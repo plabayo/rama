@@ -1,66 +1,30 @@
 //! Stunnel for Rama
 //!
-//! ## Usage
-//!
-//! ### Server Mode
-//!
-//! Accepts incoming TLS connections and forwards them as plain TCP to a backend service.
-//!
-//! # Start a backend service using rama echo cmd
-//! rama echo --bind 127.0.0.1:8080 --mode http
-//!
-//! # With auto-generated certificate (development only)
-//! rama stunnel server --listen 127.0.0.1:8443 --forward 127.0.0.1:8080
+//! # With auto-generated self-signed certificate (development & testing only)
+//! 1. rama echo echo --bind 127.0.0.1:8001 --mode http
+//! 2. rama stunnel server --listen 127.0.0.1:8002 --forward 127.0.0.1:8001
+//! 3. rama stunnel client --listen 127.0.0.1:8003 --connect 127.0.0.1:8002 --insecure
+//! # Test
+//! 4. curl http://127.0.0.1:8003
 //!
 //! # Explicitily provided certificates
-//! rama stunnel server --listen 0.0.0.0:8443 \
-//!   --forward 127.0.0.1:8080 \
-//!   --cert server.crt \
-//!   --key server.key
-//!
-//! # Test the tunnel
-//! curl http://127.0.0.1:8080
-//!
-//! ### Client Mode
-//!
-//! Accepts plain TCP connections and forwards them over TLS to a stunnel server.
-//!
-//! # Start a backend service using rama echo cmd
-//! rama echo --bind 127.0.0.1:8080 --mode http
-//!
-//! # With certificate verification (recommended)
-//! rama stunnel client --listen 127.0.0.1:8003 \
-//!   --connect server.example.com:8443 \
-//!   --cacert ca-bundle.pem
-//!
-//! # Skip verification (testing only)
-//! rama stunnel client --listen 127.0.0.1:8003 \
-//!   --connect 127.0.0.1:8443 \
-//!   --insecure
-//!
-//! ### Full Tunnel (server + client)
-//!
-//! # With auto-generated certificate (development only)
-//! rama stunnel server --listen 127.0.0.1:8443 --forward 127.0.0.1:8080
-//! rama stunnel client --listen 127.0.0.1:8003 --connect 127.0.0.1:8443 --insecure
+//! 1. rama echo echo --bind 127.0.0.1:8001 --mode http
+//! 2. rama stunnel server --listen 0.0.0.0:8002 \
+//!    --forward 127.0.0.1:8001 \
+//!    --cert server-cert.pem \
+//!    --key server-key.pem
+//! 3. rama stunnel client --listen 127.0.0.1:8003 \
+//!    --connect 127.0.0.1:8002 \
+//!    --cacert cacert.pem
 //! # Test
-//! curl http://127.0.0.1:8003
-//!
-//! # Explicitily provided certificates
-//! rama stunnel server --listen 0.0.0.0:8443 \
-//!   --forward 127.0.0.1:8080 \
-//!   --cert server.crt \
-//!   --key server.key
-//! rama stunnel client --listen 127.0.0.1:8003 --connect 127.0.0.1:8443 --cacert cert.pem
-//! # Test
-//! curl http://127.0.0.1:8003
+//! 4. curl -v http://127.0.0.1:8003
 
 use rama::{
     Layer,
     error::BoxError,
     graceful::Shutdown,
     net::{
-        address::SocketAddress,
+        address::{Authority, SocketAddress},
         socket::Interface,
         tls::{
             DataEncoding,
@@ -101,50 +65,57 @@ pub enum StunnelSubcommand {
 
 #[derive(Debug, Args)]
 pub struct ServerArgs {
-    #[arg(long, default_value = "127.0.0.1:8443")]
-    /// Address and port to listen on for incoming TLS connections
+    #[arg(long, default_value = "127.0.0.1:8002")]
+    /// address and port to listen on for incoming TLS connections
     pub listen: Interface,
 
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    /// Backend address to forward decrypted connections to
+    #[arg(long, default_value = "127.0.0.1:8001")]
+    /// backend address to forward decrypted connections to
     pub forward: SocketAddress,
 
     #[arg(long, requires = "key")]
-    /// Path to TLS certificate file (PEM format)
+    /// path to TLS certificate file (PEM format)
     ///
-    /// If not provided, a self-signed certificate will be auto-generated.
-    /// Can also be set via RAMA_TLS_CRT environment variable (base64-encoded).
+    /// if not provided, a self-signed certificate will be auto-generated.
+    /// can also be set via RAMA_TLS_CRT environment variable (base64-encoded).
     pub cert: Option<PathBuf>,
 
     #[arg(long, requires = "cert")]
-    /// Path to TLS private key file (PEM format)
+    /// path to TLS private key file (PEM format)
     ///
-    /// If not provided, a private key will be auto-generated.
-    /// Can also be set via RAMA_TLS_KEY environment variable (base64-encoded).
+    /// if not provided, a private key will be auto-generated.
+    /// can also be set via RAMA_TLS_KEY environment variable (base64-encoded).
     pub key: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
 pub struct ClientArgs {
     #[arg(long, default_value = "127.0.0.1:8003")]
-    /// the interface to bind to
+    /// address and port to listen on
     pub listen: Interface,
 
-    #[arg(long, default_value = "127.0.0.1:8002")]
-    /// server address to connect to with TLS
-    pub connect: SocketAddress,
+    #[arg(long, default_value = "127.0.0.1:8002", value_name = "HOST:PORT")]
+    /// server to connect to (port is REQUIRED)
+    ///
+    /// examples:
+    ///   localhost:8443
+    ///   example.com:8443
+    ///   192.168.1.100:8443
+    ///
+    /// port must be explicitly specified (e.g., :8443, :443)
+    pub connect: Authority,
 
     #[arg(long, conflicts_with = "insecure")]
-    /// Path to CA certificate bundle for server verification (PEM format)
+    /// path to CA certificate bundle for server verification (PEM format)
     ///
-    /// Use this to trust a specific CA or self-signed certificate.
-    /// If not provided, the system trust store will be used.
+    /// use this to trust a specific CA or self-signed certificate.
+    /// if not provided, the system trust store will be used.
     pub cacert: Option<PathBuf>,
 
     #[arg(short = 'k', long)]
-    /// Skip TLS certificate verification (INSECURE - testing only!)
+    /// skip TLS certificate verification (INSECURE - testing only!)
     ///
-    /// This disables all certificate validation and should NEVER be used
+    /// this disables all certificate validation and should NEVER be used
     /// in production. Use --cacert instead for self-signed certificates.
     pub insecure: bool,
 }
@@ -249,17 +220,17 @@ pub async fn run(cmd: StunnelCommand) -> Result<(), BoxError> {
                 .expect("Failed to bind stunnel client");
 
             let listen_addr = args.listen.clone();
-            let connect_addr = args.connect;
+            let connect_authority = args.connect;
 
             shutdown.spawn_task_fn(async move |guard| {
                 tracing::info!("Stunnel client is running...");
                 tracing::info!(
                     "Listening on {} and connecting to {}",
                     listen_addr,
-                    connect_addr
+                    connect_authority
                 );
 
-                let tcp_service = Forwarder::new(connect_addr).connector(
+                let tcp_service = Forwarder::new(connect_authority).connector(
                     TlsConnectorLayer::secure()
                         .with_connector_data(tls_client_data_builder)
                         .into_layer(TcpConnector::new()),
