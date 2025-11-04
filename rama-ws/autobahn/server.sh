@@ -21,6 +21,7 @@ function test_diff() {
     fi
 }
 
+cargo build --release -p rama-cli
 cargo run --release -p rama-cli -- echo --ws --bind 127.0.0.1:9002 & WSSERVER_PID=$!
 sleep 5
 

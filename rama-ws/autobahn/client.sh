@@ -31,5 +31,6 @@ docker run -d --rm \
     wstest -m fuzzingserver -s 'autobahn/fuzzingserver.json'
 
 sleep 5
+
 cargo run --release -p rama --example autobahn_client --features=http-full
 test_diff
