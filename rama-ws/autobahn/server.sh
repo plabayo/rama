@@ -21,18 +21,27 @@ function test_diff() {
     fi
 }
 
-cargo build --release -p rama-cli
-cargo run --release -p rama-cli -- echo --ws --bind 127.0.0.1:9002 & WSSERVER_PID=$!
-sleep 5
+case "$(uname -s)" in
+  Linux)
+      ECHO_BIND_ADDR="0.0.0.0:9002"
+      PLATFORM_SPECIFIC_DOCKER_ARGS="--add-host=host.docker.internal:host-gateway"
+      ;;
+  Darwin)
+      ECHO_BIND_ADDR="127.0.0.1:9002"
+      PLATFORM_SPECIFIC_DOCKER_ARGS="--network host"
+      ;;
+  *)
+      ECHO_BIND_ADDR="127.0.0.1:9002"
+      PLATFORM_SPECIFIC_DOCKER_ARGS="--network host"
+      ;;
+esac
 
-PLATFORM_SPECIFIC_DOCKER_ARGS=""
-if [[ "$(uname -s)" == "Linux" ]]; then
-  PLATFORM_SPECIFIC_DOCKER_ARGS="--add-host=host.docker.internal:host-gateway"
-fi
+cargo build --release -p rama-cli
+cargo run --release -p rama-cli -- echo --ws --bind "$ECHO_BIND_ADDR" & WSSERVER_PID=$!
+sleep 5
 
 docker run --rm \
     -v "${PWD}/autobahn:/autobahn" \
-    --network host \
     $PLATFORM_SPECIFIC_DOCKER_ARGS \
     crossbario/autobahn-testsuite \
     wstest -m fuzzingclient -s 'autobahn/fuzzingclient.json'
