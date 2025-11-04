@@ -235,7 +235,8 @@ pub async fn run(cmd: StunnelCommand) -> Result<(), BoxError> {
                     .add_cert(ca_cert)
                     .map_err(|e| format!("Failed to add CA certificate to store: {e}"))?;
 
-                tls_builder = tls_builder.with_server_verify_cert_store(store_builder.build());
+                tls_builder =
+                    tls_builder.with_server_verify_cert_store(store_builder.build().into());
                 tracing::info!("CA certificate loaded and added to trust store");
             } else {
                 tracing::info!("Using system trust store for certificate verification");
