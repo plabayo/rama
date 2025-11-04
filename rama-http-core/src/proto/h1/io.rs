@@ -6,6 +6,7 @@ use std::task::{Context, Poll};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::{debug, trace};
 use std::task::ready;
 use tokio::io::AsyncRead;
@@ -52,6 +53,18 @@ where
             .field("read_buf", &self.read_buf)
             .field("write_buf", &self.write_buf)
             .finish()
+    }
+}
+
+impl<T: ExtensionsRef, B> ExtensionsRef for Buffered<T, B> {
+    fn extensions(&self) -> &rama_core::extensions::Extensions {
+        self.io.extensions()
+    }
+}
+
+impl<T: ExtensionsMut, B> ExtensionsMut for Buffered<T, B> {
+    fn extensions_mut(&mut self) -> &mut rama_core::extensions::Extensions {
+        self.io.extensions_mut()
     }
 }
 
@@ -181,7 +194,7 @@ where
                     h1_max_headers: parse_ctx.h1_max_headers,
                     h09_responses: parse_ctx.h09_responses,
                     on_informational: parse_ctx.on_informational,
-                    encoded_request_extensions: parse_ctx.encoded_request_extensions,
+                    extensions: parse_ctx.extensions,
                 },
             )? {
                 debug!("parsed {} headers", msg.head.headers.len());
@@ -695,8 +708,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
-                io_extensions: &Extensions::default(),
-                request_extensions: &mut None,
+                extensions: &mut Some(Extensions::default()),
             };
             assert!(
                 buffered

@@ -8,6 +8,7 @@ use std::time::Duration;
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::{debug, error, trace, warn};
 use rama_http::io::upgrade;
 use rama_http_types::body::Frame;
@@ -197,6 +198,17 @@ where
             }
         }
 
+        let extensions = if T::is_client() {
+            if self.state.encoded_request_extensions.is_none() {
+                panic!(
+                    "encoded_request_extensions should never be none when receiving response headers"
+                )
+            }
+            &mut self.state.encoded_request_extensions
+        } else {
+            &mut Some(self.io.extensions().clone())
+        };
+
         let msg = match self.io.parse::<T>(
             cx,
             ParseContext {
@@ -205,7 +217,7 @@ where
                 h1_max_headers: self.state.h1_max_headers,
                 h09_responses: self.state.h09_responses,
                 on_informational: &mut self.state.on_informational,
-                encoded_request_extensions: &mut self.state.encoded_request_extensions,
+                extensions,
             },
         ) {
             Poll::Ready(Ok(msg)) => msg,
