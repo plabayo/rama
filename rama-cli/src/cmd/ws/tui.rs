@@ -117,6 +117,13 @@ impl App {
         })
     }
 
+    async fn cleanup(&mut self) -> Result<(), OpaqueError> {
+        self.socket
+            .close(None)
+            .await
+            .context("send close WS message")
+    }
+
     pub(super) async fn run(&mut self, guard: ShutdownGuard) -> Result<(), OpaqueError> {
         loop {
             self.render()?;
@@ -128,12 +135,12 @@ impl App {
                 .unwrap_or_default()
             {
                 tracing::info!("guard cancelled: exit tui");
-                return Ok(());
+                return self.cleanup().await;
             }
 
             if self.update().await? {
                 tracing::info!("user quit: exit tui");
-                return Ok(());
+                return self.cleanup().await;
             }
 
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -221,6 +228,11 @@ impl App {
             match result {
                 Ok(Message::Text(text)) => {
                     self.history.push_server_message(text);
+                }
+                Ok(Message::Close(close)) => {
+                    return Err(OpaqueError::from_display(format!(
+                        "recv close msg, frame: {close:?}"
+                    )));
                 }
                 Ok(message) => {
                     tracing::info!("received non-text message: {message}");

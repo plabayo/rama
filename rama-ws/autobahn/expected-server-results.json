@@ -1716,14 +1716,14 @@
          "reportfile": "rama_case_3_1.json"
       },
       "3.2": {
-         "behavior": "NON-STRICT",
+         "behavior": "OK",
          "behaviorClose": "OK",
          "duration": 0,
          "remoteCloseCode": null,
          "reportfile": "rama_case_3_2.json"
       },
       "3.3": {
-         "behavior": "NON-STRICT",
+         "behavior": "OK",
          "behaviorClose": "OK",
          "duration": 1,
          "remoteCloseCode": null,
@@ -1772,14 +1772,14 @@
          "reportfile": "rama_case_4_1_2.json"
       },
       "4.1.3": {
-         "behavior": "NON-STRICT",
+         "behavior": "OK",
          "behaviorClose": "OK",
          "duration": 1,
          "remoteCloseCode": null,
          "reportfile": "rama_case_4_1_3.json"
       },
       "4.1.4": {
-         "behavior": "NON-STRICT",
+         "behavior": "OK",
          "behaviorClose": "OK",
          "duration": 1,
          "remoteCloseCode": null,
@@ -1807,14 +1807,14 @@
          "reportfile": "rama_case_4_2_2.json"
       },
       "4.2.3": {
-         "behavior": "NON-STRICT",
+         "behavior": "OK",
          "behaviorClose": "OK",
          "duration": 1,
          "remoteCloseCode": null,
          "reportfile": "rama_case_4_2_3.json"
       },
       "4.2.4": {
-         "behavior": "NON-STRICT",
+         "behavior": "OK",
          "behaviorClose": "OK",
          "duration": 0,
          "remoteCloseCode": null,
@@ -1870,7 +1870,7 @@
          "reportfile": "rama_case_5_14.json"
       },
       "5.15": {
-         "behavior": "NON-STRICT",
+         "behavior": "OK",
          "behaviorClose": "OK",
          "duration": 1,
          "remoteCloseCode": null,

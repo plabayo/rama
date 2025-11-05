@@ -288,6 +288,48 @@ jobs:
       - name: Run doc tests
         run: cargo test --all-features --examples --workspace
 
+  test-ws-autobahn-server:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Run autobahn ws server test-suite
+        shell: bash
+        working-directory: "./rama-ws"
+        run: ./autobahn/server.sh
+
+  test-ws-autobahn-client:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Run autobahn ws client test-suite
+        shell: bash
+        working-directory: "./rama-ws"
+        run: ./autobahn/client.sh
+
   cargo-hack:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
@@ -412,6 +454,8 @@ jobs:
       - test-examples-msrv
       - test-ignored
       - test-docs
+      - test-ws-autobahn-client
+      - test-ws-autobahn-server
       - cargo-hack
       - cargo-deny
       - test-spec-h2
