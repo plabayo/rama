@@ -54,3 +54,6 @@ pub mod core {
         pub use rama_boring_tokio::*;
     }
 }
+
+#[cfg(test)]
+mod tests;

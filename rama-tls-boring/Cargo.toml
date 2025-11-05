@@ -45,6 +45,7 @@ zstd = { workspace = true, optional = true }
 schannel = { workspace = true }
 
 [dev-dependencies]
+tracing-test = { workspace = true }
 
 [lints]
 workspace = true
