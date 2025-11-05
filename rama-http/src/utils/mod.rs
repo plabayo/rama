@@ -9,7 +9,7 @@ pub use header_value::{HeaderValueErr, HeaderValueGetter};
 pub(crate) mod macros;
 
 mod req_switch_version_ext;
-pub use req_switch_version_ext::RequestSwitchVersionExt;
+pub use req_switch_version_ext::{RequestApplyTargetVersionExt, RequestSwitchVersionExt};
 
 mod request;
 pub use request::request_uri;
