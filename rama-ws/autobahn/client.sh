@@ -25,7 +25,7 @@ test_diff() {
   if [[ $STATUS -eq 1 ]]; then
     echo "❌ Difference detected between expected and actual results:"
     echo
-    echo "$DIFF_OUTPUT"
+    # echo "$DIFF_OUTPUT"
     echo
     echo "Either this is a regression, or update autobahn/expected-client-results.json with the new results."
     return 64
@@ -38,8 +38,20 @@ test_diff() {
   fi
 }
 
+case "$(uname -s)" in
+  Linux)
+    PLATFORM_SPECIFIC_DOCKER_ARGS="--add-host=host.docker.internal:host-gateway"
+    ;;
+  Darwin)
+    PLATFORM_SPECIFIC_DOCKER_ARGS=""
+    ;;
+  *)
+    echo "unsupported platform"; exit 1;;
+esac
+
 docker run -d --rm \
   -v "${PWD}/autobahn:/autobahn" \
+  $PLATFORM_SPECIFIC_DOCKER_ARGS \
   -p 9001:9001 \
   --init \
   --name "${CONTAINER_NAME}" \
