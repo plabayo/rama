@@ -43,7 +43,7 @@ case "$(uname -s)" in
     ;;
   Darwin)
     ECHO_BIND_ADDR="127.0.0.1:9002"
-    PLATFORM_SPECIFIC_DOCKER_ARGS=""
+    PLATFORM_SPECIFIC_DOCKER_ARGS="--network=host"
     ;;
   *)
     echo "unsupported platform"; exit 1;;
