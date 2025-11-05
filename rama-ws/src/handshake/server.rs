@@ -871,9 +871,6 @@ impl Service<AsyncWebSocket> for WebSocketEchoService {
 
         loop {
             let msg = socket.recv_message().await.context("recv next msg")?;
-            if msg.is_close() {
-                return Ok(());
-            }
             if let Some(msg2) = transformer(msg) {
                 socket.send_message(msg2).await.context("echo msg back")?;
             }

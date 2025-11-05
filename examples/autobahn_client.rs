@@ -155,9 +155,6 @@ async fn run_test(case: u32) -> Result<(), BoxError> {
 
     while let Some(msg) = socket.next().await {
         let msg = msg?;
-        if msg.is_close() {
-            break;
-        }
         if msg.is_text() || msg.is_binary() {
             socket.send(msg).await?;
         }
