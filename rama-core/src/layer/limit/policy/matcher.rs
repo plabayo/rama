@@ -136,8 +136,8 @@ mod tests {
     impl Matcher<NumberedRequest> for TestMatchers {
         fn matches(&self, _ext: Option<&mut Extensions>, req: &NumberedRequest) -> bool {
             match self {
-                Self::Const(n) => *n == req.request,
-                Self::Odd => req.request % 2 == 1,
+                Self::Const(n) => *n == req.input,
+                Self::Odd => req.input % 2 == 1,
             }
         }
     }

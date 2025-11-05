@@ -1,7 +1,7 @@
 #![deny(warnings)]
 
 use h2_support::prelude::*;
-use rama::extensions::ExtensionsMut;
+use rama::{ServiceInput, extensions::ExtensionsMut};
 use rama_core::{extensions::ExtensionsRef, futures::StreamExt};
 use tokio::io::AsyncWriteExt;
 
@@ -21,6 +21,7 @@ async fn read_preface_in_multiple_frames() {
         .write(SETTINGS_ACK)
         .read(SETTINGS_ACK)
         .build();
+    let mock = ServiceInput::new(mock);
 
     let mut h2 = server::handshake(mock).await.unwrap();
 

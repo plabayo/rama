@@ -8,6 +8,7 @@ use std::task::{Context, Poll};
 use std::{io, time::Duration};
 
 use pin_project_lite::pin_project;
+use rama_core::extensions::ExtensionsMut;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
@@ -101,7 +102,7 @@ impl Builder {
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<'_, I, S>
     where
         S: HttpService<Incoming>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         let state = match self.version {
             Some(Version::H1) => {
@@ -287,7 +288,7 @@ pin_project! {
 impl<I, S> Connection<'_, I, S>
 where
     S: HttpService<Incoming>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -331,7 +332,7 @@ where
 impl<I, S> Future for Connection<'_, I, S>
 where
     S: HttpService<Incoming>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = Result<()>;
 
@@ -413,7 +414,7 @@ pin_project! {
 impl<I, S> UpgradeableConnection<'_, I, S>
 where
     S: HttpService<Incoming>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -457,7 +458,7 @@ where
 impl<I, S> Future for UpgradeableConnection<'_, I, S>
 where
     S: HttpService<Incoming>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = Result<()>;
 
@@ -632,7 +633,7 @@ impl Http1Builder<'_> {
     pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<()>
     where
         S: HttpService<Incoming>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         self.inner.serve_connection(io, service).await
     }
@@ -812,7 +813,7 @@ impl Http2Builder<'_> {
     pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<()>
     where
         S: HttpService<Incoming>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         self.inner.serve_connection(io, service).await
     }
@@ -839,6 +840,7 @@ mod tests {
     use crate::server::conn::auto;
     use crate::service::RamaHttpService;
     use crate::{body::Bytes, client};
+    use rama_core::ServiceInput;
     use rama_core::error::BoxError;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
@@ -962,7 +964,7 @@ mod tests {
     #[cfg(not(miri))]
     #[tokio::test]
     async fn graceful_shutdown() {
-        use rama_core::service::service_fn;
+        use rama_core::{ServiceInput, service::service_fn};
 
         use crate::service::RamaHttpService;
 
@@ -978,6 +980,8 @@ mod tests {
         let _stream = TcpStream::connect(listener_addr).await.unwrap();
 
         let (stream, _) = listen_task.await.unwrap();
+        let stream = ServiceInput::new(stream);
+
         let builder = auto::Builder::new(Executor::new());
         let connection = builder.serve_connection(stream, RamaHttpService::new(service_fn(hello)));
 
@@ -1001,6 +1005,7 @@ mod tests {
         B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let stream = TcpStream::connect(addr).await.unwrap();
+        let stream = ServiceInput::new(stream);
         let (sender, connection) = http1::handshake(stream).await.unwrap();
 
         tokio::spawn(connection);
@@ -1013,6 +1018,7 @@ mod tests {
         B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let stream = TcpStream::connect(addr).await.unwrap();
+        let stream = ServiceInput::new(stream);
         let (sender, connection) = client::conn::http2::Builder::new(Executor::new())
             .handshake(stream)
             .await
@@ -1032,6 +1038,7 @@ mod tests {
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
+                let stream = ServiceInput::new(stream);
                 tokio::spawn(async move {
                     let mut builder = auto::Builder::new(Executor::new());
                     if h1_only {

@@ -74,7 +74,7 @@ where
             }
         }
 
-        let header_map = Http1HeaderMap::new(parts.headers, Some(&mut parts.extensions));
+        let header_map = Http1HeaderMap::new(parts.headers, Some(&parts.extensions));
         // put a clone of this data back into parts as we don't really want to consume it, just trace it
         parts.headers = header_map.clone().consume(&mut parts.extensions);
 

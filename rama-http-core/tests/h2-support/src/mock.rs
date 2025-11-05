@@ -1,5 +1,6 @@
 use crate::SendFrame;
 
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_http_core::h2::SendError;
 use rama_http_core::h2::frame::{self, Frame};
 use rama_http_core::h2::proto::Error;
@@ -20,6 +21,19 @@ use std::{cmp, io};
 #[derive(Debug)]
 pub struct Mock {
     pipe: Pipe,
+    extensions: Extensions,
+}
+
+impl ExtensionsRef for Mock {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for Mock {
+    fn extensions_mut(&mut self) -> &mut rama_core::extensions::Extensions {
+        &mut self.extensions
+    }
 }
 
 #[derive(Debug)]
@@ -83,6 +97,7 @@ pub fn new_with_write_capacity(cap: usize) -> (Mock, Handle) {
         pipe: Pipe {
             inner: inner.clone(),
         },
+        extensions: Extensions::default(),
     };
 
     let handle = Handle {

@@ -14,6 +14,7 @@ use std::thread;
 use std::time::Duration;
 
 use futures_channel::oneshot;
+use rama::ServiceInput;
 use rama::error::{BoxError, OpaqueError};
 use rama::extensions::Extensions;
 use rama::extensions::ExtensionsMut;
@@ -1002,6 +1003,7 @@ async fn expect_continue_waits_for_body_poll() {
     });
 
     let (socket, _) = listener.accept().await.expect("accept");
+    let socket = ServiceInput::new(socket);
 
     http1::Builder::new()
         .serve_connection(
@@ -1186,6 +1188,7 @@ async fn disable_keep_alive_mid_request() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     let srv = http1::Builder::new().serve_connection(socket, RamaHttpService::new(HelloWorld));
     future::try_select(srv, rx1)
         .then(|r| match r {
@@ -1232,10 +1235,12 @@ async fn disable_keep_alive_post_request() {
     let dropped = Dropped::new();
     let dropped2 = dropped.clone();
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     let transport = DebugStream {
         stream: socket,
         _debug: dropped2,
     };
+    let transport = ServiceInput::new(transport);
     let server =
         http1::Builder::new().serve_connection(transport, RamaHttpService::new(HelloWorld));
     let fut = future::try_select(server, rx1).then(|r| match r {
@@ -1294,6 +1299,7 @@ async fn http1_graceful_shutdown_after_upgrade() {
     }));
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
 
     let mut conn = http1::Builder::new()
         .serve_connection(socket, svc)
@@ -1306,7 +1312,7 @@ async fn http1_graceful_shutdown_after_upgrade() {
     read_101_rx.await.unwrap();
 
     let upgraded = on_upgrade.await.expect("on_upgrade");
-    let parts = upgraded.downcast::<TkTcpStream>().unwrap();
+    let parts = upgraded.downcast::<ServiceInput<TkTcpStream>>().unwrap();
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
     pin!(conn);
@@ -1322,6 +1328,7 @@ async fn empty_parse_eof_does_not_return_error() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
@@ -1338,6 +1345,7 @@ async fn nonempty_parse_eof_returns_error() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
@@ -1360,6 +1368,7 @@ async fn http1_allow_half_close() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .half_close(true)
         .serve_connection(
@@ -1385,6 +1394,7 @@ async fn disconnect_after_reading_request_before_responding() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .half_close(false)
         .serve_connection(
@@ -1416,6 +1426,7 @@ async fn returning_1xx_response_is_error() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .serve_connection(
             socket,
@@ -1478,6 +1489,7 @@ async fn header_read_timeout_slow_writes() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
         .header_read_timeout(Duration::from_secs(5))
         .serve_connection(
@@ -1506,6 +1518,7 @@ async fn header_read_timeout_starts_immediately() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
         .header_read_timeout(Duration::from_secs(2))
         .serve_connection(socket, RamaHttpService::new(unreachable_service()));
@@ -1571,6 +1584,7 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
         .header_read_timeout(Duration::from_secs(5))
         .serve_connection(
@@ -1613,6 +1627,7 @@ async fn header_read_timeout_as_idle_timeout() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
         .header_read_timeout(Duration::from_secs(3))
         .serve_connection(
@@ -1658,6 +1673,7 @@ async fn upgrades() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new().serve_connection(
         socket,
         RamaHttpService::new(service_fn(|_| {
@@ -1711,6 +1727,7 @@ async fn http_connect() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new().serve_connection(
         socket,
         RamaHttpService::new(service_fn(|_| {
@@ -1781,6 +1798,7 @@ async fn upgrades_new() {
     }));
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .serve_connection(socket, svc)
         .with_upgrades()
@@ -1793,7 +1811,7 @@ async fn upgrades_new() {
     read_101_rx.await.unwrap();
 
     let upgraded = on_upgrade.await.expect("on_upgrade");
-    let parts = upgraded.downcast::<TkTcpStream>().unwrap();
+    let parts = upgraded.downcast::<ServiceInput<TkTcpStream>>().unwrap();
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
     let mut io = parts.io;
@@ -1814,6 +1832,7 @@ async fn upgrades_ignored() {
                 future::ok::<_, Infallible>(Response::new(Empty::<Bytes>::new()))
             }));
             let (socket, _) = listener.accept().await.unwrap();
+            let socket = ServiceInput::new(socket);
             tokio::task::spawn(async move {
                 http1::Builder::new()
                     .serve_connection(socket, svc)
@@ -1884,6 +1903,7 @@ async fn http_connect_new() {
     }));
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .serve_connection(socket, svc)
         .with_upgrades()
@@ -1896,7 +1916,7 @@ async fn http_connect_new() {
     read_200_rx.await.unwrap();
 
     let upgraded = on_upgrade.await.expect("on_upgrade");
-    let parts = upgraded.downcast::<TkTcpStream>().unwrap();
+    let parts = upgraded.downcast::<ServiceInput<TkTcpStream>>().unwrap();
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
     let mut io = parts.io;
@@ -1910,6 +1930,7 @@ async fn http_connect_new() {
 async fn h2_connect() {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
+    let conn = ServiceInput::new(conn);
 
     let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
     tokio::spawn(async move {
@@ -1964,6 +1985,7 @@ async fn h2_connect() {
     }));
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http2::Builder::new(Executor::new())
         .serve_connection(socket, svc)
         //.with_upgrades()
@@ -1978,6 +2000,7 @@ async fn h2_connect_multiplex() {
 
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
+    let conn = ServiceInput::new(conn);
 
     let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
     tokio::spawn(async move {
@@ -2073,6 +2096,7 @@ async fn h2_connect_multiplex() {
     }));
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http2::Builder::new(Executor::new())
         .serve_connection(socket, svc)
         //.with_upgrades()
@@ -2084,6 +2108,7 @@ async fn h2_connect_multiplex() {
 async fn h2_connect_large_body() {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
+    let conn = ServiceInput::new(conn);
 
     let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
     tokio::spawn(async move {
@@ -2145,6 +2170,7 @@ async fn h2_connect_large_body() {
     }));
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http2::Builder::new(Executor::new())
         .serve_connection(socket, svc)
         //.with_upgrades()
@@ -2156,6 +2182,7 @@ async fn h2_connect_large_body() {
 async fn h2_connect_empty_frames() {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
+    let conn = ServiceInput::new(conn);
 
     let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
     tokio::spawn(async move {
@@ -2214,6 +2241,7 @@ async fn h2_connect_empty_frames() {
     }));
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http2::Builder::new(Executor::new())
         .serve_connection(socket, svc)
         //.with_upgrades()
@@ -2236,6 +2264,7 @@ async fn parse_errors_send_4xx_response() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
@@ -2258,6 +2287,7 @@ async fn illegal_request_length_returns_400_response() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
@@ -2295,6 +2325,7 @@ async fn max_buf_size() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
     http1::Builder::new()
         .max_buf_size(MAX)
         .serve_connection(socket, RamaHttpService::new(HelloWorld))
@@ -2308,6 +2339,7 @@ async fn graceful_shutdown_before_first_request_no_block() {
 
     tokio::spawn(async move {
         let socket = listener.accept().await.unwrap().0;
+        let socket = ServiceInput::new(socket);
 
         let future =
             http1::Builder::new().serve_connection(socket, RamaHttpService::new(HelloWorld));
@@ -2563,6 +2595,7 @@ async fn http2_keep_alive_detects_unresponsive_client() {
     });
 
     let (socket, _) = listener.accept().await.expect("accept");
+    let socket = ServiceInput::new(socket);
 
     let err = http2::Builder::new(Executor::new())
         .keep_alive_interval(Duration::from_secs(1))
@@ -2581,6 +2614,7 @@ async fn http2_keep_alive_with_responsive_client() {
 
     tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
+        let socket = ServiceInput::new(socket);
 
         http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
@@ -2591,6 +2625,7 @@ async fn http2_keep_alive_with_responsive_client() {
     });
 
     let tcp = connect_async(addr).await;
+    let tcp = ServiceInput::new(tcp);
     let (mut client, conn) = rama::http::core::client::conn::http2::Builder::new(Executor::new())
         .handshake(tcp)
         .await
@@ -2612,6 +2647,7 @@ async fn http2_check_date_header_disabled() {
 
     tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
+        let socket = ServiceInput::new(socket);
 
         http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
@@ -2623,6 +2659,7 @@ async fn http2_check_date_header_disabled() {
     });
 
     let tcp = connect_async(addr).await;
+    let tcp = ServiceInput::new(tcp);
     let (mut client, conn) = rama::http::core::client::conn::http2::Builder::new(Executor::new())
         .handshake(tcp)
         .await
@@ -2677,6 +2714,7 @@ async fn http2_keep_alive_count_server_pings() {
 
     tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
+        let socket = ServiceInput::new(socket);
 
         http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
@@ -3190,6 +3228,7 @@ impl ServeOptions {
                         tokio::select! {
                             res = listener.accept() => {
                                 let (stream, _) = res.unwrap();
+                                let stream = ServiceInput::new(stream);
 
                                 tokio::task::spawn(async move {
                                     let msg_tx = msg_tx.clone();
@@ -3421,6 +3460,7 @@ impl TestClient {
         let stream = TkTcpStream::connect(format!("{host}:{port}"))
             .await
             .unwrap();
+        let stream = ServiceInput::new(stream);
 
         if self.http2_only {
             let (mut sender, conn) =

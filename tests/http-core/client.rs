@@ -9,12 +9,14 @@ use std::pin::Pin;
 use std::thread;
 use std::time::Duration;
 
+use rama::ServiceInput;
 use rama::extensions::ExtensionsMut;
 use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::http::uri::PathAndQuery;
 use rama::http::{Method, Request, StatusCode, StreamingBody, Uri, Version};
+use rama::net::stream::Socket;
 
 use super::support;
 
@@ -49,7 +51,7 @@ async fn tcp_connect(addr: &SocketAddr) -> std::io::Result<TcpStream> {
     TcpStream::connect(*addr).await
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct HttpInfo {
     remote_addr: SocketAddr,
 }
@@ -320,6 +322,7 @@ macro_rules! test {
             let port = req.uri().port_u16().unwrap_or(80);
 
             let stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
+            let stream = ServiceInput::new(stream);
 
             let extra = HttpInfo {
                 remote_addr: stream.peer_addr().unwrap(),
@@ -1488,8 +1491,9 @@ mod conn {
     use std::time::Duration;
 
     use futures_channel::{mpsc, oneshot};
+    use rama::ServiceInput;
     use rama::bytes::{Buf, Bytes};
-    use rama::extensions::ExtensionsRef;
+    use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
     use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
@@ -1541,6 +1545,7 @@ mod conn {
 
         let client = async move {
             let tcp = tcp_connect(&addr).await.expect("connect");
+            let tcp = ServiceInput::new(tcp);
             let (mut client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
 
             tokio::task::spawn(async move {
@@ -1581,6 +1586,7 @@ mod conn {
 
         let client = async move {
             let tcp = tcp_connect(&addr).await.expect("connect");
+            let tcp = ServiceInput::new(tcp);
             let (mut client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
 
             tokio::task::spawn(async move {
@@ -1637,6 +1643,7 @@ mod conn {
         });
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
+        let tcp = ServiceInput::new(tcp);
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
@@ -1681,6 +1688,7 @@ mod conn {
         });
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
+        let tcp = ServiceInput::new(tcp);
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
@@ -1736,6 +1744,7 @@ mod conn {
         });
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
+        let tcp = ServiceInput::new(tcp);
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
@@ -1780,6 +1789,7 @@ mod conn {
         });
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
+        let tcp = ServiceInput::new(tcp);
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
@@ -1821,6 +1831,7 @@ mod conn {
         });
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
+        let tcp = ServiceInput::new(tcp);
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
@@ -1884,10 +1895,7 @@ mod conn {
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
 
-        let io = DebugStream {
-            tcp,
-            shutdown_called: false,
-        };
+        let io = DebugStream::new(tcp);
 
         let (mut client, mut conn) = rt.block_on(conn::http1::handshake(io)).unwrap();
 
@@ -1968,10 +1976,7 @@ mod conn {
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
 
-        let io = DebugStream {
-            tcp,
-            shutdown_called: false,
-        };
+        let io = DebugStream::new(tcp);
 
         let (mut client, mut conn) = rt.block_on(conn::http1::handshake(io)).unwrap();
 
@@ -2066,6 +2071,7 @@ mod conn {
         });
 
         let tcp = tcp_connect(&addr).await.unwrap();
+        let tcp = ServiceInput::new(tcp);
 
         let (mut client, conn) = conn::http1::Builder::new()
             .http09_responses(true)
@@ -2103,6 +2109,7 @@ mod conn {
         });
 
         let tcp = tcp_connect(&addr).await.unwrap();
+        let tcp = ServiceInput::new(tcp);
 
         let (mut client, conn) = conn::http1::handshake(tcp).await.unwrap();
 
@@ -2140,6 +2147,7 @@ mod conn {
         // make polling fair by putting both in spawns
         tokio::spawn(async move {
             let io = io_srv;
+            let io = ServiceInput::new(io);
             let (mut client, mut conn) = conn::http1::Builder::new()
                 .handshake::<_, Empty<Bytes>>(io)
                 .await
@@ -2228,6 +2236,7 @@ mod conn {
                 tokio::select! {
                     res = listener.accept() => {
                         let (stream, _) = res.unwrap();
+                        let stream = ServiceInput::new(stream);
 
                         let service = RamaHttpService::new(
 
@@ -2257,6 +2266,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake(io)
             .await
@@ -2320,6 +2330,7 @@ mod conn {
             }));
 
             tokio::task::spawn(async move {
+                let stream = ServiceInput::new(stream);
                 let conn = http2::Builder::new(Executor::new()).serve_connection(stream, service);
                 let _ = conn.await;
                 tx.send(()).unwrap();
@@ -2327,6 +2338,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake(io)
             .await
@@ -2388,6 +2400,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
         let (_client, conn) = conn::http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
@@ -2415,6 +2428,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
@@ -2445,6 +2459,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
@@ -2484,6 +2499,7 @@ mod conn {
         // Spawn an HTTP2 server that reads the whole body and responds
         tokio::spawn(async move {
             let sock = listener.accept().await.unwrap().0;
+            let sock = ServiceInput::new(sock);
             rama::http::core::server::conn::http2::Builder::new(Executor::new())
                 .serve_connection(
                     sock,
@@ -2499,6 +2515,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
@@ -2536,6 +2553,7 @@ mod conn {
         // It's normal case to decline the request due to headers or size of the body.
         tokio::spawn(async move {
             let sock = listener.accept().await.unwrap().0;
+            let sock = ServiceInput::new(sock);
             rama::http::core::server::conn::http2::Builder::new(Executor::new())
                 .serve_connection(
                     sock,
@@ -2550,6 +2568,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake(io)
             .await
@@ -2583,6 +2602,7 @@ mod conn {
         // Spawn an HTTP2 server that asks for bread and responds with baguette.
         tokio::spawn(async move {
             let sock = listener.accept().await.unwrap().0;
+            let sock = ServiceInput::new(sock);
             let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
 
             let (req, mut respond) = h2.accept().await.unwrap().unwrap();
@@ -2605,6 +2625,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake(io)
             .await
@@ -2638,6 +2659,7 @@ mod conn {
 
         tokio::spawn(async move {
             let sock = listener.accept().await.unwrap().0;
+            let sock = ServiceInput::new(sock);
             let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
 
             let (req, mut respond) = h2.accept().await.unwrap().unwrap();
@@ -2655,6 +2677,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake::<_, Empty<Bytes>>(io)
             .await
@@ -2691,6 +2714,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
+        let io = ServiceInput::new(io);
 
         let (mut client, conn) = conn::http1::Builder::new()
             .handshake(io)
@@ -2729,6 +2753,29 @@ mod conn {
     struct DebugStream {
         tcp: TcpStream,
         shutdown_called: bool,
+        extensions: Extensions,
+    }
+
+    impl DebugStream {
+        fn new(tcp: TcpStream) -> Self {
+            Self {
+                tcp,
+                shutdown_called: false,
+                extensions: Extensions::default(),
+            }
+        }
+    }
+
+    impl ExtensionsRef for DebugStream {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl ExtensionsMut for DebugStream {
+        fn extensions_mut(&mut self) -> &mut Extensions {
+            &mut self.extensions
+        }
     }
 
     #[warn(clippy::missing_trait_methods)]

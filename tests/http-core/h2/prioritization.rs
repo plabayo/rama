@@ -1,3 +1,4 @@
+use rama::ServiceInput;
 use rama_core::futures::{FutureExt, StreamExt, pin_mut};
 
 use h2_support::DEFAULT_WINDOW_SIZE;
@@ -27,6 +28,7 @@ async fn single_stream_send_large_body() {
         // Read response
         .read(&[0, 0, 1, 1, 5, 0, 0, 0, 1, 0x89])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 
@@ -157,6 +159,7 @@ async fn single_stream_send_extra_large_body_multi_frames_one_buffer() {
         // Read response
         .read(&[0, 0, 1, 1, 5, 0, 0, 0, 1, 0x89])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 
@@ -240,6 +243,7 @@ async fn single_stream_send_body_greater_than_default_window() {
         // Read response
         .read(&[0, 0, 1, 1, 5, 0, 0, 0, 1, 0x89])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 
@@ -317,6 +321,7 @@ async fn single_stream_send_extra_large_body_multi_frames_multi_buffer() {
         // Read response
         .read(&[0, 0, 1, 1, 5, 0, 0, 0, 1, 0x89])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 

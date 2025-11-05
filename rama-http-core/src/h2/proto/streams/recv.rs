@@ -1,10 +1,7 @@
 use super::*;
 use crate::h2::codec::UserError;
 use crate::h2::proto;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
-
-use rama_http::proto::{RequestExtensions, RequestHeaders};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
@@ -258,12 +255,15 @@ impl Recv {
         }
 
         if !pseudo.is_informational() {
+            // TODO we can probably mem::take them here, but will need to be tested for side-effects
+            let extensions = stream.extensions.clone();
             let message = counts.peer().convert_poll_message(
                 pseudo,
                 fields,
                 field_order,
                 header_size,
                 stream_id,
+                extensions,
             )?;
 
             // Push the frame onto the stream's recv buffer
@@ -336,18 +336,7 @@ impl Recv {
         // If the buffer is not empty, then the first frame must be a HEADERS
         // frame or the user violated the contract.
         match stream.pending_recv.pop_front(&mut self.buffer) {
-            Some(Event::Headers(peer::PollMessage::Client(mut response))) => {
-                if let Some(request_ext) = stream.encoded_extensions.take() {
-                    // TODO instead of this manual stuff do we just see request extensions as parent extensions for response?
-                    if let Some(request_headers) = request_ext.get::<RequestHeaders>().cloned() {
-                        response.extensions_mut().insert(request_headers);
-                    }
-                    response
-                        .extensions_mut()
-                        .insert(RequestExtensions::from(request_ext));
-                }
-                Poll::Ready(Ok(response))
-            }
+            Some(Event::Headers(peer::PollMessage::Client(response))) => Poll::Ready(Ok(response)),
             Some(_) => panic!("poll_response called after response returned"),
             None => {
                 if !stream.state.ensure_recv_open()? {
@@ -780,12 +769,14 @@ impl Recv {
         let promised_id = frame.promised_id();
         let header_size = frame.calculate_header_list_size();
         let (pseudo, fields, field_order) = frame.into_parts();
+        // TODO we can probably mem::take them here, but will need to be tested for side-effects
         let req = crate::h2::server::Peer::convert_poll_message(
             pseudo,
             fields,
             field_order,
             header_size,
             promised_id,
+            stream.extensions.clone(),
         )?;
 
         if let Err(e) = frame::PushPromise::validate_request(&req) {

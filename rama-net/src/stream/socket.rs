@@ -67,12 +67,12 @@ impl Socket for tokio::net::UdpSocket {
 impl<T: Socket> Socket for ServiceInput<T> {
     #[inline]
     fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.request.local_addr()
+        self.input.local_addr()
     }
 
     #[inline]
     fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-        self.request.peer_addr()
+        self.input.peer_addr()
     }
 }
 

@@ -18,6 +18,7 @@
 //! You should see an HTTP Status 200 OK with a HTML payload containing the
 //! connection index and count of requests within that connection.
 
+use rama_core::ServiceInput;
 use rama_error::BoxError;
 use rama_http_core::h2::client;
 use rama_http_types::{Method, Request};
@@ -53,8 +54,9 @@ pub async fn main() -> Result<(), BoxError> {
     let connector = TlsConnector::from(tls_client_config);
     let res = connector.connect(dns_name, tcp).await;
     let tls = res.unwrap();
+    let tls = ServiceInput::new(tls);
     {
-        let (_, session) = tls.get_ref();
+        let (_, session) = tls.input.get_ref();
         let negotiated_protocol = session.alpn_protocol();
         assert_eq!(Some(ALPN_H2.as_bytes()), negotiated_protocol);
     }

@@ -894,7 +894,7 @@ mod tests {
         type ID = usize;
 
         fn id(&self, req: &ServiceInput<String>) -> Result<Self::ID, OpaqueError> {
-            Ok(req.request.chars().count())
+            Ok(req.input.chars().count())
         }
     }
 

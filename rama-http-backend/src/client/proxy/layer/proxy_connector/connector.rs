@@ -4,6 +4,7 @@
 
 use super::HttpProxyError;
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::extensions::ExtensionsMut;
 use rama_core::rt::Executor;
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
@@ -80,7 +81,7 @@ impl InnerHttpProxyConnector {
     }
 
     /// Connect to the proxy server.
-    pub(super) async fn handshake<S: Stream + Unpin>(
+    pub(super) async fn handshake<S: Stream + ExtensionsMut + Unpin>(
         self,
         stream: S,
     ) -> Result<(HeaderMap, upgrade::Upgraded), HttpProxyError> {
@@ -121,7 +122,7 @@ impl InnerHttpProxyConnector {
         }
     }
 
-    async fn handshake_h1<S: Stream + Unpin>(
+    async fn handshake_h1<S: Stream + ExtensionsMut + Unpin>(
         req: Request,
         stream: S,
     ) -> Result<Response<Incoming>, HttpProxyError> {
@@ -142,7 +143,7 @@ impl InnerHttpProxyConnector {
             .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed()))
     }
 
-    async fn handshake_h2<S: Stream + Unpin>(
+    async fn handshake_h2<S: Stream + ExtensionsMut + Unpin>(
         req: Request,
         stream: S,
     ) -> Result<Response<Incoming>, HttpProxyError> {

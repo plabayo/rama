@@ -5,6 +5,12 @@ use rama_core::extensions::ExtensionsMut;
 #[derive(Clone)]
 pub(crate) struct OnInformational(Arc<dyn OnInformationalCallback + Send + Sync>);
 
+impl std::fmt::Debug for OnInformational {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("OnInformational").finish()
+    }
+}
+
 /// Add a callback for 1xx informational responses.
 ///
 /// # Example

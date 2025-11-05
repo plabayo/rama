@@ -72,7 +72,7 @@ where
             RecvItem = MessageHead<T::Incoming>,
         > + Unpin,
     D::PollError: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     T: Http1Transaction + Unpin,
     Bs: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
@@ -449,7 +449,7 @@ where
             RecvItem = MessageHead<T::Incoming>,
         > + Unpin,
     D::PollError: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     T: Http1Transaction + Unpin,
     Bs: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
@@ -700,6 +700,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use rama_core::ServiceInput;
+
     use super::*;
     use crate::proto::h1::ClientTransaction;
     use std::time::Duration;
@@ -708,6 +710,7 @@ mod tests {
     fn client_read_bytes_before_writing_request() {
         tokio_test::task::spawn(()).enter(|cx, _| {
             let (io, mut handle) = tokio_test::io::Builder::new().build_with_handle();
+            let io = ServiceInput::new(io);
 
             // Block at 0 for now, but we will release this response before
             // the request is ready to write later...
@@ -744,6 +747,8 @@ mod tests {
             .wait(std::time::Duration::from_secs(2))
             .build_with_handle();
 
+        let io = ServiceInput::new(io);
+
         let (mut tx, rx) = crate::client::dispatch::channel();
         let mut conn = Conn::<_, rama_core::bytes::Bytes, ClientTransaction>::new(io);
         conn.set_write_strategy_queue();
@@ -772,6 +777,8 @@ mod tests {
             // no reading or writing, just be blocked for the test...
             .wait(Duration::from_secs(5))
             .build();
+
+        let io = ServiceInput::new(io);
 
         let (mut tx, rx) = crate::client::dispatch::channel();
         let conn = Conn::<_, rama_core::bytes::Bytes, ClientTransaction>::new(io);

@@ -103,7 +103,7 @@ pub(super) async fn get_consent() -> impl IntoResponse {
 pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
-    let (mut parts, _) = req.into_parts();
+    let (parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
@@ -120,7 +120,7 @@ pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
 
     let http_info = get_and_store_http_info(
         parts.headers,
-        &mut parts.extensions,
+        &parts.extensions,
         parts.version,
         user_agent.clone(),
         Initiator::Navigator,
@@ -342,7 +342,7 @@ pub(super) async fn post_api_fetch_number(
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
 
-    let (mut parts, body) = req.into_parts();
+    let (parts, body) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(parts.extensions()).await;
 
@@ -359,7 +359,7 @@ pub(super) async fn post_api_fetch_number(
 
     let http_info = get_and_store_http_info(
         parts.headers,
-        &mut parts.extensions,
+        &parts.extensions,
         parts.version,
         user_agent.clone(),
         Initiator::Fetch,
@@ -427,7 +427,7 @@ pub(super) async fn post_api_xml_http_request_number(
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
 
-    let (mut parts, _) = req.into_parts();
+    let (parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
@@ -444,7 +444,7 @@ pub(super) async fn post_api_xml_http_request_number(
 
     let http_info = get_and_store_http_info(
         parts.headers,
-        &mut parts.extensions,
+        &parts.extensions,
         parts.version,
         user_agent.clone(),
         Initiator::XMLHttpRequest,
@@ -478,7 +478,7 @@ pub(super) async fn post_api_xml_http_request_number(
 pub(super) async fn form(req: Request) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
-    let (mut parts, _) = req.into_parts();
+    let (parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
@@ -495,7 +495,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
 
     let http_info = get_and_store_http_info(
         parts.headers,
-        &mut parts.extensions,
+        &parts.extensions,
         parts.version,
         user_agent.clone(),
         Initiator::Form,
@@ -587,7 +587,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
 
 pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
     tracing::debug!("ws api called");
-    let (mut ws, mut parts) = ws.into_parts();
+    let (mut ws, parts) = ws.into_parts();
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
@@ -595,7 +595,7 @@ pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
 
     let _ = get_and_store_http_info(
         parts.headers,
-        &mut parts.extensions,
+        &parts.extensions,
         parts.version,
         user_agent.clone(),
         Initiator::Ws,

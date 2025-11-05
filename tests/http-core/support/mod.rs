@@ -6,6 +6,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use rama::ServiceInput;
 use rama::futures::FutureExt;
 use rama::http::StatusCode;
 use rama::http::body::util::{BodyExt, Full};
@@ -359,6 +360,7 @@ async fn async_test(cfg: __TestConfig) {
 
         loop {
             let (stream, _) = listener.accept().await.expect("server error");
+            let stream = ServiceInput::new(stream);
 
             // Move a clone into the service_fn
             let serve_handles = serve_handles.clone();
@@ -438,6 +440,7 @@ async fn async_test(cfg: __TestConfig) {
 
         async move {
             let stream = TcpStream::connect(addr).await.unwrap();
+            let stream = ServiceInput::new(stream);
 
             let res = if http2_only {
                 let (mut sender, conn) =
@@ -522,6 +525,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
+                let stream = ServiceInput::new(stream);
 
                 let service = RamaHttpService::new(service_fn(move |mut req: Request| {
                     async move {
@@ -535,6 +539,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                         let port = req.uri().port_u16().expect("uri has no port");
 
                         let stream = TcpStream::connect(format!("{uri}:{port}")).await.unwrap();
+                        let stream = ServiceInput::new(stream);
 
                         let result = if http2_only {
                             let (mut sender, conn) =

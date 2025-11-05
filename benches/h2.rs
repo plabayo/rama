@@ -1,3 +1,4 @@
+use rama::ServiceInput;
 use rama::http::Request;
 use rama::http::core::h2::{
     RecvStream, client,
@@ -32,6 +33,7 @@ async fn server(addr: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
 }
 
 async fn serve(socket: TcpStream) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let socket = ServiceInput::new(socket);
     let mut connection = server::handshake(socket).await?;
     while let Some(result) = connection.accept().await {
         let (request, respond) = result?;
@@ -68,6 +70,7 @@ async fn send_requests(addr: &str) -> Result<(), Box<dyn Error>> {
         };
         break tcp;
     };
+    let tcp = ServiceInput::new(tcp);
     let (client, h2) = client::handshake(tcp).await?;
     // Spawn a task to run the conn...
     tokio::spawn(async move {

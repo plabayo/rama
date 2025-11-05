@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::ExtensionsMut;
 use rama_http::Body;
 use rama_http::io::upgrade::Upgraded;
 use std::task::ready;
@@ -112,7 +113,7 @@ where
 impl<I, S> Connection<I, S>
 where
     S: HttpService<IncomingBody>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -188,7 +189,7 @@ where
 impl<I, S> Future for Connection<I, S>
 where
     S: HttpService<IncomingBody>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = crate::Result<()>;
 
@@ -377,7 +378,7 @@ impl Builder {
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<I, S>
     where
         S: HttpService<IncomingBody>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         let mut conn = proto::Conn::new(io);
         conn.set_h1_parser_config(self.h1_parser_config.clone());
@@ -427,7 +428,7 @@ where
 impl<I, S> UpgradeableConnection<I, S>
 where
     S: HttpService<IncomingBody>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -445,7 +446,7 @@ where
 impl<I, S> Future for UpgradeableConnection<I, S>
 where
     S: HttpService<IncomingBody>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = crate::Result<()>;
 

@@ -1,4 +1,5 @@
 use h2_support::prelude::*;
+use rama::ServiceInput;
 use rama_core::futures::StreamExt;
 use rama_core::futures::future::{Either, ready};
 use rama_core::futures::stream::FuturesUnordered;
@@ -15,6 +16,7 @@ async fn handshake() {
         .handshake()
         .write(SETTINGS_ACK)
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (_client, h2) = client::handshake(mock).await.unwrap();
 
@@ -79,6 +81,7 @@ async fn recv_invalid_server_stream_id() {
         // Write GO_AWAY
         .write(&[0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, h2) = client::handshake(mock).await.unwrap();
 

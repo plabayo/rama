@@ -450,7 +450,7 @@ impl Service<Request> for EchoService {
                 })
             });
 
-        let (mut parts, body) = req.into_parts();
+        let (parts, body) = req.into_parts();
 
         let body = body
             .collect()
@@ -460,7 +460,7 @@ impl Service<Request> for EchoService {
 
         let curl_request = curl::cmd_string_for_request_parts_and_payload(&parts, &body);
 
-        let headers: Vec<_> = Http1HeaderMap::new(parts.headers, Some(&mut parts.extensions))
+        let headers: Vec<_> = Http1HeaderMap::new(parts.headers, Some(&parts.extensions))
             .into_iter()
             .map(|(name, value)| {
                 (

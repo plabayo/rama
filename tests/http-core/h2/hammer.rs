@@ -1,4 +1,5 @@
 use h2_support::prelude::*;
+use rama::ServiceInput;
 use rama_core::futures::{FutureExt, StreamExt, TryFutureExt};
 use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
 
@@ -75,7 +76,8 @@ where
     F: Fn() -> Bytes,
     F: Send + Sync + 'static,
 {
-    let mut conn = server::handshake(socket?).await?;
+    let socket = ServiceInput::new(socket?);
+    let mut conn = server::handshake(socket).await?;
     while let Some(result) = conn.next().await {
         let (_, mut respond) = result?;
         reqs.fetch_add(1, Ordering::Release);
@@ -103,6 +105,7 @@ fn hammer_client_concurrency() {
         let tcp = tcp
             .then(|res| {
                 let tcp = res.unwrap();
+                let tcp = ServiceInput::new(tcp);
                 client::handshake(tcp)
             })
             .then(move |res| {

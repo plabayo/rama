@@ -1,5 +1,6 @@
 use h2_support::prelude::*;
 use h2_support::util::yield_once;
+use rama::ServiceInput;
 use rama_core::futures::{StreamExt, TryStreamExt};
 
 // In this case, the stream & connection both have capacity, but capacity is not
@@ -26,6 +27,7 @@ async fn send_data_without_requesting_capacity() {
         // Read response
         .read(&[0, 0, 1, 1, 5, 0, 0, 0, 1, 0x89])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 

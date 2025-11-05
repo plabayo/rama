@@ -4,6 +4,7 @@ use libfuzzer_sys::{
     arbitrary::{self, Arbitrary},
     fuzz_target,
 };
+use rama::ServiceInput;
 
 #[derive(Debug, Arbitrary)]
 struct HttpSpec {
@@ -19,6 +20,7 @@ async fn fuzz_entry(inp: HttpSpec) {
         .body(())
     {
         let (io, mut _srv) = mock::new();
+        let io = ServiceInput::new(io);
         let (mut client, _h2) = client::Builder::new()
             .handshake::<_, Bytes>(io)
             .await
