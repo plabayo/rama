@@ -232,7 +232,7 @@ tracing-test = "0.2"
 tracing-tree = "0.4"
 trybuild = "1.0"
 tui-logger = { version = "0.17", features = ["tracing-support"] }
-turmoil = "0.6"
+turmoil = "0.7"
 unicode-normalization = "0.1"
 uuid = "1.18"
 venndb = "0.6"
