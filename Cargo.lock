@@ -2859,6 +2859,7 @@ version = "0.3.0-alpha.4"
 dependencies = [
  "pin-project-lite",
  "rama-core",
+ "rama-http-types",
  "rama-net",
  "rama-utils",
  "rcgen",

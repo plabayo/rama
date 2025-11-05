@@ -1,4 +1,4 @@
-use super::{HttpConnector, http_inspector::HttpVersionAdapter};
+use super::HttpConnector;
 use crate::{
     Layer, Service,
     dns::DnsResolver,
@@ -22,9 +22,6 @@ use crate::tls::boring::client as boring_client;
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
 
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::http::client::http_inspector::HttpsAlpnModifier;
-
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
 
@@ -44,6 +41,9 @@ pub struct ProxyTunnelStage;
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct ProxyStage;
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct TlsStage;
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct HttpStage;
@@ -73,6 +73,27 @@ impl EasyHttpWebClientBuilder {
         self,
         connector: C,
     ) -> EasyHttpWebClientBuilder<C, TransportStage> {
+        EasyHttpWebClientBuilder {
+            connector,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T, Stage> EasyHttpWebClientBuilder<T, Stage> {
+    /// Add a custom connector to this Stage.
+    ///
+    /// Adding a custom connector to a stage will not change the state
+    /// so this can be used to modify behaviour at a specific stage.
+    pub fn with_custom_connector<L>(
+        self,
+        connector_layer: L,
+    ) -> EasyHttpWebClientBuilder<L::Service, TlsStage>
+    where
+        L: Layer<T>,
+    {
+        let connector = connector_layer.into_layer(self.connector);
+
         EasyHttpWebClientBuilder {
             connector,
             _phantom: PhantomData,
@@ -307,32 +328,14 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
 impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Add a custom tls connector that will be used by the client
-    ///
-    /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
-    /// crucial to make tls alpn work and set the correct [`TargetHttpVersion`]
-    ///
-    /// And a [`HttpVersionAdapter`] that will adapt the request version to the configured
-    /// [`TargetHttpVersion`]
-    ///
-    /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
-    /// to configure your own request inspectors or [`Self::without_jit_req_inspector`] to remove
-    /// all the default request inspectors
-    ///
-    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
     pub fn with_custom_tls_connector<L>(
         self,
         connector_layer: L,
-    ) -> EasyHttpWebClientBuilder<
-        HttpConnector<L::Service, (HttpsAlpnModifier, HttpVersionAdapter)>,
-        HttpStage,
-    >
+    ) -> EasyHttpWebClientBuilder<L::Service, TlsStage>
     where
         L: Layer<T>,
     {
         let connector = connector_layer.into_layer(self.connector);
-
-        let connector = HttpConnector::new(connector)
-            .with_jit_req_inspector((HttpsAlpnModifier::default(), HttpVersionAdapter::default()));
 
         EasyHttpWebClientBuilder {
             connector,
@@ -342,30 +345,12 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
 
     #[cfg(feature = "boring")]
     /// Support https connections by using boringssl for tls
-    ///
-    /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
-    /// crucial to make tls alpn work and set the correct [`TargetHttpVersion`]
-    ///
-    /// And a [`HttpVersionAdapter`] that will adapt the request version to the configured
-    /// [`TargetHttpVersion`]
-    ///
-    /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
-    /// to configure your own request inspectors or [`Self::without_jit_req_inspector`] to remove
-    /// all the default request inspectors
-    ///
-    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
     pub fn with_tls_support_using_boringssl(
         self,
         config: Option<std::sync::Arc<boring_client::TlsConnectorDataBuilder>>,
-    ) -> EasyHttpWebClientBuilder<
-        HttpConnector<boring_client::TlsConnector<T>, (HttpsAlpnModifier, HttpVersionAdapter)>,
-        HttpStage,
-    > {
+    ) -> EasyHttpWebClientBuilder<boring_client::TlsConnector<T>, TlsStage> {
         let connector =
             boring_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
-
-        let connector = HttpConnector::new(connector)
-            .with_jit_req_inspector((HttpsAlpnModifier::default(), HttpVersionAdapter::default()));
 
         EasyHttpWebClientBuilder {
             connector,
@@ -375,30 +360,12 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
 
     #[cfg(feature = "rustls")]
     /// Support https connections by using ruslts for tls
-    ///
-    /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
-    /// crucial to make tls alpn work and set the correct [`TargetHttpVersion`]
-    ///
-    /// And a [`HttpVersionAdapter`] that will adapt the request version to the configured
-    /// [`TargetHttpVersion`]
-    ///
-    /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
-    /// to configure your own request inspectors or [`Self::without_jit_req_inspector`] to remove
-    /// all the default request inspectors
-    ///
-    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
     pub fn with_tls_support_using_rustls(
         self,
         config: Option<rustls_client::TlsConnectorData>,
-    ) -> EasyHttpWebClientBuilder<
-        HttpConnector<rustls_client::TlsConnector<T>, (HttpsAlpnModifier, HttpVersionAdapter)>,
-        HttpStage,
-    > {
+    ) -> EasyHttpWebClientBuilder<rustls_client::TlsConnector<T>, TlsStage> {
         let connector =
             rustls_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
-
-        let connector = HttpConnector::new(connector)
-            .with_jit_req_inspector((HttpsAlpnModifier::default(), HttpVersionAdapter::default()));
 
         EasyHttpWebClientBuilder {
             connector,
@@ -407,20 +374,34 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     }
 
     /// Dont support https on this connector
-    ///
-    /// This will also add the [`HttpVersionAdapter`] that will adapt the request version to
-    /// the configured [`TargetHttpVersion`]
-    ///
-    /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
-    /// to configure your own request inspectors or [`Self::without_jit_req_inspector`] to remove
-    /// all the default request inspectors
-    ///
-    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
-    pub fn without_tls_support(
+    pub fn without_tls_support(self) -> EasyHttpWebClientBuilder<T, TlsStage> {
+        EasyHttpWebClientBuilder {
+            connector: self.connector,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T> EasyHttpWebClientBuilder<T, TlsStage> {
+    /// Add http support to this connector
+    pub fn with_http(self) -> EasyHttpWebClientBuilder<HttpConnector<T>, HttpStage> {
+        let connector = HttpConnector::new(self.connector);
+
+        EasyHttpWebClientBuilder {
+            connector,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Add a custom http connector that will be run just after tls
+    pub fn with_custom_http_connector<L>(
         self,
-    ) -> EasyHttpWebClientBuilder<HttpConnector<T, HttpVersionAdapter>, HttpStage> {
-        let connector = HttpConnector::new(self.connector)
-            .with_jit_req_inspector(HttpVersionAdapter::default());
+        connector_layer: L,
+    ) -> EasyHttpWebClientBuilder<L::Service, HttpStage>
+    where
+        L: Layer<T>,
+    {
+        let connector = connector_layer.into_layer(self.connector);
 
         EasyHttpWebClientBuilder {
             connector,
@@ -429,93 +410,12 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     }
 }
 
-impl<T, I1, I2> EasyHttpWebClientBuilder<HttpConnector<T, I1, I2>, HttpStage> {
-    /// Add a http request inspector that will run just after the inner http connector
-    /// has connected but before the http handshake happens
-    ///
-    /// This function doesn't add any default request inspectors
-    pub fn with_advanced_jit_req_inspector<I>(
-        self,
-        http_req_inspector: I,
-    ) -> EasyHttpWebClientBuilder<HttpConnector<T, I, I2>, HttpStage> {
-        EasyHttpWebClientBuilder {
-            connector: self.connector.with_jit_req_inspector(http_req_inspector),
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Removes the currently configured request inspector(s)
-    ///
-    /// By default most methods add some request inspectors, this
-    /// can be used to remove them
-    pub fn without_jit_req_inspector(
-        self,
-    ) -> EasyHttpWebClientBuilder<HttpConnector<T, (), I2>, HttpStage> {
-        EasyHttpWebClientBuilder {
-            connector: self.connector.with_jit_req_inspector(()),
-            _phantom: PhantomData,
-        }
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Add a http request inspector that will run just after the inner http connector
-    /// has connected but before the http handshake happens
-    ///
-    /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
-    /// crucial to make tls alpn work and set the correct [`TargetHttpVersion`]
-    ///
-    /// And a [`HttpVersionAdapter`] that will adapt the request version to the configured
-    /// [`TargetHttpVersion`]
-    ///
-    /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
-    /// to configure your own request inspectors without any defaults
-    ///
-    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
-    pub fn with_jit_req_inspector<I>(
-        self,
-        http_req_inspector: I,
-    ) -> EasyHttpWebClientBuilder<
-        HttpConnector<T, (HttpsAlpnModifier, HttpVersionAdapter, I), I2>,
-        HttpStage,
-    > {
-        EasyHttpWebClientBuilder {
-            connector: self.connector.with_jit_req_inspector((
-                HttpsAlpnModifier::default(),
-                HttpVersionAdapter::default(),
-                http_req_inspector,
-            )),
-            _phantom: PhantomData,
-        }
-    }
-
-    #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    /// Add a http request inspector that will run just after the inner http connector
-    /// has finished but before the http handshake
-    ///
-    /// This will also add the [`HttpVersionAdapter`] that will adapt the request version to
-    /// the configured [`TargetHttpVersion`]
-    ///
-    /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
-    /// to configure your own request inspectors without any defaults
-    ///
-    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
-    pub fn with_jit_req_inspector<I>(
-        self,
-        http_req_inspector: I,
-    ) -> EasyHttpWebClientBuilder<HttpConnector<T, (HttpVersionAdapter, I), I2>, HttpStage> {
-        EasyHttpWebClientBuilder {
-            connector: self
-                .connector
-                .with_jit_req_inspector((HttpVersionAdapter::default(), http_req_inspector)),
-            _phantom: PhantomData,
-        }
-    }
-
+impl<T, I> EasyHttpWebClientBuilder<HttpConnector<T, I>, HttpStage> {
     /// Add a http request inspector that will run just before doing the actual http request
-    pub fn with_svc_req_inspector<I>(
+    pub fn with_svc_req_inspector<X>(
         self,
-        http_req_inspector: I,
-    ) -> EasyHttpWebClientBuilder<HttpConnector<T, I1, I>, HttpStage> {
+        http_req_inspector: X,
+    ) -> EasyHttpWebClientBuilder<HttpConnector<T, X>, HttpStage> {
         EasyHttpWebClientBuilder {
             connector: self.connector.with_svc_req_inspector(http_req_inspector),
             _phantom: PhantomData,

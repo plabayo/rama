@@ -5,6 +5,7 @@ use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
+use rama_http_types::Version;
 use rama_http_types::conn::TargetHttpVersion;
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
@@ -269,7 +270,11 @@ where
         );
 
         let mut conn = AutoTlsStream::secure(stream);
-        conn.extensions_mut().insert(negotiated_params);
+        store_tls_params_and_target_http_version(
+            req.extensions(),
+            conn.extensions_mut(),
+            negotiated_params,
+        )?;
 
         Ok(EstablishedClientConnection { req, conn })
     }
@@ -306,7 +311,11 @@ where
         let connector_data = self.connector_data(req.extensions_mut())?;
         let (conn, negotiated_params) = handshake(connector_data, host, conn).await?;
         let mut conn = TlsStream::new(conn);
-        conn.extensions_mut().insert(negotiated_params);
+        store_tls_params_and_target_http_version(
+            req.extensions(),
+            conn.extensions_mut(),
+            negotiated_params,
+        )?;
 
         Ok(EstablishedClientConnection { req, conn })
     }
@@ -345,11 +354,40 @@ where
         let connector_data = self.connector_data(req.extensions_mut())?;
         let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
         let mut conn = AutoTlsStream::secure(stream);
-        conn.extensions_mut().insert(negotiated_params);
+        store_tls_params_and_target_http_version(
+            req.extensions(),
+            conn.extensions_mut(),
+            negotiated_params,
+        )?;
 
         tracing::trace!("TlsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection { req, conn })
     }
+}
+
+fn store_tls_params_and_target_http_version(
+    request_extensions: &Extensions,
+    conn_extensions: &mut Extensions,
+    tls_params: NegotiatedTlsParameters,
+) -> Result<(), OpaqueError> {
+    if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
+        let neg_version: Version = proto.try_into()?;
+        if let Some(target_version) = request_extensions.get::<TargetHttpVersion>()
+            && target_version.0 != neg_version
+        {
+            return Err(OpaqueError::from_display(format!(
+                "TargetHttpVersion was set to {target_version:?} but tls alpn negotiated {neg_version:?}"
+            )));
+        }
+
+        tracing::trace!(
+            "setting request TargetHttpVersion to {:?} based on negotiated APLN",
+            neg_version,
+        );
+        conn_extensions.insert(TargetHttpVersion(neg_version));
+    }
+    conn_extensions.insert(tls_params);
+    Ok(())
 }
 
 impl<S, K> TlsConnector<S, K> {

@@ -23,6 +23,7 @@ default = []
 [dependencies]
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
+rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["http", "tls"] }
 rama-utils = { workspace = true }
 rcgen = { workspace = true }
