@@ -22,7 +22,7 @@ pub use hickory_resolver as resolver;
 pub struct HickoryDns(Arc<TokioResolver>);
 
 impl Default for HickoryDns {
-    #[cfg(any(unix, target_os = "windows"))]
+    #[cfg(any(target_family = "unix", target_os = "windows"))]
     fn default() -> Self {
         Self::try_new_system().unwrap_or_else(|err| {
             tracing::warn!(
@@ -32,7 +32,7 @@ impl Default for HickoryDns {
         })
     }
 
-    #[cfg(not(any(unix, target_os = "windows")))]
+    #[cfg(not(any(target_family = "unix", target_os = "windows")))]
     fn default() -> Self {
         Self::new_cloudflare()
     }
@@ -101,7 +101,7 @@ impl HickoryDns {
         Self::builder().with_config(ResolverConfig::quad9()).build()
     }
 
-    #[cfg(any(unix, target_os = "windows"))]
+    #[cfg(any(target_family = "unix", target_os = "windows"))]
     /// Construct a new [`HickoryDns`] with the system configuration.
     ///
     /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.

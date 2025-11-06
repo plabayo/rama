@@ -58,6 +58,7 @@ impl CertIssuerHttpClient {
     }
 
     #[cfg(feature = "boring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
     pub fn try_from_env() -> Result<Self, OpaqueError> {
         use crate::{
             Layer as _,

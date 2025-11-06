@@ -80,6 +80,7 @@ impl Socks5ProxyConnectorLayer {
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
+        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn default_dns_resolver(mut self) -> Self {
             self.dns_resolver = Some(rama_dns::global_dns_resolver());
             self
@@ -94,6 +95,7 @@ impl Socks5ProxyConnectorLayer {
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
+        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn dns_resolver(mut self, resolver: impl DnsResolver) -> Self {
             self.dns_resolver = Some(resolver.boxed());
             self
@@ -192,6 +194,7 @@ impl<S> Socks5ProxyConnector<S> {
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
+        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn default_dns_resolver(mut self) -> Self {
             self.dns_resolver = Some(rama_dns::global_dns_resolver());
             self
@@ -206,6 +209,7 @@ impl<S> Socks5ProxyConnector<S> {
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
+        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn dns_resolver(mut self, resolver: impl DnsResolver) -> Self {
             self.dns_resolver = Some(resolver.boxed());
             self

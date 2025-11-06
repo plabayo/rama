@@ -6,4 +6,5 @@ pub mod redirect;
 pub mod web;
 
 #[cfg(feature = "opentelemetry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod opentelemetry;

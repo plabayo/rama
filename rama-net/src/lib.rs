@@ -32,18 +32,23 @@ pub(crate) mod proto;
 pub use proto::Protocol;
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub mod transport;
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub mod http;
 
 #[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub mod tls;
 
 #[cfg(any(feature = "tls", feature = "http"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "tls", feature = "http"))))]
 pub mod fingerprint;
 
 #[cfg(all(feature = "tls", feature = "http"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "tls", feature = "http"))))]
 pub mod https;
 
 pub mod socket;

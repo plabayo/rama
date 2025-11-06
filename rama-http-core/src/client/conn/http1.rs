@@ -318,7 +318,7 @@ impl Builder {
 
     /// Set whether HTTP/0.9 responses should be tolerated.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn http09_responses(&mut self, enabled: bool) -> &mut Self {
         self.h09_responses = enabled;
         self
@@ -338,7 +338,7 @@ impl Builder {
     /// > of 400 (Bad Request). A proxy MUST remove any such whitespace from a
     /// > response message before forwarding the message downstream.
     ///
-    /// Default is false.
+    /// Default is `false`.
     ///
     /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
     pub fn allow_spaces_after_header_name_in_responses(&mut self, enabled: bool) -> &mut Self {
@@ -376,7 +376,7 @@ impl Builder {
     /// > obs-fold with one or more SP octets prior to interpreting the field
     /// > value.
     ///
-    /// Default is false.
+    /// Default is `false`.
     ///
     /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
     pub fn allow_obsolete_multiline_headers_in_responses(&mut self, enabled: bool) -> &mut Self {
@@ -391,7 +391,7 @@ impl Builder {
     /// name, or does not include a colon at all, the line will be silently ignored
     /// and no error will be reported.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_parser_config
             .ignore_invalid_headers_in_responses(enabled);
@@ -418,7 +418,7 @@ impl Builder {
     /// Set whether HTTP/1 connections will write header names as title case at
     /// the socket level.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_title_case_headers = enabled;
         self

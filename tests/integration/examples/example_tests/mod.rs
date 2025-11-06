@@ -94,9 +94,9 @@ mod ws_over_h2;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod ws_tls_server;
 
-#[cfg(all(feature = "net", unix))]
+#[cfg(all(feature = "net", target_family = "unix"))]
 mod unix_datagram_codec;
-#[cfg(all(feature = "net", unix))]
+#[cfg(all(feature = "net", target_family = "unix"))]
 mod unix_socket;
 #[cfg(all(feature = "net", feature = "http-full", unix))]
 mod unix_socket_http;

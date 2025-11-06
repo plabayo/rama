@@ -1,6 +1,7 @@
 //! Rama TCP Client module.
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub mod service;
 
 mod connect;
