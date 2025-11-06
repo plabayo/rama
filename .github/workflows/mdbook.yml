@@ -46,7 +46,7 @@ jobs:
       - name: Generate Rust Docs
         env:
           RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links --cfg docsrs"
-        run: cargo doc --all-features --no-deps
+        run: cargo +nightly doc --all-features --no-deps
       - name: Install Graphviz
         run: sudo apt-get install graphviz
       - name: Install mdBook
