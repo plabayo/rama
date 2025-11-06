@@ -298,6 +298,90 @@ impl RamaService {
 
         Self { process }
     }
+
+    // Start the rama stunnel server with the default port and the forward address.
+    // with self-signed certificates for testing
+    pub(super) fn stunnel_server() -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        builder
+            .stdout(std::process::Stdio::piped())
+            .arg("stunnel")
+            .arg("server")
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        let mut process = builder.spawn().unwrap();
+
+        let stdout = process.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout).lines();
+
+        for line in &mut stdout {
+            let line = line.unwrap();
+            if line.contains("Stunnel server is running") {
+                break;
+            }
+        }
+
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                eprintln!("rama stunnel-server >> {line}");
+            }
+        });
+
+        Self { process }
+    }
+
+    /// Start the rama stunnel client in insecure mode (skip verification).
+    pub(super) fn stunnel_client_insecure() -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        builder
+            .stdout(std::process::Stdio::piped())
+            .arg("stunnel")
+            .arg("client")
+            .arg("--insecure")
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        let mut process = builder.spawn().unwrap();
+
+        let stdout = process.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout).lines();
+
+        for line in &mut stdout {
+            let line = line.unwrap();
+            if line.contains("Stunnel client is running") {
+                break;
+            }
+        }
+
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                eprintln!("rama stunnel-client >> {line}");
+            }
+        });
+
+        Self { process }
+    }
 }
 
 impl Drop for RamaService {
