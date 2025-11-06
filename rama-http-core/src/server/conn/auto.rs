@@ -511,7 +511,7 @@ impl Http1Builder<'_> {
     ///
     /// Note that including the `date` header is recommended by RFC 7231.
     ///
-    /// Default is true.
+    /// Default is `true`.
     pub fn auto_date_header(&mut self, enabled: bool) -> &mut Self {
         self.inner.http1.auto_date_header(enabled);
         self
@@ -532,7 +532,7 @@ impl Http1Builder<'_> {
 
     /// Enables or disables HTTP/1 keep-alive.
     ///
-    /// Default is true.
+    /// Default is `true`.
     pub fn keep_alive(&mut self, val: bool) -> &mut Self {
         self.inner.http1.keep_alive(val);
         self
@@ -543,7 +543,7 @@ impl Http1Builder<'_> {
     ///
     /// Note that this setting does not affect HTTP/2.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
         self.inner.http1.title_case_headers(enabled);
         self
@@ -555,7 +555,7 @@ impl Http1Builder<'_> {
     /// name, or does not include a colon at all, the line will be silently ignored
     /// and no error will be reported.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Self {
         self.inner.http1.ignore_invalid_headers(enabled);
         self
@@ -623,7 +623,7 @@ impl Http1Builder<'_> {
     ///
     /// Experimental, may have bugs.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn pipeline_flush(&mut self, enabled: bool) -> &mut Self {
         self.inner.http1.pipeline_flush(enabled);
         self
@@ -803,7 +803,7 @@ impl Http2Builder<'_> {
     ///
     /// Note that including the `date` header is recommended by RFC 7231.
     ///
-    /// Default is true.
+    /// Default is `true`.
     pub fn auto_date_header(&mut self, enabled: bool) -> &mut Self {
         self.inner.http2.auto_date_header(enabled);
         self

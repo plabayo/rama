@@ -4,27 +4,32 @@
 mod akamai;
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub use akamai::{AkamaiH2, AkamaiH2ComputeError};
 
 #[cfg(any(feature = "tls", feature = "http"))]
 mod ja4;
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub use ja4::{Ja4H, Ja4HComputeError};
 
 #[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub use ja4::{Ja4, Ja4ComputeError};
 
 #[cfg(feature = "tls")]
 mod peet;
 
 #[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub use peet::{PeetComputeError, PeetPrint};
 
 #[cfg(feature = "tls")]
 mod ja3;
 
 #[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub use ja3::{Ja3, Ja3ComputeError};
 
 #[cfg(feature = "tls")]
@@ -89,6 +94,7 @@ mod tls_utils {
 }
 
 #[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub use tls_utils::ClientHelloProvider;
 
 #[cfg(feature = "http")]
@@ -140,4 +146,5 @@ mod http_utils {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub use http_utils::{HttpRequestInput, HttpRequestProvider};

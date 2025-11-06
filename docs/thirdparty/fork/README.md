@@ -14,9 +14,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/h2/blob/b9d5397bd751633f676b3164ebe03cb3c4534a75/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/b8affd8a2ee5d77dec0c32050a7234e4f2f3751b>
+- hyper: <https://github.com/hyperium/hyper/tree/f9f8f44058745d23fa52abf51b96b61ee7665642>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/b8affd8a2ee5d77dec0c32050a7234e4f2f3751b/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/f9f8f44058745d23fa52abf51b96b61ee7665642/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
@@ -39,15 +39,40 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/21e01e977e97a7025ff4beb00b2acd79eadf7285/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/35740decc663f4921b85b234ae33580f40fcbb31>
+- <https://github.com/tower-rs/tower-http/tree/7cfdf76723415faf12e3dfdfdf1d1c93a2e31cab>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/35740decc663f4921b85b234ae33580f40fcbb31/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/7cfdf76723415faf12e3dfdfdf1d1c93a2e31cab/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
+
+## External Forks
+
+These are forks made within other code repositories,
+but still directly in function of Rama.
+
+- <https://github.com/cloudflare/boring/tree/47c33f64284a905bd1c26dc59c5eec6f5f38bf8b>
+  - boring:
+    - Fork: <https://github.com/plabayo/rama-boring/tree/7b3fb171483c6250dc607520cd7cc71c85843ee1/boring>
+    - License:
+      - Original: <https://github.com/cloudflare/boring/blob/47c33f64284a905bd1c26dc59c5eec6f5f38bf8b/boring/LICENSE>
+      - Type: Apache 2.0
+      - Copy: [./licenses/boring](./licenses/boring)
+  - boring-sys:
+    - Fork: <https://github.com/plabayo/rama-boring/tree/7b3fb171483c6250dc607520cd7cc71c85843ee1/boring-sys>
+    - License:
+      - Original: <https://github.com/cloudflare/boring/blob/47c33f64284a905bd1c26dc59c5eec6f5f38bf8b/boring-sys/LICENSE-MIT>
+      - Type: MIT
+      - Copy: [./licenses/boring-sys](./licenses/boring-sys)
+  - tokio-boring:
+    - Fork: <https://github.com/plabayo/rama-boring/tree/7b3fb171483c6250dc607520cd7cc71c85843ee1/tokio-boring>
+    - License:
+      - Original: <https://github.com/cloudflare/boring/blob/47c33f64284a905bd1c26dc59c5eec6f5f38bf8b/tokio-boring/LICENSE-MIT>
+      - Type: MIT
+      - Copy: [./licenses/tokio-boring](./licenses/tokio-boring)
 
 ## Relative Forks
 

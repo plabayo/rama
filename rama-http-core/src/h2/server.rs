@@ -604,6 +604,7 @@ where
     // Could disappear at anytime.
     #[doc(hidden)]
     #[cfg(feature = "unstable")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
     pub fn num_wired_streams(&self) -> usize {
         self.connection.num_wired_streams()
     }

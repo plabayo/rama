@@ -17,6 +17,10 @@ pub enum Interface {
     /// [`Socket`]: super::core::Socket
     Address(SocketAddress),
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Bind to a network device interface name, using IPv4/TCP.
     ///
     /// Use [`SocketOptions`] if you want more finegrained control,
@@ -36,6 +40,10 @@ impl Interface {
 }
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+)]
 pub use device::DeviceName;
 
 use super::SocketOptions;

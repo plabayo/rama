@@ -56,12 +56,15 @@ pub enum Protocol {
     /// Protocol corresponding to `UDP` (`sys::IPPROTO_UDP`)
     UDP,
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Protocol corresponding to `MPTCP` (`sys::IPPROTO_MPTCP`)
     MPTCP,
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Protocol corresponding to `DCCP` (`sys::IPPROTO_DCCP`)
     DCCP,
     #[cfg(any(target_os = "freebsd", target_os = "linux"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "freebsd", target_os = "linux"))))]
     /// Protocol corresponding to `SCTP` (`sys::IPPROTO_SCTP`)
     SCTP,
 }
@@ -82,10 +85,13 @@ impl From<Protocol> for SocketProtocol {
             Protocol::TCP => Self::TCP,
             Protocol::UDP => Self::UDP,
             #[cfg(target_os = "linux")]
+            #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
             Protocol::MPTCP => Self::MPTCP,
             #[cfg(target_os = "linux")]
+            #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
             Protocol::DCCP => Self::DCCP,
             #[cfg(any(target_os = "freebsd", target_os = "linux"))]
+            #[cfg_attr(docsrs, doc(cfg(any(target_os = "freebsd", target_os = "linux"))))]
             Protocol::SCTP => Self::SCTP,
         }
     }
@@ -104,11 +110,13 @@ pub enum Type {
     /// Used for protocols such as [`Protocol::UDP`].
     Datagram,
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Type corresponding to `SOCK_DCCP`.
     ///
     /// Used for the [`Protocol::DCCP`].
     DCCP,
     #[cfg(not(target_os = "espidf"))]
+    #[cfg_attr(docsrs, doc(cfg(not(target_os = "espidf"))))]
     /// Type corresponding to `SOCK_SEQPACKET`.
     SequencePacket,
     #[cfg(not(any(target_os = "redox", target_os = "espidf")))]
@@ -130,10 +138,13 @@ impl From<Type> for SocketType {
             Type::Stream => Self::STREAM,
             Type::Datagram => Self::DGRAM,
             #[cfg(target_os = "linux")]
+            #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
             Type::DCCP => Self::DCCP,
             #[cfg(not(target_os = "espidf"))]
+            #[cfg_attr(docsrs, doc(cfg(not(target_os = "espidf"))))]
             Type::SequencePacket => Self::SEQPACKET,
             #[cfg(not(any(target_os = "redox", target_os = "espidf")))]
+            #[cfg_attr(docsrs, doc(cfg(any(target_os = "redox", target_os = "espidf"))))]
             Type::Raw => Self::RAW,
         }
     }
@@ -166,6 +177,18 @@ pub struct TcpKeepAlive {
         target_os = "vita",
         target_os = "haiku",
     )))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(not(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris",
+            target_os = "nto",
+            target_os = "espidf",
+            target_os = "vita",
+            target_os = "haiku",
+        ))))
+    )]
     /// Set the value of the `TCP_KEEPINTVL` option. On Windows, this sets the
     /// value of the `tcp_keepalive` struct's `keepaliveinterval` field.
     ///
@@ -185,6 +208,19 @@ pub struct TcpKeepAlive {
         target_os = "vita",
         target_os = "haiku",
     )))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(not(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris",
+            target_os = "windows",
+            target_os = "nto",
+            target_os = "espidf",
+            target_os = "vita",
+            target_os = "haiku",
+        ))))
+    )]
     /// Set the value of the `TCP_KEEPCNT` option.
     ///
     /// Set the maximum number of TCP keepalive probes that will be sent before
@@ -387,6 +423,10 @@ pub struct SocketOptions {
     pub address: Option<SocketAddress>,
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Bind the [`Socket`] to the specified device.
     ///
     /// Sets the value for the `SO_BINDTODEVICE` option on this [`Socket`]].
@@ -423,6 +463,7 @@ pub struct SocketOptions {
     pub linger: Option<Duration>,
 
     #[cfg(not(target_os = "redox"))]
+    #[cfg_attr(docsrs, doc(cfg(not(target_os = "redox"))))]
     /// Set value for the SO_OOBINLINE option on this [`Socket`].
     ///
     /// If this option is enabled,
@@ -434,7 +475,8 @@ pub struct SocketOptions {
     /// [RFC6093]: https://datatracker.ietf.org/doc/html/rfc6093
     pub out_of_band_inline: Option<bool>,
 
-    #[cfg(all(unix, target_os = "linux"))]
+    #[cfg(all(target_family = "unix", target_os = "linux"))]
+    #[cfg_attr(docsrs, doc(cfg(all(target_family = "unix", target_os = "linux"))))]
     /// Set value for the `SO_PASSCRED` option on this [`Socket`].
     ///
     /// If this option is enabled, enables the receiving of the `SCM_CREDENTIALS` control messages.
@@ -469,6 +511,7 @@ pub struct SocketOptions {
     pub write_timeout: Option<Duration>,
 
     #[cfg(not(any(target_os = "redox", target_os = "espidf")))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "redox", target_os = "espidf"))))]
     /// Set the value of the `IP_HDRINCL` option on this [`Socket`].
     ///
     /// If enabled, the user supplies an IP header in front of the user data.
@@ -490,6 +533,17 @@ pub struct SocketOptions {
         target_os = "dragonfly",
         target_os = "netbsd"
     )))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(not(any(
+            target_os = "redox",
+            target_os = "espidf",
+            target_os = "openbsd",
+            target_os = "freebsd",
+            target_os = "dragonfly",
+            target_os = "netbsd"
+        ))))
+    )]
     /// Set the value of the `IP_HDRINCL` option on this [`Socket`].
     ///
     /// If enabled, the user supplies an IP header in front of the user data.
@@ -501,6 +555,7 @@ pub struct SocketOptions {
     pub header_included_v6: Option<bool>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set the value of the `IP_TRANSPARENT` option on this [`Socket`].
     ///
     /// Setting this boolean option enables transparent proxying on this [`Socket`].
@@ -533,6 +588,16 @@ pub struct SocketOptions {
         target_os = "illumos",
         target_os = "haiku",
     )))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(not(any(
+            target_os = "fuchsia",
+            target_os = "redox",
+            target_os = "solaris",
+            target_os = "illumos",
+            target_os = "haiku",
+        ))))
+    )]
     /// Set the value of the `IP_TOS` option for this [`Socket`].
     ///
     /// This value sets the type-of-service field that is used in every packet sent from this [`Socket`].
@@ -558,6 +623,24 @@ pub struct SocketOptions {
         target_os = "espidf",
         target_os = "vita",
     )))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(not(any(
+            target_os = "aix",
+            target_os = "dragonfly",
+            target_os = "fuchsia",
+            target_os = "hurd",
+            target_os = "illumos",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris",
+            target_os = "haiku",
+            target_os = "nto",
+            target_os = "espidf",
+            target_os = "vita",
+        ))))
+    )]
     /// Set the value of the `IP_RECVTOS` option for this [`Socket`].
     ///
     /// If enabled, the `IP_TOS` ancillary message is passed with incoming packets.
@@ -572,6 +655,7 @@ pub struct SocketOptions {
     pub multicast_hops_v6: Option<u32>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set the value of the `IP_MULTICAST_ALL` option for this [`Socket`].
     ///
     /// This option can be used to modify the delivery policy of
@@ -585,6 +669,7 @@ pub struct SocketOptions {
     pub multicast_all_v4: Option<bool>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set the value of the `IPV6_MULTICAST_ALL` option for this [`Socket`].
     ///
     /// This option can be used to modify the delivery policy of multicast messages.
@@ -657,6 +742,22 @@ pub struct SocketOptions {
         target_os = "espidf",
         target_os = "vita",
     )))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(not(any(
+            target_os = "dragonfly",
+            target_os = "fuchsia",
+            target_os = "illumos",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris",
+            target_os = "haiku",
+            target_os = "hurd",
+            target_os = "espidf",
+            target_os = "vita",
+        ))))
+    )]
     /// Set the value of the `IPV6_RECVTCLASS` option for this [`Socket`].
     ///
     /// If enabled, the `IPV6_TCLASS` ancillary message is passed
@@ -674,6 +775,19 @@ pub struct SocketOptions {
         target_os = "netbsd",
         target_os = "openbsd"
     ))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "fuchsia",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        )))
+    )]
     /// Set the value of the `IPV6_TCLASS` option for this [`Socket`].
     ///
     /// Specifies the traffic class field that is used in every packets
@@ -681,7 +795,7 @@ pub struct SocketOptions {
     pub tclass_v6: Option<u32>,
 
     #[cfg(not(any(
-        windows,
+        target_os = "windows",
         target_os = "dragonfly",
         target_os = "fuchsia",
         target_os = "illumos",
@@ -694,6 +808,23 @@ pub struct SocketOptions {
         target_os = "espidf",
         target_os = "vita",
     )))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(not(any(
+            target_os = "windows",
+            target_os = "dragonfly",
+            target_os = "fuchsia",
+            target_os = "illumos",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris",
+            target_os = "haiku",
+            target_os = "hurd",
+            target_os = "espidf",
+            target_os = "vita",
+        ))))
+    )]
     /// Set the value of the `IPV6_RECVHOPLIMIT` option for this [`Socket`].
     ///
     /// The received hop limit is returned as ancillary data by `recvmsg()`
@@ -729,7 +860,11 @@ pub struct SocketOptions {
     /// thereby avoiding the frequent sending of small packets.
     pub tcp_no_delay: Option<bool>,
 
-    #[cfg(all(unix, not(target_os = "redox")))]
+    #[cfg(all(target_family = "unix", not(target_os = "redox")))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(target_family = "unix", not(target_os = "redox"))))
+    )]
     /// Sets the value of the `TCP_MAXSEG` option on this [`Socket`].
     ///
     /// The `TCP_MAXSEG` option denotes the TCP Maximum Segment Size
@@ -737,6 +872,7 @@ pub struct SocketOptions {
     pub tcp_max_segments: Option<u32>,
 
     #[cfg(any(target_os = "freebsd", target_os = "linux"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "freebsd", target_os = "linux"))))]
     /// Set the value of the `TCP_CONGESTION` option for this [`Socket`].
     ///
     /// Specifies the TCP congestion control algorithm to use for this socket.
@@ -746,6 +882,10 @@ pub struct SocketOptions {
     pub tcp_congestion: Option<String>,
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Sets the value for the `SO_MARK` option on this [`Socket`].
     ///
     /// This value sets the socket mark field for each packet sent through this [`Socket`].
@@ -755,6 +895,10 @@ pub struct SocketOptions {
     pub mark: Option<u32>,
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Set the value of the `TCP_CORK` option on this [`Socket`].
     ///
     /// If set, don't send out partial frames. All queued partial frames are
@@ -764,6 +908,10 @@ pub struct SocketOptions {
     pub tcp_cork: Option<bool>,
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Set the value of the `TCP_QUICKACK` option on this [`Socket`].
     ///
     /// If set, acks are sent immediately, rather than delayed if needed in accordance to normal
@@ -773,6 +921,10 @@ pub struct SocketOptions {
     pub tcp_quick_ack: Option<bool>,
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Set the value of the `TCP_THIN_LINEAR_TIMEOUTS` option on this [`Socket`].
     ///
     /// If set, the kernel will dynamically detect a thin-stream connection
@@ -783,6 +935,10 @@ pub struct SocketOptions {
     pub tcp_thin_linear_timeouts: Option<bool>,
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Set the value of the `TCP_USER_TIMEOUT` option on this [`Socket`].
     ///
     /// If set, this specifies the maximum amount of time that transmitted data may remain
@@ -796,6 +952,10 @@ pub struct SocketOptions {
     pub tcp_user_timeout: Option<Duration>,
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Set value for the `IP_FREEBIND` option on this [`Socket`].
     ///
     /// If enabled, this boolean option allows binding to an IP address that is
@@ -806,6 +966,10 @@ pub struct SocketOptions {
     pub freebind: Option<bool>,
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Set value for the `IPV6_FREEBIND` option on this [`Socket`].
     ///
     /// This is an IPv6 counterpart of `IP_FREEBIND` [`Socket`] option on
@@ -816,12 +980,23 @@ pub struct SocketOptions {
     pub freebind_ipv6: Option<bool>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set value for the `SO_INCOMING_CPU` option on this [`Socket`].
     ///
     /// Sets the CPU affinity of the [`Socket`].
     pub cpu_affinity: Option<usize>,
 
-    #[cfg(all(unix, not(any(target_os = "solaris", target_os = "illumos"))))]
+    #[cfg(all(
+        target_family = "unix",
+        not(any(target_os = "solaris", target_os = "illumos"))
+    ))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(
+            target_family = "unix",
+            not(any(target_os = "solaris", target_os = "illumos"))
+        )))
+    )]
     /// Set value for the `SO_REUSEPORT` option on this [`Socket`].
     ///
     /// This indicates that further calls to `bind` may allow reuse of local
@@ -830,6 +1005,7 @@ pub struct SocketOptions {
     pub reuse_port: Option<bool>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set value for the `DCCP_SOCKOPT_SERVICE` option on this [`Socket`].
     ///
     /// Sets the DCCP service. The specification mandates use of service codes.
@@ -843,12 +1019,14 @@ pub struct SocketOptions {
     pub dccp_service: Option<u32>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set value for the `DCCP_SOCKOPT_CCID` option on this [`Socket`].
     ///
     /// This option sets both the TX and RX CCIDs at the same time.
     pub dccp_ccid: Option<u8>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set value for the `DCCP_SOCKOPT_SERVER_TIMEWAIT` option on this [`Socket`].
     ///
     /// Enables a listening [`Socket`] to hold timewait state when closing the
@@ -856,6 +1034,7 @@ pub struct SocketOptions {
     pub dccp_server_timewait: Option<bool>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set value for the `DCCP_SOCKOPT_SEND_CSCOV` option on this [`Socket`].
     ///
     /// Both this option and `DCCP_SOCKOPT_RECV_CSCOV` are used for setting the
@@ -866,6 +1045,7 @@ pub struct SocketOptions {
     pub dccp_send_cscov: Option<u32>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set the value of the `DCCP_SOCKOPT_RECV_CSCOV` option on this [`Socket`].
     ///
     /// This option is only useful when combined with [`dccp_send_cscov`].
@@ -874,6 +1054,7 @@ pub struct SocketOptions {
     pub dccp_recv_cscov: Option<u32>,
 
     #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set value for the `DCCP_SOCKOPT_QPOLICY_TXQLEN` option on this [`Socket`].
     ///
     /// This option sets the maximum length of the output queue. A zero value is
@@ -913,7 +1094,7 @@ impl SocketOptions {
         if let Some(oob) = self.out_of_band_inline {
             socket.set_out_of_band_inline(oob)?;
         }
-        #[cfg(all(unix, target_os = "linux"))]
+        #[cfg(all(target_family = "unix", target_os = "linux"))]
         if let Some(passcred) = self.passcred {
             socket.set_passcred(passcred)?;
         }
@@ -1016,7 +1197,7 @@ impl SocketOptions {
         }
 
         #[cfg(not(any(
-            windows,
+            target_os = "windows",
             target_os = "dragonfly",
             target_os = "fuchsia",
             target_os = "illumos",
@@ -1034,7 +1215,7 @@ impl SocketOptions {
         }
 
         #[cfg(not(any(
-            windows,
+            target_os = "windows",
             target_os = "dragonfly",
             target_os = "fuchsia",
             target_os = "illumos",
@@ -1072,7 +1253,7 @@ impl SocketOptions {
             socket.set_tcp_nodelay(no_delay)?;
         }
 
-        #[cfg(all(unix, not(target_os = "redox")))]
+        #[cfg(all(target_family = "unix", not(target_os = "redox")))]
         if let Some(mss) = self.tcp_max_segments {
             socket.set_tcp_mss(mss)?;
         }
@@ -1112,7 +1293,10 @@ impl SocketOptions {
             socket.set_cpu_affinity(cpu)?;
         }
 
-        #[cfg(all(unix, not(any(target_os = "solaris", target_os = "illumos"))))]
+        #[cfg(all(
+            target_family = "unix",
+            not(any(target_os = "solaris", target_os = "illumos"))
+        ))]
         if let Some(reuse) = self.reuse_port {
             socket.set_reuse_port(reuse)?;
         }

@@ -667,6 +667,7 @@ where
         /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
         /// using the default [`crate::protocol::PerMessageDeflateConfig`].
         #[must_use]
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate(mut self) -> Self {
             self.extensions = match self.extensions.take() {
                 Some(ext) => {
@@ -686,6 +687,7 @@ where
         ///
         /// Overwrites existing extensions if already existed.
         #[must_use]
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_overwrite_extensions(mut self) -> Self {
             self.extensions = Some(SecWebSocketExtensions::per_message_deflate());
             self.inner.config = Some(self.inner.config.take().unwrap_or_default().with_per_message_deflate_default());
@@ -698,6 +700,7 @@ where
         /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
         /// using the default [`crate::protocol::PerMessageDeflateConfig`].
         #[must_use]
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_with_config(mut self, config: impl Into<crate::protocol::PerMessageDeflateConfig>) -> Self {
             let config = config.into();
             self.extensions = match self.extensions.take() {
@@ -724,6 +727,7 @@ where
         ///
         /// Overwrites existing extensions if already existed.
         #[must_use]
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_with_config_overwrite_extensions(mut self, config: impl Into<crate::protocol::PerMessageDeflateConfig>) -> Self {
             let config = config.into();
             self.extensions = Some(SecWebSocketExtensions::per_message_deflate_with_config((&config).into()));

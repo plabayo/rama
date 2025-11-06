@@ -253,7 +253,7 @@ impl Builder {
     ///
     /// Note that including the `date` header is recommended by RFC 7231.
     ///
-    /// Default is true.
+    /// Default is `true`.
     pub fn auto_date_header(&mut self, enabled: bool) -> &mut Self {
         self.h2_builder.date_header = enabled;
         self

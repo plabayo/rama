@@ -361,6 +361,7 @@ impl WebSocketAcceptor {
     #[cfg(feature = "compression")]
     rama_utils::macros::generate_set_and_with! {
         /// Set or add the deflate WebSocket extension with the default config
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate(mut self) -> Self {
             self.extensions = match self.extensions.take() {
                 Some(ext) => {
@@ -376,6 +377,7 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Set the deflate WebSocket extension with the default config,
         /// erasing existing if it already exists.
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_overwrite_extensions(mut self) -> Self {
             self.extensions = Some(headers::SecWebSocketExtensions::per_message_deflate());
             self
@@ -386,6 +388,7 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Set or add the deflate WebSocket extension with the given config,
         /// erasing existing if it already exists.
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_with_config(mut self, config: impl Into<sec_websocket_extensions::PerMessageDeflateConfig>) -> Self {
             self.extensions = match self.extensions.take() {
                 Some(ext) => {
@@ -401,6 +404,7 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Set or add the deflate WebSocket extension with the given config,
         /// erasing existing if it already exists.
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_with_config_overwrite_extensions(mut self, config: impl Into<sec_websocket_extensions::PerMessageDeflateConfig>) -> Self {
             self.extensions = Some(headers::SecWebSocketExtensions::per_message_deflate_with_config(config.into()));
             self

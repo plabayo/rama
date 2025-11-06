@@ -110,6 +110,7 @@ mod proto;
 
 #[cfg(feature = "unstable")]
 #[allow(missing_docs)]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
 pub mod proto;
 
 pub mod client;
@@ -128,6 +129,7 @@ pub use crate::h2::error::{Error, Reason};
 pub use crate::h2::share::{FlowControl, Ping, PingPong, Pong, RecvStream, SendStream};
 
 #[cfg(feature = "unstable")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
 pub use codec::{Codec, SendError};
 
 use std::pin::Pin;

@@ -12,6 +12,7 @@ pub use ::rama_http::{
 };
 
 #[cfg(feature = "http-full")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
 #[doc(inline)]
 pub use ::rama_http_core as core;
 
@@ -25,20 +26,25 @@ pub mod layer {
     pub use ::rama_http::layer::*;
 
     #[cfg(feature = "http-full")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
     #[doc(inline)]
     pub use ::rama_http_backend::server::layer::*;
 }
 
 #[cfg(feature = "http-full")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
 pub mod client;
 
 #[cfg(feature = "http-full")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
 #[doc(inline)]
 pub use ::rama_http_backend::server;
 
 #[cfg(feature = "ws")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ws")))]
 #[doc(inline)]
 pub use ::rama_ws as ws;
 
 #[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub mod tls;

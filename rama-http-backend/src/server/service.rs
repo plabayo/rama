@@ -182,6 +182,7 @@ where
     }
 
     #[cfg(target_family = "unix")]
+    #[cfg_attr(docsrs, doc(cfg(target_family = "unix")))]
     /// Listen for connections on the given [`Path`], using a unix (domain) socket, serving HTTP connections.
     ///
     /// It's a shortcut in case you don't need to operate on the unix transport layer directly.
@@ -191,11 +192,11 @@ where
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
-        let unix = UnixListener::bind_path(path).await?;
+        let socket = UnixListener::bind_path(path).await?;
         let service = HttpService::new(self.builder, service);
         match self.guard {
-            Some(guard) => unix.serve_graceful(guard, service).await,
-            None => unix.serve(service).await,
+            Some(guard) => socket.serve_graceful(guard, service).await,
+            None => socket.serve(service).await,
         };
         Ok(())
     }

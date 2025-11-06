@@ -215,7 +215,6 @@ impl<const N: usize> Read for StackReader<N> {
 pin_project! {
     /// Reader that can be used to chain two readers together.
     #[must_use = "streams do nothing unless polled"]
-    #[cfg_attr(docsrs, doc(cfg(feature = "io-util")))]
     pub struct ChainReader<T, U> {
         #[pin]
         first: T,

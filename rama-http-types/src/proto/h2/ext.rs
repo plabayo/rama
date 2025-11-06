@@ -5,10 +5,23 @@ use crate::proto::h2::hpack::BytesStr;
 use rama_core::bytes::Bytes;
 use std::fmt;
 
-/// Represents the `:protocol` pseudo-header used by
-/// the [Extended CONNECT Protocol].
+/// The `Protocol` extension allows access to the value of the `:protocol` pseudo-header
+/// used by the [Extended CONNECT Protocol](https://datatracker.ietf.org/doc/html/rfc8441#section-4).
+/// This extension is only sent on HTTP/2 CONNECT requests, most commonly with the value `websocket`.
 ///
-/// [Extended CONNECT Protocol]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
+/// # Example
+///
+/// ```rust
+/// use rama_core::extensions::ExtensionsMut;
+/// use rama_http_types::proto::h2::ext::Protocol;
+/// use rama_http_types::{Request, Method, Version};
+///
+/// let mut req = Request::new(());
+/// *req.method_mut() = Method::CONNECT;
+/// *req.version_mut() = Version::HTTP_2;
+/// req.extensions_mut().insert(Protocol::from_static("websocket"));
+/// // Now the request will include the `:protocol` pseudo-header with value "websocket"
+/// ```
 #[derive(Clone, Eq, PartialEq)]
 pub struct Protocol {
     value: BytesStr,
