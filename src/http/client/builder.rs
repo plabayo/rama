@@ -22,6 +22,9 @@ use crate::tls::boring::client as boring_client;
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
 
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use crate::http::layer::version_adapter::RequestVersionAdapter;
+
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
 
@@ -328,6 +331,8 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
 impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Add a custom tls connector that will be used by the client
+    ///
+    /// You probably also want to add VersionAdapter after this ...
     pub fn with_custom_tls_connector<L>(
         self,
         connector_layer: L,
@@ -348,9 +353,11 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     pub fn with_tls_support_using_boringssl(
         self,
         config: Option<std::sync::Arc<boring_client::TlsConnectorDataBuilder>>,
-    ) -> EasyHttpWebClientBuilder<boring_client::TlsConnector<T>, TlsStage> {
+    ) -> EasyHttpWebClientBuilder<RequestVersionAdapter<boring_client::TlsConnector<T>>, TlsStage>
+    {
         let connector =
             boring_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector = RequestVersionAdapter::new(connector);
 
         EasyHttpWebClientBuilder {
             connector,
@@ -363,9 +370,11 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     pub fn with_tls_support_using_rustls(
         self,
         config: Option<rustls_client::TlsConnectorData>,
-    ) -> EasyHttpWebClientBuilder<rustls_client::TlsConnector<T>, TlsStage> {
+    ) -> EasyHttpWebClientBuilder<RequestVersionAdapter<rustls_client::TlsConnector<T>>, TlsStage>
+    {
         let connector =
             rustls_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector = RequestVersionAdapter::new(connector);
 
         EasyHttpWebClientBuilder {
             connector,

@@ -29,6 +29,7 @@ use rama::ua::profile::{
 use rama::ua::profile::{TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Layer, Service};
+use rama_http::layer::version_adapter::RequestVersionAdapter;
 use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
@@ -312,7 +313,9 @@ async fn test_ua_emulation() {
 
                 // We dont need to set connector data on TlsConnector as it will get it from extensions
                 let connector = HttpConnector::new(UserAgentEmulateHttpConnectModifier::new(
-                    TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn))),
+                    RequestVersionAdapter::new(TlsConnector::secure(MockConnectorService::new(
+                        service_fn(server_svc_fn),
+                    ))),
                 ))
                 .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
@@ -380,7 +383,9 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     // We dont set base emulator data here since we always use EmulateTlsProfileLayer, but we could
                     // set a base config here in case EmulateTlsProfileLayer would not always set a config.
                     let connector = HttpConnector::new(UserAgentEmulateHttpConnectModifier::new(
-                        TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn))),
+                        RequestVersionAdapter::new(TlsConnector::secure(
+                            MockConnectorService::new(service_fn(server_svc_fn)),
+                        )),
                     ))
                     .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 

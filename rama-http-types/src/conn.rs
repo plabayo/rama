@@ -38,15 +38,3 @@ pub struct H2ClientContextParams {
 /// otherwise this will be set automatically by things such
 /// tls alpn
 pub struct TargetHttpVersion(pub Version);
-
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
-/// Default Target http version
-///
-/// This will be used if a [`TargetHttpVersion`] is needed,
-/// but no other component has configured one
-pub struct DefaultTargetHttpVersion(pub Version);
-
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
-/// If layers change the Request version this will
-/// contain the original value;
-pub struct OriginalRequestVersion(pub Version);

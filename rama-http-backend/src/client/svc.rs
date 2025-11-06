@@ -5,12 +5,7 @@ use rama_core::{
     inspect::RequestInspector,
     telemetry::tracing,
 };
-use rama_http::{
-    StreamingBody,
-    conn::{OriginalRequestVersion, TargetHttpVersion},
-    header::SEC_WEBSOCKET_KEY,
-    utils::RequestApplyTargetVersionExt,
-};
+use rama_http::{StreamingBody, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY};
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
     Method, Request, Response, Version,
@@ -72,9 +67,6 @@ where
             }
         }
 
-        // Having correct version is important in parts following this
-        req.apply_target_version()?;
-
         let req = self
             .http_req_inspector
             .inspect_request(req)
@@ -108,29 +100,6 @@ where
 
         resp.extensions_mut()
             .insert(RequestContextExt::from(req_extensions));
-
-        // let original_req_http_version = resp
-        //     .extensions()
-        //     .get::<OriginalRequestVersion>()
-        //     .map(|version| version.0);
-
-        // if let Some(original_req_http_version) = original_req_http_version {
-        //     let original_resp_http_version = resp.version();
-        //     if original_resp_http_version == original_req_http_version {
-        //         tracing::trace!(
-        //             "response version {original_req_http_version:?} matches original http request version, it will remain unchanged",
-        //         );
-        //     } else {
-        //         *resp.version_mut() = original_req_http_version;
-        //         tracing::trace!(
-        //             "change the response http version {original_req_http_version:?} into the original http request version {original_resp_http_version:?}",
-        //         );
-        //     }
-        // } else {
-        //     tracing::trace!(
-        //         "no original http request version found, so not version changes are needed"
-        //     );
-        // }
 
         Ok(resp.map(rama_http_types::Body::new))
     }

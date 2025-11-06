@@ -11,7 +11,6 @@ use rama_http::{
     StreamingBody,
     header::{HOST, USER_AGENT},
     opentelemetry::version_as_protocol_version,
-    utils::RequestApplyTargetVersionExt,
 };
 use rama_http_core::h2::ext::Protocol;
 use rama_http_types::{
@@ -91,11 +90,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut req, mut conn } =
+        let EstablishedClientConnection { req, mut conn } =
             self.inner.connect(req).await.map_err(Into::into)?;
-
-        // Version is important here so make sure we apply target version here
-        req.apply_connection_target_version(&conn)?;
 
         let extensions = std::mem::take(conn.extensions_mut());
 

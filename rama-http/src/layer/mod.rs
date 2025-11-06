@@ -48,6 +48,7 @@ pub mod timeout;
 pub mod trace;
 pub mod traffic_writer;
 pub mod validate_request;
+pub mod version_adapter;
 
 #[cfg(feature = "opentelemetry")]
 pub mod opentelemetry;
