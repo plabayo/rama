@@ -90,7 +90,7 @@ async fn create_client(
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config.into_shared_builder()))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_http()
+        .with_default_http_connector()
         .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default())
         .build();
 

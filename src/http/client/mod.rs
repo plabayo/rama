@@ -80,7 +80,7 @@ where
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
             .with_tls_support_using_boringssl(Some(tls_config))
-            .with_http()
+            .with_default_http_connector()
             .build()
     }
 
@@ -94,7 +94,7 @@ where
             .with_tls_proxy_support_using_rustls()
             .with_proxy_support()
             .with_tls_support_using_rustls(Some(tls_config))
-            .with_http()
+            .with_default_http_connector()
             .build()
     }
 
@@ -105,7 +105,7 @@ where
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_http()
+            .with_default_http_connector()
             .build()
     }
 }

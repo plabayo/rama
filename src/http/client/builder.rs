@@ -412,7 +412,9 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
 
 impl<T> EasyHttpWebClientBuilder<T, TlsStage> {
     /// Add http support to this connector
-    pub fn with_http(self) -> EasyHttpWebClientBuilder<HttpConnector<T>, HttpStage> {
+    pub fn with_default_http_connector(
+        self,
+    ) -> EasyHttpWebClientBuilder<HttpConnector<T>, HttpStage> {
         let connector = HttpConnector::new(self.connector);
 
         EasyHttpWebClientBuilder {
@@ -440,10 +442,10 @@ impl<T> EasyHttpWebClientBuilder<T, TlsStage> {
 
 impl<T, I> EasyHttpWebClientBuilder<HttpConnector<T, I>, HttpStage> {
     /// Add a http request inspector that will run just before doing the actual http request
-    pub fn with_svc_req_inspector<X>(
+    pub fn with_svc_req_inspector<U>(
         self,
-        http_req_inspector: X,
-    ) -> EasyHttpWebClientBuilder<HttpConnector<T, X>, HttpStage> {
+        http_req_inspector: U,
+    ) -> EasyHttpWebClientBuilder<HttpConnector<T, U>, HttpStage> {
         EasyHttpWebClientBuilder {
             connector: self.connector.with_svc_req_inspector(http_req_inspector),
             _phantom: PhantomData,

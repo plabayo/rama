@@ -299,7 +299,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_http()
+        .with_default_http_connector()
         .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default())
         .build();
 
