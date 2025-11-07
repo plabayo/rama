@@ -8,14 +8,15 @@ use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
-use rama_http_types::Version;
-use rama_http_types::conn::TargetHttpVersion;
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
+
+#[cfg(feature = "http")]
+use rama_http_types::{Version, conn::TargetHttpVersion};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
@@ -290,12 +291,10 @@ where
         );
 
         let mut conn = AutoTlsStream::secure(stream);
-        store_tls_params_and_target_http_version(
-            req.extensions(),
-            conn.extensions_mut(),
-            negotiated_params,
-        )?;
+        #[cfg(feature = "http")]
+        set_target_http_version(req.extensions(), conn.extensions_mut(), &negotiated_params)?;
 
+        conn.extensions_mut().insert(negotiated_params);
         Ok(EstablishedClientConnection { req, conn })
     }
 }
@@ -333,13 +332,10 @@ where
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         let mut conn = TlsStream::new(conn);
+        #[cfg(feature = "http")]
+        set_target_http_version(req.extensions(), conn.extensions_mut(), &negotiated_params)?;
 
-        store_tls_params_and_target_http_version(
-            req.extensions(),
-            conn.extensions_mut(),
-            negotiated_params,
-        )?;
-
+        conn.extensions_mut().insert(negotiated_params);
         Ok(EstablishedClientConnection { req, conn })
     }
 }
@@ -380,12 +376,10 @@ where
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
         let mut conn = AutoTlsStream::secure(conn);
 
-        store_tls_params_and_target_http_version(
-            req.extensions(),
-            conn.extensions_mut(),
-            negotiated_params,
-        )?;
+        #[cfg(feature = "http")]
+        set_target_http_version(req.extensions(), conn.extensions_mut(), &negotiated_params)?;
 
+        conn.extensions_mut().insert(negotiated_params);
         tracing::trace!("TlsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection { req, conn })
     }
@@ -436,10 +430,11 @@ impl<S, K> TlsConnector<S, K> {
     }
 }
 
-fn store_tls_params_and_target_http_version(
+#[cfg(feature = "http")]
+fn set_target_http_version(
     request_extensions: &Extensions,
     conn_extensions: &mut Extensions,
-    tls_params: NegotiatedTlsParameters,
+    tls_params: &NegotiatedTlsParameters,
 ) -> Result<(), OpaqueError> {
     if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
         let neg_version: Version = proto.try_into()?;
@@ -457,7 +452,7 @@ fn store_tls_params_and_target_http_version(
         );
         conn_extensions.insert(TargetHttpVersion(neg_version));
     }
-    conn_extensions.insert(tls_params);
+
     Ok(())
 }
 
