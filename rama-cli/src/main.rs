@@ -7,7 +7,7 @@
 use clap::{Parser, Subcommand};
 
 pub mod cmd;
-use self::cmd::{discard, echo, fp, http, ip, proxy, serve, tls, ws};
+use self::cmd::{discard, echo, fp, http, ip, proxy, serve, stunnel, tls, ws};
 
 pub mod trace;
 pub mod utils;
@@ -41,6 +41,7 @@ enum CliCommands {
     Ip(ip::CliCommandIp),
     Fp(fp::CliCommandFingerprint),
     Serve(serve::CliCommandServe),
+    Stunnel(stunnel::StunnelCommand),
 }
 
 #[tokio::main]
@@ -58,6 +59,7 @@ async fn main() {
         CliCommands::Ip(cfg) => ip::run(cfg).await,
         CliCommands::Fp(cfg) => fp::run(cfg).await,
         CliCommands::Serve(cfg) => serve::run(cfg).await,
+        CliCommands::Stunnel(cfg) => stunnel::run(cfg).await,
     } {
         eprintln!("🚩 exit with error: {err}");
         std::process::exit(1);
