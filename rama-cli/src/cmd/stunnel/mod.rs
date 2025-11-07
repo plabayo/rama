@@ -5,7 +5,7 @@
 //! 2. rama stunnel server --listen 127.0.0.1:8002 --forward 127.0.0.1:8080
 //! 3. rama stunnel client --listen 127.0.0.1:8003 --connect (127.0.0.1 | localhost):8002 --insecure
 //! # Test
-//! 4. rama http (127.0.0.1 | localhost):8003
+//! 4. rama http 127.0.0.1:8003
 //!
 //! # Explicitily provided certificates
 //! 1. rama echo
@@ -17,7 +17,7 @@
 //!    --connect (127.0.0.1 | localhost):8002 \
 //!    --cacert cacert.pem
 //! # Test
-//! 4. rama http (127.0.0.1 | localhost):8003
+//! 4. rama http 127.0.0.1:8003
 
 use rama::{
     Layer,
@@ -160,7 +160,8 @@ async fn run_server(args: ServerArgs, graceful_timeout: Option<Duration>) -> Res
             forward_addr
         );
 
-        let tcp_service = TlsAcceptorLayer::new(acceptor_data).layer(Forwarder::new(forward_addr));
+        let tcp_service =
+            TlsAcceptorLayer::new(acceptor_data).into_layer(Forwarder::new(forward_addr));
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 
