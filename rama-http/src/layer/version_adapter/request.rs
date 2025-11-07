@@ -1,7 +1,7 @@
 use rama_core::Layer;
 use rama_core::Service;
 use rama_core::extensions::ChainableExtensions;
-use rama_core::telemetry::tracing::trace;
+use rama_core::telemetry::tracing;
 use rama_error::BoxError;
 use rama_error::OpaqueError;
 use rama_http_headers::HeaderMapExt;
@@ -14,6 +14,10 @@ use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_utils::macros::generate_set_and_with;
 
 #[derive(Clone, Debug)]
+/// [`ConnectorService`] which will adapt the request version if needed.
+///
+/// It will adapt the request version to [`TargetHttpVersion`], or the configured
+/// default version
 pub struct RequestVersionAdapter<S> {
     inner: S,
     default_http_version: Option<Version>,
@@ -28,6 +32,8 @@ impl<S> RequestVersionAdapter<S> {
     }
 
     generate_set_and_with! {
+        /// Set default request [`Version`] which will be used if [`TargetHttpVersion`] is
+        /// is not present in extensions
         pub fn default_version(mut self, version: Option<Version>) -> Self {
             self.default_http_version = version;
             self
@@ -54,7 +60,7 @@ where
 
         match (version, self.default_http_version) {
             (Some(version), _) => {
-                trace!(
+                tracing::trace!(
                     "setting request version to {:?} based on configured TargetHttpVersion (was: {:?})",
                     version,
                     req.version(),
@@ -62,7 +68,7 @@ where
                 adapt_request_version(&mut req, version)?;
             }
             (_, Some(version)) => {
-                trace!(
+                tracing::trace!(
                     "setting request version to {:?} based on configured default http version (was: {:?})",
                     version,
                     req.version(),
@@ -70,7 +76,7 @@ where
                 adapt_request_version(&mut req, version)?;
             }
             (None, None) => {
-                trace!(
+                tracing::trace!(
                     "no TargetHttpVersion or default http version configured, leaving request version {:?}",
                     req.version(),
                 );
@@ -82,11 +88,16 @@ where
 }
 
 #[derive(Clone, Debug, Default)]
+/// [`ConnectorService`] layer which will adapt the request version if needed.
+///
+/// It will adapt the request version to [`TargetHttpVersion`], or the configured
+/// default version
 pub struct RequestVersionAdapterLayer {
     default_http_version: Option<Version>,
 }
 
 impl RequestVersionAdapterLayer {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             default_http_version: None,
@@ -94,6 +105,8 @@ impl RequestVersionAdapterLayer {
     }
 
     generate_set_and_with! {
+        /// Set default request [`Version`] which will be used if [`TargetHttpVersion`] is
+        /// is not present in extensions
         pub fn default_version(mut self, version: Option<Version>) -> Self {
             self.default_http_version = version;
             self
@@ -112,19 +125,23 @@ impl<S> Layer<S> for RequestVersionAdapterLayer {
     }
 }
 
+/// Adapt request to match the provided [`Version`]
 pub fn adapt_request_version<Body>(
     request: &mut Request<Body>,
     target_version: Version,
 ) -> Result<(), OpaqueError> {
     let request_version = request.version();
     if request_version == target_version {
-        trace!("request version is already {target_version:?}, no version switching needed",);
+        tracing::trace!(
+            "request version is already {target_version:?}, no version switching needed",
+        );
         return Ok(());
     }
 
-    trace!(
+    tracing::trace!(
         "changing request version from {:?} to {:?}",
-        request_version, target_version,
+        request_version,
+        target_version,
     );
 
     // TODO full implementation: https://github.com/plabayo/rama/issues/624

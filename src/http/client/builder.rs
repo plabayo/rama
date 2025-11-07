@@ -332,7 +332,10 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Add a custom tls connector that will be used by the client
     ///
-    /// You probably also want to add VersionAdapter after this ...
+    /// Note: when using a tls_connector you probably want to also
+    /// add a [`RequestVersionAdapter`] which applies the negotiated
+    /// http version from tls alpn. This can be achieved by using
+    /// [`Self::with_custom_connector`] just after adding the tls connector.
     pub fn with_custom_tls_connector<L>(
         self,
         connector_layer: L,
@@ -350,6 +353,10 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
 
     #[cfg(feature = "boring")]
     /// Support https connections by using boringssl for tls
+    ///
+    /// Note: this also adds a [`RequestVersionAdapter`] to automatically change the
+    /// request version to the one configured with tls alpn. If this is not
+    /// wanted, use [`Self::with_custom_tls_connector`] instead.
     pub fn with_tls_support_using_boringssl(
         self,
         config: Option<std::sync::Arc<boring_client::TlsConnectorDataBuilder>>,
@@ -367,6 +374,10 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
 
     #[cfg(feature = "rustls")]
     /// Support https connections by using ruslts for tls
+    ///
+    /// Note: this also adds a [`RequestVersionAdapter`] to automatically change the
+    /// request version to the one configured with tls alpn. If this is not
+    /// wanted, use [`Self::with_custom_tls_connector`] instead.
     pub fn with_tls_support_using_rustls(
         self,
         config: Option<rustls_client::TlsConnectorData>,

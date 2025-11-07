@@ -229,7 +229,7 @@ where
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// A [`Layer`] that produces an [`HttpConnector`].
 pub struct HttpConnectorLayer<I = ()> {
     http_req_inspector_svc: I,
@@ -251,14 +251,6 @@ impl<I> HttpConnectorLayer<I> {
         HttpConnectorLayer {
             http_req_inspector_svc: http_req_inspector,
         }
-    }
-}
-
-impl<I: fmt::Debug> fmt::Debug for HttpConnectorLayer<I> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpConnectorLayer")
-            .field("http_req_inspector_svc", &self.http_req_inspector_svc)
-            .finish()
     }
 }
 

@@ -6,6 +6,10 @@ use rama_http_types::Version;
 use rama_http_types::{Request, Response};
 
 #[derive(Clone, Debug)]
+/// [`Service`] which will adapt the response version to the original request version.
+///
+/// When a request passes through this [`Service`] it will store the request version,
+/// and if the response has a different [`Version`] it will adapt it back the original one.
 pub struct ResponseVersionAdapter<S> {
     inner: S,
 }
@@ -47,6 +51,10 @@ where
 
 #[non_exhaustive]
 #[derive(Clone, Debug, Default)]
+/// [`Layer`] which will adapt the response version to the original request version.
+///
+/// When a request passes through this [`Layer`] it will store the request version,
+/// and if the response has a different [`Version`] it will adapt it back the original one.
 pub struct ResponseVersionAdapterLayer;
 
 impl<S> Layer<S> for ResponseVersionAdapterLayer {
@@ -57,10 +65,25 @@ impl<S> Layer<S> for ResponseVersionAdapterLayer {
     }
 }
 
+/// Adapt response to match the provided [`Version`]
 pub fn adapt_response_version<Body>(
     response: &mut Response<Body>,
     target_version: Version,
 ) -> Result<(), OpaqueError> {
+    let resp_version = response.version();
+    if resp_version == target_version {
+        tracing::trace!(
+            "response version is already {target_version:?}, no version switching needed",
+        );
+        return Ok(());
+    }
+
+    tracing::trace!(
+        "changing response version from {:?} to {:?}",
+        resp_version,
+        target_version,
+    );
+
     *response.version_mut() = target_version;
     Ok(())
 }
