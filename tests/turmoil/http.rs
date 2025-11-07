@@ -56,6 +56,7 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
+            .with_default_http_connector()
             .build(),
     );
 

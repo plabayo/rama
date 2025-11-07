@@ -58,6 +58,7 @@ async fn main() {
         .without_tls_proxy_support()
         .with_proxy_support()
         .without_tls_support()
+        .with_default_http_connector()
         .with_connection_pool(Default::default())
         .expect("connection pool")
         .build();

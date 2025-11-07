@@ -8,5 +8,4 @@ mod conn;
 #[doc(inline)]
 pub use conn::{HttpConnector, HttpConnectorLayer};
 
-pub mod http_inspector;
 pub mod proxy;

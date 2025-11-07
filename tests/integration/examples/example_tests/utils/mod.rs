@@ -133,6 +133,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(Some(tls_config))
+                    .with_default_http_connector()
                     .build()
             };
 
@@ -157,6 +158,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_rustls(Some(tls_config))
+                    .with_default_http_connector()
                     .build()
             };
 

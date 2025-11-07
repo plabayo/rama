@@ -1,9 +1,9 @@
 use std::{borrow::Cow, fmt};
 
 use rama_core::{
-    Service,
+    Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::{ChainableExtensions, ExtensionsMut, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_http::headers::{ClientHint, all_client_hints};
@@ -23,6 +23,7 @@ use rama_http::{
 use rama_net::{
     Protocol,
     address::{Authority, Host},
+    client::{ConnectorService, EstablishedClientConnection},
     http::RequestContext,
 };
 use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
@@ -304,30 +305,35 @@ where
 }
 
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-// a http RequestInspector which is to be used in combination
+// A connector which is to be used in combination
 // with the [`UserAgentEmulateService`] to facilitate the
 // http emulation based on the injected http profile.
-pub struct UserAgentEmulateHttpConnectModifier;
+pub struct UserAgentEmulateHttpConnectModifier<S> {
+    inner: S,
+}
 
-impl UserAgentEmulateHttpConnectModifier {
+impl<S> UserAgentEmulateHttpConnectModifier<S> {
     #[inline]
-    /// Create a new (default) [`UserAgentEmulateHttpConnectModifier`].
+    /// Create a new [`UserAgentEmulateHttpConnectModifier`].
     #[must_use]
-    pub fn new() -> Self {
-        Self
+    pub fn new(inner: S) -> Self {
+        Self { inner }
     }
 }
 
-impl<ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpConnectModifier
+impl<S, ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpConnectModifier<S>
 where
+    S: ConnectorService<Request<ReqBody>, Error: Into<BoxError>>,
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = Request<ReqBody>;
+    type Response = EstablishedClientConnection<S::Connection, Request<ReqBody>>;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
-        match req.extensions().get().cloned() {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { conn, mut req } =
+            self.inner.connect(req).await.map_err(Into::into)?;
+
+        match (&conn, &req).get().cloned() {
             Some(http_profile) => {
                 tracing::trace!(
                     http.version = ?req.version(),
@@ -342,7 +348,19 @@ where
                 );
             }
         }
-        Ok(req)
+        Ok(EstablishedClientConnection { req, conn })
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Default, Clone)]
+pub struct UserAgentEmulateHttpConnectModifierLayer;
+
+impl<S> Layer<S> for UserAgentEmulateHttpConnectModifierLayer {
+    type Service = UserAgentEmulateHttpConnectModifier<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        UserAgentEmulateHttpConnectModifier::new(inner)
     }
 }
 

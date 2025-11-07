@@ -44,6 +44,7 @@ fn init_structured(default_directive: impl Into<Directive>) {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(None)
+        .with_default_http_connector()
         .with_connection_pool(HttpPooledConnectorConfig::default())
         .expect("build http exporter client service")
         .build();

@@ -226,6 +226,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_tls_proxy_support_using_rustls()
         .with_proxy_support()
         .with_tls_support_using_rustls(Some(tls_config))
+        .with_default_http_connector()
         .build();
 
     match client.serve(req).await {

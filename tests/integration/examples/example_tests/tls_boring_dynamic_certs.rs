@@ -95,6 +95,7 @@ where
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
+        .with_default_http_connector()
         .build();
 
     (

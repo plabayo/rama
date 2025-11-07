@@ -1,7 +1,6 @@
 use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama::http::Request;
 use rama::http::client::HttpConnector;
-use rama::http::client::http_inspector::{HttpVersionAdapter, HttpsAlpnModifier};
 use rama::http::proto::h1::Http1HeaderMap;
 use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
@@ -30,6 +29,7 @@ use rama::ua::profile::{
 use rama::ua::profile::{TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Layer, Service};
+use rama_http::layer::version_adapter::RequestVersionAdapter;
 use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
@@ -303,22 +303,19 @@ async fn test_ua_emulation() {
         )
             .into_layer(service_fn(async |mut req: Request| {
                 // We can edit our current builder directly or create a new one if needed
-                let builder = match req.extensions_mut().get_mut::<TlsConnectorDataBuilder>() {
-                    Some(builder) => builder,
-                    None => req
-                        .extensions_mut()
-                        .insert_mut(TlsConnectorDataBuilder::default()),
-                };
+                let mut builder = req
+                    .extensions_mut()
+                    .get::<TlsConnectorDataBuilder>()
+                    .cloned()
+                    .unwrap_or_default();
                 builder.set_server_verify_mode(ServerVerifyMode::Disable);
+                req.extensions_mut().insert(builder);
 
                 // We dont need to set connector data on TlsConnector as it will get it from extensions
-                let connector = HttpConnector::new(TlsConnector::secure(
-                    MockConnectorService::new(service_fn(server_svc_fn)),
-                ))
-                .with_jit_req_inspector((
-                    HttpsAlpnModifier::default(),
-                    HttpVersionAdapter::default(),
-                    UserAgentEmulateHttpConnectModifier::default(),
+                let connector = HttpConnector::new(UserAgentEmulateHttpConnectModifier::new(
+                    RequestVersionAdapter::new(TlsConnector::secure(MockConnectorService::new(
+                        service_fn(server_svc_fn),
+                    ))),
                 ))
                 .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
@@ -385,13 +382,10 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 .into_layer(service_fn(async |req: Request| {
                     // We dont set base emulator data here since we always use EmulateTlsProfileLayer, but we could
                     // set a base config here in case EmulateTlsProfileLayer would not always set a config.
-                    let connector = HttpConnector::new(TlsConnector::secure(
-                        MockConnectorService::new(service_fn(server_svc_fn)),
-                    ))
-                    .with_jit_req_inspector((
-                        HttpsAlpnModifier::default(),
-                        HttpVersionAdapter::default(),
-                        UserAgentEmulateHttpConnectModifier::default(),
+                    let connector = HttpConnector::new(UserAgentEmulateHttpConnectModifier::new(
+                        RequestVersionAdapter::new(TlsConnector::secure(
+                            MockConnectorService::new(service_fn(server_svc_fn)),
+                        )),
                     ))
                     .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
@@ -447,7 +441,7 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 /// [`ServerExtensions`] will be transfered from the client extensions to the server side
 struct ServerExtensions(Extensions);
 

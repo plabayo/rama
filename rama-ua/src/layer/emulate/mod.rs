@@ -25,6 +25,6 @@ pub use layer::UserAgentEmulateLayer;
 
 mod service;
 pub use service::{
-    UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
-    UserAgentEmulateService,
+    UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpConnectModifierLayer,
+    UserAgentEmulateHttpRequestModifier, UserAgentEmulateService,
 };

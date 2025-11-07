@@ -219,6 +219,7 @@ async fn test_https_echo() {
             TlsConnectorDataBuilder::new_http_1()
                 .with_server_verify_mode(ServerVerifyMode::Disable),
         )))
+        .with_default_http_connector()
         .build();
 
     let mut ws = client

@@ -80,7 +80,7 @@ use rama::{
     },
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
             UserAgentEmulateLayer,
         },
         profile::UserAgentDatabase,
@@ -298,7 +298,8 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
-        .with_jit_req_inspector(UserAgentEmulateHttpConnectModifier::default())
+        .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
+        .with_default_http_connector()
         .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default())
         .build();
 

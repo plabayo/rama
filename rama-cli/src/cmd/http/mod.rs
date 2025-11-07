@@ -38,7 +38,7 @@ use rama::{
     tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
             UserAgentEmulateLayer, UserAgentSelectFallback,
         },
         profile::UserAgentDatabase,
@@ -413,7 +413,8 @@ async fn create_client(
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config.into_shared_builder())
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config.into_shared_builder()))
-        .with_jit_req_inspector(UserAgentEmulateHttpConnectModifier::default())
+        .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
+        .with_default_http_connector()
         .with_svc_req_inspector((
             UserAgentEmulateHttpRequestModifier::default(),
             request_writer,

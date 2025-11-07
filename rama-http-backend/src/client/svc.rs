@@ -5,10 +5,7 @@ use rama_core::{
     inspect::RequestInspector,
     telemetry::tracing,
 };
-use rama_http::{
-    StreamingBody, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY,
-    utils::RequestSwitchVersionExt,
-};
+use rama_http::{StreamingBody, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY};
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
     Method, Request, Response, Version,
@@ -70,38 +67,6 @@ where
             }
         }
 
-        let original_http_version = req.version();
-
-        match self.sender {
-            SendRequest::Http1(_) => match original_http_version {
-                Version::HTTP_10 | Version::HTTP_11 => {
-                    tracing::trace!(
-                        "request version {original_http_version:?} is already h1 compatible, it will remain unchanged",
-                    );
-                }
-                _ => {
-                    tracing::debug!(
-                        "modify request version {original_http_version:?} to compatible h1 connection version: {:?}",
-                        Version::HTTP_11
-                    );
-                    req.switch_version(Version::HTTP_11)?;
-                }
-            },
-            SendRequest::Http2(_) => {
-                if original_http_version == Version::HTTP_2 {
-                    tracing::trace!(
-                        "request version {original_http_version:?} is already h2 compatible, it will remain unchanged",
-                    );
-                } else {
-                    tracing::debug!(
-                        "modify request version {original_http_version:?} to compatible h2 connection version: {:?}",
-                        Version::HTTP_2,
-                    );
-                    req.switch_version(Version::HTTP_2)?;
-                }
-            }
-        }
-
         let req = self
             .http_req_inspector
             .inspect_request(req)
@@ -135,18 +100,6 @@ where
 
         resp.extensions_mut()
             .insert(RequestContextExt::from(req_extensions));
-
-        let original_resp_http_version = resp.version();
-        if original_resp_http_version == original_http_version {
-            tracing::trace!(
-                "response version {original_http_version:?} matches original http request version, it will remain unchanged",
-            );
-        } else {
-            *resp.version_mut() = original_http_version;
-            tracing::trace!(
-                "change the response http version {original_http_version:?} into the original http request version {original_resp_http_version:?}",
-            );
-        }
 
         Ok(resp.map(rama_http_types::Body::new))
     }

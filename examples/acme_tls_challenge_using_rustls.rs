@@ -116,6 +116,7 @@ async fn main() {
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_rustls(Some(tls_config))
+        .with_default_http_connector()
         .build()
         .boxed();
 

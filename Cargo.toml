@@ -346,6 +346,8 @@ http = [
     "rama-net?/http",
     "rama-tcp?/http",
     "rama-tls-boring?/ua",
+    "rama-tls-boring?/http",
+    "rama-tls-rustls?/http",
     "opentelemetry-otlp?/http-proto",
 ]
 http-full = [

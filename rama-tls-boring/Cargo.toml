@@ -19,6 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
+http = ["dep:rama-http-types"]
 compression = ["dep:flate2", "dep:brotli", "dep:zstd"]
 ua = ["dep:rama-ua"]
 
@@ -34,8 +35,8 @@ pin-project-lite = { workspace = true }
 rama-boring = { workspace = true }
 rama-boring-tokio = { workspace = true }
 rama-core = { workspace = true }
-rama-http-types = { workspace = true }
-rama-net = { workspace = true, features = ["http", "tls"] }
+rama-http-types = { workspace = true, optional = true }
+rama-net = { workspace = true, features = ["tls", "http"] }
 rama-ua = { workspace = true, optional = true, features = ["tls"] }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }

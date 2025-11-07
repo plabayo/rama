@@ -19,11 +19,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
+http = ["dep:rama-http-types"]
 
 [dependencies]
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
-rama-net = { workspace = true, features = ["http", "tls"] }
+rama-http-types = { workspace = true, optional = true }
+rama-net = { workspace = true, features = ["tls", "http"] }
 rama-utils = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }

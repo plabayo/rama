@@ -109,7 +109,7 @@ use rama::{
     },
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
             UserAgentEmulateLayer,
         },
         profile::UserAgentDatabase,
@@ -297,7 +297,8 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
-        .with_jit_req_inspector(UserAgentEmulateHttpConnectModifier::default())
+        .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
+        .with_default_http_connector()
         .with_svc_req_inspector((
             UserAgentEmulateHttpRequestModifier::default(),
             // these layers are for example purposes only,
@@ -453,15 +454,16 @@ where
 
         let ingress_socket = match upgrade::handle_upgrade(&request).await {
             Ok(upgraded) => {
-                let mut socket = AsyncWebSocket::from_raw_socket(
+                let socket = AsyncWebSocket::from_raw_socket(
                     upgraded,
                     Role::Server,
                     Some(ingress_socket_cfg),
                 )
                 .await;
-                socket
-                    .extensions_mut()
-                    .set_parent_extensions(Arc::new(request.extensions().clone()));
+                // TODO in a place like this we dont really want to extend but instead prepend
+                // which probably means we should do it here, but it should have already happened
+                // socket.extensions_mut().extend(request.extensions().clone());
+                #[allow(clippy::let_and_return)]
                 socket
             }
             Err(err) => {

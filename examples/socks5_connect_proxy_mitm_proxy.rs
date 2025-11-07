@@ -146,6 +146,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(base_tls_config))
+        .with_default_http_connector()
         .with_svc_req_inspector((
             // these layers are for example purposes only,
             // best not to print requests like this in production...
