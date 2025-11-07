@@ -148,6 +148,7 @@ where
 }
 
 #[cfg(target_family = "unix")]
+#[cfg_attr(docsrs, doc(cfg(target_family = "unix")))]
 pub fn mpsc_toggle_for_unix_signal<C>(
     signal: tokio::signal::unix::SignalKind,
     cancel: C,

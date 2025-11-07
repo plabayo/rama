@@ -351,6 +351,7 @@ impl<B, I> UdpRelay<B, I> {
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
     #[must_use]
+    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
     pub fn with_default_dns_resolver(mut self) -> Self {
         self.dns_resolver = None;
         self
@@ -360,6 +361,7 @@ impl<B, I> UdpRelay<B, I> {
     ///
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
+    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
     pub fn set_default_dns_resolver(&mut self) -> &mut Self {
         self.dns_resolver = None;
         self
@@ -370,6 +372,7 @@ impl<B, I> UdpRelay<B, I> {
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
     #[must_use]
+    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
     pub fn with_dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
         self.dns_resolver = Some(resolver.boxed());
         self
@@ -379,6 +382,7 @@ impl<B, I> UdpRelay<B, I> {
     ///
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
+    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
     pub fn set_dns_resolver(
         &mut self,
         resolver: impl DnsResolver<Error = OpaqueError>,

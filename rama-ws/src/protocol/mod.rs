@@ -115,6 +115,7 @@ pub struct WebSocketConfig {
     pub accept_unmasked_frames: bool,
 
     #[cfg(feature = "compression")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
     /// Per-message-deflate configuration, specify it
     /// to enable per-message (de)compression using the Deflate algorithm
     /// as specified by [`RFC7692`].
@@ -124,6 +125,7 @@ pub struct WebSocketConfig {
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 /// Per-message-deflate configuration as specified in [`RFC7692`]
 ///
 /// [`RFC7692`]: https://datatracker.ietf.org/doc/html/rfc7692
@@ -329,6 +331,7 @@ impl WebSocketConfig {
     rama_utils::macros::generate_set_and_with! {
         /// Set [`Self::per_message_deflate`] with the default config..
         #[must_use]
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_default(mut self) -> Self {
             self.per_message_deflate = Some(Default::default());
             self
@@ -339,6 +342,7 @@ impl WebSocketConfig {
     rama_utils::macros::generate_set_and_with! {
         /// Set [`Self::per_message_deflate`].
         #[must_use]
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate(mut self, per_message_deflate: Option<PerMessageDeflateConfig>) -> Self {
             self.per_message_deflate = per_message_deflate;
             self

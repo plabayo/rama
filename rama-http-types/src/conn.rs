@@ -13,7 +13,7 @@ pub struct Http1ClientContextParams {
     /// Set whether HTTP/1 connections will write header names as title case at
     /// the socket level.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub title_header_case: bool,
 }
 

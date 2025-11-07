@@ -11,13 +11,27 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct TimeoutLayer {
     timeout: Duration,
+    status_code: StatusCode,
 }
 
 impl TimeoutLayer {
     /// Creates a new [`TimeoutLayer`].
+    ///
+    /// By default, it will return a `408 Request Timeout` response if the request does not complete within the specified timeout.
+    /// To customize the response status code, use the `with_status_code` method.
     #[must_use]
+    #[inline(always)]
     pub const fn new(timeout: Duration) -> Self {
-        Self { timeout }
+        Self::with_status_code(StatusCode::REQUEST_TIMEOUT, timeout)
+    }
+
+    /// Creates a new [`TimeoutLayer`] with the specified status code for the timeout response.
+    #[must_use]
+    pub const fn with_status_code(status_code: StatusCode, timeout: Duration) -> Self {
+        Self {
+            timeout,
+            status_code,
+        }
     }
 }
 
@@ -25,25 +39,36 @@ impl<S> Layer<S> for TimeoutLayer {
     type Service = Timeout<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        Timeout::new(inner, self.timeout)
+        Timeout::with_status_code(inner, self.status_code, self.timeout)
     }
 }
 
 /// Middleware which apply a timeout to requests.
 ///
-/// If the request does not complete within the specified timeout it will be aborted and a `408
-/// Request Timeout` response will be sent.
-///
 /// See the [module docs](super) for an example.
 pub struct Timeout<S> {
     inner: S,
     timeout: Duration,
+    status_code: StatusCode,
 }
 
 impl<S> Timeout<S> {
+    #[inline(always)]
     /// Creates a new [`Timeout`].
+    ///
+    /// By default, it will return a `408 Request Timeout` response if the request does not complete within the specified timeout.
+    /// To customize the response status code, use the `with_status_code` method.
     pub const fn new(inner: S, timeout: Duration) -> Self {
-        Self { inner, timeout }
+        Self::with_status_code(inner, StatusCode::REQUEST_TIMEOUT, timeout)
+    }
+
+    /// Creates a new [`Timeout`] with the specified status code for the timeout response.
+    pub const fn with_status_code(inner: S, status_code: StatusCode, timeout: Duration) -> Self {
+        Self {
+            inner,
+            timeout,
+            status_code,
+        }
     }
 
     define_inner_service_accessors!();
@@ -54,6 +79,7 @@ impl<S: fmt::Debug> fmt::Debug for Timeout<S> {
         f.debug_struct("Timeout")
             .field("inner", &self.inner)
             .field("timeout", &self.timeout)
+            .field("status_code", &self.status_code)
             .finish()
     }
 }
@@ -63,6 +89,7 @@ impl<S: Clone> Clone for Timeout<S> {
         Self {
             inner: self.inner.clone(),
             timeout: self.timeout,
+            status_code: self.status_code,
         }
     }
 }
@@ -83,7 +110,7 @@ where
             res = self.inner.serve(req) => res,
             _ = tokio::time::sleep(self.timeout) => {
                 let mut res = Response::new(ResBody::default());
-                *res.status_mut() = StatusCode::REQUEST_TIMEOUT;
+                *res.status_mut() = self.status_code;
                 Ok(res)
             }
         }
@@ -216,4 +243,84 @@ impl<S> ResponseBodyTimeout<S> {
     }
 
     define_inner_service_accessors!();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use super::*;
+    use crate::{Body, body::util::BodyExt};
+    use rama_core::service::service_fn;
+
+    #[tokio::test]
+    async fn request_completes_within_timeout() {
+        let service =
+            TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, Duration::from_secs(1))
+                .into_layer(service_fn(fast_handler));
+
+        let request = Request::get("/").body(Body::empty()).unwrap();
+        let res = service.serve(request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn timeout_middleware_with_custom_status_code() {
+        let service = Timeout::with_status_code(
+            service_fn(slow_handler),
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_millis(10),
+        );
+
+        let request = Request::get("/").body(Body::empty()).unwrap();
+        let res = service.serve(request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn timeout_response_has_empty_body() {
+        let service =
+            TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, Duration::from_millis(10))
+                .into_layer(service_fn(slow_handler));
+
+        let request = Request::get("/").body(Body::empty()).unwrap();
+        let res = service.serve(request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::GATEWAY_TIMEOUT);
+
+        // Verify the body is empty (default)
+        let body = res.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        assert!(bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deprecated_new_method_compatibility() {
+        #[allow(deprecated)]
+        let layer = TimeoutLayer::new(Duration::from_millis(10));
+        let service = layer.into_layer(service_fn(slow_handler));
+
+        let request = Request::get("/").body(Body::empty()).unwrap();
+        let res = service.serve(request).await.unwrap();
+
+        // Should use default 408 status code
+        assert_eq!(res.status(), StatusCode::REQUEST_TIMEOUT);
+    }
+
+    async fn slow_handler(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap())
+    }
+
+    async fn fast_handler(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap())
+    }
 }

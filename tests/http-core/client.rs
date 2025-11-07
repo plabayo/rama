@@ -1496,7 +1496,9 @@ mod conn {
     use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
-    use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
+    use tokio::io::{
+        AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf,
+    };
     use tokio::net::{TcpListener as TkTcpListener, TcpStream};
 
     use rama::error::BoxError;
@@ -1508,6 +1510,20 @@ mod conn {
     use rama::rt::Executor;
 
     use super::{FutureHyperExt, concat, s, support, tcp_connect};
+
+    fn setup_duplex_test_server() -> (DuplexStream, DuplexStream, SocketAddr) {
+        use std::net::{IpAddr, Ipv6Addr};
+
+        const BUF_SIZE: usize = 1024;
+        let (ioa, iob) = tokio::io::duplex(BUF_SIZE);
+
+        /// A test address inside the 'documentation' address range.
+        /// See: <https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml>
+        const TEST_ADDR: IpAddr = IpAddr::V6(Ipv6Addr::new(0x3fff, 0, 0, 0, 0, 0, 0, 1));
+        const TEST_SOCKET: SocketAddr = SocketAddr::new(TEST_ADDR, 8080);
+
+        (ioa, iob, TEST_SOCKET)
+    }
 
     async fn setup_tk_test_server() -> (TkTcpListener, SocketAddr) {
         let listener = TkTcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
@@ -1525,12 +1541,11 @@ mod conn {
 
     #[tokio::test]
     async fn get() {
-        let (listener, addr) = setup_tk_test_server().await;
+        let (client_io, mut server_io, _addr) = setup_duplex_test_server();
 
         let server = async move {
-            let mut sock = listener.accept().await.unwrap().0;
             let mut buf = [0; 4096];
-            let n = sock.read(&mut buf).await.expect("read 1");
+            let n = server_io.read(&mut buf).await.expect("read 1");
 
             // Notably:
             // - Just a path, since just a path was set
@@ -1538,15 +1553,15 @@ mod conn {
             let expected = "GET /a HTTP/1.1\r\n\r\n";
             assert_eq!(s(&buf[..n]), expected);
 
-            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            server_io
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
         };
 
         let client = async move {
-            let tcp = tcp_connect(&addr).await.expect("connect");
-            let tcp = ServiceInput::new(tcp);
-            let (mut client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
+            let io = ServiceInput::new(client_io);
+            let (mut client, conn) = conn::http1::handshake(io).await.expect("handshake");
 
             tokio::task::spawn(async move {
                 conn.await.expect("http conn");
@@ -2384,14 +2399,13 @@ mod conn {
 
     #[tokio::test]
     async fn http2_keep_alive_detects_unresponsive_server() {
-        let (listener, addr) = setup_tk_test_server().await;
+        let (client_io, mut server_io, _) = setup_duplex_test_server();
 
         // spawn a server that reads but doesn't write
         tokio::spawn(async move {
-            let mut sock = listener.accept().await.unwrap().0;
             let mut buf = [0u8; 1024];
             loop {
-                let n = sock.read(&mut buf).await.expect("server read");
+                let n = server_io.read(&mut buf).await.expect("server read");
                 if n == 0 {
                     // server closed, lets go!
                     break;
@@ -2399,8 +2413,7 @@ mod conn {
             }
         });
 
-        let io = tcp_connect(&addr).await.expect("tcp connect");
-        let io = ServiceInput::new(io);
+        let io = ServiceInput::new(client_io);
         let (_client, conn) = conn::http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
@@ -2419,16 +2432,14 @@ mod conn {
         // will use the default behavior which will NOT detect the server
         // is unresponsive while no streams are active.
 
-        let (listener, addr) = setup_tk_test_server().await;
+        let (client_io, server_io, _) = setup_duplex_test_server();
 
         // spawn a server that reads but doesn't write
         tokio::spawn(async move {
-            let sock = listener.accept().await.unwrap().0;
-            drain_til_eof(sock).await.expect("server read");
+            drain_til_eof(server_io).await.expect("server read");
         });
 
-        let io = tcp_connect(&addr).await.expect("tcp connect");
-        let io = ServiceInput::new(io);
+        let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
@@ -2450,16 +2461,14 @@ mod conn {
 
     #[tokio::test]
     async fn http2_keep_alive_closes_open_streams() {
-        let (listener, addr) = setup_tk_test_server().await;
+        let (client_io, server_io, _addr) = setup_duplex_test_server();
 
         // spawn a server that reads but doesn't write
         tokio::spawn(async move {
-            let sock = listener.accept().await.unwrap().0;
-            drain_til_eof(sock).await.expect("server read");
+            drain_til_eof(server_io).await.expect("server read");
         });
 
-        let io = tcp_connect(&addr).await.expect("tcp connect");
-        let io = ServiceInput::new(io);
+        let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
@@ -2494,12 +2503,11 @@ mod conn {
         // alive is enabled
         use rama::service::service_fn;
 
-        let (listener, addr) = setup_tk_test_server().await;
+        let (client_io, server_io, _addr) = setup_duplex_test_server();
 
         // Spawn an HTTP2 server that reads the whole body and responds
         tokio::spawn(async move {
-            let sock = listener.accept().await.unwrap().0;
-            let sock = ServiceInput::new(sock);
+            let sock = ServiceInput::new(server_io);
             rama::http::core::server::conn::http2::Builder::new(Executor::new())
                 .serve_connection(
                     sock,
@@ -2514,8 +2522,7 @@ mod conn {
                 .expect("serve_connection");
         });
 
-        let io = tcp_connect(&addr).await.expect("tcp connect");
-        let io = ServiceInput::new(io);
+        let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
@@ -2597,12 +2604,11 @@ mod conn {
 
     #[tokio::test]
     async fn h2_connect() {
-        let (listener, addr) = setup_tk_test_server().await;
+        let (client_io, server_io, _) = setup_duplex_test_server();
 
         // Spawn an HTTP2 server that asks for bread and responds with baguette.
         tokio::spawn(async move {
-            let sock = listener.accept().await.unwrap().0;
-            let sock = ServiceInput::new(sock);
+            let sock = ServiceInput::new(server_io);
             let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
 
             let (req, mut respond) = h2.accept().await.unwrap().unwrap();
@@ -2624,8 +2630,7 @@ mod conn {
             assert!(body.data().await.is_none());
         });
 
-        let io = tcp_connect(&addr).await.expect("tcp connect");
-        let io = ServiceInput::new(io);
+        let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake(io)
             .await
@@ -2654,12 +2659,11 @@ mod conn {
 
     #[tokio::test]
     async fn h2_connect_rejected() {
-        let (listener, addr) = setup_tk_test_server().await;
+        let (client_io, server_io, _) = setup_duplex_test_server();
         let (done_tx, done_rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            let sock = listener.accept().await.unwrap().0;
-            let sock = ServiceInput::new(sock);
+            let sock = ServiceInput::new(server_io);
             let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
 
             let (req, mut respond) = h2.accept().await.unwrap().unwrap();
@@ -2676,8 +2680,7 @@ mod conn {
             done_rx.await.unwrap();
         });
 
-        let io = tcp_connect(&addr).await.expect("tcp connect");
-        let io = ServiceInput::new(io);
+        let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake::<_, Empty<Bytes>>(io)
             .await
@@ -2705,16 +2708,14 @@ mod conn {
 
     #[tokio::test]
     async fn test_body_panics() {
-        let (listener, addr) = setup_tk_test_server().await;
+        let (client_io, server_io, _) = setup_duplex_test_server();
 
         // spawn a server that reads but doesn't write
         tokio::spawn(async move {
-            let sock = listener.accept().await.unwrap().0;
-            drain_til_eof(sock).await.expect("server read");
+            drain_til_eof(server_io).await.expect("server read");
         });
 
-        let io = tcp_connect(&addr).await.expect("tcp connect");
-        let io = ServiceInput::new(io);
+        let io = ServiceInput::new(client_io);
 
         let (mut client, conn) = conn::http1::Builder::new()
             .handshake(io)

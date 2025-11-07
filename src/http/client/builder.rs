@@ -136,6 +136,7 @@ impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
     }
 
     #[cfg(feature = "boring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
     /// Support a tls tunnel to the proxy itself using boringssl
     ///
     /// Note that a tls proxy is not needed to make a https connection
@@ -155,6 +156,7 @@ impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
     }
 
     #[cfg(feature = "boring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
     /// Support a tls tunnel to the proxy itself using boringssl and the provided config
     ///
     /// Note that a tls proxy is not needed to make a https connection
@@ -176,6 +178,7 @@ impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
     }
 
     #[cfg(feature = "rustls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
     /// Support a tls tunnel to the proxy itself using rustls
     ///
     /// Note that a tls proxy is not needed to make a https connection
@@ -196,6 +199,7 @@ impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
     }
 
     #[cfg(feature = "rustls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
     /// Support a tls tunnel to the proxy itself using rustls and the provided config
     ///
     /// Note that a tls proxy is not needed to make a https connection
@@ -247,6 +251,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
     }
 
     #[cfg(feature = "socks5")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
     /// Add support for usage of a http(s) and socks5(h) [`ProxyAddress`] to this client
     ///
     /// Note that a tls proxy is not needed to make a https connection
@@ -305,6 +310,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
     }
 
     #[cfg(feature = "socks5")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
     /// Add support for usage of a socks5(h) [`ProxyAddress`] to this client
     ///
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
@@ -352,6 +358,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     }
 
     #[cfg(feature = "boring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
     /// Support https connections by using boringssl for tls
     ///
     /// Note: this also adds a [`RequestVersionAdapter`] to automatically change the
@@ -373,6 +380,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     }
 
     #[cfg(feature = "rustls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
     /// Support https connections by using ruslts for tls
     ///
     /// Note: this also adds a [`RequestVersionAdapter`] to automatically change the

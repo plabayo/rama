@@ -45,8 +45,8 @@ jobs:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Generate Rust Docs
         env:
-          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
-        run: cargo doc --all-features --no-deps
+          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links --cfg docsrs"
+        run: cargo +nightly doc --all-features --no-deps
       - name: Install Graphviz
         run: sudo apt-get install graphviz
       - name: Install mdBook

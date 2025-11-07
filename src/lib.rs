@@ -379,59 +379,79 @@ pub use ::rama_core::{
 };
 
 #[cfg(feature = "crypto")]
+#[cfg_attr(docsrs, doc(cfg(feature = "crypto")))]
 #[doc(inline)]
 pub use ::rama_crypto as crypto;
 
-#[cfg(all(unix, feature = "net"))]
+#[cfg(all(target_family = "unix", feature = "net"))]
+#[cfg_attr(docsrs, doc(cfg(all(target_family = "unix", feature = "net"))))]
 #[doc(inline)]
 pub use ::rama_unix as unix;
 
 #[cfg(feature = "tcp")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tcp")))]
 #[doc(inline)]
 pub use ::rama_tcp as tcp;
 
 #[cfg(feature = "udp")]
+#[cfg_attr(docsrs, doc(cfg(feature = "udp")))]
 #[doc(inline)]
 pub use ::rama_udp as udp;
 
 pub mod telemetry;
 
 #[cfg(any(feature = "rustls", feature = "boring", feature = "acme"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "rustls", feature = "boring", feature = "acme")))
+)]
 pub mod tls;
 
 #[cfg(feature = "dns")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
 #[doc(inline)]
 pub use ::rama_dns as dns;
 
 #[cfg(feature = "net")]
+#[cfg_attr(docsrs, doc(cfg(feature = "net")))]
 #[doc(inline)]
 pub use ::rama_net as net;
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub mod http;
 
 #[cfg(any(feature = "proxy", feature = "haproxy", feature = "socks5"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "proxy", feature = "haproxy", feature = "socks5")))
+)]
 pub mod proxy {
     //! rama proxy support
 
     #[cfg(feature = "proxy")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "proxy")))]
     #[doc(inline)]
     pub use ::rama_proxy::*;
 
     #[cfg(feature = "haproxy")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "haproxy")))]
     #[doc(inline)]
     pub use ::rama_haproxy as haproxy;
 
     #[cfg(feature = "socks5")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
     #[doc(inline)]
     pub use ::rama_socks5 as socks5;
 }
 
 #[cfg(feature = "ua")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ua")))]
 #[doc(inline)]
 pub use ::rama_ua as ua;
 
 #[cfg(feature = "cli")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cli")))]
 pub mod cli;
 
 pub mod utils {
@@ -441,6 +461,7 @@ pub mod utils {
     pub use ::rama_utils::*;
 
     #[cfg(feature = "tower")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tower")))]
     #[doc(inline)]
     pub use ::rama_tower as tower;
 }

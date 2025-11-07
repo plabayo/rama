@@ -33,6 +33,7 @@ impl UserAgentDatabase {
     /// This function is only available if the `embed-profiles` feature is enabled.
     #[cfg(feature = "embed-profiles")]
     #[must_use]
+    #[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
     pub fn embedded() -> Self {
         let profiles = crate::profile::load_embedded_profiles();
         Self::from_iter(profiles)

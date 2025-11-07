@@ -7,6 +7,7 @@ use std::fmt;
 #[cfg(feature = "live-update")]
 mod update;
 #[cfg(feature = "live-update")]
+#[cfg_attr(docsrs, doc(cfg(feature = "live-update")))]
 #[doc(inline)]
 pub use update::{LiveUpdateProxyDB, LiveUpdateProxyDBSetter, proxy_db_updater};
 
@@ -21,6 +22,7 @@ pub use internal::Proxy;
 mod csv;
 
 #[cfg(feature = "csv")]
+#[cfg_attr(docsrs, doc(cfg(feature = "csv")))]
 #[doc(inline)]
 pub use csv::{ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind};
 
@@ -1328,6 +1330,7 @@ mod memdb {
 }
 
 #[cfg(feature = "memory-db")]
+#[cfg_attr(docsrs, doc(cfg(feature = "memory-db")))]
 pub use memdb::{
     MemoryProxyDB, MemoryProxyDBInsertError, MemoryProxyDBInsertErrorKind, MemoryProxyDBQueryError,
     MemoryProxyDBQueryErrorKind,

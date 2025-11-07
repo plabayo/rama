@@ -56,7 +56,8 @@ impl UdpSocket {
         Ok(Self { inner })
     }
 
-    #[cfg(any(windows, unix))]
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
     /// Creates a new [`UdpSocket`], which will be bound to the specified socket.
     ///
     /// The returned socket is ready for accepting connections and connecting to others.
@@ -67,6 +68,10 @@ impl UdpSocket {
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Creates a new [`UdpSocket`], which will be bound to the specified (interface) device name).
     ///
     /// The returned socket is ready for accepting connections and connecting to others.
@@ -172,7 +177,8 @@ impl UdpSocket {
     }
 
     /// Expose a reference to `self` as a [`rama_net::socket::core::SockRef`].
-    #[cfg(any(windows, unix))]
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
     #[inline]
     pub fn as_socket(&self) -> rama_net::socket::core::SockRef<'_> {
         rama_net::socket::core::SockRef::from(self)
@@ -923,7 +929,7 @@ fn bind_socket_internal(socket: rama_net::socket::core::Socket) -> Result<UdpSoc
     })
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(any(target_os = "windows", target_family = "unix"))]
 impl TryFrom<rama_net::socket::core::Socket> for UdpSocket {
     type Error = std::io::Error;
 

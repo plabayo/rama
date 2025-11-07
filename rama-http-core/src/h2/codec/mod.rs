@@ -78,6 +78,7 @@ impl<T, B> Codec<T, B> {
     /// frames will be rejected.
     #[cfg(feature = "unstable")]
     #[inline]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
     pub fn max_recv_frame_size(&self) -> usize {
         self.inner.max_frame_size()
     }
@@ -109,6 +110,7 @@ impl<T, B> Codec<T, B> {
 
     /// Get a reference to the inner stream.
     #[cfg(feature = "unstable")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
     pub fn get_ref(&self) -> &T {
         self.inner.get_ref().get_ref()
     }

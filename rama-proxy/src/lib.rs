@@ -259,10 +259,12 @@ pub use proxydb::{
 pub use proxydb::layer::{ProxyDBLayer, ProxyDBService, ProxyFilterMode, UsernameFormatter};
 
 #[cfg(feature = "live-update")]
+#[cfg_attr(docsrs, doc(cfg(feature = "live-update")))]
 #[doc(inline)]
 pub use proxydb::{LiveUpdateProxyDB, LiveUpdateProxyDBSetter, proxy_db_updater};
 
 #[cfg(feature = "memory-db")]
+#[cfg_attr(docsrs, doc(cfg(feature = "memory-db")))]
 #[doc(inline)]
 pub use proxydb::{
     MemoryProxyDB, MemoryProxyDBInsertError, MemoryProxyDBInsertErrorKind, MemoryProxyDBQueryError,
@@ -270,5 +272,6 @@ pub use proxydb::{
 };
 
 #[cfg(feature = "csv")]
+#[cfg_attr(docsrs, doc(cfg(feature = "csv")))]
 #[doc(inline)]
 pub use proxydb::{ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind};

@@ -36,6 +36,7 @@ pub struct UserAgentProfile {
     pub http: super::HttpProfile,
 
     #[cfg(feature = "tls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
     /// The profile information regarding the tls implementation of the [`crate::UserAgent`].
     pub tls: super::TlsProfile,
 

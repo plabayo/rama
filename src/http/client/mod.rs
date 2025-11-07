@@ -24,6 +24,7 @@ pub use builder::EasyHttpWebClientBuilder;
 #[cfg(feature = "socks5")]
 mod proxy_connector;
 #[cfg(feature = "socks5")]
+#[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
 #[doc(inline)]
 pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnectorLayer};
 

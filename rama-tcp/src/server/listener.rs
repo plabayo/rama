@@ -77,7 +77,8 @@ impl TcpListenerBuilder {
         Ok(TcpListener { inner })
     }
 
-    #[cfg(any(windows, unix))]
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
     /// Creates a new TcpListener, which will be bound to the specified socket.
     ///
     /// The returned listener is ready for accepting connections.
@@ -91,6 +92,10 @@ impl TcpListenerBuilder {
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Creates a new TcpListener, which will be bound to the specified (interface) device name).
     ///
     /// The returned listener is ready for accepting connections.
@@ -167,7 +172,8 @@ impl TcpListener {
         TcpListenerBuilder::default().bind_address(addr).await
     }
 
-    #[cfg(any(windows, unix))]
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
     /// Creates a new TcpListener, which will be bound to the specified socket.
     ///
     /// The returned listener is ready for accepting connections.
@@ -176,6 +182,10 @@ impl TcpListener {
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Creates a new TcpListener, which will be bound to the specified (interface) device name.
     ///
     /// The returned listener is ready for accepting connections.
@@ -230,7 +240,7 @@ impl From<TokioTcpListener> for TcpListener {
     }
 }
 
-#[cfg(any(windows, unix))]
+#[cfg(any(target_os = "windows", target_family = "unix"))]
 impl TryFrom<rama_net::socket::core::Socket> for TcpListener {
     type Error = std::io::Error;
 

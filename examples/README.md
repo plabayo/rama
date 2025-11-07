@@ -167,3 +167,4 @@ Feel free to contribute new examples or improve existing ones. When adding a new
 2. Add clear usage instructions
 3. Include any necessary feature flags
 4. Add the example to this README in the appropriate category
+5. Add comprehensive e2e test(s) for the example

@@ -17,6 +17,7 @@ pub use http::*;
 #[cfg(feature = "tls")]
 mod tls;
 #[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub use tls::*;
 
 mod js;
@@ -34,4 +35,5 @@ pub use runtime_hints::*;
 #[cfg(feature = "embed-profiles")]
 mod embedded_profiles;
 #[cfg(feature = "embed-profiles")]
+#[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
 pub use embedded_profiles::*;

@@ -13,7 +13,7 @@ One of the goals of the HTTP Archive format is to be flexible enough so, it can 
 - The format is based on [JSON](http://www.ietf.org/rfc/rfc4627.txt).
 - Please follow-up in the [newsgroup](http://groups.google.com/group/http-archive-specification?hl=en).
 - An online [HAR viewer](http://www.softwareishard.com/blog/har-viewer/) is available.
-- Report any problems in the [issue list](http://code.google.com/p/http-archive-specification/issues/list).
+- Report any problems in the [issue list](https://code.google.com/archive/p/http-archive-specification/issues).
 - See [list of tools](http://www.softwareishard.com/blog/har-adopters/) supporting HAR.
 
 ### HAR Data Structure

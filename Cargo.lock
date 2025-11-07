@@ -1561,9 +1561,9 @@ checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
 
 [[package]]
 name = "iri-string"
-version = "0.7.8"
+version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbc5ebe9c3a1a7a5127f920a418f7585e9e758e911d0466ed004f393b0e380b2"
+checksum = "4f867b9d1d896b67beb18518eda36fdb77a32ea590de864f1325b294a6d14397"
 dependencies = [
  "memchr",
  "serde",
@@ -2419,9 +2419,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81f5d7d52ff73d4f0338f0ec50e99b485a90263f0c91bd743be5fd5759438c62"
+checksum = "8a337b1a70ae88b0b43ad7041cac496c6c2de10275160d50db4a154d8c5ec5b5"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -2432,9 +2432,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5936410563403a899c7a15255abfe80fcb460eb5a31d117755a72c9195559f7"
+checksum = "6b5d750fc31a4c3b0926ba331b499c3917f1033d0bac7877168c972e84a99f5a"
 dependencies = [
  "bindgen",
  "cmake",
@@ -2444,9 +2444,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2056017b2ed1c4f775c958c9684afaaa056949c2f8e56505ab92d93281e473b0"
+checksum = "0e4c770121ff4cf0b0f4f5f08f56ff0912c489705958c735b8708853d2171bb9"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -2850,6 +2850,7 @@ dependencies = [
  "rama-utils",
  "schannel",
  "tokio",
+ "tracing-test",
  "zstd",
 ]
 
@@ -3180,9 +3181,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.34"
+version = "0.23.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a9586e9ee2b4f8fab52a0048ca7334d7024eef48e2cb9407e3497bb7cab7fa7"
+checksum = "533f54bc6a7d4f647e46ad909549eda97bf5afc1585190ef692b4286b198bd8f"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -4128,9 +4129,9 @@ dependencies = [
 
 [[package]]
 name = "turmoil"
-version = "0.6.6"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f0d6c134ef37268c94d50fb74252af1c34c5c88389e2c1af85654da944ceb52"
+checksum = "85cd2d56e2ec74ade0b5c61c3a435df11aa8584cb1f672b36feb4d2980f956b3"
 dependencies = [
  "bytes",
  "indexmap",

@@ -44,13 +44,16 @@ extra-checks:
 	{{justfile_directory()}}/scripts/extra-checks.sh
 
 doc:
-	cargo doc --all-features --no-deps
+	RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links --cfg docsrs" \
+	    cargo +nightly doc --all-features --no-deps
 
 doc-crate CRATE:
-	cargo doc --all-features --no-deps -p {{CRATE}}
+	RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links --cfg docsrs" \
+	    cargo +nightly doc --all-features --no-deps -p {{CRATE}}
 
 doc-open:
-	cargo doc --all-features --no-deps --open
+	RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links --cfg docsrs" \
+	    cargo +nightly doc --all-features --no-deps --open
 
 hack:
 	@cargo install cargo-hack

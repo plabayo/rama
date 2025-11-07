@@ -5,6 +5,10 @@ mod interface;
 pub use interface::Interface;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+)]
 #[doc(inline)]
 pub use interface::DeviceName;
 
