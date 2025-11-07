@@ -36,7 +36,7 @@ rama-boring = { workspace = true }
 rama-boring-tokio = { workspace = true }
 rama-core = { workspace = true }
 rama-http-types = { workspace = true, optional = true }
-rama-net = { workspace = true, features = [ "tls"] }
+rama-net = { workspace = true, features = ["tls", "http"] }
 rama-ua = { workspace = true, optional = true, features = ["tls"] }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }

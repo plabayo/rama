@@ -25,7 +25,7 @@ http = ["dep:rama-http-types"]
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-http-types = { workspace = true, optional = true }
-rama-net = { workspace = true, features = ["tls"] }
+rama-net = { workspace = true, features = ["tls", "http"] }
 rama-utils = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
