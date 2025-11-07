@@ -390,6 +390,7 @@ fn set_target_http_version(
 
 impl<S, K> TlsConnector<S, K> {
     fn connector_data(&self, extensions: &mut Extensions) -> Result<TlsConnectorData, OpaqueError> {
+        #[cfg(feature = "http")]
         let target_version = extensions
             .get::<TargetHttpVersion>()
             .map(|version| ApplicationProtocol::try_from(version.0))
@@ -412,6 +413,7 @@ impl<S, K> TlsConnector<S, K> {
             builder.prepend_base_config(base_builder);
         }
 
+        #[cfg(feature = "http")]
         if let Some(target_version) = target_version {
             builder.try_set_rama_alpn_protos(&[target_version])?;
         }

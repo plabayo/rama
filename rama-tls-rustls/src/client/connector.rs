@@ -4,7 +4,7 @@ use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
 use rama_core::error::ErrorContext;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
@@ -16,7 +16,10 @@ use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
 
 #[cfg(feature = "http")]
-use rama_http_types::{Version, conn::TargetHttpVersion};
+use ::{
+    rama_core::extensions::Extensions,
+    rama_http_types::{Version, conn::TargetHttpVersion},
+};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
