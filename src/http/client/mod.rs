@@ -8,6 +8,7 @@ use std::fmt;
 use crate::{
     Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::ExtensionsMut,
     http::{Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
     service::BoxService,
@@ -133,7 +134,8 @@ where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     ModifiedBody:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    ConnResponse: Service<Request<ModifiedBody>, Response = Response, Error = BoxError>,
+    ConnResponse:
+        Service<Request<ModifiedBody>, Response = Response, Error = BoxError> + ExtensionsMut,
 {
     type Response = Response;
 
@@ -142,7 +144,9 @@ where
     async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
 
-        let EstablishedClientConnection { req, conn } = self.connector.serve(req).await?;
+        let EstablishedClientConnection { mut req, mut conn } = self.connector.serve(req).await?;
+        req.extensions_mut()
+            .extend(std::mem::take(conn.extensions_mut()));
         // NOTE: stack might change request version based on connector data,
         tracing::trace!(url.full = %uri, "send http req to connector stack");
 

@@ -262,14 +262,22 @@ where
         }
 
         if !forwarded_elements.is_empty() {
-            if let Some(ref mut f) = req.extensions_mut().get_mut::<Forwarded>() {
-                f.extend(forwarded_elements);
+            // TODO why was this Forwarded header instead of rama_net Forwarded, @glen was this mistake before?
+            let forwarded = if let Some(mut forwarded) = req
+                .extensions_mut()
+                .get::<rama_net::forwarded::Forwarded>()
+                .cloned()
+            {
+                forwarded.extend(forwarded_elements);
+                forwarded
             } else {
                 let mut it = forwarded_elements.into_iter();
+                // TODO why was this
                 let mut forwarded = rama_net::forwarded::Forwarded::new(it.next().unwrap());
                 forwarded.extend(it);
-                req.extensions_mut().insert(forwarded);
-            }
+                forwarded
+            };
+            req.extensions_mut().insert(forwarded);
         }
 
         self.inner.serve(req)

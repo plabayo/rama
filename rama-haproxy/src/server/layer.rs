@@ -177,22 +177,28 @@ where
                     v1::Addresses::Tcp4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
+                        let forwarded = if let Some(mut forwarded) =
+                            stream.extensions_mut().get::<Forwarded>().cloned()
+                        {
                             forwarded.append(el);
+                            forwarded
                         } else {
-                            let forwarded = Forwarded::new(el);
-                            stream.extensions_mut().insert(forwarded);
-                        }
+                            Forwarded::new(el)
+                        };
+                        stream.extensions_mut().insert(forwarded);
                     }
                     v1::Addresses::Tcp6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
+                        let forwarded = if let Some(mut forwarded) =
+                            stream.extensions_mut().get::<Forwarded>().cloned()
+                        {
                             forwarded.append(el);
+                            forwarded
                         } else {
-                            let forwarded = Forwarded::new(el);
-                            stream.extensions_mut().insert(forwarded);
-                        }
+                            Forwarded::new(el)
+                        };
+                        stream.extensions_mut().insert(forwarded);
                     }
                     v1::Addresses::Unknown => (),
                 };
@@ -203,22 +209,28 @@ where
                     v2::Addresses::IPv4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
+                        let forwarded = if let Some(mut forwarded) =
+                            stream.extensions_mut().get::<Forwarded>().cloned()
+                        {
                             forwarded.append(el);
+                            forwarded
                         } else {
-                            let forwarded = Forwarded::new(el);
-                            stream.extensions_mut().insert(forwarded);
-                        }
+                            Forwarded::new(el)
+                        };
+                        stream.extensions_mut().insert(forwarded);
                     }
                     v2::Addresses::IPv6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
+                        let forwarded = if let Some(mut forwarded) =
+                            stream.extensions_mut().get::<Forwarded>().cloned()
+                        {
                             forwarded.append(el);
+                            forwarded
                         } else {
-                            let forwarded = Forwarded::new(el);
-                            stream.extensions_mut().insert(forwarded);
-                        }
+                            Forwarded::new(el)
+                        };
+                        stream.extensions_mut().insert(forwarded);
                     }
                     v2::Addresses::Unix(_) | v2::Addresses::Unspecified => (),
                 };

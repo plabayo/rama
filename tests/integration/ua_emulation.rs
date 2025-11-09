@@ -319,8 +319,11 @@ async fn test_ua_emulation() {
                 ))
                 .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
-                let EstablishedClientConnection { req, conn } =
+                let EstablishedClientConnection { mut req, mut conn } =
                     connector.serve(req).await.expect(description);
+
+                req.extensions_mut()
+                    .extend(std::mem::take(conn.extensions_mut()));
 
                 Ok::<_, Infallible>(conn.serve(req).await.expect(description))
             }));
@@ -392,9 +395,11 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     let profile = req.extensions().get::<SelectedUserAgentProfile>().unwrap();
                     let expect_msg = format!("selected profile to work: {profile:?}");
 
-                    let EstablishedClientConnection { req, conn } =
+                    let EstablishedClientConnection { mut req, mut conn } =
                         connector.serve(req).await.expect(&expect_msg);
 
+                    req.extensions_mut()
+                        .extend(std::mem::take(conn.extensions_mut()));
                     Ok::<_, Infallible>(conn.serve(req).await.expect(&expect_msg))
                 }));
 

@@ -27,43 +27,11 @@
 //! assert_eq!(ext.get::<i32>(), Some(&5i32));
 //! ```
 
-use rama_utils::macros::generate_set_and_with;
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
 use std::fmt;
-use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::Arc;
-
-#[cfg(debug_assertions)]
-use std::any::type_name;
-
-type AnyMap = HashMap<TypeId, Box<dyn AnyClone + Send + Sync>, BuildHasherDefault<IdHasher>>;
-#[cfg(debug_assertions)]
-type TypeIdMap = HashMap<TypeId, String, BuildHasherDefault<IdHasher>>;
-
-// With TypeIds as keys, there's no need to hash them. They are already hashes
-// themselves, coming from the compiler. The IdHasher just holds the u64 of
-// the TypeId, and then returns it, instead of doing any bit fiddling.
-#[derive(Default)]
-struct IdHasher(u64);
-
-impl Hasher for IdHasher {
-    fn write(&mut self, _: &[u8]) {
-        unreachable!("TypeId calls write_u64");
-    }
-
-    #[inline(always)]
-    fn write_u64(&mut self, id: u64) {
-        self.0 = id;
-    }
-
-    #[inline(always)]
-    fn finish(&self) -> u64 {
-        self.0
-    }
-}
 
 /// A type map of protocol extensions.
 ///
@@ -71,161 +39,75 @@ impl Hasher for IdHasher {
 /// extra data derived from the underlying protocol.
 #[derive(Clone, Default)]
 pub struct Extensions {
-    // If extensions are never used, no need to carry around an empty HashMap.
-    // That's 3 words. Instead, this is only 1 word.
-    map: Option<Box<AnyMap>>,
-    #[cfg(debug_assertions)]
-    type_map: Option<Box<TypeIdMap>>,
-    parent_extensions: Option<Arc<Extensions>>,
+    // TODO optimize this storage
+    extensions: Vec<Extension>,
 }
+
+#[derive(Clone, Debug)]
+struct Extension(TypeId, Box<dyn ExtensionType>);
 
 impl Extensions {
     /// Create an empty `Extensions`.
     #[inline(always)]
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            map: None,
-            #[cfg(debug_assertions)]
-            type_map: None,
-            parent_extensions: None,
-        }
-    }
-
-    #[must_use]
-    /// Convert [`Extensions`] into a frozen/readonly variant
-    pub fn into_frozen_extensions(self) -> Arc<Self> {
-        Arc::new(self)
-    }
-
-    generate_set_and_with! {
-        /// Set parent extensions
-        pub fn parent_extensions(mut self, frozen_extensions: Option<Arc<Extensions>>) -> Self {
-            self.parent_extensions = frozen_extensions;
-            self
+            extensions: vec![],
+            // parent_extensions: Arc::new([]),
         }
     }
 
     /// Insert a type into this `Extensions`.
-    ///
-    /// If a extension of this type already existed, it will
-    /// be returned.
-    pub fn insert<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> Option<T> {
-        #[cfg(debug_assertions)]
-        self.type_map
-            .get_or_insert_with(Box::default)
-            .insert(TypeId::of::<T>(), type_name::<T>().to_owned());
-
-        self.map
-            .get_or_insert_with(Box::default)
-            .insert(TypeId::of::<T>(), Box::new(val))
-            .and_then(|boxed| boxed.into_any().downcast().ok().map(|boxed| *boxed))
+    pub fn insert<T>(&mut self, val: T) -> &mut Self
+    where
+        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    {
+        let extension = Extension(TypeId::of::<T>(), Box::new(val));
+        self.extensions.push(extension);
+        self
     }
 
-    /// Insert a type into this `Extensions` and get mutable reference
-    pub fn insert_mut<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> &mut T {
-        self.insert(val);
-        self.get_mut().unwrap()
+    /// Insert a type into this `Extensions`.
+    pub fn maybe_insert<T>(&mut self, val: Option<T>) -> &mut Self
+    where
+        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    {
+        if let Some(val) = val {
+            self.insert(val);
+        }
+        self
     }
 
-    /// Insert a type only into this `Extensions`, if the value is `Some(T)`.
-    ///
-    /// See [`Self::insert`] for more information.
-    pub fn maybe_insert<T: Clone + Send + Sync + 'static>(
-        &mut self,
-        mut val: Option<T>,
-    ) -> Option<T> {
-        val.take().and_then(|val| self.insert(val))
-    }
-
-    /// Extend these extensions with another Extensions.
-    pub fn extend(&mut self, other: Self) {
-        #[cfg(debug_assertions)]
-        if let Some(other_map) = other.type_map {
-            let map = self.type_map.get_or_insert_with(Box::default);
-            #[allow(clippy::useless_conversion)]
-            map.extend(other_map.into_iter());
-        }
-
-        if let Some(other_map) = other.map {
-            let map = self.map.get_or_insert_with(Box::default);
-            #[allow(clippy::useless_conversion)]
-            map.extend(other_map.into_iter());
-        }
-    }
-
-    /// Clear the `Extensions` of all inserted extensions.
-    pub fn clear(&mut self) {
-        #[cfg(debug_assertions)]
-        if let Some(map) = self.type_map.as_mut() {
-            map.clear();
-        }
-
-        if let Some(map) = self.map.as_mut() {
-            map.clear();
-        }
+    pub fn extend(&mut self, extensions: Self) -> &mut Self {
+        self.extensions.extend(extensions.extensions);
+        self
     }
 
     /// Returns true if the `Extensions` or parents contains the given type.
     #[must_use]
     pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
-        self.map
-            .as_ref()
-            .map(|map| map.contains_key(&TypeId::of::<T>()))
-            .unwrap_or_else(|| {
-                self.parent_extensions
-                    .as_ref()
-                    .map(|parent| parent.contains::<T>())
-                    .unwrap_or_default()
-            })
+        let type_id = TypeId::of::<T>();
+        self.extensions.iter().rev().any(|item| item.0 == type_id)
     }
 
     /// Get a shared reference to a type previously inserted on this `Extensions` or any of the parents
     #[must_use]
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        self.map
-            .as_ref()
-            .and_then(|map| map.get(&TypeId::of::<T>()))
+        let type_id = TypeId::of::<T>();
+        self.extensions
+            .iter()
+            .rev()
+            .find(|item| item.0 == type_id)
+            .map(|ext| &ext.1)
             .and_then(|boxed| (**boxed).as_any().downcast_ref())
-            .or_else(|| {
-                self.parent_extensions
-                    .as_ref()
-                    .and_then(|parent| parent.get())
-            })
-    }
-
-    /// Get an exclusive reference to a type previously inserted on this `Extensions`.
-    pub fn get_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T> {
-        self.map
-            .as_mut()
-            .and_then(|map| map.get_mut(&TypeId::of::<T>()))
-            .and_then(|boxed| (**boxed).as_any_mut().downcast_mut())
     }
 }
 
 impl fmt::Debug for Extensions {
-    #[cfg(debug_assertions)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let items = self.map.as_ref().map(|map| {
-            map.keys()
-                .map(|key| {
-                    self.type_map
-                        .as_ref()
-                        .and_then(|type_map| type_map.get(key))
-                        .unwrap()
-                })
-                .collect::<Vec<&String>>()
-        });
-
         f.debug_struct("Extensions")
-            .field("items", &items)
-            .field("parent_extensions", &self.parent_extensions)
+            .field("extensions", &self.extensions)
             .finish()
-    }
-
-    #[cfg(not(debug_assertions))]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Extensions").finish()
     }
 }
 
@@ -407,32 +289,22 @@ where
     }
 }
 
-trait AnyClone: Any {
-    fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync>;
+trait ExtensionType: Any + Send + Sync + std::fmt::Debug {
+    fn clone_box(&self) -> Box<dyn ExtensionType>;
     fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
-impl<T: Clone + Send + Sync + 'static> AnyClone for T {
-    fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync> {
+impl<T: Clone + Send + Sync + std::fmt::Debug + 'static> ExtensionType for T {
+    fn clone_box(&self) -> Box<dyn ExtensionType> {
         Box::new(self.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
 }
 
-impl Clone for Box<dyn AnyClone + Send + Sync> {
+impl Clone for Box<dyn ExtensionType> {
     fn clone(&self) -> Self {
         (**self).clone_box()
     }
@@ -481,49 +353,53 @@ impl DerefMut for RequestContextExt {
     }
 }
 
-#[test]
-fn test_extensions() {
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct MyType(i32);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut extensions = Extensions::new();
+    #[test]
+    fn get_should_return_last_added_extension() {
+        let mut ext = Extensions::new();
+        ext.insert("first".to_owned());
+        ext.insert("second".to_owned());
 
-    extensions.insert(5i32);
-    extensions.insert(MyType(10));
+        assert_eq!(*ext.get::<String>().unwrap(), "second".to_owned());
 
-    assert_eq!(extensions.get(), Some(&5i32));
+        let mut split = ext.clone();
+        split.insert("split".to_owned());
 
-    let mut ext2 = extensions.clone();
+        assert_eq!(*ext.get::<String>().unwrap(), "second".to_owned());
+        assert_eq!(*split.get::<String>().unwrap(), "split".to_owned());
+    }
 
-    ext2.insert(true);
+    #[test]
+    fn test_extensions() {
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        struct MyType(i32);
 
-    assert_eq!(ext2.get(), Some(&5i32));
-    assert_eq!(ext2.get(), Some(&MyType(10)));
-    assert_eq!(ext2.get(), Some(&true));
+        let mut extensions = Extensions::new();
 
-    // test extend
-    let mut extensions = Extensions::new();
-    extensions.insert(5i32);
-    extensions.insert(MyType(10));
+        extensions.insert(5i32);
+        extensions.insert(MyType(10));
 
-    let mut extensions2 = Extensions::new();
-    extensions2.extend(extensions);
-    assert_eq!(extensions2.get(), Some(&5i32));
-    assert_eq!(extensions2.get(), Some(&MyType(10)));
+        assert_eq!(extensions.get(), Some(&5i32));
 
-    // test clear
-    extensions2.clear();
-    assert_eq!(extensions2.get::<i32>(), None);
-    assert_eq!(extensions2.get::<MyType>(), None);
-}
+        let mut ext2 = extensions.clone();
 
-#[test]
-fn test_extensions_chaining() {
-    let mut conn_extensions = Extensions::new();
-    conn_extensions.insert(String::new());
+        ext2.insert(true);
 
-    let conn_extensions = conn_extensions.into_frozen_extensions();
+        assert_eq!(ext2.get(), Some(&5i32));
+        assert_eq!(ext2.get(), Some(&MyType(10)));
+        assert_eq!(ext2.get(), Some(&true));
 
-    let req_extensions = Extensions::new().with_parent_extensions(conn_extensions);
-    assert!(req_extensions.get::<String>().is_some());
+        // test extend
+        let mut extensions = Extensions::new();
+        extensions.insert(5i32);
+        extensions.insert(MyType(10));
+
+        let mut extensions2 = Extensions::new();
+        extensions2.extend(extensions);
+        assert_eq!(extensions2.get(), Some(&5i32));
+        assert_eq!(extensions2.get(), Some(&MyType(10)));
+    }
 }

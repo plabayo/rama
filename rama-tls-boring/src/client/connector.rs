@@ -396,17 +396,18 @@ impl<S, K> TlsConnector<S, K> {
             .map(|version| ApplicationProtocol::try_from(version.0))
             .transpose()?;
 
-        let builder = if let Some(builder) = extensions.get_mut::<TlsConnectorDataBuilder>() {
-            tracing::trace!(
-                "use TlsConnectorDataBuilder from extensions as foundation for connector cfg"
-            );
-            builder
-        } else {
-            tracing::trace!(
-                "start from Default TlsConnectorDataBuilder as foundation for connector cfg"
-            );
-            extensions.insert_mut(TlsConnectorDataBuilder::default())
-        };
+        let mut builder =
+            if let Some(builder) = extensions.get::<TlsConnectorDataBuilder>().cloned() {
+                tracing::trace!(
+                    "use TlsConnectorDataBuilder from extensions as foundation for connector cfg"
+                );
+                builder
+            } else {
+                tracing::trace!(
+                    "start from Default TlsConnectorDataBuilder as foundation for connector cfg"
+                );
+                TlsConnectorDataBuilder::default()
+            };
 
         if let Some(base_builder) = self.connector_data.clone() {
             tracing::trace!("prepend connector data (base) config to TlsConnectorDataBuilder");
@@ -417,6 +418,9 @@ impl<S, K> TlsConnector<S, K> {
         if let Some(target_version) = target_version {
             builder.try_set_rama_alpn_protos(&[target_version])?;
         }
+
+        // We dont have to insert, but it's nice to have...
+        extensions.insert(builder.clone());
         builder.build()
     }
 }
