@@ -1,13 +1,3 @@
-use super::{
-    State,
-    data::{
-        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo, UserAgentInfo,
-        get_akamai_h2_info, get_and_store_http_info, get_ja4h_info, get_request_info,
-        get_tls_display_info_and_store, get_user_agent_info,
-    },
-};
-use crate::cmd::fp::{StorageAuthorized, data::TlsDisplayInfoExtensionData};
-use itertools::Itertools as _;
 use rama::{
     error::{ErrorContext, OpaqueError},
     extensions::ExtensionsRef,
@@ -28,9 +18,21 @@ use rama::{
     telemetry::tracing,
     ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
+
+use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
+
+use super::{
+    State, StorageAuthorized,
+    data::TlsDisplayInfoExtensionData,
+    data::{
+        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo, UserAgentInfo,
+        get_akamai_h2_info, get_and_store_http_info, get_ja4h_info, get_request_info,
+        get_tls_display_info_and_store, get_user_agent_info,
+    },
+};
 
 type Html = response::Html<String>;
 
@@ -379,7 +381,7 @@ pub(super) async fn post_api_fetch_number(
         .storage
         .as_ref()
     {
-        let auth = parts.extensions.contains::<crate::fp::StorageAuthorized>();
+        let auth = parts.extensions.contains::<StorageAuthorized>();
         if let Some(js_web_apis) = request.js_web_apis.clone() {
             storage
                 .store_js_web_apis(user_agent.clone(), auth, js_web_apis)
@@ -645,7 +647,7 @@ pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
 // endpoints: assets
 //------------------------------------------
 
-const STYLE_CSS: &str = include_str!("../../../assets/style.css");
+const STYLE_CSS: &str = include_str!("../../../../assets/style.css");
 
 pub(super) async fn get_assets_style() -> Response {
     Response::builder()
@@ -655,7 +657,7 @@ pub(super) async fn get_assets_style() -> Response {
         .expect("build css response")
 }
 
-const SCRIPT_JS: &str = include_str!("../../../assets/script.js");
+const SCRIPT_JS: &str = include_str!("../../../../assets/script.js");
 
 pub(super) async fn get_assets_script() -> Response {
     Response::builder()

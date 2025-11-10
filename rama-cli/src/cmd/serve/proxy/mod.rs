@@ -3,8 +3,10 @@
 use clap::Args;
 use rama::{
     Layer, Service,
+    combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::ExtensionsMut,
+    graceful::ShutdownGuard,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -17,7 +19,10 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
-    layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    layer::{
+        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
+    },
     net::{
         http::RequestContext, proxy::ProxyTarget, socket::Interface,
         stream::layer::http::BodyLimitLayer,
@@ -25,7 +30,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing,
 };
 use std::{convert::Infallible, time::Duration};
 
@@ -43,18 +48,10 @@ pub struct CliCommandProxy {
     #[arg(long, short = 't', default_value_t = 8)]
     /// the timeout in seconds for each connection (0 = no timeout)
     timeout: u64,
-
-    #[arg(long, default_value_t = 30)]
-    /// the graceful shutdown timeout in seconds (0 = no timeout)
-    graceful: u64,
 }
 
 /// run the rama proxy service
-pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
-    crate::trace::init_tracing(LevelFilter::INFO);
-
-    let graceful = rama::graceful::Shutdown::default();
-
+pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), BoxError> {
     tracing::info!("starting proxy on: bind interface = {}", cfg.bind);
 
     let tcp_service = TcpListener::build()
@@ -67,7 +64,7 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    graceful.spawn_task_fn(async move |guard| {
+    graceful.into_spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (
@@ -86,8 +83,16 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
         let tcp_service_builder = (
             // protect the http proxy from too large bodies, both from request and response end
             BodyLimitLayer::symmetric(2 * 1024 * 1024),
-            (cfg.concurrent > 0).then(|| LimitLayer::new(ConcurrentPolicy::max(cfg.concurrent))),
-            (cfg.timeout > 0).then(|| TimeoutLayer::new(Duration::from_secs(cfg.timeout))),
+            LimitLayer::new(if cfg.concurrent > 0 {
+                Either::A(ConcurrentPolicy::max(cfg.concurrent))
+            } else {
+                Either::B(UnlimitedPolicy::new())
+            }),
+            if cfg.timeout > 0 {
+                TimeoutLayer::new(Duration::from_secs(cfg.timeout))
+            } else {
+                TimeoutLayer::never()
+            },
         );
 
         tracing::info!(
@@ -100,15 +105,6 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
             .serve_graceful(guard, tcp_service_builder.into_layer(http_service))
             .await;
     });
-
-    let delay = if cfg.graceful > 0 {
-        graceful
-            .shutdown_with_limit(Duration::from_secs(cfg.graceful))
-            .await?
-    } else {
-        graceful.shutdown().await
-    };
-    tracing::info!("proxy gracefully shutdown with a delay of: {delay:?}");
 
     Ok(())
 }

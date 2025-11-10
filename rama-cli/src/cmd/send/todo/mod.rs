@@ -45,7 +45,7 @@ use rama::{
     },
 };
 
-use std::{io::IsTerminal, str::FromStr, sync::Arc, time::Duration};
+use std::{io::IsTerminal, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
 
@@ -54,29 +54,27 @@ mod writer;
 #[derive(Args, Debug, Clone)]
 /// rama http client
 pub struct CliCommandHttp {
-    #[arg(short = 'j', long)]
-    /// data items from the command line are serialized as a JSON object.
-    /// The `Content-Type` and `Accept headers` are set to `application/json`
-    /// (if not specified)
+    #[arg(required = true)]
+    uri: String,
+
+    #[arg(short = 'L', long)]
+    /// If the server reports that the requested page has moved to a different location
+    /// (indicated with a Location: header and a 3XX response code),
+    /// this option makes curl redo the request to the new place.
+    /// If used together with --show-headers, headers from all requested pages are shown.
     ///
-    /// (default)
-    json: bool,
+    /// Limit the amount of redirects to follow by using the --max-redirs option.
+    location: bool,
 
-    #[arg(short = 'f', long)]
-    /// data items from the command line are serialized as form fields.
-    ///
-    /// The `Content-Type` is set to `application/x-www-form-urlencoded` (if not specified).
-    form: bool,
+    #[arg(long, default_value_t = 50)]
+    /// the maximum number of redirects to follow (set to -1 to put no limit)
+    max_redirs: isize,
 
-    #[arg(short = 'F', long)]
-    /// follow 30 Location redirects
-    follow: bool,
+    #[arg(long, short = 'X')]
+    /// Change the method to use when starting the transfer.
+    request: Option<String>,
 
-    #[arg(long, default_value_t = 30)]
-    /// the maximum number of redirects to follow
-    max_redirects: usize,
-
-    #[arg(long, short = 'P')]
+    #[arg(long, short = 'x')]
     /// upstream proxy to use (can also be specified using PROXY env variable)
     proxy: Option<String>,
 
@@ -84,46 +82,65 @@ pub struct CliCommandHttp {
     /// upstream proxy user credentials to use (or overwrite)
     proxy_user: Option<String>,
 
-    #[arg(long, short = 'a')]
+    #[arg(long, short = 'u')]
     /// client authentication: `USER[:PASS]` | TOKEN,
     /// if basic and no password is given it will be promped
-    auth: Option<String>,
-
-    #[arg(long, short = 'A', default_value = "basic")]
-    /// the type of authentication to use (basic, bearer)
-    auth_type: String,
+    user: Option<String>,
 
     #[arg(short = 'k', long)]
     /// skip Tls certificate verification
     insecure: bool,
 
     #[arg(long)]
-    /// the desired tls version to use (automatically defined by default, choices are: 1.2, 1.3)
-    tls: Option<String>,
+    /// the desired tls version to use (automatically defined by default, choices are: 1.0, 1.1, 1.2 and 1.3)
+    tls_max: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    /// Force rama to use TLS version 1.0 or later when connecting to a remote TLS server.
+    tls_v10: bool,
+
+    #[arg(long, default_value_t = false)]
+    /// Force rama to use TLS version 1.1 or later when connecting to a remote TLS server.
+    tls_v11: bool,
+
+    #[arg(long, default_value_t = false)]
+    /// Force rama to use TLS version 1.2 or later when connecting to a remote TLS server.
+    tls_v12: bool,
+
+    #[arg(long, default_value_t = false)]
+    /// Force rama to use TLS version 1.3 or later when connecting to a remote TLS server.
+    tls_v13: bool,
 
     #[arg(long)]
     /// the client tls key file path to use
-    cert_key: Option<String>,
+    cert_key: Option<PathBuf>,
 
-    #[arg(long, short = 't', default_value = "0")]
-    /// the timeout in seconds for each connection (0 = default timeout of 180s)
-    timeout: u64,
+    #[arg(long, short = 'm')]
+    /// Set the maximum time in seconds that you allow each transfer to take.
+    /// Prevents your batch jobs from hanging for hours due to slow networks or links going down.
+    ///
+    /// This option accepts decimal values.
+    max_time: Option<f64>,
 
     #[arg(long)]
-    /// fail if status code is not 2xx (4 if 4xx and 5 if 5xx)
-    check_status: bool,
+    /// Maximum time in seconds that you allow rama's connection to take.
+    /// This only limits the connection phase, so if rama connects within the given period it continues -
+    /// if not it exits.
+    ///
+    /// This option accepts decimal values
+    ///  The decimal value needs to be provided using a dot (.) as decimal separator -
+    /// not the local version even if it might be using another separator.
+    ///
+    /// The connection phase is considered complete when the DNS lookup and requested TCP,
+    /// TLS or QUIC handshakes are done.
+    connect_timeout: Option<f64>,
 
-    #[arg(long, short = 'p')]
-    /// define what the output should contain ('h'/'H' for headers, 'b'/'B' for body (response/request)
-    print: Option<String>,
-
-    #[arg(short = 'b', long)]
-    /// print the response body (short for --print b)
-    body: bool,
-
-    #[arg(short = 'H', long)]
-    /// print the response headers (short for --print h)
-    headers: bool,
+    #[arg(short = 'i', long)]
+    /// Show response headers in the output. HTTP response headers can include
+    /// things like server name, cookies, date of the document, HTTP version and more.
+    ///
+    /// For request headers use the `-v` / `--verbose` flag.
+    show_headers: bool,
 
     #[arg(short = 'v', long)]
     /// print verbose output, alias for --all --print hHbB
@@ -133,20 +150,14 @@ pub struct CliCommandHttp {
     /// do not send request but instead print equivalent curl command
     curl: bool,
 
-    #[arg(long)]
-    /// show output for all requests/responses (including redirects)
-    all: bool,
-
     #[arg(long, short = 'o')]
-    /// write output to file instead of stdout
+    /// Write output to the given file instead of stdout
     output: Option<String>,
 
     #[arg(long)]
-    /// print debug info
-    debug: bool,
-
-    #[arg(long, short = 'E')]
-    /// emulate user agent
+    /// emulate the provided user-agent
+    ///
+    /// (or a random one if no user-agent header is defined)
     emulate: bool,
 
     #[arg(long = "http0.9")]
@@ -179,59 +190,25 @@ pub struct CliCommandHttp {
     /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http2
     http_3: bool,
 
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    /// positional arguments to populate request headers and body
+    #[arg(long, short = 'H')]
+    /// Extra header to include in information sent.
+    /// When used within an HTTP request, it is added to the regular request headers.
     ///
-    /// These arguments come after any flags and in the order they are listed here.
-    /// Only the URL is required.
+    /// Some HTTP-based protocols such as websocket will add the
+    /// headers required for that protocol automatically if not yet defined.
+    header: Vec<String>,
+
+    #[arg(long, short = 'H')]
+    /// Extra header to include in the request when sending HTTP to a proxy.
     ///
-    /// # METHOD
-    ///
-    /// The HTTP method to be used for the request (GET, POST, PUT, DELETE, ...).
-    ///
-    /// This argument can be omitted in which case HTTPie will use POST if there
-    /// is some data to be sent, otherwise GET:
-    ///
-    ///     $ rama http example.org               # => GET
-    ///
-    ///     $ rama http example.org hello=world   # => POST
-    ///
-    /// # URL
-    ///
-    /// The request URL. Scheme defaults to 'http://' if the URL
-    /// does not include one.
-    ///
-    /// You can also use a shorthand for localhost
-    ///
-    ///    $ rama http :3000    # => http://localhost:3000
-    ///
-    ///    $ rama http :/foo    # => http://localhost/foo
-    ///
-    /// # REQUEST_ITEM
-    ///
-    /// Optional key-value pairs to be included in the request. The separator used
-    /// determines the type:
-    ///
-    /// ':' HTTP headers:
-    ///
-    ///     Referer:https://ramaproxy.org  Cookie:foo=bar  User-Agent:rama/0.2.0
-    ///
-    /// '==' URL parameters to be appended to the request URI:
-    ///
-    ///     search==rama
-    ///
-    /// '=' Data fields to be serialized into a JSON object or form data:
-    ///
-    ///     name=rama  language=Rust  description='CLI HTTP client'
-    ///
-    /// ':=' Non-string data fields:
-    ///
-    ///     awesome:=true  amount:=42  colors:='["red", "green", "blue"]'
-    ///
-    /// You can use a backslash to escape a colliding separator in the field name:
-    ///
-    ///     field-name-with\:colon=value
-    args: Vec<String>,
+    /// You may specify any number of extra headers.
+    /// This is the equivalent option to --header but is for proxy communication
+    /// only like in CONNECT requests when you want a separate header sent to the proxy
+    /// to what is sent to the actual remote host.
+    proxy_header: Vec<String>,
+
+    /// Output trace output to the given file.
+    trace: Option<PathBuf>,
 }
 
 // TODO in future:

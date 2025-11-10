@@ -20,7 +20,7 @@ pub use layer::TimeoutLayer;
 pub struct Timeout<S, F> {
     inner: S,
     into_error: F,
-    timeout: Duration,
+    timeout: Option<Duration>,
 }
 
 impl<S, F> Timeout<S, F> {
@@ -59,7 +59,16 @@ pub type DefaultTimeout<S> = Timeout<S, LayerErrorStatic<Elapsed>>;
 impl<S> DefaultTimeout<S> {
     /// Creates a new [`Timeout`]
     pub fn new(inner: S, timeout: Duration) -> Self {
-        Self::with_error(inner, timeout, error::Elapsed::new(timeout))
+        Self::with_error(inner, timeout, error::Elapsed::new(Some(timeout)))
+    }
+
+    /// Creates a new [`Timeout`] which never times out.
+    pub fn never(inner: S) -> Self {
+        Self {
+            inner,
+            timeout: None,
+            into_error: LayerErrorStatic::new(error::Elapsed::new(None)),
+        }
     }
 }
 
@@ -72,7 +81,7 @@ impl<S, E> Timeout<S, LayerErrorStatic<E>> {
     {
         Self {
             inner,
-            timeout,
+            timeout: Some(timeout),
             into_error: LayerErrorStatic::new(error),
         }
     }
@@ -88,7 +97,7 @@ impl<S, F> Timeout<S, LayerErrorFn<F>> {
     {
         Self {
             inner,
-            timeout,
+            timeout: Some(timeout),
             into_error: LayerErrorFn::new(error_fn),
         }
     }
@@ -100,7 +109,7 @@ where
 {
     /// Creates a new [`Timeout`] with a custom error
     /// value.
-    pub(crate) fn with(inner: S, timeout: Duration, into_error: F) -> Self {
+    pub(crate) fn with(inner: S, timeout: Option<Duration>, into_error: F) -> Self {
         Self {
             inner,
             timeout,
@@ -120,9 +129,12 @@ where
     type Error = T::Error;
 
     async fn serve(&self, request: Request) -> Result<Self::Response, Self::Error> {
-        tokio::select! {
-            res = self.inner.serve(request) => res,
-            _ = tokio::time::sleep(self.timeout) => Err(self.into_error.make_layer_error().into()),
+        match self.timeout {
+            Some(duration) => tokio::select! {
+                res = self.inner.serve(request) => res,
+                _ = tokio::time::sleep(duration) => Err(self.into_error.make_layer_error().into()),
+            },
+            None => self.inner.serve(request).await,
         }
     }
 }

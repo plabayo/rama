@@ -5,9 +5,13 @@
 use rama::{
     Layer as _,
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
+    combinators::Either,
     error::{BoxError, ErrorContext, ErrorExt as _, OpaqueError},
-    graceful,
-    layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    graceful::ShutdownGuard,
+    layer::{
+        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
+    },
     net::{
         socket::Interface,
         stream::service::EchoService,
@@ -16,7 +20,7 @@ use rama::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
+    telemetry::tracing::{self, Instrument},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     ua::profile::UserAgentDatabase,
     udp::UdpSocket,
@@ -24,16 +28,13 @@ use rama::{
 
 use clap::{Args, ValueEnum};
 use std::{fmt, sync::Arc, time::Duration};
+use tokio::sync::mpsc::Sender;
 
 use crate::utils::{http::HttpVersion, tls::new_server_config};
 
 #[derive(Debug, Clone, Args)]
 /// rama echo service (rich https echo or else raw tcp/udp bytes)
 pub struct CliCommandEcho {
-    /// enable debug logs for tracing
-    #[arg(long, default_value_t = false)]
-    verbose: bool,
-
     /// the interface to bind to
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: Interface,
@@ -51,10 +52,6 @@ pub struct CliCommandEcho {
     /// (0 = no timeout)
     /// Default is 300s, unless in UDP mode, there no timeout is supported.
     timeout: Option<u64>,
-
-    #[arg(long, default_value_t = 5)]
-    /// the graceful shutdown timeout in seconds (0 = no timeout)
-    graceful: u64,
 
     #[arg(long, short = 'f')]
     /// enable support for one of the following "forward" headers or protocols
@@ -120,13 +117,11 @@ impl fmt::Display for Mode {
 }
 
 /// run the rama echo service
-pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
-    crate::trace::init_tracing(if cfg.verbose {
-        LevelFilter::DEBUG
-    } else {
-        LevelFilter::INFO
-    });
-
+pub async fn run(
+    graceful: ShutdownGuard,
+    etx: Sender<OpaqueError>,
+    cfg: CliCommandEcho,
+) -> Result<(), BoxError> {
     let maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https).then(|| {
         tracing::info!("create tls server config...");
         new_server_config(matches!(cfg.mode, Mode::Http | Mode::Https).then(|| {
@@ -140,47 +135,24 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         }))
     });
 
-    let (etx, mut erx) = tokio::sync::mpsc::channel::<OpaqueError>(1);
-    let graceful = graceful::Shutdown::new(async move {
-        let signal = graceful::default_signal();
-        tokio::select! {
-            _ = signal => {
-                tracing::debug!("default signal triggered: init graceful shutdown");
-            }
-            err = erx.recv() => {
-                let err = err.expect("channel to remain alive to the end of times");
-                tracing::error!("fatal err received: {err}; abort");
-            }
-        }
-    });
-
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
-            bind_echo_tcp_service(&graceful, cfg.clone(), maybe_tls_server_config).await?
+            bind_echo_tcp_service(graceful, cfg.clone(), maybe_tls_server_config).await?
         }
         Mode::Udp => {
-            bind_echo_udp_service(&graceful, cfg.clone(), maybe_tls_server_config, etx.clone())
+            bind_echo_udp_service(graceful, cfg.clone(), maybe_tls_server_config, etx.clone())
                 .await?
         }
         Mode::Http | Mode::Https => {
-            bind_echo_http_service(&graceful, cfg.clone(), maybe_tls_server_config).await?
+            bind_echo_http_service(graceful, cfg.clone(), maybe_tls_server_config).await?
         }
     }
-
-    let delay = if cfg.graceful > 0 {
-        graceful
-            .shutdown_with_limit(Duration::from_secs(cfg.graceful))
-            .await?
-    } else {
-        graceful.shutdown().await
-    };
-    tracing::info!("echo service gracefully shutdown with a delay of: {delay:?}");
 
     Ok(())
 }
 
 async fn bind_echo_http_service(
-    graceful: &graceful::Shutdown,
+    graceful: ShutdownGuard,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
 ) -> Result<(), OpaqueError> {
@@ -192,7 +164,7 @@ async fn bind_echo_http_service(
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_config)
         .with_user_agent_database(Arc::new(UserAgentDatabase::embedded()))
-        .build(Executor::graceful(graceful.guard()))
+        .build(Executor::graceful(graceful.clone()))
         .map_err(OpaqueError::from_boxed)
         .context("build http(s) echo service")?;
 
@@ -213,7 +185,7 @@ async fn bind_echo_http_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "http");
 
-    graceful.spawn_task_fn(async move |guard| {
+    graceful.into_spawn_task_fn(async move |guard| {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -230,7 +202,7 @@ async fn bind_echo_http_service(
 }
 
 async fn bind_echo_tcp_service(
-    graceful: &graceful::Shutdown,
+    graceful: ShutdownGuard,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
 ) -> Result<(), OpaqueError> {
@@ -274,8 +246,16 @@ async fn bind_echo_tcp_service(
 
     let middleware = (
         ConsumeErrLayer::trace(tracing::Level::DEBUG),
-        (concurrent > 0).then(|| LimitLayer::new(ConcurrentPolicy::max(concurrent))),
-        (timeout > 0).then(|| TimeoutLayer::new(Duration::from_secs(timeout))),
+        LimitLayer::new(if concurrent > 0 {
+            Either::A(ConcurrentPolicy::max(concurrent))
+        } else {
+            Either::B(UnlimitedPolicy::new())
+        }),
+        if timeout > 0 {
+            TimeoutLayer::new(Duration::from_secs(timeout))
+        } else {
+            TimeoutLayer::never()
+        },
         with_ha_proxy.then(|| HaProxyLayer::new().with_peek(true)),
         maybe_tls_data.map(TlsAcceptorLayer::new),
     );
@@ -295,7 +275,7 @@ async fn bind_echo_tcp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "tcp");
 
-    graceful.spawn_task_fn(async move |guard| {
+    graceful.into_spawn_task_fn(async move |guard| {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -312,7 +292,7 @@ async fn bind_echo_tcp_service(
 }
 
 async fn bind_echo_udp_service(
-    graceful: &graceful::Shutdown,
+    graceful: ShutdownGuard,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
     etx: tokio::sync::mpsc::Sender<OpaqueError>,
@@ -356,7 +336,7 @@ async fn bind_echo_udp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "udp");
 
-    graceful.spawn_task_fn(move |guard| {
+    graceful.into_spawn_task_fn(move |guard| {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),

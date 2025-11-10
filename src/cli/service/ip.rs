@@ -48,6 +48,7 @@ type TlsConfig = ServerConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 type TlsConfig = TlsAcceptorData;
 
+use rama_core::{combinators::Either, layer::limit::policy::UnlimitedPolicy};
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
 use tokio::io::AsyncWriteExt;
 
@@ -336,9 +337,16 @@ impl<M> IpServiceBuilder<M> {
 
         let tcp_service_builder = (
             ConsumeErrLayer::trace(tracing::Level::DEBUG),
-            (self.concurrent_limit > 0)
-                .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
-            (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
+            LimitLayer::new(if self.concurrent_limit > 0 {
+                Either::A(ConcurrentPolicy::max(self.concurrent_limit))
+            } else {
+                Either::B(UnlimitedPolicy::new())
+            }),
+            if !self.timeout.is_zero() {
+                TimeoutLayer::new(self.timeout)
+            } else {
+                TimeoutLayer::never()
+            },
             tcp_forwarded_layer,
             #[cfg(any(feature = "rustls", feature = "boring"))]
             maybe_tls_accept_layer,

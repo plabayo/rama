@@ -6,5 +6,5 @@
 //! [`Service`]: crate::Service
 
 pub mod echo;
+pub mod fs;
 pub mod ip;
-pub mod serve;

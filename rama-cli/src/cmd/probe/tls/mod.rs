@@ -1,6 +1,5 @@
 #![allow(clippy::print_stdout)]
 
-use clap::Args;
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
@@ -18,20 +17,22 @@ use rama::{
         TcpStream,
         client::{Request, service::TcpConnector},
     },
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing,
     tls::boring::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer},
         core::x509::X509,
     },
 };
 
+use clap::Args;
+
 #[derive(Args, Debug, Clone)]
-/// rama tls support
+/// rama tls probe command
 pub struct CliCommandTls {
     /// The address to connect to
     /// e.g. "example.com" or "example.com:8443"
     /// if no port is provided, the default port 443 will be used
-    address: String,
+    address: String, // TODO: in future we need a rama-net type for something with opt-port
 
     #[arg(long, short = 'k')]
     /// Wether to skip certificate verification
@@ -40,8 +41,6 @@ pub struct CliCommandTls {
 
 /// Run the tls command
 pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
-    crate::trace::init_tracing(LevelFilter::INFO);
-
     let address = cfg.address.trim();
     let authority = if cfg.address.contains(':') {
         address

@@ -1,13 +1,17 @@
-//! Stunnel for Rama
+//! #Stunnel for Rama
 //!
-//! # With auto-generated self-signed certificate (development & testing only)
+//! ## With auto-generated self-signed certificate (development & testing only)
+//!
 //! 1. rama echo echo
 //! 2. rama stunnel server --listen 127.0.0.1:8002 --forward 127.0.0.1:8080
 //! 3. rama stunnel client --listen 127.0.0.1:8003 --connect (127.0.0.1 | localhost):8002 --insecure
-//! # Test
+//!
+//! Test:
+//!
 //! 4. rama http 127.0.0.1:8003
 //!
-//! # Explicitily provided certificates
+//! ## Explicitily provided certificates
+//!
 //! 1. rama echo
 //! 2. rama stunnel server --listen 127.0.0.1:8002 \
 //!    --forward 127.0.0.1:8080 \
@@ -16,13 +20,15 @@
 //! 3. rama stunnel client --listen 127.0.0.1:8003 \
 //!    --connect (127.0.0.1 | localhost):8002 \
 //!    --cacert cacert.pem
-//! # Test
+//!
+//! Test:
+//!
 //! 4. rama http 127.0.0.1:8003
 
 use rama::{
     Layer,
-    error::BoxError,
-    graceful::Shutdown,
+    error::{BoxError, ErrorContext as _, OpaqueError},
+    graceful::ShutdownGuard,
     net::{
         address::{Authority, SocketAddress},
         socket::Interface,
@@ -36,7 +42,7 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing,
     tls::boring::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer},
         core::x509::{X509, store::X509StoreBuilder},
@@ -46,7 +52,7 @@ use rama::{
 };
 
 use clap::{Args, Subcommand};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc};
 
 use crate::utils::tls::new_server_config;
 
@@ -54,28 +60,23 @@ use crate::utils::tls::new_server_config;
 /// rama stunnel service
 pub struct StunnelCommand {
     #[command(subcommand)]
-    // --server (server mode), --client (client mode)
     pub commands: StunnelSubcommand,
-
-    #[arg(long, default_value_t = 5)]
-    /// the graceful shutdown timeout in seconds (0 = no timeout)
-    graceful: u64,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum StunnelSubcommand {
-    /// run as TLS termination proxy (decrypt incoming TLS and forward plaintext)
-    Server(ServerArgs),
+    /// run as TLS exit node (decrypt incoming TLS and forward plaintext)
+    Exit(ExitNodeArgs),
 
-    /// run as TLS origination proxy (encrypt outgoing connections)
-    Client(ClientArgs),
+    /// run as TLS entry node (encrypt outgoing connections)
+    Entry(EntryNodeArgs),
 }
 
 #[derive(Debug, Args)]
-pub struct ServerArgs {
+pub struct ExitNodeArgs {
     #[arg(long, default_value = "127.0.0.1:8002")]
     /// address and port to listen on for incoming TLS connections
-    pub listen: Interface,
+    pub bind: Interface,
 
     #[arg(long, default_value = "127.0.0.1:8080")]
     /// backend address to forward decrypted connections to
@@ -97,20 +98,18 @@ pub struct ServerArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct ClientArgs {
+pub struct EntryNodeArgs {
     #[arg(long, default_value = "127.0.0.1:8003")]
     /// address and port to listen on
-    pub listen: Interface,
+    pub bind: Interface,
 
     #[arg(long, default_value = "127.0.0.1:8002", value_name = "HOST:PORT")]
-    /// server to connect to (port is REQUIRED)
+    /// server to connect to
     ///
     /// examples:
     ///   localhost:8443
     ///   example.com:8443
     ///   192.168.1.100:8443
-    ///
-    /// port must be explicitly specified (e.g., :8443, :443)
     pub connect: Authority,
 
     #[arg(long, conflicts_with = "insecure")]
@@ -129,34 +128,32 @@ pub struct ClientArgs {
     pub insecure: bool,
 }
 
-pub async fn run(cfg: StunnelCommand) -> Result<(), BoxError> {
-    crate::trace::init_tracing(LevelFilter::INFO);
-
-    let graceful_timeout = parse_graceful_timeout(cfg.graceful);
-
+pub async fn run(guard: ShutdownGuard, cfg: StunnelCommand) -> Result<(), BoxError> {
     match cfg.commands {
-        StunnelSubcommand::Server(args) => run_server(args, graceful_timeout).await,
-        StunnelSubcommand::Client(args) => run_client(args, graceful_timeout).await,
+        StunnelSubcommand::Exit(cfg) => run_exit_node(guard, cfg).await,
+        StunnelSubcommand::Entry(cfg) => run_entry_node(guard, cfg).await,
     }
 }
 
-async fn run_server(args: ServerArgs, graceful_timeout: Option<Duration>) -> Result<(), BoxError> {
-    let graceful = Shutdown::default();
-    let server_config = load_server_config(args.cert.as_ref(), args.key.as_ref())?;
+async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(), BoxError> {
+    let server_config = load_server_config(cfg.cert.as_ref(), cfg.key.as_ref())?;
     let acceptor_data = TlsAcceptorData::try_from(server_config)?;
 
-    let tcp_listener = TcpListener::bind(args.listen.clone())
+    let tcp_listener = TcpListener::bind(cfg.bind.clone())
         .await
-        .expect("bind stunnel server");
+        .map_err(OpaqueError::from_boxed)
+        .context("bind stunnel server")?;
 
-    let listen_addr = args.listen;
-    let forward_addr = args.forward;
+    let bind_address = tcp_listener
+        .local_addr()
+        .context("get local addr of tcp listener")?;
+    let forward_addr = cfg.forward;
 
-    graceful.spawn_task_fn(async move |guard| {
+    graceful.into_spawn_task_fn(async move |guard| {
         tracing::info!("Stunnel server is running...");
         tracing::info!(
             "Listening on {} and forwarding to {}",
-            listen_addr,
+            bind_address,
             forward_addr
         );
 
@@ -165,25 +162,26 @@ async fn run_server(args: ServerArgs, graceful_timeout: Option<Duration>) -> Res
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 
-    shutdown_gracefully(graceful, graceful_timeout, "server").await
+    Ok(())
 }
 
-async fn run_client(args: ClientArgs, graceful_timeout: Option<Duration>) -> Result<(), BoxError> {
-    let graceful = Shutdown::default();
-    let tls_connector_data = build_tls_connector(&args)?;
+async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(), BoxError> {
+    let tls_connector_data = build_tls_connector(&cfg)?;
 
-    let tcp_listener = TcpListener::bind(args.listen.clone())
+    let tcp_listener = TcpListener::bind(cfg.bind.clone())
         .await
         .expect("bind stunnel client");
 
-    let listen_addr = args.listen;
-    let connect_authority = args.connect;
+    let bind_address = tcp_listener
+        .local_addr()
+        .context("get local addr of tcp listener")?;
+    let connect_authority = cfg.connect;
 
-    graceful.spawn_task_fn(async move |guard| {
+    graceful.into_spawn_task_fn(async move |guard| {
         tracing::info!("Stunnel client is running...");
         tracing::info!(
             "Listening on {} and connecting to {}",
-            listen_addr,
+            bind_address,
             connect_authority
         );
 
@@ -196,17 +194,17 @@ async fn run_client(args: ClientArgs, graceful_timeout: Option<Duration>) -> Res
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 
-    shutdown_gracefully(graceful, graceful_timeout, "client").await
+    Ok(())
 }
 
-fn build_tls_connector(args: &ClientArgs) -> Result<Arc<TlsConnectorDataBuilder>, BoxError> {
+fn build_tls_connector(cfg: &EntryNodeArgs) -> Result<Arc<TlsConnectorDataBuilder>, BoxError> {
     let mut tls_builder = TlsConnectorDataBuilder::new();
 
-    if args.insecure {
+    if cfg.insecure {
         tls_builder.set_server_verify_mode(ServerVerifyMode::Disable);
         tracing::warn!("TLS certificate verification disabled (--insecure flag)");
         tracing::warn!("This is insecure and should only be used for testing!");
-    } else if let Some(cacert_path) = &args.cacert {
+    } else if let Some(cacert_path) = &cfg.cacert {
         load_ca_certificate(&mut tls_builder, cacert_path)?;
     } else {
         tracing::info!("Using system trust store for certificate verification");
@@ -275,22 +273,4 @@ fn read_pem_file(path: &PathBuf, file_type: &str) -> Result<NonEmptyString, BoxE
 
     NonEmptyString::try_from(content)
         .map_err(|e| format!("Failed to parse {file_type} file: {e}").into())
-}
-
-fn parse_graceful_timeout(seconds: u64) -> Option<Duration> {
-    (seconds > 0).then(|| Duration::from_secs(seconds))
-}
-
-async fn shutdown_gracefully(
-    graceful: Shutdown,
-    timeout: Option<Duration>,
-    service_type: &str,
-) -> Result<(), BoxError> {
-    let delay = match timeout {
-        Some(duration) => graceful.shutdown_with_limit(duration).await?,
-        None => graceful.shutdown().await,
-    };
-
-    tracing::info!("stunnel {service_type} gracefully shutdown with a delay of: {delay:?}");
-    Ok(())
 }

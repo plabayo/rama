@@ -1,4 +1,6 @@
-//! Serve '[`Service`] that serves a file or directory using [`ServeFile`] or [`ServeDir`], or a placeholder page.
+//! [`Service`] that serves a file or directory using [`ServeFile`] or [`ServeDir`], or a placeholder page.
+
+use rama_core::{combinators::Either, layer::limit::policy::UnlimitedPolicy};
 
 use crate::{
     Layer, Service,
@@ -48,7 +50,7 @@ type TlsConfig = TlsAcceptorData;
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own serve [`Service`],
 /// serving a file or directory, or a placeholder page.
-pub struct ServeServiceBuilder<H> {
+pub struct FsServiceBuilder<H> {
     concurrent_limit: usize,
     body_limit: usize,
     timeout: Duration,
@@ -65,7 +67,7 @@ pub struct ServeServiceBuilder<H> {
     dir_serve_mode: DirectoryServeMode,
 }
 
-impl Default for ServeServiceBuilder<()> {
+impl Default for FsServiceBuilder<()> {
     fn default() -> Self {
         Self {
             concurrent_limit: 0,
@@ -86,7 +88,7 @@ impl Default for ServeServiceBuilder<()> {
     }
 }
 
-impl ServeServiceBuilder<()> {
+impl FsServiceBuilder<()> {
     /// Create a new [`ServeServiceBuilder`].
     #[must_use]
     pub fn new() -> Self {
@@ -94,7 +96,7 @@ impl ServeServiceBuilder<()> {
     }
 }
 
-impl<H> ServeServiceBuilder<H> {
+impl<H> FsServiceBuilder<H> {
     /// set the number of concurrent connections to allow
     ///
     /// (0 = no limit)
@@ -223,8 +225,8 @@ impl<H> ServeServiceBuilder<H> {
 
     /// add a custom http layer which will be applied to the existing http layers
     #[must_use]
-    pub fn http_layer<H2>(self, layer: H2) -> ServeServiceBuilder<(H, H2)> {
-        ServeServiceBuilder {
+    pub fn http_layer<H2>(self, layer: H2) -> FsServiceBuilder<(H, H2)> {
+        FsServiceBuilder {
             concurrent_limit: self.concurrent_limit,
             body_limit: self.body_limit,
             timeout: self.timeout,
@@ -287,7 +289,7 @@ impl<H> ServeServiceBuilder<H> {
     }
 }
 
-impl<H> ServeServiceBuilder<H>
+impl<H> FsServiceBuilder<H>
 where
     H: Layer<ServeService, Service: Service<Request, Response = Response, Error: Into<BoxError>>>,
 {
@@ -314,9 +316,16 @@ where
 
         let tcp_service_builder = (
             ConsumeErrLayer::trace(tracing::Level::DEBUG),
-            (self.concurrent_limit > 0)
-                .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
-            (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
+            LimitLayer::new(if self.concurrent_limit > 0 {
+                Either::A(ConcurrentPolicy::max(self.concurrent_limit))
+            } else {
+                Either::B(UnlimitedPolicy::new())
+            }),
+            if !self.timeout.is_zero() {
+                TimeoutLayer::new(self.timeout)
+            } else {
+                TimeoutLayer::never()
+            },
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]

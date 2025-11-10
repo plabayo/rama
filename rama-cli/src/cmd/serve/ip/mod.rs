@@ -4,10 +4,11 @@ use rama::{
     cli::{ForwardKind, service::ip::IpServiceBuilder},
     combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
+    graceful::ShutdownGuard,
     net::{socket::Interface, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing,
 };
 
 use clap::Args;
@@ -53,24 +54,16 @@ pub struct CliCommandIp {
     #[arg(long, short = 's')]
     /// run IP service in secure mode (enable TLS)
     secure: bool,
-
-    #[arg(long, default_value_t = 5)]
-    /// the graceful shutdown timeout in seconds (0 = no timeout)
-    graceful: u64,
 }
 
 /// run the rama ip service
-pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
-    crate::trace::init_tracing(LevelFilter::INFO);
-
+pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxError> {
     let maybe_tls_server_config = cfg.secure.then(|| {
         new_server_config((!cfg.transport).then_some(vec![
             ApplicationProtocol::HTTP_2,
             ApplicationProtocol::HTTP_11,
         ]))
     });
-
-    let graceful = rama::graceful::Shutdown::default();
 
     let tcp_service = if cfg.transport {
         Either::A(
@@ -80,7 +73,8 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
                 .maybe_with_forward(cfg.forward)
                 .maybe_with_tls_server_config(maybe_tls_server_config)
                 .build()
-                .expect("build ip TCP service"),
+                .map_err(OpaqueError::from_boxed)
+                .context("build ip TCP service")?,
         )
     } else {
         Either::B(
@@ -89,8 +83,9 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
                 .with_timeout(Duration::from_secs(cfg.timeout))
                 .maybe_with_forward(cfg.forward)
                 .maybe_with_tls_server_config(maybe_tls_server_config)
-                .build(Executor::graceful(graceful.guard()))
-                .expect("build ip HTTP service"),
+                .build(Executor::graceful(graceful.clone()))
+                .map_err(OpaqueError::from_boxed)
+                .context("build ip HTTP service")?,
         )
     };
 
@@ -105,7 +100,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    graceful.spawn_task_fn(async move |guard| {
+    graceful.into_spawn_task_fn(async move |guard| {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -114,15 +109,6 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
 
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
-
-    let delay = if cfg.graceful > 0 {
-        graceful
-            .shutdown_with_limit(Duration::from_secs(cfg.graceful))
-            .await?
-    } else {
-        graceful.shutdown().await
-    };
-    tracing::info!("IP address echo service gracefully shutdown with a delay of: {delay:?}");
 
     Ok(())
 }

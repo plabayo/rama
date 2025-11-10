@@ -6,6 +6,7 @@ use rama::{
     combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
+    graceful::ShutdownGuard,
     http::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
@@ -36,7 +37,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing,
     tls::boring::server::TlsAcceptorLayer,
     ua::layer::classifier::UserAgentClassifierLayer,
     utils::backoff::ExponentialBackoff,
@@ -103,18 +104,10 @@ pub struct CliCommandFingerprint {
     #[arg(long)]
     /// use self-signed certs in case secure is enabled
     self_signed: bool,
-
-    #[arg(long, default_value_t = 8)]
-    /// the graceful shutdown timeout in seconds (0 = no timeout)
-    graceful: u64,
 }
 
 /// run the rama FP service
-pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
-    crate::trace::init_tracing(LevelFilter::INFO);
-
-    let graceful = rama::graceful::Shutdown::default();
-
+pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     let (tcp_forwarded_layer, http_forwarded_layer) = match &cfg.forward {
         None => (None, None),
         Some(ForwardKind::Forwarded) => {
@@ -165,7 +158,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     let ch_headers = all_client_hint_header_name_strings()
         .join(", ")
         .parse::<HeaderValue>()
-        .expect("parse header value");
+        .context("parse header value")?;
 
     let pg_url = std::env::var("DATABASE_URL").ok();
     let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
@@ -180,149 +173,134 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    graceful.spawn_task_fn(async move |guard|  {
-        let ws_service = ConsumeErrLayer::default().into_layer(WebSocketAcceptor::new()
+    let ws_service = ConsumeErrLayer::default().into_layer(
+        WebSocketAcceptor::new()
             .with_protocols(SecWebSocketProtocol::new("a").with_additional_protocol("b"))
             .with_protocols_flex(true)
-            .with_extensions(sec_websocket_extensions::SecWebSocketExtensions::per_message_deflate())
-            .into_service(service_fn(endpoints::ws_api)));
-
-        let inner_http_service = HijackLayer::new(
-                HttpMatcher::custom(false),
-                service_fn(async || {
-                    tracing::debug!(
-                        "redirecting to consent: conditions not fulfilled"
-                    );
-                    Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
-                }),
+            .with_extensions(
+                sec_websocket_extensions::SecWebSocketExtensions::per_message_deflate(),
             )
-            .into_layer(match_service!{
-                HttpMatcher::get("/report") => endpoints::get_report,
-                HttpMatcher::path("/api/ws") => ws_service,
-                HttpMatcher::post("/api/fetch/number/:number") => endpoints::post_api_fetch_number,
-                HttpMatcher::post("/api/xml/number/:number") => endpoints::post_api_xml_http_request_number,
-                HttpMatcher::method_get().or_method_post().and_path("/form") => endpoints::form,
-                _ => service_fn(async || {
-                    tracing::debug!(
-                        "redirecting to consent: fallback"
-                    );
-                    Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
-                }),
-            });
+            .into_service(service_fn(endpoints::ws_api)),
+    );
 
-        let http_service = (
-            TraceLayer::new_for_http(),
-            CompressionLayer::new(),
-            CatchPanicLayer::new(),
-            AddRequiredResponseHeadersLayer::default(),
-            SetResponseHeaderLayer::overriding(
-                HeaderName::from_static("x-sponsored-by"),
-                HeaderValue::from_static("fly.io"),
-            ),
-            StorageAuthLayer,
-            SetResponseHeaderLayer::if_not_present(
-                HeaderName::from_static("accept-ch"),
-                ch_headers.clone(),
-            ),
-            SetResponseHeaderLayer::if_not_present(
-                HeaderName::from_static("critical-ch"),
-                ch_headers.clone(),
-            ),
-            SetResponseHeaderLayer::if_not_present(
-                HeaderName::from_static("vary"),
-                ch_headers,
-            ),
-            UserAgentClassifierLayer::new(),
-            ConsumeErrLayer::trace(tracing::Level::WARN),
-            http_forwarded_layer,
-            ).into_layer(
-                Arc::new(match_service!{
-                    // Navigate
-                    HttpMatcher::get("/") => Redirect::temporary("/consent"),
-                    HttpMatcher::get("/consent") => endpoints::get_consent,
-                    // Assets
-                    HttpMatcher::get("/assets/style.css") => endpoints::get_assets_style,
-                    HttpMatcher::get("/assets/script.js") => endpoints::get_assets_script,
-                    // Fingerprinting Endpoints
-                    _ => inner_http_service,
-                })
+    let inner_http_service = HijackLayer::new(
+        HttpMatcher::custom(false),
+        service_fn(async || {
+            tracing::debug!("redirecting to consent: conditions not fulfilled");
+            Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
+        }),
+    )
+    .into_layer(match_service! {
+        HttpMatcher::get("/report") => endpoints::get_report,
+        HttpMatcher::path("/api/ws") => ws_service,
+        HttpMatcher::post("/api/fetch/number/:number") => endpoints::post_api_fetch_number,
+        HttpMatcher::post("/api/xml/number/:number") => endpoints::post_api_xml_http_request_number,
+        HttpMatcher::method_get().or_method_post().and_path("/form") => endpoints::form,
+        _ => service_fn(async || {
+            tracing::debug!(
+                "redirecting to consent: fallback"
             );
-
-        let tcp_service_builder = (
-            AddExtensionLayer::new(Arc::new(
-                State::new(pg_url, storage_auth.as_deref())
-                    .await
-                    .expect("create state"),
-            )),
-            ConsumeErrLayer::trace(tracing::Level::WARN),
-            tcp_forwarded_layer,
-            TimeoutLayer::new(Duration::from_secs(300)),
-            LimitLayer::new(ConcurrentPolicy::max_with_backoff(
-                2048,
-                ExponentialBackoff::default(),
-            )),
-            // Limit the body size to 1MB for both request and response
-            BodyLimitLayer::symmetric(1024 * 1024),
-            tls_acceptor_data.map(|data| {
-                TlsAcceptorLayer::new(data).with_store_client_hello(true)
-            })
-        );
-
-        match cfg.http_version {
-            HttpVersion::Auto => {
-                tracing::info!(
-                    network.local.address = %bind_address.ip(),
-                    network.local.port = %bind_address.port(),
-                    "FP Service (auto) listening: bind interface = {}", cfg.bind,
-                );
-                tcp_listener
-                    .serve_graceful(
-                        guard.clone(),
-                        tcp_service_builder.into_layer(
-                            HttpServer::auto(Executor::graceful(guard)).service(http_service),
-                        ),
-                    )
-                    .await;
-            }
-            HttpVersion::H1 => {
-                tracing::info!(
-                    network.local.address = %bind_address.ip(),
-                    network.local.port = %bind_address.port(),
-                    "FP Service (HTTP/1.1) listening: bind interface = {}", cfg.bind,
-                );
-                tcp_listener
-                    .serve_graceful(
-                        guard,
-                        tcp_service_builder.into_layer(HttpServer::http1().service(http_service)),
-                    )
-                    .await;
-            }
-            HttpVersion::H2 => {
-                tracing::info!(
-                    network.local.address = %bind_address.ip(),
-                    network.local.port = %bind_address.port(),
-                    "FP Service (H2) listening: bind interface = {}", cfg.bind,
-                );
-                tcp_listener
-                    .serve_graceful(
-                        guard.clone(),
-                        tcp_service_builder.into_layer(
-                            HttpServer::h2(Executor::graceful(guard)).service(http_service),
-                        ),
-                    )
-                    .await;
-            }
-        }
+            Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
+        }),
     });
 
-    let delay = if cfg.graceful > 0 {
-        graceful
-            .shutdown_with_limit(Duration::from_secs(cfg.graceful))
-            .await?
-    } else {
-        graceful.shutdown().await
-    };
-    tracing::info!("FP service gracefully shutdown with a delay of: {delay:?}");
+    let http_service = (
+        TraceLayer::new_for_http(),
+        CompressionLayer::new(),
+        CatchPanicLayer::new(),
+        AddRequiredResponseHeadersLayer::default(),
+        SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-sponsored-by"),
+            HeaderValue::from_static("fly.io"),
+        ),
+        StorageAuthLayer,
+        SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("accept-ch"),
+            ch_headers.clone(),
+        ),
+        SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("critical-ch"),
+            ch_headers.clone(),
+        ),
+        SetResponseHeaderLayer::if_not_present(HeaderName::from_static("vary"), ch_headers),
+        UserAgentClassifierLayer::new(),
+        ConsumeErrLayer::trace(tracing::Level::WARN),
+        http_forwarded_layer,
+    )
+        .into_layer(Arc::new(match_service! {
+            // Navigate
+            HttpMatcher::get("/") => Redirect::temporary("/consent"),
+            HttpMatcher::get("/consent") => endpoints::get_consent,
+            // Assets
+            HttpMatcher::get("/assets/style.css") => endpoints::get_assets_style,
+            HttpMatcher::get("/assets/script.js") => endpoints::get_assets_script,
+            // Fingerprinting Endpoints
+            _ => inner_http_service,
+        }));
+
+    let tcp_service_builder = (
+        AddExtensionLayer::new(Arc::new(
+            State::new(pg_url, storage_auth.as_deref())
+                .await
+                .context("create state")?,
+        )),
+        ConsumeErrLayer::trace(tracing::Level::WARN),
+        tcp_forwarded_layer,
+        TimeoutLayer::new(Duration::from_secs(300)),
+        LimitLayer::new(ConcurrentPolicy::max_with_backoff(
+            2048,
+            ExponentialBackoff::default(),
+        )),
+        // Limit the body size to 1MB for both request and response
+        BodyLimitLayer::symmetric(1024 * 1024),
+        tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
+    );
+
+    graceful.into_spawn_task_fn(async move |guard| match cfg.http_version {
+        HttpVersion::Auto => {
+            tracing::info!(
+                network.local.address = %bind_address.ip(),
+                network.local.port = %bind_address.port(),
+                "FP Service (auto) listening: bind interface = {}", cfg.bind,
+            );
+            tcp_listener
+                .serve_graceful(
+                    guard.clone(),
+                    tcp_service_builder.into_layer(
+                        HttpServer::auto(Executor::graceful(guard)).service(http_service),
+                    ),
+                )
+                .await;
+        }
+        HttpVersion::H1 => {
+            tracing::info!(
+                network.local.address = %bind_address.ip(),
+                network.local.port = %bind_address.port(),
+                "FP Service (HTTP/1.1) listening: bind interface = {}", cfg.bind,
+            );
+            tcp_listener
+                .serve_graceful(
+                    guard,
+                    tcp_service_builder.into_layer(HttpServer::http1().service(http_service)),
+                )
+                .await;
+        }
+        HttpVersion::H2 => {
+            tracing::info!(
+                network.local.address = %bind_address.ip(),
+                network.local.port = %bind_address.port(),
+                "FP Service (H2) listening: bind interface = {}", cfg.bind,
+            );
+            tcp_listener
+                .serve_graceful(
+                    guard.clone(),
+                    tcp_service_builder.into_layer(
+                        HttpServer::h2(Executor::graceful(guard)).service(http_service),
+                    ),
+                )
+                .await;
+        }
+    });
 
     Ok(())
 }

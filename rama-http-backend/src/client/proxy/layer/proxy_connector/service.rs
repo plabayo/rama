@@ -9,7 +9,12 @@ use rama_core::{
     stream::Stream,
     telemetry::tracing,
 };
-use rama_http::{HeaderMap, io::upgrade};
+use rama_http::{
+    HeaderMap, HeaderValue,
+    header::{HOST, PROXY_AUTHORIZATION},
+    io::upgrade,
+    proto::h1::{Http1HeaderMap, IntoHttp1HeaderName, headers::original::OriginalHttp1Headers},
+};
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
 use rama_net::{
@@ -19,6 +24,7 @@ use rama_net::{
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::generate_set_and_with;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{self, Poll};
@@ -33,9 +39,10 @@ use rama_net::tls::TlsTunnel;
 /// This behaviour is optional and only triggered in case there
 /// is a [`ProxyAddress`] found in the [`Context`].
 pub struct HttpProxyConnector<S> {
-    inner: S,
-    required: bool,
-    version: Option<Version>,
+    pub(super) inner: S,
+    pub(super) required: bool,
+    pub(super) version: Option<Version>,
+    pub(super) headers: Option<Http1HeaderMap>,
 }
 
 impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
@@ -44,6 +51,7 @@ impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
             .field("inner", &self.inner)
             .field("required", &self.required)
             .field("version", &self.version)
+            .field("headers", &self.headers)
             .finish()
     }
 }
@@ -54,6 +62,7 @@ impl<S: Clone> Clone for HttpProxyConnector<S> {
             inner: self.inner.clone(),
             required: self.required,
             version: self.version,
+            headers: self.headers.clone(),
         }
     }
 }
@@ -67,35 +76,30 @@ impl<S> HttpProxyConnector<S> {
             inner,
             required,
             version: Some(Version::HTTP_11),
+            headers: None,
         }
     }
 
-    /// Set the HTTP version to use for the CONNECT request.
-    ///
-    /// By default this is set to HTTP/1.1.
-    #[must_use]
-    pub fn with_version(mut self, version: Version) -> Self {
-        self.version = Some(version);
-        self
+    generate_set_and_with! {
+        /// Set the HTTP version to use for the CONNECT request.
+        ///
+        /// By default this is set to HTTP/1.1.
+        pub fn version(mut self, version: Version) -> Self {
+            self.version = Some(version);
+            self
+        }
     }
 
-    /// Set the HTTP version to use for the CONNECT request.
-    pub fn set_version(&mut self, version: Version) -> &mut Self {
-        self.version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the CONNECT request.
-    #[must_use]
-    pub fn with_auto_version(mut self) -> Self {
-        self.version = None;
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the CONNECT request.
-    pub fn set_auto_version(&mut self) -> &mut Self {
-        self.version = None;
-        self
+    generate_set_and_with! {
+        /// Append a custom header to use for the CONNECT request.
+        pub fn custom_header(
+            mut self,
+            name: impl IntoHttp1HeaderName,
+            value: HeaderValue,
+        ) -> Self {
+            self.headers.get_or_insert_default().append(name, value);
+            self
+        }
     }
 
     /// Create a new [`HttpProxyConnector`]
@@ -228,10 +232,10 @@ where
         }
 
         let mut connector = InnerHttpProxyConnector::new(&transport_ctx.authority)?;
-        match self.version {
-            Some(version) => connector.set_version(version),
-            None => connector.set_auto_version(),
-        };
+
+        if let Some(version) = self.version {
+            connector.set_version(version);
+        }
 
         if let Some(credential) = address.credential.clone() {
             match credential {
@@ -242,6 +246,18 @@ where
                     connector.with_typed_header(ProxyAuthorization(bearer));
                 }
             }
+        }
+
+        if let Some(headers) = self.headers.clone() {
+            let mut map = OriginalHttp1Headers::new();
+            for (name, value) in headers.into_iter() {
+                let http_name = name.header_name();
+                if http_name != PROXY_AUTHORIZATION && http_name != HOST {
+                    connector.with_header(http_name.clone(), value);
+                }
+                map.push(name);
+            }
+            connector.with_extension(map);
         }
 
         let (headers, conn) = connector

@@ -41,6 +41,7 @@ use crate::{
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
 };
 
+use rama_core::{combinators::Either, layer::limit::policy::UnlimitedPolicy};
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
@@ -258,9 +259,16 @@ where
 
         let tcp_service_builder = (
             ConsumeErrLayer::trace(tracing::Level::DEBUG),
-            (self.concurrent_limit > 0)
-                .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
-            (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
+            LimitLayer::new(if self.concurrent_limit > 0 {
+                Either::A(ConcurrentPolicy::max(self.concurrent_limit))
+            } else {
+                Either::B(UnlimitedPolicy::new())
+            }),
+            if !self.timeout.is_zero() {
+                TimeoutLayer::new(self.timeout)
+            } else {
+                TimeoutLayer::never()
+            },
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]

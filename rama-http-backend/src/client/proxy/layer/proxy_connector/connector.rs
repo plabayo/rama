@@ -26,7 +26,6 @@ use rama_net::address::Authority;
 /// Used to connect as a client to a HTTP proxy server.
 pub(super) struct InnerHttpProxyConnector {
     req: Request,
-    version: Option<Version>,
 }
 
 impl InnerHttpProxyConnector {
@@ -51,26 +50,26 @@ impl InnerHttpProxyConnector {
             .body(Body::empty())
             .context("build http request")?;
 
-        Ok(Self {
-            req,
-            version: Some(Version::HTTP_11),
-        })
+        Ok(Self { req })
     }
 
     pub(super) fn set_version(&mut self, version: Version) -> &mut Self {
-        self.version = Some(version);
+        *self.req.version_mut() = version;
         self
     }
 
-    pub(super) fn set_auto_version(&mut self) -> &mut Self {
-        self.version = None;
-        self
-    }
-
-    #[expect(unused)]
     /// Add a header to the request.
     pub(super) fn with_header(&mut self, name: HeaderName, value: HeaderValue) -> &mut Self {
         self.req.headers_mut().insert(name, value);
+        self
+    }
+
+    /// Add a header to the request.
+    pub(super) fn with_extension<E: Clone + Send + Sync + 'static>(
+        &mut self,
+        value: E,
+    ) -> &mut Self {
+        self.req.extensions_mut().insert(value);
         self
     }
 
@@ -85,20 +84,9 @@ impl InnerHttpProxyConnector {
         self,
         stream: S,
     ) -> Result<(HeaderMap, upgrade::Upgraded), HttpProxyError> {
-        let response = match self.version {
-            Some(Version::HTTP_10 | Version::HTTP_11) => {
-                Self::handshake_h1(self.req, stream).await?
-            }
-            Some(Version::HTTP_2) => Self::handshake_h2(self.req, stream).await?,
-            None => match self.req.version() {
-                Version::HTTP_10 | Version::HTTP_11 => Self::handshake_h1(self.req, stream).await?,
-                Version::HTTP_2 => Self::handshake_h2(self.req, stream).await?,
-                version => {
-                    return Err(HttpProxyError::Other(format!(
-                        "invalid http version: {version:?}",
-                    )));
-                }
-            },
+        let response = match self.req.version() {
+            Version::HTTP_10 | Version::HTTP_11 => Self::handshake_h1(self.req, stream).await?,
+            Version::HTTP_2 => Self::handshake_h2(self.req, stream).await?,
             version => {
                 return Err(HttpProxyError::Other(format!(
                     "invalid http version: {version:?}",
