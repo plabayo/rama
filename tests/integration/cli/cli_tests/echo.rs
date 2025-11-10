@@ -34,8 +34,14 @@ async fn test_http_echo() {
     let lines = utils::RamaService::http(vec!["--http1.1", "http://127.0.0.1:63101"]).unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
 
-    let lines =
-        utils::RamaService::http(vec!["http://127.0.0.1:63101", "foo:bar", "a=4", "q==1"]).unwrap();
+    let lines = utils::RamaService::http(vec![
+        "http://127.0.0.1:63101?q=1",
+        "-H",
+        "foo: bar",
+        "-D",
+        r##"{"a":4}"##,
+    ])
+    .unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
     assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
     assert!(lines.contains(r##""foo","bar""##), "lines: {lines:?}");
@@ -190,8 +196,14 @@ async fn test_https_echo() {
 
     let _guard = utils::RamaService::echo(63103, "https");
 
-    let lines = utils::RamaService::http(vec!["https://127.0.0.1:63103", "foo:bar", "a=4", "q==1"])
-        .unwrap();
+    let lines = utils::RamaService::http(vec![
+        "https://127.0.0.1:63103?q=1",
+        "-H",
+        "foo: bar",
+        "-D",
+        r##"{"a":4}"##,
+    ])
+    .unwrap();
 
     // same http test as the plain text version
     assert!(lines.contains("HTTP/2.0 200 OK"), "lines: {lines:?}");
@@ -302,10 +314,11 @@ async fn test_https_forced_version() {
 
         let lines = utils::RamaService::http(vec![
             test.cli_flag,
-            "https://127.0.0.1:63104",
-            "foo:bar",
-            "a=4",
-            "q==1",
+            "https://127.0.0.1:63104?q=1",
+            "-H",
+            "foo: bar",
+            "-D",
+            r##"{"a":4}"##,
         ])
         .unwrap();
 

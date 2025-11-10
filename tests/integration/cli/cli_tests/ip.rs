@@ -41,14 +41,15 @@ fn test_http_ip_inner(addr: &'static str) {
     );
 
     // json
-    let lines =
-        utils::RamaService::http(vec!["--http1.1", addr, "accept:application/json"]).unwrap();
+    let lines = utils::RamaService::http(vec!["--http1.1", addr, "-H", "accept: application/json"])
+        .unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"));
     assert!(lines.contains("content-type: application/json"));
     assert!(lines.contains(r##""127.0.0.1""##), "json; lines: {lines}");
 
     // html
-    let lines = utils::RamaService::http(vec!["--http1.1", addr, "accept:text/html"]).unwrap();
+    let lines =
+        utils::RamaService::http(vec!["--http1.1", addr, "-H", "accept: text/html"]).unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"));
     assert!(lines.contains("content-type: text/html; charset=utf-8"));
     assert!(
