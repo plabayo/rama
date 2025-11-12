@@ -1,10 +1,10 @@
-use std::time::Duration;
-
 use rama::{
     Service,
     error::{BoxError, ErrorContext as _, OpaqueError},
-    http::{BodyExtractExt, Response},
+    http::Response,
 };
+
+use std::time::Duration;
 
 use crate::utils::error::ErrorWithExitCode;
 
@@ -14,7 +14,6 @@ pub mod arg;
 
 mod client;
 mod request;
-mod writer;
 
 pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
     let resp = if let Some(max_time) = cfg.max_time
@@ -40,18 +39,11 @@ pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
         }
     }
 
-    // TOOD: delete, and instead use proper writers + file support
-    let s = resp
-        .try_into_string()
-        .await
-        .context("try collect response into string")?;
-    println!("{s}");
-
     Ok(())
 }
 
 pub async fn run_inner(cfg: &SendCommand) -> Result<Response, BoxError> {
     let https_client = client::new(&cfg).await?;
-    let request = request::build(&cfg)?;
+    let request = request::build(&cfg).await?;
     https_client.serve(request).await
 }

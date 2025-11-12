@@ -1,18 +1,24 @@
 use rama::{
+    bytes::Bytes,
     error::{ErrorContext as _, OpaqueError},
     extensions::ExtensionsMut,
+    futures::{StreamExt, stream},
     http::{
-        Body, Method, Request, Uri, Version, conn::TargetHttpVersion,
+        Body, Method, Request, Uri, Version,
+        conn::TargetHttpVersion,
+        headers::{ContentType, HeaderMapExt},
         proto::h1::headers::original::OriginalHttp1Headers,
     },
+    stream::io::ReaderStream,
+    utils::str::NATIVE_NEWLINE,
 };
 
 use super::SendCommand;
 
-pub(super) fn build(cfg: &SendCommand) -> Result<Request, OpaqueError> {
+pub(super) async fn build(cfg: &SendCommand) -> Result<Request, OpaqueError> {
     let mut request = Request::new(Body::empty());
 
-    // TODO support data input
+    let input = build_data_input(cfg).await?;
 
     let uri: Uri = expand_url(&cfg.uri)
         .parse()
@@ -48,12 +54,7 @@ pub(super) fn build(cfg: &SendCommand) -> Result<Request, OpaqueError> {
             .to_uppercase()
             .parse()
             .context("parse HTTP request method")?
-    } else if cfg
-        .data
-        .as_ref()
-        .map(|v| v.iter().any(|d| !d.is_empty()))
-        .unwrap_or_default()
-    {
+    } else if input.is_some() {
         Method::POST
     } else {
         Method::GET
@@ -70,7 +71,77 @@ pub(super) fn build(cfg: &SendCommand) -> Result<Request, OpaqueError> {
             cfg.header.iter().map(|header| header.name.clone()),
         ));
 
+    if cfg.verbose {
+        request.extensions_mut().insert(super::client::VerboseLogs);
+    }
+
+    if let Some((body, ct)) = input {
+        request.headers_mut().typed_insert(ct);
+        *request.body_mut() = body;
+    }
+
     Ok(request)
+}
+
+async fn build_data_input(cfg: &SendCommand) -> Result<Option<(Body, ContentType)>, OpaqueError> {
+    let (ct, separator) = match (cfg.binary, cfg.json) {
+        (true, false) => (ContentType::octet_stream(), None),
+        (false, true) => (ContentType::json(), Some(NATIVE_NEWLINE)),
+        (false, false) => (ContentType::form_url_encoded(), Some("&")),
+        _ => Err(OpaqueError::from_display(
+            "--binary, --json are mutually exclusive",
+        ))?,
+    };
+
+    let Some(data) = cfg.data.as_deref() else {
+        return Ok(None);
+    };
+    if data.is_empty() {
+        return Ok(None);
+    }
+
+    let mut stream = stream::empty().boxed();
+
+    for (index, data) in data.into_iter().enumerate() {
+        if index > 0
+            && let Some(separator) = separator
+        {
+            let b = Bytes::from_static(separator.as_bytes());
+            stream = stream
+                .chain(stream::once(async move { Ok(b) }).boxed())
+                .boxed();
+        }
+        if let Some(fin) = data.strip_prefix('@') {
+            let fin = fin.trim_end();
+            if fin == "-" {
+                stream = stream
+                    .chain(ReaderStream::new(tokio::io::stdin()).boxed())
+                    .boxed()
+            } else {
+                stream = stream
+                    .chain(
+                        ReaderStream::new(
+                            tokio::fs::OpenOptions::new()
+                                .read(true)
+                                .open(fin)
+                                .await
+                                .context(format!("read input file: {fin}"))?,
+                        )
+                        .boxed(),
+                    )
+                    .boxed();
+            }
+        } else {
+            let b = Bytes::copy_from_slice(data.as_bytes());
+            stream = stream
+                .chain(stream::once(async move { Ok(b) }).boxed())
+                .boxed();
+        }
+    }
+
+    let body = Body::from_stream(stream);
+
+    Ok(Some((body, ct)))
 }
 
 /// Expand a URL string to a full URL,

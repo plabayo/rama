@@ -106,25 +106,21 @@ pub struct SendCommand {
     /// (TLS) the desired tls version to use (automatically defined by default, choices are: 1.0, 1.1, 1.2 and 1.3)
     tls_max: Option<String>,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "tlsv1.0", default_value_t = false)]
     /// (TLS) Force rama to use TLS version 1.0 or later when connecting to a remote TLS server.
     tls_v10: bool,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "tlsv1.1", default_value_t = false)]
     /// (TLS) Force rama to use TLS version 1.1 or later when connecting to a remote TLS server.
     tls_v11: bool,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "tlsv1.2", default_value_t = false)]
     /// (TLS) Force rama to use TLS version 1.2 or later when connecting to a remote TLS server.
     tls_v12: bool,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "tlsv1.3", default_value_t = false)]
     /// (TLS) Force rama to use TLS version 1.3 or later when connecting to a remote TLS server.
     tls_v13: bool,
-
-    #[arg(long)]
-    /// (TLS) the client tls key file path to use
-    cert_key: Option<PathBuf>,
 
     #[arg(long, short = 'm')]
     /// Set the maximum time in seconds that you allow each transfer to take.
@@ -163,7 +159,7 @@ pub struct SendCommand {
 
     #[arg(long, short = 'o')]
     /// Write output to the given file instead of stdout
-    output: Option<String>,
+    output: Option<PathBuf>,
 
     #[arg(long)]
     /// emulate the provided user-agent
