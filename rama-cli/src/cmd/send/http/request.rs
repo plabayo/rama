@@ -15,10 +15,13 @@ use rama::{
 
 use super::SendCommand;
 
-pub(super) async fn build(cfg: &SendCommand) -> Result<Request, OpaqueError> {
+pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, OpaqueError> {
     let mut request = Request::new(Body::empty());
 
     let input = build_data_input(cfg).await?;
+    if input.is_some() && is_ws {
+        return Err(OpaqueError::from_display("input not allowed in WS mode"));
+    }
 
     let uri: Uri = expand_url(&cfg.uri)
         .parse()
@@ -56,6 +59,8 @@ pub(super) async fn build(cfg: &SendCommand) -> Result<Request, OpaqueError> {
             .context("parse HTTP request method")?
     } else if input.is_some() {
         Method::POST
+    } else if is_ws && request.version() == Version::HTTP_2 {
+        Method::CONNECT
     } else {
         Method::GET
     };

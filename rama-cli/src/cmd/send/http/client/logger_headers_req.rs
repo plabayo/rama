@@ -5,7 +5,7 @@ use rama::{
         Request, Version,
         proto::{
             h1::Http1HeaderMap,
-            h2::{PseudoHeader, PseudoHeaderOrder},
+            h2::{self, PseudoHeader, PseudoHeaderOrder},
         },
     },
 };
@@ -39,6 +39,7 @@ where
                             PseudoHeader::Scheme,
                             PseudoHeader::Authority,
                             PseudoHeader::Path,
+                            PseudoHeader::Protocol,
                         ])
                     });
                 for header in pseudo_headers.iter() {
@@ -62,7 +63,14 @@ where
                             PseudoHeader::Path => {
                                 req.uri().path().to_owned()
                             }
-                            PseudoHeader::Protocol | PseudoHeader::Status => "<???>".to_owned(),
+                            PseudoHeader::Status => "<???>".to_owned(),
+                            PseudoHeader::Protocol => {
+                                if let Some(proto) = req.extensions().get::<h2::ext::Protocol>() {
+                                    proto.as_str().to_owned()
+                                } else {
+                                    continue;
+                                }
+                            }
                         }
                     );
                 }

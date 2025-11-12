@@ -1,23 +1,26 @@
-use std::{fmt, io, path::PathBuf, time::Duration};
-
-use chrono::{DateTime, Local};
 use rama::{
-    error::{ErrorContext, ErrorExt, OpaqueError},
+    Service,
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     futures::{FutureExt, StreamExt},
     graceful::ShutdownGuard,
-    http::ws::{Message, Utf8Bytes, handshake::client::ClientWebSocket, protocol::Role},
+    http::{
+        Request, Response,
+        ws::{Message, Utf8Bytes, handshake::client::ClientWebSocket, protocol::Role},
+    },
     telemetry::tracing,
 };
+
+use chrono::{DateTime, Local};
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     prelude::*,
     widgets::{Block, HighlightSpacing, List, ListItem, ListState, Paragraph},
 };
+use std::{fmt, io, time::Duration};
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerSmartWidget, TuiWidgetState};
 
 pub(super) struct App {
     title: String,
-    log_file_path: PathBuf,
 
     screen: Screen,
 
@@ -93,21 +96,23 @@ enum ChatMode {
 }
 
 impl App {
-    pub(super) async fn new(cfg: super::CliCommandWs) -> Result<Self, OpaqueError> {
-        let log_file_path = super::log::init_logger().context("init tui logger")?;
+    pub(super) async fn new<C>(
+        req: Request,
+        client: C,
+        protocols: Option<Vec<String>>,
+    ) -> Result<Self, OpaqueError>
+    where
+        C: Service<Request, Response = Response, Error = BoxError>,
+    {
+        let title = format!("  rama-ws @ {}", req.uri());
 
-        let socket = super::client::connect(cfg.clone())
+        let socket = super::client::connect(req, client, protocols)
             .await
             .context("create websocket stream")?;
         let terminal = ratatui::init();
 
         Ok(Self {
-            title: format!(
-                "  rama-ws @ {} | logs: {} ",
-                cfg.uri,
-                log_file_path.to_string_lossy()
-            ),
-            log_file_path,
+            title,
             screen: Screen::Chat(ChatMode::Insert),
             input_buffer: Default::default(),
             history: ChatHistory::default(),
@@ -347,10 +352,6 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         ratatui::restore();
-        eprintln!(
-            "Bye! Logfile available at {}",
-            self.log_file_path.to_string_lossy()
-        )
     }
 }
 

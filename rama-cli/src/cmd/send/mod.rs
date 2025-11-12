@@ -1,4 +1,7 @@
-use rama::error::{BoxError, OpaqueError};
+use rama::{
+    error::{BoxError, OpaqueError},
+    utils::str::starts_with_ignore_ascii_case,
+};
 
 use clap::Args;
 use std::path::PathBuf;
@@ -20,7 +23,8 @@ pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
         .into_iter()
         .any(|scheme| uri_scheme_raw.eq_ignore_ascii_case(scheme))
     {
-        http::run(cfg).await
+        let is_ws = starts_with_ignore_ascii_case(uri_scheme_raw.as_bytes(), b"ws");
+        http::run(cfg, is_ws).await
     } else {
         Err(
             OpaqueError::from_display(format!("scheme '{uri_scheme_raw}' is not supported"))
@@ -217,4 +221,8 @@ pub struct SendCommand {
     #[arg(long)]
     /// Output trace (log) output to the given file.
     trace: Option<PathBuf>,
+
+    #[arg(long, value_delimiter = ',')]
+    /// (WebSocket) sub protocols to use
+    subprotocol: Option<Vec<String>>,
 }

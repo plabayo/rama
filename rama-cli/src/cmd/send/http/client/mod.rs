@@ -11,7 +11,6 @@ use rama::{
         },
         layer::{
             auth::AddAuthorizationLayer,
-            decompression::DecompressionLayer,
             follow_redirect::{FollowRedirectLayer, policy::Limited},
             required_header::AddRequiredRequestHeadersLayer,
         },
@@ -80,7 +79,6 @@ pub(super) async fn new(
         } else {
             0
         })),
-        DecompressionLayer::new(),
         cfg.user
             .as_deref()
             .map(|auth| {
