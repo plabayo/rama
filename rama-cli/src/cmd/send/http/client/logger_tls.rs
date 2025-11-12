@@ -26,15 +26,15 @@ where
     async fn serve(&self, request: R) -> Result<Self::Response, Self::Error> {
         let ec = self.0.connect(request).await?;
         if ec.req.extensions().contains::<VerboseLogs>() {
-            if let Some(client_tls_data) = ec.req.extensions().get::<TlsConnectorDataBuilder>() {
-                if let Some(alpn) = client_tls_data.alpn_protos() {
-                    let mut protocols = Vec::new();
-                    let mut reader = std::io::Cursor::new(&alpn[..]);
-                    while let Ok(protocol) = ApplicationProtocol::decode_wire_format(&mut reader) {
-                        protocols.push(protocol.to_string());
-                    }
-                    eprintln!("* ALPN: rama offers {}", protocols.join(","));
+            if let Some(client_tls_data) = ec.req.extensions().get::<TlsConnectorDataBuilder>()
+                && let Some(alpn) = client_tls_data.alpn_protos()
+            {
+                let mut protocols = Vec::new();
+                let mut reader = std::io::Cursor::new(&alpn[..]);
+                while let Ok(protocol) = ApplicationProtocol::decode_wire_format(&mut reader) {
+                    protocols.push(protocol.to_string());
                 }
+                eprintln!("* ALPN: rama offers {}", protocols.join(","));
             }
             if let Some(server_tls_data) = ec.conn.extensions().get::<NegotiatedTlsParameters>() {
                 eprintln!(
@@ -44,8 +44,8 @@ where
                 if let Some(ref alpn) = server_tls_data.application_layer_protocol {
                     eprintln!("* ALPN: server selected {alpn}");
                 }
-                if let Some(ref raw_pem_data) = server_tls_data.peer_certificate_chain {
-                    if let Some(x509) = match raw_pem_data {
+                if let Some(ref raw_pem_data) = server_tls_data.peer_certificate_chain
+                    && let Some(x509) = match raw_pem_data {
                         DataEncoding::Der(raw_data) => X509::from_der(raw_data.as_slice()).ok(),
                         DataEncoding::DerStack(raw_data_slice) => {
                             if raw_data_slice.is_empty() {
@@ -57,23 +57,23 @@ where
                         DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
                             .ok()
                             .and_then(|v| v.into_iter().next()),
-                    } {
-                        // TOOD: improve verbose logging in future (performance + print race conditions)
-                        eprintln!("* Server Certificate:");
-                        eprintln!("*  subject: {}", fmt_crt_name(x509.subject_name()));
-                        let alt_names = x509
-                            .subject_alt_names()
-                            .iter()
-                            .flatten()
-                            .filter_map(|n| n.dnsname())
-                            .join(", ");
-                        eprintln!("*  start date: {}", x509.not_before());
-                        eprintln!("*  expire date: {}", x509.not_after());
-                        if !alt_names.is_empty() {
-                            eprintln!("*  subjectAltNames: {alt_names}");
-                        }
-                        eprintln!("*  issuer: {}", fmt_crt_name(x509.issuer_name()));
                     }
+                {
+                    // TOOD: improve verbose logging in future (performance + print race conditions)
+                    eprintln!("* Server Certificate:");
+                    eprintln!("*  subject: {}", fmt_crt_name(x509.subject_name()));
+                    let alt_names = x509
+                        .subject_alt_names()
+                        .iter()
+                        .flatten()
+                        .filter_map(|n| n.dnsname())
+                        .join(", ");
+                    eprintln!("*  start date: {}", x509.not_before());
+                    eprintln!("*  expire date: {}", x509.not_after());
+                    if !alt_names.is_empty() {
+                        eprintln!("*  subjectAltNames: {alt_names}");
+                    }
+                    eprintln!("*  issuer: {}", fmt_crt_name(x509.issuer_name()));
                 }
             }
         }
@@ -92,7 +92,7 @@ fn fmt_crt_name(x: &rama::tls::boring::core::x509::X509NameRef) -> String {
             .as_utf8()
             .map(|s| s.to_string())
             .unwrap_or_else(|_| fmt_hex(e.data().as_slice(), ":"));
-        parts.push(format!("{}={}", short, val));
+        parts.push(format!("{short}={val}"));
     }
     parts.join(", ")
 }
@@ -104,7 +104,7 @@ fn fmt_hex(bytes: &[u8], sep: &str) -> String {
             s.push_str(sep);
         }
         use std::fmt::Write as _;
-        let _ = write!(s, "{:02X}", b);
+        let _ = write!(s, "{b:02X}");
     }
     s
 }

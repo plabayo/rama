@@ -107,7 +107,7 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<(Body, ContentType
 
     let mut stream = stream::empty().boxed();
 
-    for (index, data) in data.into_iter().enumerate() {
+    for (index, data) in data.iter().enumerate() {
         if index > 0
             && let Some(separator) = separator
         {

@@ -35,8 +35,8 @@ pub async fn run(cfg: SendCommand, is_ws: bool) -> Result<(), BoxError> {
 }
 
 pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
-    let https_client = client::new(&cfg).await?;
-    let request = request::build(&cfg, is_ws).await?;
+    let https_client = client::new(cfg).await?;
+    let request = request::build(cfg, is_ws).await?;
 
     if is_ws {
         ws::run(request, https_client, cfg.subprotocol.clone()).await?;

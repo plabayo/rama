@@ -89,7 +89,7 @@ impl Default for FsServiceBuilder<()> {
 }
 
 impl FsServiceBuilder<()> {
-    /// Create a new [`ServeServiceBuilder`].
+    /// Create a new [`FsServiceBuilder`].
     #[must_use]
     pub fn new() -> Self {
         Self::default()
