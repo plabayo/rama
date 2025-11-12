@@ -3,9 +3,8 @@ use rama::error::BoxError;
 use clap::{Args, Subcommand};
 use tracing_subscriber::filter::LevelFilter;
 
+pub mod tcp;
 pub mod tls;
-
-// TOOD: tcp / udp
 
 pub async fn run(cfg: ProbeCommand) -> Result<(), BoxError> {
     crate::trace::init_tracing(if cfg.verbose {
@@ -16,6 +15,7 @@ pub async fn run(cfg: ProbeCommand) -> Result<(), BoxError> {
 
     match cfg.commands {
         ProbeSubcommand::Tls(cfg) => tls::run(cfg).await,
+        ProbeSubcommand::Tcp(cfg) => tcp::run(cfg).await,
     }
 }
 
@@ -34,4 +34,6 @@ pub struct ProbeCommand {
 pub enum ProbeSubcommand {
     /// probe a server for its Tls capabilities
     Tls(tls::CliCommandTls),
+    /// probe a server for its Tcp capabilities
+    Tcp(tcp::CliCommandTcp),
 }
