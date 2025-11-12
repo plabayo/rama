@@ -103,9 +103,9 @@ where
                     }
                 }
             }
-        }
 
-        eprintln!(">");
+            eprintln!(">");
+        }
 
         Ok(req)
     }
