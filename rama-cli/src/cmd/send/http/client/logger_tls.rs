@@ -5,10 +5,9 @@ use rama::{
         client::{ConnectorService, EstablishedClientConnection},
         tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
     },
+    telemetry::tracing,
     tls::boring::{client::TlsConnectorDataBuilder, core::x509::X509},
 };
-
-use itertools::Itertools as _;
 
 use super::VerboseLogs;
 
@@ -46,65 +45,48 @@ where
                 }
                 if let Some(ref raw_pem_data) = server_tls_data.peer_certificate_chain
                     && let Some(x509) = match raw_pem_data {
-                        DataEncoding::Der(raw_data) => X509::from_der(raw_data.as_slice()).ok(),
+                        DataEncoding::Der(raw_data) => X509::from_der(raw_data.as_slice())
+                            .inspect_err(|err| {
+                                tracing::error!(
+                                    "failed to decode DER-encoded TLS peer cert: {err}"
+                                );
+                            })
+                            .ok(),
                         DataEncoding::DerStack(raw_data_slice) => {
                             if raw_data_slice.is_empty() {
+                                tracing::error!(
+                                    "decode DER-stack-encoded TLS peer cert bytes was empty (BUG?)"
+                                );
                                 None
                             } else {
-                                X509::from_der(raw_data_slice[0].as_slice()).ok()
+                                X509::from_der(raw_data_slice[0].as_slice()).inspect_err(|err| {
+                                    tracing::error!(
+                                        "failed to decode DER-stack-encoded TLS peer cert: {err}"
+                                    );
+                                }).ok()
                             }
                         }
                         DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
+                            .inspect_err(|err| {
+                                tracing::error!(
+                                    "failed to decode PEM-encoded TLS peer cert: {err}"
+                                );
+                            })
                             .ok()
                             .and_then(|v| v.into_iter().next()),
                     }
                 {
-                    // TOOD: improve verbose logging in future (performance + print race conditions)
                     eprintln!("* Server Certificate:");
-                    eprintln!("*  subject: {}", fmt_crt_name(x509.subject_name()));
-                    let alt_names = x509
-                        .subject_alt_names()
-                        .iter()
-                        .flatten()
-                        .filter_map(|n| n.dnsname())
-                        .join(", ");
-                    eprintln!("*  start date: {}", x509.not_before());
-                    eprintln!("*  expire date: {}", x509.not_after());
-                    if !alt_names.is_empty() {
-                        eprintln!("*  subjectAltNames: {alt_names}");
+                    if let Err(err) =
+                        crate::utils::tls::write_cert_info(&x509, &mut std::io::stderr())
+                    {
+                        tracing::error!(
+                            "failed to write server TLS certificate information to STDERR: {err}"
+                        );
                     }
-                    eprintln!("*  issuer: {}", fmt_crt_name(x509.issuer_name()));
                 }
             }
         }
         Ok(ec)
     }
-}
-
-fn fmt_crt_name(x: &rama::tls::boring::core::x509::X509NameRef) -> String {
-    // Similar to OpenSSL one line, but stable ordering by entry index
-    let mut parts = Vec::new();
-    for e in x.entries() {
-        let obj = e.object();
-        let short = obj.nid().short_name().unwrap_or("OBJ");
-        let val = e
-            .data()
-            .as_utf8()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|_| fmt_hex(e.data().as_slice(), ":"));
-        parts.push(format!("{short}={val}"));
-    }
-    parts.join(", ")
-}
-
-fn fmt_hex(bytes: &[u8], sep: &str) -> String {
-    let mut s = String::with_capacity(bytes.len() * 3);
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 {
-            s.push_str(sep);
-        }
-        use std::fmt::Write as _;
-        let _ = write!(s, "{b:02X}");
-    }
-    s
 }

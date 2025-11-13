@@ -23,7 +23,7 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
         LevelFilter::INFO
     });
 
-    let graceful_timeout = (cfg.graceful > 0).then(|| Duration::from_secs(cfg.graceful));
+    let graceful_timeout = (cfg.graceful > 0.).then(|| Duration::from_secs_f64(cfg.graceful));
 
     let (etx, mut erx) = tokio::sync::mpsc::channel::<OpaqueError>(1);
     let graceful = graceful::Shutdown::new(async move {
@@ -69,9 +69,9 @@ pub struct ServeCommand {
     // rama serve subcommands
     pub commands: ServeSubcommand,
 
-    #[arg(long, global = true, default_value_t = 8)]
-    /// the graceful shutdown timeout in seconds (0 = no timeout)
-    pub graceful: u64,
+    #[arg(long, global = true, default_value_t = 1.)]
+    /// the graceful shutdown timeout in seconds (<= 0.0 = no timeout)
+    pub graceful: f64,
 
     /// enable debug logs for tracing (possible via RUST_LOG env as well)
     #[arg(long, short = 'v', global = true, default_value_t = false)]

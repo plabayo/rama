@@ -2,7 +2,7 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, OpaqueError},
     extensions::{Extensions, ExtensionsRef},
     net::{
         address::Authority,
@@ -78,34 +78,42 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .get::<NegotiatedTlsParameters>()
         .expect("NegotiatedTlsParameters to be available in connector context");
 
-    if let Some(cert_chain) = params.peer_certificate_chain.clone() {
-        match cert_chain {
-            DataEncoding::Der(raw_data) => log_cert(&raw_data, 1),
-            DataEncoding::DerStack(raw_data_list) => {
-                for (i, raw_data) in raw_data_list.iter().enumerate() {
-                    log_cert(raw_data, i + 1);
+    if let Some(ref raw_pem_data) = params.peer_certificate_chain {
+        let x509_stack = match raw_pem_data {
+            DataEncoding::Der(raw_data) => {
+                vec![X509::from_der(raw_data.as_slice()).context("decode DER-encoded TLS cert")?]
+            }
+            DataEncoding::DerStack(raw_data_slice) => {
+                if raw_data_slice.is_empty() {
+                    return Err(OpaqueError::from_display(
+                        "DER-encoded stack byte slice for TLS cert is empty",
+                    )
+                    .into_boxed());
+                } else {
+                    vec![
+                        X509::from_der(raw_data_slice[0].as_slice())
+                            .context("decode DER-stack-encoded TLS cert")?,
+                    ]
                 }
             }
-            DataEncoding::Pem(raw_data) => {
-                println!("PEM certificate: {raw_data:?}");
-            }
+            DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
+                .context("decode PEM-encoded TLS cert")?
+                .into_iter()
+                .collect(),
+        };
+
+        for (index, x509) in x509_stack.iter().enumerate() {
+            println!("Certificate #{}:", index + 1);
+            println!();
+            crate::utils::tls::write_cert_info(x509, &mut std::io::stdout())
+                .context("write certificate info to stdout")?;
+            println!();
         }
+    } else {
+        return Err(OpaqueError::from_display("no peer cert information found").into_boxed());
     }
 
     Ok(())
-}
-
-fn log_cert(raw_data: &[u8], index: usize) {
-    match X509::from_der(raw_data) {
-        Ok(cert) => {
-            println!("Certificate #{index}:");
-            println!("Subject: {:?}", cert.subject_name());
-            println!("Issuer: {:?}", cert.issuer_name());
-        }
-        Err(err) => {
-            eprintln!("Failed to decode certificate #{index}: {err:?}");
-        }
-    }
 }
 
 struct LoggingService<S> {
