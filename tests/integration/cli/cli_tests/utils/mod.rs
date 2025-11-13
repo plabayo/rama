@@ -212,6 +212,7 @@ impl RamaService {
             .run()
             .unwrap()
             .command()
+            .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .args(args)
             .env(
@@ -223,15 +224,16 @@ impl RamaService {
 
         let output = child.wait_with_output()?;
         assert!(output.status.success());
-        let output = String::from_utf8(output.stdout)?;
-        Ok(output)
+        let mut s = String::from_utf8(output.stderr)?;
+        s.extend(String::from_utf8(output.stdout)?.chars());
+        Ok(s)
     }
 
     /// Run the http command
     pub(super) fn http(
         input_args: Vec<&'static str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let mut args = vec!["http", "--verbose", "-v", "--all", "-L", "-k"];
+        let mut args = vec!["--verbose", "-L", "-k"];
         args.extend(input_args);
         Self::run(args)
     }

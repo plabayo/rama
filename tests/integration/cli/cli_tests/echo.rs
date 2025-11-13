@@ -50,7 +50,10 @@ async fn test_http_echo() {
         lines.contains(r##""content-type","application/json""##),
         "lines: {lines:?}",
     );
-    assert!(lines.contains(r##""a":"4""##), "lines: {lines:?}");
+    assert!(
+        lines.contains(/*{"a":4}*/ "7b2261223a347d"),
+        "lines: {lines:?}"
+    );
     assert!(lines.contains(r##""path":"/""##), "lines: {lines:?}");
     assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");
 
@@ -215,7 +218,10 @@ async fn test_https_echo() {
         lines.contains(r##""content-type","application/json""##),
         "lines: {lines:?}",
     );
-    assert!(lines.contains(r##""a":"4""##), "lines: {lines:?}");
+    assert!(
+        lines.contains(/*{"a":4}*/ "7b2261223a347d"),
+        "lines: {lines:?}"
+    );
     assert!(lines.contains(r##""path":"/""##), "lines: {lines:?}");
     assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");
     assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");

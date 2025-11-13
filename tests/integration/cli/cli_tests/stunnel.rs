@@ -27,7 +27,7 @@ async fn test_stunnel_full() {
     // Verify the response
     assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
     assert!(
-        lines.contains(r##""message":"Hello through tunnel!""##),
-        "Should contain request body, lines: {lines:?}"
+        lines.contains("7b226d657373616765223a2248656c6c6f207468726f7567682074756e6e656c2122"), // hex-encoded json payload
+        "Should contain request body echo'd back, lines: {lines:?}"
     );
 }

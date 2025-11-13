@@ -32,7 +32,7 @@ struct Cli {
 #[derive(Debug, Parser)]
 #[command(name = "rama")]
 #[command(bin_name = "rama")]
-#[command(version, about, long_about = None)]
+#[command(version = None, about = None, long_about = None)]
 struct CliDefault {
     #[command(flatten)]
     cmd: cmd::send::SendCommand,
@@ -48,14 +48,24 @@ enum CliCommands {
 
 #[tokio::main]
 async fn main() {
-    let cli = match Cli::try_parse().or_else(|err| match err.kind() {
-        clap::error::ErrorKind::DisplayHelp => Err(err),
-        _ => CliDefault::try_parse().map(|cli_default| Cli {
-            cmds: CliCommands::Send(cli_default.cmd),
-        }),
-    }) {
-        Err(e) => e.exit(),
+    let cli = match Cli::try_parse() {
         Ok(cli) => cli,
+        Err(err) if err.kind() == clap::error::ErrorKind::DisplayHelp => {
+            let _ = err.print();
+            println!();
+            println!("------------------");
+            println!();
+            println!(
+                "'rama' root command acts as 'rama send' by default unless a subcommand is specified."
+            );
+            println!("See more help on usage of 'rama send' below...");
+            println!();
+            CliDefault::parse_from(["rama", "--help"]);
+            unreachable!("previous statement should exit");
+        }
+        Err(_) => Cli {
+            cmds: CliCommands::Send(CliDefault::parse().cmd),
+        },
     };
 
     #[allow(clippy::exit)]

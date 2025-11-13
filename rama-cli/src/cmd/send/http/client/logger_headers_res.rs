@@ -39,6 +39,13 @@ where
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let res = self.inner.serve(req).await?;
         if self.show_headers || res.extensions().contains::<VerboseLogs>() {
+            eprintln!(
+                "* {:?} {} {}",
+                res.version(),
+                res.status().as_u16(),
+                res.status().canonical_reason().unwrap_or_default()
+            );
+
             if let Some(pseudo_headers) = res.extensions().get::<PseudoHeaderOrder>() {
                 for header in pseudo_headers.iter() {
                     eprintln!(
@@ -76,7 +83,7 @@ where
                         );
                     }
                     _ => {
-                        eprintln!("> {name}: {}", value.to_str().unwrap_or("<???>"));
+                        eprintln!("< {name}: {}", value.to_str().unwrap_or("<???>"));
                     }
                 }
             }
