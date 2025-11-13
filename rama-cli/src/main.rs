@@ -52,17 +52,17 @@ async fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) if err.kind() == clap::error::ErrorKind::DisplayHelp => {
-            let _ = err.print();
-            println!();
-            println!("------------------");
-            println!();
-            println!(
-                "'rama' root command acts as 'rama send' by default unless a subcommand is specified."
-            );
-            println!("See more help on usage of 'rama send' below...");
-            println!();
-            CliDefault::parse_from(["rama", "--help"]);
-            unreachable!("previous statement should exit");
+            if err.render().to_string().contains("rama <COMMAND>") {
+                let _ = err.print();
+                println!();
+                println!("When invoked without a subcommand, `rama` executes the `send` command.");
+                println!("Refer to the `send` command section below.");
+                println!();
+                CliDefault::parse_from(["rama", "--help"]);
+                unreachable!("previous statement should exit");
+            } else {
+                err.exit()
+            }
         }
         Err(_) => Cli {
             cmds: CliCommands::Send(CliDefault::parse().cmd),

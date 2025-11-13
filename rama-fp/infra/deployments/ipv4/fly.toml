@@ -7,8 +7,8 @@ app = 'rama-ipv4'
 primary_region = 'fra'
 
 [processes]
-app_secure = "ip --bind 0.0.0.0:8443 -c 2048 -f haproxy -s"
-app_insecure = "ip --bind 0.0.0.0:8080 -c 2048 -f haproxy"
+app_secure = "serve ip --bind 0.0.0.0:8443 -c 2048 -f haproxy -s"
+app_insecure = "serve ip --bind 0.0.0.0:8080 -c 2048 -f haproxy"
 
 [build]
 image = 'glendc/rama:latest'
