@@ -18,7 +18,7 @@ use rama::{
     layer::{HijackLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
         address::ProxyAddress,
-        tls::{KeyLogIntent, client::ServerVerifyMode},
+        tls::client::ServerVerifyMode,
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
@@ -130,8 +130,7 @@ fn new_inner_client(
         TlsConnectorDataBuilder::new()
     } else {
         TlsConnectorDataBuilder::new_http_auto()
-    }
-    .with_keylog_intent(KeyLogIntent::Environment);
+    };
 
     if cfg.verbose {
         tls_config.set_store_server_certificate_chain(true);
@@ -161,8 +160,7 @@ fn new_inner_client(
         tls_config.set_max_ssl_version(max_ssl_version);
     }
 
-    let mut proxy_tls_config =
-        TlsConnectorDataBuilder::new().with_keylog_intent(KeyLogIntent::Environment);
+    let mut proxy_tls_config = TlsConnectorDataBuilder::new();
 
     if cfg.insecure {
         tls_config.set_server_verify_mode(ServerVerifyMode::Disable);
