@@ -48,6 +48,7 @@ enum CliCommands {
 
 #[tokio::main]
 async fn main() {
+    #[allow(clippy::print_stdout)]
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) if err.kind() == clap::error::ErrorKind::DisplayHelp => {

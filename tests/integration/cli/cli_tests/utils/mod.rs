@@ -225,7 +225,7 @@ impl RamaService {
         let output = child.wait_with_output()?;
         assert!(output.status.success());
         let mut s = String::from_utf8(output.stderr)?;
-        s.extend(String::from_utf8(output.stdout)?.chars());
+        s.push_str(&String::from_utf8(output.stdout)?);
         Ok(s)
     }
 
