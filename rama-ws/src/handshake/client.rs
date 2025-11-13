@@ -132,6 +132,15 @@ where
     S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
     RequestBody: Into<rama_http::Body>,
 {
+    if !request
+        .headers()
+        .contains_key(header::SEC_WEBSOCKET_VERSION)
+    {
+        request
+            .headers_mut()
+            .typed_insert(headers::SecWebSocketVersion::V13);
+    }
+
     match request.version() {
         Version::HTTP_10 | Version::HTTP_11 => {
             if request.headers().get(header::UPGRADE).is_none() {

@@ -1,190 +1,90 @@
-//! Serve service that serves a file, directory or placeholder page.
+use std::time::Duration;
 
-use clap::Args;
+use clap::{Args, Subcommand};
 use rama::{
-    Service,
-    cli::{ForwardKind, service::serve::ServeServiceBuilder},
-    error::{BoxError, ErrorContext, OpaqueError},
-    http::service::web::response::IntoResponse,
-    http::{Request, Response, matcher::HttpMatcher, service::fs::DirectoryServeMode},
-    layer::HijackLayer,
-    net::{
-        socket::Interface,
-        tls::{
-            ApplicationProtocol, DataEncoding,
-            server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
-        },
-    },
-    rt::Executor,
-    tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    error::{BoxError, OpaqueError},
+    graceful,
+    telemetry::tracing,
 };
+use tracing_subscriber::filter::LevelFilter;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as ENGINE;
+pub mod discard;
+pub mod echo;
+pub mod fp;
+pub mod fs;
+pub mod ip;
+pub mod proxy;
+pub mod stunnel;
 
-use std::{convert::Infallible, path::PathBuf, time::Duration};
+pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
+    crate::trace::init_tracing(if cfg.verbose {
+        LevelFilter::DEBUG
+    } else {
+        LevelFilter::INFO
+    });
 
-#[derive(Debug, Args)]
-/// rama serve service (serves a file, directory or placeholder page)
-pub struct CliCommandServe {
-    /// The path to the file or directory to serve
-    ///
-    /// If not provided, a placeholder page will be served.
-    #[arg()]
-    path: Option<PathBuf>,
+    let graceful_timeout = (cfg.graceful > 0.).then(|| Duration::from_secs_f64(cfg.graceful));
 
-    /// the interface to bind to
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: Interface,
-
-    #[arg(short = 'c', long, default_value_t = 0)]
-    /// the number of concurrent connections to allow
-    ///
-    /// (0 = no limit)
-    concurrent: usize,
-
-    #[arg(short = 't', long, default_value_t = 8)]
-    /// the timeout in seconds for each connection
-    ///
-    /// (0 = no timeout)
-    timeout: u64,
-
-    #[arg(long, short = 'f')]
-    /// enable support for one of the following "forward" headers or protocols
-    ///
-    /// Supported headers:
-    ///
-    /// Forwarded ("for="), X-Forwarded-For
-    ///
-    /// X-Client-IP Client-IP, X-Real-IP
-    ///
-    /// CF-Connecting-IP, True-Client-IP
-    ///
-    /// Or using HaProxy protocol.
-    forward: Option<ForwardKind>,
-
-    #[arg(long, short = 's')]
-    /// run serve service in secure mode (enable TLS)
-    secure: bool,
-
-    #[arg(long, default_value_t = DirectoryServeMode::HtmlFileList)]
-    /// define how to serve directories
-    ///
-    /// 'append-index': only serve directories if it contains an index.html
-    ///
-    /// 'not-found': return 404 for directories
-    ///
-    /// 'html-file-list': render directory file structure as a html page (default)
-    dir_serve: DirectoryServeMode,
-}
-
-/// run the rama serve service
-pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
-    crate::trace::init_tracing(LevelFilter::INFO);
-
-    let maybe_tls_server_config = cfg.secure.then(|| {
-        let Ok(tls_key_pem_raw) = std::env::var("RAMA_TLS_KEY") else {
-            return ServerConfig {
-                application_layer_protocol_negotiation: Some(vec![
-                    ApplicationProtocol::HTTP_2,
-                    ApplicationProtocol::HTTP_11,
-                ]),
-                ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-            };
-        };
-        let tls_key_pem_raw = std::str::from_utf8(
-            &ENGINE
-                .decode(tls_key_pem_raw)
-                .expect("base64 decode RAMA_TLS_KEY")[..],
-        )
-        .expect("base64-decoded RAMA_TLS_KEY valid utf-8")
-        .try_into()
-        .expect("tls_key_pem_raw => NonEmptyStr (RAMA_TLS_KEY)");
-        let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
-        let tls_crt_pem_raw = std::str::from_utf8(
-            &ENGINE
-                .decode(tls_crt_pem_raw)
-                .expect("base64 decode RAMA_TLS_CRT")[..],
-        )
-        .expect("base64-decoded RAMA_TLS_CRT valid utf-8")
-        .try_into()
-        .expect("tls_crt_pem_raw => NonEmptyStr (RAMA_TLS_CRT)");
-        ServerConfig {
-            application_layer_protocol_negotiation: Some(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]),
-            ..ServerConfig::new(ServerAuth::Single(ServerAuthData {
-                private_key: DataEncoding::Pem(tls_key_pem_raw),
-                cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
-                ocsp: None,
-            }))
+    let (etx, mut erx) = tokio::sync::mpsc::channel::<OpaqueError>(1);
+    let graceful = graceful::Shutdown::new(async move {
+        let mut signal = Box::pin(graceful::default_signal());
+        tokio::select! {
+            _ = signal.as_mut() => {
+                tracing::debug!("default signal triggered: init graceful shutdown");
+            }
+            err = erx.recv() => {
+                if let Some(err) = err {
+                    tracing::error!("fatal err received: {err}; abort");
+                } else {
+                    signal.await;
+                    tracing::debug!("default signal triggered: init graceful shutdown");
+                }
+            }
         }
     });
 
-    let maybe_acme_service = std::env::var("RAMA_ACME_DATA")
-        .map(|data| {
-            let mut iter = data.trim().splitn(2, ',');
-            let key = iter.next().expect("acme data key");
-            let value = iter.next().expect("acme data value");
+    match cfg.commands {
+        ServeSubcommand::Discard(cfg) => discard::run(graceful.guard(), cfg).await?,
+        ServeSubcommand::Echo(cfg) => echo::run(graceful.guard(), etx, cfg).await?,
+        ServeSubcommand::Fp(cfg) => fp::run(graceful.guard(), cfg).await?,
+        ServeSubcommand::Fs(cfg) => fs::run(graceful.guard(), cfg).await?,
+        ServeSubcommand::Ip(cfg) => ip::run(graceful.guard(), cfg).await?,
+        ServeSubcommand::Proxy(cfg) => proxy::run(graceful.guard(), cfg).await?,
+        ServeSubcommand::Stunnel(cfg) => stunnel::run(graceful.guard(), cfg).await?,
+    }
 
-            HijackLayer::new(
-                HttpMatcher::path(format!("/.well-known/acme-challenge/{key}")),
-                AcmeService(value.to_owned()),
-            )
-        })
-        .ok();
+    let delay = match graceful_timeout {
+        Some(duration) => graceful.shutdown_with_limit(duration).await?,
+        None => graceful.shutdown().await,
+    };
 
-    let graceful = rama::graceful::Shutdown::default();
-
-    let tcp_service = ServeServiceBuilder::new()
-        .concurrent(cfg.concurrent)
-        .timeout(Duration::from_secs(cfg.timeout))
-        .maybe_forward(cfg.forward)
-        .maybe_tls_server_config(maybe_tls_server_config)
-        .http_layer(maybe_acme_service)
-        .maybe_content_path(cfg.path)
-        .directory_serve_mode(cfg.dir_serve)
-        .build(Executor::graceful(graceful.guard()))
-        .map_err(OpaqueError::from_boxed)
-        .context("build serve service")?;
-
-    tracing::info!("starting serve service on: bind interface = {}", cfg.bind);
-    let tcp_listener = TcpListener::build()
-        .bind(cfg.bind.clone())
-        .await
-        .map_err(OpaqueError::from_boxed)
-        .context("bind serve service")?;
-
-    let bind_address = tcp_listener
-        .local_addr()
-        .context("get local addr of tcp listener")?;
-
-    graceful.spawn_task_fn(async move |guard| {
-        tracing::info!(
-            network.local.address = %bind_address.ip(),
-            network.local.port = %bind_address.port(),
-            "ready to serve: bind interface = {}", cfg.bind,
-        );
-        tcp_listener.serve_graceful(guard, tcp_service).await;
-    });
-
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await?;
-
+    tracing::info!("gracefully shutdown with a delay of: {delay:?}");
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct AcmeService(String);
+#[derive(Debug, Args)]
+/// run server(s) with rama
+pub struct ServeCommand {
+    #[command(subcommand)]
+    // rama serve subcommands
+    pub commands: ServeSubcommand,
 
-impl Service<Request> for AcmeService {
-    type Response = Response;
-    type Error = Infallible;
+    #[arg(long, global = true, default_value_t = 1.)]
+    /// the graceful shutdown timeout in seconds (<= 0.0 = no timeout)
+    pub graceful: f64,
 
-    async fn serve(&self, _req: Request) -> Result<Self::Response, Self::Error> {
-        Ok(self.0.clone().into_response())
-    }
+    /// enable debug logs for tracing (possible via RUST_LOG env as well)
+    #[arg(long, short = 'v', global = true, default_value_t = false)]
+    verbose: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ServeSubcommand {
+    Discard(discard::CliCommandDiscard),
+    Echo(echo::CliCommandEcho),
+    Fp(fp::CliCommandFingerprint),
+    Fs(fs::CliCommandFs),
+    Ip(ip::CliCommandIp),
+    Proxy(proxy::CliCommandProxy),
+    Stunnel(stunnel::StunnelCommand),
 }

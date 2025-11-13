@@ -1,6 +1,11 @@
 use super::HttpProxyConnector;
 use rama_core::Layer;
+use rama_http::{
+    HeaderValue,
+    proto::h1::{Http1HeaderMap, IntoHttp1HeaderName},
+};
 use rama_http_types::Version;
+use rama_utils::macros::generate_set_and_with;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which wraps the given service with a [`HttpProxyConnector`].
@@ -9,6 +14,7 @@ use rama_http_types::Version;
 pub struct HttpProxyConnectorLayer {
     required: bool,
     version: Option<Version>,
+    headers: Option<Http1HeaderMap>,
 }
 
 impl HttpProxyConnectorLayer {
@@ -23,6 +29,7 @@ impl HttpProxyConnectorLayer {
         Self {
             required: false,
             version: Some(Version::HTTP_11),
+            headers: None,
         }
     }
 
@@ -37,35 +44,30 @@ impl HttpProxyConnectorLayer {
         Self {
             required: true,
             version: Some(Version::HTTP_11),
+            headers: None,
         }
     }
 
-    /// Set the HTTP version to use for the CONNECT request.
-    ///
-    /// By default this is set to HTTP/1.1.
-    #[must_use]
-    pub fn with_version(mut self, version: Version) -> Self {
-        self.version = Some(version);
-        self
+    generate_set_and_with! {
+        /// Set the HTTP version to use for the CONNECT request.
+        ///
+        /// By default this is set to HTTP/1.1.
+        pub fn version(mut self, version: Version) -> Self {
+            self.version = Some(version);
+            self
+        }
     }
 
-    /// Set the HTTP version to use for the CONNECT request.
-    pub fn set_version(&mut self, version: Version) -> &mut Self {
-        self.version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the CONNECT request.
-    #[must_use]
-    pub fn with_auto_version(mut self) -> Self {
-        self.version = None;
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the CONNECT request.
-    pub fn set_auto_version(&mut self) -> &mut Self {
-        self.version = None;
-        self
+    generate_set_and_with! {
+        /// Append a custom header to use for the CONNECT request.
+        pub fn custom_header(
+            mut self,
+            name: impl IntoHttp1HeaderName,
+            value: HeaderValue,
+        ) -> Self {
+            self.headers.get_or_insert_default().append(name, value);
+            self
+        }
     }
 }
 
@@ -73,11 +75,11 @@ impl<S> Layer<S> for HttpProxyConnectorLayer {
     type Service = HttpProxyConnector<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        let mut svc = HttpProxyConnector::new(inner, self.required);
-        match self.version {
-            Some(version) => svc.set_version(version),
-            None => svc.set_auto_version(),
-        };
-        svc
+        HttpProxyConnector {
+            inner,
+            required: self.required,
+            version: self.version,
+            headers: self.headers.clone(),
+        }
     }
 }

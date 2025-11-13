@@ -9,7 +9,7 @@ use super::{Timeout, error::Elapsed};
 
 /// Applies a timeout to requests via the supplied inner service.
 pub struct TimeoutLayer<F> {
-    timeout: Duration,
+    timeout: Option<Duration>,
     into_error: F,
 }
 
@@ -39,8 +39,16 @@ impl TimeoutLayer<LayerErrorStatic<Elapsed>> {
     #[must_use]
     pub const fn new(timeout: Duration) -> Self {
         Self {
-            timeout,
-            into_error: LayerErrorStatic::new(Elapsed::new(timeout)),
+            timeout: Some(timeout),
+            into_error: LayerErrorStatic::new(Elapsed::new(Some(timeout))),
+        }
+    }
+    /// Create one which never times out.
+    #[must_use]
+    pub const fn never() -> Self {
+        Self {
+            timeout: None,
+            into_error: LayerErrorStatic::new(Elapsed::new(None)),
         }
     }
 }
@@ -53,7 +61,7 @@ impl<E> TimeoutLayer<LayerErrorStatic<E>> {
         E: Clone + Send + Sync + 'static,
     {
         Self {
-            timeout,
+            timeout: Some(timeout),
             into_error: LayerErrorStatic::new(error),
         }
     }
@@ -68,7 +76,7 @@ impl<F> TimeoutLayer<LayerErrorFn<F>> {
         E: Send + 'static,
     {
         Self {
-            timeout,
+            timeout: Some(timeout),
             into_error: LayerErrorFn::new(error_fn),
         }
     }
