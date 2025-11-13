@@ -150,15 +150,12 @@ fn new_inner_client(
         tls_config.set_min_ssl_version(min_ssl_version);
     }
 
-    if let Some(max_ssl_version_str) = cfg.tls_max.as_deref() {
-        let max_ssl_version = match max_ssl_version_str.trim() {
-            "1" | "1.0" => SslVersion::TLS1,
-            "1.1" => SslVersion::TLS1_1,
-            "1.2" => SslVersion::TLS1_2,
-            "1.3" => SslVersion::TLS1_3,
-            other => Err(OpaqueError::from_display(format!(
-                "invalid --tls-max value: {other}",
-            )))?,
+    if let Some(max_ssl_version) = cfg.tls_max.as_ref() {
+        let max_ssl_version = match max_ssl_version {
+            crate::cmd::send::arg::TlsVersion::V10 => SslVersion::TLS1,
+            crate::cmd::send::arg::TlsVersion::V11 => SslVersion::TLS1_1,
+            crate::cmd::send::arg::TlsVersion::V12 => SslVersion::TLS1_2,
+            crate::cmd::send::arg::TlsVersion::V13 => SslVersion::TLS1_3,
         };
 
         tls_config.set_max_ssl_version(max_ssl_version);

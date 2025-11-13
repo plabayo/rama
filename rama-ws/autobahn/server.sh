@@ -50,7 +50,7 @@ case "$(uname -s)" in
 esac
 
 cargo build --release -p rama-cli
-cargo run --release -p rama-cli -- echo --ws --bind "$ECHO_BIND_ADDR" & WSSERVER_PID=$!
+cargo run --release -p rama-cli -- serve echo --ws --bind "$ECHO_BIND_ADDR" & WSSERVER_PID=$!
 
 sleep 5
 

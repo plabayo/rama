@@ -144,6 +144,110 @@ impl RamaService {
         Self { process }
     }
 
+    // Start the rama fp service with the given port.
+    pub(super) fn serve_fp(port: u16, secure: bool) -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        if secure {
+            const BASE64: base64::engine::GeneralPurpose =
+                base64::engine::general_purpose::STANDARD;
+
+            builder.env(
+                "RAMA_TLS_CRT",
+                BASE64.encode(include_bytes!("./example_tls.crt")),
+            );
+            builder.env(
+                "RAMA_TLS_KEY",
+                BASE64.encode(include_bytes!("./example_tls.key")),
+            );
+        }
+
+        builder
+            .stdout(std::process::Stdio::piped())
+            .arg("serve")
+            .arg("fp")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        if secure {
+            builder.arg("--secure");
+        }
+
+        let mut process = builder.spawn().unwrap();
+
+        let stdout = process.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout).lines();
+
+        for line in &mut stdout {
+            let line = line.unwrap();
+            if line.contains("FP Service (auto) listening") {
+                break;
+            }
+        }
+
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                println!("rama fp >> {line}");
+            }
+        });
+
+        Self { process }
+    }
+
+    /// Start the rama proxy service with the given port.
+    pub(super) fn serve_proxy(port: u16) -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        builder
+            .stdout(std::process::Stdio::piped())
+            .arg("serve")
+            .arg("proxy")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        let mut process = builder.spawn().unwrap();
+
+        let stdout = process.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout).lines();
+
+        for line in &mut stdout {
+            let line = line.unwrap();
+            if line.contains("proxy ready") {
+                break;
+            }
+        }
+
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                println!("rama proxy >> {line}");
+            }
+        });
+
+        Self { process }
+    }
+
     /// Start the rama discard service with the given port.
     pub(super) fn serve_discard(port: u16, mode: &'static str) -> Self {
         let mut builder = escargot::CargoBuild::new()
@@ -238,6 +342,18 @@ impl RamaService {
         Self::run(args)
     }
 
+    /// Run the probe tls command
+    pub(super) fn probe_tls(addr: &'static str) -> Result<String, Box<dyn std::error::Error>> {
+        let args = vec!["probe", "tls", "-k", addr];
+        Self::run(args)
+    }
+
+    /// Run the probe tcp command
+    pub(super) fn probe_tcp(addr: &'static str) -> Result<String, Box<dyn std::error::Error>> {
+        let args = vec!["probe", "tcp", addr];
+        Self::run(args)
+    }
+
     /// Start the rama serve service with the given port and content path.
     pub(super) fn serve_fs(port: u16, path: Option<PathBuf>) -> Self {
         let secure = true;
@@ -307,7 +423,7 @@ impl RamaService {
 
     // Start the rama stunnel exit node with the default port and the forward address.
     // with self-signed certificates for testing
-    pub(super) fn serve_stunnel_exit() -> Self {
+    pub(super) fn serve_stunnel_exit(bind: &str, forward: &str) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -321,6 +437,10 @@ impl RamaService {
             .arg("serve")
             .arg("stunnel")
             .arg("exit")
+            .arg("--bind")
+            .arg(bind)
+            .arg("--forward")
+            .arg(forward)
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
@@ -349,7 +469,7 @@ impl RamaService {
     }
 
     /// Start the rama stunnel entry node in insecure mode (skip verification).
-    pub(super) fn serve_stunnel_entry_insecure() -> Self {
+    pub(super) fn serve_stunnel_entry_insecure(bind: &str, connect: &str) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -364,6 +484,10 @@ impl RamaService {
             .arg("stunnel")
             .arg("entry")
             .arg("--insecure")
+            .arg("--bind")
+            .arg(bind)
+            .arg("--connect")
+            .arg(connect)
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),

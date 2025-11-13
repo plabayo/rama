@@ -9,6 +9,7 @@ use rama::{
         headers::{ContentType, HeaderMapExt},
         proto::h1::headers::original::OriginalHttp1Headers,
     },
+    net::mode::{ConnectIpMode, DnsResolveIpMode},
     stream::io::ReaderStream,
     utils::str::NATIVE_NEWLINE,
 };
@@ -78,6 +79,25 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Opa
 
     if cfg.verbose {
         request.extensions_mut().insert(super::client::VerboseLogs);
+    }
+
+    match (cfg.ipv4, cfg.ipv6) {
+        (true, true) => Err(OpaqueError::from_display(
+            "--ipv4, --ipv6 are mutually exclusive",
+        ))?,
+        (true, false) => {
+            request
+                .extensions_mut()
+                .insert(DnsResolveIpMode::SingleIpV4);
+            request.extensions_mut().insert(ConnectIpMode::Ipv4);
+        }
+        (false, true) => {
+            request
+                .extensions_mut()
+                .insert(DnsResolveIpMode::SingleIpV6);
+            request.extensions_mut().insert(ConnectIpMode::Ipv6);
+        }
+        (false, false) => (), // allow both ipv4 and ipv6, nothing to do this is the default
     }
 
     if let Some((body, ct)) = input {

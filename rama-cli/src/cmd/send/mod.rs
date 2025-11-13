@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 pub mod http;
 
+mod arg;
+
 pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
     if cfg.uri.is_empty() {
         return Err(OpaqueError::from_display("empty URI is not valid").into_boxed());
@@ -107,8 +109,12 @@ pub struct SendCommand {
     proxy_insecure: bool,
 
     #[arg(long)]
-    /// (TLS) the desired tls version to use (automatically defined by default, choices are: 1.0, 1.1, 1.2 and 1.3)
-    tls_max: Option<String>,
+    /// (TLS) the desired MAX tls version to use
+    ///
+    /// Can be set together with one of the TLS version
+    /// flags to enforce a specific TLS version: --tlsv1.0,
+    /// --tlsv1.1, --tlsv1.2, --tlsv1.3
+    tls_max: Option<arg::TlsVersion>,
 
     #[arg(long = "tlsv1.0", default_value_t = false)]
     /// (TLS) Force rama to use TLS version 1.0 or later when connecting to a remote TLS server.
@@ -200,6 +206,18 @@ pub struct SendCommand {
     ///
     /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http2
     http_3: bool,
+
+    #[arg(long, short = '4')]
+    /// Use IPv4 addresses only when resolving hostnames, and not for example try IPv6.
+    ipv4: bool,
+
+    #[arg(long, short = '6')]
+    /// Use IPv6 addresses only when resolving hostnames, and not for example try IPv4.
+    ///
+    /// Your resolver may respond to an IPv6-only resolve request by
+    /// returning IPv6 addresses that contain "mapped" IPv4 addresses
+    /// for compatibility purposes. macOS is known to do this.
+    ipv6: bool,
 
     #[arg(long, short = 'H')]
     /// (HTTP) Extra header to include in information sent.

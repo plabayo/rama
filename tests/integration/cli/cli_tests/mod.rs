@@ -1,9 +1,13 @@
 mod utils;
 
 mod help;
-mod http_serve;
 
-mod discard;
-mod echo;
-mod ip;
-mod stunnel;
+mod serve_discard;
+mod serve_echo;
+mod serve_fp;
+mod serve_fs;
+mod serve_ip;
+mod serve_proxy;
+mod serve_stunnel;
+
+mod probe;
