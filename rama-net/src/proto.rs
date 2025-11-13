@@ -276,8 +276,8 @@ impl PartialEq<str> for Protocol {
             ProtocolKind::Http => other.eq_ignore_ascii_case(SCHEME_HTTP) || other.is_empty(),
             ProtocolKind::Socks5 => other.eq_ignore_ascii_case(SCHEME_SOCKS5),
             ProtocolKind::Socks5h => other.eq_ignore_ascii_case(SCHEME_SOCKS5H),
-            ProtocolKind::Ws => other.eq_ignore_ascii_case("ws"),
-            ProtocolKind::Wss => other.eq_ignore_ascii_case("wss"),
+            ProtocolKind::Ws => other.eq_ignore_ascii_case(SCHEME_WS),
+            ProtocolKind::Wss => other.eq_ignore_ascii_case(SCHEME_WSS),
             ProtocolKind::Custom(s) => other.eq_ignore_ascii_case(s),
         }
     }

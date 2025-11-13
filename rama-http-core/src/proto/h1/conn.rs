@@ -379,7 +379,9 @@ where
                 self.state.reading = Reading::Body(decoder.clone());
                 return self.poll_read_body(cx);
             }
-            _ => unreachable!("poll_read_body invalid state: {:?}", self.state.reading),
+            Reading::Closed | Reading::KeepAlive | Reading::Init => {
+                unreachable!("poll_read_body invalid state: {:?}", self.state.reading)
+            }
         };
 
         self.state.reading = reading;
@@ -538,7 +540,7 @@ where
 
         match self.state.writing {
             Writing::Init => self.io.can_headers_buf(),
-            _ => false,
+            Writing::Body(_) | Writing::KeepAlive | Writing::Closed => false,
         }
     }
 
@@ -706,7 +708,9 @@ where
                     };
                 }
             }
-            _ => unreachable!("write_trailers invalid state: {:?}", self.state.writing),
+            Writing::Closed | Writing::KeepAlive | Writing::Init => {
+                unreachable!("write_trailers invalid state: {:?}", self.state.writing)
+            }
         }
     }
 
@@ -724,7 +728,9 @@ where
                     Writing::Closed
                 }
             }
-            _ => unreachable!("write_body invalid state: {:?}", self.state.writing),
+            Writing::Closed | Writing::KeepAlive | Writing::Init => {
+                unreachable!("write_body invalid state: {:?}", self.state.writing)
+            }
         };
 
         self.state.writing = state;

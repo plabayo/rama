@@ -136,14 +136,13 @@ impl<T> From<Response<T>> for HyperiumResponse<T> {
 
         hyper_extensions.insert(parts.extensions);
 
-        let mut builder = HyperiumResponse::builder()
-            .status(parts.status)
-            .version(parts.version);
+        let mut response = Self::new(body);
+        *response.status_mut() = parts.status;
+        *response.version_mut() = parts.version;
+        *response.headers_mut() = parts.headers;
+        *response.extensions_mut() = hyper_extensions;
 
-        *builder.headers_mut().unwrap() = parts.headers;
-        *builder.extensions_mut().unwrap() = hyper_extensions;
-
-        builder.body(body).unwrap()
+        response
     }
 }
 

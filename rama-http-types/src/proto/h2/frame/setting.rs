@@ -344,14 +344,38 @@ impl SettingsConfig {
 
 impl PartialEq for SettingsConfig {
     fn eq(&self, other: &Self) -> bool {
-        self.header_table_size == other.header_table_size
-            && self.enable_push == other.enable_push
-            && self.max_concurrent_streams == other.max_concurrent_streams
-            && self.initial_window_size == other.initial_window_size
-            && self.max_frame_size == other.max_frame_size
-            && self.max_header_list_size == other.max_header_list_size
-            && self.enable_connect_protocol == other.enable_connect_protocol
-            && self.no_rfc7540_priorities == other.no_rfc7540_priorities
+        let Self {
+            header_table_size,
+            enable_push,
+            max_concurrent_streams,
+            initial_window_size,
+            max_frame_size,
+            max_header_list_size,
+            enable_connect_protocol,
+            no_rfc7540_priorities,
+            setting_order: _,
+        } = self;
+
+        let Self {
+            header_table_size: other_header_table_size,
+            enable_push: other_enable_push,
+            max_concurrent_streams: other_max_concurrent_streams,
+            initial_window_size: other_initial_window_size,
+            max_frame_size: other_max_frame_size,
+            max_header_list_size: other_max_header_list_size,
+            enable_connect_protocol: other_enable_connect_protocol,
+            no_rfc7540_priorities: other_no_rfc7540_priorities,
+            setting_order: _,
+        } = other;
+
+        header_table_size == other_header_table_size
+            && enable_push == other_enable_push
+            && max_concurrent_streams == other_max_concurrent_streams
+            && initial_window_size == other_initial_window_size
+            && max_frame_size == other_max_frame_size
+            && max_header_list_size == other_max_header_list_size
+            && enable_connect_protocol == other_enable_connect_protocol
+            && no_rfc7540_priorities == other_no_rfc7540_priorities
     }
 }
 

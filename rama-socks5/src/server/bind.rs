@@ -470,7 +470,7 @@ mod test {
                         target: Some(Arc::new(Mutex::new(target))),
                     },
                 },
-                _ => unreachable!(),
+                MockReply::Error(_) | MockReply::Success { .. } => unreachable!(),
             };
             self
         }

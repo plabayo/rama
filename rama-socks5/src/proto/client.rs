@@ -230,9 +230,17 @@ pub struct RequestRef<'a> {
 
 impl PartialEq<Request> for RequestRef<'_> {
     fn eq(&self, other: &Request) -> bool {
-        self.version == other.version
-            && self.command == other.command
-            && self.destination.eq(&other.destination)
+        let Self {
+            version,
+            command,
+            destination,
+        } = self;
+        let Request {
+            version: other_version,
+            command: other_command,
+            destination: other_destination,
+        } = other;
+        version == other_version && command == other_command && destination.eq(&other_destination)
     }
 }
 

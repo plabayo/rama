@@ -126,7 +126,8 @@ where
         if self.config.parse_rest {
             let empty_line_handling = match self.config.empty_line_handling {
                 EmptyLineHandling::ParseAlways => EmptyLineHandling::IgnoreEmpty,
-                empty_line_handling => empty_line_handling,
+                empty_line_handling @ (EmptyLineHandling::IgnoreBlank
+                | EmptyLineHandling::IgnoreEmpty) => empty_line_handling,
             };
 
             if let Some(item) = parse_line(&self.in_queue, empty_line_handling) {

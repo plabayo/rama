@@ -85,14 +85,18 @@ mod tests {
     fn assert_ready<R, G, E>(result: PolicyResult<R, G, E>) -> G {
         match result.output {
             PolicyOutput::Ready(guard) => guard,
-            _ => panic!("unexpected output, expected ready"),
+            PolicyOutput::Abort(_) | PolicyOutput::Retry => {
+                panic!("unexpected output, expected ready")
+            }
         }
     }
 
     fn assert_abort<R, G, E>(result: &PolicyResult<R, G, E>) {
         match result.output {
             PolicyOutput::Abort(_) => (),
-            _ => panic!("unexpected output, expected abort"),
+            PolicyOutput::Ready(_) | PolicyOutput::Retry => {
+                panic!("unexpected output, expected abort")
+            }
         }
     }
 

@@ -68,28 +68,28 @@ impl Error {
     fn is_incomplete_message(&self) -> bool {
         match self {
             Self::Hyper(err) => err.is_incomplete_message(),
-            _ => false,
+            Self::AbsoluteUriRequired | Self::Io(_) | Self::UnsupportedVersion => false,
         }
     }
 
     fn is_parse(&self) -> bool {
         match self {
             Self::Hyper(err) => err.is_parse(),
-            _ => false,
+            Self::AbsoluteUriRequired | Self::Io(_) | Self::UnsupportedVersion => false,
         }
     }
 
     fn is_parse_too_large(&self) -> bool {
         match self {
             Self::Hyper(err) => err.is_parse_too_large(),
-            _ => false,
+            Self::AbsoluteUriRequired | Self::Io(_) | Self::UnsupportedVersion => false,
         }
     }
 
     fn is_parse_status(&self) -> bool {
         match self {
             Self::Hyper(err) => err.is_parse_status(),
-            _ => false,
+            Self::AbsoluteUriRequired | Self::Io(_) | Self::UnsupportedVersion => false,
         }
     }
 }

@@ -248,7 +248,7 @@ impl<T, U> Callback<T, U> {
         match *self {
             Self::Retry(Some(ref tx)) => tx.is_closed(),
             Self::NoRetry(Some(ref tx)) => tx.is_closed(),
-            _ => unreachable!(),
+            Self::NoRetry(_) | Self::Retry(_) => unreachable!(),
         }
     }
 
@@ -256,7 +256,7 @@ impl<T, U> Callback<T, U> {
         match *self {
             Self::Retry(Some(ref mut tx)) => tx.poll_closed(cx),
             Self::NoRetry(Some(ref mut tx)) => tx.poll_closed(cx),
-            _ => unreachable!(),
+            Self::NoRetry(_) | Self::Retry(_) => unreachable!(),
         }
     }
 

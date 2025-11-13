@@ -415,9 +415,8 @@ impl Stream {
 
     pub(super) fn ensure_content_length_zero(&self) -> Result<(), ()> {
         match self.content_length {
-            ContentLength::Remaining(0) => Ok(()),
+            ContentLength::Remaining(0) | ContentLength::Head | ContentLength::Omitted => Ok(()),
             ContentLength::Remaining(_) => Err(()),
-            _ => Ok(()),
         }
     }
 

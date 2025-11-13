@@ -132,7 +132,9 @@ impl UserAgent {
                     info: UserAgentInfo { kind, .. },
                     ..
                 } => Some(*kind),
-                _ => None,
+                UserAgentData::Device(_) | UserAgentData::Platform(_) | UserAgentData::Unknown => {
+                    None
+                }
             },
         }
     }
@@ -142,7 +144,7 @@ impl UserAgent {
     pub fn ua_version(&self) -> Option<usize> {
         match &self.data {
             UserAgentData::Standard { info, .. } => info.version,
-            _ => None,
+            UserAgentData::Device(_) | UserAgentData::Platform(_) | UserAgentData::Unknown => None,
         }
     }
 
@@ -157,7 +159,7 @@ impl UserAgent {
                 None | Some(PlatformLike::Device(_)) => None,
             },
             UserAgentData::Platform(platform) => Some(*platform),
-            _ => None,
+            UserAgentData::Device(_) | UserAgentData::Unknown => None,
         }
     }
 
