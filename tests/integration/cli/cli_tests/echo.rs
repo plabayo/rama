@@ -29,7 +29,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 async fn test_http_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63101, "http");
+    let _guard = utils::RamaService::serve_echo(63101, "http");
 
     let lines = utils::RamaService::http(vec!["--http1.1", "http://127.0.0.1:63101"]).unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
@@ -38,8 +38,9 @@ async fn test_http_echo() {
         "http://127.0.0.1:63101?q=1",
         "-H",
         "foo: bar",
-        "-D",
+        "-d",
         r##"{"a":4}"##,
+        "--json",
     ])
     .unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
@@ -102,7 +103,7 @@ async fn test_http_echo() {
 async fn test_tcp_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63110, "tcp");
+    let _guard = utils::RamaService::serve_echo(63110, "tcp");
 
     let mut stream = None;
     for i in 0..5 {
@@ -132,7 +133,7 @@ async fn test_tcp_echo() {
 async fn test_tls_tcp_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63111, "tls");
+    let _guard = utils::RamaService::serve_echo(63111, "tls");
 
     let mut stream = None;
     for i in 0..5 {
@@ -167,7 +168,7 @@ async fn test_tls_tcp_echo() {
 async fn test_udp_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63112, "udp");
+    let _guard = utils::RamaService::serve_echo(63112, "udp");
     let socket = UdpSocket::bind(SocketAddress::local_ipv4(63113))
         .await
         .unwrap();
@@ -194,14 +195,15 @@ async fn test_udp_echo() {
 async fn test_https_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63103, "https");
+    let _guard = utils::RamaService::serve_echo(63103, "https");
 
     let lines = utils::RamaService::http(vec![
         "https://127.0.0.1:63103?q=1",
         "-H",
         "foo: bar",
-        "-D",
+        "-d",
         r##"{"a":4}"##,
+        "--json",
     ])
     .unwrap();
 
@@ -280,7 +282,7 @@ async fn test_https_echo() {
 async fn test_https_forced_version() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63104, "https");
+    let _guard = utils::RamaService::serve_echo(63104, "https");
 
     struct Test {
         cli_flag: &'static str,
@@ -317,8 +319,9 @@ async fn test_https_forced_version() {
             "https://127.0.0.1:63104?q=1",
             "-H",
             "foo: bar",
-            "-D",
+            "-d",
             r##"{"a":4}"##,
+            "--json",
         ])
         .unwrap();
 

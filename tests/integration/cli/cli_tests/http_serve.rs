@@ -6,7 +6,7 @@ use std::path::PathBuf;
 async fn test_http_serve_placeholder() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve(63109, None);
+    let _guard = utils::RamaService::serve_fs(63109, None);
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63109"]).unwrap();
 
     assert!(lines.contains("GET /"), "req method, lines: {lines:?}",);
@@ -29,7 +29,7 @@ async fn test_http_serve_placeholder() {
 async fn test_http_serve_file() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve(63105, Some(PathBuf::from("test-files/hello.txt")));
+    let _guard = utils::RamaService::serve_fs(63105, Some(PathBuf::from("test-files/hello.txt")));
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63105"]).unwrap();
 
     assert!(lines.contains("GET /"), "req method, lines: {lines:?}",);
@@ -52,7 +52,7 @@ async fn test_http_serve_file() {
 async fn test_http_serve_dir() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve(63106, Some(PathBuf::from("test-files")));
+    let _guard = utils::RamaService::serve_fs(63106, Some(PathBuf::from("test-files")));
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63106/hello.txt"]).unwrap();
 
     assert!(
@@ -78,7 +78,7 @@ async fn test_http_serve_dir() {
 async fn test_http_serve_dir_index() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve(63107, Some(PathBuf::from("test-files")));
+    let _guard = utils::RamaService::serve_fs(63107, Some(PathBuf::from("test-files")));
 
     // root (dir)
     {
@@ -126,7 +126,7 @@ async fn test_http_serve_dir_index() {
 async fn test_http_serve_dir_404() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve(63108, Some(PathBuf::from("test-files")));
+    let _guard = utils::RamaService::serve_fs(63108, Some(PathBuf::from("test-files")));
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63108/missing.txt"]).unwrap();
     assert!(
         lines.contains("GET /missing.txt"),

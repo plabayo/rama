@@ -17,7 +17,7 @@ use ::{
 #[ignore]
 async fn test_http_ip() {
     utils::init_tracing();
-    let _guard = utils::RamaService::ip(63100, false, false);
+    let _guard = utils::RamaService::serve_ip(63100, false, false);
     test_http_ip_inner("http://127.0.0.1:63100");
 }
 
@@ -26,7 +26,7 @@ async fn test_http_ip() {
 #[ignore]
 async fn test_https_ip() {
     utils::init_tracing();
-    let _guard = utils::RamaService::ip(63118, false, true);
+    let _guard = utils::RamaService::serve_ip(63118, false, true);
     test_http_ip_inner("https://127.0.0.1:63118");
 }
 
@@ -63,7 +63,7 @@ fn test_http_ip_inner(addr: &'static str) {
 async fn test_tcp_ip() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::ip(63119, true, false);
+    let _guard = utils::RamaService::serve_ip(63119, true, false);
 
     let mut stream = None;
     for i in 0..5 {
@@ -92,7 +92,7 @@ async fn test_tcp_ip() {
 async fn test_tls_tcp_ip() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::ip(63120, true, true);
+    let _guard = utils::RamaService::serve_ip(63120, true, true);
 
     let mut stream = None;
     for i in 0..5 {

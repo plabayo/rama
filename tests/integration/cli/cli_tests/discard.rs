@@ -22,7 +22,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 async fn test_tcp_discard() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::discard(63114, "tcp");
+    let _guard = utils::RamaService::serve_discard(63114, "tcp");
 
     let mut stream = None;
     for i in 0..5 {
@@ -65,7 +65,7 @@ async fn test_tcp_discard() {
 async fn test_tls_tcp_discard() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::discard(63115, "tls");
+    let _guard = utils::RamaService::serve_discard(63115, "tls");
 
     let mut stream = None;
     for i in 0..5 {
@@ -113,7 +113,7 @@ async fn test_tls_tcp_discard() {
 async fn test_udp_discard() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::discard(63116, "udp");
+    let _guard = utils::RamaService::serve_discard(63116, "udp");
     let socket = UdpSocket::bind(SocketAddress::local_ipv4(63117))
         .await
         .unwrap();

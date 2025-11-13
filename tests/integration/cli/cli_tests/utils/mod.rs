@@ -20,7 +20,7 @@ pub(super) struct RamaService {
 
 impl RamaService {
     /// Start the rama Ip service with the given port.
-    pub(super) fn ip(port: u16, transport: bool, secure: bool) -> Self {
+    pub(super) fn serve_ip(port: u16, transport: bool, secure: bool) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -31,6 +31,7 @@ impl RamaService {
 
         builder
             .stdout(std::process::Stdio::piped())
+            .arg("serve")
             .arg("ip")
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
@@ -81,7 +82,7 @@ impl RamaService {
     }
 
     /// Start the rama echo service with the given port.
-    pub(super) fn echo(port: u16, mode: &'static str) -> Self {
+    pub(super) fn serve_echo(port: u16, mode: &'static str) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -106,6 +107,7 @@ impl RamaService {
 
         builder
             .stdout(std::process::Stdio::piped())
+            .arg("serve")
             .arg("echo")
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
@@ -143,7 +145,7 @@ impl RamaService {
     }
 
     /// Start the rama discard service with the given port.
-    pub(super) fn discard(port: u16, mode: &'static str) -> Self {
+    pub(super) fn serve_discard(port: u16, mode: &'static str) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -168,6 +170,7 @@ impl RamaService {
 
         builder
             .stdout(std::process::Stdio::piped())
+            .arg("serve")
             .arg("discard")
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
@@ -228,13 +231,13 @@ impl RamaService {
     pub(super) fn http(
         input_args: Vec<&'static str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let mut args = vec!["http", "--debug", "-v", "--all", "-F", "-k"];
+        let mut args = vec!["http", "--verbose", "-v", "--all", "-L", "-k"];
         args.extend(input_args);
         Self::run(args)
     }
 
     /// Start the rama serve service with the given port and content path.
-    pub(super) fn serve(port: u16, path: Option<PathBuf>) -> Self {
+    pub(super) fn serve_fs(port: u16, path: Option<PathBuf>) -> Self {
         let secure = true;
 
         let mut builder = escargot::CargoBuild::new()
@@ -262,6 +265,7 @@ impl RamaService {
         builder
             .stdout(std::process::Stdio::piped())
             .arg("serve")
+            .arg("fs")
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
             .env(
@@ -299,9 +303,9 @@ impl RamaService {
         Self { process }
     }
 
-    // Start the rama stunnel server with the default port and the forward address.
+    // Start the rama stunnel exit node with the default port and the forward address.
     // with self-signed certificates for testing
-    pub(super) fn stunnel_server() -> Self {
+    pub(super) fn serve_stunnel_exit() -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -312,8 +316,9 @@ impl RamaService {
 
         builder
             .stdout(std::process::Stdio::piped())
+            .arg("serve")
             .arg("stunnel")
-            .arg("server")
+            .arg("exit")
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
@@ -341,8 +346,8 @@ impl RamaService {
         Self { process }
     }
 
-    /// Start the rama stunnel client in insecure mode (skip verification).
-    pub(super) fn stunnel_client_insecure() -> Self {
+    /// Start the rama stunnel entry node in insecure mode (skip verification).
+    pub(super) fn serve_stunnel_entry_insecure() -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -353,8 +358,9 @@ impl RamaService {
 
         builder
             .stdout(std::process::Stdio::piped())
+            .arg("serve")
             .arg("stunnel")
-            .arg("client")
+            .arg("entry")
             .arg("--insecure")
             .env(
                 "RUST_LOG",
