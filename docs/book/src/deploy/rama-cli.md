@@ -8,24 +8,8 @@ It also allows you to run a `rama` proxy, configured to your needs.
 
 ## Usage
 
-```text
-rama cli to move and transform network packets
-
-Usage: rama <COMMAND>
-
-Commands:
-  http   rama http client
-  tls    rama tls support
-  proxy  rama proxy server
-  echo   rama echo service (echos the http request and tls client config)
-  ip     rama ip service (returns the ip address of the client)
-  fp     rama fp service (used for FP collection in purpose of UA emulation)
-  serve  rama serve service (serves a file, directory or placeholder page)
-  help   Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
+```bash
+rama --help
 ```
 
 ## Install
@@ -33,7 +17,7 @@ Options:
 The easiest way to install `rama` is by using `cargo`:
 
 ```sh
-cargo install rama-cli@0.3.0-alpha.2
+cargo install rama-cli@0.3.0-alpha.3
 ```
 
 This will install `rama-cli` from source and make it available
@@ -42,7 +26,7 @@ a pre-built binary when available for your platform you can do so
 using [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall):
 
 ```sh
-cargo binstall rama-cli@0.3.0-alpha.2
+cargo binstall rama-cli@0.3.0-alpha.3
 ```
 
 On 🍎 MacOS you can also install the `rama` binary using [HomeBrew](https://brew.sh/):
