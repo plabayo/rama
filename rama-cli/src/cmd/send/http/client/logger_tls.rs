@@ -78,7 +78,7 @@ where
                 {
                     eprintln!("* Server Certificate:");
                     if let Err(err) =
-                        crate::utils::tls::write_cert_info(&x509, &mut std::io::stderr())
+                        crate::utils::tls::write_cert_info(&x509, "*  ", &mut std::io::stderr())
                     {
                         tracing::error!(
                             "failed to write server TLS certificate information to STDERR: {err}"

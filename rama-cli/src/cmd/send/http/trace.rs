@@ -2,22 +2,14 @@ use rama::{
     error::{ErrorContext, OpaqueError},
     telemetry::tracing::Level,
 };
-use std::{env::temp_dir, fs::OpenOptions, path::PathBuf};
+use std::{fs::OpenOptions, path::PathBuf};
 use tracing_subscriber::{Layer, filter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use tui_logger::TuiTracingSubscriberLayer;
 
 pub(super) fn init_logger(
-    file_path: Option<PathBuf>,
+    log_file_path: Option<PathBuf>,
     use_tui: bool,
 ) -> Result<Option<PathBuf>, OpaqueError> {
-    let log_file_path = file_path.or_else(|| {
-        if use_tui {
-            Some(temp_dir().join("rama-cli-send-http.txt"))
-        } else {
-            None
-        }
-    });
-
     if let Some(log_file_path) = log_file_path.as_deref() {
         let log_file = OpenOptions::new()
             .append(true)

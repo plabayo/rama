@@ -105,7 +105,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         for (index, x509) in x509_stack.iter().enumerate() {
             println!("Certificate #{}:", index + 1);
             println!();
-            crate::utils::tls::write_cert_info(x509, &mut std::io::stdout())
+            crate::utils::tls::write_cert_info(x509, "* ", &mut std::io::stdout())
                 .context("write certificate info to stdout")?;
             println!();
         }

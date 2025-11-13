@@ -68,18 +68,30 @@ pub fn new_server_config(alpn: Option<Vec<ApplicationProtocol>>) -> ServerConfig
     }
 }
 
-pub(crate) fn write_cert_info(x509: &X509, w: &mut impl std::io::Write) -> std::io::Result<()> {
-    write!(w, "* subject:",)?;
+pub(crate) fn write_cert_info(
+    x509: &X509,
+    row_prefix: &str,
+    w: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    write!(w, "{row_prefix}subject:",)?;
     fmt_crt_name(x509.subject_name(), w)?;
     writeln!(w)?;
 
-    write!(w, "* start date: {}{NATIVE_NEWLINE}", x509.not_before())?;
-    write!(w, "* expire date: {}{NATIVE_NEWLINE}", x509.not_after())?;
+    write!(
+        w,
+        "{row_prefix}start date: {}{NATIVE_NEWLINE}",
+        x509.not_before()
+    )?;
+    write!(
+        w,
+        "{row_prefix}expire date: {}{NATIVE_NEWLINE}",
+        x509.not_after()
+    )?;
 
     if let Some(alt_names) = x509.subject_alt_names()
         && !alt_names.is_empty()
     {
-        write!(w, "* subjectAltNames:")?;
+        write!(w, "{row_prefix}subjectAltNames:")?;
         for (index, alt_name) in alt_names.iter().enumerate() {
             let separator = if index == 0 { " " } else { ", " };
             if let Some(domain) = alt_name.dnsname() {
@@ -101,7 +113,7 @@ pub(crate) fn write_cert_info(x509: &X509, w: &mut impl std::io::Write) -> std::
         writeln!(w)?;
     }
 
-    write!(w, "* issuer:")?;
+    write!(w, "{row_prefix}issuer:")?;
     fmt_crt_name(x509.issuer_name(), w)?;
     writeln!(w)?;
 
