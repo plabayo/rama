@@ -73,7 +73,7 @@
 //! > 🗒️ _Footnotes_
 //! >
 //! > * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/2)
-//! > * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/3)
+//! > * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2026 Q1)](https://github.com/plabayo/rama/milestone/3)
 //! > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](https://ramaproxy.org/book/sponsor.html) to help accelerate its priority.
 //!
 //! The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
