@@ -53,7 +53,7 @@ macro_rules! name_list {
 }
 
 name_list![
-    "Karen Spärck Jones",
+    "Karen Sparck Jones",
     "Grant Imahara",
     "Douglas Adams",
     "Ian Murdock",
@@ -68,7 +68,7 @@ name_list![
     "Joe Armstrong",
     "David Bowie",
     "Barbara Liskov",
-    "Kris Nóva",
+    "Kris Nova",
     "Alan Turing",
     "Sir Clive Sinclair",
     "Ada Lovelace",
@@ -92,7 +92,12 @@ impl XClacksOverhead {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let index = now as usize % NAMES.len();
+        Self::new_random(now as usize)
+    }
+
+    #[inline(always)]
+    fn new_random(n: usize) -> Self {
+        let index = n % NAMES.len();
         Self(HeaderValueString::from_static(NAMES[index]))
     }
 
@@ -127,13 +132,55 @@ impl FromStr for XClacksOverhead {
 }
 
 impl Default for XClacksOverhead {
+    #[inline(always)]
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl fmt::Display for XClacksOverhead {
+    #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::HeaderEncode;
+
+    use ahash::{HashSet, HashSetExt as _};
+
+    fn test_value(value: &XClacksOverhead) -> String {
+        let _ = value.encode_to_value();
+
+        let s = value.to_string();
+        let _ = XClacksOverhead::from_str(&s).unwrap();
+
+        s
+    }
+
+    #[test]
+    fn test_new() {
+        let value = XClacksOverhead::new();
+        let _ = test_value(&value);
+    }
+
+    #[test]
+    fn test_default() {
+        let value = XClacksOverhead::default();
+        let _ = test_value(&value);
+    }
+
+    #[test]
+    fn test_random_values() {
+        let mut unique_values = HashSet::new();
+        for index in 0..NAMES.len() * 2 {
+            let value = XClacksOverhead::new_random(index);
+            let s = test_value(&value);
+            unique_values.insert(s);
+        }
+        assert_eq!(NAMES.len(), unique_values.len());
     }
 }
