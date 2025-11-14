@@ -92,11 +92,11 @@ impl XClacksOverhead {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        Self::new_random(now as usize)
+        Self::new_with_index(now as usize)
     }
 
     #[inline(always)]
-    fn new_random(n: usize) -> Self {
+    fn new_with_index(n: usize) -> Self {
         let index = n % NAMES.len();
         Self(HeaderValueString::from_static(NAMES[index]))
     }
@@ -177,7 +177,7 @@ mod tests {
     fn test_random_values() {
         let mut unique_values = HashSet::new();
         for index in 0..NAMES.len() * 2 {
-            let value = XClacksOverhead::new_random(index);
+            let value = XClacksOverhead::new_with_index(index);
             let s = test_value(&value);
             unique_values.insert(s);
         }
