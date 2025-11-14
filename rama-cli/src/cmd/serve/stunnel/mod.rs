@@ -2,28 +2,28 @@
 //!
 //! ## With auto-generated self-signed certificate (development & testing only)
 //!
-//! 1. rama echo echo
-//! 2. rama stunnel server --listen 127.0.0.1:8002 --forward 127.0.0.1:8080
-//! 3. rama stunnel client --listen 127.0.0.1:8003 --connect (127.0.0.1 | localhost):8002 --insecure
+//! 1. rama serve echo
+//! 2. rama serve stunnel exit --bind 127.0.0.1:8002 --forward 127.0.0.1:8080
+//! 3. rama serve stunnel entry --bind 127.0.0.1:8003 --connect 127.0.0.1:8002 --insecure
 //!
 //! Test:
 //!
-//! 4. rama http 127.0.0.1:8003
+//! 4. rama :8003
 //!
 //! ## Explicitily provided certificates
 //!
-//! 1. rama echo
-//! 2. rama stunnel server --listen 127.0.0.1:8002 \
+//! 1. rama serve echo
+//! 2. rama serve stunnel exit --bind 127.0.0.1:8002 \
 //!    --forward 127.0.0.1:8080 \
 //!    --cert server-cert.pem \
 //!    --key server-key.pem
-//! 3. rama stunnel client --listen 127.0.0.1:8003 \
+//! 3. rama serve stunnel entry --bind 127.0.0.1:8003 \
 //!    --connect (127.0.0.1 | localhost):8002 \
 //!    --cacert cacert.pem
 //!
 //! Test:
 //!
-//! 4. rama http 127.0.0.1:8003
+//! 4. rama :8003
 
 use rama::{
     Layer,
