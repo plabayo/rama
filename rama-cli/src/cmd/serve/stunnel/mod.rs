@@ -8,7 +8,7 @@
 //!
 //! Test:
 //!
-//! 4. rama send 127.0.0.1:8003
+//! 4. rama :8003
 //!
 //! ## Explicitily provided certificates
 //!
