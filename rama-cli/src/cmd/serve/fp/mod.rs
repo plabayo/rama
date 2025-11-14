@@ -11,7 +11,9 @@ use rama::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            Cookie, HeaderMapExt, SecWebSocketProtocol, all_client_hint_header_name_strings,
+            Cookie, HeaderEncode, HeaderMapExt, SecWebSocketProtocol, TypedHeader,
+            all_client_hint_header_name_strings,
+            exotic::XClacksOverhead,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
             sec_websocket_extensions,
         },
@@ -155,11 +157,6 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         Some(cfg) => Some(cfg.try_into()?),
     };
 
-    let ch_headers = all_client_hint_header_name_strings()
-        .join(", ")
-        .parse::<HeaderValue>()
-        .context("parse header value")?;
-
     let pg_url = std::env::var("DATABASE_URL").ok();
     let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
@@ -182,6 +179,11 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             )
             .into_service(service_fn(endpoints::ws_api)),
     );
+
+    let ch_headers = all_client_hint_header_name_strings()
+        .join(", ")
+        .parse::<HeaderValue>()
+        .context("parse header value")?;
 
     let inner_http_service = HijackLayer::new(
         HttpMatcher::custom(false),
@@ -208,6 +210,9 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
         CatchPanicLayer::new(),
+        SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
+            std::future::ready(XClacksOverhead::new().encode_to_value())
+        }),
         AddRequiredResponseHeadersLayer::default(),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-sponsored-by"),

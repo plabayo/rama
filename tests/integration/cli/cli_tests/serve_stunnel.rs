@@ -7,15 +7,15 @@ async fn test_stunnel_full() {
 
     let _echo = utils::RamaService::serve_echo(63121, "http");
 
-    // stunnel server on 63122 (TLS termination -> forwards to localhost:63121)
-    let _stunnel_server =
+    // stunnel exit node on 63122 (TLS termination -> forwards to localhost:63121)
+    let _stunnel_exit_node =
         utils::RamaService::serve_stunnel_exit("127.0.0.1:63122", "127.0.0.1:63121");
 
-    // stunnel client on 63123 (TLS origination -> connects to 63122)
-    let _stunnel_client =
+    // stunnel entry node on 63123 (TLS origination -> connects to 63122)
+    let _stunnel_entry_node =
         utils::RamaService::serve_stunnel_entry_insecure("127.0.0.1:63123", "127.0.0.1:63122");
 
-    // Test: rama http client -> stunnel client (63123) -> stunnel server (63122) -> http server (63121)
+    // Test: rama http client -> stunnel entry node (63123) -> stunnel exit node (63122) -> http server (63121)
     let lines = utils::RamaService::http(vec![
         "127.0.0.1:63123",
         "-d",

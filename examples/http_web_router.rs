@@ -44,6 +44,10 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
+use rama_http::{
+    headers::{HeaderEncode, TypedHeader, exotic::XClacksOverhead},
+    layer::set_header::SetResponseHeaderLayer,
+};
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde_json::json;
 use std::time::Duration;
@@ -112,6 +116,9 @@ async fn main() {
 
     let middlewares = (
         TraceLayer::new_for_http(),
+        SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
+            std::future::ready(XClacksOverhead::new().encode_to_value())
+        }),
         UriMatchRedirectLayer::permanent([
             UriMatchReplaceRule::try_new("*/v1/*", "$1/v2/$2").unwrap(), // upgrade users as-is to v2 (backwards compatible)
             // this is now a new endpoint,

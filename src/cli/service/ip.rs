@@ -5,6 +5,7 @@
 use crate::{
     Layer, Service,
     cli::ForwardKind,
+    combinators::Either,
     combinators::Either7,
     error::{BoxError, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
@@ -12,14 +13,16 @@ use crate::{
         Request, Response, StatusCode,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         headers::{Accept, HeaderMapExt},
+        headers::{HeaderEncode as _, TypedHeader as _, exotic::XClacksOverhead},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            trace::TraceLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer,
         },
         mime,
         server::HttpServer,
         service::web::response::{Html, IntoResponse, Json, Redirect},
     },
+    layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
@@ -34,7 +37,7 @@ use crate::{
 use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::http::{headers::StrictTransportSecurity, layer::set_header::SetResponseHeaderLayer};
+use crate::http::headers::StrictTransportSecurity;
 
 #[cfg(feature = "boring")]
 use crate::{
@@ -48,7 +51,6 @@ type TlsConfig = ServerConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 type TlsConfig = TlsAcceptorData;
 
-use rama_core::{combinators::Either, layer::limit::policy::UnlimitedPolicy};
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
 use tokio::io::AsyncWriteExt;
 
@@ -415,6 +417,9 @@ impl<M> IpServiceBuilder<M> {
 
         let http_service = (
             TraceLayer::new_for_http(),
+            SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
+                std::future::ready(XClacksOverhead::new().encode_to_value())
+            }),
             AddRequiredResponseHeadersLayer::default(),
             ConsumeErrLayer::default(),
             #[cfg(any(feature = "rustls", feature = "boring"))]

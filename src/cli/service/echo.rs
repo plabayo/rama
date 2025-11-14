@@ -8,7 +8,7 @@
 use crate::{
     Layer, Service,
     cli::ForwardKind,
-    combinators::{Either3, Either7},
+    combinators::{Either, Either3, Either7},
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::ExtensionsRef,
     http::{
@@ -18,6 +18,8 @@ use crate::{
         core::h2::frame::EarlyFrameCapture,
         header::USER_AGENT,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        headers::{HeaderEncode as _, TypedHeader as _, exotic::XClacksOverhead},
+        layer::set_header::SetResponseHeaderLayer,
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer,
@@ -28,9 +30,9 @@ use crate::{
         service::web::{extract::Json, response::IntoResponse},
         ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher},
     },
+    layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
-    net::fingerprint::AkamaiH2,
-    net::fingerprint::Ja4H,
+    net::fingerprint::{AkamaiH2, Ja4H},
     net::forwarded::Forwarded,
     net::http::RequestContext,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
@@ -41,7 +43,6 @@ use crate::{
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
 };
 
-use rama_core::{combinators::Either, layer::limit::policy::UnlimitedPolicy};
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
@@ -330,6 +331,9 @@ where
 
         (
             TraceLayer::new_for_http(),
+            SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
+                std::future::ready(XClacksOverhead::new().encode_to_value())
+            }),
             AddRequiredResponseHeadersLayer::default(),
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),

@@ -18,7 +18,7 @@
 //!    --cert server-cert.pem \
 //!    --key server-key.pem
 //! 3. rama serve stunnel entry --bind 127.0.0.1:8003 \
-//!    --connect (127.0.0.1 | localhost):8002 \
+//!    --connect 127.0.0.1:8002 \
 //!    --cacert cacert.pem
 //!
 //! Test:
@@ -142,7 +142,7 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
     let tcp_listener = TcpListener::bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
-        .context("bind stunnel server")?;
+        .context("bind stunnel exit node")?;
 
     let bind_address = tcp_listener
         .local_addr()
@@ -150,7 +150,7 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
     let forward_addr = cfg.forward;
 
     graceful.into_spawn_task_fn(async move |guard| {
-        tracing::info!("Stunnel server is running...");
+        tracing::info!("Stunnel exit node is running...");
         tracing::info!(
             "Listening on {} and forwarding to {}",
             bind_address,
@@ -170,7 +170,7 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
 
     let tcp_listener = TcpListener::bind(cfg.bind.clone())
         .await
-        .expect("bind stunnel client");
+        .expect("bind stunnel entry node");
 
     let bind_address = tcp_listener
         .local_addr()
@@ -178,7 +178,7 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
     let connect_authority = cfg.connect;
 
     graceful.into_spawn_task_fn(async move |guard| {
-        tracing::info!("Stunnel client is running...");
+        tracing::info!("Stunnel entry node is running...");
         tracing::info!(
             "Listening on {} and connecting to {}",
             bind_address,

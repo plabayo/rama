@@ -75,7 +75,7 @@ pub mod header {
         "x-forwarded-for",
         "x-forwarded-proto",
         "x-robots-tag",
-        "x-clacks-overhead"
+        "x-clacks-overhead",
     ];
 
     // new standard sec-headers

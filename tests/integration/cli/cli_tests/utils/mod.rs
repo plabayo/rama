@@ -453,7 +453,7 @@ impl RamaService {
 
         for line in &mut stdout {
             let line = line.unwrap();
-            if line.contains("Stunnel server is running") {
+            if line.contains("Stunnel exit node is running") {
                 break;
             }
         }
@@ -500,7 +500,7 @@ impl RamaService {
 
         for line in &mut stdout {
             let line = line.unwrap();
-            if line.contains("Stunnel client is running") {
+            if line.contains("Stunnel entry node is running") {
                 break;
             }
         }

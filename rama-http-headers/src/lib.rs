@@ -41,13 +41,11 @@ mod map_ext;
 mod req_builder_ext;
 mod resp_builder_ext;
 
+pub mod exotic;
 pub mod privacy;
 
 pub mod x_robots_tag;
 pub use x_robots_tag::XRobotsTag;
-
-pub mod x_clacks_overhead;
-pub use x_clacks_overhead::XClacksOverhead;
 
 pub mod specifier;
 

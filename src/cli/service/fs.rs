@@ -1,15 +1,16 @@
 //! [`Service`] that serves a file or directory using [`ServeFile`] or [`ServeDir`], or a placeholder page.
 
-use rama_core::{combinators::Either, layer::limit::policy::UnlimitedPolicy};
-
 use crate::{
     Layer, Service,
     cli::ForwardKind,
+    combinators::Either,
     combinators::{Either3, Either7},
     error::{BoxError, OpaqueError},
     http::{
         Request, Response, Version,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        headers::{HeaderEncode as _, TypedHeader as _, exotic::XClacksOverhead},
+        layer::set_header::SetResponseHeaderLayer,
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer,
@@ -21,6 +22,7 @@ use crate::{
             web::response::{Html, IntoResponse},
         },
     },
+    layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::stream::layer::http::BodyLimitLayer,
     proxy::haproxy::server::HaProxyLayer,
@@ -397,6 +399,9 @@ where
 
         let http_service = (
             TraceLayer::new_for_http(),
+            SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
+                std::future::ready(XClacksOverhead::new().encode_to_value())
+            }),
             AddRequiredResponseHeadersLayer::default(),
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),
