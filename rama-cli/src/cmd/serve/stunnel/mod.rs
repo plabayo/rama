@@ -4,7 +4,7 @@
 //!
 //! 1. rama serve echo
 //! 2. rama serve stunnel exit --bind 127.0.0.1:8002 --forward 127.0.0.1:8080
-//! 3. rama serve stunnel entry --bind 127.0.0.1:8003 --connect (127.0.0.1 | localhost):8002 --insecure
+//! 3. rama serve stunnel entry --bind 127.0.0.1:8003 --connect 127.0.0.1:8002 --insecure
 //!
 //! Test:
 //!
