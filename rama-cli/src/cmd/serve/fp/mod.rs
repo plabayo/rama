@@ -142,34 +142,6 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
     };
 
-    let maybe_tls_server_config = cfg.secure.then(|| {
-        new_server_config(Some(match cfg.http_version {
-            HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-            HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-            HttpVersion::Auto => {
-                vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
-            }
-        }))
-    });
-
-    let tls_acceptor_data = match maybe_tls_server_config {
-        None => None,
-        Some(cfg) => Some(cfg.try_into()?),
-    };
-
-    let pg_url = std::env::var("DATABASE_URL").ok();
-    let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
-
-    let tcp_listener = TcpListener::build()
-        .bind(cfg.bind.clone())
-        .await
-        .map_err(OpaqueError::from_boxed)
-        .context("bind fp service")?;
-
-    let bind_address = tcp_listener
-        .local_addr()
-        .context("get local addr of tcp listener")?;
-
     let ws_service = ConsumeErrLayer::default().into_layer(
         WebSocketAcceptor::new()
             .with_protocols(SecWebSocketProtocol::new("a").with_additional_protocol("b"))
@@ -243,6 +215,46 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             _ => inner_http_service,
         }));
 
+    serve_http(graceful, cfg, http_service, tcp_forwarded_layer).await
+}
+
+async fn serve_http<Response>(
+    graceful: ShutdownGuard,
+    cfg: CliCommandFingerprint,
+    http_service: impl Service<Request, Response = Response, Error = Infallible>,
+    maybe_ha_proxy_layer: Option<HaProxyLayer>,
+) -> Result<(), BoxError>
+where
+    Response: IntoResponse + Send + 'static,
+{
+    let maybe_tls_server_config = cfg.secure.then(|| {
+        new_server_config(Some(match cfg.http_version {
+            HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+            HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+            HttpVersion::Auto => {
+                vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+            }
+        }))
+    });
+
+    let tls_acceptor_data = match maybe_tls_server_config {
+        None => None,
+        Some(cfg) => Some(cfg.try_into()?),
+    };
+
+    let pg_url = std::env::var("DATABASE_URL").ok();
+    let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
+
+    let tcp_listener = TcpListener::build()
+        .bind(cfg.bind.clone())
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind fp service")?;
+
+    let bind_address = tcp_listener
+        .local_addr()
+        .context("get local addr of tcp listener")?;
+
     let tcp_service_builder = (
         AddExtensionLayer::new(Arc::new(
             State::new(pg_url, storage_auth.as_deref())
@@ -250,7 +262,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
                 .context("create state")?,
         )),
         ConsumeErrLayer::trace(tracing::Level::WARN),
-        tcp_forwarded_layer,
+        maybe_ha_proxy_layer,
         TimeoutLayer::new(Duration::from_secs(300)),
         LimitLayer::new(ConcurrentPolicy::max_with_backoff(
             2048,
