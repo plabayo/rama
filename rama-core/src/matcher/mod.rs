@@ -204,13 +204,12 @@ macro_rules! impl_matcher_service_tuple {
                     mut req: Request,
                 ) -> Result<Self::Response, Self::Error> {
                     let ($(([<M_ $T>], $T)),+, S) = &self.0;
-                    let mut ext = Extensions::new();
                     $(
+                        let mut ext = Extensions::new();
                         if [<M_ $T>].matches(Some(&mut ext), &req) {
                             req.extensions_mut().extend(ext);
                             return $T.serve(req).await;
                         }
-                        ext.clear();
                     )+
                     S.serve(req).await
                 }

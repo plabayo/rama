@@ -56,12 +56,15 @@ async fn test_server_with_haproxy_v1() {
         ))));
 
     let EstablishedClientConnection {
-        req,
-        conn: http_service,
+        mut req,
+        conn: mut http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a connection to the http server using haproxy v1");
+
+    req.extensions_mut()
+        .extend(std::mem::take(http_service.extensions_mut()));
 
     let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(req)
@@ -92,12 +95,15 @@ async fn test_server_with_haproxy_v2() {
         ))));
 
     let EstablishedClientConnection {
-        req,
-        conn: http_service,
+        mut req,
+        conn: mut http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a connection to the http server using haproxy v2");
+
+    req.extensions_mut()
+        .extend(std::mem::take(http_service.extensions_mut()));
 
     let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(req)

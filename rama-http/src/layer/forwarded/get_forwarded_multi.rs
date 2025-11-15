@@ -164,17 +164,19 @@ macro_rules! get_forwarded_service_for_tuple {
                 )*
 
                 if !forwarded_elements.is_empty() {
-                    match req.extensions_mut().get_mut::<Forwarded>() {
-                        Some(ref mut f) => {
-                            f.extend(forwarded_elements);
+                    let forwarded = match req.extensions_mut().get::<Forwarded>().cloned() {
+                        Some(mut forwarded) => {
+                            forwarded.extend(forwarded_elements);
+                            forwarded
                         }
                         None => {
                             let mut it = forwarded_elements.into_iter();
                             let mut forwarded = Forwarded::new(it.next().unwrap());
                             forwarded.extend(it);
-                            req.extensions_mut().insert(forwarded);
+                            forwarded
                         }
-                    }
+                    };
+                    req.extensions_mut().insert(forwarded);
                 }
 
                 self.inner.serve(req)

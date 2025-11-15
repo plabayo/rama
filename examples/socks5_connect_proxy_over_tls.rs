@@ -98,12 +98,15 @@ async fn main() {
     });
 
     let EstablishedClientConnection {
-        req,
-        conn: http_service,
+        mut req,
+        conn: mut http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a proxied connection ready to make http requests");
+
+    req.extensions_mut()
+        .extend(std::mem::take(http_service.extensions_mut()));
 
     tracing::info!(
         url.full = %uri,
