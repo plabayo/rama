@@ -45,5 +45,5 @@ Depending on a combination of how you learn/reason and how well I explained this
 this may or may not make sense. Please consult
 [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to see this in action in actual Rust code. GitHub should allow you to even click through
-the synbols, but this might be even easier if you clone the repo and go through them
+the symbols, but this might be even easier if you clone the repo and go through them
 in your preferred IDE.

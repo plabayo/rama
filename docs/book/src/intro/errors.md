@@ -55,7 +55,7 @@ that implements the [`std::error::Error`] trait. Using the [`OpaqueError::from_d
 you can even create errors from a displayable type.
 
 The other advantage of [`OpaqueError`] over [`BoxError`]
-is that it is Sized and can be used in places where a `Sized`` type is required,
+is that it is Sized and can be used in places where a `Sized` type is required,
 while [`BoxError`] is `?Sized` and can give you a hard time in certain scenarios.
 
 ## Error Context
