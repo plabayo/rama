@@ -14,7 +14,7 @@ use rama_net::{
     socket::{Interface, SocketService},
 };
 use rama_udp::UdpSocket;
-use rama_utils::macros::generate_field_setters;
+use rama_utils::macros::generate_set_and_with;
 
 #[cfg(feature = "dns")]
 use ::{
@@ -340,7 +340,13 @@ impl<B, I> UdpRelay<B, I> {
         self
     }
 
-    generate_field_setters!(relay_timeout, Duration);
+    generate_set_and_with! {
+        /// Define the relay timeout for this socks5 UDP server.
+        pub fn relay_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.relay_timeout = timeout;
+            self
+        }
+    }
 }
 
 #[cfg(feature = "dns")]

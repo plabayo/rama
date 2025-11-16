@@ -9,7 +9,7 @@ use rama_net::{
     socket::{Interface, SocketService},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
-use rama_utils::macros::generate_field_setters;
+use rama_utils::macros::generate_set_and_with;
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
@@ -163,7 +163,13 @@ impl<A, S> Binder<A, S> {
         self
     }
 
-    generate_field_setters!(accept_timeout, Duration);
+    generate_set_and_with! {
+        /// Define the accept timeout for this socks5 bind server.
+        pub fn accept_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.accept_timeout = timeout;
+            self
+        }
+    }
 }
 
 impl<A: fmt::Debug, S: fmt::Debug> fmt::Debug for Binder<A, S> {

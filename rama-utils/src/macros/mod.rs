@@ -207,34 +207,6 @@ pub use rama_macros::paste;
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __generate_field_setters {
-    ($field: ident, $type: ty) => {
-        $crate::macros::paste! {
-            /// Set field with Some(value)
-            pub fn [<set_ $field>](&mut self, $field: $type) -> &mut Self {
-                self.$field = Some($field);
-                self
-            }
-
-            /// Replace field with Some(value)
-            pub fn [<with_ $field>](mut self, $field: $type) -> Self {
-                self.$field = Some($field);
-                self
-            }
-
-            /// Replace field with the provided option
-            pub fn [<maybe_with_ $field>](mut self, $field: Option<$type>) -> Self {
-                self.$field = $field;
-                self
-            }
-        }
-    };
-}
-
-pub use crate::__generate_field_setters as generate_field_setters;
-
-#[doc(hidden)]
-#[macro_export]
 macro_rules! __generate_set_and_with {
     (
         $(#[$outer_doc:meta])*

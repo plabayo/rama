@@ -12,7 +12,7 @@ use rama_tcp::client::{
     Request as TcpRequest,
     service::{DefaultForwarder, TcpConnector},
 };
-use rama_utils::macros::generate_field_setters;
+use rama_utils::macros::generate_set_and_with;
 use std::{fmt, time::Duration};
 
 use super::Error;
@@ -127,7 +127,13 @@ impl<C, S> Connector<C, S> {
         self
     }
 
-    generate_field_setters!(connect_timeout, Duration);
+    generate_set_and_with! {
+        /// Define the connect timeout for this socks5 connect server.
+        pub fn connect_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.connect_timeout = timeout;
+            self
+        }
+    }
 }
 
 impl<C, S> Connector<C, S> {
