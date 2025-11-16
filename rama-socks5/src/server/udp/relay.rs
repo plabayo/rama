@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::telemetry::tracing;
-use rama_net::address::{Host, SocketAddress};
+use rama_net::address::{Host, HostWithPort, SocketAddress};
 use rama_udp::UdpSocket;
 
 use crate::proto::udp::UdpHeader;
@@ -12,7 +12,6 @@ use crate::proto::udp::UdpHeader;
 use ::{
     rama_core::{error::ErrorContext, extensions::Extensions},
     rama_dns::{BoxDnsResolver, DnsResolver},
-    rama_net::address::HostWithPort,
     rama_net::mode::DnsResolveIpMode,
     rand::seq::IteratorRandom,
     std::net::IpAddr,

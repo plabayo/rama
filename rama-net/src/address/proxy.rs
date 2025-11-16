@@ -78,7 +78,13 @@ impl Display for ProxyAddress {
         if let Some(credential) = &self.credential {
             match credential {
                 ProxyCredential::Basic(basic) => {
-                    write!(f, "{basic}@")?;
+                    let username = basic.username();
+                    let password = basic.password();
+                    if password.is_empty() {
+                        write!(f, "{username}@")?;
+                    } else {
+                        write!(f, "{username}:{password}@")?;
+                    }
                 }
                 ProxyCredential::Bearer(_) => {
                     tracing::trace!(
@@ -280,18 +286,21 @@ mod tests {
             ("socks5://127.0.0.1:8080", None),
             ("socks5://::1", Some("socks5://[::1]:1080")),
             ("socks5://[::1]:8080", None),
+            ("socks5://foo@proxy.io", Some("socks5://foo@proxy.io:1080")),
+            ("socks5://foo@proxy.io:8080", None),
             (
-                "socks5://foo:@proxy.io",
-                Some("socks5://foo:@proxy.io:1080"),
+                "socks5://foo@127.0.0.1",
+                Some("socks5://foo@127.0.0.1:1080"),
             ),
-            ("socks5://foo:@proxy.io:8080", None),
+            ("socks5://foo@127.0.0.1:8080", None),
+            ("socks5://foo@::1", Some("socks5://foo@[::1]:1080")),
+            ("socks5://foo@[::1]:8080", None),
             (
-                "socks5://foo:@127.0.0.1",
-                Some("socks5://foo:@127.0.0.1:1080"),
+                "socks5://foo:@127.0.0.1:8080",
+                Some("socks5://foo@127.0.0.1:8080"),
             ),
-            ("socks5://foo:@127.0.0.1:8080", None),
-            ("socks5://foo:@::1", Some("socks5://foo:@[::1]:1080")),
-            ("socks5://foo:@[::1]:8080", None),
+            ("socks5://foo:@::1", Some("socks5://foo@[::1]:1080")),
+            ("socks5://foo:@[::1]:8080", Some("socks5://foo@[::1]:8080")),
             (
                 "socks5://foo:bar@proxy.io",
                 Some("socks5://foo:bar@proxy.io:1080"),

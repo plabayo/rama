@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(
             s,
             format!(
-                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -x 'john:@127.0.0.1:8080'"##,
+                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -x 'john@127.0.0.1:8080'"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );

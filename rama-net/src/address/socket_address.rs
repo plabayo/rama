@@ -101,6 +101,20 @@ impl SocketAddress {
         }
     }
 
+    /// Create a [`SocketAddress`] from the std [`SocketAddr`] version.
+    #[must_use]
+    #[inline(always)]
+    pub fn from_std(addr: SocketAddr) -> Self {
+        Self::from(addr)
+    }
+
+    /// Turn the [`SocketAddress`] into the std [`SocketAddr`] version.
+    #[must_use]
+    #[inline(always)]
+    pub fn into_std(self) -> SocketAddr {
+        self.into()
+    }
+
     /// creates a new broadcast ipv4 [`SocketAddress`] for the given port
     ///
     /// # Example
