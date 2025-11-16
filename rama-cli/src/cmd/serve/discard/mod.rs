@@ -18,7 +18,7 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
-    udp::UdpSocket,
+    udp::{UdpFramed, bind_udp},
 };
 
 use clap::{Args, ValueEnum};
@@ -144,7 +144,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
                 "starting UDP discard service: bind interface = {:?}",
                 cfg.bind
             );
-            let udp_socket = UdpSocket::bind(cfg.bind.clone())
+            let udp_socket = bind_udp(cfg.bind.clone())
                 .await
                 .map_err(OpaqueError::from_boxed)
                 .context("bind UDP discard service socket")?;
@@ -167,12 +167,12 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
                     "discard service ready: bind interface = {}", cfg.bind,
                 );
 
-                let reader = StreamReader::new(udp_socket.into_framed(BytesCodec::new()).map_ok(
-                    |(bytes, addr)| {
+                let reader = StreamReader::new(
+                    UdpFramed::new(udp_socket, BytesCodec::new()).map_ok(|(bytes, addr)| {
                         tracing::trace!("read bytes for addr {addr}");
                         bytes
-                    },
-                ));
+                    }),
+                );
                 let stream = tokio::io::join(reader, tokio::io::empty());
                 let input = ServiceInput::new(stream);
 

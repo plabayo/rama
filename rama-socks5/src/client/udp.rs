@@ -6,7 +6,7 @@ use rama_core::stream::codec::{Decoder, Encoder};
 use rama_core::telemetry::tracing;
 use rama_net::address::HostWithPort;
 use rama_net::{address::SocketAddress, socket::Interface};
-use rama_udp::UdpSocket;
+use rama_udp::{UdpSocket, bind_udp};
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::{fmt, io, net::SocketAddr};
@@ -36,7 +36,7 @@ impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
         mut self,
         interface: impl TryInto<Interface, Error: Into<BoxError>>,
     ) -> Result<UdpSocketRelay<S>, HandshakeError> {
-        let socket = UdpSocket::bind(interface).await.map_err(|err| {
+        let socket = bind_udp(interface).await.map_err(|err| {
             HandshakeError::other(err).with_context("bind udp socket ready for sending")
         })?;
 
@@ -80,9 +80,12 @@ impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
             rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
         };
 
-        socket.connect(bind_address).await.map_err(|err| {
-            HandshakeError::other(err).with_context("connect to socks5 udp association socket")
-        })?;
+        socket
+            .connect(bind_address.into_std())
+            .await
+            .map_err(|err| {
+                HandshakeError::other(err).with_context("connect to socks5 udp association socket")
+            })?;
 
         tracing::trace!(
             network.local.address = %socket_addr.ip(),

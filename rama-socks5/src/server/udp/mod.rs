@@ -13,7 +13,7 @@ use rama_net::{
     address::{Host, HostWithPort, SocketAddress},
     socket::{Interface, SocketService},
 };
-use rama_udp::UdpSocket;
+use rama_udp::{UdpSocket, bind_udp};
 use rama_utils::macros::generate_set_and_with;
 
 #[cfg(feature = "dns")]
@@ -93,7 +93,7 @@ impl Service<Interface> for DefaultUdpBinder {
     type Error = BoxError;
 
     async fn serve(&self, interface: Interface) -> Result<Self::Response, Self::Error> {
-        let socket = UdpSocket::bind(interface).await?;
+        let socket = bind_udp(interface).await?;
         Ok(socket)
     }
 }

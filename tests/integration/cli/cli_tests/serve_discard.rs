@@ -1,6 +1,6 @@
 use rama::{
     extensions::Extensions, net::address::SocketAddress, tcp::client::default_tcp_connect,
-    telemetry::tracing, udp::UdpSocket,
+    telemetry::tracing, udp::bind_udp,
 };
 
 #[cfg(feature = "boring")]
@@ -113,12 +113,13 @@ async fn test_udp_discard() {
     utils::init_tracing();
 
     let _guard = utils::RamaService::serve_discard(63116, "udp");
-    let socket = UdpSocket::bind(SocketAddress::local_ipv4(63117))
-        .await
-        .unwrap();
+    let socket = bind_udp(SocketAddress::local_ipv4(63117)).await.unwrap();
 
     for i in 0..5 {
-        match socket.connect(SocketAddress::local_ipv4(63116)).await {
+        match socket
+            .connect(SocketAddress::local_ipv4(63116).into_std())
+            .await
+        {
             Ok(_) => break,
             Err(e) => {
                 tracing::error!("UdpSocket::connect error: {e}");

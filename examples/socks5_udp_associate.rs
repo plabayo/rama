@@ -24,7 +24,7 @@ use rama::{
     },
     tcp::{client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
-    udp::UdpSocket,
+    udp::bind_udp,
 };
 
 use std::convert::Infallible;
@@ -55,7 +55,7 @@ async fn main() {
         .await
         .expect("initiate socks5 UDP Associate handshake");
 
-    let udp_server = UdpSocket::bind(SocketAddress::local_ipv4(0))
+    let udp_server = bind_udp(SocketAddress::local_ipv4(0))
         .await
         .expect("bind udp server");
 

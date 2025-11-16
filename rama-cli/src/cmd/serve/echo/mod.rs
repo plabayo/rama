@@ -23,7 +23,7 @@ use rama::{
     telemetry::tracing::{self, Instrument},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     ua::profile::UserAgentDatabase,
-    udp::UdpSocket,
+    udp::bind_udp,
 };
 
 use clap::{Args, ValueEnum};
@@ -324,7 +324,7 @@ async fn bind_echo_udp_service(
     }
 
     tracing::info!("starting UDP echo service: bind interface = {:?}", cfg.bind);
-    let udp_socket = UdpSocket::bind(cfg.bind.clone())
+    let udp_socket = bind_udp(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
         .context("bind UDP echo service socket")?;

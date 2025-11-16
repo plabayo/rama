@@ -173,7 +173,7 @@ impl UdpSocketRelay {
                             "south socket: received packet (len = {len}; src = {src})",
                         );
                         self.south_read_buf.truncate(len);
-                        Ok(Some(UdpRelayState::ReadSouth(src)))
+                        Ok(Some(UdpRelayState::ReadSouth(src.into())))
                     }
 
                     Err(err) if is_fatal_io_error(&err) => {
@@ -216,7 +216,7 @@ impl UdpSocketRelay {
                 );
                 return Ok(());
             }
-            self.south.send_to(&data, server_address).await
+            self.south.send_to(&data, server_address.into_std()).await
         } else {
             tracing::trace!(
                 network.peer.address = %self.client_address.ip_addr,
@@ -227,7 +227,7 @@ impl UdpSocketRelay {
                 self.north_read_buf.len(),
             );
             self.south
-                .send_to(&self.north_read_buf, server_address)
+                .send_to(&self.north_read_buf, server_address.into_std())
                 .await
         };
 
@@ -260,7 +260,7 @@ impl UdpSocketRelay {
                 }
                 Err(err) => {
                     tracing::debug!("south socket: fatal unknown write error: {err:?}");
-                    Err(OpaqueError::from_boxed(err)
+                    Err(OpaqueError::from_std(err)
                         .context("south socket fatal unknown write error")
                         .into_boxed())
                 }
@@ -322,7 +322,7 @@ impl UdpSocketRelay {
 
         match self
             .north
-            .send_to(&self.north_write_buf, self.client_address)
+            .send_to(&self.north_write_buf, self.client_address.into_std())
             .await
         {
             Ok(len) => {
@@ -353,7 +353,7 @@ impl UdpSocketRelay {
                 }
                 Err(err) => {
                     tracing::debug!("north socket: fatal unknown write error: {err:?}");
-                    Err(OpaqueError::from_boxed(err)
+                    Err(OpaqueError::from_std(err)
                         .context("north socket fatal unknown write error")
                         .into_boxed())
                 }

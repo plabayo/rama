@@ -17,6 +17,19 @@ pub struct SocketAddress {
     pub port: u16,
 }
 
+impl PartialEq<SocketAddr> for SocketAddress {
+    fn eq(&self, other: &SocketAddr) -> bool {
+        self.port == other.port() && self.ip_addr == other.ip()
+    }
+}
+
+impl PartialEq<SocketAddress> for SocketAddr {
+    #[inline(always)]
+    fn eq(&self, other: &SocketAddress) -> bool {
+        other.eq(self)
+    }
+}
+
 impl SocketAddress {
     /// creates a new [`SocketAddress`]
     #[must_use]
