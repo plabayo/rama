@@ -32,7 +32,7 @@ pub fn request_uri<Body>(req: &Request<Body>) -> Cow<'_, Uri> {
             "{}://{}{}",
             req_ctx.protocol,
             if req_ctx.authority_has_default_port() {
-                Either::A(req_ctx.authority.host())
+                Either::A(req_ctx.authority.host)
             } else {
                 Either::B(req_ctx.authority)
             },

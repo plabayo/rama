@@ -12,7 +12,7 @@ use super::{
 };
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
-use rama_net::{address::Authority, user};
+use rama_net::{address::HostWithPort, user};
 use smallvec::{SmallVec, smallvec};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -163,7 +163,7 @@ impl Header {
 pub struct Request {
     pub version: ProtocolVersion,
     pub command: Command,
-    pub destination: Authority,
+    pub destination: HostWithPort,
 }
 
 impl Request {
@@ -225,7 +225,7 @@ impl Request {
 pub struct RequestRef<'a> {
     pub version: ProtocolVersion,
     pub command: Command,
-    pub destination: &'a Authority,
+    pub destination: &'a HostWithPort,
 }
 
 impl PartialEq<Request> for RequestRef<'_> {
@@ -253,7 +253,7 @@ impl PartialEq<RequestRef<'_>> for Request {
 
 impl<'a> RequestRef<'a> {
     #[must_use]
-    pub fn new(command: Command, destination: &'a Authority) -> Self {
+    pub fn new(command: Command, destination: &'a HostWithPort) -> Self {
         Self {
             version: ProtocolVersion::Socks5,
             command,
@@ -272,7 +272,7 @@ impl RequestRef<'_> {
     {
         let n = self.serialized_len();
 
-        match self.destination.host() {
+        match self.destination.host {
             rama_net::address::Host::Address(IpAddr::V4(_)) => {
                 tracing::trace!("write socks5 client request w/ Ipv4 addr: on stack (w={n})");
                 debug_assert_eq!(4 + 4 + 2, n);
@@ -547,7 +547,6 @@ impl<'a> UsernamePasswordRequestRef<'a> {
 #[cfg(test)]
 mod tests {
     use crate::proto::test_write_read_eq;
-    use rama_net::address::{Domain, Host};
 
     use super::*;
 
@@ -569,7 +568,7 @@ mod tests {
             Request {
                 version: ProtocolVersion::Socks5,
                 command: Command::Connect,
-                destination: Authority::local_ipv4(1234)
+                destination: HostWithPort::local_ipv4(1234)
             },
             Request,
         );
@@ -578,7 +577,7 @@ mod tests {
             Request {
                 version: ProtocolVersion::Socks5,
                 command: Command::Connect,
-                destination: Authority::local_ipv6(1450)
+                destination: HostWithPort::local_ipv6(1450)
             },
             Request,
         );
@@ -587,7 +586,7 @@ mod tests {
             RequestRef {
                 version: ProtocolVersion::Socks5,
                 command: Command::Bind,
-                destination: &Authority::new(Host::Name(Domain::example()), 1450),
+                destination: &HostWithPort::example_domain_with_port(1450),
             },
             Request,
         );

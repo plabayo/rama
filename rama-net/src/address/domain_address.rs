@@ -1,44 +1,101 @@
+use crate::Protocol;
 use crate::address::{Domain, parse_utils};
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 use std::str::FromStr;
 
-/// A [`Domain`] with an associated port
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// A [`Domain`] with an associated port (u16)
+///
+/// Example: `example.com:80`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DomainAddress {
-    domain: Domain,
-    port: u16,
+    pub domain: Domain,
+    pub port: u16,
 }
 
 impl DomainAddress {
     /// Creates a new [`DomainAddress`].
     #[must_use]
+    #[inline(always)]
     pub const fn new(domain: Domain, port: u16) -> Self {
         Self { domain, port }
     }
 
-    /// Gets the [`Domain`] reference.
+    /// Creates a new example [`DomainAddress`] for the `http` default port.
     #[must_use]
-    pub fn domain(&self) -> &Domain {
-        &self.domain
+    #[inline(always)]
+    pub const fn example_http() -> Self {
+        Self {
+            domain: Domain::example(),
+            port: Protocol::HTTP_DEFAULT_PORT,
+        }
     }
 
-    /// Consumes the [`DomainAddress`] and returns the [`Domain`].
+    /// Creates a new example [`DomainAddress`] for the `https` default port.
     #[must_use]
-    pub fn into_domain(self) -> Domain {
-        self.domain
+    #[inline(always)]
+    pub const fn example_https() -> Self {
+        Self {
+            domain: Domain::example(),
+            port: Protocol::HTTPS_DEFAULT_PORT,
+        }
     }
 
-    /// Gets the port.
+    /// Creates a new example [`DomainAddress`] for given port.
     #[must_use]
-    pub fn port(&self) -> u16 {
-        self.port
+    #[inline(always)]
+    pub const fn example_with_port(port: u16) -> Self {
+        Self {
+            domain: Domain::example(),
+            port,
+        }
     }
 
-    /// Consume self into its parts: `(Domain, port)`
+    /// Creates a new localhost [`DomainAddress`] for the `http` default port.
     #[must_use]
-    pub fn into_parts(self) -> (Domain, u16) {
-        (self.domain, self.port)
+    #[inline(always)]
+    pub const fn localhost_http() -> Self {
+        Self {
+            domain: Domain::tld_localhost(),
+            port: Protocol::HTTP_DEFAULT_PORT,
+        }
+    }
+
+    /// Creates a new localhost [`DomainAddress`] for the `https` default port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn localhost_https() -> Self {
+        Self {
+            domain: Domain::tld_localhost(),
+            port: Protocol::HTTPS_DEFAULT_PORT,
+        }
+    }
+
+    /// Creates a new localhost [`DomainAddress`] for the given port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn localhost_with_port(port: u16) -> Self {
+        Self {
+            domain: Domain::tld_localhost(),
+            port,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set [`Domain`] of [`DomainAddress`]
+        pub fn domain(mut self, domain: Domain) -> Self {
+            self.domain = domain;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set port (u16) of [`DomainAddress`]
+        pub fn port(mut self, port: u16) -> Self {
+            self.port = port;
+            self
+        }
     }
 }
 
@@ -125,8 +182,8 @@ mod tests {
 
     #[allow(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, domain_address: DomainAddress, domain: &str, port: u16) {
-        assert_eq!(domain_address.domain().as_str(), domain, "parsing: {s}");
-        assert_eq!(domain_address.port(), port, "parsing: {s}");
+        assert_eq!(domain_address.domain.as_str(), domain, "parsing: {s}");
+        assert_eq!(domain_address.port, port, "parsing: {s}");
     }
 
     #[test]

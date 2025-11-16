@@ -82,7 +82,7 @@ fn http_1_client_server_it() {
 
     let mut sim = Builder::new().enable_tokio_io().build();
 
-    sim.host(ADDRESS.ip_addr(), || start_server(ADDRESS.to_string()));
+    sim.host(ADDRESS.ip_addr, || start_server(ADDRESS.to_string()));
 
     sim.client("client", run_client(ADDRESS));
 

@@ -10,7 +10,7 @@ use super::{
 };
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
-use rama_net::address::Authority;
+use rama_net::address::HostWithPort;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,12 +112,12 @@ impl Header {
 pub struct Reply {
     pub version: ProtocolVersion,
     pub reply: ReplyKind,
-    pub bind_address: Authority,
+    pub bind_address: HostWithPort,
 }
 
 impl Reply {
     /// Create a new success [`Reply`].
-    pub fn new(addr: impl Into<Authority>) -> Self {
+    pub fn new(addr: impl Into<HostWithPort>) -> Self {
         Self {
             version: ProtocolVersion::Socks5,
             reply: ReplyKind::Succeeded,
@@ -131,7 +131,7 @@ impl Reply {
         Self {
             version: ProtocolVersion::Socks5,
             reply: kind,
-            bind_address: Authority::default_ipv4(0),
+            bind_address: HostWithPort::default_ipv4(0),
         }
     }
 
@@ -175,7 +175,7 @@ impl Reply {
     {
         let n = self.serialized_len();
 
-        match self.bind_address.host() {
+        match &self.bind_address.host {
             rama_net::address::Host::Address(IpAddr::V4(_)) => {
                 tracing::trace!("write socks5 server reply w/ Ipv4 addr: on stack (w={n})");
                 debug_assert_eq!(4 + 4 + 2, n);
@@ -372,7 +372,7 @@ mod tests {
             Reply {
                 version: ProtocolVersion::Socks5,
                 reply: ReplyKind::Succeeded,
-                bind_address: Authority::default_ipv4(4128)
+                bind_address: HostWithPort::default_ipv4(4128)
             },
             Reply,
         );

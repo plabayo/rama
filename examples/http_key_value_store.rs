@@ -116,8 +116,8 @@ async fn main() {
 
     let addr = SocketAddress::local_ipv4(62006);
     tracing::info!(
-        network.local.address = %addr.ip_addr(),
-        network.local.port = %addr.port(),
+        network.local.address = %addr.ip_addr,
+        network.local.port = %addr.port,
         "running service",
     );
     let exec = Executor::default();

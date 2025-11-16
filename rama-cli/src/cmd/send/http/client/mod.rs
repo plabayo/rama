@@ -17,7 +17,6 @@ use rama::{
     },
     layer::{HijackLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
-        address::ProxyAddress,
         tls::client::ServerVerifyMode,
         user::{Basic, ProxyCredential},
     },
@@ -96,18 +95,11 @@ pub(super) async fn new(
             .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),
         AddRequiredRequestHeadersLayer::default(),
-        match cfg.proxy.as_ref() {
+        match cfg.proxy.clone() {
             None => HttpProxyAddressLayer::try_from_env_default()?,
-            Some(proxy) => {
-                let mut proxy_address: ProxyAddress =
-                    proxy.parse().context("parse proxy address")?;
-                if let Some(proxy_user) = cfg.proxy_user.as_ref() {
-                    let credential = ProxyCredential::Basic(
-                        proxy_user
-                            .parse()
-                            .context("parse basic proxy credentials")?,
-                    );
-                    proxy_address.credential = Some(credential);
+            Some(mut proxy_address) => {
+                if let Some(credentials) = cfg.proxy_user.clone() {
+                    proxy_address.credential = Some(ProxyCredential::Basic(credentials));
                 }
                 HttpProxyAddressLayer::maybe(Some(proxy_address))
             }

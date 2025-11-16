@@ -1,10 +1,13 @@
 use super::stream::TcpStream;
-use rama::net::{
-    client::EstablishedClientConnection,
-    stream::{ClientSocketInfo, SocketInfo},
-    transport::TryRefIntoTransportContext,
-};
 use rama::{Service, error::BoxError, extensions::ExtensionsMut, telemetry::tracing};
+use rama::{
+    error::ErrorContext as _,
+    net::{
+        client::EstablishedClientConnection,
+        stream::{ClientSocketInfo, SocketInfo},
+        transport::TryRefIntoTransportContext,
+    },
+};
 
 /// A newtype for managing a `[turmoil::net::TcpStream]` 'connector' implementing `[rama::Service]`
 #[derive(Debug, Clone)]
@@ -20,10 +23,10 @@ where
 
     async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         let transport_context = req.try_ref_into_transport_ctx().map_err(Into::into)?;
-        let authority = &transport_context.authority;
-        let host = authority.host();
-        let port = authority.port();
-        let address = format!("{host}:{port}");
+        let address = transport_context
+            .host_with_port()
+            .context("convert to host with port")?
+            .to_string();
 
         // TODO: proxy support
 

@@ -1,5 +1,6 @@
 use rama::{
     error::{BoxError, OpaqueError},
+    net::{address::ProxyAddress, user::Basic},
     utils::str::starts_with_ignore_ascii_case,
 };
 
@@ -89,11 +90,11 @@ pub struct SendCommand {
 
     #[arg(long, short = 'x')]
     /// upstream proxy to use (can also be specified using PROXY env variable)
-    proxy: Option<String>,
+    proxy: Option<ProxyAddress>,
 
     #[arg(long, short = 'U')]
     /// upstream proxy user credentials to use (or overwrite)
-    proxy_user: Option<String>,
+    proxy_user: Option<Basic>,
 
     #[arg(long, short = 'u')]
     /// (HTTP) client authentication: `USER[:PASS]` | TOKEN,

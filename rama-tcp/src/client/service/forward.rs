@@ -7,7 +7,7 @@ use rama_core::{
     stream::Stream,
 };
 use rama_net::{
-    address::Authority,
+    address::HostWithPort,
     client::{ConnectorService, EstablishedClientConnection},
     proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
 };
@@ -15,7 +15,7 @@ use std::fmt;
 
 #[derive(Debug, Clone)]
 enum ForwarderKind {
-    Static(Authority),
+    Static(HostWithPort),
     Dynamic,
 }
 
@@ -53,8 +53,8 @@ where
 pub type DefaultForwarder = Forwarder<super::TcpConnector>;
 
 impl DefaultForwarder {
-    /// Create a new static forwarder for the given target [`Authority`]
-    pub fn new(target: impl Into<Authority>) -> Self {
+    /// Create a new static forwarder for the given target [`HostWithPort`]
+    pub fn new(target: impl Into<HostWithPort>) -> Self {
         Self {
             kind: ForwarderKind::Static(target.into()),
             connector: TcpConnector::new(),
@@ -109,7 +109,7 @@ where
         // Clone them here so we also have them on source still
         let parent_extensions = source.extensions().clone().into_frozen_extensions();
         let extensions = Extensions::new().with_parent_extensions(parent_extensions);
-        let req = TcpRequest::new(authority.clone(), extensions);
+        let req = TcpRequest::new_with_extensions(authority.clone(), extensions);
 
         let EstablishedClientConnection { conn: target, .. } =
             self.connector.connect(req).await.map_err(|err| {

@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn test_proxy_db_happy_path_basic() {
         let mut db = ProxyDB::new();
-        let proxy = parse_csv_row("id,1,,1,,,,1,,,authority,,,,,,,,").unwrap();
+        let proxy = parse_csv_row("id,1,,1,,,,1,,,authority:80,,,,,,,,").unwrap();
         db.append(proxy).unwrap();
 
         let mut query = db.query();
@@ -198,7 +198,7 @@ mod tests {
     async fn test_proxy_db_happy_path_any_country() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "1,1,,1,,,,1,,,authority,,,US,,,,,\n2,1,,1,,,,1,,,authority,,,*,,,,,",
+            "1,1,,1,,,,1,,,authority:80,,,US,,,,,\n2,1,,1,,,,1,,,authority:80,,,*,,,,,",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();
@@ -232,7 +232,7 @@ mod tests {
     async fn test_proxy_db_happy_path_any_country_city() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "1,1,,1,,,,1,,,authority,,,US,,New York,,,\n2,1,,1,,,,1,,,authority,,,*,,*,,,",
+            "1,1,,1,,,,1,,,authority:80,,,US,,New York,,,\n2,1,,1,,,,1,,,authority:80,,,*,,*,,,",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();
@@ -276,7 +276,7 @@ mod tests {
     async fn test_proxy_db_happy_path_specific_asn_within_continents() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "1,1,,1,,,,1,,,authority,,europe,BE,,Brussels,,1348,\n2,1,,1,,,,1,,,authority,,asia,CN,,Shenzen,,1348,\n3,1,,1,,,,1,,,authority,,asia,CN,,Peking,,42,",
+            "1,1,,1,,,,1,,,authority:80,,europe,BE,,Brussels,,1348,\n2,1,,1,,,,1,,,authority:80,,asia,CN,,Shenzen,,1348,\n3,1,,1,,,,1,,,authority:80,,asia,CN,,Peking,,42,",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();
@@ -315,7 +315,7 @@ mod tests {
     async fn test_proxy_db_happy_path_states() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "1,1,,1,,,,1,,,authority,,,US,Texas,,,,\n2,1,,1,,,,1,,,authority,,,US,New York,,,,\n3,1,,1,,,,1,,,authority,,,US,California,,,,",
+            "1,1,,1,,,,1,,,authority:80,,,US,Texas,,,,\n2,1,,1,,,,1,,,authority:80,,,US,New York,,,,\n3,1,,1,,,,1,,,authority:80,,,US,California,,,,",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();
@@ -349,7 +349,7 @@ mod tests {
     async fn test_proxy_db_invalid_row_cases() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "id1,1,,,,,,,,,authority,,,,,,,\nid2,,1,,,,,,,,authority,,,,,,,\nid3,,1,1,,,,,,,authority,,,,,,,\nid4,,1,1,,,,,1,,authority,,,,,,,\nid5,,1,1,,,,,1,,authority,,,,,,,",
+            "id1,1,,,,,,,,,authority:80,,,,,,,\nid2,,1,,,,,,,,authority:80,,,,,,,\nid3,,1,1,,,,,,,authority:80,,,,,,,\nid4,,1,1,,,,,1,,authority:80,,,,,,,\nid5,,1,1,,,,,1,,authority:80,,,,,,,",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             assert_eq!(

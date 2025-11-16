@@ -262,8 +262,8 @@ where
             .unwrap_or_default()
         {
             tracing::trace!(
-                server.address = %transport_ctx.authority.host(),
-                server.port = %transport_ctx.authority.port(),
+                server.address = %transport_ctx.authority.host,
+                server.port = transport_ctx.authority.port,
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
 
@@ -273,11 +273,11 @@ where
             });
         }
 
-        let server_host = transport_ctx.authority.host().clone();
+        let server_host = transport_ctx.authority.host.clone();
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(auto): attempt to secure inner connection w/ app protcol: {:?}",
             transport_ctx.app_protocol,
         );
@@ -287,8 +287,8 @@ where
         let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(auto): protocol secure, established tls connection w/ app protcol: {:?}",
             transport_ctx.app_protocol,
         );
@@ -322,13 +322,13 @@ where
                 .context("TlsConnector(auto): compute transport context")
         })?;
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(secure): attempt to secure inner connection w/ app protcol: {:?}",
             transport_ctx.app_protocol,
         );
 
-        let server_host = transport_ctx.authority.host().clone();
+        let server_host = transport_ctx.authority.host.clone();
 
         let connector_data = req.extensions().get::<TlsConnectorData>().cloned();
 

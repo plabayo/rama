@@ -1,9 +1,9 @@
 use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Service, error::BoxError, stream::Stream};
+use rama_net::address::HostWithPort;
 use rama_net::client::ConnectorService;
 use rama_net::{
-    address::Authority,
     client::EstablishedClientConnection,
     proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
     stream::Socket,
@@ -39,7 +39,7 @@ pub trait Socks5ConnectorSeal<S>: Send + Sync + 'static {
         &self,
 
         stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
@@ -47,7 +47,7 @@ impl<S> Socks5ConnectorSeal<S> for ()
 where
     S: Stream + Unpin,
 {
-    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: abort: command not supported: Connect",
         );
@@ -70,7 +70,7 @@ pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
 /// which actually is able to accept connect requests and process them.
 ///
 /// The [`Default`] implementation establishes a connection for the requested
-/// destination [`Authority`] and pipes the incoming [`Stream`] with the established
+/// destination [`HostWithPort`] and pipes the incoming [`Stream`] with the established
 /// outgoing [`Stream`] by copying the bytes without doing anyting else with them.
 ///
 /// You can customise the [`Connector`] fully by creating it using [`Connector::new`]
@@ -209,7 +209,7 @@ where
     StreamService:
         Service<ProxyRequest<S, InnerConnector::Connection>, Response = (), Error: Into<BoxError>>,
 {
-    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: connect: try to establish connection",
         );
@@ -218,7 +218,7 @@ where
 
         // Clone so we also have them on stream still
         let parent_extensions = stream.extensions().clone().into_frozen_extensions();
-        let connect_future = self.connector.connect(TcpRequest::new(
+        let connect_future = self.connector.connect(TcpRequest::new_with_extensions(
             destination.clone(),
             Extensions::new().with_parent_extensions(parent_extensions),
         ));
@@ -270,7 +270,7 @@ where
                     "socks5 server w/ destination: {destination}: connect: failed to retrieve local addr from established conn, use default '0.0.0.0:0': {err}",
                 );
             })
-            .unwrap_or(Authority::default_ipv4(0));
+            .unwrap_or(HostWithPort::default_ipv4(0));
         let peer_addr = target.peer_addr();
 
         tracing::trace!(
@@ -278,7 +278,7 @@ where
         );
 
         Reply::new(if self.hide_local_address {
-            Authority::default_ipv4(0)
+            HostWithPort::default_ipv4(0)
         } else {
             local_addr.clone()
         })
@@ -357,12 +357,12 @@ where
     S: Stream + Unpin + ExtensionsMut,
     StreamService: Service<S, Response = (), Error: Into<BoxError>>,
 {
-    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: lazy connect: try to establish connection",
         );
 
-        Reply::new(Authority::default_ipv4(0))
+        Reply::new(HostWithPort::default_ipv4(0))
             .write_to(&mut stream)
             .await
             .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
@@ -387,6 +387,7 @@ pub(crate) use test::MockConnector;
 #[cfg(test)]
 mod test {
     use super::*;
+    use rama_net::address::HostWithPort;
     use std::{ops::DerefMut, sync::Arc};
     use tokio::sync::Mutex;
 
@@ -398,14 +399,14 @@ mod test {
     #[derive(Debug)]
     enum MockReply {
         Success {
-            local_addr: Authority,
+            local_addr: HostWithPort,
             target: Option<Arc<Mutex<tokio_test::io::Mock>>>,
         },
         Error(ReplyKind),
     }
 
     impl MockConnector {
-        pub(crate) fn new(local_addr: Authority) -> Self {
+        pub(crate) fn new(local_addr: HostWithPort) -> Self {
             Self {
                 reply: MockReply::Success {
                     local_addr,
@@ -438,7 +439,7 @@ mod test {
         async fn accept_connect(
             &self,
             mut stream: S,
-            _destination: Authority,
+            _destination: HostWithPort,
         ) -> Result<(), Error> {
             match &self.reply {
                 MockReply::Success { local_addr, target } => {

@@ -6,7 +6,7 @@
 
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
-use rama_net::address::{Authority, SocketAddress};
+use rama_net::address::{HostWithPort, SocketAddress};
 use std::fmt;
 
 use super::core::HandshakeError;
@@ -82,7 +82,7 @@ pub struct BindOutput<S> {
     /// Stream to transfer data via the socks5 server to the target server.
     pub stream: S,
     /// Possibly the address of the server as seen by the socks5 server.
-    pub server: Authority,
+    pub server: HostWithPort,
 }
 
 impl<S: Stream + Unpin> Binder<S> {
@@ -135,10 +135,10 @@ impl<S: Stream + Unpin> Binder<S> {
         };
 
         tracing::trace!(
-            network.local.address = %self.selected_bind_address.ip_addr(),
-            network.local.port = %self.selected_bind_address.port(),
-            server.address = %server.host(),
-            server.port = %server.port(),
+            network.local.address = %self.selected_bind_address.ip_addr,
+            network.local.port = %self.selected_bind_address.port,
+            server.address = %server.host,
+            server.port = %server.port,
             "socks5: bind handshake complete",
         );
 

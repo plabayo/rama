@@ -30,7 +30,8 @@ impl Domain {
 
     /// Creates the example [`Domain].
     #[must_use]
-    pub fn example() -> Self {
+    #[inline(always)]
+    pub const fn example() -> Self {
         Self::from_static("example.com")
     }
 
@@ -41,19 +42,21 @@ impl Domain {
     ///
     /// In specific this means that it will match on any domain with the TLD `.internal`.
     #[must_use]
-    pub fn tld_private() -> Self {
+    #[inline(always)]
+    pub const fn tld_private() -> Self {
         Self::from_static("internal")
     }
 
     /// Creates the localhost [`Domain`].
     #[must_use]
-    pub fn tld_localhost() -> Self {
+    #[inline(always)]
+    pub const fn tld_localhost() -> Self {
         Self::from_static("localhost")
     }
 
     /// Consumes the domain as a host.
     #[must_use]
-    pub fn into_host(self) -> Host {
+    pub const fn into_host(self) -> Host {
         Host::Name(self)
     }
 

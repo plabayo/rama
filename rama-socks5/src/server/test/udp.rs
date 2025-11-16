@@ -1,7 +1,7 @@
 use crate::server::udp::MockUdpAssociator;
 use crate::server::*;
 use rama_core::ServiceInput;
-use rama_net::address::Authority;
+use rama_net::address::HostWithPort;
 
 #[tokio::test]
 async fn test_socks5_acceptor_no_auth_client_udp_associate_failure_method_not_supported() {
@@ -130,7 +130,7 @@ async fn test_socks5_acceptor_no_auth_client_udp_associate_mock_success_no_data(
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
-        .with_udp_associator(MockUdpAssociator::new(Authority::local_ipv4(42)));
+        .with_udp_associator(MockUdpAssociator::new(HostWithPort::local_ipv4(42)));
     let result = server.accept(stream).await;
     assert!(result.is_ok());
 }

@@ -158,7 +158,7 @@ mod tests {
 
         writer.set(Proxy {
             id: NonEmptyString::from_static("id"),
-            address: "authority".parse().unwrap(),
+            address: "authority:80".parse().unwrap(),
             tcp: true,
             udp: false,
             http: false,

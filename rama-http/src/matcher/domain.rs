@@ -38,7 +38,7 @@ impl DomainMatcher {
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
     fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         let host = if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
-            req_ctx.authority.host().clone()
+            req_ctx.authority.host.clone()
         } else {
             let req_ctx = match RequestContext::try_from(req) {
                 Ok(req_ctx) => req_ctx,
@@ -47,7 +47,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
                     return false;
                 }
             };
-            let host = req_ctx.authority.host().clone();
+            let host = req_ctx.authority.host.clone();
             if let Some(ext) = ext {
                 ext.insert(req_ctx);
             }

@@ -132,7 +132,7 @@ fn write_curl_command_for_request_parts(
         .map(|rc| {
             (
                 if rc.authority_has_default_port() {
-                    rc.authority.host().to_string()
+                    rc.authority.host.to_string()
                 } else {
                     rc.authority.to_string()
                 },
@@ -143,7 +143,7 @@ fn write_curl_command_for_request_parts(
             try_request_ctx_from_http_parts(parts).ok().map(|rc| {
                 (
                     if rc.authority_has_default_port() {
-                        rc.authority.host().to_string()
+                        rc.authority.host.to_string()
                     } else {
                         rc.authority.to_string()
                     },
@@ -238,7 +238,7 @@ fn write_curl_command_for_request_parts(
 #[cfg(test)]
 mod tests {
     use rama_net::Protocol;
-    use rama_net::address::Authority;
+    use rama_net::address::HostWithPort;
     use rama_net::user::{Basic, Bearer};
 
     use crate::body::util::BodyExt;
@@ -497,7 +497,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: None,
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: None,
         });
 
@@ -521,7 +521,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: None,
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(Basic::new_insecure("john"))),
         });
 
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(
             s,
             format!(
-                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -x 'john:@127.0.0.1:8080'"##,
+                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -x 'john@127.0.0.1:8080'"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
@@ -545,7 +545,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: None,
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(Basic::new("john", "secret"))),
         });
 
@@ -569,7 +569,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: None,
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Bearer(Bearer::new_static("abc123"))),
         });
 
@@ -594,7 +594,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: Some(Protocol::SOCKS5),
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(Basic::new("user", "pass"))),
         });
 

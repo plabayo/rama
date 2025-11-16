@@ -31,6 +31,8 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         Request,
+        headers::{HeaderEncode, TypedHeader, exotic::XClacksOverhead},
+        layer::set_header::SetResponseHeaderLayer,
         layer::{match_redirect::UriMatchRedirectLayer, trace::TraceLayer},
         matcher::UriParams,
         server::HttpServer,
@@ -44,10 +46,6 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
-use rama_http::{
-    headers::{HeaderEncode, TypedHeader, exotic::XClacksOverhead},
-    layer::set_header::SetResponseHeaderLayer,
-};
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde_json::json;
 use std::time::Duration;

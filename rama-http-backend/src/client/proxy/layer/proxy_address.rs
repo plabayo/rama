@@ -97,7 +97,7 @@ impl<S> Layer<S> for HttpProxyAddressLayer {
 /// [`HttpProxyConnectorLayer`]: crate::client::proxy::layer::HttpProxyConnectorLayer
 pub struct HttpProxyAddressService<S> {
     inner: S,
-    address: Option<ProxyAddress>,
+    proxy_info: Option<ProxyAddress>,
     preserve: bool,
 }
 
@@ -105,7 +105,7 @@ impl<S: fmt::Debug> fmt::Debug for HttpProxyAddressService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpProxyAddressService")
             .field("inner", &self.inner)
-            .field("address", &self.address)
+            .field("address", &self.proxy_info)
             .field("preserve", &self.preserve)
             .finish()
     }
@@ -115,7 +115,7 @@ impl<S: Clone> Clone for HttpProxyAddressService<S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            address: self.address.clone(),
+            proxy_info: self.proxy_info.clone(),
             preserve: self.preserve,
         }
     }
@@ -134,7 +134,7 @@ impl<S> HttpProxyAddressService<S> {
     pub const fn maybe(inner: S, address: Option<ProxyAddress>) -> Self {
         Self {
             inner,
-            address,
+            proxy_info: address,
             preserve: false,
         }
     }
@@ -188,15 +188,15 @@ where
         &self,
         mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        if let Some(ref address) = self.address
+        if let Some(ref proxy_info) = self.proxy_info
             && (!self.preserve || !req.extensions().contains::<ProxyAddress>())
         {
             tracing::trace!(
-                server.address = %address.authority.host(),
-                server.port = %address.authority.port(),
+                server.address = %proxy_info.address.host,
+                server.port = proxy_info.address.port,
                 "setting proxy address",
             );
-            req.extensions_mut().insert(address.clone());
+            req.extensions_mut().insert(proxy_info.clone());
         }
         self.inner.serve(req)
     }

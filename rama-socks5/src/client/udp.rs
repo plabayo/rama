@@ -4,6 +4,7 @@ use rama_core::futures::Sink;
 use rama_core::futures::Stream;
 use rama_core::stream::codec::{Decoder, Encoder};
 use rama_core::telemetry::tracing;
+use rama_net::address::HostWithPort;
 use rama_net::{address::SocketAddress, socket::Interface};
 use rama_udp::UdpSocket;
 use std::pin::Pin;
@@ -67,7 +68,7 @@ impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
                 .with_context("server responded with non-success reply"));
         }
 
-        let (host, port) = server_reply.bind_address.into_parts();
+        let HostWithPort { host, port } = server_reply.bind_address;
         let bind_address: SocketAddress = match host {
             rama_net::address::Host::Name(_) => {
                 return Err(
@@ -248,7 +249,7 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
 
     let header_offset = header.serialized_len() - 1;
 
-    let (host, port) = header.destination.into_parts();
+    let HostWithPort { host, port } = header.destination;
     let from: SocketAddress = match host {
         rama_net::address::Host::Name(_) => {
             return Err(OpaqueError::from_display(

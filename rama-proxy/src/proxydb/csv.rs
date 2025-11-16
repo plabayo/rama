@@ -284,10 +284,10 @@ mod tests {
         for (input, output) in [
             // most minimal
             (
-                "id,,,,,,,,,,authority,,,,,,,,",
+                "id,,,,,,,,,,authority:80,,,,,,,,",
                 Proxy {
                     id: NonEmptyString::from_static("id"),
-                    address: ProxyAddress::from_str("authority").unwrap(),
+                    address: ProxyAddress::from_str("authority:80").unwrap(),
                     tcp: false,
                     udp: false,
                     http: false,
@@ -308,10 +308,10 @@ mod tests {
             ),
             // more happy row tests
             (
-                "id,true,false,true,,false,,true,false,true,authority,pool_id,,country,,city,carrier,,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+                "id,true,false,true,,false,,true,false,true,authority:80,pool_id,,country,,city,carrier,,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
                 Proxy {
                     id: NonEmptyString::from_static("id"),
-                    address: ProxyAddress::from_str("username:password@authority").unwrap(),
+                    address: ProxyAddress::from_str("username:password@authority:80").unwrap(),
                     tcp: true,
                     udp: false,
                     http: true,
@@ -377,10 +377,10 @@ mod tests {
                 },
             ),
             (
-                "foo,1,0,1,,0,,1,0,0,bar,baz,,US,,,,",
+                "foo,1,0,1,,0,,1,0,0,http://bar,baz,,US,,,,",
                 Proxy {
                     id: NonEmptyString::from_static("foo"),
-                    address: ProxyAddress::from_str("bar").unwrap(),
+                    address: ProxyAddress::from_str("http://bar").unwrap(),
                     tcp: true,
                     udp: false,
                     http: true,
@@ -431,21 +431,21 @@ mod tests {
             ",,,,,,,,,,,,,,,,,,,,,,",
             ",,,,,,,,,,,,,,,,,,,,,,,",
             // too many rows
-            "id,true,false,true,false,true,false,true,authority,pool_id,continent,country,state,city,carrier,15169,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,",
+            "id,true,false,true,false,true,false,true,authority:80,pool_id,continent,country,state,city,carrier,15169,Basic dXNlcm5hbWU6cGFzc3dvcmQ=,",
             // missing authority
             "id,,,,,,,,,,,,,,,,",
             // missing proxy id
-            ",,,,,,,,authority,,,,,,,,",
+            ",,,,,,,,authority:80,,,,,,,,",
             // invalid bool values
-            "id,foo,,,,,,,,,authority,,,,,,,,",
-            "id,,foo,,,,,,,,authority,,,,,,,,",
-            "id,,,foo,,,,,,,authority,,,,,,,,",
-            "id,,,,,foo,,,,,authority,,,,,,,,",
-            "id,,,,,,foo,,,,authority,,,,,,,,",
-            "id,,,,,,,,foo,,authority,,,,,,,,",
-            "id,,,,,,,foo,authority,,,,,,,,",
+            "id,foo,,,,,,,,,authority:80,,,,,,,,",
+            "id,,foo,,,,,,,,authority:80,,,,,,,,",
+            "id,,,foo,,,,,,,authority:80,,,,,,,,",
+            "id,,,,,foo,,,,,authority:80,,,,,,,,",
+            "id,,,,,,foo,,,,authority:80,,,,,,,,",
+            "id,,,,,,,,foo,,authority:80,,,,,,,,",
+            "id,,,,,,,foo,authority:80,,,,,,,,",
             // invalid credentials
-            "id,,,,,,,,authority,,,,,:foo",
+            "id,,,,,,,,authority:80,,,,,:foo",
         ] {
             assert!(parse_csv_row(input).is_none(), "input: {input}");
         }
@@ -454,14 +454,14 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_csv_row_reader_happy_one_row() {
         let mut reader = ProxyCsvRowReader::raw(
-            "id,true,false,true,,false,,true,false,true,authority,pool_id,continent,country,state,city,carrier,13335,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+            "id,true,false,true,,false,,true,false,true,authority:80,pool_id,continent,country,state,city,carrier,13335,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
         );
         let proxy = reader.next().await.unwrap().unwrap();
 
         assert_eq!(proxy.id, "id");
         assert_eq!(
             proxy.address,
-            ProxyAddress::from_str("username:password@authority").unwrap()
+            ProxyAddress::from_str("username:password@authority:80").unwrap()
         );
         assert!(proxy.tcp);
         assert!(!proxy.udp);
@@ -485,14 +485,14 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_csv_row_reader_happy_multi_row() {
         let mut reader = ProxyCsvRowReader::raw(
-            "id,true,false,false,true,true,false,true,false,true,authority,pool_id,continent,country,state,city,carrier,42,Basic dXNlcm5hbWU6cGFzc3dvcmQ=\nid2,1,0,0,0,0,0,1,0,0,authority2,pool_id2,continent2,country2,state2,city2,carrier2,1",
+            "id,true,false,false,true,true,false,true,false,true,authority:80,pool_id,continent,country,state,city,carrier,42,Basic dXNlcm5hbWU6cGFzc3dvcmQ=\nid2,1,0,0,0,0,0,1,0,0,authority2:80,pool_id2,continent2,country2,state2,city2,carrier2,1",
         );
 
         let proxy = reader.next().await.unwrap().unwrap();
         assert_eq!(proxy.id, "id");
         assert_eq!(
             proxy.address,
-            ProxyAddress::from_str("username:password@authority").unwrap()
+            ProxyAddress::from_str("username:password@authority:80").unwrap()
         );
         assert!(proxy.tcp);
         assert!(!proxy.udp);
@@ -514,7 +514,10 @@ mod tests {
         let proxy = reader.next().await.unwrap().unwrap();
 
         assert_eq!(proxy.id, "id2");
-        assert_eq!(proxy.address, ProxyAddress::from_str("authority2").unwrap());
+        assert_eq!(
+            proxy.address,
+            ProxyAddress::from_str("authority2:80").unwrap()
+        );
         assert!(proxy.tcp);
         assert!(!proxy.udp);
         assert!(!proxy.http);
@@ -550,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_proxy_is_match_happy_path_proxy_with_any_filter_string_cases() {
-        let proxy = parse_csv_row("id,1,,1,,,,,,,authority,*,*,*,*,*,*,0").unwrap();
+        let proxy = parse_csv_row("id,1,,1,,,,,,,authority:80,*,*,*,*,*,*,0").unwrap();
         let ctx = ProxyContext {
             protocol: TransportProtocol::Tcp,
         };
@@ -596,9 +599,10 @@ mod tests {
 
     #[test]
     fn test_proxy_is_match_happy_path_proxy_with_any_filters_cases() {
-        let proxy =
-            parse_csv_row("id,1,,1,,,,,,,authority,pool,continent,country,state,city,carrier,42")
-                .unwrap();
+        let proxy = parse_csv_row(
+            "id,1,,1,,,,,,,authority:80,pool,continent,country,state,city,carrier,42",
+        )
+        .unwrap();
         let ctx = ProxyContext {
             protocol: TransportProtocol::Tcp,
         };

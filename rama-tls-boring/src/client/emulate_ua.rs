@@ -66,7 +66,7 @@ where
                 .flatten()
                 .any(|e| matches!(e, ClientHelloExtension::ServerName(_)))
             {
-                match transport_ctx.authority.host() {
+                match &transport_ctx.authority.host {
                     Host::Name(domain) => {
                         tracing::trace!(
                             "ua tls emulator: ensure we append domain {domain} (SNI) overwriter"

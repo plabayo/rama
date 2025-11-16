@@ -140,7 +140,7 @@
 //!     });
 //!
 //!     let proxy_address = service.serve(req).await.unwrap();
-//!     assert_eq!(proxy_address.authority.to_string(), "12.34.12.34:8080");
+//!     assert_eq!(proxy_address.address.to_string(), "12.34.12.34:8080");
 //! }
 //! ```
 //!

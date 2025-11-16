@@ -1,252 +1,442 @@
-use crate::address::ip::{IPV4_BROADCAST, IPV4_UNSPECIFIED, IPV6_UNSPECIFIED};
+use crate::address::{HostWithOptPort, HostWithPort};
+use crate::user::Basic;
 
-use super::{Domain, DomainAddress, Host, SocketAddress, parse_utils};
+use super::{Domain, DomainAddress, Host, SocketAddress};
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_utils::macros::generate_set_and_with;
+use std::borrow::Cow;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
 };
 
-#[cfg(feature = "http")]
-use rama_http_types::HeaderValue;
-
-/// A [`Host`] with an associated port.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// A [`Host`] with optionally a port and/or user-info ([`Basic`]).
+///
+/// ## Examples
+///
+/// - example.com
+/// - 127.0.0.1
+/// - example.com:80
+/// - 127.0.0.1:80
+/// - joe@example.com:80
+/// - joe:secret@example.com
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Authority {
-    host: Host,
-    port: u16,
+    pub user_info: Option<Basic>,
+    pub address: HostWithOptPort,
 }
 
 impl Authority {
-    /// Creates a new [`Authority`].
+    /// Creates a new [`Authority`] from a [`HostWithOptPort`].
     #[must_use]
-    pub const fn new(host: Host, port: u16) -> Self {
-        Self { host, port }
+    #[inline(always)]
+    pub const fn new(addr: HostWithOptPort) -> Self {
+        Self {
+            address: addr,
+            user_info: None,
+        }
     }
 
-    /// creates a new local ipv4 [`Authority`] for the given port
+    /// Creates a new [`Authority`] from a [`HostWithOptPort`] and user-info ([`Basic`]).
+    #[must_use]
+    #[inline(always)]
+    pub const fn new_with_user_info(addr: HostWithOptPort, user_info: Basic) -> Self {
+        Self {
+            address: addr,
+            user_info: Some(user_info),
+        }
+    }
+
+    /// creates a new local ipv4 [`Authority`] without a port.
     ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::Authority;
     ///
-    /// let addr = Authority::local_ipv4(8080);
+    /// let addr = Authority::local_ipv4();
+    /// assert_eq!("127.0.0.1", addr.to_string());
+    /// ```
+    #[must_use]
+    #[inline(always)]
+    pub const fn local_ipv4() -> Self {
+        Self::new(HostWithOptPort::local_ipv4())
+    }
+
+    /// creates a new local ipv4 [`Authority`] with the given port
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::local_ipv4_with_port(8080);
     /// assert_eq!("127.0.0.1:8080", addr.to_string());
     /// ```
     #[must_use]
-    pub const fn local_ipv4(port: u16) -> Self {
-        Self {
-            host: Host::LOCALHOST_IPV4,
-            port,
-        }
+    #[inline(always)]
+    pub const fn local_ipv4_with_port(port: u16) -> Self {
+        Self::new(HostWithOptPort::local_ipv4_with_port(port))
     }
 
-    /// creates a new local ipv6 [`Authority`] for the given port.
+    /// creates a new local ipv6 [`Authority`] without a port.
     ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::Authority;
     ///
-    /// let addr = Authority::local_ipv6(8080);
+    /// let addr = Authority::local_ipv6();
+    /// assert_eq!("::1", addr.to_string());
+    /// ```
+    #[must_use]
+    #[inline(always)]
+    pub const fn local_ipv6() -> Self {
+        Self::new(HostWithOptPort::local_ipv6())
+    }
+
+    /// creates a new local ipv6 [`Authority`] with the given port.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::local_ipv6_with_port(8080);
     /// assert_eq!("[::1]:8080", addr.to_string());
     /// ```
     #[must_use]
-    pub const fn local_ipv6(port: u16) -> Self {
-        Self {
-            host: Host::LOCALHOST_IPV6,
-            port,
-        }
+    #[inline(always)]
+    pub const fn local_ipv6_with_port(port: u16) -> Self {
+        Self::new(HostWithOptPort::local_ipv6_with_port(port))
     }
 
-    /// creates a new default ipv4 [`Authority`] for the given port
+    /// creates a default ipv4 [`Authority`] without a port
     ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::Authority;
     ///
-    /// let addr = Authority::default_ipv4(8080);
+    /// let addr = Authority::default_ipv4_with_port(8080);
     /// assert_eq!("0.0.0.0:8080", addr.to_string());
     /// ```
     #[must_use]
-    pub const fn default_ipv4(port: u16) -> Self {
-        Self {
-            host: Host::Address(IPV4_UNSPECIFIED),
-            port,
-        }
+    #[inline(always)]
+    pub const fn default_ipv4() -> Self {
+        Self::new(HostWithOptPort::default_ipv4())
     }
 
-    /// creates a new default ipv6 [`Authority`] for the given port.
+    /// creates a default ipv4 [`Authority`] with the given port
     ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::Authority;
     ///
-    /// let addr = Authority::default_ipv6(8080);
+    /// let addr = Authority::default_ipv4_with_port(8080);
+    /// assert_eq!("0.0.0.0:8080", addr.to_string());
+    /// ```
+    #[must_use]
+    #[inline(always)]
+    pub const fn default_ipv4_with_port(port: u16) -> Self {
+        Self::new(HostWithOptPort::default_ipv4_with_port(port))
+    }
+
+    /// creates a new default ipv6 [`Authority`] without a port.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::default_ipv6();
+    /// assert_eq!("::", addr.to_string());
+    /// ```
+    #[must_use]
+    #[inline(always)]
+    pub const fn default_ipv6() -> Self {
+        Self::new(HostWithOptPort::default_ipv6())
+    }
+
+    /// creates a new default ipv6 [`Authority`] with the given port.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::default_ipv6_with_port(8080);
     /// assert_eq!("[::]:8080", addr.to_string());
     /// ```
     #[must_use]
-    pub const fn default_ipv6(port: u16) -> Self {
-        Self {
-            host: Host::Address(IPV6_UNSPECIFIED),
-            port,
-        }
+    #[inline(always)]
+    pub const fn default_ipv6_with_port(port: u16) -> Self {
+        Self::new(HostWithOptPort::default_ipv6_with_port(port))
     }
 
-    /// creates a new broadcast ipv4 [`Authority`] for the given port
+    /// creates a new broadcast ipv4 [`Authority`] without a port
     ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::Authority;
     ///
-    /// let addr = Authority::broadcast_ipv4(8080);
+    /// let addr = Authority::broadcast_ipv4();
+    /// assert_eq!("255.255.255.255", addr.to_string());
+    /// ```
+    #[must_use]
+    #[inline(always)]
+    pub const fn broadcast_ipv4() -> Self {
+        Self::new(HostWithOptPort::broadcast_ipv4())
+    }
+
+    /// creates a new broadcast ipv4 [`Authority`] with the given port
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::broadcast_ipv4_with_port(8080);
     /// assert_eq!("255.255.255.255:8080", addr.to_string());
     /// ```
     #[must_use]
-    pub const fn broadcast_ipv4(port: u16) -> Self {
-        Self {
-            host: Host::Address(IPV4_BROADCAST),
-            port,
+    #[inline(always)]
+    pub const fn broadcast_ipv4_with_port(port: u16) -> Self {
+        Self::new(HostWithOptPort::broadcast_ipv4_with_port(port))
+    }
+
+    /// Creates a new example domain [`Authority`] without a port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn example_domain() -> Self {
+        Self::new(HostWithOptPort::example_domain())
+    }
+
+    /// Creates a new example domain [`HostWithOptPort`] for the `http` default port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn example_domain_http() -> Self {
+        Self::new(HostWithOptPort::example_domain_http())
+    }
+
+    /// Creates a new example domain [`HostWithOptPort`] for the `https` default port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn example_domain_https() -> Self {
+        Self::new(HostWithOptPort::example_domain_https())
+    }
+
+    /// Creates a new example domain [`HostWithOptPort`] for the given port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn example_domain_with_port(port: u16) -> Self {
+        Self::new(HostWithOptPort::example_domain_with_port(port))
+    }
+
+    /// Creates a new localhost domain [`HostWithOptPort`] without a port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn localhost_domain() -> Self {
+        Self::new(HostWithOptPort::localhost_domain())
+    }
+
+    /// Creates a new localhost domain [`HostWithOptPort`] for the `http` default port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn localhost_domain_http() -> Self {
+        Self::new(HostWithOptPort::localhost_domain_http())
+    }
+
+    /// Creates a new localhost domain [`HostWithOptPort`] for the `https` default port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn localhost_domain_https() -> Self {
+        Self::new(HostWithOptPort::localhost_domain_https())
+    }
+
+    /// Creates a new localhost domain [`HostWithOptPort`] for the given port.
+    #[must_use]
+    #[inline(always)]
+    pub const fn localhost_domain_with_port(port: u16) -> Self {
+        Self::new(HostWithOptPort::localhost_domain_with_port(port))
+    }
+
+    generate_set_and_with! {
+        /// Set [`Host`] of [`Authority`]
+        pub fn host(mut self, host: Host) -> Self {
+            self.address.set_host(host);
+            self
         }
     }
 
-    /// Gets the [`Host`] reference.
-    #[must_use]
-    pub fn host(&self) -> &Host {
-        &self.host
+    generate_set_and_with! {
+        /// (un)set port (u16) of [`Authority`]
+        pub fn port(mut self, port: Option<u16>) -> Self {
+            self.address.maybe_set_port(port);
+            self
+        }
     }
 
-    /// Consumes the [`Authority`] and returns the [`Host`].
-    #[must_use]
-    pub fn into_host(self) -> Host {
-        self.host
-    }
-
-    /// Gets the port
-    #[must_use]
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-
-    /// Consume self into its parts: `(host, port)`
-    #[must_use]
-    pub fn into_parts(self) -> (Host, u16) {
-        (self.host, self.port)
+    generate_set_and_with! {
+        /// (un)set user-info ([`Basic`]) of [`Authority`]
+        pub fn user_info(mut self, user_info: Option<Basic>) -> Self {
+            self.user_info = user_info;
+            self
+        }
     }
 }
 
 impl From<(Domain, u16)> for Authority {
-    #[inline]
+    #[inline(always)]
     fn from((domain, port): (Domain, u16)) -> Self {
         (Host::Name(domain), port).into()
     }
 }
 
 impl From<(IpAddr, u16)> for Authority {
-    #[inline]
+    #[inline(always)]
     fn from((ip, port): (IpAddr, u16)) -> Self {
         (Host::Address(ip), port).into()
     }
 }
 
 impl From<(Ipv4Addr, u16)> for Authority {
-    #[inline]
+    #[inline(always)]
     fn from((ip, port): (Ipv4Addr, u16)) -> Self {
         (Host::Address(IpAddr::V4(ip)), port).into()
     }
 }
 
 impl From<([u8; 4], u16)> for Authority {
-    #[inline]
+    #[inline(always)]
     fn from((ip, port): ([u8; 4], u16)) -> Self {
         (Host::Address(IpAddr::V4(ip.into())), port).into()
     }
 }
 
 impl From<(Ipv6Addr, u16)> for Authority {
-    #[inline]
+    #[inline(always)]
     fn from((ip, port): (Ipv6Addr, u16)) -> Self {
         (Host::Address(IpAddr::V6(ip)), port).into()
     }
 }
 
 impl From<([u8; 16], u16)> for Authority {
-    #[inline]
+    #[inline(always)]
     fn from((ip, port): ([u8; 16], u16)) -> Self {
         (Host::Address(IpAddr::V6(ip.into())), port).into()
     }
 }
 
+impl From<Host> for Authority {
+    #[inline(always)]
+    fn from(host: Host) -> Self {
+        Self::new(HostWithOptPort::new(host))
+    }
+}
+
 impl From<(Host, u16)> for Authority {
+    #[inline(always)]
     fn from((host, port): (Host, u16)) -> Self {
-        Self { host, port }
+        Self::new(HostWithOptPort::new_with_port(host, port))
     }
 }
 
 impl From<Authority> for Host {
+    #[inline(always)]
     fn from(authority: Authority) -> Self {
-        authority.host
+        authority.address.host
     }
 }
 
 impl From<SocketAddr> for Authority {
+    #[inline(always)]
     fn from(addr: SocketAddr) -> Self {
-        Self {
-            host: Host::Address(addr.ip()),
-            port: addr.port(),
-        }
+        Self::new(HostWithOptPort::new_with_port(
+            Host::Address(addr.ip()),
+            addr.port(),
+        ))
     }
 }
 
 impl From<&SocketAddr> for Authority {
+    #[inline(always)]
     fn from(addr: &SocketAddr) -> Self {
+        Self::new(HostWithOptPort::new_with_port(
+            Host::Address(addr.ip()),
+            addr.port(),
+        ))
+    }
+}
+
+impl From<HostWithOptPort> for Authority {
+    #[inline(always)]
+    fn from(addr: HostWithOptPort) -> Self {
         Self {
-            host: Host::Address(addr.ip()),
-            port: addr.port(),
+            user_info: None,
+            address: addr,
+        }
+    }
+}
+
+impl From<Authority> for HostWithOptPort {
+    #[inline(always)]
+    fn from(addr: Authority) -> Self {
+        addr.address
+    }
+}
+
+impl From<HostWithPort> for Authority {
+    #[inline(always)]
+    fn from(addr: HostWithPort) -> Self {
+        Self {
+            user_info: None,
+            address: addr.into(),
         }
     }
 }
 
 impl From<SocketAddress> for Authority {
+    #[inline(always)]
     fn from(addr: SocketAddress) -> Self {
-        let (ip, port) = addr.into_parts();
-        Self {
-            host: Host::Address(ip),
-            port,
-        }
+        let SocketAddress { ip_addr, port } = addr;
+        Self::new(HostWithOptPort::new_with_port(Host::Address(ip_addr), port))
     }
 }
 
 impl From<&SocketAddress> for Authority {
+    #[inline(always)]
     fn from(addr: &SocketAddress) -> Self {
-        Self {
-            host: Host::Address(addr.ip_addr()),
-            port: addr.port(),
-        }
+        Self::new(HostWithOptPort::new_with_port(
+            Host::Address(addr.ip_addr),
+            addr.port,
+        ))
     }
 }
 
 impl From<DomainAddress> for Authority {
+    #[inline(always)]
     fn from(addr: DomainAddress) -> Self {
-        let (domain, port) = addr.into_parts();
+        let DomainAddress { domain, port } = addr;
         Self::from((domain, port))
     }
 }
 
 impl fmt::Display for Authority {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.host {
-            Host::Name(domain) => write!(f, "{}:{}", domain, self.port),
-            Host::Address(ip) => match ip {
-                IpAddr::V4(ip) => write!(f, "{}:{}", ip, self.port),
-                IpAddr::V6(ip) => write!(f, "[{}]:{}", ip, self.port),
-            },
+        if let Some(ref user_info) = self.user_info {
+            let username = user_info.username();
+            let password = user_info.password();
+            if password.is_empty() {
+                write!(f, "{username}@")?;
+            } else {
+                write!(f, "{username}:{password}@")?;
+            }
         }
+        self.address.fmt(f)
     }
 }
 
@@ -261,42 +451,111 @@ impl std::str::FromStr for Authority {
 impl TryFrom<String> for Authority {
     type Error = OpaqueError;
 
+    #[inline(always)]
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.as_str().try_into()
+        try_from_maybe_borrowed_str(s.into())
     }
 }
 
 impl TryFrom<&str> for Authority {
     type Error = OpaqueError;
 
+    #[inline(always)]
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let (host, port) = parse_utils::split_port_from_str(s)?;
-        let host = Host::try_from(host).context("parse host from authority")?;
-        match host {
-            Host::Address(IpAddr::V6(_)) if !s.starts_with('[') => Err(OpaqueError::from_display(
-                "missing brackets for IPv6 address with port",
-            )),
-            _ => Ok(Self { host, port }),
-        }
+        try_from_maybe_borrowed_str(s.into())
     }
 }
 
-#[cfg(feature = "http")]
-impl TryFrom<HeaderValue> for Authority {
-    type Error = OpaqueError;
+fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority, OpaqueError> {
+    let mut s = maybe_borrowed.as_ref();
 
-    fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
-        Self::try_from(&header)
+    if s.is_empty() {
+        return Err(OpaqueError::from_display(
+            "empty string is invalid authority",
+        ));
     }
-}
 
-#[cfg(feature = "http")]
-impl TryFrom<&HeaderValue> for Authority {
-    type Error = OpaqueError;
-
-    fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
-        header.to_str().context("convert header to str")?.try_into()
+    let mut user_info = None;
+    if let Some((user_info_s, rest)) = s.split_once('@') {
+        user_info = Some(Basic::try_from(user_info_s)?);
+        s = rest;
     }
+
+    let host;
+    let mut port = None;
+
+    if let Some(last_colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
+        let first_part = &s[..last_colon];
+        if first_part.contains(':') {
+            // ipv6
+            if first_part.starts_with('[') || first_part.ends_with(']') {
+                let value = first_part
+                    .strip_prefix('[')
+                    .and_then(|value| value.strip_suffix(']'))
+                    .context("strip brackets from authority ipv6 host w/ trailing port")?;
+                host = Host::Address(IpAddr::V6(
+                    value
+                        .parse::<Ipv6Addr>()
+                        .context("parse authority host as Ipv6 w/ trailing port")?,
+                ));
+
+                port = Some(
+                    s[last_colon + 1..]
+                        .parse()
+                        .context("parse authority port string as u16")?,
+                );
+            } else {
+                host = Host::Address(IpAddr::V6(
+                    s.parse::<Ipv6Addr>()
+                        .context("parse authority host as ipv6 w/o trailing port")?,
+                ));
+            };
+        } else {
+            port = Some(
+                s[last_colon + 1..]
+                    .parse()
+                    .context("parse authority port string as u16")?,
+            );
+
+            // try ipv4 first, domain afterwards
+            host = if let Ok(ipv4) = first_part.parse::<Ipv4Addr>() {
+                Host::Address(IpAddr::V4(ipv4))
+            } else {
+                let mut owned_vec = if user_info.is_some() {
+                    s.as_bytes().to_vec()
+                } else {
+                    maybe_borrowed.into_owned().into_bytes()
+                };
+                owned_vec.truncate(last_colon);
+                let owned_str = String::from_utf8(owned_vec)
+                    .context("interpret authority host as utf-8 str")?;
+                Host::Name(
+                    Domain::try_from(owned_str)
+                        .context("parse authority host utf-8 str as domain w/ trailing port")?,
+                )
+            };
+        };
+    } else {
+        // no port, so either IpAddr or Domain, in that order
+        host = if let Ok(ip) = s.parse::<IpAddr>() {
+            Host::Address(ip)
+        } else {
+            let owned_str = if user_info.is_some() {
+                s.to_owned()
+            } else {
+                maybe_borrowed.into_owned()
+            };
+            Host::Name(
+                Domain::try_from(owned_str)
+                    .context("parse host utf-8 str as domain w/o trailing port")?,
+            )
+        };
+    }
+
+    Ok(Authority {
+        user_info,
+        address: HostWithOptPort { host, port },
+    })
 }
 
 impl TryFrom<Vec<u8>> for Authority {
@@ -342,41 +601,178 @@ mod tests {
     use super::*;
 
     #[allow(clippy::needless_pass_by_value)]
-    fn assert_eq(s: &str, authority: Authority, host: &str, port: u16) {
-        assert_eq!(authority.host(), &host, "parsing: {s}");
-        assert_eq!(authority.port(), port, "parsing: {s}");
+    fn assert_eq(
+        s: &str,
+        authority: Authority,
+        user_info: Option<Basic>,
+        host: &str,
+        port: Option<u16>,
+    ) {
+        assert_eq!(authority.user_info, user_info, "parsing: {s}");
+        assert_eq!(authority.address.host, host, "parsing: {s}");
+        assert_eq!(authority.address.port, port, "parsing: {s}");
     }
 
     #[test]
     fn test_parse_valid() {
-        for (s, (expected_host, expected_port)) in [
-            ("example.com:80", ("example.com", 80)),
-            ("[::1]:80", ("::1", 80)),
-            ("127.0.0.1:80", ("127.0.0.1", 80)),
+        for (s, (expected_user_info, expected_host, expected_port)) in [
+            ("example.com", (None, "example.com", None)),
+            (
+                "user@example.com",
+                (
+                    Some(Basic::new_static_insecure("user")),
+                    "example.com",
+                    None,
+                ),
+            ),
+            (
+                "user:password@example.com",
+                (
+                    Some(Basic::new_static("user", "password")),
+                    "example.com",
+                    None,
+                ),
+            ),
+            ("example.com:80", (None, "example.com", Some(80))),
+            (
+                "user@example.com:80",
+                (
+                    Some(Basic::new_static_insecure("user")),
+                    "example.com",
+                    Some(80),
+                ),
+            ),
+            (
+                "user:secret@example.com:80",
+                (
+                    Some(Basic::new_static("user", "secret")),
+                    "example.com",
+                    Some(80),
+                ),
+            ),
+            (
+                "user@::1",
+                (Some(Basic::new_static_insecure("user")), "::1", None),
+            ),
+            (
+                "user:password@::1",
+                (Some(Basic::new_static("user", "password")), "::1", None),
+            ),
+            ("::1", (None, "::1", None)),
+            ("[::1]:80", (None, "::1", Some(80))),
+            (
+                "user@[::1]:80",
+                (Some(Basic::new_static_insecure("user")), "::1", Some(80)),
+            ),
+            (
+                "user:password@[::1]:80",
+                (Some(Basic::new_static("user", "password")), "::1", Some(80)),
+            ),
+            ("127.0.0.1", (None, "127.0.0.1", None)),
+            (
+                "user@127.0.0.1",
+                (Some(Basic::new_static_insecure("user")), "127.0.0.1", None),
+            ),
+            (
+                "user:password@127.0.0.1",
+                (
+                    Some(Basic::new_static("user", "password")),
+                    "127.0.0.1",
+                    None,
+                ),
+            ),
+            ("127.0.0.1:80", (None, "127.0.0.1", Some(80))),
+            (
+                "user@127.0.0.1:80",
+                (
+                    Some(Basic::new_static_insecure("user")),
+                    "127.0.0.1",
+                    Some(80),
+                ),
+            ),
+            (
+                "user:secret@127.0.0.1:80",
+                (
+                    Some(Basic::new_static("user", "secret")),
+                    "127.0.0.1",
+                    Some(80),
+                ),
+            ),
+            (
+                "2001:db8:3333:4444:5555:6666:7777:8888",
+                (None, "2001:db8:3333:4444:5555:6666:7777:8888", None),
+            ),
+            (
+                "user@2001:db8:3333:4444:5555:6666:7777:8888",
+                (
+                    Some(Basic::new_static_insecure("user")),
+                    "2001:db8:3333:4444:5555:6666:7777:8888",
+                    None,
+                ),
+            ),
+            (
+                "user:secret@2001:db8:3333:4444:5555:6666:7777:8888",
+                (
+                    Some(Basic::new_static("user", "secret")),
+                    "2001:db8:3333:4444:5555:6666:7777:8888",
+                    None,
+                ),
+            ),
             (
                 "[2001:db8:3333:4444:5555:6666:7777:8888]:80",
-                ("2001:db8:3333:4444:5555:6666:7777:8888", 80),
+                (None, "2001:db8:3333:4444:5555:6666:7777:8888", Some(80)),
+            ),
+            (
+                "user@[2001:db8:3333:4444:5555:6666:7777:8888]:80",
+                (
+                    Some(Basic::new_static_insecure("user")),
+                    "2001:db8:3333:4444:5555:6666:7777:8888",
+                    Some(80),
+                ),
+            ),
+            (
+                "user:secret@[2001:db8:3333:4444:5555:6666:7777:8888]:80",
+                (
+                    Some(Basic::new_static("user", "secret")),
+                    "2001:db8:3333:4444:5555:6666:7777:8888",
+                    Some(80),
+                ),
             ),
         ] {
             let msg = format!("parsing '{s}'");
 
-            assert_eq(s, s.parse().expect(&msg), expected_host, expected_port);
-            assert_eq(s, s.try_into().expect(&msg), expected_host, expected_port);
+            assert_eq(
+                s,
+                s.parse().expect(&msg),
+                expected_user_info.clone(),
+                expected_host,
+                expected_port,
+            );
+            assert_eq(
+                s,
+                s.try_into().expect(&msg),
+                expected_user_info.clone(),
+                expected_host,
+                expected_port,
+            );
             assert_eq(
                 s,
                 s.to_owned().try_into().expect(&msg),
+                expected_user_info.clone(),
                 expected_host,
                 expected_port,
             );
             assert_eq(
                 s,
                 s.as_bytes().try_into().expect(&msg),
+                expected_user_info.clone(),
                 expected_host,
                 expected_port,
             );
             assert_eq(
                 s,
                 s.as_bytes().to_vec().try_into().expect(&msg),
+                expected_user_info.clone(),
                 expected_host,
                 expected_port,
             );
@@ -393,18 +789,23 @@ mod tests {
             ":80",
             "-.",
             ".-",
-            "::1",
-            "127.0.0.1",
             "[::1]",
-            "2001:db8:3333:4444:5555:6666:7777:8888",
+            "[2001:db8:3333:4444:5555:6666:7777:8888",
+            "2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888]",
-            "example.com",
             "example.com:",
             "example.com:-1",
             "example.com:999999",
             "example:com",
             "[127.0.0.1]:80",
             "2001:db8:3333:4444:5555:6666:7777:8888:80",
+            ":foo@80",
+            ":foo@example.com",
+            ":foo@127.0.0.1",
+            ":foo@example.com:80",
+            ":foo@127.0.0.1:80",
+            ":foo@:80",
+            ":foo@:80",
         ] {
             let msg = format!("parsing '{s}'");
             assert!(s.parse::<Authority>().is_err(), "{msg}");
@@ -418,9 +819,24 @@ mod tests {
     #[test]
     fn test_parse_display() {
         for (s, expected) in [
+            ("example.com", "example.com"),
+            ("user@example.com", "user@example.com"),
+            ("user:secret@example.com", "user:secret@example.com"),
             ("example.com:80", "example.com:80"),
+            ("user@example.com:80", "user@example.com:80"),
+            ("user:secret@example.com:80", "user:secret@example.com:80"),
             ("[::1]:80", "[::1]:80"),
+            ("user@[::1]:80", "user@[::1]:80"),
+            ("secret:user@[::1]:80", "secret:user@[::1]:80"),
+            ("::1", "::1"),
+            ("user@::1", "user@::1"),
+            ("user:secret@::1", "user:secret@::1"),
             ("127.0.0.1:80", "127.0.0.1:80"),
+            ("user@127.0.0.1:80", "user@127.0.0.1:80"),
+            ("user:secret@127.0.0.1:80", "user:secret@127.0.0.1:80"),
+            ("127.0.0.1", "127.0.0.1"),
+            ("user@127.0.0.1", "user@127.0.0.1"),
+            ("user:secret@127.0.0.1", "user:secret@127.0.0.1"),
         ] {
             let msg = format!("parsing '{s}'");
             let authority: Authority = s.parse().expect(&msg);
