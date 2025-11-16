@@ -5,7 +5,7 @@ use rama_core::{
 use rama_http_types::Version;
 use rama_net::{
     Protocol,
-    address::Authority,
+    address::HostWithPort,
     transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext},
 };
 use std::convert::Infallible;
@@ -17,16 +17,27 @@ use std::convert::Infallible;
 /// This can be used in case you operate on a layer below
 /// an application layer such as Http.
 pub struct Request {
-    authority: Authority,
-    protocol: Option<Protocol>,
-    http_version: Option<Version>,
-    extensions: Extensions,
+    pub authority: HostWithPort,
+    pub protocol: Option<Protocol>,
+    pub http_version: Option<Version>,
+    pub extensions: Extensions,
 }
 
 impl Request {
-    /// Create a new Tcp [`Request`].
+    /// Create a new Tcp [`Request`] with default [`Extensions`].
     #[must_use]
-    pub const fn new(authority: Authority, extensions: Extensions) -> Self {
+    pub const fn new(authority: HostWithPort) -> Self {
+        Self {
+            authority,
+            protocol: None,
+            http_version: None,
+            extensions: Extensions::new(),
+        }
+    }
+
+    /// Create a new Tcp [`Request`] with given [`Extensions`].
+    #[must_use]
+    pub const fn new_with_extensions(authority: HostWithPort, extensions: Extensions) -> Self {
         Self {
             authority,
             protocol: None,
@@ -35,73 +46,20 @@ impl Request {
         }
     }
 
-    /// Attach an application protocol to this [`Request`]
-    /// on which the established connection will operate.
-    #[must_use]
-    pub fn with_protocol(mut self, protocol: Protocol) -> Self {
-        self.protocol = Some(protocol);
-        self
-    }
-
-    /// Set an application protocol to this [`Request`]
-    /// on which the established connection will operate.
-    pub fn set_protocol(&mut self, protocol: Protocol) -> &mut Self {
-        self.protocol = Some(protocol);
-        self
-    }
-
-    /// Return the application protocol on which the established
-    /// connection will operate, if known.
-    #[must_use]
-    pub fn protocol(&self) -> Option<Protocol> {
-        self.protocol.clone()
-    }
-
-    /// Attach an http version as a hint to the application layer.
-    #[must_use]
-    pub const fn with_http_version(mut self, version: Version) -> Self {
-        self.http_version = Some(version);
-        self
-    }
-
-    /// Set an http version as a hint to the application layer.
-    pub fn set_http_version(&mut self, version: Version) -> &mut Self {
-        self.http_version = Some(version);
-        self
-    }
-
-    /// Return the http version hint, if defined
-    #[must_use]
-    pub fn http_version(&self) -> Option<Version> {
-        self.http_version
-    }
-
-    /// (re)construct a Tcp [`Request`] from its [`Parts`].
-    #[must_use]
-    pub fn from_parts(parts: Parts) -> Self {
-        Self {
-            authority: parts.authority,
-            protocol: parts.protocol,
-            http_version: parts.http_version,
-            extensions: Extensions::new(),
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the application protocol to this [`Request`]
+        /// on which the established connection will operate.
+        pub fn protocol(mut self, protocol: Option<Protocol>) -> Self {
+            self.protocol = protocol;
+            self
         }
     }
 
-    /// View a reference to the target [`Authority`] of
-    /// this Tcp [`Request`].
-    #[must_use]
-    pub fn authority(&self) -> &Authority {
-        &self.authority
-    }
-
-    /// Consume the Tcp [`Request`] into the [`Parts`] it is made of.
-    #[must_use]
-    pub fn into_parts(self) -> Parts {
-        Parts {
-            authority: self.authority,
-            protocol: self.protocol,
-            http_version: self.http_version,
-            extensions: self.extensions,
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the http version as a hint to the application layer.
+        pub fn http_version(mut self, version: Option<Version>) -> Self {
+            self.http_version = version;
+            self
         }
     }
 }
@@ -124,7 +82,7 @@ impl From<&Request> for TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol.clone(),
             http_version: value.http_version,
-            authority: value.authority.clone(),
+            authority: value.authority.clone().into(),
         }
     }
 }
@@ -135,72 +93,12 @@ impl From<Request> for TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol,
             http_version: value.http_version,
-            authority: value.authority,
-        }
-    }
-}
-
-impl From<Parts> for Request {
-    #[inline]
-    fn from(value: Parts) -> Self {
-        Self::from_parts(value)
-    }
-}
-
-#[derive(Debug, Clone)]
-/// The parts that make up a Tcp [`Request`].
-pub struct Parts {
-    /// Authority to be used to make a connection to the server.
-    pub authority: Authority,
-
-    /// Application Protocol that will be operated on, if known.
-    pub protocol: Option<Protocol>,
-
-    /// Http version hint that application layer can use if possible.
-    pub http_version: Option<Version>,
-
-    /// Extensions stored on this request
-    pub extensions: Extensions,
-}
-
-impl From<Request> for Parts {
-    #[inline]
-    fn from(value: Request) -> Self {
-        value.into_parts()
-    }
-}
-
-impl From<&Parts> for TransportContext {
-    fn from(value: &Parts) -> Self {
-        Self {
-            protocol: TransportProtocol::Tcp,
-            app_protocol: value.protocol.clone(),
-            http_version: value.http_version,
-            authority: value.authority.clone(),
-        }
-    }
-}
-
-impl From<Parts> for TransportContext {
-    fn from(value: Parts) -> Self {
-        Self {
-            protocol: TransportProtocol::Tcp,
-            app_protocol: value.protocol,
-            http_version: value.http_version,
-            authority: value.authority,
+            authority: value.authority.into(),
         }
     }
 }
 
 impl TryRefIntoTransportContext for Request {
-    type Error = Infallible;
-
-    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
-        Ok(self.into())
-    }
-}
-
-impl TryRefIntoTransportContext for Parts {
     type Error = Infallible;
 
     fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {

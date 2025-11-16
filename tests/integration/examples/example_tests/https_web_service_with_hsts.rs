@@ -3,11 +3,11 @@ use rama::http::headers::StrictTransportSecurity;
 use rama::http::headers::{HeaderMapExt, Location};
 use rama::http::service::client::HttpClientExt as _;
 use rama::http::{BodyExtractExt, StatusCode, client::EasyHttpWebClient};
-use rama::net::address::Authority;
+use rama::net::address::HostWithPort;
 use std::time::Duration;
 
-const ADDRESS_HTTP: Authority = Authority::local_ipv4(62043);
-const ADDRESS_HTTPS: Authority = Authority::local_ipv4(62044);
+const ADDRESS_HTTP: HostWithPort = HostWithPort::local_ipv4(62043);
+const ADDRESS_HTTPS: HostWithPort = HostWithPort::local_ipv4(62044);
 
 #[tokio::test]
 #[ignore]

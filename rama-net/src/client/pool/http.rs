@@ -1,5 +1,5 @@
 use super::{LruDropPool, PooledConnector, ReqToConnID};
-use crate::{Protocol, address::Authority, client::pool::OpaqueError, http::RequestContext};
+use crate::{Protocol, address::HostWithOptPort, client::pool::OpaqueError, http::RequestContext};
 use rama_core::extensions::ExtensionsRef;
 use rama_http_types::Request;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use std::time::Duration;
 /// [`BasicHttpConnIdentifier`] can be used together with a [`super::Pool`] to create a basic http connection pool
 pub struct BasicHttpConnIdentifier;
 
-pub type BasicHttpConId = (Protocol, Authority);
+pub type BasicHttpConId = (Protocol, HostWithOptPort);
 
 impl super::ConnID for BasicHttpConId {
     #[cfg(feature = "opentelemetry")]

@@ -12,4 +12,4 @@ pub use connect::{TcpStreamConnector, default_tcp_connect, tcp_connect};
 mod request;
 #[cfg(feature = "http")]
 #[doc(inline)]
-pub use request::{Parts, Request};
+pub use request::Request;

@@ -302,8 +302,8 @@ impl TcpListener {
             let span = trace_root_span!(
                 "tcp::serve",
                 otel.kind = "server",
-                network.local.port = %trace_local_addr.port(),
-                network.local.address = %trace_local_addr.ip_addr(),
+                network.local.port = trace_local_addr.port,
+                network.local.address = %trace_local_addr.ip_addr,
                 network.peer.port = %peer_addr.port(),
                 network.peer.address = %peer_addr.ip(),
                 network.protocol.name = "tcp",
@@ -354,8 +354,8 @@ impl TcpListener {
                             let span = trace_root_span!(
                                 "tcp::serve_graceful",
                                 otel.kind = "server",
-                                network.local.port = %trace_local_addr.port(),
-                                network.local.address = %trace_local_addr.ip_addr(),
+                                network.local.port = trace_local_addr.port,
+                                network.local.address = %trace_local_addr.ip_addr,
                                 network.peer.port = %peer_addr.port(),
                                 network.peer.address = %peer_addr.ip(),
                                 network.protocol.name = "tcp",

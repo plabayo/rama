@@ -35,8 +35,8 @@ impl SubdomainTrieMatcher {
 
 impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
     fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
-        let match_authority = |ctx: &RequestContext| match ctx.authority.host() {
-            Host::Name(domain) => {
+        let match_authority = |ctx: &RequestContext| match ctx.authority.host {
+            Host::Name(ref domain) => {
                 let is_match = self.is_match(domain);
                 tracing::trace!(
                     "SubdomainTrieMatcher: matching domain = {}, matched = {}",

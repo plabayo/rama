@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::telemetry::tracing;
-use rama_net::address::{Authority, Host, SocketAddress};
+use rama_net::address::{Host, SocketAddress};
 use rama_udp::UdpSocket;
 
 use crate::proto::udp::UdpHeader;
@@ -12,6 +12,7 @@ use crate::proto::udp::UdpHeader;
 use ::{
     rama_core::{error::ErrorContext, extensions::Extensions},
     rama_dns::{BoxDnsResolver, DnsResolver},
+    rama_net::address::HostWithPort,
     rama_net::mode::DnsResolveIpMode,
     rand::seq::IteratorRandom,
     std::net::IpAddr,
@@ -104,8 +105,8 @@ impl UdpSocketRelay {
 
                         if !self.client_address.eq(&src) {
                             tracing::debug!(
-                                network.peer.address = %self.client_address.ip_addr(),
-                                network.peer.port = %self.client_address.port(),
+                                network.peer.address = %self.client_address.ip_addr,
+                                network.peer.port = %self.client_address.port,
                                 "north socket: drop packet non-client packet (len = {len}; src = {src})",
                             );
                             return Ok(None);
@@ -116,8 +117,8 @@ impl UdpSocketRelay {
                             Ok(header) => {
                                 if header.fragment_number != 0 {
                                     tracing::debug!(
-                                        network.peer.address = %self.client_address.ip_addr(),
-                                        network.peer.port = %self.client_address.port(),
+                                        network.peer.address = %self.client_address.ip_addr,
+                                        network.peer.port = %self.client_address.port,
                                         "received north packet with non-zero fragment number {}: drop it",
                                         header.fragment_number,
                                     );
@@ -127,8 +128,8 @@ impl UdpSocketRelay {
                             }
                             Err(err) => {
                                 tracing::debug!(
-                                    network.peer.address = %self.client_address.ip_addr(),
-                                    network.peer.port = %self.client_address.port(),
+                                    network.peer.address = %self.client_address.ip_addr,
+                                    network.peer.port = %self.client_address.port,
                                     "received invalid north packet: drop it: err = {err:?}",
                                 );
                                 return Ok(None);
@@ -139,8 +140,8 @@ impl UdpSocketRelay {
                             Ok(addr) => addr,
                             Err(err) => {
                                 tracing::debug!(
-                                    network.peer.address = %self.client_address.ip_addr(),
-                                    network.peer.port = %self.client_address.port(),
+                                    network.peer.address = %self.client_address.ip_addr,
+                                    network.peer.port = %self.client_address.port,
                                     "north packet's destination authority failed to (dns) resolve: {err:?}",
                                 );
                                 return Ok(None);
@@ -197,19 +198,19 @@ impl UdpSocketRelay {
     ) -> Result<(), BoxError> {
         let result = if let Some(data) = data {
             tracing::trace!(
-                network.peer.address = %self.client_address.ip_addr(),
-                network.peer.port = %self.client_address.port(),
-                server.address = %server_address.ip_addr(),
-                server.port = %server_address.port(),
+                network.peer.address = %self.client_address.ip_addr,
+                network.peer.port = %self.client_address.port,
+                server.address = %server_address.ip_addr,
+                server.port = %server_address.port,
                 "send packet south: data from input (len = {})",
                 data.len()
             );
             if data.len() > self.south_max_size {
                 tracing::trace!(
-                    network.peer.address = %self.client_address.ip_addr(),
-                    network.peer.port = %self.client_address.port(),
-                    server.address = %server_address.ip_addr(),
-                    server.port = %server_address.port(),
+                    network.peer.address = %self.client_address.ip_addr,
+                    network.peer.port = %self.client_address.port,
+                    server.address = %server_address.ip_addr,
+                    server.port = %server_address.port,
                     "drop packet south: length is too large for defined limit (len = {}; max len = {})",
                     data.len(),
                     self.south_max_size,
@@ -219,10 +220,10 @@ impl UdpSocketRelay {
             self.south.send_to(&data, server_address).await
         } else {
             tracing::trace!(
-                network.peer.address = %self.client_address.ip_addr(),
-                network.peer.port = %self.client_address.port(),
-                server.address = %server_address.ip_addr(),
-                server.port = %server_address.port(),
+                network.peer.address = %self.client_address.ip_addr,
+                network.peer.port = %self.client_address.port,
+                server.address = %server_address.ip_addr,
+                server.port = %server_address.port,
                 "send packet south: data from north socket (len = {})",
                 self.north_read_buf.len(),
             );
@@ -234,10 +235,10 @@ impl UdpSocketRelay {
         match result {
             Ok(len) => {
                 tracing::trace!(
-                    network.peer.address = %self.client_address.ip_addr(),
-                    network.peer.port = %self.client_address.port(),
-                    server.address = %server_address.ip_addr(),
-                    server.port = %server_address.port(),
+                    network.peer.address = %self.client_address.ip_addr,
+                    network.peer.port = %self.client_address.port,
+                    server.address = %server_address.ip_addr,
+                    server.port = %server_address.port,
                     "send packet south: complete (len = {}; write len = {})",
                     self.north_read_buf.len(),
                     len
@@ -282,20 +283,20 @@ impl UdpSocketRelay {
 
         if let Some(data) = data {
             tracing::trace!(
-                network.peer.address = %self.client_address.ip_addr(),
-                network.peer.port = %self.client_address.port(),
-                server.address = %server_address.ip_addr(),
-                server.port = %server_address.port(),
+                network.peer.address = %self.client_address.ip_addr,
+                network.peer.port = %self.client_address.port,
+                server.address = %server_address.ip_addr,
+                server.port = %server_address.port,
                 "send packet north: data from input (len = {})",
                 data.len(),
             );
 
             if data.len() > self.north_max_size {
                 tracing::trace!(
-                    network.peer.address = %self.client_address.ip_addr(),
-                    network.peer.port = %self.client_address.port(),
-                    server.address = %server_address.ip_addr(),
-                    server.port = %server_address.port(),
+                    network.peer.address = %self.client_address.ip_addr,
+                    network.peer.port = %self.client_address.port,
+                    server.address = %server_address.ip_addr,
+                    server.port = %server_address.port,
                     "drop packet north: length is too large for defined limit (len = {}; max len = {})",
                     data.len(),
                     self.north_max_size,
@@ -307,10 +308,10 @@ impl UdpSocketRelay {
             self.north_write_buf.extend_from_slice(&data);
         } else {
             tracing::trace!(
-                network.peer.address = %self.client_address.ip_addr(),
-                network.peer.port = %self.client_address.port(),
-                server.address = %server_address.ip_addr(),
-                server.port = %server_address.port(),
+                network.peer.address = %self.client_address.ip_addr,
+                network.peer.port = %self.client_address.port,
+                server.address = %server_address.ip_addr,
+                server.port = %server_address.port,
                 "send packet north: data from south socket (len = {})",
                 self.north_read_buf.len(),
             );
@@ -327,10 +328,10 @@ impl UdpSocketRelay {
         {
             Ok(len) => {
                 tracing::trace!(
-                    network.peer.address = %self.client_address.ip_addr(),
-                    network.peer.port = %self.client_address.port(),
-                    server.address = %server_address.ip_addr(),
-                    server.port = %server_address.port(),
+                    network.peer.address = %self.client_address.ip_addr,
+                    network.peer.port = %self.client_address.port,
+                    server.address = %server_address.ip_addr,
+                    server.port = %server_address.port,
                     "send packet north: complete (len = {}; write len = {})",
                     self.north_write_buf.len(),
                     len,
@@ -379,9 +380,9 @@ fn is_fatal_io_error(err: &std::io::Error) -> bool {
 impl UdpSocketRelay {
     pub(super) async fn authority_to_socket_address(
         &self,
-        authority: Authority,
+        authority: HostWithPort,
     ) -> Result<SocketAddress, BoxError> {
-        let (host, port) = authority.into_parts();
+        let HostWithPort { host, port } = authority;
         let ip_addr = match host {
             Host::Name(_) => {
                 return Err(OpaqueError::from_display(
@@ -411,9 +412,9 @@ impl UdpSocketRelay {
 
     pub(super) async fn authority_to_socket_address(
         &self,
-        authority: Authority,
+        authority: HostWithPort,
     ) -> Result<SocketAddress, BoxError> {
-        let (host, port) = authority.into_parts();
+        let HostWithPort { host, port } = authority;
         let ip_addr = match host {
             Host::Name(domain) => {
                 let dns_resolver = self

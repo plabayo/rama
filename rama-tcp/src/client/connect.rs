@@ -6,8 +6,9 @@ use rama_core::{
     rt::Executor,
 };
 use rama_dns::{DnsOverwrite, DnsResolver, GlobalDnsResolver};
+use rama_net::address::HostWithPort;
 use rama_net::{
-    address::{Authority, Domain, Host, SocketAddress},
+    address::{Domain, Host, SocketAddress},
     mode::{ConnectIpMode, DnsResolveIpMode},
     socket::SocketOptions,
 };
@@ -76,7 +77,7 @@ impl TcpStreamConnector for SocketAddress {
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let bind_addr = *self;
-        let opts = match bind_addr.ip_addr() {
+        let opts = match bind_addr.ip_addr {
             IpAddr::V4(_ip) => SocketOptions {
                 address: Some(bind_addr),
                 ..SocketOptions::default_tcp()
@@ -174,24 +175,24 @@ macro_rules! impl_stream_connector_either {
 ::rama_core::combinators::impl_either!(impl_stream_connector_either);
 
 #[inline]
-/// Establish a [`TcpStream`] connection for the given [`Authority`],
+/// Establish a [`TcpStream`] connection for the given [`HostWithPort`],
 /// using the default settings and no custom state.
 ///
 /// Use [`tcp_connect`] in case you want to customise any of these settings,
 /// or use a [`rama_net::client::ConnectorService`] for even more advanced possibilities.
 pub async fn default_tcp_connect(
     extensions: &Extensions,
-    authority: Authority,
+    address: HostWithPort,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
 {
-    tcp_connect(extensions, authority, GlobalDnsResolver::default(), ()).await
+    tcp_connect(extensions, address, GlobalDnsResolver::default(), ()).await
 }
 
-/// Establish a [`TcpStream`] connection for the given [`Authority`].
+/// Establish a [`TcpStream`] connection for the given [`HostWithPort`].
 pub async fn tcp_connect<Dns, Connector>(
     extensions: &Extensions,
-    authority: Authority,
+    address: HostWithPort,
     dns: Dns,
     connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
@@ -202,7 +203,7 @@ where
     let ip_mode = extensions.get().copied().unwrap_or_default();
     let dns_mode = extensions.get().copied().unwrap_or_default();
 
-    let (host, port) = authority.into_parts();
+    let HostWithPort { host, port } = address;
     let domain = match host {
         Host::Name(domain) => domain,
         Host::Address(ip) => {

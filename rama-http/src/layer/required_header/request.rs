@@ -196,7 +196,7 @@ where
                 "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
             )?;
             if request_ctx.authority_has_default_port() {
-                let host = request_ctx.authority.host().clone();
+                let host = request_ctx.authority.host;
                 tracing::trace!(
                     server.address = %host,
                     "add missing host from authority as host header",
@@ -205,8 +205,8 @@ where
             } else {
                 let authority = request_ctx.authority;
                 tracing::trace!(
-                    server.address = %authority.host(),
-                    server.port = %authority.port(),
+                    server.address = %authority.host,
+                    server.port = authority.port,
                     "add missing authority as host header"
                 );
                 req.headers_mut().typed_insert(Host::from(authority));

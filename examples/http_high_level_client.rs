@@ -173,8 +173,8 @@ async fn run_server(addr: SocketAddress) {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     tracing::info!(
-        network.local.address = %addr.ip_addr(),
-        network.local.port = %addr.port(),
+        network.local.address = %addr.ip_addr,
+        network.local.port = %addr.port,
         "running server",
     );
     let exec = Executor::default();

@@ -35,8 +35,7 @@ where
             RequestContext::try_from(parts)
                 .map_err(|_| MissingHost)?
                 .authority
-                .host()
-                .clone(),
+                .host,
         ))
     }
 }

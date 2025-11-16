@@ -281,7 +281,7 @@ where
                             .into());
                         }
                     }
-                    TransportProtocol::Tcp => match proxy_address.authority.port() {
+                    TransportProtocol::Tcp => match proxy_address.address.port {
                         80 | 8080 if proxy.http => Some(Protocol::HTTP),
                         443 | 8443 if proxy.https => Some(Protocol::HTTPS),
                         1080 if proxy.socks5 => Some(Protocol::SOCKS5),
@@ -518,14 +518,11 @@ mod tests {
     use super::*;
     use crate::{MemoryProxyDB, Proxy, ProxyCsvRowReader, StringFilter};
     use itertools::Itertools;
-    use rama_core::{
-        extensions::{Extensions, ExtensionsRef},
-        service::service_fn,
-    };
+    use rama_core::{extensions::ExtensionsRef, service::service_fn};
     use rama_http_types::{Body, Request, Version};
     use rama_net::{
         Protocol,
-        address::{Authority, ProxyAddress},
+        address::{HostWithPort, ProxyAddress},
         asn::Asn,
     };
     use rama_utils::str::NonEmptyString;
@@ -599,8 +596,8 @@ mod tests {
 
         let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
-            proxy_address.authority,
-            Authority::try_from("12.34.12.34:8080").unwrap()
+            proxy_address.address,
+            HostWithPort::from(([12, 34, 12, 34], 8080))
         );
     }
 
@@ -649,8 +646,8 @@ mod tests {
 
         let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
-            proxy_address.authority,
-            Authority::try_from("12.34.12.34:8080").unwrap()
+            proxy_address.address,
+            HostWithPort::from(([12, 34, 12, 34], 8080))
         );
     }
 
@@ -779,11 +776,8 @@ mod tests {
                 Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut req = rama_tcp::client::Request::new(
-            "www.example.com:443".parse().unwrap(),
-            Extensions::new(),
-        )
-        .with_protocol(Protocol::HTTPS);
+        let mut req = rama_tcp::client::Request::new("www.example.com:443".parse().unwrap())
+            .with_protocol(Protocol::HTTPS);
 
         req.extensions_mut().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
@@ -794,8 +788,8 @@ mod tests {
 
         let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
-            proxy_address.authority,
-            Authority::try_from("12.34.12.34:8080").unwrap()
+            proxy_address.address,
+            HostWithPort::from(([12, 34, 12, 34], 8080))
         );
     }
 
@@ -833,7 +827,7 @@ mod tests {
 
         let proxy_address = service.serve(req).await.unwrap();
 
-        assert_eq!(proxy_address.authority.to_string(), "1.2.3.4:1234");
+        assert_eq!(proxy_address.address.to_string(), "1.2.3.4:1234");
     }
 
     #[tokio::test]
@@ -890,8 +884,8 @@ mod tests {
             let maybe_proxy_address = service.serve(req).await.unwrap();
 
             assert_eq!(
-                maybe_proxy_address.map(|p| p.authority),
-                expected_authority.map(|s| Authority::try_from(s).unwrap())
+                maybe_proxy_address.map(|p| p.address),
+                expected_authority.map(|s| HostWithPort::try_from(s).unwrap())
             );
         }
     }
@@ -934,7 +928,7 @@ mod tests {
 
                 req.extensions_mut().maybe_insert(filter.clone());
 
-                let proxy_address = service.serve(req).await.unwrap().authority.to_string();
+                let proxy_address = service.serve(req).await.unwrap().address.to_string();
 
                 if !seen_addresses.contains(&proxy_address) {
                     seen_addresses.push(proxy_address);
@@ -989,7 +983,7 @@ mod tests {
 
                 req.extensions_mut().maybe_insert(filter.clone());
 
-                let proxy_address = service.serve(req).await.unwrap().authority.to_string();
+                let proxy_address = service.serve(req).await.unwrap().address.to_string();
 
                 if !seen_addresses.contains(&proxy_address) {
                     seen_addresses.push(proxy_address);
@@ -1073,8 +1067,8 @@ mod tests {
             match expected_address {
                 Some(expected_address) => {
                     assert_eq!(
-                        proxy_address_result.unwrap().authority,
-                        Authority::try_from(expected_address).unwrap()
+                        proxy_address_result.unwrap().address,
+                        HostWithPort::try_from(expected_address).unwrap()
                     );
                 }
                 None => {
@@ -1171,8 +1165,8 @@ mod tests {
             match expected {
                 Some(expected_address) => {
                     assert_eq!(
-                        proxy_result.unwrap().authority,
-                        Authority::try_from(expected_address).unwrap()
+                        proxy_result.unwrap().address,
+                        HostWithPort::try_from(expected_address).unwrap()
                     );
                 }
                 None => {

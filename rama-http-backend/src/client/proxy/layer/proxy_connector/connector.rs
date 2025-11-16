@@ -12,13 +12,10 @@ use rama_http::HeaderMap;
 use rama_http::io::upgrade;
 use rama_http_core::body::Incoming;
 use rama_http_core::client::conn::{http1, http2};
-use rama_http_headers::{HeaderEncode, HeaderMapExt};
+use rama_http_headers::{HeaderEncode, HeaderMapExt, Host, HttpRequestBuilderExt, UserAgent};
 use rama_http_types::Response;
-use rama_http_types::{
-    Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version,
-    header::{HOST, USER_AGENT},
-};
-use rama_net::address::Authority;
+use rama_http_types::{Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version};
+use rama_net::address::HostWithOptPort;
 
 #[derive(Debug)]
 /// Connector for HTTP proxies.
@@ -30,23 +27,15 @@ pub(super) struct InnerHttpProxyConnector {
 
 impl InnerHttpProxyConnector {
     /// Create a new [`InnerHttpProxyConnector`] with the given authority.
-    pub(super) fn new(authority: &Authority) -> Result<Self, OpaqueError> {
+    pub(super) fn new(authority: HostWithOptPort) -> Result<Self, OpaqueError> {
         let uri = authority.to_string();
-        let host_value: HeaderValue = uri.parse().context("parse authority as header value")?;
 
         let req = Request::builder()
             .method(Method::CONNECT)
             .version(Version::HTTP_11)
             .uri(uri)
-            .header(HOST, host_value)
-            .header(
-                USER_AGENT,
-                HeaderValue::from_static(const_format::formatcp!(
-                    "{}/{}",
-                    rama_utils::info::NAME,
-                    rama_utils::info::VERSION,
-                )),
-            )
+            .typed_header(Host::from(authority))
+            .typed_header(UserAgent::rama())
             .body(Body::empty())
             .context("build http request")?;
 

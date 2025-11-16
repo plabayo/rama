@@ -140,12 +140,11 @@ async fn test_tls_tcp_echo() {
 
     let mut stream = None;
     for i in 0..5 {
-        let extensions = Extensions::new();
         let connector = TlsConnector::secure(TcpConnector::new()).with_connector_data(Arc::new(
             TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
         ));
         match connector
-            .connect(TcpRequest::new(([127, 0, 0, 1], 63111).into(), extensions))
+            .connect(TcpRequest::new(([127, 0, 0, 1], 63111).into()))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {

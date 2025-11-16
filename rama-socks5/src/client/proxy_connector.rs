@@ -1,4 +1,7 @@
-use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
+use crate::{
+    Socks5Client,
+    client::{core::HandshakeError, proxy_error::Socks5ProxyError},
+};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
@@ -18,11 +21,7 @@ use std::fmt;
 #[cfg(feature = "dns")]
 use ::{
     rama_dns::{BoxDnsResolver, DnsResolver},
-    rama_net::{
-        Protocol,
-        address::{Authority, Host},
-        mode::DnsResolveIpMode,
-    },
+    rama_net::{Protocol, address::Host, mode::DnsResolveIpMode},
     rama_utils::macros::generate_set_and_with,
     std::net::IpAddr,
     tokio::sync::mpsc,
@@ -229,12 +228,14 @@ impl<S> Socks5ProxyConnector<S> {
         if let Some(dns_resolver) = self.dns_resolver.as_ref()
             && addr.protocol == Some(Protocol::SOCKS5)
         {
+            use rama_net::address::HostWithPort;
+
             let ProxyAddress {
                 protocol,
-                authority,
+                address: HostWithPort { host, port },
                 credential,
             } = addr;
-            let (host, port) = authority.into_parts();
+
             let host = match host {
                 Host::Name(domain) => match dns_mode {
                     DnsResolveIpMode::SingleIpV4 => {
@@ -330,10 +331,10 @@ impl<S> Socks5ProxyConnector<S> {
                 Host::Address(ip_addr) => Host::Address(ip_addr),
             };
 
-            let authority = Authority::new(host, port);
+            let address = HostWithPort::new(host, port);
             return ProxyAddress {
                 protocol,
-                authority,
+                address,
                 credential,
             };
         }
@@ -387,11 +388,11 @@ where
                 .connect(req)
                 .await
                 .map_err(|err| match address.as_ref() {
-                    Some(address) => OpaqueError::from_std(Socks5ProxyError::Transport(
+                    Some(proxy_info) => OpaqueError::from_std(Socks5ProxyError::Transport(
                         OpaqueError::from_boxed(err.into())
                             .context(format!(
                                 "establish connection to proxy {} (protocol: {:?})",
-                                address.authority, address.protocol,
+                                proxy_info.address, proxy_info.protocol,
                             ))
                             .into_boxed(),
                     )),
@@ -421,10 +422,10 @@ where
         })?;
 
         tracing::trace!(
-            network.peer.address = %proxy_address.authority.host(),
-            network.peer.port = %proxy_address.authority.port(),
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            network.peer.address = %proxy_address.address.host,
+            network.peer.port = %proxy_address.address.port,
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "socks5 proxy connector: connected to proxy",
         );
 
@@ -433,10 +434,10 @@ where
         match &proxy_address.credential {
             Some(ProxyCredential::Basic(basic)) => {
                 tracing::trace!(
-                    network.peer.address = %proxy_address.authority.host(),
-                    network.peer.port = %proxy_address.authority.port(),
-                    server.address = %transport_ctx.authority.host(),
-                    server.port = %transport_ctx.authority.port(),
+                    network.peer.address = %proxy_address.address.host,
+                    network.peer.port = %proxy_address.address.port,
+                    server.address = %transport_ctx.authority.host,
+                    server.port = transport_ctx.authority.port,
                     "socks5 proxy connector: continue handshake with authorisation",
                 );
                 client.set_auth(basic.clone());
@@ -449,26 +450,33 @@ where
             }
             None => {
                 tracing::trace!(
-                    network.peer.address = %proxy_address.authority.host(),
-                    network.peer.port = %proxy_address.authority.port(),
-                    server.address = %transport_ctx.authority.host(),
-                    server.port = %transport_ctx.authority.port(),
+                    network.peer.address = %proxy_address.address.host,
+                    network.peer.port = %proxy_address.address.port,
+                    server.address = %transport_ctx.authority.host,
+                    server.port = transport_ctx.authority.port,
                     "socks5 proxy connector: continue handshake without authorisation",
                 );
             }
         }
 
-        // .maybe_with_auth(self.auth.clone());
+        let Some(connect_authority) = transport_ctx.host_with_port() else {
+            return Err(Box::new(Socks5ProxyError::Handshake(
+                HandshakeError::other(OpaqueError::from_display(
+                    "failed to get port from transport context",
+                )),
+            )));
+        };
+
         match client
-            .handshake_connect(&mut conn, &transport_ctx.authority)
+            .handshake_connect(&mut conn, &connect_authority)
             .await
         {
             Ok(bind_addr) => {
                 tracing::trace!(
-                    network.peer.address = %proxy_address.authority.host(),
-                    network.peer.port = %proxy_address.authority.port(),
-                    server.address = %transport_ctx.authority.host(),
-                    server.port = %transport_ctx.authority.port(),
+                    network.peer.address = %proxy_address.address.host,
+                    network.peer.port = %proxy_address.address.port,
+                    server.address = %transport_ctx.authority.host,
+                    server.port = transport_ctx.authority.port,
                     %bind_addr,
                     "socks5 proxy connector: handshake complete",
                 )

@@ -65,10 +65,10 @@ async fn main() {
     let http_socket_addr = spawn_http_server().await;
 
     tracing::info!(
-        network.peer.address = %proxy_socket_addr.ip_addr(),
-        network.peer.port = %proxy_socket_addr.port(),
-        server.address = %http_socket_addr.ip_addr(),
-        server.port = %http_socket_addr.port(),
+        network.peer.address = %proxy_socket_addr.ip_addr,
+        network.peer.port = %proxy_socket_addr.port,
+        server.address = %http_socket_addr.ip_addr,
+        server.port = %http_socket_addr.port,
         "local servers up and running",
     );
 
@@ -93,7 +93,7 @@ async fn main() {
 
     request.extensions_mut().insert(ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
-        authority: proxy_socket_addr.into(),
+        address: proxy_socket_addr.into(),
         credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
     });
 

@@ -102,13 +102,13 @@ where
                 stream
                     .extensions()
                     .get::<TransportContext>()
-                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
+                    .and_then(|ctx| ctx.authority.host.as_domain().cloned())
             })
             .or_else(|| {
                 stream
                     .extensions()
                     .get::<RequestContext>()
-                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
+                    .and_then(|ctx| ctx.authority.host.as_domain().cloned())
             });
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks

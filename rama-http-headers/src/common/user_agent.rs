@@ -57,6 +57,16 @@ impl UserAgent {
         Self(HeaderValueString::from_static(src))
     }
 
+    /// Create the default rama 'UserAgent'.
+    #[must_use]
+    pub const fn rama() -> Self {
+        Self(HeaderValueString::from_static(const_format::formatcp!(
+            "{}/{}",
+            rama_utils::info::NAME,
+            rama_utils::info::VERSION,
+        )))
+    }
+
     /// View this `UserAgent` as a `&str`.
     pub fn as_str(&self) -> &str {
         self.0.as_str()

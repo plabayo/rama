@@ -5,20 +5,22 @@ use crate::address::parse_utils::try_to_parse_str_to_ip;
 use rama_core::error::{ErrorContext, OpaqueError};
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
+use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::str::FromStr;
 
-/// An [`IpAddr`] with an associated port
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// An [`IpAddr`] with an associated port (u16)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SocketAddress {
-    ip_addr: IpAddr,
-    port: u16,
+    pub ip_addr: IpAddr,
+    pub port: u16,
 }
 
 impl SocketAddress {
     /// creates a new [`SocketAddress`]
     #[must_use]
+    #[inline(always)]
     pub const fn new(ip_addr: IpAddr, port: u16) -> Self {
         Self { ip_addr, port }
     }
@@ -34,6 +36,7 @@ impl SocketAddress {
     /// assert_eq!("127.0.0.1:8080", addr.to_string());
     /// ```
     #[must_use]
+    #[inline(always)]
     pub const fn local_ipv4(port: u16) -> Self {
         Self {
             ip_addr: IPV4_LOCALHOST,
@@ -52,6 +55,7 @@ impl SocketAddress {
     /// assert_eq!("[::1]:8080", addr.to_string());
     /// ```
     #[must_use]
+    #[inline(always)]
     pub const fn local_ipv6(port: u16) -> Self {
         Self {
             ip_addr: IPV6_LOCALHOST,
@@ -70,6 +74,7 @@ impl SocketAddress {
     /// assert_eq!("0.0.0.0:8080", addr.to_string());
     /// ```
     #[must_use]
+    #[inline(always)]
     pub const fn default_ipv4(port: u16) -> Self {
         Self {
             ip_addr: IPV4_UNSPECIFIED,
@@ -88,6 +93,7 @@ impl SocketAddress {
     /// assert_eq!("[::]:8080", addr.to_string());
     /// ```
     #[must_use]
+    #[inline(always)]
     pub const fn default_ipv6(port: u16) -> Self {
         Self {
             ip_addr: IPV6_UNSPECIFIED,
@@ -106,6 +112,7 @@ impl SocketAddress {
     /// assert_eq!("255.255.255.255:8080", addr.to_string());
     /// ```
     #[must_use]
+    #[inline(always)]
     pub const fn broadcast_ipv4(port: u16) -> Self {
         Self {
             ip_addr: IPV4_BROADCAST,
@@ -113,22 +120,36 @@ impl SocketAddress {
         }
     }
 
-    /// Gets the [`IpAddr`] reference.
-    #[must_use]
-    pub fn ip_addr(&self) -> IpAddr {
-        self.ip_addr
+    generate_set_and_with! {
+        /// Set [`IpAddr`] as the ip of [`SocketAddress`]
+        pub fn ip(mut self, ip_addr: IpAddr) -> Self {
+            self.ip_addr = ip_addr;
+            self
+        }
     }
 
-    /// Gets the port
-    #[must_use]
-    pub fn port(&self) -> u16 {
-        self.port
+    generate_set_and_with! {
+        /// Set [`Ipv4Addr`] as the ip of [`SocketAddress`]
+        pub fn ipv4(mut self, ip_addr: Ipv4Addr) -> Self {
+            self.ip_addr = IpAddr::V4(ip_addr);
+            self
+        }
     }
 
-    /// Consume self into its parts: `(ip_addr, port)`
-    #[must_use]
-    pub fn into_parts(self) -> (IpAddr, u16) {
-        (self.ip_addr, self.port)
+    generate_set_and_with! {
+        /// Set [`Ipv6Addr`] as the ip of [`SocketAddress`]
+        pub fn ipv6(mut self, ip_addr: Ipv6Addr) -> Self {
+            self.ip_addr = IpAddr::V6(ip_addr);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set port (u16) of [`SocketAddress`]
+        pub fn port(mut self, port: u16) -> Self {
+            self.port = port;
+            self
+        }
     }
 }
 
@@ -342,8 +363,8 @@ mod tests {
     use super::*;
 
     fn assert_eq(s: &str, sock_address: SocketAddress, ip_addr: &str, port: u16) {
-        assert_eq!(sock_address.ip_addr().to_string(), ip_addr, "parsing: {s}");
-        assert_eq!(sock_address.port(), port, "parsing: {s}");
+        assert_eq!(sock_address.ip_addr.to_string(), ip_addr, "parsing: {s}");
+        assert_eq!(sock_address.port, port, "parsing: {s}");
     }
 
     #[test]

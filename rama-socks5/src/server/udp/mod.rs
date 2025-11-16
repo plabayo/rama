@@ -10,7 +10,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
-    address::{Authority, Host, SocketAddress},
+    address::{Host, HostWithPort, SocketAddress},
     socket::{Interface, SocketService},
 };
 use rama_udp::UdpSocket;
@@ -51,9 +51,8 @@ impl<S, C> Socks5UdpAssociator<S> for C where C: Socks5UdpAssociatorSeal<S> {}
 pub trait Socks5UdpAssociatorSeal<S>: Send + Sync + 'static {
     fn accept_udp_associate(
         &self,
-
         stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_
     where
         S: Stream + Unpin;
@@ -67,7 +66,7 @@ where
         &self,
 
         mut stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> Result<(), Error> {
         tracing::debug!(
             "socks5 server w/ destination {destination}: abort: command not supported: UDP Associate",
@@ -450,7 +449,7 @@ where
     async fn accept_udp_associate(
         &self,
         mut stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: udp associate: try to bind incoming socket to destination {destination}",
@@ -459,7 +458,11 @@ where
         let parent_extensions = std::mem::take(stream.extensions_mut()).into_frozen_extensions();
         let extensions = Extensions::new().with_parent_extensions(parent_extensions);
 
-        let (dest_host, dest_port) = destination.into_parts();
+        let HostWithPort {
+            host: dest_host,
+            port: dest_port,
+        } = destination;
+
         let dest_addr = match dest_host {
             Host::Name(domain) => {
                 tracing::debug!(
@@ -567,16 +570,16 @@ where
         tokio::select! {
             _ = &mut drop_stream_fut => {
                 tracing::trace!(
-                    network.peer.address = %client_address.ip_addr(),
-                    network.peer.port = %client_address.port(),
+                    network.peer.address = %client_address.ip_addr,
+                    network.peer.port = %client_address.port,
                     "socks5 server: udp associate: tcp stream dropped from client: drop relay",
                 );
             }
 
             _ = &mut timeout_fut => {
                 tracing::debug!(
-                    network.peer.address = %client_address.ip_addr(),
-                    network.peer.port = %client_address.port(),
+                    network.peer.address = %client_address.ip_addr,
+                    network.peer.port = %client_address.port,
                     "socks5 server: udp associate: timeout reached: drop relay",
                 );
                 return Err(Error::io(std::io::Error::new(std::io::ErrorKind::TimedOut, "relay timeout reached")));
@@ -584,8 +587,8 @@ where
 
             Err(err) = udp_relay => {
                 tracing::debug!(
-                    network.peer.address = %client_address.ip_addr(),
-                    network.peer.port = %client_address.port(),
+                    network.peer.address = %client_address.ip_addr,
+                    network.peer.port = %client_address.port,
                     "socks5 server: udp associate: udp relay: exit with an error",
                 );
                 return Err(err);
@@ -593,8 +596,8 @@ where
         }
 
         tracing::trace!(
-            network.peer.address = %client_address.ip_addr(),
-            network.peer.port = %client_address.port(),
+            network.peer.address = %client_address.ip_addr,
+            network.peer.port = %client_address.port,
             "socks5 server: udp associate: udp relay: done",);
         Ok(())
     }

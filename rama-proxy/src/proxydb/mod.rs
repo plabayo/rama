@@ -975,7 +975,7 @@ mod memdb {
         async fn test_db_proxy_filter_any_use_filter_property() {
             let db = MemoryProxyDB::try_from_iter([Proxy {
                 id: NonEmptyString::from_static("1"),
-                address: ProxyAddress::from_str("example.com").unwrap(),
+                address: ProxyAddress::from_str("example.com:80").unwrap(),
                 tcp: true,
                 udp: true,
                 http: true,
@@ -1075,7 +1075,7 @@ mod memdb {
         async fn test_db_proxy_filter_any_only_matches_any_value() {
             let db = MemoryProxyDB::try_from_iter([Proxy {
                 id: NonEmptyString::from_static("1"),
-                address: ProxyAddress::from_str("example.com").unwrap(),
+                address: ProxyAddress::from_str("example.com:80").unwrap(),
                 tcp: true,
                 udp: true,
                 http: true,
@@ -1156,7 +1156,7 @@ mod memdb {
             let db = MemoryProxyDB::try_from_iter([
                 Proxy {
                     id: NonEmptyString::from_static("1"),
-                    address: ProxyAddress::from_str("example.com").unwrap(),
+                    address: ProxyAddress::from_str("example.com:80").unwrap(),
                     tcp: true,
                     udp: true,
                     http: true,
@@ -1176,7 +1176,7 @@ mod memdb {
                 },
                 Proxy {
                     id: NonEmptyString::from_static("2"),
-                    address: ProxyAddress::from_str("example.com").unwrap(),
+                    address: ProxyAddress::from_str("example.com:80").unwrap(),
                     tcp: true,
                     udp: true,
                     http: true,
@@ -1196,7 +1196,7 @@ mod memdb {
                 },
                 Proxy {
                     id: NonEmptyString::from_static("3"),
-                    address: ProxyAddress::from_str("example.com").unwrap(),
+                    address: ProxyAddress::from_str("example.com:80").unwrap(),
                     tcp: true,
                     udp: true,
                     http: true,
@@ -1216,7 +1216,7 @@ mod memdb {
                 },
                 Proxy {
                     id: NonEmptyString::from_static("4"),
-                    address: ProxyAddress::from_str("example.com").unwrap(),
+                    address: ProxyAddress::from_str("example.com:80").unwrap(),
                     tcp: true,
                     udp: true,
                     http: true,

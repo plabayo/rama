@@ -69,8 +69,8 @@ async fn main() {
         .into();
 
     tracing::info!(
-        network.local.address = %udp_server_addr.ip_addr(),
-        network.local.port = %udp_server_addr.port(),
+        network.local.address = %udp_server_addr.ip_addr,
+        network.local.port = %udp_server_addr.port,
         "server: socket created",
     );
 

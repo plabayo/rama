@@ -1,5 +1,5 @@
 use super::{ObfNode, ObfPort};
-use crate::address::{Authority, Domain, Host};
+use crate::address::{Domain, Host, HostWithOptPort, HostWithPort};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{
     fmt,
@@ -117,10 +117,10 @@ impl NodeId {
         }
     }
 
-    /// Return the [`Authority`] if this [`NodeId`] has either
+    /// Return the [`HostWithPort`] if this [`NodeId`] has either
     /// an [`IpAddr`] or [`Domain`] defined, as well as a numeric port.
     #[must_use]
-    pub fn authority(&self) -> Option<Authority> {
+    pub fn authority(&self) -> Option<HostWithPort> {
         match (&self.name, self.port()) {
             (NodeName::Ip(ip), Some(port)) => Some((*ip, port).into()),
             // every domain is a valid node name, but not every valid node name is a valid domain!!
@@ -191,9 +191,19 @@ impl From<(Domain, Option<u16>)> for NodeId {
     }
 }
 
-impl From<Authority> for NodeId {
-    fn from(authority: Authority) -> Self {
-        let (host, port) = authority.into_parts();
+impl From<HostWithOptPort> for NodeId {
+    fn from(value: HostWithOptPort) -> Self {
+        let HostWithOptPort { host, port } = value;
+        match host {
+            Host::Name(domain) => (domain, port).into(),
+            Host::Address(ip) => (ip, port).into(),
+        }
+    }
+}
+
+impl From<HostWithPort> for NodeId {
+    fn from(value: HostWithPort) -> Self {
+        let HostWithPort { host, port } = value;
         match host {
             Host::Name(domain) => (domain, port).into(),
             Host::Address(ip) => (ip, port).into(),

@@ -2,15 +2,15 @@ use super::AddressType;
 use byteorder::{BigEndian, ReadBytesExt};
 use rama_core::bytes::BufMut;
 use rama_core::error::OpaqueError;
-use rama_net::address::{Authority, Domain, Host};
+use rama_net::address::{Domain, Host, HostWithPort};
 use std::{io::Read, net::IpAddr};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// Compute the length of an authority,
 /// used in the context of buffer allocation
 /// in function of writing a socks5 protocol element.
-pub(super) fn authority_length(authority: &Authority) -> usize {
-    2 + match authority.host() {
+pub(super) fn authority_length(authority: &HostWithPort) -> usize {
+    2 + match &authority.host {
         Host::Name(domain) => 1 + domain.len(),
         Host::Address(ip_addr) => match ip_addr {
             IpAddr::V4(_) => 4,
@@ -40,7 +40,7 @@ impl From<OpaqueError> for ReadError {
 /// Read the authority from a Socks5 protocol element.
 pub(super) async fn read_authority<R: AsyncRead + Unpin>(
     r: &mut R,
-) -> Result<Authority, ReadError> {
+) -> Result<HostWithPort, ReadError> {
     let address_type: AddressType = r.read_u8().await?.into();
     let host: Host = match address_type {
         AddressType::IpV4 => {
@@ -72,7 +72,7 @@ pub(super) async fn read_authority<R: AsyncRead + Unpin>(
 }
 
 /// Read the authority from a Socks5 protocol element.
-pub(super) fn read_authority_sync<R: Read>(r: &mut R) -> Result<Authority, ReadError> {
+pub(super) fn read_authority_sync<R: Read>(r: &mut R) -> Result<HostWithPort, ReadError> {
     let address_type: AddressType = r.read_u8()?.into();
     let host: Host = match address_type {
         AddressType::IpV4 => {
@@ -104,8 +104,8 @@ pub(super) fn read_authority_sync<R: Read>(r: &mut R) -> Result<Authority, ReadE
 }
 
 /// Write the authority into the (usually pre-allocated) buffer.
-pub(super) fn write_authority_to_buf<B: BufMut>(authority: &Authority, buf: &mut B) {
-    match authority.host() {
+pub(super) fn write_authority_to_buf<B: BufMut>(authority: &HostWithPort, buf: &mut B) {
+    match &authority.host {
         Host::Name(domain) => {
             buf.put_u8(AddressType::DomainName.into());
             debug_assert!(domain.len() <= 255);
@@ -123,7 +123,7 @@ pub(super) fn write_authority_to_buf<B: BufMut>(authority: &Authority, buf: &mut
             }
         },
     }
-    buf.put_u16(authority.port());
+    buf.put_u16(authority.port);
 }
 
 #[cfg(test)]
@@ -131,7 +131,7 @@ mod tests {
     use std::io::Write;
 
     use crate::proto::{test_write_read_eq, test_write_read_sync_eq};
-    use rama_net::address::{Domain, Host};
+    use rama_net::address::Host;
     use tokio::io::{AsyncWrite, AsyncWriteExt};
 
     use super::*;
@@ -139,9 +139,9 @@ mod tests {
     #[test]
     fn test_authority_length() {
         for (authority, expected_length) in [
-            (Authority::local_ipv4(1248), 4 + 2),
-            (Authority::local_ipv6(42), 16 + 2),
-            (Authority::new(Host::EXAMPLE_NAME, 1), 1 + 11 + 2),
+            (HostWithPort::local_ipv4(1248), 4 + 2),
+            (HostWithPort::local_ipv6(42), 16 + 2),
+            (HostWithPort::new(Host::EXAMPLE_NAME, 1), 1 + 11 + 2),
         ] {
             let length = authority_length(&authority);
             assert_eq!(expected_length, length, "authority: {authority}");
@@ -151,7 +151,7 @@ mod tests {
     #[tokio::test]
     async fn test_authority_write_read_eq() {
         #[derive(Debug, PartialEq, Eq)]
-        struct SocksAuthority(Authority);
+        struct SocksAuthority(HostWithPort);
 
         impl SocksAuthority {
             async fn read_from<R>(r: &mut R) -> Result<Self, ReadError>
@@ -172,10 +172,10 @@ mod tests {
             }
         }
 
-        test_write_read_eq!(SocksAuthority(Authority::local_ipv4(1)), SocksAuthority);
-        test_write_read_eq!(SocksAuthority(Authority::local_ipv6(42)), SocksAuthority);
+        test_write_read_eq!(SocksAuthority(HostWithPort::local_ipv4(1)), SocksAuthority);
+        test_write_read_eq!(SocksAuthority(HostWithPort::local_ipv6(42)), SocksAuthority);
         test_write_read_eq!(
-            SocksAuthority(Authority::new(Host::Name(Domain::example()), 1450)),
+            SocksAuthority(HostWithPort::example_domain_with_port(1450)),
             SocksAuthority
         );
     }
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn test_authority_write_read_sync_eq() {
         #[derive(Debug, PartialEq, Eq)]
-        struct SocksAuthority(Authority);
+        struct SocksAuthority(HostWithPort);
 
         impl SocksAuthority {
             fn read_from_sync<R>(r: &mut R) -> Result<Self, ReadError>
@@ -204,10 +204,10 @@ mod tests {
             }
         }
 
-        test_write_read_sync_eq!(SocksAuthority(Authority::local_ipv4(1)), SocksAuthority);
-        test_write_read_sync_eq!(SocksAuthority(Authority::local_ipv6(42)), SocksAuthority);
+        test_write_read_sync_eq!(SocksAuthority(HostWithPort::local_ipv4(1)), SocksAuthority);
+        test_write_read_sync_eq!(SocksAuthority(HostWithPort::local_ipv6(42)), SocksAuthority);
         test_write_read_sync_eq!(
-            SocksAuthority(Authority::new(Host::Name(Domain::example()), 1450)),
+            SocksAuthority(HostWithPort::example_domain_with_port(1450)),
             SocksAuthority
         );
     }

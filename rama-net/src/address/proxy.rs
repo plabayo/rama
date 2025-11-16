@@ -1,8 +1,9 @@
-use super::{Authority, Host};
+use super::Authority;
 use crate::{
     Protocol,
+    address::{HostWithOptPort, HostWithPort},
     proto::try_to_extract_protocol_from_uri_scheme,
-    user::{Basic, ProxyCredential},
+    user::ProxyCredential,
 };
 use rama_core::{
     error::{ErrorContext, OpaqueError},
@@ -16,8 +17,8 @@ pub struct ProxyAddress {
     /// [`Protocol`] used by the proxy.
     pub protocol: Option<Protocol>,
 
-    /// [`Authority`] of the proxy.
-    pub authority: Authority,
+    /// [`Host`] of the proxy with optional Port.
+    pub address: HostWithPort,
 
     /// [`ProxyCredential`] of the proxy.
     pub credential: Option<ProxyCredential>,
@@ -33,57 +34,22 @@ impl TryFrom<&str> for ProxyAddress {
             .context("extract protocol from proxy address scheme")?;
         let slice = &slice[size..];
 
-        for i in 0..slice.len() {
-            if slice[i] == b'@' {
-                let credential = Basic::try_from(
-                    std::str::from_utf8(&slice[..i])
-                        .context("parse proxy address: view credential as utf-8")?,
-                )
-                .context("parse proxy credential from address")?;
+        let Authority {
+            user_info,
+            address:
+                HostWithOptPort {
+                    host,
+                    port: maybe_port,
+                },
+        } = Authority::try_from(slice)?;
 
-                let authority: Authority = slice[i + 1..]
-                    .try_into()
-                    .or_else(|_| {
-                        Host::try_from(&slice[i + 1..]).map(|h| {
-                            (
-                                h,
-                                protocol
-                                    .as_ref()
-                                    .and_then(|proto| proto.default_port())
-                                    .unwrap_or(80),
-                            )
-                                .into()
-                        })
-                    })
-                    .context("parse proxy authority from address")?;
+        let port = maybe_port.or_else(|| protocol.as_ref().and_then(|protocol| protocol.default_port()))
+            .context("proxy address contains no port or scheme with known port; port is required for proxy connections!!")?;
 
-                return Ok(Self {
-                    protocol,
-                    authority,
-                    credential: Some(ProxyCredential::Basic(credential)),
-                });
-            }
-        }
-
-        let authority: Authority = slice
-            .try_into()
-            .or_else(|_| {
-                Host::try_from(slice).map(|h| {
-                    (
-                        h,
-                        protocol
-                            .as_ref()
-                            .and_then(|proto| proto.default_port())
-                            .unwrap_or(80),
-                    )
-                        .into()
-                })
-            })
-            .context("parse proxy authority from address")?;
         Ok(Self {
             protocol,
-            authority,
-            credential: None,
+            address: HostWithPort::new(host, port),
+            credential: user_info.map(ProxyCredential::Basic),
         })
     }
 }
@@ -121,7 +87,7 @@ impl Display for ProxyAddress {
                 }
             }
         }
-        self.authority.fmt(f)
+        self.address.fmt(f)
     }
 }
 
@@ -148,7 +114,10 @@ impl<'de> serde::Deserialize<'de> for ProxyAddress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{address::Host, user::Basic};
+    use crate::{
+        address::{Domain, Host},
+        user::Basic,
+    };
 
     #[test]
     fn test_valid_proxy() {
@@ -157,7 +126,7 @@ mod tests {
             addr,
             ProxyAddress {
                 protocol: None,
-                authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
+                address: HostWithPort::local_ipv4(8080),
                 credential: None,
             }
         );
@@ -165,12 +134,15 @@ mod tests {
 
     #[test]
     fn test_valid_domain_proxy() {
-        let addr: ProxyAddress = "proxy.example.com".try_into().unwrap();
+        let addr: ProxyAddress = "proxy.example.com:80".try_into().unwrap();
         assert_eq!(
             addr,
             ProxyAddress {
                 protocol: None,
-                authority: Authority::new(Host::Name("proxy.example.com".parse().unwrap()), 80),
+                address: HostWithPort::new(
+                    Host::Name(Domain::from_static("proxy.example.com")),
+                    80
+                ),
                 credential: None,
             }
         );
@@ -183,8 +155,21 @@ mod tests {
             addr,
             ProxyAddress {
                 protocol: None,
-                authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
+                address: HostWithPort::local_ipv4(8080),
                 credential: Some(Basic::new_static("foo", "bar").into()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_valid_proxy_with_insecure_credential() {
+        let addr: ProxyAddress = "foo@127.0.0.1:8080".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress {
+                protocol: None,
+                address: HostWithPort::local_ipv4(8080),
+                credential: Some(Basic::new_static_insecure("foo").into()),
             }
         );
     }
@@ -196,7 +181,7 @@ mod tests {
             addr,
             ProxyAddress {
                 protocol: Some(Protocol::HTTP),
-                authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
+                address: HostWithPort::local_ipv4(8080),
                 credential: None,
             }
         );
@@ -209,8 +194,21 @@ mod tests {
             addr,
             ProxyAddress {
                 protocol: Some(Protocol::HTTP),
-                authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
+                address: HostWithPort::local_ipv4(8080),
                 credential: Some(Basic::new_static("foo", "bar").into()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_valid_http_proxy_with_insecure_credential() {
+        let addr: ProxyAddress = "http://foo@127.0.0.1:8080".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress {
+                protocol: Some(Protocol::HTTP),
+                address: HostWithPort::local_ipv4(8080),
+                credential: Some(Basic::new_static_insecure("foo").into()),
             }
         );
     }
@@ -224,8 +222,21 @@ mod tests {
             addr,
             ProxyAddress {
                 protocol: Some(Protocol::HTTPS),
-                authority: Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), 9999),
+                address: HostWithPort::new(Host::Name(Domain::from_static("my.proxy.io.")), 9999),
                 credential: Some(Basic::new_static("foo-cc-be", "baz").into()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_valid_https_proxy_with_insecure_credentials() {
+        let addr: ProxyAddress = "https://foo-cc-be@my.proxy.io.:9999".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress {
+                protocol: Some(Protocol::HTTPS),
+                address: HostWithPort::new(Host::Name(Domain::from_static("my.proxy.io.")), 9999),
+                credential: Some(Basic::new_static_insecure("foo-cc-be").into()),
             }
         );
     }
@@ -237,7 +248,7 @@ mod tests {
             addr,
             ProxyAddress {
                 protocol: Some(Protocol::SOCKS5H),
-                authority: Authority::new(Host::Address("::1".parse().unwrap()), 60000),
+                address: HostWithPort::local_ipv6(60000),
                 credential: Some(Basic::new_insecure("foo").into()),
             }
         );
@@ -250,7 +261,7 @@ mod tests {
             addr,
             ProxyAddress {
                 protocol: Some(Protocol::SOCKS5H),
-                authority: Authority::new(Host::Address("::1".parse().unwrap()), 60000),
+                address: HostWithPort::local_ipv6(60000),
                 credential: Some(Basic::new_insecure("foo").into()),
             }
         );
@@ -258,66 +269,49 @@ mod tests {
 
     #[test]
     fn test_valid_proxy_address_symmetric() {
-        for s in [
-            "proxy.io",
-            "proxy.io:8080",
-            "127.0.0.1",
-            "127.0.0.1:8080",
-            "::1",
-            "[::1]:8080",
-            "socks5://proxy.io",
-            "socks5://proxy.io:8080",
-            "socks5://127.0.0.1",
-            "socks5://127.0.0.1:8080",
-            "socks5://::1",
-            "socks5://[::1]:8080",
-            "socks5://foo:@proxy.io",
-            "socks5://foo:@proxy.io:8080",
-            "socks5://foo:@127.0.0.1",
-            "socks5://foo:@127.0.0.1:8080",
-            "socks5://foo:@::1",
-            "socks5://foo:@[::1]:8080",
-            "socks5://foo:bar@proxy.io",
-            "socks5://foo:bar@proxy.io:8080",
-            "socks5://foo:bar@127.0.0.1",
-            "socks5://foo:bar@127.0.0.1:8080",
-            "socks5://foo:bar@::1",
-            "socks5://foo:bar@[::1]:8080",
+        for (s, expected) in [
+            ("http://proxy.io", Some("http://proxy.io:80")),
+            ("proxy.io:8080", None),
+            ("127.0.0.1:8080", None),
+            ("[::1]:8080", None),
+            ("socks5://proxy.io", Some("socks5://proxy.io:1080")),
+            ("socks5://proxy.io:8080", None),
+            ("socks5://127.0.0.1", Some("socks5://127.0.0.1:1080")),
+            ("socks5://127.0.0.1:8080", None),
+            ("socks5://::1", Some("socks5://[::1]:1080")),
+            ("socks5://[::1]:8080", None),
+            (
+                "socks5://foo:@proxy.io",
+                Some("socks5://foo:@proxy.io:1080"),
+            ),
+            ("socks5://foo:@proxy.io:8080", None),
+            (
+                "socks5://foo:@127.0.0.1",
+                Some("socks5://foo:@127.0.0.1:1080"),
+            ),
+            ("socks5://foo:@127.0.0.1:8080", None),
+            ("socks5://foo:@::1", Some("socks5://foo:@[::1]:1080")),
+            ("socks5://foo:@[::1]:8080", None),
+            (
+                "socks5://foo:bar@proxy.io",
+                Some("socks5://foo:bar@proxy.io:1080"),
+            ),
+            ("socks5://foo:bar@proxy.io:8080", None),
+            (
+                "socks5://foo:bar@127.0.0.1",
+                Some("socks5://foo:bar@127.0.0.1:1080"),
+            ),
+            ("socks5://foo:bar@127.0.0.1:8080", None),
+            ("socks5://foo:bar@::1", Some("socks5://foo:bar@[::1]:1080")),
+            ("socks5://foo:bar@[::1]:8080", None),
         ] {
             let addr: ProxyAddress = match s.try_into() {
                 Ok(addr) => addr,
                 Err(err) => panic!("invalid addr '{s}': {err}"),
             };
             let out = addr.to_string();
-            let mut s = s.to_owned();
-            if !s.ends_with(":8080") {
-                if s.contains("::1") {
-                    let mut it = s.split("://");
-                    let mut scheme = Some(it.next().unwrap());
-                    let host = it.next().unwrap_or_else(|| scheme.take().unwrap());
-                    if host.contains('@') {
-                        let mut it = host.split('@');
-                        let credential = it.next().unwrap();
-                        let host = it.next().unwrap();
-                        s = match scheme {
-                            Some(scheme) => format!("{scheme}://{credential}@[{host}]:1080"),
-                            None => format!("{credential}@[{host}]:80"),
-                        };
-                    } else {
-                        s = match scheme {
-                            Some(scheme) => format!("{scheme}://[{host}]:1080"),
-                            None => format!("[{host}]:80"),
-                        };
-                    }
-                } else {
-                    s = if s.contains("://") {
-                        format!("{s}:1080")
-                    } else {
-                        format!("{s}:80")
-                    };
-                }
-            }
-            assert_eq!(s, out, "addr: {addr}");
+            let expected = expected.unwrap_or(s);
+            assert_eq!(expected, out, "addr: {addr}");
         }
     }
 }

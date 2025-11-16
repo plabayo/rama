@@ -17,6 +17,14 @@ mod domain;
 #[doc(inline)]
 pub use domain::{AsDomainRef, Domain, IntoDomain};
 
+mod host_with_port;
+#[doc(inline)]
+pub use host_with_port::HostWithPort;
+
+mod host_with_opt_port;
+#[doc(inline)]
+pub use host_with_opt_port::HostWithOptPort;
+
 mod authority;
 #[doc(inline)]
 pub use authority::Authority;

@@ -1,5 +1,5 @@
 use rama_core::ServiceInput;
-use rama_net::address::Authority;
+use rama_net::address::HostWithPort;
 
 use crate::server::connect::MockConnector;
 use crate::server::*;
@@ -131,7 +131,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_no_data() {
     let stream = ServiceInput::new(stream);
 
     let server =
-        Socks5Acceptor::new().with_connector(MockConnector::new(Authority::local_ipv4(42)));
+        Socks5Acceptor::new().with_connector(MockConnector::new(HostWithPort::local_ipv4(42)));
     let result = server.accept(stream).await;
     assert!(result.is_ok());
 }
@@ -156,7 +156,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_with_data() {
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new().with_connector(
-        MockConnector::new(Authority::local_ipv4(42)).with_proxy_data(
+        MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(
             tokio_test::io::Builder::new()
                 // client data
                 .write(b"ping")
@@ -195,7 +195,7 @@ async fn test_socks5_acceptor_with_auth_flow_client_connect_mock_success_with_da
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer())
         .with_connector(
-            MockConnector::new(Authority::local_ipv4(42)).with_proxy_data(
+            MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(
                 tokio_test::io::Builder::new()
                     // client data
                     .write(b"ping")
@@ -234,7 +234,7 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_connect_mock_s
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer())
         .with_connector(
-            MockConnector::new(Authority::local_ipv4(42)).with_proxy_data(
+            MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(
                 tokio_test::io::Builder::new()
                     // client data
                     .write(b"ping")

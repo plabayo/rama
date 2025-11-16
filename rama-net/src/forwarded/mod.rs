@@ -229,7 +229,7 @@ impl TryFrom<&[u8]> for Forwarded {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::address::Host;
+    use crate::address::HostWithOptPort;
 
     #[test]
     fn test_forwarded_parse_invalid() {
@@ -384,11 +384,11 @@ mod tests {
             ),
             (
                 r##"host=example.com,for=195.2.34.12"##,
-                Some((Host::try_from("example.com").unwrap(), None)),
+                Some(HostWithOptPort::example_domain()),
             ),
             (
                 r##"host="example.com:443",for=195.2.34.12"##,
-                Some((Host::try_from("example.com").unwrap(), Some(443))),
+                Some(HostWithOptPort::example_domain_https()),
             ),
         ] {
             let forwarded = Forwarded::try_from(s).unwrap();
@@ -397,7 +397,7 @@ mod tests {
                     .iter()
                     .next()
                     .and_then(|el| el.ref_forwarded_host())
-                    .map(|host| host.clone().into_parts()),
+                    .map(|authority| authority.0.clone()),
                 expected
             );
         }

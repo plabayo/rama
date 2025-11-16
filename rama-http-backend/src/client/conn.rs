@@ -98,7 +98,7 @@ where
         let server_address = req
             .extensions()
             .get::<RequestContext>()
-            .map(|ctx| ctx.authority.host().to_str())
+            .map(|ctx| ctx.authority.host.to_str())
             .or_else(|| req.uri().host().map(Into::into))
             .or_else(|| {
                 req.headers()

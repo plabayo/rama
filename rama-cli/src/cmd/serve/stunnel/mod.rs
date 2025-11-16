@@ -30,7 +30,7 @@ use rama::{
     error::{BoxError, ErrorContext as _, OpaqueError},
     graceful::ShutdownGuard,
     net::{
-        address::{Authority, SocketAddress},
+        address::{HostWithPort, SocketAddress},
         socket::Interface,
         tls::{
             DataEncoding,
@@ -110,7 +110,7 @@ pub struct EntryNodeArgs {
     ///   localhost:8443
     ///   example.com:8443
     ///   192.168.1.100:8443
-    pub connect: Authority,
+    pub connect: HostWithPort,
 
     #[arg(long, conflicts_with = "insecure")]
     /// path to CA certificate bundle for server verification (PEM format)

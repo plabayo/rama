@@ -57,14 +57,14 @@ impl XForwardedHost {
     /// Get a reference to the [`Host`] of this [`XForwardedHost`].
     #[must_use]
     pub fn host(&self) -> &Host {
-        self.0.host()
+        &self.0.0.host
     }
 
     #[inline]
     /// Get a copy of the `port` of this [`XForwardedHost`] if it is set.
     #[must_use]
     pub fn port(&self) -> Option<u16> {
-        self.0.port()
+        self.0.0.port
     }
 
     /// Return a reference to the inner data of this header.

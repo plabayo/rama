@@ -124,7 +124,7 @@ where
         if let Some(proxy) = req.extensions().get::<ProxyAddress>() {
             let (mut conn, addr) = crate::client::tcp_connect(
                 req.extensions(),
-                proxy.authority.clone(),
+                proxy.address.clone(),
                 self.dns.clone(),
                 connector,
             )
@@ -162,7 +162,9 @@ where
             }
         }
 
-        let authority = transport_ctx.authority.clone();
+        let authority = transport_ctx
+            .host_with_port()
+            .context("get host:port from transport ctx")?;
         let (mut conn, addr) =
             crate::client::tcp_connect(req.extensions(), authority, self.dns.clone(), connector)
                 .await

@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 ahash = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
+const_format = { workspace = true }
 httpdate = { workspace = true }
 rama-core = { workspace = true }
 rama-error = { workspace = true }

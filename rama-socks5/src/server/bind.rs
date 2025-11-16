@@ -2,8 +2,9 @@ use std::{fmt, io, time::Duration};
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, error::BoxError, layer::timeout::DefaultTimeout, stream::Stream};
+use rama_net::address::HostWithPort;
 use rama_net::{
-    address::{Authority, Host, SocketAddress},
+    address::{Host, SocketAddress},
     proxy::{ProxyRequest, StreamForwardService},
     socket::{Interface, SocketService},
 };
@@ -30,9 +31,8 @@ impl<S, C> Socks5Binder<S> for C where C: Socks5BinderSeal<S> {}
 pub trait Socks5BinderSeal<S>: Send + Sync + 'static {
     fn accept_bind(
         &self,
-
         stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
@@ -40,10 +40,10 @@ impl<S> Socks5BinderSeal<S> for ()
 where
     S: Stream + Unpin,
 {
-    async fn accept_bind(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
+    async fn accept_bind(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::debug!(
-            server.address = %destination.host(),
-            server.port = %destination.port(),
+            server.address = %destination.host,
+            server.port = %destination.port,
             "socks5 server: abort: command not supported: Bind",
         );
 
@@ -226,8 +226,8 @@ impl Acceptor for TcpListener {
     async fn accept(self) -> Result<(Self::Stream, SocketAddress), Error> {
         let (stream, addr) = Self::accept(&self).await.map_err(Error::io)?;
         tracing::trace!(
-            network.peer.port = %addr.port(),
-            network.peer.address = %addr.ip_addr(),
+            network.peer.port = %addr.port,
+            network.peer.address = %addr.ip_addr,
             "accepted incoming TCP connection"
         );
         Ok((stream, addr))
@@ -256,11 +256,15 @@ where
     async fn accept_bind(
         &self,
         mut stream: S,
-        requested_bind_address: Authority,
+        requested_bind_address: HostWithPort,
     ) -> Result<(), Error> {
         tracing::trace!("socks5 server: bind: try to create acceptor @ {requested_bind_address}");
 
-        let (requested_host, requested_port) = requested_bind_address.into_parts();
+        let HostWithPort {
+            host: requested_host,
+            port: requested_port,
+        } = requested_bind_address;
+
         let requested_addr = match requested_host {
             Host::Name(domain) => {
                 tracing::debug!("bind command does not accept domain {domain} as bind address",);
@@ -402,6 +406,7 @@ pub(crate) use test::MockBinder;
 #[cfg(test)]
 mod test {
     use super::*;
+    use rama_net::address::HostWithPort;
     use std::{ops::DerefMut, sync::Arc};
     use tokio::sync::Mutex;
 
@@ -413,7 +418,7 @@ mod test {
     #[derive(Debug)]
     enum MockReply {
         Success {
-            bind_addr: Authority,
+            bind_addr: HostWithPort,
             second_reply: MockSecondReply,
         },
         Error(ReplyKind),
@@ -422,14 +427,14 @@ mod test {
     #[derive(Debug)]
     enum MockSecondReply {
         Success {
-            recv_addr: Authority,
+            recv_addr: HostWithPort,
             target: Option<Arc<Mutex<tokio_test::io::Mock>>>,
         },
         Error(ReplyKind),
     }
 
     impl MockBinder {
-        pub(crate) fn new(bind_addr: Authority, recv_addr: Authority) -> Self {
+        pub(crate) fn new(bind_addr: HostWithPort, recv_addr: HostWithPort) -> Self {
             Self {
                 reply: MockReply::Success {
                     bind_addr,
@@ -445,7 +450,7 @@ mod test {
                 reply: MockReply::Error(reply),
             }
         }
-        pub(crate) fn new_bind_err(bind_addr: Authority, reply: ReplyKind) -> Self {
+        pub(crate) fn new_bind_err(bind_addr: HostWithPort, reply: ReplyKind) -> Self {
             Self {
                 reply: MockReply::Success {
                     bind_addr,
@@ -483,7 +488,7 @@ mod test {
         async fn accept_bind(
             &self,
             mut stream: S,
-            _requested_bind_address: Authority,
+            _requested_bind_address: HostWithPort,
         ) -> Result<(), Error> {
             match &self.reply {
                 MockReply::Success {

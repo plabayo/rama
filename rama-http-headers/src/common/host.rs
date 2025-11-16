@@ -1,40 +1,15 @@
 use std::convert::TryFrom;
 use std::fmt;
-use std::net::IpAddr;
 
 use rama_core::bytes::Bytes;
-use rama_http_types::uri;
 use rama_http_types::{HeaderName, HeaderValue};
-use rama_net::address;
+use rama_net::address::{self, HostWithOptPort};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// The `Host` header.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd)]
-pub struct Host {
-    host: address::Host,
-    port: Option<u16>,
-}
-
-impl Host {
-    /// Get the [`address::Host`], such as example.domain.
-    #[must_use]
-    pub fn host(&self) -> &address::Host {
-        &self.host
-    }
-
-    /// Get the optional port number.
-    #[must_use]
-    pub fn port(&self) -> Option<u16> {
-        self.port
-    }
-
-    /// Consume self into its parts: `(host, ?port)`
-    #[must_use]
-    pub fn into_parts(self) -> (address::Host, Option<u16>) {
-        (self.host, self.port)
-    }
-}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Host(pub HostWithOptPort);
 
 impl TypedHeader for Host {
     fn name() -> &'static HeaderName {
@@ -44,13 +19,11 @@ impl TypedHeader for Host {
 
 impl HeaderDecode for Host {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        let auth = values
+        let addr = values
             .next()
-            .and_then(|val| uri::Authority::try_from(val.as_bytes()).ok())
+            .and_then(|val| HostWithOptPort::try_from(val.as_bytes()).ok())
             .ok_or_else(Error::invalid)?;
-        let host = address::Host::try_from(auth.host()).map_err(|_| Error::invalid())?;
-        let port = auth.port_u16();
-        Ok(Self { host, port })
+        Ok(Self(addr))
     }
 }
 
@@ -65,29 +38,43 @@ impl HeaderEncode for Host {
 }
 
 impl From<address::Host> for Host {
+    #[inline(always)]
     fn from(host: address::Host) -> Self {
-        Self { host, port: None }
+        Self(host.into())
     }
 }
 
-impl From<address::Authority> for Host {
-    fn from(auth: address::Authority) -> Self {
-        let (host, port) = auth.into_parts();
-        Self {
-            host,
-            port: Some(port),
-        }
+impl From<Host> for address::Host {
+    #[inline(always)]
+    fn from(value: Host) -> Self {
+        value.0.host
+    }
+}
+
+impl From<HostWithOptPort> for Host {
+    #[inline(always)]
+    fn from(addr: HostWithOptPort) -> Self {
+        Self(addr)
+    }
+}
+
+impl From<Host> for HostWithOptPort {
+    #[inline(always)]
+    fn from(host: Host) -> Self {
+        host.0
+    }
+}
+
+impl From<address::HostWithPort> for Host {
+    #[inline(always)]
+    fn from(addr: address::HostWithPort) -> Self {
+        Self(addr.into())
     }
 }
 
 impl fmt::Display for Host {
+    #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.port {
-            Some(port) => match &self.host {
-                address::Host::Address(IpAddr::V6(ip)) => write!(f, "[{ip}]:{port}"),
-                host => write!(f, "{host}:{port}"),
-            },
-            None => self.host.fmt(f),
-        }
+        self.0.fmt(f)
     }
 }
