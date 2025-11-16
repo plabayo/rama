@@ -384,9 +384,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.10.1"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
+checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
 
 [[package]]
 name = "cassowary"
@@ -2319,9 +2319,9 @@ dependencies = [
 
 [[package]]
 name = "psl"
-version = "2.1.161"
+version = "2.1.162"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96f36d5dda1aa6585ce2a74b0ae1a85e530db47b0186cd06b63f09dbd8035fc6"
+checksum = "9031bc0c03e389af72e52f11bc07869fbcc357f1b0774f9e2b3bce085a393416"
 dependencies = [
  "psl-types",
 ]
