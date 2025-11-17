@@ -218,10 +218,11 @@ where
     ///
     /// Note: this sub-router is configured with the same State this router has.
     #[must_use]
-    pub fn sub(self, prefix: &str, router: Router) -> Self {
+    pub fn sub(self, prefix: &str, configure_router: impl FnOnce(Self) -> Self) -> Self {
         let path = format!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
 
-        let router = router.with_state(self.state.clone());
+        let router = Router::default().with_state(self.state.clone());
+        let router = configure_router(router);
         let nested = router.boxed();
 
         let nested_router_service = NestedRouterService {
@@ -387,7 +388,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::matcher::UriParams;
+    use crate::{matcher::UriParams, service::web::extract::State};
 
     use super::*;
     use rama_core::{extensions::ExtensionsRef, service::service_fn};
@@ -579,23 +580,37 @@ mod tests {
                 "Get Order: 456 for User: 123",
                 StatusCode::OK,
             ),
+            (Method::GET, "/api/state", "state", StatusCode::OK),
+            (Method::GET, "/api/users/123/state", "state", StatusCode::OK),
         ];
+
+        let state = "state".to_owned();
 
         for prefix in ["/", ""] {
             let api_router = Router::new()
+                .with_state(state.clone())
                 .get(&format!("{prefix}users"), get_users_service())
+                .get(
+                    &format!("{prefix}state"),
+                    async |State(state): State<String>| state,
+                )
                 .post(&format!("{prefix}users"), create_user_service())
                 .delete(&format!("{prefix}users/{{user_id}}"), delete_user_service())
-                .sub(
-                    &format!("{prefix}users/{{user_id}}"),
-                    Router::new().get(prefix, get_user_service()).get(
-                        &format!("{prefix}orders/{{order_id}}"),
-                        get_user_order_service(),
-                    ),
-                );
+                .sub(&format!("{prefix}users/{{user_id}}"), |router| {
+                    router
+                        .get(prefix, get_user_service())
+                        .get(
+                            &format!("{prefix}orders/{{order_id}}"),
+                            get_user_order_service(),
+                        )
+                        .get(
+                            &format!("{prefix}/state"),
+                            async |State(state): State<String>| state,
+                        )
+                });
 
             let app = Router::new()
-                .sub(&format!("{prefix}api"), api_router)
+                .sub_service(&format!("{prefix}api"), api_router)
                 .get(prefix, root_service());
 
             for (method, path, expected_body, expected_status) in cases.iter() {

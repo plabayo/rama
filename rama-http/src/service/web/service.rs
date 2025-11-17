@@ -53,7 +53,6 @@ impl WebService {
         Self {
             endpoints: Vec::new(),
             not_found: service_fn(async || Ok(StatusCode::NOT_FOUND.into_response())).boxed(),
-
             state: (),
         }
     }
@@ -160,11 +159,12 @@ where
     ///
     /// Note: this sub-webservice is configured with the same State this router has.
     #[must_use]
-    pub fn nest(self, prefix: &str, web_service: WebService) -> Self {
+    pub fn nest(self, prefix: &str, configure_svc: impl FnOnce(Self) -> Self) -> Self {
         let prefix = format!("{}/*", prefix.trim_end_matches(['/', '*']));
         let matcher = HttpMatcher::path(prefix);
 
-        let web_service = web_service.with_state(self.state.clone());
+        let web_service = WebService::default().with_state(self.state.clone());
+        let web_service = configure_svc(web_service);
         let service = NestedService(web_service);
         self.on(matcher, service)
     }
@@ -426,6 +426,7 @@ pub use crate::__match_service as match_service;
 #[cfg(test)]
 mod test {
     use crate::matcher::MethodMatcher;
+    use crate::service::web::extract::State;
     use crate::{Body, body::util::BodyExt};
 
     use super::*;
@@ -489,12 +490,16 @@ mod test {
 
     #[tokio::test]
     async fn test_web_service_nest() {
-        let svc = WebService::new().nest(
-            "/api",
-            WebService::new()
-                .get("/hello", "hello")
-                .post("/world", "world"),
-        );
+        let state = "state".to_owned();
+
+        let svc = WebService::new()
+            .with_state(state)
+            .get("/state", async |State(state): State<String>| state)
+            .nest("/api", |web| {
+                web.get("/hello", "hello")
+                    .post("/world", "world")
+                    .get("/state", async |State(state): State<String>| state)
+            });
 
         let res = get_response(&svc, "https://www.test.io/api/hello").await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -511,6 +516,16 @@ mod test {
 
         let res = get_response(&svc, "https://www.test.io").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        let res = get_response(&svc, "https://www.test.io/state").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "state");
+
+        let res = get_response(&svc, "https://www.test.io/api/state").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "state");
     }
 
     #[tokio::test]
