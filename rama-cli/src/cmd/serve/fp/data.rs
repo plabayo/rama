@@ -24,8 +24,9 @@ use rama::{
         profile::{Http1Settings, Http2Settings},
     },
 };
+
 use serde::Serialize;
-use std::{str::FromStr, sync::Arc};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(dead_code)]
@@ -239,6 +240,7 @@ pub(super) struct HttpInfo {
 }
 
 pub(super) async fn get_and_store_http_info(
+    state: &State,
     headers: HeaderMap,
     ext: &Extensions,
     http_version: http::Version,
@@ -255,7 +257,7 @@ pub(super) async fn get_and_store_http_info(
         _ => None,
     };
 
-    if let Some(storage) = ext.get::<Arc<State>>().unwrap().storage.as_ref() {
+    if let Some(storage) = state.storage.as_ref() {
         let auth = ext.contains::<StorageAuthorized>();
 
         match http_version {
@@ -423,6 +425,7 @@ pub(super) enum TlsDisplayInfoExtensionData {
 }
 
 pub(super) async fn get_tls_display_info_and_store(
+    state: &State,
     extensions: &Extensions,
     ua: String,
 ) -> Result<Option<TlsDisplayInfo>, OpaqueError> {
@@ -434,7 +437,7 @@ pub(super) async fn get_tls_display_info_and_store(
         None => return Ok(None),
     };
 
-    if let Some(storage) = extensions.get::<Arc<State>>().unwrap().storage.as_ref() {
+    if let Some(storage) = state.storage.as_ref() {
         let auth = extensions.contains::<StorageAuthorized>();
         storage
             .store_tls_client_hello(ua, auth, hello.clone())

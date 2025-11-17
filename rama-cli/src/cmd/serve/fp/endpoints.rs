@@ -5,7 +5,7 @@ use rama::{
         BodyExtractExt, Request, Response, StatusCode, Version,
         proto::h2,
         service::web::{
-            extract::Path,
+            extract::{Path, State as StateParam},
             response::{self, IntoResponse, Json},
         },
         ws::{
@@ -22,7 +22,6 @@ use rama::{
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
 
 use super::{
     State, StorageAuthorized,
@@ -102,7 +101,10 @@ pub(super) async fn get_consent() -> impl IntoResponse {
     )
 }
 
-pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
+pub(super) async fn get_report(
+    StateParam(state): StateParam<State>,
+    req: Request,
+) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -121,6 +123,7 @@ pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
     let user_agent = user_agent_info.user_agent.clone();
 
     let http_info = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -133,13 +136,7 @@ pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
     let head = r#"<script src="/assets/script.js"></script>"#;
 
     let mut tables = vec![
-        parts
-            .extensions
-            .get::<Arc<State>>()
-            .unwrap()
-            .data_source
-            .clone()
-            .into(),
+        state.data_source.clone().into(),
         user_agent_info.into(),
         request_info.into(),
         Table {
@@ -174,7 +171,7 @@ pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
         extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
-    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
+    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -339,6 +336,7 @@ pub(super) struct APINumberRequest {
 }
 
 pub(super) async fn post_api_fetch_number(
+    StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -360,6 +358,7 @@ pub(super) async fn post_api_fetch_number(
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -374,13 +373,7 @@ pub(super) async fn post_api_fetch_number(
         .await
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
 
-    if let Some(storage) = parts
-        .extensions
-        .get::<Arc<State>>()
-        .unwrap()
-        .storage
-        .as_ref()
-    {
+    if let Some(storage) = state.storage.as_ref() {
         let auth = parts.extensions.contains::<StorageAuthorized>();
         if let Some(js_web_apis) = request.js_web_apis.clone() {
             storage
@@ -401,7 +394,7 @@ pub(super) async fn post_api_fetch_number(
         }
     }
 
-    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
+    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -424,6 +417,7 @@ pub(super) async fn post_api_fetch_number(
 }
 
 pub(super) async fn post_api_xml_http_request_number(
+    StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -445,6 +439,7 @@ pub(super) async fn post_api_xml_http_request_number(
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -454,7 +449,7 @@ pub(super) async fn post_api_xml_http_request_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
+    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -477,7 +472,10 @@ pub(super) async fn post_api_xml_http_request_number(
 // endpoints: form
 //------------------------------------------
 
-pub(super) async fn form(req: Request) -> Result<Html, Response> {
+pub(super) async fn form(
+    StateParam(state): StateParam<State>,
+    req: Request,
+) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -496,6 +494,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -525,13 +524,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
     }
 
     let mut tables = vec![
-        parts
-            .extensions
-            .get::<Arc<State>>()
-            .unwrap()
-            .data_source
-            .clone()
-            .into(),
+        state.data_source.clone().into(),
         user_agent_info.into(),
         request_info.into(),
         Table {
@@ -566,7 +559,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
         extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
-    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
+    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -587,7 +580,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
 // endpoints: WS(S)
 //------------------------------------------
 
-pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
+pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), OpaqueError> {
     tracing::debug!("ws api called");
     let (mut ws, parts) = ws.into_parts();
 
@@ -596,6 +589,7 @@ pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
     let user_agent = user_agent_info.user_agent.clone();
 
     let _ = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -609,12 +603,7 @@ pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
         .extensions
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
-        && let Some(storage) = parts
-            .extensions
-            .get::<Arc<State>>()
-            .unwrap()
-            .storage
-            .as_ref()
+        && let Some(storage) = state.storage.as_ref()
     {
         let auth = parts.extensions.contains::<StorageAuthorized>();
         storage

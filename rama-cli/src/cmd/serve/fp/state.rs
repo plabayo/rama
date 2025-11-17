@@ -2,7 +2,7 @@ use rama::error::{ErrorContext, OpaqueError};
 
 use super::{data::DataSource, storage::Storage};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub(super) struct State {
     pub(super) data_source: DataSource,
