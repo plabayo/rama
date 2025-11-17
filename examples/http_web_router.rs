@@ -97,17 +97,15 @@ async fn main() {
             }))
         })
         // sub route support - api version health check
-        .sub(
-            "/api",
-            Router::new().sub(
-                "/v2",
-                Router::new().get("/status", async || {
+        .sub("/api", |router| {
+            router.sub("/v2", |router| {
+                router.get("/status", async || {
                     Json(json!({
                         "status": "API v2 is up and running",
                     }))
-                }),
-            ),
-        )
+                })
+            })
+        })
         .not_found(Redirect::temporary("/"));
 
     let middlewares = (
