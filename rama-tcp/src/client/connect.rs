@@ -14,7 +14,6 @@ use rama_net::{
 };
 use std::{
     net::{IpAddr, SocketAddr},
-    ops::Deref,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -229,25 +228,20 @@ where
         }
     };
 
-    if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>()
-        && let Ok(tuple) = tcp_connect_inner(
+    if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>().cloned() {
+        tcp_connect_inner(
             extensions,
             domain.clone(),
             port,
             dns_mode,
-            dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
+            (dns_overwrite, dns),
             connector.clone(),
             ip_mode,
         )
         .await
-    {
-        return Ok(tuple);
+    } else {
+        tcp_connect_inner(extensions, domain, port, dns_mode, dns, connector, ip_mode).await
     }
-
-    //... otherwise we'll try to establish a connection,
-    // with dual-stack parallel connections...
-
-    tcp_connect_inner(extensions, domain, port, dns_mode, dns, connector, ip_mode).await
 }
 
 async fn tcp_connect_inner<Dns, Connector>(

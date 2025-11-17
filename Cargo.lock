@@ -2533,6 +2533,7 @@ dependencies = [
  "rama-utils",
  "serde",
  "serde_html_form",
+ "serde_json",
  "tokio",
 ]
 

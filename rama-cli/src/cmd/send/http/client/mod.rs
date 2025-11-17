@@ -37,6 +37,8 @@ use rama::{
 use std::{str::FromStr as _, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 
+use crate::cmd::send::layer::resolve::OptDnsOverwriteLayer;
+
 use super::{SendCommand, arg::HttpHeader};
 
 mod logger_body_res;
@@ -78,6 +80,7 @@ pub(super) async fn new(
         } else {
             0
         })),
+        OptDnsOverwriteLayer::new(cfg.resolve.clone()),
         cfg.user
             .as_deref()
             .map(|auth| {

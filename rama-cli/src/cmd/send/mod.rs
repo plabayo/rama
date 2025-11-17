@@ -10,6 +10,7 @@ use std::path::PathBuf;
 pub mod http;
 
 mod arg;
+mod layer;
 
 pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
     if cfg.uri.is_empty() {
@@ -219,6 +220,17 @@ pub struct SendCommand {
     /// returning IPv6 addresses that contain "mapped" IPv4 addresses
     /// for compatibility purposes. macOS is known to do this.
     ipv6: bool,
+
+    #[arg(long, value_name = "[host]|:[port]:addr[,addr]...")]
+    /// Provide custom address(es) to overwrite the DNS with.
+    ///
+    /// - if Host is empty or equal to `*` it will resolve _any_ host to the given Ips
+    /// - if Port is empty or equal to `*` it will use the dns overwrites for any port
+    /// - at least one Ip address is required (ipv4/ipv6), multiple are allowed as well
+    ///
+    /// Using this, you can make the requests(s) use a specified address and
+    /// prevent the otherwise normally resolved address to be used.
+    resolve: Option<arg::ResolveArg>,
 
     #[arg(long, short = 'H')]
     /// (HTTP) Extra header to include in information sent.

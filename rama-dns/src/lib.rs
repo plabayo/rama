@@ -163,6 +163,7 @@ pub use deny_all::{DenyAllDns, DnsDeniedError};
 
 pub mod chain;
 
+mod tuple;
 mod variant;
 
 mod boxed;
