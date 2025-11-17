@@ -205,12 +205,12 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         // Report and API
         .get("/report", endpoints::get_report)
         .get("/api/ws", ws_service)
-        .get(
-            "/api/fetch/number/:number",
+        .post(
+            "/api/fetch/number/{number}",
             endpoints::post_api_fetch_number,
         )
-        .get(
-            "/api/xml/number/:number",
+        .post(
+            "/api/xml/number/{number}",
             endpoints::post_api_xml_http_request_number,
         )
         .match_route(
