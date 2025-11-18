@@ -574,7 +574,7 @@ You can become a regular financial contributor to Rama by paying for a monthly s
 Sponsors help us continue to maintain and improve `rama`, as well as other
 Free and Open Source (FOSS) technology. It also helps us to create
 educational content such as <https://github.com/plabayo/learn-rust-101>,
-and other open source libraries such as <https://github.com/plabayo/tokio-graceful> and <https://venndb.rs>.
+and other open source libraries such as <https://github.com/plabayo/tokio-graceful> and <https://venndb.plabayo.tech>.
 
 Next to the many unpaid developer hours we put in a project such as `rama`,
 we also have plenty of costs, such as services ranging from hosting to Docker,

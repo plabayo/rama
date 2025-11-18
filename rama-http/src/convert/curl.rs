@@ -15,6 +15,7 @@ use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
 use rama_net::address::ProxyAddress;
 use rama_net::http::{RequestContext, try_request_ctx_from_http_parts};
+use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 use rama_net::user::ProxyCredential;
 
 /// Create a `curl` command string for the given [`HttpRequestParts`].
@@ -201,6 +202,29 @@ fn write_curl_command_for_request_parts(
                 s_value,
             );
         }
+    }
+
+    match (
+        parts.extensions().get::<DnsResolveIpMode>(),
+        parts.extensions().get::<ConnectIpMode>(),
+    ) {
+        (Some(DnsResolveIpMode::SingleIpV4), _)
+        | (
+            None | Some(DnsResolveIpMode::DualPreferIpV4 | DnsResolveIpMode::Dual),
+            Some(ConnectIpMode::Ipv4),
+        ) => {
+            // force ipv4
+            writer.write_single("-4");
+        }
+        (Some(DnsResolveIpMode::SingleIpV6), _)
+        | (
+            None | Some(DnsResolveIpMode::DualPreferIpV4 | DnsResolveIpMode::Dual),
+            Some(ConnectIpMode::Ipv6),
+        ) => {
+            // force ipv6
+            writer.write_single("-6");
+        }
+        _ => (), // nothing that can be done
     }
 
     let original_http_headers = parts
@@ -506,6 +530,46 @@ mod tests {
             s,
             format!(
                 r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -x '127.0.0.1:8080'"##,
+                NL = rama_utils::str::NATIVE_NEWLINE
+            ),
+        );
+    }
+
+    #[test]
+    fn test_cmd_string_for_request_with_ipv4_preference() {
+        let (mut parts, _) = crate::Request::builder()
+            .uri("example.com")
+            .body(())
+            .unwrap()
+            .into_parts();
+
+        parts.extensions.insert(DnsResolveIpMode::SingleIpV4);
+
+        let s = cmd_string_for_request_parts(&&parts);
+        assert_eq!(
+            s,
+            format!(
+                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -4"##,
+                NL = rama_utils::str::NATIVE_NEWLINE
+            ),
+        );
+    }
+
+    #[test]
+    fn test_cmd_string_for_request_with_ipv6_preference() {
+        let (mut parts, _) = crate::Request::builder()
+            .uri("example.com")
+            .body(())
+            .unwrap()
+            .into_parts();
+
+        parts.extensions.insert(DnsResolveIpMode::SingleIpV6);
+
+        let s = cmd_string_for_request_parts(&&parts);
+        assert_eq!(
+            s,
+            format!(
+                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -6"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
