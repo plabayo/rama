@@ -38,17 +38,17 @@ use rama::{
         },
     },
     net::stream::{SocketInfo, matcher::SocketMatcher},
-    rt::Executor,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
-use std::sync::Arc;
 /// Everything else we need is provided by the standard library, community crates or tokio.
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Default)]
 struct AppState {
@@ -57,7 +57,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -68,11 +68,10 @@ async fn main() {
 
     let addr = "0.0.0.0:62013";
     tracing::info!("running service at: {addr}");
-    let exec = Executor::default();
 
     let state = Arc::new(AppState::default());
 
-    HttpServer::auto(exec)
+    HttpServer::default()
         .listen(
             addr,
             (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(

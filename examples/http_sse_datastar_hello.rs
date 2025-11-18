@@ -64,7 +64,11 @@ use rama::{
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use std::{
@@ -76,11 +80,10 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{broadcast, mpsc};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -228,6 +231,7 @@ pub mod controller {
     use rama::futures::Stream;
     use rama::http::sse::datastar::ExecuteScript;
     use rama::http::sse::datastar::{ElementPatchMode, PatchElements};
+    use rama::telemetry::tracing::Instrument as _;
     use serde::{Deserialize, Serialize};
     use std::pin::Pin;
 

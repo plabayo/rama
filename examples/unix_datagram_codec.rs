@@ -34,7 +34,11 @@ mod unix_example {
         bytes::Bytes,
         futures::{FutureExt, SinkExt, StreamExt},
         stream::codec::BytesCodec,
-        telemetry::tracing::{self, level_filters::LevelFilter},
+        telemetry::tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
         unix::{UnixDatagram, UnixDatagramFramed, UnixSocketAddress},
     };
 
@@ -43,10 +47,9 @@ mod unix_example {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
     use tokio::time;
-    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     pub(super) async fn run() {
-        tracing_subscriber::registry()
+        tracing::subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()

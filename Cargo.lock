@@ -2484,7 +2484,6 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-postgres",
- "tracing-subscriber",
  "tui-logger",
 ]
 
@@ -2964,7 +2963,6 @@ dependencies = [
  "rama-utils",
  "rand 0.9.2",
  "tokio",
- "tracing-subscriber",
  "tracing-test",
 ]
 

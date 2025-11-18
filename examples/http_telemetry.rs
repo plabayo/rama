@@ -66,8 +66,11 @@ use rama::{
                 resource::{HOST_ARCH, OS_NAME},
             },
         },
-        tracing::level_filters::LevelFilter,
-        tracing::subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
     },
 };
 
@@ -99,7 +102,7 @@ impl Metrics {
 #[tokio::main]
 async fn main() {
     // tracing setup
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()

@@ -1,7 +1,7 @@
 use rama::error::BoxError;
+use rama::telemetry::tracing::subscriber::filter::LevelFilter;
 
 use clap::{Args, Subcommand};
-use tracing_subscriber::filter::LevelFilter;
 
 pub mod tcp;
 pub mod tls;

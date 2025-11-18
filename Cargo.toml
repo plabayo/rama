@@ -459,6 +459,7 @@ harness = false
 
 [[bench]]
 name = "h2"
+required-features = ["http"]
 harness = false
 
 [[bench]]
@@ -634,6 +635,10 @@ required-features = ["http-full", "rustls"]
 [[example]]
 name = "mtls_tunnel_and_service"
 required-features = ["http-full", "rustls"]
+
+[[example]]
+name = "tls_sni_proxy_mitm"
+required-features = ["http-full", "boring"]
 
 [[example]]
 name = "tls_sni_router"

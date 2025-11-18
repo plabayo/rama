@@ -49,7 +49,6 @@ use rama::{
         limit::policy::{ConcurrentPolicy, LimitReached},
     },
     net::stream::matcher::SocketMatcher,
-    rt::Executor,
     service::service_fn,
     utils::backoff::ExponentialBackoff,
 };
@@ -57,9 +56,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() {
-    let exec = Executor::default();
-
-    HttpServer::auto(exec)
+    HttpServer::default()
         .listen(
             "0.0.0.0:62008",
             (

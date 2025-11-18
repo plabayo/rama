@@ -1,9 +1,12 @@
 use rama::{
     error::{ErrorContext, OpaqueError},
-    telemetry::tracing::Level,
+    telemetry::tracing::{
+        self, Level,
+        subscriber::{Layer, filter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
+
 use std::{fs::OpenOptions, path::PathBuf};
-use tracing_subscriber::{Layer, filter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use tui_logger::TuiTracingSubscriberLayer;
 
 pub(super) fn init_logger(
@@ -17,7 +20,7 @@ pub(super) fn init_logger(
             .open(log_file_path)
             .context("open log file")?;
         if use_tui {
-            tracing_subscriber::registry()
+            tracing::subscriber::registry()
                 .with(TuiTracingSubscriberLayer)
                 .with(
                     fmt::layer()
@@ -29,7 +32,7 @@ pub(super) fn init_logger(
 
             tui_logger::init_logger(tui_logger::LevelFilter::Trace).context("init tui logger")?;
         } else {
-            tracing_subscriber::registry()
+            tracing::subscriber::registry()
                 .with(
                     fmt::layer()
                         .with_ansi(false)

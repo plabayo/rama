@@ -1,12 +1,11 @@
-use std::time::Duration;
-
-use clap::{Args, Subcommand};
 use rama::{
     error::{BoxError, OpaqueError},
     graceful,
-    telemetry::tracing,
+    telemetry::tracing::{self, subscriber::filter::LevelFilter},
 };
-use tracing_subscriber::filter::LevelFilter;
+
+use clap::{Args, Subcommand};
+use std::time::Duration;
 
 pub mod discard;
 pub mod echo;

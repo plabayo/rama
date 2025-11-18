@@ -28,7 +28,7 @@ pub fn init_tracing(default_directive: impl Into<Directive>) {
 }
 
 fn init_default(default_directive: impl Into<Directive>) {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -68,10 +68,10 @@ fn init_structured(default_directive: impl Into<Directive>) {
     let tracer = provider.tracer("rama-cli");
     let telemetry = layer().with_tracer(tracer);
 
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(telemetry)
         .with(
-            tracing_subscriber::fmt::Layer::new()
+            tracing::subscriber::fmt::Layer::new()
                 .with_ansi(std::io::stderr().is_terminal())
                 .with_writer(std::io::stderr)
                 .json()

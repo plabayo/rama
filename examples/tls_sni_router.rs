@@ -56,17 +56,21 @@ use rama::{
     service::service_fn,
     stream::Stream,
     tcp::{client::service::Forwarder, server::TcpListener},
-    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self, Instrument as _,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio
+
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()

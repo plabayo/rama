@@ -29,15 +29,18 @@ mod unix_example {
         layer::AddExtensionLayer,
         service::service_fn,
         stream::Stream,
-        telemetry::tracing::{self, level_filters::LevelFilter},
+        telemetry::tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
         unix::server::UnixListener,
     };
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     pub(super) async fn run() {
-        tracing_subscriber::registry()
+        tracing::subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()

@@ -119,6 +119,12 @@ SNI Proxy MITM'ing HTTPS traffic (Rama-style)
      │◀──────────────────▶│◀────────────────────────▶│
 ```
 
+[Examples](https://github.com/plabayo/rama/tree/main/examples):
+
+- [/examples/tls_sni_proxy_mitm.rs](https://github.com/plabayo/rama/tree/main/examples/tls_sni_proxy_mitm.rs):
+  (TLS) SNI MITM Proxy, a basic example showing you how you can hijhack/re-route traffic that you
+  wish to handle but ignore any other traffic.
+
 ### SNI Proxies as invisible proxies
 
 A SNI Proxy can be send tls-encrypted traffic without it first going

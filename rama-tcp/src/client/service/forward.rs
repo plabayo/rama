@@ -78,7 +78,7 @@ impl Forwarder<super::TcpConnector> {
     /// This can be useful for any custom middleware, but also to enrich with
     /// rama-provided services for tls connections, HAproxy client endoding
     /// or even an entirely custom tcp connector service.
-    pub fn connector<T>(self, connector: T) -> Forwarder<T> {
+    pub fn with_connector<T>(self, connector: T) -> Forwarder<T> {
         Forwarder {
             kind: self.kind,
             connector,

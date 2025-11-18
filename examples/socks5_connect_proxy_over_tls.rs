@@ -38,9 +38,12 @@ use rama::{
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
-    rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::{
         client::{TlsConnector, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorService},
@@ -48,11 +51,10 @@ use rama::{
 };
 
 use std::sync::Arc;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -157,7 +159,7 @@ async fn spawn_http_server() -> SocketAddress {
         .into();
 
     let app = Router::new().get("/ping", "pong");
-    let server = HttpServer::auto(Executor::default()).service(Arc::new(app));
+    let server = HttpServer::default().service(Arc::new(app));
 
     tokio::spawn(tcp_service.serve(server));
 

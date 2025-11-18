@@ -80,6 +80,8 @@ mod tcp_listener_layers;
 #[cfg(feature = "tcp")]
 mod tcp_nd_json;
 #[cfg(all(feature = "http-full", feature = "boring"))]
+mod tls_sni_proxy_mitm;
+#[cfg(all(feature = "http-full", feature = "boring"))]
 mod tls_sni_router;
 #[cfg(feature = "udp")]
 mod udp_codec;

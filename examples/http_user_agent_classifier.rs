@@ -24,7 +24,6 @@ use rama::{
         server::HttpServer,
         service::web::response::{IntoResponse, Json},
     },
-    rt::Executor,
     service::service_fn,
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer},
 };
@@ -33,8 +32,7 @@ use std::convert::Infallible;
 
 #[tokio::main]
 async fn main() {
-    let exec = Executor::default();
-    HttpServer::auto(exec)
+    HttpServer::default()
         .listen(
             "127.0.0.1:62015",
             UserAgentClassifierLayer::new()

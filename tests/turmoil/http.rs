@@ -8,8 +8,11 @@ use rama::{
         layer::trace::TraceLayer, server::HttpServer, service::web::WebService,
     },
     net::address::SocketAddress,
+    telemetry::tracing::subscriber::{
+        self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    },
 };
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
 use turmoil::{Builder, ToSocketAddrs};
 
 use crate::{stream::TcpStream, types::TurmoilTcpConnector};
@@ -17,7 +20,7 @@ use crate::{stream::TcpStream, types::TurmoilTcpConnector};
 const ADDRESS: SocketAddress = SocketAddress::default_ipv4(62004);
 
 fn setup_tracing() {
-    tracing_subscriber::registry()
+    subscriber::registry()
         .with(fmt::layer().with_test_writer())
         .with(
             EnvFilter::try_from_env("RUST_LOG")

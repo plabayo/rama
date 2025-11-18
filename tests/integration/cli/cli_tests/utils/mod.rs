@@ -9,8 +9,11 @@ use std::{
 };
 
 use base64::Engine;
-use rama::telemetry::tracing::level_filters::LevelFilter;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+use rama::telemetry::tracing::{
+    level_filters::LevelFilter,
+    subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+};
 
 #[derive(Debug)]
 /// A wrapper around a rama service process.
@@ -531,7 +534,7 @@ static INIT_TRACING_ONCE: Once = Once::new();
 /// Initialize tracing for example tests
 pub(super) fn init_tracing() {
     INIT_TRACING_ONCE.call_once(|| {
-        let _ = tracing_subscriber::registry()
+        let _ = subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()

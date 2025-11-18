@@ -185,7 +185,7 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
             connect_authority
         );
 
-        let tcp_service = Forwarder::new(connect_authority).connector(
+        let tcp_service = Forwarder::new(connect_authority).with_connector(
             TlsConnectorLayer::secure()
                 .with_connector_data(tls_connector_data)
                 .into_layer(TcpConnector::new()),

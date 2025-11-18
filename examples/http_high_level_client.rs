@@ -34,7 +34,11 @@ use rama::{
     net::address::SocketAddress,
     net::user::Basic,
     rt::Executor,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 
@@ -42,9 +46,6 @@ use rama::{
 
 use serde_json::json;
 use std::time::Duration;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62004);
 
@@ -158,7 +159,7 @@ async fn main() {
 }
 
 fn setup_tracing() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()

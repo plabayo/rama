@@ -47,22 +47,23 @@ use rama::{
     net::{address::SocketAddress, stream::SocketInfo},
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     utils::macros::impl_deref,
 };
 
-use ahash::HashSet;
 /// Everything else we need is provided by the standard library, community crates or tokio.
+use ahash::HashSet;
 use serde::Deserialize;
 use std::{net::IpAddr, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()

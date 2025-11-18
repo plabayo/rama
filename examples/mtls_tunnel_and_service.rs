@@ -32,8 +32,10 @@ use rama::{
     http::{
         layer::trace::TraceLayer,
         server::HttpServer,
-        service::web::WebService,
-        service::web::response::{Html, Redirect},
+        service::web::{
+            WebService,
+            response::{Html, Redirect},
+        },
     },
     layer::TraceErrLayer,
     net::address::SocketAddress,
@@ -42,7 +44,11 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::rustls::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer, self_signed_client_auth},
         dep::rustls::{
@@ -54,16 +60,16 @@ use rama::{
 };
 
 // everything else is provided by the standard library, community crates or tokio
+
 use std::sync::Arc;
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const SERVER_AUTHORITY: SocketAddress = SocketAddress::local_ipv4(63014);
 const TUNNEL_AUTHORITY: SocketAddress = SocketAddress::local_ipv4(62014);
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -155,7 +161,7 @@ async fn main() {
             "start mTLS TCP Tunnel Proxy",
         );
 
-        let forwarder = Forwarder::new(SERVER_AUTHORITY).connector(
+        let forwarder = Forwarder::new(SERVER_AUTHORITY).with_connector(
             TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
                 .with_connector_data(tls_client_data)
                 .into_layer(TcpConnector::new()),

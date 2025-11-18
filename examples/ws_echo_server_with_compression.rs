@@ -20,15 +20,18 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     tcp::server::TcpListener,
-    telemetry::tracing::{Level, info, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self, Level, info,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()

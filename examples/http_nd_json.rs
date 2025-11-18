@@ -36,12 +36,15 @@ use rama::{
     rt::Executor,
     stream::json::JsonWriteStream,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use serde::Serialize;
 use std::{borrow::Cow, convert::Infallible, sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn api_json_events_endpoint() -> impl IntoResponse {
     (
@@ -72,7 +75,7 @@ async fn api_json_events_endpoint() -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()

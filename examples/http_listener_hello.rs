@@ -21,7 +21,6 @@ use rama::{
     http::service::web::response::Json,
     http::{Request, server::HttpServer},
     net::address::SocketAddress,
-    rt::Executor,
     service::service_fn,
 };
 
@@ -29,8 +28,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() {
-    let exec = Executor::default();
-    HttpServer::auto(exec)
+    HttpServer::default()
         .listen(
             // The below string type will also work
             // "127.0.0.1:62007",

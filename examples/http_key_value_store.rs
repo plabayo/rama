@@ -69,8 +69,11 @@ use rama::{
         },
     },
     net::{address::SocketAddress, user::Bearer},
-    rt::Executor,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     utils::macros::impl_deref,
 };
 
@@ -79,9 +82,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Clone, Debug, Default, FromRef)]
 /// Contains the global shared state
@@ -105,7 +105,7 @@ struct ItemParam {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -120,9 +120,10 @@ async fn main() {
         network.local.port = %addr.port,
         "running service",
     );
-    let exec = Executor::default();
+
     let state = AppState::default();
-    HttpServer::auto(exec)
+
+    HttpServer::default()
         .listen(
             addr,
             (TraceLayer::new_for_http())

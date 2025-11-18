@@ -73,7 +73,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::{
         acme::{
             AcmeClient,
@@ -92,7 +96,6 @@ use rama::{
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::time::sleep;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Default directory url of pebble
 const TEST_DIRECTORY_URL: &str = "https://localhost:14000/dir";
@@ -101,7 +104,7 @@ const ADDR: &str = "0.0.0.0:5002";
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()

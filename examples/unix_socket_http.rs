@@ -25,14 +25,16 @@ mod unix_example {
     use rama::{
         http::server::HttpServer,
         http::service::web::Router,
-        telemetry::tracing::{self, level_filters::LevelFilter},
+        telemetry::tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
         unix::server::UnixListener,
     };
 
-    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-
     pub(super) async fn run() {
-        tracing_subscriber::registry()
+        tracing::subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()

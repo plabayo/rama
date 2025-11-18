@@ -34,6 +34,13 @@ pub struct HttpServer<B> {
     guard: Option<ShutdownGuard>,
 }
 
+impl Default for HttpServer<AutoConnBuilder> {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::auto(Executor::default())
+    }
+}
+
 impl<B> fmt::Debug for HttpServer<B>
 where
     B: fmt::Debug,

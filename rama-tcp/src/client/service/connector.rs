@@ -7,7 +7,7 @@ use rama_core::{
 use rama_dns::{DnsResolver, GlobalDnsResolver};
 use rama_net::{
     address::ProxyAddress,
-    client::EstablishedClientConnection,
+    client::{ConnectorTarget, EstablishedClientConnection},
     stream::{ClientSocketInfo, Socket, SocketInfo},
     transport::{TransportProtocol, TryRefIntoTransportContext},
 };
@@ -136,6 +136,27 @@ where
                     .inspect_err(|err| {
                         tracing::debug!(
                             "failed to receive local addr of established connection to proxy: {err:?}"
+                        )
+                    })
+                    .ok(),
+                addr,
+            ));
+            conn.extensions_mut().insert(socket_info);
+
+            return Ok(EstablishedClientConnection { req, conn });
+        }
+
+        if let Some(ConnectorTarget(target)) = req.extensions().get::<ConnectorTarget>().cloned() {
+            let (mut conn, addr) =
+                crate::client::tcp_connect(req.extensions(), target, self.dns.clone(), connector)
+                    .await
+                    .context("tcp connector: conncept to connector target (overwrite?)")?;
+
+            let socket_info= ClientSocketInfo(SocketInfo::new(
+                conn.local_addr()
+                    .inspect_err(|err| {
+                        tracing::debug!(
+                            "failed to receive local addr of established connection to target (overwrite?): {err:?}"
                         )
                     })
                     .ok(),
