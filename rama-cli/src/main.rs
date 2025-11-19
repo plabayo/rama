@@ -67,10 +67,23 @@ async fn main() {
                     err.exit()
                 }
             }
-            clap::error::ErrorKind::InvalidSubcommand => Cli {
-                cmds: CliCommands::Send(CliDefault::parse().cmd),
-            },
-            _ => err.exit(),
+            clap::error::ErrorKind::DisplayVersion => err.exit(),
+            _ => {
+                if std::env::args()
+                    .nth(1)
+                    .map(|s| {
+                        ["-V", "--version", "-h", "--help", "send", "serve", "probe"]
+                            .contains(&s.trim())
+                    })
+                    .unwrap_or_default()
+                {
+                    err.exit()
+                } else {
+                    Cli {
+                        cmds: CliCommands::Send(CliDefault::parse().cmd),
+                    }
+                }
+            }
         },
     };
 
