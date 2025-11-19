@@ -51,21 +51,26 @@ async fn main() {
     #[allow(clippy::print_stdout)]
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
-        Err(err) if err.kind() == clap::error::ErrorKind::DisplayHelp => {
-            if err.render().to_string().contains("rama <COMMAND>") {
-                let _ = err.print();
-                println!();
-                println!("When invoked without a subcommand, `rama` executes the `send` command.");
-                println!("Refer to the `send` command section below.");
-                println!();
-                CliDefault::parse_from(["rama", "--help"]);
-                unreachable!("previous statement should exit");
-            } else {
-                err.exit()
+        Err(err) => match err.kind() {
+            clap::error::ErrorKind::DisplayHelp => {
+                if err.render().to_string().contains("rama <COMMAND>") {
+                    let _ = err.print();
+                    println!();
+                    println!(
+                        "When invoked without a subcommand, `rama` executes the `send` command."
+                    );
+                    println!("Refer to the `send` command section below.");
+                    println!();
+                    CliDefault::parse_from(["rama", "--help"]);
+                    unreachable!("previous statement should exit");
+                } else {
+                    err.exit()
+                }
             }
-        }
-        Err(_) => Cli {
-            cmds: CliCommands::Send(CliDefault::parse().cmd),
+            clap::error::ErrorKind::InvalidSubcommand => Cli {
+                cmds: CliCommands::Send(CliDefault::parse().cmd),
+            },
+            _ => err.exit(),
         },
     };
 
