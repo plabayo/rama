@@ -38,7 +38,7 @@ async fn test_http_mitm_proxy() {
     })
     .expect("self signed acceptor data")
     .with_alpn_protocols_http_auto()
-    .with_env_key_logger()
+    .try_with_env_key_logger()
     .expect("with env key logger")
     .build();
 

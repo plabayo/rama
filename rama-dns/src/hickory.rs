@@ -1,21 +1,24 @@
 //! dns using the [`hickory_resolver`] crate
 
-use crate::DnsResolver;
-use hickory_resolver::{
-    Name, TokioResolver,
-    config::ResolverConfig,
-    name_server::TokioConnectionProvider,
-    proto::rr::rdata::{A, AAAA},
-};
-use rama_core::error::{ErrorContext, OpaqueError};
-use rama_core::telemetry::tracing;
-use rama_net::address::Domain;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
 };
 
 pub use hickory_resolver as resolver;
+use hickory_resolver::{
+    Name, TokioResolver,
+    config::ResolverConfig,
+    name_server::TokioConnectionProvider,
+    proto::rr::rdata::{A, AAAA},
+};
+
+use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::telemetry::tracing;
+use rama_net::address::Domain;
+use rama_utils::macros::generate_set_and_with;
+
+use crate::DnsResolver;
 
 #[derive(Debug, Clone)]
 /// [`DnsResolver`] using the [`hickory_resolver`] crate
@@ -131,50 +134,21 @@ pub struct HickoryDnsBuilder {
 }
 
 impl HickoryDnsBuilder {
-    /// Replace `self` with a hickory [`ResolverConfig`][`config::ResolverConfig`] defined.
-    #[must_use]
-    pub fn with_config(mut self, config: self::resolver::config::ResolverConfig) -> Self {
-        self.config = Some(config);
-        self
+    generate_set_and_with! {
+        /// Define the [`ResolverConfig`][`config::ResolverConfig`] used.
+        pub fn config(mut self, config: Option<self::resolver::config::ResolverConfig>) -> Self {
+            self.config = config;
+            self
+        }
     }
 
-    /// Replace `self` with an [`Option`]al hickory [`ResolverConfig`][`config::ResolverConfig`] defined.
-    #[must_use]
-    pub fn maybe_with_config(
-        mut self,
-        config: Option<self::resolver::config::ResolverConfig>,
-    ) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Set a hickory [`ResolverConfig`][`config::ResolverConfig`].
-    pub fn set_config(&mut self, config: self::resolver::config::ResolverConfig) -> &mut Self {
-        self.config = Some(config);
-        self
-    }
-
-    /// Replace `self` with a hickory [`ResolverOpts`][`config::ResolverOpts`] defined.
-    #[must_use]
-    pub fn with_options(mut self, options: self::resolver::config::ResolverOpts) -> Self {
-        self.options = Some(options);
-        self
-    }
-
-    /// Replace `self` with an [`Option`]al hickory [`ResolverOpts`][`config::ResolverOpts`] defined.
-    #[must_use]
-    pub fn maybe_with_options(
-        mut self,
-        options: Option<self::resolver::config::ResolverOpts>,
-    ) -> Self {
-        self.options = options;
-        self
-    }
-
-    /// Set a hickory [`ResolverOpts`][`config::ResolverOpts`].
-    pub fn set_options(&mut self, options: self::resolver::config::ResolverOpts) -> &mut Self {
-        self.options = Some(options);
-        self
+    generate_set_and_with! {
+        /// Define the [`ResolverOpts`][`config::ResolverOpts`] used.
+        #[must_use]
+        pub fn options(mut self, options: Option<self::resolver::config::ResolverOpts>) -> Self {
+            self.options = options;
+            self
+        }
     }
 
     /// Build a [`HickoryDns`] instance, consuming [`self`].

@@ -90,7 +90,7 @@ async fn main() {
                 .with_no_cert_verifier()
                 .with_alpn_protocols_http_auto()
                 .with_server_name(SERVER_AUTHORITY.ip_addr.into())
-                .with_env_key_logger()
+                .try_with_env_key_logger()
                 .expect("connector with env keylogger")
                 .build();
 
@@ -118,7 +118,7 @@ async fn main() {
         // Or convert [`rustls::ServerConfig`] to [`TlsAcceptorDataBuilder`] to make use of some of the utils rama provides
         let tls_server_data = TlsAcceptorDataBuilder::from(server_config)
             .with_alpn_protocols_http_auto()
-            .with_env_key_logger()
+            .try_with_env_key_logger()
             .expect("acceptor with env keylogger")
             .build();
 

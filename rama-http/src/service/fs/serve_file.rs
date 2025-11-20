@@ -34,72 +34,82 @@ impl ServeFile {
         Self(ServeDir::new_single_file(path, mime))
     }
 
-    /// Informs the service that it should also look for a precompressed gzip
-    /// version of the file.
-    ///
-    /// If the client has an `Accept-Encoding` header that allows the gzip encoding,
-    /// the file `foo.txt.gz` will be served instead of `foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the same directory. Different precompressed
-    /// variants can be combined.
-    #[must_use]
-    pub fn precompressed_gzip(self) -> Self {
-        Self(self.0.precompressed_gzip())
+    rama_utils::macros::generate_set_and_with! {
+        /// Informs the service that it should also look for a precompressed gzip
+        /// version of the file.
+        ///
+        /// If the client has an `Accept-Encoding` header that allows the gzip encoding,
+        /// the file `foo.txt.gz` will be served instead of `foo.txt`.
+        /// If the precompressed file is not available, or the client doesn't support it,
+        /// the uncompressed version will be served instead.
+        /// Both the precompressed version and the uncompressed version are expected
+        /// to be present in the same directory. Different precompressed
+        /// variants can be combined.
+        pub fn precompressed_gzip(mut self) -> Self {
+            self.0.set_precompressed_gzip();
+            self
+        }
     }
 
-    /// Informs the service that it should also look for a precompressed brotli
-    /// version of the file.
-    ///
-    /// If the client has an `Accept-Encoding` header that allows the brotli encoding,
-    /// the file `foo.txt.br` will be served instead of `foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the same directory. Different precompressed
-    /// variants can be combined.
-    #[must_use]
-    pub fn precompressed_br(self) -> Self {
-        Self(self.0.precompressed_br())
+    rama_utils::macros::generate_set_and_with! {
+        /// Informs the service that it should also look for a precompressed brotli
+        /// version of the file.
+        ///
+        /// If the client has an `Accept-Encoding` header that allows the brotli encoding,
+        /// the file `foo.txt.br` will be served instead of `foo.txt`.
+        /// If the precompressed file is not available, or the client doesn't support it,
+        /// the uncompressed version will be served instead.
+        /// Both the precompressed version and the uncompressed version are expected
+        /// to be present in the same directory. Different precompressed
+        /// variants can be combined.
+        pub fn precompressed_br(mut self) -> Self {
+            self.0.set_precompressed_br();
+            self
+        }
     }
 
-    /// Informs the service that it should also look for a precompressed deflate
-    /// version of the file.
-    ///
-    /// If the client has an `Accept-Encoding` header that allows the deflate encoding,
-    /// the file `foo.txt.zz` will be served instead of `foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the same directory. Different precompressed
-    /// variants can be combined.
-    #[must_use]
-    pub fn precompressed_deflate(self) -> Self {
-        Self(self.0.precompressed_deflate())
+    rama_utils::macros::generate_set_and_with! {
+        /// Informs the service that it should also look for a precompressed deflate
+        /// version of the file.
+        ///
+        /// If the client has an `Accept-Encoding` header that allows the deflate encoding,
+        /// the file `foo.txt.zz` will be served instead of `foo.txt`.
+        /// If the precompressed file is not available, or the client doesn't support it,
+        /// the uncompressed version will be served instead.
+        /// Both the precompressed version and the uncompressed version are expected
+        /// to be present in the same directory. Different precompressed
+        /// variants can be combined.
+        pub fn precompressed_deflate(mut self) -> Self {
+            self.0.set_precompressed_deflate();
+            self
+        }
     }
 
-    /// Informs the service that it should also look for a precompressed zstd
-    /// version of the file.
-    ///
-    /// If the client has an `Accept-Encoding` header that allows the zstd encoding,
-    /// the file `foo.txt.zst` will be served instead of `foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the same directory. Different precompressed
-    /// variants can be combined.
-    #[must_use]
-    pub fn precompressed_zstd(self) -> Self {
-        Self(self.0.precompressed_zstd())
+    rama_utils::macros::generate_set_and_with! {
+        /// Informs the service that it should also look for a precompressed zstd
+        /// version of the file.
+        ///
+        /// If the client has an `Accept-Encoding` header that allows the zstd encoding,
+        /// the file `foo.txt.zst` will be served instead of `foo.txt`.
+        /// If the precompressed file is not available, or the client doesn't support it,
+        /// the uncompressed version will be served instead.
+        /// Both the precompressed version and the uncompressed version are expected
+        /// to be present in the same directory. Different precompressed
+        /// variants can be combined.
+        pub fn precompressed_zstd(mut self) -> Self {
+            self.0.set_precompressed_zstd();
+            self
+        }
     }
 
-    /// Set a specific read buffer chunk size.
-    ///
-    /// The default capacity is 64kb.
-    #[must_use]
-    pub fn with_buf_chunk_size(self, chunk_size: usize) -> Self {
-        Self(self.0.with_buf_chunk_size(chunk_size))
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a specific read buffer chunk size.
+        ///
+        /// The default capacity is 64kb.
+        pub fn buf_chunk_size(mut self, chunk_size: usize) -> Self {
+            self.0.set_buf_chunk_size(chunk_size);
+            self
+        }
     }
 
     /// Call the service and get a future that contains any `std::io::Error` that might have
@@ -141,7 +151,7 @@ mod compression_tests {
         use async_compression::tokio::bufread::ZstdDecoder;
         use tokio::io::AsyncReadExt;
 
-        let svc = ServeFile::new("../test-files/precompressed.txt").precompressed_zstd();
+        let svc = ServeFile::new("../test-files/precompressed.txt").with_precompressed_zstd();
         let request = Request::builder()
             .header("Accept-Encoding", "zstd,br")
             .body(Body::empty())
@@ -221,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn precompresed_head_request() {
-        let svc = ServeFile::new("../test-files/precompressed.txt").precompressed_gzip();
+        let svc = ServeFile::new("../test-files/precompressed.txt").with_precompressed_gzip();
 
         let request = Request::builder()
             .header("Accept-Encoding", "gzip")
@@ -239,7 +249,7 @@ mod tests {
 
     #[tokio::test]
     async fn precompressed_gzip() {
-        let svc = ServeFile::new("../test-files/precompressed.txt").precompressed_gzip();
+        let svc = ServeFile::new("../test-files/precompressed.txt").with_precompressed_gzip();
 
         let request = Request::builder()
             .header("Accept-Encoding", "gzip")
@@ -259,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_precompression_algorithm_fallbacks_to_uncompressed() {
-        let svc = ServeFile::new("../test-files/precompressed.txt").precompressed_gzip();
+        let svc = ServeFile::new("../test-files/precompressed.txt").with_precompressed_gzip();
 
         let request = Request::builder()
             .header("Accept-Encoding", "br")
@@ -277,7 +287,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_precompressed_variant_fallbacks_to_uncompressed() {
-        let svc = ServeFile::new("../test-files/missing_precompressed.txt").precompressed_gzip();
+        let svc =
+            ServeFile::new("../test-files/missing_precompressed.txt").with_precompressed_gzip();
 
         let request = Request::builder()
             .header("Accept-Encoding", "gzip")
@@ -296,7 +307,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_precompressed_variant_fallbacks_to_uncompressed_head_request() {
-        let svc = ServeFile::new("../test-files/missing_precompressed.txt").precompressed_gzip();
+        let svc =
+            ServeFile::new("../test-files/missing_precompressed.txt").with_precompressed_gzip();
 
         let request = Request::builder()
             .header("Accept-Encoding", "gzip")
@@ -318,7 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_precompressed_variant_existing() {
-        let svc = ServeFile::new("../test-files/only_gzipped.txt").precompressed_gzip();
+        let svc = ServeFile::new("../test-files/only_gzipped.txt").with_precompressed_gzip();
 
         let request = Request::builder().body(Body::empty()).unwrap();
         let res = svc.clone().serve(request).await.unwrap();
@@ -344,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn precompressed_br() {
-        let svc = ServeFile::new("../test-files/precompressed.txt").precompressed_br();
+        let svc = ServeFile::new("../test-files/precompressed.txt").with_precompressed_br();
 
         let request = Request::builder()
             .header("Accept-Encoding", "gzip,br")
@@ -364,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn precompressed_deflate() {
-        let svc = ServeFile::new("../test-files/precompressed.txt").precompressed_deflate();
+        let svc = ServeFile::new("../test-files/precompressed.txt").with_precompressed_deflate();
         let request = Request::builder()
             .header("Accept-Encoding", "deflate,br")
             .body(Body::empty())
@@ -384,8 +396,8 @@ mod tests {
     #[tokio::test]
     async fn multi_precompressed() {
         let svc = ServeFile::new("../test-files/precompressed.txt")
-            .precompressed_gzip()
-            .precompressed_br();
+            .with_precompressed_gzip()
+            .with_precompressed_br();
 
         let request = Request::builder()
             .header("Accept-Encoding", "gzip")
@@ -435,9 +447,9 @@ mod tests {
     #[tokio::test]
     async fn fallbacks_to_different_precompressed_variant_if_not_found() {
         let svc = ServeFile::new("../test-files/precompressed_br.txt")
-            .precompressed_gzip()
-            .precompressed_deflate()
-            .precompressed_br();
+            .with_precompressed_gzip()
+            .with_precompressed_deflate()
+            .with_precompressed_br();
 
         let request = Request::builder()
             .header("Accept-Encoding", "gzip,deflate,br")
@@ -458,9 +470,9 @@ mod tests {
     #[tokio::test]
     async fn fallbacks_to_different_precompressed_variant_if_not_found_head_request() {
         let svc = ServeFile::new("../test-files/precompressed_br.txt")
-            .precompressed_gzip()
-            .precompressed_deflate()
-            .precompressed_br();
+            .with_precompressed_gzip()
+            .with_precompressed_deflate()
+            .with_precompressed_br();
 
         let request = Request::builder()
             .header("Accept-Encoding", "gzip,deflate,br")
@@ -488,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn returns_404_if_file_doesnt_exist_when_precompression_is_used() {
-        let svc = ServeFile::new("../this-doesnt-exist.md").precompressed_deflate();
+        let svc = ServeFile::new("../this-doesnt-exist.md").with_precompressed_deflate();
 
         let request = Request::builder()
             .header("Accept-Encoding", "deflate")

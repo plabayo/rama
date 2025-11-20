@@ -372,6 +372,25 @@ macro_rules! __generate_set_and_with {
             }
         }
     };
+    (
+        $(#[$outer_doc:meta])*
+        $vis:vis fn $fn_name:ident(mut $self_token:ident) -> Result<Self, $error:ty> {
+            $($body:tt)*
+        }
+    ) => {
+        $crate::macros::paste! {
+            $(#[$outer_doc])*
+            #[must_use]
+            $vis fn [<try_with_ $fn_name>](mut $self_token) -> Result<Self, $error> {
+                $($body)*
+            }
+
+            $(#[$outer_doc])*
+            $vis fn [<try_set_ $fn_name>](&mut $self_token) -> Result<&mut Self, $error> {
+                $($body)*
+            }
+        }
+    };
 }
 
 pub use crate::__generate_set_and_with as generate_set_and_with;

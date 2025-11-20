@@ -110,7 +110,7 @@ async fn main() {
 
     let acceptor_data = TlsAcceptorDataBuilder::from(config)
         .with_alpn_protocols_http_auto()
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("with env keylogger")
         .build();
 

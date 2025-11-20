@@ -175,95 +175,108 @@ impl CacheControl {
 
     // setters
 
-    /// Set the `no-cache` directive.
-    #[must_use]
-    pub fn with_no_cache(mut self) -> Self {
-        self.flags.insert(Flags::NO_CACHE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `no-cache` directive.
+        pub fn no_cache(mut self) -> Self {
+            self.flags.insert(Flags::NO_CACHE);
+            self
+        }
     }
 
-    /// Set the `no-store` directive.
-    #[must_use]
-    pub fn with_no_store(mut self) -> Self {
-        self.flags.insert(Flags::NO_STORE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `no-store` directive.
+        pub fn no_store(mut self) -> Self {
+            self.flags.insert(Flags::NO_STORE);
+            self
+        }
     }
 
-    /// Set the `no-transform` directive.
-    #[must_use]
-    pub fn with_no_transform(mut self) -> Self {
-        self.flags.insert(Flags::NO_TRANSFORM);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `no-transform` directive.
+        pub fn no_transform(mut self) -> Self {
+            self.flags.insert(Flags::NO_TRANSFORM);
+            self
+        }
     }
 
-    /// Set the `only-if-cached` directive.
-    #[must_use]
-    pub fn with_only_if_cached(mut self) -> Self {
-        self.flags.insert(Flags::ONLY_IF_CACHED);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `only-if-cached` directive.
+        pub fn only_if_cached(mut self) -> Self {
+            self.flags.insert(Flags::ONLY_IF_CACHED);
+            self
+        }
     }
 
-    /// Set the `private` directive.
-    #[must_use]
-    pub fn with_private(mut self) -> Self {
-        self.flags.insert(Flags::PRIVATE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `private` directive.
+        pub fn private(mut self) -> Self {
+            self.flags.insert(Flags::PRIVATE);
+            self
+        }
     }
 
-    /// Set the `public` directive.
-    #[must_use]
-    pub fn with_public(mut self) -> Self {
-        self.flags.insert(Flags::PUBLIC);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `public` directive.
+        pub fn public(mut self) -> Self {
+            self.flags.insert(Flags::PUBLIC);
+            self
+        }
     }
 
-    /// Set the `immutable` directive.
-    #[must_use]
-    pub fn with_immutable(mut self) -> Self {
-        self.flags.insert(Flags::IMMUTABLE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `immutable` directive.
+        pub fn immutable(mut self) -> Self {
+            self.flags.insert(Flags::IMMUTABLE);
+            self
+        }
     }
 
-    /// Set the `must-revalidate` directive.
-    #[must_use]
-    pub fn with_must_revalidate(mut self) -> Self {
-        self.flags.insert(Flags::MUST_REVALIDATE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `must-revalidate` directive.
+        pub fn must_revalidate(mut self) -> Self {
+            self.flags.insert(Flags::MUST_REVALIDATE);
+            self
+        }
     }
 
-    /// Set the `must-understand` directive.
-    #[must_use]
-    pub fn with_must_understand(mut self) -> Self {
-        self.flags.insert(Flags::MUST_UNDERSTAND);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `must-understand` directive.
+        pub fn must_understand(mut self) -> Self {
+            self.flags.insert(Flags::MUST_UNDERSTAND);
+            self
+        }
     }
 
-    /// Set the `max-age` directive.
-    #[must_use]
-    pub fn with_max_age(mut self, duration: Duration) -> Self {
-        self.max_age = Some(duration.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `max-age` directive.
+        pub fn max_age(mut self, duration: Duration) -> Self {
+            self.max_age = Some(duration.into());
+            self
+        }
     }
 
-    /// Set the `max-stale` directive.
-    #[must_use]
-    pub fn with_max_stale(mut self, duration: Duration) -> Self {
-        self.max_stale = Some(duration.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `max-stale` directive.
+        pub fn max_stale(mut self, duration: Duration) -> Self {
+            self.max_stale = Some(duration.into());
+            self
+        }
     }
 
-    /// Set the `min-fresh` directive.
-    #[must_use]
-    pub fn with_min_fresh(mut self, duration: Duration) -> Self {
-        self.min_fresh = Some(duration.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `min-fresh` directive.
+        pub fn min_fresh(mut self, duration: Duration) -> Self {
+            self.min_fresh = Some(duration.into());
+            self
+        }
     }
 
-    /// Set the `s-maxage` directive.
-    #[must_use]
-    pub fn with_s_max_age(mut self, duration: Duration) -> Self {
-        self.s_max_age = Some(duration.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `s-maxage` directive.
+        pub fn s_max_age(mut self, duration: Duration) -> Self {
+            self.s_max_age = Some(duration.into());
+            self
+        }
     }
 }
 

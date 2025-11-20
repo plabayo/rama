@@ -82,7 +82,7 @@ async fn main() {
 
     let acceptor_data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData::default())
         .expect("tls acceptor with self signed data")
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("with env key logger")
         .build();
 

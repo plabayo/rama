@@ -190,7 +190,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
             .mitm_tls_service_data
             .clone(),
     )
-    .with_store_client_hello(true)
+    .with_static_store_client_hello(true)
     .into_layer(http_transport_service);
 
     https_service.serve(upgraded).await.expect("infallible");
@@ -219,7 +219,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // such as upstream proxies or other configurations
     let tls_config = TlsConnectorDataBuilder::new()
         .with_alpn_protocols_http_auto()
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("with env keylogger")
         .with_no_cert_verifier()
         .build();
@@ -254,7 +254,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     })
     .context("self signed builder")?
     .with_alpn_protocols_http_auto()
-    .with_env_key_logger()
+    .try_with_env_key_logger()
     .context("with env key logger")?
     .build();
 

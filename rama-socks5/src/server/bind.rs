@@ -125,42 +125,26 @@ impl<A, S> Binder<A, S> {
         }
     }
 
-    /// Define the (network) [`Interface`] to bind to.
-    ///
-    /// By default it will use the client's requested bind address,
-    /// which is in many cases not what you want.
-    pub fn set_bind_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
-        self.bind_interface = Some(interface.into());
-        self
+    generate_set_and_with! {
+        /// Define the (network) [`Interface`] to bind to.
+        ///
+        /// By default it will use the client's requested bind address,
+        /// which is in many cases not what you want.
+        pub fn bind_interface(mut self, interface: impl Into<Interface>) -> Self {
+            self.bind_interface = Some(interface.into());
+            self
+        }
     }
 
-    /// Define the default (network) [`Interface`] to bind to (`0.0.0.0:0`).
-    ///
-    /// By default it will use the client's requested bind address,
-    /// which is in many cases not what you want.
-    pub fn set_default_bind_interface(&mut self) -> &mut Self {
-        self.bind_interface = Some(SocketAddress::default_ipv4(0).into());
-        self
-    }
-
-    /// Define the (network) [`Interface`] to bind to.
-    ///
-    /// By default it will use the client's requested bind address,
-    /// which is in many cases not what you want.
-    #[must_use]
-    pub fn with_bind_interface(mut self, interface: impl Into<Interface>) -> Self {
-        self.bind_interface = Some(interface.into());
-        self
-    }
-
-    /// Define the default (network) [`Interface`] to bind to (`0.0.0.0:0`).
-    ///
-    /// By default it will use the client's requested bind address,
-    /// which is in many cases not what you want.
-    #[must_use]
-    pub fn with_default_bind_interface(mut self) -> Self {
-        self.bind_interface = Some(SocketAddress::default_ipv4(0).into());
-        self
+    generate_set_and_with! {
+        /// Define the default (network) [`Interface`] to bind to (`0.0.0.0:0`).
+        ///
+        /// By default it will use the client's requested bind address,
+        /// which is in many cases not what you want.
+        pub fn default_bind_interface(mut self) -> Self {
+            self.bind_interface = Some(SocketAddress::default_ipv4(0).into());
+            self
+        }
     }
 
     generate_set_and_with! {

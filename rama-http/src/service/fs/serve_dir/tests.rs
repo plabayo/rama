@@ -102,14 +102,14 @@ async fn test_head_request(svc: ServeDir) {
 
 #[tokio::test]
 async fn precompresed_head_request() {
-    let svc = ServeDir::new("../test-files").precompressed_gzip();
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
     test_precompresed_head_request(svc).await;
 }
 
 #[tokio::test]
 async fn precompresed_head_request_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
-    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_precompressed_gzip();
     test_precompresed_head_request(svc).await;
 }
 
@@ -160,14 +160,14 @@ async fn test_with_custom_chunk_size(svc: ServeDir) {
 
 #[tokio::test]
 async fn precompressed_gzip() {
-    let svc = ServeDir::new("../test-files").precompressed_gzip();
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
     test_precompressed_gzip(svc).await;
 }
 
 #[tokio::test]
 async fn precompressed_gzip_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
-    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_precompressed_gzip();
     test_precompressed_gzip(svc).await;
 }
 
@@ -191,14 +191,14 @@ async fn test_precompressed_gzip(svc: ServeDir) {
 
 #[tokio::test]
 async fn precompressed_br() {
-    let svc = ServeDir::new("../test-files").precompressed_br();
+    let svc = ServeDir::new("../test-files").with_precompressed_br();
     test_precompressed_br(svc).await;
 }
 
 #[tokio::test]
 async fn precompressed_br_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
-    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_br();
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_precompressed_br();
     test_precompressed_br(svc).await;
 }
 
@@ -222,14 +222,14 @@ async fn test_precompressed_br(svc: ServeDir) {
 
 #[tokio::test]
 async fn precompressed_deflate() {
-    let svc = ServeDir::new("../test-files").precompressed_deflate();
+    let svc = ServeDir::new("../test-files").with_precompressed_deflate();
     test_precompressed_deflate(svc).await;
 }
 
 #[tokio::test]
 async fn precompressed_deflate_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
-    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_deflate();
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_precompressed_deflate();
     test_precompressed_deflate(svc).await;
 }
 
@@ -253,14 +253,14 @@ async fn test_precompressed_deflate(svc: ServeDir) {
 
 #[tokio::test]
 async fn unsupported_precompression_algorithm_fallbacks_to_uncompressed() {
-    let svc = ServeDir::new("../test-files").precompressed_gzip();
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
     test_unsupported_precompression_algorithm_fallbacks_to_uncompressed(svc).await;
 }
 
 #[tokio::test]
 async fn unsupported_precompression_algorithm_fallbacks_to_uncompressed_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
-    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_precompressed_gzip();
     test_unsupported_precompression_algorithm_fallbacks_to_uncompressed(svc).await;
 }
 
@@ -282,14 +282,14 @@ async fn test_unsupported_precompression_algorithm_fallbacks_to_uncompressed(svc
 
 #[tokio::test]
 async fn only_precompressed_variant_existing() {
-    let svc = ServeDir::new("../test-files").precompressed_gzip();
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
     test_only_precompressed_variant_existing(svc).await;
 }
 
 #[tokio::test]
 async fn only_precompressed_variant_existing_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
-    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_precompressed_gzip();
     test_only_precompressed_variant_existing(svc).await;
 }
 
@@ -322,14 +322,14 @@ async fn test_only_precompressed_variant_existing(svc: ServeDir) {
 
 #[tokio::test]
 async fn missing_precompressed_variant_fallbacks_to_uncompressed() {
-    let svc = ServeDir::new("../test-files").precompressed_gzip();
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
     test_missing_precompressed_variant_fallbacks_to_uncompressed(svc).await;
 }
 
 #[tokio::test]
 async fn missing_precompressed_variant_fallbacks_to_uncompressed_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
-    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_precompressed_gzip();
     test_missing_precompressed_variant_fallbacks_to_uncompressed(svc).await;
 }
 
@@ -352,14 +352,14 @@ async fn test_missing_precompressed_variant_fallbacks_to_uncompressed(svc: Serve
 
 #[tokio::test]
 async fn missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request() {
-    let svc = ServeDir::new("../test-files").precompressed_gzip();
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
     test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request(svc).await;
 }
 
 #[tokio::test]
 async fn missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
-    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_precompressed_gzip();
     test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request(svc).await;
 }
 
@@ -464,14 +464,14 @@ async fn not_found_when_not_a_directory() {
 
 #[tokio::test]
 async fn not_found_precompressed() {
-    let svc = ServeDir::new("../test-files").precompressed_gzip();
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
     test_not_found_precompressed(svc).await;
 }
 
 #[tokio::test]
 async fn not_found_precompressed_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
-    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_precompressed_gzip();
     test_not_found_precompressed(svc).await;
 }
 
@@ -493,8 +493,8 @@ async fn test_not_found_precompressed(svc: ServeDir) {
 #[tokio::test]
 async fn fallbacks_to_different_precompressed_variant_if_not_found_for_head_request() {
     let svc = ServeDir::new("../test-files")
-        .precompressed_gzip()
-        .precompressed_br();
+        .with_precompressed_gzip()
+        .with_precompressed_br();
     test_fallbacks_to_different_precompressed_variant_if_not_found_for_head_request(svc).await;
 }
 
@@ -502,8 +502,8 @@ async fn fallbacks_to_different_precompressed_variant_if_not_found_for_head_requ
 async fn fallbacks_to_different_precompressed_variant_if_not_found_for_head_request_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES)
-        .precompressed_gzip()
-        .precompressed_br();
+        .with_precompressed_gzip()
+        .with_precompressed_br();
     test_fallbacks_to_different_precompressed_variant_if_not_found_for_head_request(svc).await;
 }
 
@@ -528,8 +528,8 @@ async fn test_fallbacks_to_different_precompressed_variant_if_not_found_for_head
 #[tokio::test]
 async fn fallbacks_to_different_precompressed_variant_if_not_found() {
     let svc = ServeDir::new("../test-files")
-        .precompressed_gzip()
-        .precompressed_br();
+        .with_precompressed_gzip()
+        .with_precompressed_br();
     test_fallbacks_to_different_precompressed_variant_if_not_found(svc).await;
 }
 
@@ -537,8 +537,8 @@ async fn fallbacks_to_different_precompressed_variant_if_not_found() {
 async fn fallbacks_to_different_precompressed_variant_if_not_found_embedded() {
     const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES)
-        .precompressed_gzip()
-        .precompressed_br();
+        .with_precompressed_gzip()
+        .with_precompressed_br();
     test_fallbacks_to_different_precompressed_variant_if_not_found(svc).await;
 }
 
@@ -1049,7 +1049,7 @@ async fn calling_fallback_on_not_allowed() {
     }
 
     let svc = ServeDir::new("..")
-        .call_fallback_on_method_not_allowed(true)
+        .with_call_fallback_on_method_not_allowed(true)
         .fallback(service_fn(fallback));
 
     let req = Request::builder()

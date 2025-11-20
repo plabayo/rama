@@ -196,148 +196,61 @@ impl<B, I> UdpRelay<B, I> {
         }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for both north and south direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_bind_north_interface`]: to only set [`Interface`] for the north direction;
-    /// - [`UdpRelay::set_bind_south_interface`]: to only set [`Interface`] for the south direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn set_bind_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
-        let interface = interface.into();
-        self.bind_north_interface = interface.clone();
-        self.bind_south_interface = interface;
-        self
+    generate_set_and_with! {
+        /// Define the (network) [`Interface`] to bind to, for both north and south direction.
+        ///
+        /// By default it binds the udp sockets at `0.0.0.0:0`.
+        pub fn bind_interface(mut self, interface: impl Into<Interface>) -> Self {
+            let interface = interface.into();
+            self.bind_north_interface = interface.clone();
+            self.bind_south_interface = interface;
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for both north and south direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_bind_north_interface`]: to only set [`Interface`] for the north direction;
-    /// - [`UdpRelay::with_bind_south_interface`]: to only set [`Interface`] for the south direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    #[must_use]
-    pub fn with_bind_interface(mut self, interface: impl Into<Interface>) -> Self {
-        let interface = interface.into();
-        self.bind_north_interface = interface.clone();
-        self.bind_south_interface = interface;
-        self
+    generate_set_and_with! {
+        /// Define the (network) [`Interface`] to bind to, for the north direction.
+        ///
+        /// By default it binds the udp sockets at `0.0.0.0:0`.
+        pub fn bind_north_interface(mut self, interface: impl Into<Interface>) -> Self {
+            self.bind_north_interface = interface.into();
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for the north direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_bind_interface`]: to only set [`Interface`] for both the north and south direction;
-    /// - [`UdpRelay::set_bind_south_interface`]: to only set [`Interface`] for the south direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn set_bind_north_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
-        self.bind_north_interface = interface.into();
-        self
+    generate_set_and_with! {
+        /// Define the (network) [`Interface`] to bind to, for the south direction.
+        ///
+        /// By default it binds the udp sockets at `0.0.0.0:0`.
+        pub fn bind_south_interface(mut self, interface: impl Into<Interface>) -> Self {
+            self.bind_south_interface = interface.into();
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for the north direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_bind_interface`]: to only set [`Interface`] for both the north and south direction;
-    /// - [`UdpRelay::with_bind_south_interface`]: to only set [`Interface`] for the south direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    #[must_use]
-    pub fn with_bind_north_interface(mut self, interface: impl Into<Interface>) -> Self {
-        self.bind_north_interface = interface.into();
-        self
+    generate_set_and_with! {
+        /// Set the size of the buffer used to read south traffic.
+        pub fn buffer_size_south(mut self, n: usize) -> Self {
+            self.south_buffer_size = n;
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for the south direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_bind_interface`]: to only set [`Interface`] for both the north and south direction;
-    /// - [`UdpRelay::set_bind_north_interface`]: to only set [`Interface`] for the north direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn set_bind_south_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
-        self.bind_south_interface = interface.into();
-        self
+    generate_set_and_with! {
+        /// Set the size of the buffer used to read north traffic.
+        pub fn buffer_size_north(mut self, n: usize) -> Self {
+            self.north_buffer_size = n;
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for the south direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_bind_interface`]: to only set [`Interface`] for both the north and south direction;
-    /// - [`UdpRelay::with_bind_north_interface`]: to only set [`Interface`] for the north direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    #[must_use]
-    pub fn with_bind_south_interface(mut self, interface: impl Into<Interface>) -> Self {
-        self.bind_south_interface = interface.into();
-        self
-    }
-
-    /// Set the size of the buffer used to read south traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_buffer_size`]: to only set the buffer size for both the north and south direction;
-    /// - [`UdpRelay::set_buffer_size_north`]: to only set the buffer size for the north direction.
-    pub fn set_buffer_size_south(&mut self, n: usize) -> &mut Self {
-        self.south_buffer_size = n;
-        self
-    }
-
-    /// Set the size of the buffer used to read north traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_buffer_size`]: to only set the buffer size for both the north and south direction;
-    /// - [`UdpRelay::set_buffer_size_south`]: to only set the buffer size for the south direction.
-    pub fn set_buffer_size_north(&mut self, n: usize) -> &mut Self {
-        self.north_buffer_size = n;
-        self
-    }
-
-    /// Set the size of the buffer used to read both north and south traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_buffer_size_north`]: to only set the buffer size for the north direction.
-    /// - [`UdpRelay::set_buffer_size_south`]: to only set the buffer size for the south direction.
-    pub fn set_buffer_size(&mut self, n: usize) -> &mut Self {
-        self.north_buffer_size = n;
-        self.south_buffer_size = n;
-        self
-    }
-
-    /// Set the size of the buffer used to read south traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_buffer_size`]: to only set the buffer size for both the north and south direction;
-    /// - [`UdpRelay::with_buffer_size_north`]: to only set the buffer size for the north direction.
-    #[must_use]
-    pub fn with_buffer_size_south(mut self, n: usize) -> Self {
-        self.south_buffer_size = n;
-        self
-    }
-
-    /// Set the size of the buffer used to read north traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_buffer_size`]: to only set the buffer size for both the north and south direction;
-    /// - [`UdpRelay::with_buffer_size_south`]: to only set the buffer size for the south direction.
-    #[must_use]
-    pub fn with_buffer_size_north(mut self, n: usize) -> Self {
-        self.north_buffer_size = n;
-        self
-    }
-
-    /// Set the size of the buffer used to read both north and south traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_buffer_size_north`]: to only set the buffer size for the north direction.
-    /// - [`UdpRelay::with_buffer_size_south`]: to only set the buffer size for the south direction.
-    #[must_use]
-    pub fn with_buffer_size(mut self, n: usize) -> Self {
-        self.north_buffer_size = n;
-        self.south_buffer_size = n;
-        self
+    generate_set_and_with! {
+        /// Set the size of the buffer used to read both north and south traffic.
+        pub fn buffer_size(mut self, n: usize) -> Self {
+            self.north_buffer_size = n;
+            self.south_buffer_size = n;
+            self
+        }
     }
 
     generate_set_and_with! {
@@ -351,49 +264,28 @@ impl<B, I> UdpRelay<B, I> {
 
 #[cfg(feature = "dns")]
 impl<B, I> UdpRelay<B, I> {
-    /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
-    ///
-    /// It will be used to best-effort resolve the domain name,
-    /// in case a domain name is passed to forward to the target server.
-    #[must_use]
-    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-    pub fn with_default_dns_resolver(mut self) -> Self {
-        self.dns_resolver = None;
-        self
+    generate_set_and_with! {
+        /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
+        ///
+        /// It will be used to best-effort resolve the domain name,
+        /// in case a domain name is passed to forward to the target server.
+        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
+        pub fn default_dns_resolver(mut self) -> Self {
+            self.dns_resolver = None;
+            self
+        }
     }
 
-    /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
-    ///
-    /// It will be used to best-effort resolve the domain name,
-    /// in case a domain name is passed to forward to the target server.
-    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-    pub fn set_default_dns_resolver(&mut self) -> &mut Self {
-        self.dns_resolver = None;
-        self
-    }
-
-    /// Attach a [`DnsResolver`] to this [`UdpRelay`].
-    ///
-    /// It will be used to best-effort resolve the domain name,
-    /// in case a domain name is passed to forward to the target server.
-    #[must_use]
-    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-    pub fn with_dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
-    }
-
-    /// Attach a [`DnsResolver`] to this [`UdpRelay`].
-    ///
-    /// It will be used to best-effort resolve the domain name,
-    /// in case a domain name is passed to forward to the target server.
-    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-    pub fn set_dns_resolver(
-        &mut self,
-        resolver: impl DnsResolver<Error = OpaqueError>,
-    ) -> &mut Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Attach a [`DnsResolver`] to this [`UdpRelay`].
+        ///
+        /// It will be used to best-effort resolve the domain name,
+        /// in case a domain name is passed to forward to the target server.
+        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
+        pub fn dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
+            self.dns_resolver = Some(resolver.boxed());
+            self
+        }
     }
 }
 

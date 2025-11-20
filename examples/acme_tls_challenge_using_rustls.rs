@@ -108,7 +108,7 @@ async fn main() {
         .init();
 
     let tls_config = rama::tls::rustls::client::TlsConnectorDataBuilder::new()
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("add env keylogger")
         .with_alpn_protocols_http_auto()
         .with_no_cert_verifier()
@@ -238,7 +238,7 @@ async fn main() {
 
         let acceptor_data = TlsAcceptorDataBuilder::new(cert_chain, private_key)
             .expect("tls acceptor with self signed data")
-            .with_env_key_logger()
+            .try_with_env_key_logger()
             .expect("with env key logger")
             .build();
 

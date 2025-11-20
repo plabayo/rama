@@ -140,7 +140,7 @@ impl DynamicConfigProvider for DynamicConfig {
         let config = TlsAcceptorDataBuilder::new(cert_chain, key_der)
             .unwrap()
             .with_alpn_protocols_http_auto()
-            .with_env_key_logger()
+            .try_with_env_key_logger()
             .expect("with env key logger")
             .into_rustls_config();
 

@@ -74,27 +74,13 @@ impl HttpServer<Http1ConnBuilder> {
         }
     }
 
-    /// Set the guard that can be used by the [`HttpServer`]
-    /// in case it is turned into an http1 listener.
-    #[must_use]
-    pub fn with_guard(mut self, guard: ShutdownGuard) -> Self {
-        self.guard = Some(guard);
-        self
-    }
-
-    /// Maybe set the guard that can be used by the [`HttpServer`]
-    /// in case it is turned into an http1 listener.
-    #[must_use]
-    pub fn maybe_with_guard(mut self, guard: Option<ShutdownGuard>) -> Self {
-        self.guard = guard;
-        self
-    }
-
-    /// Set the guard that can be used by the [`HttpServer`]
-    /// in case it is turned into an http1 listener.
-    pub fn set_guard(&mut self, guard: ShutdownGuard) -> &mut Self {
-        self.guard = Some(guard);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the guard that can be used by the [`HttpServer`]
+        /// in case it is turned into an http1 listener.
+        pub fn guard(mut self, guard: Option<ShutdownGuard>) -> Self {
+            self.guard = guard;
+            self
+        }
     }
 }
 

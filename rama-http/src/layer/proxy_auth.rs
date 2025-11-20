@@ -54,17 +54,12 @@ impl<A, C> ProxyAuthLayer<A, C, ()> {
         }
     }
 
-    /// Allow anonymous requests.
-    pub fn set_allow_anonymous(&mut self, allow_anonymous: bool) -> &mut Self {
-        self.allow_anonymous = allow_anonymous;
-        self
-    }
-
-    /// Allow anonymous requests.
-    #[must_use]
-    pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
-        self.allow_anonymous = allow_anonymous;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Allow anonymous requests.
+        pub fn allow_anonymous(mut self, allow_anonymous: bool) -> Self {
+            self.allow_anonymous = allow_anonymous;
+            self
+        }
     }
 }
 
@@ -128,17 +123,12 @@ impl<A, C, S, L> ProxyAuthService<A, C, S, L> {
         }
     }
 
-    /// Allow anonymous requests.
-    pub fn set_allow_anonymous(&mut self, allow_anonymous: bool) -> &mut Self {
-        self.allow_anonymous = allow_anonymous;
-        self
-    }
-
-    /// Allow anonymous requests.
-    #[must_use]
-    pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
-        self.allow_anonymous = allow_anonymous;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Allow anonymous requests.
+        pub fn allow_anonymous(mut self, allow_anonymous: bool) -> Self {
+            self.allow_anonymous = allow_anonymous;
+            self
+        }
     }
 
     define_inner_service_accessors!();

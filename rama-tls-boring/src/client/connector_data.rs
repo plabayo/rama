@@ -247,11 +247,12 @@ impl TlsConnectorDataBuilder {
         self
     }
 
-    /// Same as [`TlsConnectorDataBuilder::push_base_config`] but consuming self
-    #[must_use]
-    pub fn with_base_config(mut self, config: Arc<Self>) -> Self {
-        self.push_base_config(config);
-        self
+    generate_set_and_with! {
+        /// Add [`ConfigBuilder`] to the start of our base builders
+        pub fn base_config(mut self, config: Arc<Self>) -> Self {
+            self.push_base_config(config);
+            self
+        }
     }
 
     generate_set_and_with!(

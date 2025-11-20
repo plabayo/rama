@@ -44,7 +44,7 @@ impl TlsConnectorData {
     /// the http connections which `rama` supports out of the box.
     pub fn new_http_auto() -> Result<Self, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
-            .with_env_key_logger()?
+            .try_with_env_key_logger()?
             .with_alpn_protocols_http_auto()
             .build())
     }
@@ -53,7 +53,7 @@ impl TlsConnectorData {
     /// on providing http/1.1 connections.
     pub fn new_http_1() -> Result<Self, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
-            .with_env_key_logger()?
+            .try_with_env_key_logger()?
             .with_alpn_protocols(&[ApplicationProtocol::HTTP_11])
             .build())
     }
@@ -62,7 +62,7 @@ impl TlsConnectorData {
     /// on providing h2 connections.
     pub fn new_http_2() -> Result<Self, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
-            .with_env_key_logger()?
+            .try_with_env_key_logger()?
             .with_alpn_protocols(&[ApplicationProtocol::HTTP_2])
             .build())
     }
@@ -125,111 +125,68 @@ impl TlsConnectorDataBuilder {
         })
     }
 
-    /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
-    /// and set it in the current config
-    pub fn set_env_key_logger(&mut self) -> Result<&mut Self, OpaqueError> {
-        if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
-            let key_logger = Arc::new(KeyLogFile::new(path)?);
-            self.client_config.key_log = key_logger;
-        };
-        Ok(self)
+    rama_utils::macros::generate_set_and_with! {
+        /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
+        /// and set it in the current config
+        pub fn env_key_logger(mut self) -> Result<Self, OpaqueError> {
+            if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
+                let key_logger = Arc::new(KeyLogFile::new(path)?);
+                self.client_config.key_log = key_logger;
+            };
+            Ok(self)
+        }
     }
 
-    /// Same as [`Self::set_env_key_logger`] but consuming self
-    pub fn with_env_key_logger(mut self) -> Result<Self, OpaqueError> {
-        self.set_env_key_logger()?;
-        Ok(self)
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`ApplicationProtocol`]s supported in alpn extension
+        pub fn alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
+            self.set_alpn_protocols(protos);
+            self
+        }
     }
 
-    /// Set [`ApplicationProtocol`]s supported in alpn extension
-    pub fn set_alpn_protocols(&mut self, protos: &[ApplicationProtocol]) -> &mut Self {
-        self.client_config.alpn_protocols = protos
-            .iter()
-            .map(|proto| proto.as_bytes().to_vec())
-            .collect();
-
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to most commonly used http protocols:
+        /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
+        pub fn alpn_protocols_http_auto(mut self) -> Self {
+            self.set_alpn_protocols_http_auto();
+            self
+        }
     }
 
-    /// Same as [`Self::set_alpn_protocols`] but consuming self
-    #[must_use]
-    pub fn with_alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
-        self.set_alpn_protocols(protos);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set certificate verifier that will be used to verify certs
+        pub fn cert_verifier(mut self, verifier: Arc<dyn ServerCertVerifier>) -> Self {
+            self.client_config
+                .dangerous()
+                .set_certificate_verifier(verifier);
+            self
+        }
     }
 
-    /// Set alpn protocols to most commonly used http protocols: [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
-    pub fn set_alpn_protocols_http_auto(&mut self) -> &mut Self {
-        self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set certificate verifier to a custom one that will allow all certificates, resulting
+        /// in certificates not being verified.
+        pub fn no_cert_verifier(mut self) -> Self {
+            self.set_cert_verifier(Arc::new(NoServerCertVerifier::default()));
+            self
+        }
     }
 
-    /// Same as [`Self::set_alpn_protocols_http_auto`] but consuming self
-    #[must_use]
-    pub fn with_alpn_protocols_http_auto(mut self) -> Self {
-        self.set_alpn_protocols_http_auto();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set server name for SNI ext
+        pub fn server_name(mut self, server_name: Option<Host>) -> Self {
+            self.server_name = server_name;
+            self
+        }
     }
 
-    /// Set certificate verifier that will be used to verify certs
-    pub fn set_cert_verifier(&mut self, verifier: Arc<dyn ServerCertVerifier>) -> &mut Self {
-        self.client_config
-            .dangerous()
-            .set_certificate_verifier(verifier);
-        self
-    }
-
-    /// Same as [`Self::set_cert_verifier`] but consuming self
-    #[must_use]
-    pub fn with_cert_verifier(mut self, verifier: Arc<dyn ServerCertVerifier>) -> Self {
-        self.set_cert_verifier(verifier);
-        self
-    }
-
-    /// Set certificate verifier to a custom one that will allow all certificates, resulting
-    /// in certificates not being verified.
-    pub fn set_no_cert_verifier(&mut self) -> &mut Self {
-        self.set_cert_verifier(Arc::new(NoServerCertVerifier::default()))
-    }
-
-    /// Same as [`Self::set_no_cert_verifier`] but consuming self
-    #[must_use]
-    pub fn with_no_cert_verifier(mut self) -> Self {
-        self.set_no_cert_verifier();
-        self
-    }
-
-    /// Set servername that will be used for SNI
-    pub fn set_server_name(&mut self, server_name: Host) -> &mut Self {
-        self.server_name = Some(server_name);
-        self
-    }
-
-    /// Same as [`Self::set_server_name`] but consuming self
-    #[must_use]
-    pub fn with_server_name(mut self, server_name: Host) -> Self {
-        self.set_server_name(server_name);
-        self
-    }
-
-    /// Set server_name on this config to the provided option consuming self
-    #[must_use]
-    pub fn maybe_with_server_name(mut self, server_name: Option<Host>) -> Self {
-        self.server_name = server_name;
-        self
-    }
-
-    /// Set if server certificate should be stored in ctx
-    pub fn set_store_server_certificate_chain(&mut self, value: bool) -> &mut Self {
-        self.store_server_certificate_chain = value;
-        self
-    }
-
-    /// Same as [`Self::set_store_server_certificate_chain`] but consuming self
-    #[must_use]
-    pub fn with_store_server_certificate_chain(mut self, value: bool) -> Self {
-        self.set_store_server_certificate_chain(value);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set if server certificate should be stored in ctx
+        pub fn store_server_certificate_chain(mut self, value: bool) -> Self {
+            self.store_server_certificate_chain = value;
+            self
+        }
     }
 
     /// Build [`TlsConnectorData`] from the current config

@@ -151,36 +151,16 @@ impl GrpcErrorsAsFailures {
         }
     }
 
-    /// Change which gRPC codes are considered success.
-    ///
-    /// Defaults to only considering `Ok` as success.
-    ///
-    /// `Ok` will always be considered a success.
-    ///
-    /// # Example
-    ///
-    /// Servers might not want to consider `Invalid Argument` or `Not Found` as failures since
-    /// thats likely the clients fault:
-    ///
-    /// ```rust
-    /// use rama_http::layer::classify::{GrpcErrorsAsFailures, GrpcCode};
-    ///
-    /// let classifier = GrpcErrorsAsFailures::new()
-    ///     .with_success(GrpcCode::InvalidArgument)
-    ///     .with_success(GrpcCode::NotFound);
-    /// ```
-    #[must_use]
-    pub fn with_success(mut self, code: GrpcCode) -> Self {
-        self.success_codes |= code.into_bitmask();
-        self
-    }
-
-    /// Change which gRPC codes are considered success.
-    ///
-    /// Same as [`Self::with_success`] but without consuming `self`.
-    pub fn set_success(&mut self, code: GrpcCode) -> &mut Self {
-        self.success_codes |= code.into_bitmask();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Change which gRPC codes are considered success.
+        ///
+        /// Defaults to only considering `Ok` as success.
+        ///
+        /// `Ok` will always be considered a success.
+        pub fn success(mut self, code: GrpcCode) -> Self {
+            self.success_codes |= code.into_bitmask();
+            self
+        }
     }
 
     /// Returns a [`MakeClassifier`](super::MakeClassifier) that produces `GrpcErrorsAsFailures`.
