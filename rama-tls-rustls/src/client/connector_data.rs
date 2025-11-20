@@ -140,7 +140,10 @@ impl TlsConnectorDataBuilder {
     rama_utils::macros::generate_set_and_with! {
         /// Set [`ApplicationProtocol`]s supported in alpn extension
         pub fn alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
-            self.set_alpn_protocols(protos);
+            self.client_config.alpn_protocols = protos
+                .iter()
+                .map(|proto| proto.as_bytes().to_vec())
+                .collect();
             self
         }
     }
@@ -149,7 +152,7 @@ impl TlsConnectorDataBuilder {
         /// Set alpn protocols to most commonly used http protocols:
         /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
         pub fn alpn_protocols_http_auto(mut self) -> Self {
-            self.set_alpn_protocols_http_auto();
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
             self
         }
     }

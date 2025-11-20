@@ -19,17 +19,12 @@ impl TlsAcceptorLayer {
         }
     }
 
-    /// Set that the client hello should be stored
-    #[must_use]
-    pub const fn with_store_client_hello(mut self, store: bool) -> Self {
-        self.store_client_hello = store;
-        self
-    }
-
-    /// Set that the client hello should be stored
-    pub fn set_store_client_hello(&mut self, store: bool) -> &mut Self {
-        self.store_client_hello = store;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set that the client hello should be stored
+        pub fn store_client_hello(mut self, store: bool) -> Self {
+            self.store_client_hello = store;
+            self
+        }
     }
 }
 

@@ -190,7 +190,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
             .mitm_tls_service_data
             .clone(),
     )
-    .with_static_store_client_hello(true)
+    .with_store_client_hello(true)
     .into_layer(http_transport_service);
 
     https_service.serve(upgraded).await.expect("infallible");

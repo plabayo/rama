@@ -23,7 +23,7 @@ impl TlsAcceptorLayer {
 
     rama_utils::macros::generate_set_and_with! {
         /// Set that the client hello should be stored
-        pub const fn store_client_hello(mut self, store: bool) -> Self {
+        pub fn store_client_hello(mut self, store: bool) -> Self {
             self.store_client_hello = store;
             self
         }
