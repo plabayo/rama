@@ -479,7 +479,7 @@ mod tests {
                             .parse()
                             .unwrap(),
                     ));
-                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("127.0.1.2:80").unwrap(),
                     )));
                     ext
@@ -505,7 +505,7 @@ mod tests {
                 {
                     let mut ext = Extensions::new();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443").unwrap(),
                     )));
                     ext
@@ -552,7 +552,7 @@ mod tests {
                 {
                     let mut ext = Extensions::new();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
                     )));
                     ext
@@ -576,7 +576,7 @@ mod tests {
                             .parse()
                             .unwrap(),
                     ));
-                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("127.0.1.2:80").unwrap(),
                     )));
                     ext
@@ -640,7 +640,7 @@ mod tests {
                         .parse()
                         .unwrap(),
                 ));
-                ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                     NodeId::try_from("127.0.0.1:80").unwrap(),
                 )));
                 ext
@@ -687,7 +687,7 @@ mod tests {
                         .parse()
                         .unwrap(),
                 ));
-                ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                     NodeId::try_from("127.0.0.1:80").unwrap(),
                 )));
                 ext
@@ -734,7 +734,7 @@ mod tests {
             {
                 let mut ext = Extensions::new();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
-                ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                     NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
                 )));
                 ext
@@ -786,7 +786,7 @@ mod tests {
             {
                 let mut ext = Extensions::new();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
-                ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                     NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
                 )));
                 ext
@@ -842,7 +842,7 @@ mod tests {
                 {
                     let mut ext = Extensions::new();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
                     )));
                     ext
@@ -866,7 +866,7 @@ mod tests {
                             .parse()
                             .unwrap(),
                     ));
-                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("127.0.1.2:80").unwrap(),
                     )));
                     ext

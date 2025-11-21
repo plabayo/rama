@@ -329,7 +329,7 @@ macro_rules! __generate_set_and_with {
         $crate::macros::paste! {
             $(#[$outer_doc])*
             #[must_use]
-            $vis const fn [<with_static_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
+            $vis const fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
                 $($body)*
             }
         }

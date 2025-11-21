@@ -58,37 +58,22 @@ impl DefaultOnRequest {
         Self::default()
     }
 
-    /// Set the [`Level`] used for [tracing events].
-    ///
-    /// Please note that while this will set the level for the tracing events
-    /// themselves, it might cause them to lack expected information, like
-    /// request method or path. You can address this using
-    /// [`DefaultMakeSpan::level`].
-    ///
-    /// Defaults to [`Level::DEBUG`].
-    ///
-    /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
-    #[must_use]
-    pub fn level(mut self, level: Level) -> Self {
-        self.level = level;
-        self
-    }
-
-    /// Set the [`Level`] used for [tracing events].
-    ///
-    /// Please note that while this will set the level for the tracing events
-    /// themselves, it might cause them to lack expected information, like
-    /// request method or path. You can address this using
-    /// [`DefaultMakeSpan::level`].
-    ///
-    /// Defaults to [`Level::DEBUG`].
-    ///
-    /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
-    pub fn set_level(&mut self, level: Level) -> &mut Self {
-        self.level = level;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Level`] used for [tracing events].
+        ///
+        /// Please note that while this will set the level for the tracing events
+        /// themselves, it might cause them to lack expected information, like
+        /// request method or path. You can address this using
+        /// [`DefaultMakeSpan::level`].
+        ///
+        /// Defaults to [`Level::DEBUG`].
+        ///
+        /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
+        /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
+        pub fn level(mut self, level: Level) -> Self {
+            self.level = level;
+            self
+        }
     }
 }
 

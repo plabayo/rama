@@ -102,73 +102,50 @@ impl<S, P> UserAgentEmulateService<S, P> {
         }
     }
 
-    /// When no user agent profile was found it will
-    /// fail the request unless optional is true. In case of
-    /// the latter the service will do nothing.
-    #[must_use]
-    pub fn optional(mut self, optional: bool) -> Self {
-        self.optional = optional;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// When no user agent profile was found it will
+        /// fail the request unless optional is true. In case of
+        /// the latter the service will do nothing.
+        pub fn is_optional(mut self, optional: bool) -> Self {
+            self.optional = optional;
+            self
+        }
     }
 
-    /// See [`Self::optional`].
-    pub fn set_optional(&mut self, optional: bool) -> &mut Self {
-        self.optional = optional;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// If true, the service will try to auto-detect the user agent from the request,
+        /// but only in case that info is not yet found in the context.
+        pub fn try_auto_detect_user_agent(mut self, try_auto_detect_user_agent: bool) -> Self {
+            self.try_auto_detect_user_agent = try_auto_detect_user_agent;
+            self
+        }
     }
 
-    /// If true, the service will try to auto-detect the user agent from the request,
-    /// but only in case that info is not yet found in the context.
-    #[must_use]
-    pub fn try_auto_detect_user_agent(mut self, try_auto_detect_user_agent: bool) -> Self {
-        self.try_auto_detect_user_agent = try_auto_detect_user_agent;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define a header that if present is to contain a CSV header name list,
+        /// that allows you to define the desired header order for the (extra) headers
+        /// found in the input (http) request.
+        ///
+        /// Extra meaning any headers not considered a base header and already defined
+        /// by the (selected) User Agent Profile.
+        ///
+        /// This can be useful because your http client might not respect the header casing
+        /// and/or order of the headers taken together. Using this metadata allows you to
+        /// communicate this data through anyway. If however your http client does respect
+        /// casing and order, or you don't care about some of it, you might not need it.
+        pub fn input_header_order(mut self, name: Option<HeaderName>) -> Self {
+            self.input_header_order = name;
+            self
+        }
     }
 
-    /// See [`Self::try_auto_detect_user_agent`].
-    pub fn set_try_auto_detect_user_agent(
-        &mut self,
-        try_auto_detect_user_agent: bool,
-    ) -> &mut Self {
-        self.try_auto_detect_user_agent = try_auto_detect_user_agent;
-        self
-    }
-
-    /// Define a header that if present is to contain a CSV header name list,
-    /// that allows you to define the desired header order for the (extra) headers
-    /// found in the input (http) request.
-    ///
-    /// Extra meaning any headers not considered a base header and already defined
-    /// by the (selected) User Agent Profile.
-    ///
-    /// This can be useful because your http client might not respect the header casing
-    /// and/or order of the headers taken together. Using this metadata allows you to
-    /// communicate this data through anyway. If however your http client does respect
-    /// casing and order, or you don't care about some of it, you might not need it.
-    #[must_use]
-    pub fn input_header_order(mut self, name: HeaderName) -> Self {
-        self.input_header_order = Some(name);
-        self
-    }
-
-    /// See [`Self::input_header_order`].
-    pub fn set_input_header_order(&mut self, name: HeaderName) -> &mut Self {
-        self.input_header_order = Some(name);
-        self
-    }
-
-    /// Choose what to do in case no profile could be selected
-    /// using the regular pre-conditions as specified by the provider.
-    #[must_use]
-    pub fn select_fallback(mut self, fb: UserAgentSelectFallback) -> Self {
-        self.select_fallback = Some(fb);
-        self
-    }
-
-    /// See [`Self::select_fallback`].
-    pub fn set_select_fallback(&mut self, fb: UserAgentSelectFallback) -> &mut Self {
-        self.select_fallback = Some(fb);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Choose what to do in case no profile could be selected
+        /// using the regular pre-conditions as specified by the provider.
+        pub fn select_fallback(mut self, fb: Option<UserAgentSelectFallback>) -> Self {
+            self.select_fallback = fb;
+            self
+        }
     }
 }
 

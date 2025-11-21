@@ -82,11 +82,11 @@ async fn main() {
                         "sending body chunk"
                     )
                 })
-                .make_span_with(DefaultMakeSpan::new().include_headers(true))
+                .make_span_with(DefaultMakeSpan::new().with_include_headers(true))
                 .on_response(
                     DefaultOnResponse::new()
-                        .include_headers(true)
-                        .latency_unit(LatencyUnit::Micros),
+                        .with_include_headers(true)
+                        .with_latency_unit(LatencyUnit::Micros),
                 ),
             SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
             MapResponseLayer::new(IntoResponse::into_response),

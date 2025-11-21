@@ -39,7 +39,7 @@ struct ViaElement {
 
 impl From<ViaElement> for ForwardedElement {
     fn from(via: ViaElement) -> Self {
-        let mut el = Self::forwarded_by(via.node_id);
+        let mut el = Self::new_forwarded_by(via.node_id);
         el.set_forwarded_version(via.version);
         if let Some(protocol) = via.protocol {
             el.set_forwarded_proto(protocol);
@@ -101,9 +101,9 @@ impl super::ForwardHeader for Via {
         let vec: Vec<_> = input
             .into_iter()
             .filter_map(|el| {
-                let node_id = el.ref_forwarded_by()?.clone();
-                let version = el.ref_forwarded_version()?;
-                let protocol = el.ref_forwarded_proto();
+                let node_id = el.forwarded_by()?.clone();
+                let version = el.forwarded_version()?;
+                let protocol = el.forwarded_proto();
                 Some(ViaElement {
                     protocol,
                     version,

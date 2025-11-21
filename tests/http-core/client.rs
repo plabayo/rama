@@ -261,7 +261,7 @@ macro_rules! test {
 
         let res = async move {
             // Wrapper around hyper::client::conn::Builder with set_host field to mimic
-            // hyper::client::Builder.
+            // rama_http_core::client::Builder.
             struct Builder {
                 inner: rama::http::core::client::conn::http1::Builder,
                 set_host: bool,
@@ -277,17 +277,21 @@ macro_rules! test {
                     }
                 }
 
-                #[allow(unused)]
-                fn set_host(&mut self, val: bool) -> &mut Self {
-                    self.set_host = val;
-                    self
+                rama_utils::macros::generate_set_and_with! {
+                    #[allow(unused)]
+                    fn host(mut self, val: bool) -> Self {
+                        self.set_host = val;
+                        self
+                    }
                 }
 
-                #[allow(unused)]
-                fn http09_responses(&mut self, val: bool) -> &mut Self {
-                    self.http09_responses = val;
-                    self.inner.http09_responses(val);
-                    self
+                rama_utils::macros::generate_set_and_with! {
+                    #[allow(unused)]
+                    fn http09_responses(mut self, val: bool) -> Self {
+                        self.http09_responses = val;
+                        self.inner.set_http09_responses(val);
+                        self
+                    }
                 }
             }
 
@@ -1353,7 +1357,7 @@ test! {
 
     client:
         options: {
-            title_case_headers: true,
+            set_title_case_headers: true,
         },
         request: {
             method: GET,
@@ -1437,7 +1441,7 @@ test! {
 
     client:
         options: {
-            http09_responses: true,
+            set_http09_responses: true,
         },
         request: {
             method: GET,
@@ -1467,7 +1471,7 @@ test! {
 
     client:
         options: {
-            allow_obsolete_multiline_headers_in_responses: true,
+            set_allow_obsolete_multiline_headers_in_responses: true,
         },
         request: {
             method: GET,
@@ -2089,7 +2093,7 @@ mod conn {
         let tcp = ServiceInput::new(tcp);
 
         let (mut client, conn) = conn::http1::Builder::new()
-            .http09_responses(true)
+            .with_http09_responses(true)
             .handshake(tcp)
             .await
             .unwrap();
@@ -2415,10 +2419,10 @@ mod conn {
 
         let io = ServiceInput::new(client_io);
         let (_client, conn) = conn::http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             // enable while idle since we aren't sending requests
-            .keep_alive_while_idle(true)
+            .with_keep_alive_while_idle(true)
             .handshake::<_, rama::http::core::body::Incoming>(io)
             .await
             .expect("http handshake");
@@ -2441,8 +2445,8 @@ mod conn {
 
         let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             .handshake::<_, rama::http::core::body::Incoming>(io)
             .await
             .expect("http handshake");
@@ -2470,8 +2474,8 @@ mod conn {
 
         let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2524,8 +2528,8 @@ mod conn {
 
         let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             .handshake(io)
             .await
             .expect("http handshake");

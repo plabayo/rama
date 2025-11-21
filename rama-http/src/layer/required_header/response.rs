@@ -30,49 +30,25 @@ impl AddRequiredResponseHeadersLayer {
         }
     }
 
-    /// Set whether to overwrite the existing headers.
-    /// If set to `true`, the headers will be overwritten.
-    ///
-    /// Default is `false`.
-    #[must_use]
-    pub const fn overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite = overwrite;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether to overwrite the existing headers.
+        /// If set to `true`, the headers will be overwritten.
+        ///
+        /// Default is `false`.
+        pub fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
+            self
+        }
     }
 
-    /// Set whether to overwrite the existing headers.
-    /// If set to `true`, the headers will be overwritten.
-    ///
-    /// Default is `false`.
-    pub fn set_overwrite(&mut self, overwrite: bool) -> &mut Self {
-        self.overwrite = overwrite;
-        self
-    }
-
-    /// Set a custom [`SERVER`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    #[must_use]
-    pub fn server_header_value(mut self, value: HeaderValue) -> Self {
-        self.server_header_value = Some(value);
-        self
-    }
-
-    /// Maybe set a custom [`SERVER`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    #[must_use]
-    pub fn maybe_server_header_value(mut self, value: Option<HeaderValue>) -> Self {
-        self.server_header_value = value;
-        self
-    }
-
-    /// Set a custom [`SERVER`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    pub fn set_server_header_value(&mut self, value: HeaderValue) -> &mut Self {
-        self.server_header_value = Some(value);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the custom [`SERVER`] header value.
+        ///
+        /// By default a versioned `rama` value is used.
+        pub fn server_header_value(mut self, value: Option<HeaderValue>) -> Self {
+            self.server_header_value = value;
+            self
+        }
     }
 }
 
@@ -114,49 +90,25 @@ impl<S> AddRequiredResponseHeaders<S> {
         }
     }
 
-    /// Set whether to overwrite the existing headers.
-    /// If set to `true`, the headers will be overwritten.
-    ///
-    /// Default is `false`.
-    #[must_use]
-    pub const fn overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite = overwrite;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether to overwrite the existing headers.
+        /// If set to `true`, the headers will be overwritten.
+        ///
+        /// Default is `false`.
+        pub fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
+            self
+        }
     }
 
-    /// Set whether to overwrite the existing headers.
-    /// If set to `true`, the headers will be overwritten.
-    ///
-    /// Default is `false`.
-    pub fn set_overwrite(&mut self, overwrite: bool) -> &mut Self {
-        self.overwrite = overwrite;
-        self
-    }
-
-    /// Set a custom [`SERVER`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    #[must_use]
-    pub fn server_header_value(mut self, value: HeaderValue) -> Self {
-        self.server_header_value = Some(value);
-        self
-    }
-
-    /// Maybe set a custom [`SERVER`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    #[must_use]
-    pub fn maybe_server_header_value(mut self, value: Option<HeaderValue>) -> Self {
-        self.server_header_value = value;
-        self
-    }
-
-    /// Set a custom [`SERVER`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    pub fn set_server_header_value(&mut self, value: HeaderValue) -> &mut Self {
-        self.server_header_value = Some(value);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the custom [`SERVER`] header value.
+        ///
+        /// By default a versioned `rama` value is used.
+        pub fn server_header_value(mut self, value: Option<HeaderValue>) -> Self {
+            self.server_header_value = value;
+            self
+        }
     }
 
     define_inner_service_accessors!();
@@ -242,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn add_required_response_headers_custom_server() {
         let svc = AddRequiredResponseHeadersLayer::default()
-            .server_header_value(HeaderValue::from_static("foo"))
+            .with_server_header_value(HeaderValue::from_static("foo"))
             .into_layer(service_fn(async |req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
@@ -262,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn add_required_response_headers_overwrite() {
         let svc = AddRequiredResponseHeadersLayer::new()
-            .overwrite(true)
+            .with_overwrite(true)
             .into_layer(service_fn(async |req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
@@ -288,8 +240,8 @@ mod tests {
     #[tokio::test]
     async fn add_required_response_headers_overwrite_custom_ua() {
         let svc = AddRequiredResponseHeadersLayer::new()
-            .overwrite(true)
-            .server_header_value(HeaderValue::from_static("foo"))
+            .with_overwrite(true)
+            .with_server_header_value(HeaderValue::from_static("foo"))
             .into_layer(service_fn(async |req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));

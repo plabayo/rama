@@ -55,7 +55,7 @@ impl AkamaiH2 {
         for frame in early_frames.iter() {
             match frame {
                 EarlyFrame::Settings(s) => {
-                    if !s.is_ack() {
+                    if !s.flags.is_ack() {
                         let order = s
                             .config
                             .setting_order

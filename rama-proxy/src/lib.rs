@@ -120,7 +120,7 @@
 //!     .unwrap();
 //!
 //!     let service =
-//!         ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default)
+//!         ProxyDBLayer::new(Arc::new(db)).with_filter_mode(ProxyFilterMode::Default)
 //!         .into_layer(service_fn(async  |req: Request| {
 //!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
@@ -194,8 +194,8 @@
 //!     };
 //!
 //!     let service = ProxyDBLayer::new(Arc::new(proxy))
-//!         .filter_mode(ProxyFilterMode::Default)
-//!         .username_formatter(|_proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+//!         .with_filter_mode(ProxyFilterMode::Default)
+//!         .with_username_formatter(|_proxy: &Proxy, filter: &ProxyFilter, username: &str| {
 //!             use std::fmt::Write;
 //!
 //!             let mut output = String::new();

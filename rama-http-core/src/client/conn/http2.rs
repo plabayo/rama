@@ -252,250 +252,277 @@ impl Builder {
         }
     }
 
-    pub fn apply_setting_config(&mut self, config: &SettingsConfig) -> &mut Self {
-        self.header_table_size(config.header_table_size)
-            .max_concurrent_streams(config.max_concurrent_streams)
-            .initial_stream_window_size(config.initial_window_size)
-            .max_frame_size(config.max_frame_size);
+    rama_utils::macros::generate_set_and_with! {
+        pub fn setting_config(mut self, config: &SettingsConfig) -> Self {
+            self.set_header_table_size(config.header_table_size)
+                .set_max_concurrent_streams(config.max_concurrent_streams)
+                .set_initial_stream_window_size(config.initial_window_size)
+                .set_max_frame_size(config.max_frame_size);
 
-        if let Some(value) = config.enable_push {
-            self.enable_push(value != 0);
+            if let Some(value) = config.enable_push {
+                self.set_enable_push(value != 0);
+            }
+
+            if let Some(value) = config.max_header_list_size {
+                self.set_max_header_list_size(value);
+            }
+
+            if let Some(value) = config.enable_connect_protocol {
+                self.set_enable_connect_protocol(value);
+            }
+
+            if let Some(value) = config.no_rfc7540_priorities {
+                self.set_no_rfc7540_priorities(value);
+            }
+
+            if let Some(order) = config.setting_order.clone() {
+                self.set_setting_order(order);
+            }
+
+            self
         }
-
-        if let Some(value) = config.max_header_list_size {
-            self.max_header_list_size(value);
-        }
-
-        if let Some(value) = config.enable_connect_protocol {
-            self.enable_connect_protocol(value);
-        }
-
-        if let Some(value) = config.no_rfc7540_priorities {
-            self.no_rfc7540_priorities(value);
-        }
-
-        if let Some(order) = config.setting_order.clone() {
-            self.setting_order(order);
-        }
-
-        self
     }
 
-    /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
-    /// stream-level flow control.
-    ///
-    /// Passing `None` will do nothing.
-    ///
-    /// If not set, rama_http_core will use a default.
-    ///
-    /// [spec]: https://httpwg.org/specs/rfc9113.html#SETTINGS_INITIAL_WINDOW_SIZE
-    pub fn initial_stream_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
-        if let Some(sz) = sz.into() {
-            self.h2_builder.adaptive_window = false;
-            self.h2_builder.initial_stream_window_size = sz;
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
+        /// stream-level flow control.
+        ///
+        /// Passing `None` will do nothing.
+        ///
+        /// If not set, rama_http_core will use a default.
+        ///
+        /// [spec]: https://httpwg.org/specs/rfc9113.html#SETTINGS_INITIAL_WINDOW_SIZE
+        pub fn initial_stream_window_size(mut self, sz: impl Into<Option<u32>>) -> Self {
+            if let Some(sz) = sz.into() {
+                self.h2_builder.adaptive_window = false;
+                self.h2_builder.initial_stream_window_size = sz;
+            }
+            self
         }
-        self
     }
 
-    /// Sets the max connection-level flow control for HTTP2
-    ///
-    /// Passing `None` will do nothing.
-    ///
-    /// If not set, rama_http_core will use a default.
-    pub fn initial_connection_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
-        if let Some(sz) = sz.into() {
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the max connection-level flow control for HTTP2
+        ///
+        /// If not set, rama_http_core will use a default.
+        pub fn initial_connection_window_size(mut self, sz: u32) -> Self {
             self.h2_builder.adaptive_window = false;
             self.h2_builder.initial_conn_window_size = sz;
+            self
         }
-        self
     }
 
-    /// Sets the initial maximum of locally initiated (send) streams.
-    ///
-    /// This value will be overwritten by the value included in the initial
-    /// SETTINGS frame received from the peer as part of a [connection preface].
-    ///
-    /// Passing `None` will do nothing.
-    ///
-    /// If not set, rama_http_core will use a default.
-    ///
-    /// [connection preface]: https://httpwg.org/specs/rfc9113.html#preface
-    pub fn initial_max_send_streams(&mut self, initial: impl Into<Option<usize>>) -> &mut Self {
-        if let Some(initial) = initial.into() {
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the initial maximum of locally initiated (send) streams.
+        ///
+        /// This value will be overwritten by the value included in the initial
+        /// SETTINGS frame received from the peer as part of a [connection preface].
+        ///
+        /// If not set, rama_http_core will use a default.
+        ///
+        /// [connection preface]: https://httpwg.org/specs/rfc9113.html#preface
+        pub fn initial_max_send_streams(mut self, initial: usize) -> Self {
             self.h2_builder.initial_max_send_streams = initial;
+            self
         }
-        self
     }
 
-    /// Sets whether to use an adaptive flow control.
-    ///
-    /// Enabling this will override the limits set in
-    /// `initial_stream_window_size` and
-    /// `initial_connection_window_size`.
-    pub fn adaptive_window(&mut self, enabled: bool) -> &mut Self {
-        use proto::h2::SPEC_WINDOW_SIZE;
-
-        self.h2_builder.adaptive_window = enabled;
-        if enabled {
-            self.h2_builder.initial_conn_window_size = SPEC_WINDOW_SIZE;
-            self.h2_builder.initial_stream_window_size = SPEC_WINDOW_SIZE;
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to use an adaptive flow control.
+        ///
+        /// Enabling this will override the limits set in
+        /// `initial_stream_window_size` and
+        /// `initial_connection_window_size`.
+        pub fn adaptive_window(mut self, enabled: bool) -> Self {
+            self.h2_builder.adaptive_window = enabled;
+            if enabled {
+                self.h2_builder.initial_conn_window_size = proto::h2::SPEC_WINDOW_SIZE;
+                self.h2_builder.initial_stream_window_size = proto::h2::SPEC_WINDOW_SIZE;
+            }
+            self
         }
-        self
     }
 
-    /// Sets the maximum frame size to use for HTTP2.
-    ///
-    /// Default is currently 16KB, but can change.
-    pub fn max_frame_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
-        self.h2_builder.max_frame_size = sz.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the maximum frame size to use for HTTP2.
+        ///
+        /// Default is currently 16KB, but can change.
+        pub fn max_frame_size(mut self, sz: impl Into<Option<u32>>) -> Self {
+            self.h2_builder.max_frame_size = sz.into();
+            self
+        }
     }
 
-    /// Sets the max size of received header frames.
-    ///
-    /// Default is currently 16KB, but can change.
-    pub fn max_header_list_size(&mut self, max: u32) -> &mut Self {
-        self.h2_builder.max_header_list_size = max;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the max size of received header frames.
+        ///
+        /// Default is currently 16KB, but can change.
+        pub fn max_header_list_size(mut self, max: u32) -> Self {
+            self.h2_builder.max_header_list_size = max;
+            self
+        }
     }
 
-    /// Sets the header table size.
-    ///
-    /// This setting informs the peer of the maximum size of the header compression
-    /// table used to encode header blocks, in octets. The encoder may select any value
-    /// equal to or less than the header table size specified by the sender.
-    ///
-    /// The default value of crate `h2` is 4,096.
-    pub fn header_table_size(&mut self, size: impl Into<Option<u32>>) -> &mut Self {
-        self.h2_builder.header_table_size = size.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the header table size.
+        ///
+        /// This setting informs the peer of the maximum size of the header compression
+        /// table used to encode header blocks, in octets. The encoder may select any value
+        /// equal to or less than the header table size specified by the sender.
+        ///
+        /// The default value of crate `h2` is 4,096.
+        pub fn header_table_size(mut self, size: impl Into<Option<u32>>) -> Self {
+            self.h2_builder.header_table_size = size.into();
+            self
+        }
     }
 
-    /// Sets the maximum number of concurrent streams.
-    ///
-    /// The maximum concurrent streams setting only controls the maximum number
-    /// of streams that can be initiated by the remote peer. In other words,
-    /// when this setting is set to 100, this does not limit the number of
-    /// concurrent streams that can be created by the caller.
-    ///
-    /// It is recommended that this value be no smaller than 100, so as to not
-    /// unnecessarily limit parallelism. However, any value is legal, including
-    /// 0. If `max` is set to 0, then the remote will not be permitted to
-    /// initiate streams.
-    ///
-    /// Note that streams in the reserved state, i.e., push promises that have
-    /// been reserved but the stream has not started, do not count against this
-    /// setting.
-    ///
-    /// Also note that if the remote *does* exceed the value set here, it is not
-    /// a protocol level error. Instead, the `h2` library will immediately reset
-    /// the stream.
-    ///
-    /// See [Section 5.1.2] in the HTTP/2 spec for more details.
-    ///
-    /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
-    pub fn max_concurrent_streams(&mut self, max: impl Into<Option<u32>>) -> &mut Self {
-        self.h2_builder.max_concurrent_streams = max.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the maximum number of concurrent streams.
+        ///
+        /// The maximum concurrent streams setting only controls the maximum number
+        /// of streams that can be initiated by the remote peer. In other words,
+        /// when this setting is set to 100, this does not limit the number of
+        /// concurrent streams that can be created by the caller.
+        ///
+        /// It is recommended that this value be no smaller than 100, so as to not
+        /// unnecessarily limit parallelism. However, any value is legal, including
+        /// 0. If `max` is set to 0, then the remote will not be permitted to
+        /// initiate streams.
+        ///
+        /// Note that streams in the reserved state, i.e., push promises that have
+        /// been reserved but the stream has not started, do not count against this
+        /// setting.
+        ///
+        /// Also note that if the remote *does* exceed the value set here, it is not
+        /// a protocol level error. Instead, the `h2` library will immediately reset
+        /// the stream.
+        ///
+        /// See [Section 5.1.2] in the HTTP/2 spec for more details.
+        ///
+        /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
+        pub fn max_concurrent_streams(mut self, max: impl Into<Option<u32>>) -> Self {
+            self.h2_builder.max_concurrent_streams = max.into();
+            self
+        }
     }
 
-    /// Sets an interval for HTTP2 Ping frames should be sent to keep a
-    /// connection alive.
-    ///
-    /// Pass `None` to disable HTTP2 keep-alive.
-    ///
-    /// Default is currently disabled.
-    pub fn keep_alive_interval(&mut self, interval: impl Into<Option<Duration>>) -> &mut Self {
-        self.h2_builder.keep_alive_interval = interval.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets an interval for HTTP2 Ping frames should be sent to keep a
+        /// connection alive.
+        ///
+        /// Pass `None` to disable HTTP2 keep-alive.
+        ///
+        /// Default is currently disabled.
+        pub fn keep_alive_interval(mut self, interval: impl Into<Option<Duration>>) -> Self {
+            self.h2_builder.keep_alive_interval = interval.into();
+            self
+        }
     }
 
-    /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
-    ///
-    /// If the ping is not acknowledged within the timeout, the connection will
-    /// be closed. Does nothing if `keep_alive_interval` is disabled.
-    ///
-    /// Default is 20 seconds.
-    pub fn keep_alive_timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.h2_builder.keep_alive_timeout = timeout;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
+        ///
+        /// If the ping is not acknowledged within the timeout, the connection will
+        /// be closed. Does nothing if `keep_alive_interval` is disabled.
+        ///
+        /// Default is 20 seconds.
+        pub fn keep_alive_timeout(mut self, timeout: Duration) -> Self {
+            self.h2_builder.keep_alive_timeout = timeout;
+            self
+        }
     }
 
-    /// Sets whether HTTP2 keep-alive should apply while the connection is idle.
-    ///
-    /// If disabled, keep-alive pings are only sent while there are open
-    /// request/responses streams. If enabled, pings are also sent when no
-    /// streams are active. Does nothing if `keep_alive_interval` is
-    /// disabled.
-    ///
-    /// Default is `false`.
-    pub fn keep_alive_while_idle(&mut self, enabled: bool) -> &mut Self {
-        self.h2_builder.keep_alive_while_idle = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether HTTP2 keep-alive should apply while the connection is idle.
+        ///
+        /// If disabled, keep-alive pings are only sent while there are open
+        /// request/responses streams. If enabled, pings are also sent when no
+        /// streams are active. Does nothing if `keep_alive_interval` is
+        /// disabled.
+        ///
+        /// Default is `false`.
+        pub fn keep_alive_while_idle(mut self, enabled: bool) -> Self {
+            self.h2_builder.keep_alive_while_idle = enabled;
+            self
+        }
     }
 
-    /// Sets the maximum number of HTTP2 concurrent locally reset streams.
-    ///
-    /// See the documentation of [`h2::client::Builder::max_concurrent_reset_streams`] for more
-    /// details.
-    ///
-    /// The default value is determined by the `h2` crate.
-    ///
-    /// [`h2::client::Builder::max_concurrent_reset_streams`]: https://docs.rs/h2/client/struct.Builder.html#method.max_concurrent_reset_streams
-    pub fn max_concurrent_reset_streams(&mut self, max: usize) -> &mut Self {
-        self.h2_builder.max_concurrent_reset_streams = Some(max);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the maximum number of HTTP2 concurrent locally reset streams.
+        ///
+        /// See the documentation of [`h2::client::Builder::max_concurrent_reset_streams`] for more
+        /// details.
+        ///
+        /// The default value is determined by the `h2` crate.
+        ///
+        /// [`h2::client::Builder::max_concurrent_reset_streams`]: https://docs.rs/h2/client/struct.Builder.html#method.max_concurrent_reset_streams
+        pub fn max_concurrent_reset_streams(mut self, max: usize) -> Self {
+            self.h2_builder.max_concurrent_reset_streams = Some(max);
+            self
+        }
     }
 
-    /// Set the maximum write buffer size for each HTTP/2 stream.
-    ///
-    /// Default is currently 1MB, but may change.
-    ///
-    /// # Panics
-    ///
-    /// The value must be no larger than `u32::MAX`.
-    pub fn max_send_buf_size(&mut self, max: usize) -> &mut Self {
-        assert!(max <= u32::MAX as usize);
-        self.h2_builder.max_send_buffer_size = max;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum write buffer size for each HTTP/2 stream.
+        ///
+        /// Default is currently 1MB, but may change.
+        pub fn max_send_buf_size(mut self, max: u32) -> Self {
+            self.h2_builder.max_send_buffer_size = max;
+            self
+        }
     }
 
-    /// Configures the maximum number of pending reset streams allowed before a GOAWAY will be sent.
-    ///
-    /// This will default to the default value set by the `h2` module. For now this is `20`.
-    pub fn max_pending_accept_reset_streams(&mut self, max: impl Into<Option<usize>>) -> &mut Self {
-        self.h2_builder.max_pending_accept_reset_streams = max.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Configures the maximum number of pending reset streams allowed before a GOAWAY will be sent.
+        ///
+        /// This will default to the default value set by the `h2` module. For now this is `20`.
+        pub fn max_pending_accept_reset_streams(mut self, max: impl Into<Option<usize>>) -> Self {
+            self.h2_builder.max_pending_accept_reset_streams = max.into();
+            self
+        }
     }
 
-    pub fn enable_push(&mut self, enable: bool) -> &mut Self {
-        self.h2_builder.enable_push = enable;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn enable_push(mut self, enable: bool) -> Self {
+            self.h2_builder.enable_push = enable;
+            self
+        }
     }
 
-    pub fn enable_connect_protocol(&mut self, value: u32) -> &mut Self {
-        self.h2_builder.enable_connect_protocol = Some(value);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn enable_connect_protocol(mut self, value: u32) -> Self {
+            self.h2_builder.enable_connect_protocol = Some(value);
+            self
+        }
     }
 
-    pub fn no_rfc7540_priorities(&mut self, value: u32) -> &mut Self {
-        self.h2_builder.no_rfc7540_priorities = Some(value);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn no_rfc7540_priorities(mut self, value: u32) -> Self {
+            self.h2_builder.no_rfc7540_priorities = Some(value);
+            self
+        }
     }
 
-    pub fn setting_order(&mut self, order: SettingOrder) -> &mut Self {
-        self.h2_builder.setting_order = Some(order);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn setting_order(mut self, order: SettingOrder) -> Self {
+            self.h2_builder.setting_order = Some(order);
+            self
+        }
     }
 
-    pub fn headers_pseudo_order(&mut self, order: PseudoHeaderOrder) -> &mut Self {
-        self.headers_pseudo_order = Some(order);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn headers_pseudo_order(mut self, order: PseudoHeaderOrder) -> Self {
+            self.headers_pseudo_order = Some(order);
+            self
+        }
     }
 
-    pub fn early_frames(&mut self, frames: Vec<EarlyFrame>) -> &mut Self {
-        self.early_frames = Some(frames);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn early_frames(mut self, frames: Vec<EarlyFrame>) -> Self {
+            self.early_frames = Some(frames);
+            self
+        }
     }
 
     /// Constructs a connection with the configured options and IO.
@@ -518,10 +545,10 @@ impl Builder {
 
             let mut client_builder = proto::h2::client::new_builder(&self.h2_builder);
             if let Some(order) = self.headers_pseudo_order.clone() {
-                client_builder.headers_pseudo_order(order);
+                client_builder.set_headers_pseudo_order(order);
             }
             if let Some(frames) = self.early_frames.clone() {
-                client_builder.early_frames(frames);
+                client_builder.set_early_frames(frames);
             }
 
             let (tx, rx) = dispatch::channel();

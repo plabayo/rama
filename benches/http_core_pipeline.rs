@@ -48,7 +48,7 @@ fn hello_world_16(b: divan::Bencher) {
                     let stream = ServiceInput::new(stream);
 
                     http1::Builder::new()
-                        .pipeline_flush(true)
+                        .with_pipeline_flush(true)
                         .serve_connection(
                             stream,
                             rama::http::core::service::RamaHttpService::new(service_fn(

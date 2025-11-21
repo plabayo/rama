@@ -236,7 +236,7 @@ async fn reset_streams_dont_grow_memory_continuously() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .max_pending_accept_reset_streams(MAX)
+            .with_max_pending_accept_reset_streams(MAX)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -279,7 +279,7 @@ async fn go_away_with_pending_accepting() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .max_pending_accept_reset_streams(1)
+            .with_max_pending_accept_reset_streams(1)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -328,7 +328,7 @@ async fn pending_accept_reset_streams_decrement_too() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .max_pending_accept_reset_streams(MAX)
+            .with_max_pending_accept_reset_streams(MAX)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -398,7 +398,7 @@ async fn configure_max_frame_size() {
 
     let h2 = async move {
         let (mut client, h2) = client::Builder::new()
-            .max_frame_size(16_384 * 2)
+            .with_max_frame_size(16_384 * 2)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -555,7 +555,7 @@ async fn recv_next_stream_id_updated_by_malformed_headers() {
     let srv = async move {
         let mut srv = server::Builder::new()
             // forget the bad stream immediately
-            .max_concurrent_reset_streams(0)
+            .with_max_concurrent_reset_streams(0)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -593,7 +593,8 @@ async fn skipped_stream_ids_are_implicitly_closed() {
 
     let h2 = async move {
         let (mut client, mut h2) = client::Builder::new()
-            .initial_stream_id(5)
+            .try_with_initial_stream_id(5)
+            .unwrap()
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -728,7 +729,7 @@ async fn rst_stream_expires() {
 
     let client = async move {
         let (mut client, conn) = client::Builder::new()
-            .reset_stream_duration(Duration::from_millis(10))
+            .with_reset_stream_duration(Duration::from_millis(10))
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -789,7 +790,7 @@ async fn rst_stream_max() {
 
     let client = async move {
         let (mut client, conn) = client::Builder::new()
-            .max_concurrent_reset_streams(1)
+            .with_max_concurrent_reset_streams(1)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -1162,7 +1163,8 @@ async fn srv_window_update_on_lower_stream_id() {
 
     let client = async move {
         let (mut client, mut h2) = client::Builder::new()
-            .initial_stream_id(7)
+            .try_with_initial_stream_id(7)
+            .unwrap()
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
@@ -1256,7 +1258,9 @@ async fn explicit_reset_with_max_concurrent_stream() {
 
     let mock = async move {
         let settings = srv
-            .assert_client_handshake_with_settings(frames::settings().max_concurrent_streams(1))
+            .assert_client_handshake_with_settings(
+                frames::settings().with_max_concurrent_streams(1),
+            )
             .await;
         assert_default_settings!(settings);
 
@@ -1324,7 +1328,9 @@ async fn implicit_cancel_with_max_concurrent_stream() {
 
     let mock = async move {
         let settings = srv
-            .assert_client_handshake_with_settings(frames::settings().max_concurrent_streams(1))
+            .assert_client_handshake_with_settings(
+                frames::settings().with_max_concurrent_streams(1),
+            )
             .await;
         assert_default_settings!(settings);
 

@@ -34,7 +34,7 @@ use crate::service::HttpService;
 const DEFAULT_CONN_WINDOW: u32 = 1024 * 1024; // 1mb
 const DEFAULT_STREAM_WINDOW: u32 = 1024 * 1024; // 1mb
 const DEFAULT_MAX_FRAME_SIZE: u32 = 1024 * 16; // 16kb
-const DEFAULT_MAX_SEND_BUF_SIZE: usize = 1024 * 400; // 400kb
+const DEFAULT_MAX_SEND_BUF_SIZE: u32 = 1024 * 400; // 400kb
 const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: u32 = 1024 * 16; // 16kb
 const DEFAULT_MAX_LOCAL_ERROR_RESET_STREAMS: usize = 1024;
 
@@ -50,7 +50,7 @@ pub(crate) struct Config {
     pub(crate) max_local_error_reset_streams: Option<usize>,
     pub(crate) keep_alive_interval: Option<Duration>,
     pub(crate) keep_alive_timeout: Duration,
-    pub(crate) max_send_buffer_size: usize,
+    pub(crate) max_send_buffer_size: u32,
     pub(crate) max_header_list_size: u32,
     pub(crate) date_header: bool,
 }
@@ -112,30 +112,31 @@ where
     S: HttpService<IncomingBody>,
 {
     pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Self {
-        let mut builder = crate::h2::server::Builder::default();
-        builder
-            .initial_window_size(config.initial_stream_window_size)
-            .initial_connection_window_size(config.initial_conn_window_size)
-            .max_frame_size(config.max_frame_size)
-            .max_header_list_size(config.max_header_list_size)
-            .max_local_error_reset_streams(config.max_local_error_reset_streams)
-            .max_send_buffer_size(config.max_send_buffer_size);
+        let mut builder = crate::h2::server::Builder::default()
+            .with_initial_window_size(config.initial_stream_window_size)
+            .with_initial_connection_window_size(config.initial_conn_window_size)
+            .with_max_frame_size(config.max_frame_size)
+            .with_max_header_list_size(config.max_header_list_size)
+            .maybe_with_max_local_error_reset_streams(config.max_local_error_reset_streams)
+            .with_max_send_buffer_size(config.max_send_buffer_size);
+
         if let Some(max) = config.max_concurrent_streams {
-            builder.max_concurrent_streams(max);
+            builder.set_max_concurrent_streams(max);
         }
+
         if let Some(max) = config.max_pending_accept_reset_streams {
-            builder.max_pending_accept_reset_streams(max);
+            builder.set_max_pending_accept_reset_streams(max);
         }
+
         if config.enable_connect_protocol {
-            builder.enable_connect_protocol();
+            builder.set_enable_connect_protocol();
         }
+
         let handshake = builder.handshake(io);
 
-        let bdp = if config.adaptive_window {
-            Some(config.initial_stream_window_size)
-        } else {
-            None
-        };
+        let bdp = config
+            .adaptive_window
+            .then_some(config.initial_stream_window_size);
 
         let ping_config = ping::Config {
             bdp_initial_window: bdp,
@@ -326,8 +327,16 @@ where
         if let Some((_, ref mut estimator)) = self.ping {
             match estimator.poll(cx) {
                 Poll::Ready(ping::Ponged::SizeUpdate(wnd)) => {
-                    self.conn.set_target_window_size(wnd);
-                    let _ = self.conn.set_initial_window_size(wnd);
+                    if let Err(err) = self.conn.try_set_target_window_size(wnd) {
+                        let reason = err.reason().unwrap_or(crate::h2::Reason::INTERNAL_ERROR);
+                        debug!("target window size failed to update: {err}; reason = {reason}");
+                        self.conn.abrupt_shutdown(reason);
+                    }
+                    if let Err(err) = self.conn.try_set_initial_window_size(wnd) {
+                        let reason = err.reason().unwrap_or(crate::h2::Reason::INTERNAL_ERROR);
+                        trace!("initial window size failed to update: {err}; reason = {reason}");
+                        // this may fail for legit reasons...so we only log it
+                    }
                 }
                 Poll::Ready(ping::Ponged::KeepAliveTimedOut) => {
                     debug!("keep-alive timed out, closing connection");

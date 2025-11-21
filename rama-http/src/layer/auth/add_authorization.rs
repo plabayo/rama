@@ -85,46 +85,28 @@ impl AddAuthorizationLayer {
         }
     }
 
-    /// Mark the header as [sensitive].
-    ///
-    /// This can for example be used to hide the header value from logs.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    #[must_use]
-    pub fn as_sensitive(mut self, sensitive: bool) -> Self {
-        if let Some(value) = &mut self.value {
-            value.set_sensitive(sensitive);
+    rama_utils::macros::generate_set_and_with! {
+        /// Mark the header as [sensitive].
+        ///
+        /// This can for example be used to hide the header value from logs.
+        ///
+        /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
+        pub fn sensitive(mut self, sensitive: bool) -> Self {
+            if let Some(value) = &mut self.value {
+                value.set_sensitive(sensitive);
+            }
+            self
         }
-        self
     }
 
-    /// Mark the header as [sensitive].
-    ///
-    /// This can for example be used to hide the header value from logs.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    pub fn set_as_sensitive(&mut self, sensitive: bool) -> &mut Self {
-        if let Some(value) = &mut self.value {
-            value.set_sensitive(sensitive);
+    rama_utils::macros::generate_set_and_with! {
+        /// Preserve the existing `Authorization` header if it exists.
+        ///
+        /// This can be useful if you want to use different authorization headers for different requests.
+        pub fn if_not_present(mut self, value: bool) -> Self {
+            self.if_not_present = value;
+            self
         }
-        self
-    }
-
-    /// Preserve the existing `Authorization` header if it exists.
-    ///
-    /// This can be useful if you want to use different authorization headers for different requests.
-    #[must_use]
-    pub fn if_not_present(mut self, value: bool) -> Self {
-        self.if_not_present = value;
-        self
-    }
-
-    /// Preserve the existing `Authorization` header if it exists.
-    ///
-    /// This can be useful if you want to use different authorization headers for different requests.
-    pub fn set_if_not_present(&mut self, value: bool) -> &mut Self {
-        self.if_not_present = value;
-        self
     }
 }
 
@@ -179,46 +161,28 @@ impl<S> AddAuthorization<S> {
 
     define_inner_service_accessors!();
 
-    /// Mark the header as [sensitive].
-    ///
-    /// This can for example be used to hide the header value from logs.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    #[must_use]
-    pub fn as_sensitive(mut self, sensitive: bool) -> Self {
-        if let Some(value) = &mut self.value {
-            value.set_sensitive(sensitive);
+    rama_utils::macros::generate_set_and_with! {
+        /// Mark the header as [sensitive].
+        ///
+        /// This can for example be used to hide the header value from logs.
+        ///
+        /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
+        pub fn sensitive(mut self, sensitive: bool) -> Self {
+            if let Some(value) = &mut self.value {
+                value.set_sensitive(sensitive);
+            }
+            self
         }
-        self
     }
 
-    /// Mark the header as [sensitive].
-    ///
-    /// This can for example be used to hide the header value from logs.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    pub fn set_as_sensitive(&mut self, sensitive: bool) -> &mut Self {
-        if let Some(value) = &mut self.value {
-            value.set_sensitive(sensitive);
+    rama_utils::macros::generate_set_and_with! {
+        /// Preserve the existing `Authorization` header if it exists.
+        ///
+        /// This can be useful if you want to use different authorization headers for different requests.
+        pub fn if_not_present(mut self, value: bool) -> Self {
+            self.if_not_present = value;
+            self
         }
-        self
-    }
-
-    /// Preserve the existing `Authorization` header if it exists.
-    ///
-    /// This can be useful if you want to use different authorization headers for different requests.
-    #[must_use]
-    pub fn if_not_present(mut self, value: bool) -> Self {
-        self.if_not_present = value;
-        self
-    }
-
-    /// Preserve the existing `Authorization` header if it exists.
-    ///
-    /// This can be useful if you want to use different authorization headers for different requests.
-    pub fn set_if_not_present(&mut self, value: bool) -> &mut Self {
-        self.if_not_present = value;
-        self
     }
 }
 
@@ -320,7 +284,7 @@ mod tests {
             }),
         );
 
-        let client = AddAuthorization::new(svc, Bearer::new_static("foo")).as_sensitive(true);
+        let client = AddAuthorization::new(svc, Bearer::new_static("foo")).with_sensitive(true);
 
         let res = client.serve(Request::new(Body::empty())).await.unwrap();
 

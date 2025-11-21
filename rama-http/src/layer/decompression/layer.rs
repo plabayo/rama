@@ -31,55 +31,35 @@ impl DecompressionLayer {
         Default::default()
     }
 
-    /// Sets whether to request the gzip encoding.
-    #[must_use]
-    pub fn gzip(mut self, enable: bool) -> Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to request the gzip encoding.
+        pub fn gzip(mut self, enable: bool) -> Self {
+            self.accept.set_gzip(enable);
+            self
+        }
     }
 
-    /// Sets whether to request the gzip encoding.
-    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to request the Deflate encoding.
+        pub fn deflate(mut self, enable: bool) -> Self {
+            self.accept.set_deflate(enable);
+            self
+        }
     }
 
-    /// Sets whether to request the Deflate encoding.
-    #[must_use]
-    pub fn deflate(mut self, enable: bool) -> Self {
-        self.accept.set_deflate(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to request the Brotli encoding.
+        pub fn br(mut self, enable: bool) -> Self {
+            self.accept.set_br(enable);
+            self
+        }
     }
 
-    /// Sets whether to request the Deflate encoding.
-    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_deflate(enable);
-        self
-    }
-
-    /// Sets whether to request the Brotli encoding.
-    #[must_use]
-    pub fn br(mut self, enable: bool) -> Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to request the Brotli encoding.
-    pub fn set_br(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to request the Zstd encoding.
-    #[must_use]
-    pub fn zstd(mut self, enable: bool) -> Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets whether to request the Zstd encoding.
-    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_zstd(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to request the Zstd encoding.
+        pub fn zstd(mut self, enable: bool) -> Self {
+            self.accept.set_zstd(enable);
+            self
+        }
     }
 }

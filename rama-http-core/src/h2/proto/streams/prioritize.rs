@@ -54,7 +54,7 @@ pub(super) struct Prioritize {
     in_flight_data_frame: InFlightData,
 
     /// The maximum amount of bytes a stream should buffer.
-    max_buffer_size: usize,
+    max_buffer_size: u32,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -103,7 +103,7 @@ impl Prioritize {
         }
     }
 
-    pub(crate) fn max_buffer_size(&self) -> usize {
+    pub(crate) fn max_buffer_size(&self) -> u32 {
         self.max_buffer_size
     }
 

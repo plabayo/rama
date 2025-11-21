@@ -31,7 +31,7 @@ mod tests {
     #[tokio::test]
     async fn unaccepted_content_encoding_returns_unsupported_media_type() {
         let req = request_gzip();
-        let svc = RequestDecompression::new(service_fn(should_not_be_called)).gzip(false);
+        let svc = RequestDecompression::new(service_fn(should_not_be_called)).with_gzip(false);
         let res = svc.serve(req).await.unwrap();
         assert_eq!(StatusCode::UNSUPPORTED_MEDIA_TYPE, res.status());
     }
@@ -40,8 +40,8 @@ mod tests {
     async fn pass_through_unsupported_encoding_when_enabled() {
         let req = request_gzip();
         let svc = RequestDecompression::new(service_fn(assert_request_is_passed_through))
-            .pass_through_unaccepted(true)
-            .gzip(false);
+            .with_pass_through_unaccepted(true)
+            .with_gzip(false);
         let _ = svc.serve(req).await.unwrap();
     }
 

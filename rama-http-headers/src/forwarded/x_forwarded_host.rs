@@ -95,7 +95,7 @@ impl super::ForwardHeader for XForwardedHost {
         I: IntoIterator<Item = &'a ForwardedElement>,
     {
         let el = input.into_iter().next()?;
-        let host = el.ref_forwarded_host().cloned()?;
+        let host = el.forwarded_host().cloned()?;
         Some(Self(host))
     }
 }
@@ -108,7 +108,7 @@ impl Iterator for XForwardedHostIterator {
     type Item = ForwardedElement;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.take().map(ForwardedElement::forwarded_host)
+        self.0.take().map(ForwardedElement::new_forwarded_host)
     }
 }
 

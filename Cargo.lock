@@ -1226,6 +1226,7 @@ dependencies = [
  "rama-core",
  "rama-http-core",
  "rama-http-types",
+ "rama-utils",
  "tokio",
  "tokio-test",
  "tracing-subscriber",

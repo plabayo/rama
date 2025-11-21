@@ -224,7 +224,7 @@ impl Handle {
         let f = assert_settings!(frame);
 
         // Is ACK
-        assert!(f.is_ack());
+        assert!(f.flags.is_ack());
 
         settings
     }
@@ -258,7 +258,7 @@ impl Handle {
         let f = assert_settings!(frame.unwrap().unwrap());
 
         // Is ACK
-        assert!(f.is_ack());
+        assert!(f.flags.is_ack());
 
         settings
     }

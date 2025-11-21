@@ -109,7 +109,8 @@ async fn request_stream_id_overflows() {
 
     let h2 = async move {
         let (mut client, mut h2) = client::Builder::new()
-            .initial_stream_id(u32::MAX >> 1)
+            .try_with_initial_stream_id(u32::MAX >> 1)
+            .unwrap()
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
@@ -162,7 +163,7 @@ async fn client_builder_max_concurrent_streams() {
     let (io, mut srv) = mock::new();
 
     let mut settings = frame::Settings::default();
-    settings.set_max_concurrent_streams(Some(1));
+    settings.config.max_concurrent_streams = Some(1);
 
     let srv = async move {
         let rcvd_settings = srv.assert_client_handshake().await;
@@ -178,7 +179,7 @@ async fn client_builder_max_concurrent_streams() {
     };
 
     let mut builder = client::Builder::new();
-    builder.max_concurrent_streams(1);
+    builder.set_max_concurrent_streams(1);
 
     let h2 = async move {
         let (mut client, mut h2) = builder.handshake::<_, Bytes>(io).await.unwrap();
@@ -205,7 +206,7 @@ async fn request_over_max_concurrent_streams_errors() {
             .assert_client_handshake_with_settings(
                 frames::settings()
                     // super tiny server
-                    .max_concurrent_streams(1),
+                    .with_max_concurrent_streams(1),
             )
             .await;
         assert_default_settings!(settings);
@@ -316,7 +317,7 @@ async fn recv_decrement_max_concurrent_streams_when_requests_queued() {
         srv.ping_pong([0; 8]).await;
 
         // limit this server later in life
-        srv.send_frame(frames::settings().max_concurrent_streams(1))
+        srv.send_frame(frames::settings().with_max_concurrent_streams(1))
             .await;
         srv.recv_frame(frames::settings_ack()).await;
         srv.recv_frame(
@@ -392,7 +393,7 @@ async fn send_request_poll_ready_when_connection_error() {
             .assert_client_handshake_with_settings(
                 frames::settings()
                     // super tiny server
-                    .max_concurrent_streams(1),
+                    .with_max_concurrent_streams(1),
             )
             .await;
         assert_default_settings!(settings);
@@ -848,7 +849,7 @@ async fn recv_too_big_headers() {
 
     let srv = async move {
         let settings = srv.assert_client_handshake().await;
-        assert_frame_eq(settings, frames::settings().max_header_list_size(10));
+        assert_frame_eq(settings, frames::settings().with_max_header_list_size(10));
         srv.recv_frame(
             frames::headers(1)
                 .request("GET", "https://http2.akamai.com/")
@@ -871,7 +872,7 @@ async fn recv_too_big_headers() {
 
     let client = async move {
         let (mut client, mut conn) = client::Builder::new()
-            .max_header_list_size(10)
+            .with_max_header_list_size(10)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -1067,7 +1068,7 @@ async fn notify_on_send_capacity() {
     let (tx, rx) = oneshot::channel();
 
     let mut settings = frame::Settings::default();
-    settings.set_max_concurrent_streams(Some(1));
+    settings.config.max_concurrent_streams = Some(1);
 
     let srv = async move {
         let settings = srv.assert_client_handshake_with_settings(settings).await;
@@ -1189,7 +1190,7 @@ async fn drop_pending_open() {
     let (drop_tx, drop_rx) = oneshot::channel();
 
     let mut settings = frame::Settings::default();
-    settings.set_max_concurrent_streams(Some(2));
+    settings.config.max_concurrent_streams = Some(2);
 
     let srv = async move {
         let settings = srv.assert_client_handshake_with_settings(settings).await;
@@ -1222,7 +1223,7 @@ async fn drop_pending_open() {
 
     let client = async move {
         let (mut client, conn) = client::Builder::new()
-            .max_concurrent_reset_streams(0)
+            .with_max_concurrent_reset_streams(0)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -1554,7 +1555,9 @@ async fn extended_connect_protocol_enabled_during_handshake() {
 
     let srv = async move {
         let settings = srv
-            .assert_client_handshake_with_settings(frames::settings().enable_connect_protocol(1))
+            .assert_client_handshake_with_settings(
+                frames::settings().with_enable_connect_protocol(1),
+            )
             .await;
         assert_default_settings!(settings);
 
@@ -1591,7 +1594,7 @@ async fn invalid_connect_protocol_enabled_setting() {
 
     let srv = async move {
         // Send a settings frame
-        srv.send(frames::settings().enable_connect_protocol(2).into())
+        srv.send(frames::settings().with_enable_connect_protocol(2).into())
             .await
             .unwrap();
         srv.read_preface().await.unwrap();
@@ -1634,7 +1637,9 @@ async fn extended_connect_request() {
 
     let srv = async move {
         let settings = srv
-            .assert_client_handshake_with_settings(frames::settings().enable_connect_protocol(1))
+            .assert_client_handshake_with_settings(
+                frames::settings().with_enable_connect_protocol(1),
+            )
             .await;
         assert_default_settings!(settings);
 
@@ -1763,7 +1768,7 @@ async fn client_builder_header_table_size() {
     let (io, mut srv) = mock::new();
     let mut settings = frame::Settings::default();
 
-    settings.set_header_table_size(Some(10000));
+    settings.config.header_table_size = Some(10000);
 
     let srv = async move {
         let recv_settings = srv.assert_client_handshake().await;
@@ -1779,7 +1784,7 @@ async fn client_builder_header_table_size() {
     };
 
     let mut builder = client::Builder::new();
-    builder.header_table_size(10000);
+    builder.set_header_table_size(10000);
 
     let h2 = async move {
         let (mut client, mut h2) = builder.handshake::<_, Bytes>(io).await.unwrap();
@@ -1805,7 +1810,7 @@ async fn configured_max_concurrent_send_streams_and_update_it_based_on_empty_set
     let h2 = async move {
         let (_client, h2) = client::Builder::new()
             // Configure the initial value to 2024
-            .initial_max_send_streams(2024)
+            .with_initial_max_send_streams(2024)
             .handshake::<_, bytes::Bytes>(io)
             .await
             .unwrap();
@@ -1830,14 +1835,14 @@ async fn configured_max_concurrent_send_streams_and_update_it_based_on_non_empty
 
     let srv = async move {
         // Send SETTINGS frame with MAX_CONCURRENT_STREAMS set to 42
-        srv.send_frame(frames::settings().max_concurrent_streams(42))
+        srv.send_frame(frames::settings().with_max_concurrent_streams(42))
             .await;
     };
 
     let h2 = async move {
         let (_client, h2) = client::Builder::new()
             // Configure the initial value to 2024
-            .initial_max_send_streams(2024)
+            .with_initial_max_send_streams(2024)
             .handshake::<_, bytes::Bytes>(io)
             .await
             .unwrap();
@@ -1862,7 +1867,7 @@ async fn receive_settings_frame_twice_with_second_one_empty() {
 
     let srv = async move {
         // Send the initial SETTINGS frame with MAX_CONCURRENT_STREAMS set to 42
-        srv.send_frame(frames::settings().max_concurrent_streams(42))
+        srv.send_frame(frames::settings().with_max_concurrent_streams(42))
             .await;
 
         // Handle the client's connection preface
@@ -1884,7 +1889,7 @@ async fn receive_settings_frame_twice_with_second_one_empty() {
 
         // Should receive the ack for the server's initial SETTINGS frame
         let frame = assert_settings!(srv.next().await.unwrap().unwrap());
-        assert!(frame.is_ack());
+        assert!(frame.flags.is_ack());
 
         // Send another SETTINGS frame with no MAX_CONCURRENT_STREAMS
         // This should not update the max_concurrent_send_streams value that
@@ -1913,7 +1918,7 @@ async fn receive_settings_frame_twice_with_second_one_non_empty() {
 
     let srv = async move {
         // Send the initial SETTINGS frame with MAX_CONCURRENT_STREAMS set to 42
-        srv.send_frame(frames::settings().max_concurrent_streams(42))
+        srv.send_frame(frames::settings().with_max_concurrent_streams(42))
             .await;
 
         // Handle the client's connection preface
@@ -1935,12 +1940,12 @@ async fn receive_settings_frame_twice_with_second_one_non_empty() {
 
         // Should receive the ack for the server's initial SETTINGS frame
         let frame = assert_settings!(srv.next().await.unwrap().unwrap());
-        assert!(frame.is_ack());
+        assert!(frame.flags.is_ack());
 
         // Send another SETTINGS frame with no MAX_CONCURRENT_STREAMS
         // This should not update the max_concurrent_send_streams value that
         // the client manages.
-        srv.send_frame(frames::settings().max_concurrent_streams(2024))
+        srv.send_frame(frames::settings().with_max_concurrent_streams(2024))
             .await;
     };
 

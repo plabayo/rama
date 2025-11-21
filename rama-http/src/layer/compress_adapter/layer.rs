@@ -30,17 +30,12 @@ impl CompressAdaptLayer {
         Self::default()
     }
 
-    /// Sets the compression quality.
-    #[must_use]
-    pub fn quality(mut self, quality: CompressionLevel) -> Self {
-        self.quality = quality;
-        self
-    }
-
-    /// Sets the compression quality.
-    pub fn set_quality(&mut self, quality: CompressionLevel) -> &mut Self {
-        self.quality = quality;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the compression quality.
+        pub fn quality(mut self, quality: CompressionLevel) -> Self {
+            self.quality = quality;
+            self
+        }
     }
 }
 
@@ -104,9 +99,9 @@ mod tests {
         let service = (
             CompressAdaptLayer::default(),
             CompressionLayer::new()
-                .quality(CompressionLevel::Best)
-                .br(false)
-                .gzip(false),
+                .with_quality(CompressionLevel::Best)
+                .with_br(false)
+                .with_gzip(false),
         )
             .into_layer(service_fn(handle));
 
@@ -134,9 +129,9 @@ mod tests {
                 HeaderValue::from_static("deflate"),
             ),
             CompressionLayer::new()
-                .quality(CompressionLevel::Best)
-                .br(false)
-                .gzip(false),
+                .with_quality(CompressionLevel::Best)
+                .with_br(false)
+                .with_gzip(false),
         )
             .into_layer(service_fn(handle));
 
@@ -166,9 +161,9 @@ mod tests {
                 HeaderValue::from_static("gzip, br"),
             ),
             CompressionLayer::new()
-                .quality(CompressionLevel::Best)
-                .br(false)
-                .gzip(false),
+                .with_quality(CompressionLevel::Best)
+                .with_br(false)
+                .with_gzip(false),
         )
             .into_layer(service_fn(handle));
 
@@ -195,8 +190,8 @@ mod tests {
             CompressAdaptLayer::default(),
             SetResponseHeaderLayer::overriding(ACCEPT_ENCODING, HeaderValue::from_static("gzip")),
             CompressionLayer::new()
-                .quality(CompressionLevel::Best)
-                .br(false),
+                .with_quality(CompressionLevel::Best)
+                .with_br(false),
         )
             .into_layer(service_fn(handle));
 
@@ -222,8 +217,8 @@ mod tests {
             CompressAdaptLayer::default(),
             SetResponseHeaderLayer::overriding(ACCEPT_ENCODING, HeaderValue::from_static("gzip")),
             CompressionLayer::new()
-                .quality(CompressionLevel::Best)
-                .br(false),
+                .with_quality(CompressionLevel::Best)
+                .with_br(false),
         )
             .into_layer(service_fn(handle));
 

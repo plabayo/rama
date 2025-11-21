@@ -371,7 +371,7 @@ mod tests {
             .unwrap();
 
         req.extensions_mut()
-            .insert(Forwarded::new(ForwardedElement::forwarded_for(
+            .insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                 NodeId::try_from("127.0.0.1:61234").unwrap(),
             )));
 

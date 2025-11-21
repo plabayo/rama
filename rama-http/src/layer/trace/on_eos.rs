@@ -65,44 +65,27 @@ impl DefaultOnEos {
         Self::default()
     }
 
-    /// Set the [`Level`] used for [tracing events].
-    ///
-    /// Defaults to [`Level::DEBUG`].
-    ///
-    /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`Level::DEBUG`]: https://docs.rs/tracing/latest/tracing/struct.Level.html#associatedconstant.DEBUG
-    #[must_use]
-    pub fn level(mut self, level: Level) -> Self {
-        self.level = level;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Level`] used for [tracing events].
+        ///
+        /// Defaults to [`Level::DEBUG`].
+        ///
+        /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
+        /// [`Level::DEBUG`]: https://docs.rs/tracing/latest/tracing/struct.Level.html#associatedconstant.DEBUG
+        pub fn level(mut self, level: Level) -> Self {
+            self.level = level;
+            self
+        }
     }
 
-    /// Set the [`Level`] used for [tracing events].
-    ///
-    /// Defaults to [`Level::DEBUG`].
-    ///
-    /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`Level::DEBUG`]: https://docs.rs/tracing/latest/tracing/struct.Level.html#associatedconstant.DEBUG
-    pub fn set_level(&mut self, level: Level) -> &mut Self {
-        self.level = level;
-        self
-    }
-
-    /// Set the [`LatencyUnit`] latencies will be reported in.
-    ///
-    /// Defaults to [`LatencyUnit::Millis`].
-    #[must_use]
-    pub fn latency_unit(mut self, latency_unit: LatencyUnit) -> Self {
-        self.latency_unit = latency_unit;
-        self
-    }
-
-    /// Set the [`LatencyUnit`] latencies will be reported in.
-    ///
-    /// Defaults to [`LatencyUnit::Millis`].
-    pub fn set_latency_unit(&mut self, latency_unit: LatencyUnit) -> &mut Self {
-        self.latency_unit = latency_unit;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`LatencyUnit`] latencies will be reported in.
+        ///
+        /// Defaults to [`LatencyUnit::Millis`].
+        pub fn latency_unit(mut self, latency_unit: LatencyUnit) -> Self {
+            self.latency_unit = latency_unit;
+            self
+        }
     }
 }
 

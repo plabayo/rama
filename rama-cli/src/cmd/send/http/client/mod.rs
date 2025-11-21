@@ -70,8 +70,8 @@ pub(super) async fn new(
         cfg.emulate.then(|| {
             (
                 UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::embedded()))
-                    .try_auto_detect_user_agent(true)
-                    .select_fallback(UserAgentSelectFallback::Random),
+                    .with_try_auto_detect_user_agent(true)
+                    .with_select_fallback(UserAgentSelectFallback::Random),
                 EmulateTlsProfileLayer::new(),
             )
         }),
@@ -93,7 +93,7 @@ pub(super) async fn new(
                         .context("prompt password from terminal")?;
                     basic.set_password(password);
                 }
-                Ok::<_, OpaqueError>(AddAuthorizationLayer::new(basic).as_sensitive(true))
+                Ok::<_, OpaqueError>(AddAuthorizationLayer::new(basic).with_sensitive(true))
             })
             .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),

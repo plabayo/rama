@@ -520,11 +520,11 @@ impl Recv {
         settings: &frame::Settings,
         store: &mut Store,
     ) -> Result<(), proto::Error> {
-        if let Some(val) = settings.is_extended_connect_protocol_enabled() {
+        if let Some(val) = settings.config.enable_connect_protocol.map(|v| v != 0) {
             self.is_extended_connect_protocol_enabled = val;
         }
 
-        if let Some(target) = settings.initial_window_size() {
+        if let Some(target) = settings.config.initial_window_size {
             let old_sz = self.init_window_sz;
             self.init_window_sz = target;
 

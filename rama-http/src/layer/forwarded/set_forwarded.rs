@@ -110,21 +110,14 @@ impl<T: Clone> Clone for SetForwardedHeaderLayer<T> {
 }
 
 impl<T> SetForwardedHeaderLayer<T> {
-    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
-    ///
-    /// Default of `None` will be set to `rama` otherwise.
-    #[must_use]
-    pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
-        self.by_node = node_id.into();
-        self
-    }
-
-    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
-    ///
-    /// Default of `None` will be set to `rama` otherwise.
-    pub fn set_forward_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
-        self.by_node = node_id.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
+        ///
+        /// Default of `None` will be set to `rama` otherwise.
+        pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
+            self.by_node = node_id.into();
+            self
+        }
     }
 }
 
@@ -244,21 +237,14 @@ impl<S: Clone, T> Clone for SetForwardedHeaderService<S, T> {
 }
 
 impl<S, T> SetForwardedHeaderService<S, T> {
-    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
-    ///
-    /// Default of `None` will be set to `rama` otherwise.
-    #[must_use]
-    pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
-        self.by_node = node_id.into();
-        self
-    }
-
-    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
-    ///
-    /// Default of `None` will be set to `rama` otherwise.
-    pub fn set_forward_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
-        self.by_node = node_id.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
+        ///
+        /// Default of `None` will be set to `rama` otherwise.
+        pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
+            self.by_node = node_id.into();
+            self
+        }
     }
 }
 
@@ -325,7 +311,7 @@ where
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
         let forwarded: Option<rama_net::forwarded::Forwarded> = req.extensions().get().cloned();
 
-        let mut forwarded_element = ForwardedElement::forwarded_by(self.by_node.clone());
+        let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
 
         if let Some(peer_addr) = req
             .extensions()
@@ -433,7 +419,7 @@ mod tests {
             .unwrap();
         req.extensions_mut()
             .insert(rama_net::forwarded::Forwarded::new(
-                ForwardedElement::forwarded_for(IpAddr::from([12, 23, 34, 45])),
+                ForwardedElement::new_forwarded_for(IpAddr::from([12, 23, 34, 45])),
             ));
         req.extensions_mut()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
@@ -457,7 +443,7 @@ mod tests {
             .unwrap();
         req.extensions_mut()
             .insert(rama_net::forwarded::Forwarded::new(
-                ForwardedElement::forwarded_for(IpAddr::from([12, 23, 34, 45])),
+                ForwardedElement::new_forwarded_for(IpAddr::from([12, 23, 34, 45])),
             ));
         req.extensions_mut()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
@@ -475,7 +461,7 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc))
-            .forward_by(IpAddr::from([12, 23, 34, 45]));
+            .with_forward_by(IpAddr::from([12, 23, 34, 45]));
         let mut req = Request::builder()
             .uri("https://www.example.com")
             .body(())

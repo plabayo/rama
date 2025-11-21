@@ -271,7 +271,7 @@ impl<T> Event<T> {
         /// This sets how long clients will wait before reconnecting if they are disconnected from the
         /// SSE endpoint. Note that this is just a hint: clients are free to wait for longer if they
         /// wish, such as if they implement exponential backoff.
-        pub const fn retry(mut self, millis: u64) -> Self {
+        pub const fn static_retry(mut self, millis: u64) -> Self {
             self.retry = Some(Duration::from_millis(millis));
             self
         }

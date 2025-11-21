@@ -47,96 +47,15 @@ impl Settings {
         }
     }
 
-    #[must_use]
-    pub fn is_ack(&self) -> bool {
-        self.flags.is_ack()
-    }
-
-    #[must_use]
-    pub fn initial_window_size(&self) -> Option<u32> {
-        self.config.initial_window_size
-    }
-
-    pub fn set_config(&mut self, config: SettingsConfig) {
-        self.config = config;
+    rama_utils::macros::generate_set_and_with! {
+        pub fn config(mut self, config: SettingsConfig) -> Self {
+            self.config = config;
+            self
+        }
     }
 
     pub fn merge(&mut self, other: Self) {
         self.config.merge(other.config);
-    }
-
-    pub fn set_initial_window_size(&mut self, size: Option<u32>) {
-        self.config.initial_window_size = size;
-    }
-
-    #[must_use]
-    pub fn max_concurrent_streams(&self) -> Option<u32> {
-        self.config.max_concurrent_streams
-    }
-
-    pub fn set_max_concurrent_streams(&mut self, max: Option<u32>) {
-        self.config.max_concurrent_streams = max;
-    }
-
-    #[must_use]
-    pub fn max_frame_size(&self) -> Option<u32> {
-        self.config.max_frame_size
-    }
-
-    pub fn set_max_frame_size(&mut self, size: Option<u32>) {
-        if let Some(val) = size {
-            assert!((DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&val));
-        }
-        self.config.max_frame_size = size;
-    }
-
-    #[must_use]
-    pub fn max_header_list_size(&self) -> Option<u32> {
-        self.config.max_header_list_size
-    }
-
-    pub fn set_max_header_list_size(&mut self, size: Option<u32>) {
-        self.config.max_header_list_size = size;
-    }
-
-    #[must_use]
-    pub fn is_push_enabled(&self) -> Option<bool> {
-        self.config.enable_push.map(|val| val != 0)
-    }
-
-    pub fn set_enable_push(&mut self, enable: bool) {
-        self.config.enable_push = Some(enable as u32);
-    }
-
-    #[must_use]
-    pub fn is_extended_connect_protocol_enabled(&self) -> Option<bool> {
-        self.config.enable_connect_protocol.map(|val| val != 0)
-    }
-
-    pub fn set_enable_connect_protocol(&mut self, val: Option<u32>) {
-        self.config.enable_connect_protocol = val;
-    }
-
-    #[must_use]
-    pub fn header_table_size(&self) -> Option<u32> {
-        self.config.header_table_size
-    }
-
-    pub fn set_header_table_size(&mut self, size: Option<u32>) {
-        self.config.header_table_size = size;
-    }
-
-    pub fn set_no_rfc7540_priorities(&mut self, size: Option<u32>) {
-        self.config.no_rfc7540_priorities = size;
-    }
-
-    #[must_use]
-    pub fn no_rfc7540_priorities(&self) -> Option<u32> {
-        self.config.no_rfc7540_priorities
-    }
-
-    pub fn set_setting_order(&mut self, order: Option<SettingOrder>) {
-        self.config.setting_order = order;
     }
 
     pub fn load(head: Head, payload: &[u8]) -> Result<Self, Error> {
@@ -226,7 +145,7 @@ impl Settings {
         }
 
         if !setting_order.is_empty() {
-            settings.set_setting_order(Some(setting_order));
+            settings.config.setting_order = Some(setting_order);
         }
 
         Ok(settings)

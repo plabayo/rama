@@ -151,7 +151,7 @@ async fn recv_push_when_push_disabled_is_conn_error() {
 
     let h2 = async move {
         let (mut client, h2) = client::Builder::new()
-            .enable_push(false)
+            .with_enable_push(false)
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
@@ -242,7 +242,7 @@ async fn recv_push_promise_over_max_header_list_size() {
 
     let srv = async move {
         let settings = srv.assert_client_handshake().await;
-        assert_frame_eq(settings, frames::settings().max_header_list_size(10));
+        assert_frame_eq(settings, frames::settings().with_max_header_list_size(10));
         srv.recv_frame(
             frames::headers(1)
                 .request("GET", "https://http2.akamai.com/")
@@ -260,7 +260,7 @@ async fn recv_push_promise_over_max_header_list_size() {
 
     let client = async move {
         let (mut client, mut conn) = client::Builder::new()
-            .max_header_list_size(10)
+            .with_max_header_list_size(10)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");

@@ -228,7 +228,7 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                         for setting_id in order {
                             match setting_id {
                                 h2::frame::SettingId::HeaderTableSize => {
-                                    if let Some(value) = settings.header_table_size() {
+                                    if let Some(value) = settings.config.header_table_size {
                                         rows.push((
                                             "Header Table Size".to_owned(),
                                             value.to_string(),
@@ -236,12 +236,13 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                     }
                                 }
                                 h2::frame::SettingId::EnablePush => {
-                                    if let Some(value) = settings.is_push_enabled() {
+                                    if let Some(value) = settings.config.enable_push.map(|v| v != 0)
+                                    {
                                         rows.push(("Enable Push".to_owned(), value.to_string()));
                                     }
                                 }
                                 h2::frame::SettingId::MaxConcurrentStreams => {
-                                    if let Some(value) = settings.max_concurrent_streams() {
+                                    if let Some(value) = settings.config.max_concurrent_streams {
                                         rows.push((
                                             "Max Concurrent Streams".to_owned(),
                                             value.to_string(),
@@ -249,7 +250,7 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                     }
                                 }
                                 h2::frame::SettingId::InitialWindowSize => {
-                                    if let Some(value) = settings.initial_window_size() {
+                                    if let Some(value) = settings.config.initial_window_size {
                                         rows.push((
                                             "Initial Window Size".to_owned(),
                                             value.to_string(),
@@ -257,12 +258,12 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                     }
                                 }
                                 h2::frame::SettingId::MaxFrameSize => {
-                                    if let Some(value) = settings.max_frame_size() {
+                                    if let Some(value) = settings.config.max_frame_size {
                                         rows.push(("Max Frame Size".to_owned(), value.to_string()));
                                     }
                                 }
                                 h2::frame::SettingId::MaxHeaderListSize => {
-                                    if let Some(value) = settings.max_header_list_size() {
+                                    if let Some(value) = settings.config.max_header_list_size {
                                         rows.push((
                                             "Max Header List Size".to_owned(),
                                             value.to_string(),
@@ -271,7 +272,7 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                 }
                                 h2::frame::SettingId::EnableConnectProtocol => {
                                     if let Some(value) =
-                                        settings.is_extended_connect_protocol_enabled()
+                                        settings.config.enable_connect_protocol.map(|v| v != 0)
                                     {
                                         rows.push((
                                             "Enable Connect Protocol".to_owned(),
@@ -280,7 +281,7 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                     }
                                 }
                                 h2::frame::SettingId::NoRfc7540Priorities => {
-                                    if let Some(value) = settings.no_rfc7540_priorities() {
+                                    if let Some(value) = settings.config.no_rfc7540_priorities {
                                         rows.push((
                                             "No RFC 7540 Priorities".to_owned(),
                                             value.to_string(),

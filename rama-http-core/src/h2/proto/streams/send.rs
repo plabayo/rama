@@ -432,7 +432,7 @@ impl Send {
         counts: &mut Counts,
         task: &mut Option<Waker>,
     ) -> Result<(), Error> {
-        if let Some(val) = settings.is_extended_connect_protocol_enabled() {
+        if let Some(val) = settings.config.enable_connect_protocol.map(|v| v != 0) {
             self.is_extended_connect_protocol_enabled = val;
         }
 
@@ -453,7 +453,7 @@ impl Send {
         // track the negative flow-control window and MUST NOT send new
         // flow-controlled frames until it receives WINDOW_UPDATE frames that
         // cause the flow-control window to become positive.
-        if let Some(val) = settings.initial_window_size() {
+        if let Some(val) = settings.config.initial_window_size {
             let old_val = self.init_window_sz;
             self.init_window_sz = val;
 
@@ -541,7 +541,7 @@ impl Send {
             }
         }
 
-        if let Some(val) = settings.is_push_enabled() {
+        if let Some(val) = settings.config.enable_push.map(|v| v != 0) {
             self.is_push_enabled = val
         }
 
