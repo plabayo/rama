@@ -36,8 +36,12 @@ use std::any::TypeId;
 use std::fmt;
 use std::io;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
+
+use parking_lot::Mutex;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::oneshot;
 
 use rama_core::bytes::Bytes;
 use rama_core::error::OpaqueError;
@@ -47,8 +51,6 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::stream::Stream;
 use rama_core::stream::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::oneshot;
 
 /// An upgraded HTTP connection.
 ///
@@ -258,7 +260,7 @@ impl OnUpgrade {
     /// Returns true if there was an upgrade and the upgrade has already been handled
     #[must_use]
     pub fn has_handled_upgrade(&self) -> bool {
-        self.rx.lock().unwrap().is_terminated()
+        self.rx.lock().is_terminated()
     }
 }
 
@@ -266,7 +268,7 @@ impl Future for OnUpgrade {
     type Output = Result<Upgraded, OpaqueError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut *self.rx.lock().unwrap())
+        Pin::new(&mut *self.rx.lock())
             .poll(cx)
             .map(|res| match res {
                 Ok(Ok(upgraded)) => Ok(upgraded),
