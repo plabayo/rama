@@ -163,6 +163,8 @@ where
         let prefix = format!("{}/*", prefix.trim_end_matches(['/', '*']));
         let matcher = HttpMatcher::path(prefix);
 
+        // TOOD: Revisit this design so we do not need to rely on UriPath, globbing and unwrapping
+
         let web_service = WebService::default().with_state(self.state.clone());
         let web_service = configure_svc(web_service);
         let service = NestedService(web_service);

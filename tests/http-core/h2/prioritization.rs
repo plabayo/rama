@@ -437,7 +437,7 @@ async fn stream_count_over_max_stream_limit_does_not_starve_capacity() {
             .assert_client_handshake_with_settings(
                 frames::settings()
                     // super tiny server
-                    .max_concurrent_streams(1),
+                    .with_max_concurrent_streams(1),
             )
             .await;
         srv.recv_frame(frames::headers(1).request("POST", "http://example.com/"))

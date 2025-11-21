@@ -50,7 +50,7 @@ async fn test_server_with_haproxy_v1() {
 
     request
         .extensions_mut()
-        .insert(Forwarded::new(ForwardedElement::forwarded_for((
+        .insert(Forwarded::new(ForwardedElement::new_forwarded_for((
             IpAddr::V4([1u8, 2u8, 3u8, 4u8].into()),
             0,
         ))));
@@ -86,7 +86,7 @@ async fn test_server_with_haproxy_v2() {
 
     request
         .extensions_mut()
-        .insert(Forwarded::new(ForwardedElement::forwarded_for((
+        .insert(Forwarded::new(ForwardedElement::new_forwarded_for((
             IpAddr::V4([2u8, 3u8, 4u8, 5u8].into()),
             0,
         ))));

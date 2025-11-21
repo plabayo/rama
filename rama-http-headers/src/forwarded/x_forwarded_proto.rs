@@ -78,7 +78,7 @@ impl super::ForwardHeader for XForwardedProto {
     where
         I: IntoIterator<Item = &'a ForwardedElement>,
     {
-        let proto = input.into_iter().next()?.ref_forwarded_proto()?;
+        let proto = input.into_iter().next()?.forwarded_proto()?;
         Some(Self(proto))
     }
 }
@@ -91,7 +91,7 @@ impl Iterator for XForwardedProtoIterator {
     type Item = ForwardedElement;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.take().map(ForwardedElement::forwarded_proto)
+        self.0.take().map(ForwardedElement::new_forwarded_proto)
     }
 }
 

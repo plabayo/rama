@@ -42,30 +42,38 @@ impl InnerHttpProxyConnector {
         Ok(Self { req })
     }
 
-    pub(super) fn set_version(&mut self, version: Version) -> &mut Self {
-        *self.req.version_mut() = version;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub(super) fn version(mut self, version: Version) -> Self {
+            *self.req.version_mut() = version;
+            self
+        }
     }
 
-    /// Add a header to the request.
-    pub(super) fn with_header(&mut self, name: HeaderName, value: HeaderValue) -> &mut Self {
-        self.req.headers_mut().insert(name, value);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Add a header to the request.
+        pub(super) fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
+            self.req.headers_mut().insert(name, value);
+            self
+        }
     }
 
-    /// Add a header to the request.
-    pub(super) fn with_extension<E: Clone + Send + Sync + 'static>(
-        &mut self,
-        value: E,
-    ) -> &mut Self {
-        self.req.extensions_mut().insert(value);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Add a header to the request.
+        pub(super) fn extension(
+            mut self,
+            value: impl Clone + Send + Sync + 'static,
+        ) -> Self {
+            self.req.extensions_mut().insert(value);
+            self
+        }
     }
 
-    /// Add a typed header to the request.
-    pub(super) fn with_typed_header(&mut self, header: impl HeaderEncode) -> &mut Self {
-        self.req.headers_mut().typed_insert(header);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Add a typed header to the request.
+        pub(super) fn typed_header(mut self, header: impl HeaderEncode) -> Self {
+            self.req.headers_mut().typed_insert(header);
+            self
+        }
     }
 
     /// Connect to the proxy server.
@@ -104,7 +112,7 @@ impl InnerHttpProxyConnector {
         stream: S,
     ) -> Result<Response<Incoming>, HttpProxyError> {
         let (mut tx, conn) = http1::Builder::default()
-            .ignore_invalid_headers(true)
+            .with_ignore_invalid_headers(true)
             .handshake(stream)
             .await
             .map_err(|err| HttpProxyError::Transport(err.into()))?;

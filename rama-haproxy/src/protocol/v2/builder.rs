@@ -265,37 +265,26 @@ impl Builder {
         }
     }
 
-    /// Reserves the requested additional capacity in the underlying buffer.
-    /// Helps to prevent resizing the underlying buffer when called before `write_payload`, `write_payloads`.
-    /// When called after `write_payload`, `write_payloads`, useful as a hint on how to resize the buffer.
-    #[must_use]
-    pub fn reserve_capacity(mut self, capacity: usize) -> Self {
-        match self.header {
-            None => self.additional_capacity += capacity,
-            Some(ref mut header) => header.reserve(capacity),
+    rama_utils::macros::generate_set_and_with! {
+        /// Reserves the requested additional capacity in the underlying buffer.
+        /// Helps to prevent resizing the underlying buffer when called before `write_payload`, `write_payloads`.
+        /// When called after `write_payload`, `write_payloads`, useful as a hint on how to resize the buffer.
+        pub fn reserve_capacity(mut self, capacity: usize) -> Self {
+            match self.header {
+                None => self.additional_capacity += capacity,
+                Some(ref mut header) => header.reserve(capacity),
+            }
+            self
         }
-
-        self
     }
 
-    /// Reserves the requested additional capacity in the underlying buffer.
-    /// Helps to prevent resizing the underlying buffer when called before `write_payload`, `write_payloads`.
-    /// When called after `write_payload`, `write_payloads`, useful as a hint on how to resize the buffer.
-    pub fn set_reserve_capacity(&mut self, capacity: usize) -> &mut Self {
-        match self.header {
-            None => self.additional_capacity += capacity,
-            Some(ref mut header) => header.reserve(capacity),
+    rama_utils::macros::generate_set_and_with! {
+        /// Overrides the length in the header.
+        /// When set to `Some` value, the length may be smaller or larger than the actual payload in the buffer.
+        pub fn length(mut self, length: impl Into<Option<u16>>) -> Self {
+            self.length = length.into();
+            self
         }
-
-        self
-    }
-
-    /// Overrides the length in the header.
-    /// When set to `Some` value, the length may be smaller or larger than the actual payload in the buffer.
-    #[must_use]
-    pub fn set_length<T: Into<Option<u16>>>(mut self, length: T) -> Self {
-        self.length = length.into();
-        self
     }
 
     /// Writes a iterable set of payloads in order to the buffer.
@@ -407,7 +396,7 @@ mod tests {
             Version::Two | Command::Proxy,
             AddressFamily::IPv4 | Protocol::Datagram,
         )
-        .set_length(1)
+        .with_length(1)
         .write_payload(1u32)
         .unwrap()
         .build()
@@ -472,7 +461,7 @@ mod tests {
             Version::Two | Command::Proxy,
             AddressFamily::IPv4 | Protocol::Datagram,
         )
-        .set_length(addresses.len() as u16)
+        .with_length(addresses.len() as u16)
         .write_payload(addresses)
         .unwrap()
         .build()
@@ -523,7 +512,7 @@ mod tests {
             Version::Two | Command::Local,
             AddressFamily::Unix | Protocol::Stream,
         )
-        .reserve_capacity(addresses.len())
+        .with_reserve_capacity(addresses.len())
         .write_payload(addresses)
         .unwrap()
         .build()
@@ -542,7 +531,7 @@ mod tests {
         let addresses: Addresses = IPv4::new([127, 0, 0, 1], [192, 168, 1, 1], 80, 443).into();
         let header =
             Builder::with_addresses(Version::Two | Command::Proxy, Protocol::Datagram, addresses)
-                .reserve_capacity(5)
+                .with_reserve_capacity(5)
                 .write_tlv(Type::NoOp, [0, 42].as_slice())
                 .unwrap()
                 .build()
@@ -630,7 +619,7 @@ mod tests {
             Version::Two | Command::Local,
             AddressFamily::Unix | Protocol::Stream,
         )
-        .set_length(216)
+        .with_length(216)
         .write_payload(addresses)
         .unwrap()
         .write_tlv(Type::SSL, &[])

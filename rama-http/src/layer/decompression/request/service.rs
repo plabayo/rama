@@ -141,72 +141,45 @@ impl<S> RequestDecompression<S> {
 
     define_inner_service_accessors!();
 
-    /// Passes through the request even when the encoding is not supported.
-    ///
-    /// By default pass-through is disabled.
-    #[must_use]
-    pub fn pass_through_unaccepted(mut self, enabled: bool) -> Self {
-        self.pass_through_unaccepted = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Passes through the request even when the encoding is not supported.
+        ///
+        /// By default pass-through is disabled.
+        pub fn pass_through_unaccepted(mut self, enabled: bool) -> Self {
+            self.pass_through_unaccepted = enabled;
+            self
+        }
     }
 
-    /// Passes through the request even when the encoding is not supported.
-    ///
-    /// By default pass-through is disabled.
-    pub fn set_pass_through_unaccepted(&mut self, enabled: bool) -> &mut Self {
-        self.pass_through_unaccepted = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to support gzip encoding.
+        pub fn gzip(mut self, enable: bool) -> Self {
+            self.accept.set_gzip(enable);
+            self
+        }
     }
 
-    /// Sets whether to support gzip encoding.
-    #[must_use]
-    pub fn gzip(mut self, enable: bool) -> Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to support Deflate encoding.
+        pub fn deflate(mut self, enable: bool) -> Self {
+            self.accept.set_deflate(enable);
+            self
+        }
     }
 
-    /// Sets whether to support gzip encoding.
-    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to support Brotli encoding.
+        pub fn br(mut self, enable: bool) -> Self {
+            self.accept.set_br(enable);
+            self
+        }
     }
 
-    /// Sets whether to support Deflate encoding.
-    #[must_use]
-    pub fn deflate(mut self, enable: bool) -> Self {
-        self.accept.set_deflate(enable);
-        self
-    }
-
-    /// Sets whether to support Deflate encoding.
-    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_deflate(enable);
-        self
-    }
-
-    /// Sets whether to support Brotli encoding.
-    #[must_use]
-    pub fn br(mut self, enable: bool) -> Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to support Brotli encoding.
-    pub fn set_br(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to support Zstd encoding.
-    #[must_use]
-    pub fn zstd(mut self, enable: bool) -> Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets whether to support Zstd encoding.
-    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_zstd(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to support Zstd encoding.
+        pub fn zstd(mut self, enable: bool) -> Self {
+            self.accept.set_zstd(enable);
+            self
+        }
     }
 }

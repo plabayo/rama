@@ -67,8 +67,8 @@ async fn main() {
         // NOTE: the high level http client has also a `::basic` method
         // that can be used to add basic auth headers only for that specific request
         AddAuthorizationLayer::new(Basic::new_static("john", "123"))
-            .as_sensitive(true)
-            .if_not_present(true),
+            .with_sensitive(true)
+            .with_if_not_present(true),
         RetryLayer::new(
             ManagedPolicy::default().with_backoff(
                 ExponentialBackoff::new(

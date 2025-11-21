@@ -383,39 +383,53 @@ impl Mock<frame::Reset> {
 // ==== Settings helpers
 
 impl Mock<frame::Settings> {
-    pub fn max_concurrent_streams(mut self, max: u32) -> Self {
-        self.0.set_max_concurrent_streams(Some(max));
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn max_concurrent_streams(mut self, max: u32) -> Self {
+            self.0.config.max_concurrent_streams = Some(max);
+            self
+        }
     }
 
-    pub fn max_frame_size(mut self, val: u32) -> Self {
-        self.0.set_max_frame_size(Some(val));
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn max_frame_size(mut self, val: u32) -> Self {
+            self.0.config.max_frame_size = Some(val);
+            self
+        }
     }
 
-    pub fn initial_window_size(mut self, val: u32) -> Self {
-        self.0.set_initial_window_size(Some(val));
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn initial_window_size(mut self, val: u32) -> Self {
+            self.0.config.initial_window_size = Some(val);
+            self
+        }
     }
 
-    pub fn max_header_list_size(mut self, val: u32) -> Self {
-        self.0.set_max_header_list_size(Some(val));
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn max_header_list_size(mut self, val: u32) -> Self {
+            self.0.config.max_header_list_size = Some(val);
+            self
+        }
     }
 
-    pub fn disable_push(mut self) -> Self {
-        self.0.set_enable_push(false);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn disable_push(mut self) -> Self {
+            self.0.config.enable_push = Some(0);
+            self
+        }
     }
 
-    pub fn enable_connect_protocol(mut self, val: u32) -> Self {
-        self.0.set_enable_connect_protocol(Some(val));
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn enable_connect_protocol(mut self, val: u32) -> Self {
+            self.0.config.enable_connect_protocol = Some(val);
+            self
+        }
     }
 
-    pub fn header_table_size(mut self, val: u32) -> Self {
-        self.0.set_header_table_size(Some(val));
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn header_table_size(mut self, val: u32) -> Self {
+            self.0.config.header_table_size = Some(val);
+            self
+        }
     }
 }
 

@@ -76,7 +76,7 @@ impl super::ForwardHeader for XForwardedFor {
     {
         let vec: Vec<_> = input
             .into_iter()
-            .filter_map(|el| el.ref_forwarded_for()?.ip())
+            .filter_map(|el| el.forwarded_for()?.ip())
             .collect();
         if vec.is_empty() {
             None
@@ -110,7 +110,7 @@ impl Iterator for XForwardedForIterator {
     type Item = ForwardedElement;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(ForwardedElement::forwarded_for)
+        self.0.next().map(ForwardedElement::new_forwarded_for)
     }
 }
 

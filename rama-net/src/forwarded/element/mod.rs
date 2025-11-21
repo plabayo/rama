@@ -176,7 +176,7 @@ impl ForwardedElement {
 
     /// Create a new [`ForwardedElement`] with the "host" parameter set
     /// using the given [`Host`], [`Authority`] or [`SocketAddr`].
-    pub fn forwarded_host(authority: impl Into<ForwardedAuthority>) -> Self {
+    pub fn new_forwarded_host(authority: impl Into<ForwardedAuthority>) -> Self {
         Self {
             by_node: None,
             for_node: None,
@@ -187,23 +187,25 @@ impl ForwardedElement {
         }
     }
 
-    /// Sets the "host" parameter in this [`ForwardedElement`] using
-    /// the given authority value.
-    pub fn set_forwarded_host(&mut self, authority: impl Into<ForwardedAuthority>) -> &mut Self {
-        self.authority = Some(authority.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the "host" parameter in this [`ForwardedElement`] using
+        /// the given authority value.
+        pub fn forwarded_host(mut self, authority: impl Into<ForwardedAuthority>) -> Self {
+            self.authority = Some(authority.into());
+            self
+        }
     }
 
     /// Get a reference to the "host" parameter if it is set.
     #[must_use]
-    pub fn ref_forwarded_host(&self) -> Option<&ForwardedAuthority> {
+    pub fn forwarded_host(&self) -> Option<&ForwardedAuthority> {
         self.authority.as_ref()
     }
 
     /// Create a new [`ForwardedElement`] with the "for" parameter
     /// set to the given valid node identifier. Examples are
     /// an Ip Address or Domain, with or without a port.
-    pub fn forwarded_for(node_id: impl Into<NodeId>) -> Self {
+    pub fn new_forwarded_for(node_id: impl Into<NodeId>) -> Self {
         Self {
             by_node: None,
             for_node: Some(node_id.into()),
@@ -214,23 +216,25 @@ impl ForwardedElement {
         }
     }
 
-    /// Sets the "for" parameter for this [`ForwardedElement`] using the given valid node identifier.
-    /// Examples are an Ip Address or Domain, with or without a port.
-    pub fn set_forwarded_for(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
-        self.for_node = Some(node_id.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the "for" parameter for this [`ForwardedElement`] using the given valid node identifier.
+        /// Examples are an Ip Address or Domain, with or without a port.
+        pub fn forwarded_for(mut self, node_id: impl Into<NodeId>) -> Self {
+            self.for_node = Some(node_id.into());
+            self
+        }
     }
 
     /// Get a reference to the "for" parameter if it is set.
     #[must_use]
-    pub fn ref_forwarded_for(&self) -> Option<&NodeId> {
+    pub fn forwarded_for(&self) -> Option<&NodeId> {
         self.for_node.as_ref()
     }
 
     /// Create a new [`ForwardedElement`] with the "by" parameter
     /// set to the given valid node identifier. Examples are
     /// an Ip Address or Domain, with or without a port.
-    pub fn forwarded_by(node_id: impl Into<NodeId>) -> Self {
+    pub fn new_forwarded_by(node_id: impl Into<NodeId>) -> Self {
         Self {
             by_node: Some(node_id.into()),
             for_node: None,
@@ -241,23 +245,25 @@ impl ForwardedElement {
         }
     }
 
-    /// Sets the "by" parameter for this [`ForwardedElement`] using the given valid node identifier.
-    /// Examples are an Ip Address or Domain, with or without a port.
-    pub fn set_forwarded_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
-        self.by_node = Some(node_id.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the "by" parameter for this [`ForwardedElement`] using the given valid node identifier.
+        /// Examples are an Ip Address or Domain, with or without a port.
+        pub fn forwarded_by(mut self, node_id: impl Into<NodeId>) -> Self {
+            self.by_node = Some(node_id.into());
+            self
+        }
     }
 
     /// Get a reference to the "by" parameter if it is set.
     #[must_use]
-    pub fn ref_forwarded_by(&self) -> Option<&NodeId> {
+    pub fn forwarded_by(&self) -> Option<&NodeId> {
         self.by_node.as_ref()
     }
 
     /// Create a new [`ForwardedElement`] with the "proto" parameter
     /// set to the given valid/recognised [`ForwardedProtocol`]
     #[must_use]
-    pub fn forwarded_proto(protocol: ForwardedProtocol) -> Self {
+    pub fn new_forwarded_proto(protocol: ForwardedProtocol) -> Self {
         Self {
             by_node: None,
             for_node: None,
@@ -268,22 +274,24 @@ impl ForwardedElement {
         }
     }
 
-    /// Set the "proto" parameter to the given valid/recognised [`ForwardedProtocol`].
-    pub fn set_forwarded_proto(&mut self, protocol: ForwardedProtocol) -> &mut Self {
-        self.proto = Some(protocol);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the "proto" parameter to the given valid/recognised [`ForwardedProtocol`].
+        pub fn forwarded_proto(mut self, protocol: ForwardedProtocol) -> Self {
+            self.proto = Some(protocol);
+            self
+        }
     }
 
     /// Get a reference to the "proto" parameter if it is set.
     #[must_use]
-    pub fn ref_forwarded_proto(&self) -> Option<ForwardedProtocol> {
+    pub fn forwarded_proto(&self) -> Option<ForwardedProtocol> {
         self.proto.clone()
     }
 
     /// Create a new [`ForwardedElement`] with the "version" parameter
     /// set to the given valid/recognised [`ForwardedVersion`].
     #[must_use]
-    pub fn forwarded_version(version: ForwardedVersion) -> Self {
+    pub fn new_forwarded_version(version: ForwardedVersion) -> Self {
         Self {
             by_node: None,
             for_node: None,
@@ -294,15 +302,17 @@ impl ForwardedElement {
         }
     }
 
-    /// Set the "version" parameter to the given valid/recognised [`ForwardedVersion`].
-    pub fn set_forwarded_version(&mut self, version: ForwardedVersion) -> &mut Self {
-        self.proto_version = Some(version);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the "version" parameter to the given valid/recognised [`ForwardedVersion`].
+        pub fn forwarded_version(mut self, version: ForwardedVersion) -> Self {
+            self.proto_version = Some(version);
+            self
+        }
     }
 
     /// Get a copy of the "version" parameter, if it is set.
     #[must_use]
-    pub fn ref_forwarded_version(&self) -> Option<ForwardedVersion> {
+    pub fn forwarded_version(&self) -> Option<ForwardedVersion> {
         self.proto_version
     }
 }
@@ -455,11 +465,11 @@ mod tests {
         for (s, expected) in [
             (
                 r##"for="_gazonk""##,
-                ForwardedElement::forwarded_for(NodeId::try_from("_gazonk").unwrap()),
+                ForwardedElement::new_forwarded_for(NodeId::try_from("_gazonk").unwrap()),
             ),
             (
                 r##"For="[2001:db8:cafe::17]:4711""##,
-                ForwardedElement::forwarded_for(
+                ForwardedElement::new_forwarded_for(
                     NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap(),
                 ),
             ),

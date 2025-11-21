@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
+use rama_core::error::OpaqueError;
 use rama_core::extensions::ExtensionsMut;
 use rama_http::Body;
 use rama_http::io::upgrade::Upgraded;
@@ -53,10 +54,10 @@ pin_project_lite::pin_project! {
 /// # fn main() {
 /// let mut http = Builder::new();
 /// // Set options one at a time
-/// http.half_close(false);
+/// http.set_half_close(false);
 ///
 /// // Or, chain multiple options
-/// http.keep_alive(false).title_case_headers(true).max_buf_size(8192);
+/// http.set_keep_alive(false).set_title_case_headers(true).try_set_max_buf_size(8192).unwrap();
 ///
 /// # }
 /// ```
@@ -238,141 +239,161 @@ impl Builder {
             date_header: true,
         }
     }
-    /// Set whether HTTP/1 connections should support half-closures.
-    ///
-    /// Clients can chose to shutdown their write-side while waiting
-    /// for the server to respond. Setting this to `true` will
-    /// prevent closing the connection immediately if `read`
-    /// detects an EOF in the middle of a request.
-    ///
-    /// Default is `false`.
-    pub fn half_close(&mut self, val: bool) -> &mut Self {
-        self.h1_half_close = val;
-        self
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/1 connections should support half-closures.
+        ///
+        /// Clients can chose to shutdown their write-side while waiting
+        /// for the server to respond. Setting this to `true` will
+        /// prevent closing the connection immediately if `read`
+        /// detects an EOF in the middle of a request.
+        ///
+        /// Default is `false`.
+        pub fn half_close(mut self, val: bool) -> Self {
+            self.h1_half_close = val;
+            self
+        }
     }
 
-    /// Enables or disables HTTP/1 keep-alive.
-    ///
-    /// Default is `true`.
-    pub fn keep_alive(&mut self, val: bool) -> &mut Self {
-        self.h1_keep_alive = val;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Enables or disables HTTP/1 keep-alive.
+        ///
+        /// Default is `true`.
+        pub fn keep_alive(mut self, val: bool) -> Self {
+            self.h1_keep_alive = val;
+            self
+        }
     }
 
-    /// Set whether HTTP/1 connections will write header names as title case at
-    /// the socket level.
-    ///
-    /// Default is `false`.
-    pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
-        self.h1_title_case_headers = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/1 connections will write header names as title case at
+        /// the socket level.
+        ///
+        /// Default is `false`.
+        pub fn title_case_headers(mut self, enabled: bool) -> Self {
+            self.h1_title_case_headers = enabled;
+            self
+        }
     }
 
-    /// Set whether multiple spaces are allowed as delimiters in request lines.
-    ///
-    /// Default is `false`.
-    pub fn allow_multiple_spaces_in_request_line_delimiters(&mut self, enabled: bool) -> &mut Self {
-        self.h1_parser_config
-            .allow_multiple_spaces_in_request_line_delimiters(enabled);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether multiple spaces are allowed as delimiters in request lines.
+        ///
+        /// Default is `false`.
+        pub fn allow_multiple_spaces_in_request_line_delimiters(mut self, enabled: bool) -> Self {
+            self.h1_parser_config
+                .allow_multiple_spaces_in_request_line_delimiters(enabled);
+            self
+        }
     }
 
-    /// Set whether HTTP/1 connections will silently ignored malformed header lines.
-    ///
-    /// If this is enabled and a header line does not start with a valid header
-    /// name, or does not include a colon at all, the line will be silently ignored
-    /// and no error will be reported.
-    ///
-    /// Default is `false`.
-    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Self {
-        self.h1_parser_config
-            .ignore_invalid_headers_in_requests(enabled);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/1 connections will silently ignored malformed header lines.
+        ///
+        /// If this is enabled and a header line does not start with a valid header
+        /// name, or does not include a colon at all, the line will be silently ignored
+        /// and no error will be reported.
+        ///
+        /// Default is `false`.
+        pub fn ignore_invalid_headers(mut self, enabled: bool) -> Self {
+            self.h1_parser_config
+                .ignore_invalid_headers_in_requests(enabled);
+            self
+        }
     }
 
-    /// Set the maximum number of headers.
-    ///
-    /// When a request is received, the parser will reserve a buffer to store headers for optimal
-    /// performance.
-    ///
-    /// If server receives more headers than the buffer size, it responds to the client with
-    /// "431 Request Header Fields Too Large".
-    ///
-    /// Note that headers is allocated on the stack by default, which has higher performance. After
-    /// setting this value, headers will be allocated in heap memory, that is, heap memory
-    /// allocation will occur for each request, and there will be a performance drop of about 5%.
-    ///
-    /// Default is 100.
-    pub fn max_headers(&mut self, val: usize) -> &mut Self {
-        self.h1_max_headers = Some(val);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum number of headers.
+        ///
+        /// When a request is received, the parser will reserve a buffer to store headers for optimal
+        /// performance.
+        ///
+        /// If server receives more headers than the buffer size, it responds to the client with
+        /// "431 Request Header Fields Too Large".
+        ///
+        /// Note that headers is allocated on the stack by default, which has higher performance. After
+        /// setting this value, headers will be allocated in heap memory, that is, heap memory
+        /// allocation will occur for each request, and there will be a performance drop of about 5%.
+        ///
+        /// Default is `100`.
+        pub fn max_headers(mut self, val: Option<usize>) -> Self {
+            self.h1_max_headers = val;
+            self
+        }
     }
 
-    /// Set a timeout for reading client request headers. If a client does not
-    /// transmit the entire header within this time, the connection is closed.
-    ///
-    /// Requires a [`Timer`] set by [`Builder::timer`] to take effect. Panics if `header_read_timeout` is configured
-    /// without a [`Timer`].
-    ///
-    /// Pass `None` to disable.
-    ///
-    /// Default is 30 seconds.
-    pub fn header_read_timeout(&mut self, read_timeout: Duration) -> &mut Self {
-        self.h1_header_read_timeout = read_timeout;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a timeout for reading client request headers. If a client does not
+        /// transmit the entire header within this time, the connection is closed.
+        ///
+        /// Requires a [`Timer`] set by [`Builder::timer`] to take effect. Panics if `header_read_timeout` is configured
+        /// without a [`Timer`].
+        ///
+        /// Default is 30 seconds.
+        pub fn header_read_timeout(mut self, read_timeout: Duration) -> Self{
+            self.h1_header_read_timeout = read_timeout;
+            self
+        }
     }
 
-    /// Set whether HTTP/1 connections should try to use vectored writes,
-    /// or always flatten into a single buffer.
-    ///
-    /// Note that setting this to false may mean more copies of body data,
-    /// but may also improve performance when an IO transport doesn't
-    /// support vectored writes well, such as most TLS implementations.
-    ///
-    /// Setting this to true will force rama_http_core to use queued strategy
-    /// which may eliminate unnecessary cloning on some TLS backends
-    ///
-    /// Default is `auto`. In this mode rama_http_core will try to guess which
-    /// mode to use
-    pub fn writev(&mut self, val: bool) -> &mut Self {
-        self.h1_writev = Some(val);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/1 connections should try to use vectored writes,
+        /// or always flatten into a single buffer.
+        ///
+        /// Note that setting this to false may mean more copies of body data,
+        /// but may also improve performance when an IO transport doesn't
+        /// support vectored writes well, such as most TLS implementations.
+        ///
+        /// Setting this to true will force rama_http_core to use queued strategy
+        /// which may eliminate unnecessary cloning on some TLS backends
+        ///
+        /// Default is `auto`. In this mode rama_http_core will try to guess which
+        /// mode to use
+        pub fn writev(mut self, val: Option<bool>) -> Self {
+            self.h1_writev = val;
+            self
+        }
     }
 
-    /// Set the maximum buffer size for the connection.
-    ///
-    /// Default is ~400kb.
-    ///
-    /// # Panics
-    ///
-    /// The minimum value allowed is 8192. This method panics if the passed `max` is less than the minimum.
-    pub fn max_buf_size(&mut self, max: usize) -> &mut Self {
-        assert!(
-            max >= proto::h1::MINIMUM_MAX_BUFFER_SIZE,
-            "the max_buf_size cannot be smaller than the minimum that h1 specifies."
-        );
-        self.max_buf_size = Some(max);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum buffer size for the connection.
+        ///
+        /// Default is ~400kb.
+        ///
+        /// # Error
+        ///
+        /// The minimum value allowed is 8192. This method errors if the passed `max` is less than the minimum.
+        pub fn max_buf_size(mut self, max: Option<usize>) -> Result<Self, OpaqueError> {
+            if max.map(|max| max < proto::h1::MINIMUM_MAX_BUFFER_SIZE).unwrap_or_default() {
+                return Err(OpaqueError::from_display("the max_buf_size cannot be smaller than the minimum that h1 specifies"));
+            }
+            self.max_buf_size = max;
+            Ok(self)
+        }
     }
 
-    /// Set whether the `date` header should be included in HTTP responses.
-    ///
-    /// Note that including the `date` header is recommended by RFC 7231.
-    ///
-    /// Default is `true`.
-    pub fn auto_date_header(&mut self, enabled: bool) -> &mut Self {
-        self.date_header = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether the `date` header should be included in HTTP responses.
+        ///
+        /// Note that including the `date` header is recommended by RFC 7231.
+        ///
+        /// Default is `true`.
+        pub fn auto_date_header(mut self, enabled: bool) -> Self {
+            self.date_header = enabled;
+            self
+        }
     }
 
-    /// Aggregates flushes to better support pipelined responses.
-    ///
-    /// Experimental, may have bugs.
-    ///
-    /// Default is `false`.
-    pub fn pipeline_flush(&mut self, enabled: bool) -> &mut Self {
-        self.pipeline_flush = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Aggregates flushes to better support pipelined responses.
+        ///
+        /// Experimental, may have bugs.
+        ///
+        /// Default is `false`.
+        pub fn pipeline_flush(mut self, enabled: bool) -> Self {
+            self.pipeline_flush = enabled;
+            self
+        }
     }
 
     /// Bind a connection together with a [`Service`](crate::service::Service).

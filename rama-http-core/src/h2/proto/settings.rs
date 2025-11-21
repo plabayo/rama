@@ -52,20 +52,20 @@ impl Settings {
         C: Buf,
         P: Peer,
     {
-        if frame.is_ack() {
+        if frame.flags.is_ack() {
             match &self.local {
                 Local::WaitingAck(local) => {
                     tracing::debug!("received settings ACK; applying {:?}", local);
 
-                    if let Some(max) = local.max_frame_size() {
+                    if let Some(max) = local.config.max_frame_size {
                         codec.set_max_recv_frame_size(max as usize);
                     }
 
-                    if let Some(max) = local.max_header_list_size() {
+                    if let Some(max) = local.config.max_header_list_size {
                         codec.set_max_recv_header_list_size(max as usize);
                     }
 
-                    if let Some(val) = local.header_table_size() {
+                    if let Some(val) = local.config.header_table_size {
                         codec.set_recv_header_table_size(val as usize);
                     }
 
@@ -91,7 +91,7 @@ impl Settings {
     }
 
     pub(crate) fn send_settings(&mut self, frame: frame::Settings) -> Result<(), UserError> {
-        assert!(!frame.is_ack());
+        assert!(!frame.flags.is_ack());
         match &self.local {
             Local::ToSend(..) => {
                 tracing::debug!("SendSettingsWhilePending (send local, no early)");
@@ -146,11 +146,11 @@ impl Settings {
             let is_initial = self.mark_remote_initial_settings_as_received();
             streams.apply_remote_settings(&settings, is_initial)?;
 
-            if let Some(val) = settings.header_table_size() {
+            if let Some(val) = settings.config.header_table_size {
                 dst.set_send_header_table_size(val as usize);
             }
 
-            if let Some(val) = settings.max_frame_size() {
+            if let Some(val) = settings.config.max_frame_size {
                 dst.set_max_send_frame_size(val as usize);
             }
         }

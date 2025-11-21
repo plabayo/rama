@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
 
 use std::error;
@@ -50,7 +51,10 @@ pub trait HeaderEncode: TypedHeader {
     fn encode_to_value(&self) -> HeaderValue {
         let mut container = ExtendOnce(None);
         self.encode(&mut container);
-        container.0.unwrap()
+        container.0.unwrap_or_else(|| {
+            tracing::warn!("failed to get an encoded HeaderValue; default to empty");
+            HeaderValue::from_static("")
+        })
     }
 }
 

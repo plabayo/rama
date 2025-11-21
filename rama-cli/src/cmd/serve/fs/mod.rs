@@ -80,12 +80,12 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
     });
 
     let tcp_service = FsServiceBuilder::new()
-        .concurrent(cfg.concurrent)
-        .timeout(Duration::from_secs(cfg.timeout))
-        .maybe_forward(cfg.forward)
-        .maybe_tls_server_config(maybe_tls_server_config)
-        .maybe_content_path(cfg.path)
-        .directory_serve_mode(cfg.dir_serve)
+        .with_concurrent(cfg.concurrent)
+        .with_timeout(Duration::from_secs(cfg.timeout))
+        .maybe_with_forward(cfg.forward)
+        .maybe_with_tls_server_config(maybe_tls_server_config)
+        .maybe_with_content_path(cfg.path)
+        .with_directory_serve_mode(cfg.dir_serve)
         .build(Executor::graceful(graceful.clone()))
         .map_err(OpaqueError::from_boxed)
         .context("build serve service")?;

@@ -64,7 +64,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let mut h2 = HttpServer::h2(Executor::graceful(guard.clone()));
-        h2.h2_mut().enable_connect_protocol(); // required for WS sockets
+        h2.h2_mut().set_enable_connect_protocol(); // required for WS sockets
         let server = h2.service(
             Router::new().get("/", Html(INDEX)).connect(
                 "/echo",

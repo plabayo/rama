@@ -63,17 +63,12 @@ impl HttpProxyAddressLayer {
         Ok(Self::maybe(proxy_address))
     }
 
-    /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
-    #[must_use]
-    pub fn preserve(mut self, preserve: bool) -> Self {
-        self.preserve = preserve;
-        self
-    }
-
-    /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
-    pub fn set_preserve(&mut self, preserve: bool) -> &mut Self {
-        self.preserve = preserve;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
+        pub fn preserve(mut self, preserve: bool) -> Self {
+            self.preserve = preserve;
+            self
+        }
     }
 }
 
@@ -81,11 +76,11 @@ impl<S> Layer<S> for HttpProxyAddressLayer {
     type Service = HttpProxyAddressService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        HttpProxyAddressService::maybe(inner, self.address.clone()).preserve(self.preserve)
+        HttpProxyAddressService::maybe(inner, self.address.clone()).with_preserve(self.preserve)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        HttpProxyAddressService::maybe(inner, self.address).preserve(self.preserve)
+        HttpProxyAddressService::maybe(inner, self.address).with_preserve(self.preserve)
     }
 }
 
@@ -162,17 +157,12 @@ impl<S> HttpProxyAddressService<S> {
         Ok(Self::maybe(inner, proxy_address))
     }
 
-    /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
-    #[must_use]
-    pub const fn preserve(mut self, preserve: bool) -> Self {
-        self.preserve = preserve;
-        self
-    }
-
-    /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
-    pub fn set_preserve(&mut self, preserve: bool) -> &mut Self {
-        self.preserve = preserve;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
+        pub fn preserve(mut self, preserve: bool) -> Self {
+            self.preserve = preserve;
+            self
+        }
     }
 }
 

@@ -241,10 +241,10 @@ where
         if let Some(credential) = proxy_info.credential.clone() {
             match credential {
                 ProxyCredential::Basic(basic) => {
-                    connector.with_typed_header(ProxyAuthorization(basic));
+                    connector.set_typed_header(ProxyAuthorization(basic));
                 }
                 ProxyCredential::Bearer(bearer) => {
-                    connector.with_typed_header(ProxyAuthorization(bearer));
+                    connector.set_typed_header(ProxyAuthorization(bearer));
                 }
             }
         }
@@ -254,11 +254,11 @@ where
             for (name, value) in headers.into_iter() {
                 let http_name = name.header_name();
                 if http_name != PROXY_AUTHORIZATION && http_name != HOST {
-                    connector.with_header(http_name.clone(), value);
+                    connector.set_header(http_name.clone(), value);
                 }
                 map.push(name);
             }
-            connector.with_extension(map);
+            connector.set_extension(map);
         }
 
         let (headers, conn) = connector

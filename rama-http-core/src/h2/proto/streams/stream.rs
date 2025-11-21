@@ -333,14 +333,16 @@ impl Stream {
     }
 
     /// Current available stream send capacity
-    pub(super) fn capacity(&self, max_buffer_size: usize) -> WindowSize {
+    pub(super) fn capacity(&self, max_buffer_size: u32) -> WindowSize {
         let available = self.send_flow.available().as_size() as usize;
         let buffered = self.buffered_send_data;
 
-        available.min(max_buffer_size).saturating_sub(buffered) as WindowSize
+        available
+            .min(max_buffer_size as usize)
+            .saturating_sub(buffered) as WindowSize
     }
 
-    pub(super) fn assign_capacity(&mut self, capacity: WindowSize, max_buffer_size: usize) {
+    pub(super) fn assign_capacity(&mut self, capacity: WindowSize, max_buffer_size: u32) {
         let prev_capacity = self.capacity(max_buffer_size);
         debug_assert!(capacity > 0);
         // TODO: proper error handling
@@ -361,7 +363,7 @@ impl Stream {
         }
     }
 
-    pub(super) fn send_data(&mut self, len: WindowSize, max_buffer_size: usize) {
+    pub(super) fn send_data(&mut self, len: WindowSize, max_buffer_size: u32) {
         let prev_capacity = self.capacity(max_buffer_size);
 
         // TODO: proper error handling
@@ -442,12 +444,15 @@ impl Stream {
         }
     }
 
-    /// Set the stream's state to `Closed` with the given reason and initiator.
-    /// Notify the send and receive tasks, if they exist.
-    pub(super) fn set_reset(&mut self, reason: Reason, initiator: Initiator) {
-        self.state.set_reset(self.id, reason, initiator);
-        self.notify_push();
-        self.notify_recv();
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the stream's state to `Closed` with the given reason and initiator.
+        /// Notify the send and receive tasks, if they exist.
+        pub(super) fn reset(mut self, reason: Reason, initiator: Initiator) -> Self {
+            self.state.set_reset(self.id, reason, initiator);
+            self.notify_push();
+            self.notify_recv();
+            self
+        }
     }
 }
 

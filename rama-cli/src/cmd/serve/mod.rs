@@ -20,7 +20,7 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
         LevelFilter::DEBUG
     } else {
         LevelFilter::INFO
-    });
+    })?;
 
     let graceful_timeout = (cfg.graceful > 0.).then(|| Duration::from_secs_f64(cfg.graceful));
 

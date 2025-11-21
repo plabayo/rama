@@ -59,7 +59,7 @@ async fn test_http_mitm_proxy() {
     let executor = Executor::default();
 
     let mut http_tp = HttpServer::auto(executor);
-    http_tp.h2_mut().enable_connect_protocol();
+    http_tp.h2_mut().set_enable_connect_protocol();
     let tcp_service = TlsAcceptorLayer::new(data).into_layer(
         http_tp.service(
             Router::new()

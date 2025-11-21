@@ -31,18 +31,11 @@ impl<S> MockConnectorService<S> {
         }
     }
 
-    /// Set `max_buffer_size` that will be used when creating DuplexStream
-    pub fn set_max_buffer_size(&mut self, size: usize) -> &mut Self {
-        self.max_buffer_size = size;
-        self
-    }
-
-    /// [`MockConnectorService`] with `max_buffer_size` that will be used when creating DuplexStream
-    #[must_use]
-    pub fn with_max_buffer_size(self, size: usize) -> Self {
-        Self {
-            max_buffer_size: size,
-            ..self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set `max_buffer_size` that will be used when creating DuplexStream
+        pub fn max_buffer_size(mut self, size: usize) -> Self {
+            self.max_buffer_size = size;
+            self
         }
     }
 }

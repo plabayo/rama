@@ -76,7 +76,7 @@ mod tests {
             (
                 Request::builder()
                     .uri("/foo")
-                    .extension(Forwarded::new(ForwardedElement::forwarded_host(
+                    .extension(Forwarded::new(ForwardedElement::new_forwarded_host(
                         Domain::from_static("example.com"),
                     )))
                     .body(())

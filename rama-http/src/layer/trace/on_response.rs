@@ -66,75 +66,44 @@ impl DefaultOnResponse {
         Self::default()
     }
 
-    /// Set the [`Level`] used for [tracing events].
-    ///
-    /// Please note that while this will set the level for the tracing events
-    /// themselves, it might cause them to lack expected information, like
-    /// request method or path. You can address this using
-    /// [`DefaultMakeSpan::level`].
-    ///
-    /// Defaults to [`Level::DEBUG`].
-    ///
-    /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
-    #[must_use]
-    pub fn level(mut self, level: Level) -> Self {
-        self.level = level;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Level`] used for [tracing events].
+        ///
+        /// Please note that while this will set the level for the tracing events
+        /// themselves, it might cause them to lack expected information, like
+        /// request method or path. You can address this using
+        /// [`DefaultMakeSpan::level`].
+        ///
+        /// Defaults to [`Level::DEBUG`].
+        ///
+        /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
+        /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
+        pub fn level(mut self, level: Level) -> Self {
+            self.level = level;
+            self
+        }
     }
 
-    /// Set the [`Level`] used for [tracing events].
-    ///
-    /// Please note that while this will set the level for the tracing events
-    /// themselves, it might cause them to lack expected information, like
-    /// request method or path. You can address this using
-    /// [`DefaultMakeSpan::level`].
-    ///
-    /// Defaults to [`Level::DEBUG`].
-    ///
-    /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
-    pub fn set_level(&mut self, level: Level) -> &mut Self {
-        self.level = level;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`LatencyUnit`] latencies will be reported in.
+        ///
+        /// Defaults to [`LatencyUnit::Millis`].
+        pub fn latency_unit(mut self, latency_unit: LatencyUnit) -> Self {
+            self.latency_unit = latency_unit;
+            self
+        }
     }
 
-    /// Set the [`LatencyUnit`] latencies will be reported in.
-    ///
-    /// Defaults to [`LatencyUnit::Millis`].
-    #[must_use]
-    pub fn latency_unit(mut self, latency_unit: LatencyUnit) -> Self {
-        self.latency_unit = latency_unit;
-        self
-    }
-
-    /// Set the [`LatencyUnit`] latencies will be reported in.
-    ///
-    /// Defaults to [`LatencyUnit::Millis`].
-    pub fn set_latency_unit(&mut self, latency_unit: LatencyUnit) -> &mut Self {
-        self.latency_unit = latency_unit;
-        self
-    }
-
-    /// Include response headers on the [`Event`].
-    ///
-    /// By default headers are not included.
-    ///
-    /// [`Event`]: tracing::Event
-    #[must_use]
-    pub fn include_headers(mut self, include_headers: bool) -> Self {
-        self.include_headers = include_headers;
-        self
-    }
-
-    /// Include response headers on the [`Event`].
-    ///
-    /// By default headers are not included.
-    ///
-    /// [`Event`]: tracing::Event
-    pub fn set_include_headers(&mut self, include_headers: bool) -> &mut Self {
-        self.include_headers = include_headers;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Include response headers on the [`Event`].
+        ///
+        /// By default headers are not included.
+        ///
+        /// [`Event`]: tracing::Event
+        pub fn include_headers(mut self, include_headers: bool) -> Self {
+            self.include_headers = include_headers;
+            self
+        }
     }
 }
 

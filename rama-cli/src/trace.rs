@@ -1,4 +1,5 @@
 use rama::{
+    error::{BoxError, ErrorContext as _},
     http::{client::EasyHttpWebClient, service::opentelemetry::OtelExporter},
     net::client::pool::http::HttpPooledConnectorConfig,
     telemetry::{
@@ -8,26 +9,26 @@ use rama::{
             sdk::{Resource, trace::SdkTracerProvider},
             trace::TracerProvider,
         },
-        tracing::subscriber::{
-            EnvFilter, filter::Directive, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+        tracing::{
+            self, layer,
+            subscriber::{
+                EnvFilter, filter::Directive, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+            },
         },
-        tracing::{self, layer},
     },
 };
 
 use std::io::IsTerminal as _;
 
-pub fn init_tracing(default_directive: impl Into<Directive>) {
+pub fn init_tracing(default_directive: impl Into<Directive>) -> Result<(), BoxError> {
     if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
-        init_structured(default_directive);
-        tracing::trace!("structured (OTEL) tracing init complete");
+        init_structured(default_directive)
     } else {
-        init_default(default_directive);
-        tracing::trace!("default tracing init complete");
+        init_default(default_directive)
     }
 }
 
-fn init_default(default_directive: impl Into<Directive>) {
+fn init_default(default_directive: impl Into<Directive>) -> Result<(), BoxError> {
     tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -35,10 +36,13 @@ fn init_default(default_directive: impl Into<Directive>) {
                 .with_default_directive(default_directive.into())
                 .from_env_lossy(),
         )
-        .init();
+        .try_init()
+        .context("try init (default) tracing subscriber")?;
+
+    Ok(())
 }
 
-fn init_structured(default_directive: impl Into<Directive>) {
+fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxError> {
     let svc = EasyHttpWebClient::builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
@@ -46,7 +50,7 @@ fn init_structured(default_directive: impl Into<Directive>) {
         .with_tls_support_using_boringssl(None)
         .with_default_http_connector()
         .with_connection_pool(HttpPooledConnectorConfig::default())
-        .expect("build http exporter client service")
+        .context("build http exporter client service")?
         .build();
     let client = OtelExporter::new(svc);
 
@@ -54,7 +58,7 @@ fn init_structured(default_directive: impl Into<Directive>) {
         .with_http()
         .with_http_client(client)
         .build()
-        .unwrap();
+        .context("build span exporter w/ rama http client")?;
 
     let provider = SdkTracerProvider::builder()
         .with_batch_exporter(exportor)
@@ -82,5 +86,8 @@ fn init_structured(default_directive: impl Into<Directive>) {
                 .with_default_directive(default_directive.into())
                 .from_env_lossy(),
         )
-        .init();
+        .try_init()
+        .context("try init (structured) tracing subscriber")?;
+
+    Ok(())
 }

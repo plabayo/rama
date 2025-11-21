@@ -171,19 +171,13 @@ impl UserAgentClassifierLayer {
         }
     }
 
-    /// Define a custom header to allow overwriting certain
-    /// [`UserAgent`] information.
-    #[must_use]
-    pub fn overwrite_header(mut self, header: HeaderName) -> Self {
-        self.overwrite_header = Some(header);
-        self
-    }
-
-    /// Define a custom header to allow overwriting certain
-    /// [`UserAgent`] information.
-    pub fn set_overwrite_header(&mut self, header: HeaderName) -> &mut Self {
-        self.overwrite_header = Some(header);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define a custom header to allow overwriting certain
+        /// [`UserAgent`] information.
+        pub fn overwrite_header(mut self, header: HeaderName) -> Self {
+            self.overwrite_header = Some(header);
+            self
+        }
     }
 }
 
@@ -305,7 +299,7 @@ mod tests {
         }
 
         let service = UserAgentClassifierLayer::new()
-            .overwrite_header(HeaderName::from_static("x-proxy-ua"))
+            .with_overwrite_header(HeaderName::from_static("x-proxy-ua"))
             .into_layer(service_fn(handle));
 
         let _ = service
@@ -340,7 +334,7 @@ mod tests {
         }
 
         let service = UserAgentClassifierLayer::new()
-            .overwrite_header(HeaderName::from_static("x-proxy-ua"))
+            .with_overwrite_header(HeaderName::from_static("x-proxy-ua"))
             .into_layer(service_fn(handle));
 
         let _ = service

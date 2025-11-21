@@ -1370,7 +1370,7 @@ async fn http1_allow_half_close() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     http1::Builder::new()
-        .half_close(true)
+        .with_half_close(true)
         .serve_connection(
             socket,
             RamaHttpService::new(service_fn(|_| {
@@ -1396,7 +1396,7 @@ async fn disconnect_after_reading_request_before_responding() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     http1::Builder::new()
-        .half_close(false)
+        .with_half_close(false)
         .serve_connection(
             socket,
             RamaHttpService::new(service_fn(|_| {
@@ -1491,7 +1491,7 @@ async fn header_read_timeout_slow_writes() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
-        .header_read_timeout(Duration::from_secs(5))
+        .with_header_read_timeout(Duration::from_secs(5))
         .serve_connection(
             socket,
             RamaHttpService::new(service_fn(|_| {
@@ -1520,7 +1520,7 @@ async fn header_read_timeout_starts_immediately() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
-        .header_read_timeout(Duration::from_secs(2))
+        .with_header_read_timeout(Duration::from_secs(2))
         .serve_connection(socket, RamaHttpService::new(unreachable_service()));
     assert!(conn.await.unwrap_err().is_timeout());
 }
@@ -1586,7 +1586,7 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
-        .header_read_timeout(Duration::from_secs(5))
+        .with_header_read_timeout(Duration::from_secs(5))
         .serve_connection(
             socket,
             RamaHttpService::new(service_fn(|_| {
@@ -1629,7 +1629,7 @@ async fn header_read_timeout_as_idle_timeout() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
-        .header_read_timeout(Duration::from_secs(3))
+        .with_header_read_timeout(Duration::from_secs(3))
         .serve_connection(
             socket,
             RamaHttpService::new(service_fn(|_| {
@@ -2295,16 +2295,15 @@ async fn illegal_request_length_returns_400_response() {
 }
 
 #[test]
-#[should_panic]
-fn max_buf_size_panic_too_small() {
+fn max_buf_size_error_too_small() {
     const MAX: usize = 8191;
-    http1::Builder::new().max_buf_size(MAX);
+    assert!(http1::Builder::new().try_with_max_buf_size(MAX).is_err());
 }
 
 #[test]
-fn max_buf_size_no_panic() {
+fn max_buf_size_no_error() {
     const MAX: usize = 8193;
-    http1::Builder::new().max_buf_size(MAX);
+    assert!(http1::Builder::new().try_with_max_buf_size(MAX).is_ok());
 }
 
 #[tokio::test]
@@ -2327,7 +2326,8 @@ async fn max_buf_size() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     http1::Builder::new()
-        .max_buf_size(MAX)
+        .try_with_max_buf_size(MAX)
+        .unwrap()
         .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
         .expect_err("should TooLarge error");
@@ -2598,9 +2598,9 @@ async fn http2_keep_alive_detects_unresponsive_client() {
     let socket = ServiceInput::new(socket);
 
     let err = http2::Builder::new(Executor::new())
-        .keep_alive_interval(Duration::from_secs(1))
-        .keep_alive_timeout(Duration::from_secs(1))
-        .auto_date_header(true)
+        .with_keep_alive_interval(Duration::from_secs(1))
+        .with_keep_alive_timeout(Duration::from_secs(1))
+        .with_auto_date_header(true)
         .serve_connection(socket, RamaHttpService::new(unreachable_service()))
         .await
         .expect_err("serve_connection should error");
@@ -2617,8 +2617,8 @@ async fn http2_keep_alive_with_responsive_client() {
         let socket = ServiceInput::new(socket);
 
         http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, RamaHttpService::new(HelloWorld))
             .await
             .expect("serve_connection");
@@ -2650,9 +2650,9 @@ async fn http2_check_date_header_disabled() {
         let socket = ServiceInput::new(socket);
 
         http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .auto_date_header(false)
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_auto_date_header(false)
+            .with_keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, RamaHttpService::new(HelloWorld))
             .await
             .expect("serve_connection");
@@ -2717,8 +2717,8 @@ async fn http2_keep_alive_count_server_pings() {
         let socket = ServiceInput::new(socket);
 
         http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, RamaHttpService::new(unreachable_service()))
             .await
             .expect("serve_connection");
@@ -3244,8 +3244,8 @@ impl ServeOptions {
                                             .serve_connection(stream, service).await.unwrap();
                                     } else {
                                         http1::Builder::new()
-                                            .keep_alive(_options.keep_alive)
-                                            .pipeline_flush(_options.pipeline)
+                                            .with_keep_alive(_options.keep_alive)
+                                            .with_pipeline_flush(_options.pipeline)
                                             .serve_connection(stream, service).await.unwrap();
                                     }
                                 });

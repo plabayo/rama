@@ -69,69 +69,44 @@ impl<S> Compression<S, DefaultPredicate> {
 impl<S, P> Compression<S, P> {
     define_inner_service_accessors!();
 
-    /// Sets whether to enable the gzip encoding.
-    #[must_use]
-    pub fn gzip(mut self, enable: bool) -> Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the gzip encoding.
+        pub fn gzip(mut self, enable: bool) -> Self {
+            self.accept.set_gzip(enable);
+            self
+        }
     }
 
-    /// Sets whether to enable the gzip encoding.
-    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the Deflate encoding.
+        pub fn deflate(mut self, enable: bool) -> Self {
+            self.accept.set_deflate(enable);
+            self
+        }
     }
 
-    /// Sets whether to enable the Deflate encoding.
-    #[must_use]
-    pub fn deflate(mut self, enable: bool) -> Self {
-        self.accept.set_deflate(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the Brotli encoding.
+        pub fn br(mut self, enable: bool) -> Self {
+            self.accept.set_br(enable);
+            self
+        }
     }
 
-    /// Sets whether to enable the Deflate encoding.
-    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_deflate(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the Zstd encoding.
+        pub fn zstd(mut self, enable: bool) -> Self {
+            self.accept.set_zstd(enable);
+            self
+        }
     }
 
-    /// Sets whether to enable the Brotli encoding.
-    #[must_use]
-    pub fn br(mut self, enable: bool) -> Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to enable the Brotli encoding.
-    pub fn set_br(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to enable the Zstd encoding.
-    #[must_use]
-    pub fn zstd(mut self, enable: bool) -> Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets whether to enable the Zstd encoding.
-    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets the compression quality.
-    #[must_use]
-    pub fn quality(mut self, quality: CompressionLevel) -> Self {
-        self.quality = quality;
-        self
-    }
-
-    /// Sets the compression quality.
-    pub fn set_quality(&mut self, quality: CompressionLevel) -> &mut Self {
-        self.quality = quality;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the compression quality.
+        pub fn quality(mut self, quality: CompressionLevel) -> Self {
+            self.quality = quality;
+            self
+        }
     }
 
     /// Replace the current compression predicate.
@@ -162,7 +137,7 @@ impl<S, P> Compression<S, P> {
     ///     // don't compress responses who's `content-type` starts with `application/json`
     ///     .and(NotForContentType::new("application/json"));
     ///
-    /// let service = Compression::new(service).compress_when(predicate);
+    /// let service = Compression::new(service).with_compress_predicate(predicate);
     /// ```
     ///
     /// See [`predicate`](super::predicate) for more utilities for building compression predicates.
@@ -170,7 +145,7 @@ impl<S, P> Compression<S, P> {
     /// Responses that are already compressed (ie have a `content-encoding` header) will _never_ be
     /// recompressed, regardless what they predicate says.
     #[must_use]
-    pub fn compress_when<C>(self, predicate: C) -> Compression<S, C>
+    pub fn with_compress_predicate<C>(self, predicate: C) -> Compression<S, C>
     where
         C: Predicate,
     {

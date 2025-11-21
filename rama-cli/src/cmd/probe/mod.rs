@@ -11,7 +11,7 @@ pub async fn run(cfg: ProbeCommand) -> Result<(), BoxError> {
         LevelFilter::DEBUG
     } else {
         LevelFilter::INFO
-    });
+    })?;
 
     match cfg.commands {
         ProbeSubcommand::Tls(cfg) => tls::run(cfg).await,

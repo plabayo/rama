@@ -280,7 +280,7 @@ where
             Some(Version::HTTP_2) => Either3::A({
                 let mut http = HttpServer::h2(executor);
                 if self.ws_support {
-                    http.h2_mut().enable_connect_protocol();
+                    http.h2_mut().set_enable_connect_protocol();
                 }
                 http.service(http_service)
             }),
@@ -293,7 +293,7 @@ where
             None => Either3::C({
                 let mut http = HttpServer::auto(executor);
                 if self.ws_support {
-                    http.h2_mut().enable_connect_protocol();
+                    http.h2_mut().set_enable_connect_protocol();
                 }
                 http.service(http_service)
             }),

@@ -243,7 +243,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
         .unwrap_or_default();
 
     let mut http_tp = HttpServer::auto(executor);
-    http_tp.h2_mut().enable_connect_protocol();
+    http_tp.h2_mut().set_enable_connect_protocol();
 
     let http_transport_service = http_tp.service(http_service);
 
@@ -264,8 +264,8 @@ fn new_http_mitm_proxy(
         TraceLayer::new_for_http(),
         ConsumeErrLayer::default(),
         UserAgentEmulateLayer::new(state.ua_db.clone())
-            .try_auto_detect_user_agent(true)
-            .optional(true),
+            .with_try_auto_detect_user_agent(true)
+            .with_is_optional(true),
         CompressAdaptLayer::default(),
         AddRequiredRequestHeadersLayer::new(),
         EmulateTlsProfileLayer::new(),

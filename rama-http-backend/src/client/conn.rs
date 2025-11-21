@@ -125,7 +125,7 @@ where
 
                 if req.extensions().get::<Protocol>().is_some() {
                     // e.g. used for h2 bootstrap support for WebSocket
-                    builder.enable_connect_protocol(1);
+                    builder.set_enable_connect_protocol(1);
                 }
 
                 if let Some(params) = req
@@ -134,16 +134,16 @@ where
                     .or_else(|| req.extensions().get())
                 {
                     if let Some(order) = params.headers_pseudo_order.clone() {
-                        builder.headers_pseudo_order(order);
+                        builder.set_headers_pseudo_order(order);
                     }
                     if let Some(ref frames) = params.early_frames {
                         let v = frames.as_slice().to_vec();
-                        builder.early_frames(v);
+                        builder.set_early_frames(v);
                     }
                 } else if let Some(pseudo_order) =
                     req.extensions().get::<PseudoHeaderOrder>().cloned()
                 {
-                    builder.headers_pseudo_order(pseudo_order);
+                    builder.set_headers_pseudo_order(pseudo_order);
                 }
 
                 let (sender, conn) = builder.handshake(io).await?;
@@ -184,7 +184,7 @@ where
                 tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
                 let mut builder = rama_http_core::client::conn::http1::Builder::new();
                 if let Some(params) = req.extensions().get::<Http1ClientContextParams>() {
-                    builder.title_case_headers(params.title_header_case);
+                    builder.set_title_case_headers(params.title_header_case);
                 }
                 let (sender, conn) = builder.handshake(io).await?;
                 let conn = conn.with_upgrades();

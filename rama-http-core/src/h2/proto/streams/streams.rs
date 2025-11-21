@@ -196,7 +196,7 @@ where
                     frame::EarlyFrame::Priority(priority) => priority.into(),
                     frame::EarlyFrame::Settings(settings) => {
                         // NOTE: if ever issues, we might need to do something locally with settings as well
-                        return Poll::Ready(Ok((!settings.is_ack()).then_some(settings)));
+                        return Poll::Ready(Ok((!settings.flags.is_ack()).then_some(settings)));
                     }
                     frame::EarlyFrame::WindowUpdate(window_update) => window_update.into(),
                 };
