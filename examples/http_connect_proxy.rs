@@ -133,7 +133,7 @@ async fn main() {
                     HijackLayer::new(
                         DomainMatcher::exact("echo.example.internal"),
                         Arc::new(match_service!{
-                            HttpMatcher::post("/lucky/:number") => async move |path: Path<APILuckyParams>| {
+                            HttpMatcher::post("/lucky/{number}") => async move |path: Path<APILuckyParams>| {
                                 Json(json!({
                                     "lucky_number": path.number,
                                 }))

@@ -194,7 +194,7 @@ async fn main() {
             .listen(
                 ADDR,
                 (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
-                    WebService::default().get(&path, move || {
+                    WebService::default().with_get(&path, move || {
                         let state = state.clone();
                         std::future::ready((
                             Headers::single(ContentType::octet_stream()),

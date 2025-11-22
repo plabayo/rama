@@ -109,7 +109,7 @@ mod test {
             alive: Option<bool>,
         }
 
-        let service = WebService::default().post("/", async |Json(body): Json<Input>| {
+        let service = WebService::default().with_post("/", async |Json(body): Json<Input>| {
             assert_eq!(body.name, "glen");
             assert_eq!(body.age, 42);
             assert_eq!(body.alive, None);
@@ -136,7 +136,8 @@ mod test {
             _alive: Option<bool>,
         }
 
-        let service = WebService::default().post("/", async |Json(_): Json<Input>| StatusCode::OK);
+        let service =
+            WebService::default().with_post("/", async |Json(_): Json<Input>| StatusCode::OK);
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -156,7 +157,8 @@ mod test {
             _alive: Option<bool>,
         }
 
-        let service = WebService::default().post("/", async |Json(_): Json<Input>| StatusCode::OK);
+        let service =
+            WebService::default().with_post("/", async |Json(_): Json<Input>| StatusCode::OK);
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)

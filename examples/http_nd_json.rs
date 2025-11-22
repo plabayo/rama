@@ -103,7 +103,7 @@ async fn main() {
     graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
         let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
-            Router::new().get("/orders", api_json_events_endpoint),
+            Router::new().with_get("/orders", api_json_events_endpoint),
         ));
         listener
             .serve_graceful(guard, HttpServer::auto(exec).service(app))

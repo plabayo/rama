@@ -92,7 +92,7 @@ async fn spawn_http_server() -> SocketAddress {
         .expect("get bind address of http server")
         .into();
 
-    let app = Router::new().get("/ping", "pong");
+    let app = Router::new().with_get("/ping", "pong");
     let server = HttpServer::auto(Executor::default()).service(Arc::new(app));
 
     tokio::spawn(tcp_service.serve(server));

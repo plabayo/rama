@@ -1,7 +1,12 @@
+use std::sync::Arc;
+
 use crate::service::web::response::IntoResponse;
 use crate::{Request, StatusCode};
 use ahash::{HashMap, HashMapExt as _};
 use rama_core::extensions::Extensions;
+use rama_utils::str::starts_with_ignore_ascii_case;
+use smallvec::SmallVec;
+use smol_str::StrExt as _;
 
 mod de;
 
@@ -9,15 +14,15 @@ mod de;
 /// parameters that are inserted in the [`Context`],
 /// in case the [`PathMatcher`] found a match for the given [`Request`].
 pub struct UriParams {
-    params: Option<HashMap<String, String>>,
-    glob: Option<String>,
+    params: Option<HashMap<Arc<str>, Arc<str>>>,
+    glob: Option<Arc<str>>,
 }
 
 impl UriParams {
-    fn insert(&mut self, name: String, value: String) {
+    fn insert(&mut self, name: impl Into<Arc<str>>, value: impl Into<Arc<str>>) {
         self.params
             .get_or_insert_with(HashMap::new)
-            .insert(name, value);
+            .insert(name.into(), value.into());
     }
 
     /// Some str slice will be returned in case a param could be found for the given name.
@@ -25,17 +30,15 @@ impl UriParams {
         self.params
             .as_ref()
             .and_then(|params| params.get(name.as_ref()))
-            .map(String::as_str)
+            .map(AsRef::as_ref)
     }
 
     fn append_glob(&mut self, value: &str) {
-        match self.glob {
-            Some(ref mut glob) => {
-                glob.push('/');
-                glob.push_str(value);
-            }
-            None => self.glob = Some(format!("/{value}")),
-        }
+        self.glob = Some(Arc::from(if let Some(glob) = self.glob.take() {
+            smol_str::format_smolstr!("{glob}/{value}")
+        } else {
+            smol_str::format_smolstr!("/{value}")
+        }))
     }
 
     /// Some str slice will be returned in case a glob value was captured
@@ -54,7 +57,7 @@ impl UriParams {
             Some(ref params) => {
                 let params: Vec<_> = params
                     .iter()
-                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .map(|(k, v)| (k.as_ref(), v.as_ref()))
                     .collect();
                 let deserializer = de::PathDeserializer::new(&params);
                 T::deserialize(deserializer)
@@ -68,8 +71,8 @@ impl UriParams {
     pub fn extend<I, K, V>(&mut self, iter: I) -> &mut Self
     where
         I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
+        K: Into<Arc<str>>,
+        V: Into<Arc<str>>,
     {
         let params = self.params.get_or_insert_with(HashMap::new);
         for (k, v) in iter {
@@ -81,7 +84,7 @@ impl UriParams {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.params
             .as_ref()
-            .map(|params| params.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .map(|params| params.iter().map(|(k, v)| (k.as_ref(), v.as_ref())))
             .into_iter()
             .flatten()
     }
@@ -158,15 +161,16 @@ impl IntoResponse for UriParamsDeserializeError {
 
 #[derive(Debug, Clone)]
 enum PathFragment {
-    Literal(String),
-    Param(String),
+    Literal(Arc<str>),
+    Param(Arc<str>),
     Glob,
 }
 
 #[derive(Debug, Clone)]
 enum PathMatcherKind {
-    Literal(String),
-    FragmentList(Vec<PathFragment>),
+    Prefix(Arc<str>),
+    Literal(Arc<str>),
+    FragmentList(std::sync::Arc<[PathFragment]>),
 }
 
 #[derive(Debug, Clone)]
@@ -181,21 +185,21 @@ impl PathMatcher {
         let path = path.as_ref();
         let path = path.trim().trim_matches('/');
 
-        if !path.contains([':', '*', '{', '}']) {
+        if !path.contains(['*', '{', '}']) {
             return Self {
-                kind: PathMatcherKind::Literal(path.to_lowercase()),
+                kind: PathMatcherKind::Literal(Arc::from(path)),
             };
         }
 
-        let path_parts: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let path_parts: SmallVec<[_; 8]> = path.split('/').filter(|s| !s.is_empty()).collect();
         let fragment_length = path_parts.len();
         if fragment_length == 1 && path_parts[0].is_empty() {
             return Self {
-                kind: PathMatcherKind::FragmentList(vec![PathFragment::Glob]),
+                kind: PathMatcherKind::FragmentList(Arc::from([PathFragment::Glob])),
             };
         }
 
-        let fragments: Vec<PathFragment> = path_parts
+        let fragments: SmallVec<[_; 8]> = path_parts
             .into_iter()
             .enumerate()
             .filter_map(|(index, s)| {
@@ -203,33 +207,161 @@ impl PathMatcher {
                     return None;
                 }
                 if s.starts_with(':') {
-                    Some(PathFragment::Param(
-                        s.trim_start_matches(':').to_lowercase(),
-                    ))
+                    Some(PathFragment::Param(Arc::from(
+                        s.trim_start_matches(':').to_lowercase_smolstr(),
+                    )))
                 } else if s.starts_with('{') && s.ends_with('}') && s.len() > 2 {
-                    let param_name = s[1..s.len() - 1].to_lowercase();
-                    Some(PathFragment::Param(param_name))
+                    let param_name = s[1..s.len() - 1].to_lowercase_smolstr();
+                    Some(PathFragment::Param(Arc::from(param_name)))
                 } else if s == "*" && index == fragment_length - 1 {
                     Some(PathFragment::Glob)
                 } else {
-                    Some(PathFragment::Literal(s.to_lowercase()))
+                    Some(PathFragment::Literal(Arc::from(s.to_lowercase_smolstr())))
                 }
             })
             .collect();
 
+        if fragments
+            .iter()
+            .all(|f| matches!(f, PathFragment::Literal(_)))
+        {
+            // optimization for pure literal paths..
+            return Self {
+                kind: PathMatcherKind::Literal(Arc::from(path)),
+            };
+        }
+
         Self {
-            kind: PathMatcherKind::FragmentList(fragments),
+            kind: PathMatcherKind::FragmentList(Arc::from(fragments.as_slice())),
         }
     }
 
-    pub(crate) fn matches_path(&self, path: &str) -> Option<UriParams> {
+    /// Create a new [`PathMatcher`] for the given prefix.
+    pub fn new_prefix(path: impl AsRef<str>) -> Self {
+        let path = path.as_ref();
         let path = path.trim().trim_matches('/');
+        Self {
+            kind: PathMatcherKind::Prefix(path.into()),
+        }
+    }
+
+    /// Create a new [`PathMatcher`] for the given literal.
+    ///
+    /// Useful constructor in case you want to create a literal
+    /// with special characters given [`Self::new`] would interpret
+    /// something like `/*` as a glob, while you might require a literal *...
+    pub fn new_literal(path: impl AsRef<str>) -> Self {
+        let path = path.as_ref();
+        let path = path.trim().trim_matches('/');
+        Self {
+            kind: PathMatcherKind::Literal(path.into()),
+        }
+    }
+
+    #[must_use]
+    pub fn fragment_count(&self) -> usize {
         match &self.kind {
+            PathMatcherKind::Prefix(_) | PathMatcherKind::Literal(_) => 0,
+            PathMatcherKind::FragmentList(path_fragments) => path_fragments.len(),
+        }
+    }
+
+    /// Try to remove the literals that prefix other fragments. This can be useful
+    /// for routers which want to first match on a literal, and do the rest as a normal prefix.
+    ///
+    /// Err is returned with the original data in case it doesn't contain literal prefixes.
+    pub fn try_remove_literal_prefix(
+        self,
+        allow_glob: bool,
+    ) -> Result<(Arc<str>, Option<Self>), Self> {
+        match self.kind {
+            PathMatcherKind::Literal(s) | PathMatcherKind::Prefix(s) => Ok((s, None)),
+            PathMatcherKind::FragmentList(fragments) => {
+                let mut pos = 0;
+                for fragment in fragments.iter() {
+                    if !matches!(fragment, PathFragment::Literal(_)) {
+                        break;
+                    }
+                    pos += 1;
+                }
+                if pos == 0 || pos == fragments.len() {
+                    return Err(Self {
+                        kind: PathMatcherKind::FragmentList(fragments),
+                    });
+                }
+                let (fragments, rem) = fragments.split_at(pos);
+
+                let mut output = String::with_capacity(
+                    fragments.len()
+                        + fragments
+                            .iter()
+                            .map(|f| match f {
+                                PathFragment::Literal(s) => s.len(),
+                                PathFragment::Param(_) | PathFragment::Glob => unreachable!(),
+                            })
+                            .sum::<usize>(),
+                );
+                for fragment in fragments {
+                    match fragment {
+                        PathFragment::Literal(s) => output.push_str(s.as_ref()),
+                        PathFragment::Param(_) | PathFragment::Glob => unreachable!(),
+                    }
+                }
+
+                Ok(if rem.is_empty() {
+                    (Arc::from(output), None)
+                } else if !allow_glob
+                    && rem
+                        .last()
+                        .map(|f| matches!(f, PathFragment::Glob))
+                        .unwrap_or_default()
+                {
+                    (
+                        Arc::from(output),
+                        Some(Self {
+                            kind: PathMatcherKind::FragmentList(Arc::from(&rem[..rem.len() - 1])),
+                        }),
+                    )
+                } else {
+                    (
+                        Arc::from(output),
+                        Some(Self {
+                            kind: PathMatcherKind::FragmentList(Arc::from(rem)),
+                        }),
+                    )
+                })
+            }
+        }
+    }
+
+    pub fn matches_path(&self, ext: Option<&mut Extensions>, path: impl AsRef<str>) -> bool {
+        match self.matches_path_inner(path) {
+            PathMatch::None => false,
+            PathMatch::Literal => true,
+            PathMatch::WithParams(params) => {
+                if let Some(ext) = ext {
+                    ext.insert(params);
+                }
+                true
+            }
+        }
+    }
+
+    fn matches_path_inner(&self, path: impl AsRef<str>) -> PathMatch {
+        let path = path.as_ref().trim().trim_matches('/');
+        match &self.kind {
+            PathMatcherKind::Prefix(prefix) => {
+                if prefix.is_empty() || starts_with_ignore_ascii_case(path, prefix) {
+                    PathMatch::Literal
+                } else {
+                    PathMatch::None
+                }
+            }
             PathMatcherKind::Literal(literal) => {
                 if literal.eq_ignore_ascii_case(path) {
-                    Some(UriParams::default())
+                    PathMatch::Literal
                 } else {
-                    None
+                    PathMatch::None
                 }
             }
             PathMatcherKind::FragmentList(fragments) => {
@@ -245,18 +377,18 @@ impl PathMatcher {
                         (Some(segment), Some(fragment)) => match fragment {
                             PathFragment::Literal(literal) => {
                                 if !literal.eq_ignore_ascii_case(segment) {
-                                    return None;
+                                    return PathMatch::None;
                                 }
                             }
                             PathFragment::Param(name) => {
                                 if segment.is_empty() {
-                                    return None;
+                                    return PathMatch::None;
                                 }
                                 let segment = percent_encoding::percent_decode(segment.as_bytes())
                                     .decode_utf8()
                                     .map(|s| s.to_string())
                                     .unwrap_or_else(|_| segment.to_owned());
-                                params.insert(name.to_owned(), segment);
+                                params.insert(name.to_string(), segment);
                             }
                             PathFragment::Glob => {
                                 params.append_glob(segment);
@@ -266,16 +398,18 @@ impl PathMatcher {
                             break;
                         }
                         (Some(segment), None) => {
-                            params.glob()?;
+                            if params.glob().is_none() {
+                                return PathMatch::None;
+                            }
                             params.append_glob(segment);
                         }
                         _ => {
-                            return None;
+                            return PathMatch::None;
                         }
                     }
                 }
 
-                Some(params)
+                PathMatch::WithParams(params)
             }
         }
     }
@@ -283,16 +417,15 @@ impl PathMatcher {
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for PathMatcher {
     fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
-        match self.matches_path(req.uri().path()) {
-            None => false,
-            Some(params) => {
-                if let Some(ext) = ext {
-                    ext.insert(params);
-                }
-                true
-            }
-        }
+        self.matches_path(ext, req.uri().path())
     }
+}
+
+#[derive(Debug, Clone)]
+enum PathMatch {
+    None,
+    Literal,
+    WithParams(UriParams),
 }
 
 #[cfg(test)]
@@ -304,15 +437,21 @@ mod test {
         struct TestCase {
             path: &'static str,
             matcher_path: &'static str,
-            result: Option<UriParams>,
+            result: PathMatch,
         }
 
         impl TestCase {
-            fn some(path: &'static str, matcher_path: &'static str, result: UriParams) -> Self {
+            fn some(
+                path: &'static str,
+                matcher_path: &'static str,
+                result: Option<UriParams>,
+            ) -> Self {
                 Self {
                     path,
                     matcher_path,
-                    result: Some(result),
+                    result: result
+                        .map(PathMatch::WithParams)
+                        .unwrap_or(PathMatch::Literal),
                 }
             }
 
@@ -320,70 +459,70 @@ mod test {
                 Self {
                     path,
                     matcher_path,
-                    result: None,
+                    result: PathMatch::None,
                 }
             }
         }
 
         let test_cases = vec![
-            TestCase::some("/", "/", UriParams::default()),
-            TestCase::some("", "/", UriParams::default()),
-            TestCase::some("/", "", UriParams::default()),
-            TestCase::some("", "", UriParams::default()),
-            TestCase::some("/foo", "/foo", UriParams::default()),
-            TestCase::some("/foo", "//foo//", UriParams::default()),
-            TestCase::some("/*foo", "/*foo", UriParams::default()),
-            TestCase::some("/foo/*bar/baz", "/foo/*bar/baz", UriParams::default()),
+            TestCase::some("/", "/", None),
+            TestCase::some("", "/", None),
+            TestCase::some("/", "", None),
+            TestCase::some("", "", None),
+            TestCase::some("/foo", "/foo", None),
+            TestCase::some("/foo", "//foo//", None),
+            TestCase::some("/*foo", "/*foo", None),
+            TestCase::some("/foo/*bar/baz", "/foo/*bar/baz", None),
             TestCase::none("/foo/*bar/baz", "/foo/*bar"),
-            TestCase::none("/", "/:foo"),
+            TestCase::none("/", "/{foo}"),
             TestCase::some(
                 "/",
                 "/*",
-                UriParams {
-                    glob: Some("/".to_owned()),
+                Some(UriParams {
+                    glob: Some(Arc::from("/")),
                     ..UriParams::default()
-                },
+                }),
             ),
-            TestCase::none("/", "//:foo"),
-            TestCase::none("", "/:foo"),
+            TestCase::none("/", "//{foo}"),
+            TestCase::none("", "/{foo}"),
             TestCase::none("/foo", "/bar"),
             TestCase::some(
                 "/person/glen%20dc/age",
-                "/person/:name/age",
-                UriParams {
+                "/person/{name}/age",
+                Some(UriParams {
                     params: Some({
                         let mut params = HashMap::new();
-                        params.insert("name".to_owned(), "glen dc".to_owned());
+                        params.insert(Arc::from("name"), Arc::from("glen dc"));
                         params
                     }),
                     ..UriParams::default()
-                },
+                }),
             ),
             TestCase::none("/foo", "/bar"),
-            TestCase::some("/foo", "foo", UriParams::default()),
-            TestCase::some("/foo/bar/", "foo/bar", UriParams::default()),
+            TestCase::some("/foo", "foo", None),
+            TestCase::some("/foo/bar/", "foo/bar", None),
             TestCase::none("/foo/bar/", "foo/baz"),
-            TestCase::some("/foo/bar/", "/foo/bar", UriParams::default()),
-            TestCase::some("/foo/bar", "/foo/bar", UriParams::default()),
-            TestCase::some("/foo/bar", "foo/bar", UriParams::default()),
-            TestCase::some("/book/oxford-dictionary/author", "/book/:title/author", {
+            TestCase::some("/foo/bar/", "/foo/bar", None),
+            TestCase::some("/foo/bar", "/foo/bar", None),
+            TestCase::some("/foo/bar", "foo/bar", None),
+            TestCase::some("/book/oxford-dictionary/author", "/book/{title}/author", {
                 let mut params = UriParams::default();
-                params.insert("title".to_owned(), "oxford-dictionary".to_owned());
-                params
+                params.insert("title", "oxford-dictionary");
+                Some(params)
             }),
             TestCase::some("/book/oxford-dictionary/author", "/book/{title}/author", {
                 let mut params = UriParams::default();
-                params.insert("title".to_owned(), "oxford-dictionary".to_owned());
-                params
+                params.insert("title", "oxford-dictionary");
+                Some(params)
             }),
             TestCase::some(
                 "/book/oxford-dictionary/author/0",
-                "/book/:title/author/:index",
+                "/book/{title}/author/{index}",
                 {
                     let mut params = UriParams::default();
-                    params.insert("title".to_owned(), "oxford-dictionary".to_owned());
-                    params.insert("index".to_owned(), "0".to_owned());
-                    params
+                    params.insert("title", "oxford-dictionary");
+                    params.insert("index", "0");
+                    Some(params)
                 },
             ),
             TestCase::some(
@@ -391,74 +530,149 @@ mod test {
                 "/book/{title}/author/{index}",
                 {
                     let mut params = UriParams::default();
-                    params.insert("title".to_owned(), "oxford-dictionary".to_owned());
-                    params.insert("index".to_owned(), "1".to_owned());
-                    params
+                    params.insert("title", "oxford-dictionary");
+                    params.insert("index", "1");
+                    Some(params)
                 },
             ),
-            TestCase::none("/book/oxford-dictionary", "/book/:title/author"),
+            TestCase::none("/book/oxford-dictionary", "/book/{title}/author"),
             TestCase::none(
                 "/book/oxford-dictionary/author/birthdate",
-                "/book/:title/author",
+                "/book/{title}/author",
             ),
-            TestCase::none("oxford-dictionary/author", "/book/:title/author"),
+            TestCase::none("oxford-dictionary/author", "/book/{title}/author"),
             TestCase::none("/foo", "/"),
             TestCase::none("/foo", "/*f"),
             TestCase::some(
                 "/foo",
                 "/*",
-                UriParams {
-                    glob: Some("/foo".to_owned()),
+                Some(UriParams {
+                    glob: Some("/foo".into()),
                     ..UriParams::default()
-                },
+                }),
             ),
             TestCase::some(
                 "/assets/css/reset.css",
                 "/assets/*",
-                UriParams {
-                    glob: Some("/css/reset.css".to_owned()),
+                Some(UriParams {
+                    glob: Some("/css/reset.css".into()),
                     ..UriParams::default()
-                },
+                }),
             ),
-            TestCase::some("/assets/eu/css/reset.css", "/assets/:local/*", {
+            TestCase::some("/assets/eu/css/reset.css", "/assets/{local}/*", {
                 let mut params = UriParams::default();
                 params.insert("local".to_owned(), "eu".to_owned());
-                params.glob = Some("/css/reset.css".to_owned());
-                params
+                params.glob = Some("/css/reset.css".into());
+                Some(params)
             }),
             TestCase::some("/assets/eu/css/reset.css", "/assets/:local/css/*", {
                 let mut params = UriParams::default();
                 params.insert("local".to_owned(), "eu".to_owned());
-                params.glob = Some("/reset.css".to_owned());
-                params
+                params.glob = Some("/reset.css".into());
+                Some(params)
             }),
         ];
         for test_case in test_cases.into_iter() {
             let matcher = PathMatcher::new(test_case.matcher_path);
-            let result = matcher.matches_path(test_case.path);
-            match (result.as_ref(), test_case.result.as_ref()) {
-                (None, None) => (),
-                (Some(result), Some(expected_result)) => {
+            let result = matcher.matches_path_inner(test_case.path);
+            match (result.clone(), test_case.result.clone()) {
+                (PathMatch::None, PathMatch::None) | (PathMatch::Literal, PathMatch::Literal) => (),
+                (PathMatch::WithParams(result), PathMatch::WithParams(expected_result)) => {
                     assert_eq!(
                         result.params,
                         expected_result.params,
-                        "unexpected result params: ({}).matcher({}) => {:?} != {:?}",
+                        "unexpected result params: ({:?})({}).matcher({}) => {:?} != {:?}",
+                        matcher,
                         test_case.matcher_path,
                         test_case.path,
                         result.params,
                         expected_result.params,
                     );
                     assert_eq!(
-                        result.glob, expected_result.glob,
-                        "unexpected result glob: ({}).matcher({}) => {:?} != {:?}",
-                        test_case.matcher_path, test_case.path, result.glob, expected_result.glob,
+                        result.glob,
+                        expected_result.glob,
+                        "unexpected result glob: ({:?})({}).matcher({}) => {:?} != {:?}",
+                        matcher,
+                        test_case.matcher_path,
+                        test_case.path,
+                        result.glob,
+                        expected_result.glob,
                     );
                 }
                 _ => {
                     panic!(
-                        "unexpected result: ({}).matcher({}) => {:?} != {:?}",
-                        test_case.matcher_path, test_case.path, result, test_case.result
+                        "unexpected result: ({:?})({}).matcher({}) => {:?} != {:?}",
+                        matcher, test_case.matcher_path, test_case.path, result, test_case.result
                     )
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_path_matcher_match_path_literal() {
+        for (prefix, path, is_match) in [
+            ("", "", true),
+            ("/", "/", true),
+            ("/", "", true),
+            ("", "/", true),
+            ("/foo", "/", false),
+            ("/foo", "", false),
+            ("/", "/foo", false),
+            ("", "/foo", false),
+            ("/foo", "/foo", true),
+            ("/*/foo", "/*/foo", true),
+            ("/*/foo", "/*/foo/", true),
+            ("/*/foo/", "/*/foo/", true),
+            ("/*/foo/", "/*/foo", true),
+            ("/*/foo/", "/bar/foo", false),
+            ("/bar/foo/", "/bar/foo/baz", false),
+            ("/bar/foo", "/bar/foo/baz", false),
+            ("/bar/foo*", "/bar/foo/baz", false),
+            ("/FoO/42", "/foo/42/1", false),
+            ("/FoO/42", "/foo/42/", true),
+        ] {
+            let matcher = PathMatcher::new_literal(prefix);
+            match (matcher.matches_path_inner(path), is_match) {
+                (PathMatch::Literal, true) | (PathMatch::None, false) => (),
+                (result, is_match) => {
+                    panic!(
+                        "unexpected result for path '{path}: {result:?} (is_match: {is_match}); matcher = {matcher:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_path_matcher_match_path_prefix() {
+        for (prefix, path, is_match) in [
+            ("", "", true),
+            ("/", "/", true),
+            ("/", "", true),
+            ("", "/", true),
+            ("/foo", "/", false),
+            ("/foo", "", false),
+            ("/", "/foo", true),
+            ("", "/foo", true),
+            ("/foo", "/foo", true),
+            ("/*/foo", "/*/foo", true),
+            ("/*/foo", "/*/foo/", true),
+            ("/*/foo/", "/*/foo/", true),
+            ("/*/foo/", "/*/foo", true),
+            ("/*/foo/", "/bar/foo", false),
+            ("/bar/foo/", "/bar/foo/baz", true),
+            ("/bar/foo", "/bar/foo/baz", true),
+            ("/bar/foo*", "/bar/foo/baz", false),
+            ("/FoO/42", "/foo/42/1", true),
+        ] {
+            let matcher = PathMatcher::new_prefix(prefix);
+            match (matcher.matches_path_inner(path), is_match) {
+                (PathMatch::Literal, true) | (PathMatch::None, false) => (),
+                (result, is_match) => {
+                    panic!(
+                        "unexpected result for path '{path}: {result:?} (is_match: {is_match}); matcher = {matcher:?}"
+                    );
                 }
             }
         }
@@ -469,11 +683,11 @@ mod test {
         let params = UriParams {
             params: Some({
                 let mut params = HashMap::new();
-                params.insert("name".to_owned(), "glen dc".to_owned());
-                params.insert("age".to_owned(), "42".to_owned());
+                params.insert(Arc::from("name"), Arc::from("glen dc"));
+                params.insert(Arc::from("age"), Arc::from("42"));
                 params
             }),
-            glob: Some("/age".to_owned()),
+            glob: Some("/age".into()),
         };
 
         #[derive(serde::Deserialize)]

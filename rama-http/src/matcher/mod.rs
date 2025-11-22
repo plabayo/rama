@@ -545,6 +545,24 @@ impl<Body> HttpMatcher<Body> {
         }
     }
 
+    /// Create a [`PathMatcher`] matcher for literal.
+    #[must_use]
+    pub fn path_literal(path: impl AsRef<str>) -> Self {
+        Self {
+            kind: HttpMatcherKind::Path(PathMatcher::new_literal(path)),
+            negate: false,
+        }
+    }
+
+    /// Create a [`PathMatcher`] matcher for prefix.
+    #[must_use]
+    pub fn path_prefix(path: impl AsRef<str>) -> Self {
+        Self {
+            kind: HttpMatcherKind::Path(PathMatcher::new_prefix(path)),
+            negate: false,
+        }
+    }
+
     /// Add a [`PathMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`PathMatcher`] for more information.

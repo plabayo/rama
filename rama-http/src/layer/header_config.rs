@@ -24,7 +24,7 @@
 //! async fn main() {
 //!     let service = HeaderConfigLayer::<Config>::required(HeaderName::from_static("x-proxy-config"))
 //!         .into_layer(WebService::default()
-//!             .get("/", async |ext: Extensions| {
+//!             .with_get("/", async |ext: Extensions| {
 //!                 let cfg = ext.get::<Config>().unwrap();
 //!                 assert_eq!(cfg.s, "E&G");
 //!                 assert_eq!(cfg.n, 1);

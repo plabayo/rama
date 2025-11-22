@@ -158,7 +158,7 @@ async fn main() -> Result<(), BoxError> {
                 // Remember kids: authentication != security
                 HijackLayer::new(
                     DomainMatcher::exact("har.toggle.internal"),
-                    Arc::new(WebService::default().post("/switch", async |req: Request| {
+                    Arc::new(WebService::default().with_post("/switch", async |req: Request| {
                         let state = req.extensions().get::<State>().unwrap();
                         if let Err(err) = state.har_toggle_ctl.send(()).await {
                             tracing::error!("failed to toggle HAR Recording: {err}");

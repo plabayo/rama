@@ -137,7 +137,9 @@ async fn main() {
                     StrictTransportSecurity::excluding_subdomains(Duration::from_secs(31536000)),
                 ),
             )
-                .into_layer(Router::new().get("/", Html(r##"<h1>Hello HSTS</h1>"##.to_owned()))),
+                .into_layer(
+                    Router::new().with_get("/", Html(r##"<h1>Hello HSTS</h1>"##.to_owned())),
+                ),
         );
 
         tcp_service

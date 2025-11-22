@@ -189,8 +189,8 @@ async fn run_server(addr: SocketAddress) {
             )
                 .into_layer(
                     WebService::default()
-                        .get("/", "Hello, World!")
-                        .get(
+                        .with_get("/", "Hello, World!")
+                        .with_get(
                             "/info",
                             async |req: Request| {
                                 req.headers()
@@ -209,7 +209,7 @@ async fn run_server(addr: SocketAddress) {
                                     )
                             }
                         )
-                        .post(
+                        .with_post(
                             "/introduce",
                             async |Json(data): Json<serde_json::Value>| {
                                 format!("Hello, {}!", data["name"].as_str().unwrap())

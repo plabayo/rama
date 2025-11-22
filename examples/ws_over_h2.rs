@@ -66,7 +66,7 @@ async fn main() {
         let mut h2 = HttpServer::h2(Executor::graceful(guard.clone()));
         h2.h2_mut().set_enable_connect_protocol(); // required for WS sockets
         let server = h2.service(
-            Router::new().get("/", Html(INDEX)).connect(
+            Router::new().with_get("/", Html(INDEX)).with_connect(
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG)
                     .into_layer(WebSocketAcceptor::new().into_echo_service()),

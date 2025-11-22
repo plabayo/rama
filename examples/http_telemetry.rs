@@ -148,7 +148,7 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
-                WebService::default().get("/", async |ext: Extensions| {
+                WebService::default().with_get("/", async |ext: Extensions| {
                     ext.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),

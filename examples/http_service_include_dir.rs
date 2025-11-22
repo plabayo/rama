@@ -36,7 +36,7 @@ async fn main() {
         .expect("bind TCP Listener");
 
     let http_fs_server =
-        HttpServer::default().service(WebService::default().dir_embed_with_serve_mode(
+        HttpServer::default().service(WebService::default().with_dir_embed_with_serve_mode(
             "",
             ASSETS,
             DirectoryServeMode::AppendIndexHtml,

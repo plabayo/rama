@@ -195,21 +195,20 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         http_forwarded_layer,
     );
 
-    let router = Router::new()
-        .with_state(state)
-        .get("/", Redirect::temporary("/consent"))
-        .get("/consent", endpoints::get_consent)
+    let router = Router::new_with_state(state)
+        .with_get("/", Redirect::temporary("/consent"))
+        .with_get("/consent", endpoints::get_consent)
         // Assets
-        .get("/assets/style.css", endpoints::get_assets_style)
-        .get("/assets/script.js", endpoints::get_assets_script)
+        .with_get("/assets/style.css", endpoints::get_assets_style)
+        .with_get("/assets/script.js", endpoints::get_assets_script)
         // Report and API
-        .get("/report", endpoints::get_report)
-        .get("/api/ws", ws_service)
-        .post(
+        .with_get("/report", endpoints::get_report)
+        .with_get("/api/ws", ws_service)
+        .with_post(
             "/api/fetch/number/{number}",
             endpoints::post_api_fetch_number,
         )
-        .post(
+        .with_post(
             "/api/xml/number/{number}",
             endpoints::post_api_xml_http_request_number,
         )
@@ -218,7 +217,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             HttpMatcher::method_get().or_method_post().and_path("/form"),
             endpoints::form,
         )
-        .not_found(async || {
+        .with_not_found(async || {
             tracing::debug!("redirecting to consent: fallback");
             Redirect::temporary("/consent")
         });

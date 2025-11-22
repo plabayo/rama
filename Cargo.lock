@@ -2597,6 +2597,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pin-project-lite",
+ "radix_trie",
  "rama-core",
  "rama-error",
  "rama-http-headers",
@@ -2616,6 +2617,7 @@ dependencies = [
  "tokio-stream",
  "tokio-test",
  "tracing-subscriber",
+ "tracing-test",
  "uuid",
  "zstd",
 ]

@@ -40,7 +40,7 @@ mod test {
 
     #[tokio::test]
     async fn test_bytes() {
-        let service = WebService::default().get("/", async |Bytes(body): Bytes| {
+        let service = WebService::default().with_get("/", async |Bytes(body): Bytes| {
             assert_eq!(body, "test");
         });
 

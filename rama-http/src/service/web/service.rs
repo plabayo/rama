@@ -1,18 +1,22 @@
 use crate::{
-    Body, Request, Response, StatusCode, Uri,
-    matcher::{HttpMatcher, UriParams},
+    Body, Request, Response, StatusCode,
+    matcher::HttpMatcher,
     mime::Mime,
     service::{
         fs::{DirectoryServeMode, ServeDir},
         web::{IntoEndpointServiceWithState, endpoint::response::IntoResponse},
     },
+    uri::try_to_strip_path_prefix_from_uri,
 };
+
 use rama_core::{
     extensions::Extensions,
     extensions::ExtensionsMut,
     matcher::Matcher,
     service::{BoxService, Service, service_fn},
+    telemetry::tracing,
 };
+use rama_http_types::OriginalRouterUri;
 use rama_utils::include_dir;
 
 use std::{convert::Infallible, fmt, path::Path, sync::Arc};
@@ -48,8 +52,9 @@ impl<State: Clone> Clone for WebService<State> {
 }
 
 impl WebService {
+    #[must_use]
     /// create a new web service
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             endpoints: Vec::new(),
             not_found: service_fn(async || Ok(StatusCode::NOT_FOUND.into_response())).boxed(),
@@ -62,95 +67,180 @@ impl<State> WebService<State>
 where
     State: Send + Sync + Clone + 'static,
 {
-    pub fn with_state<T>(self, state: T) -> WebService<T>
-    where
-        State: Send + Sync + Clone + 'static,
-    {
-        WebService {
-            endpoints: self.endpoints,
-            not_found: self.not_found,
+    pub fn new_with_state(state: State) -> Self {
+        Self {
+            endpoints: Vec::new(),
+            not_found: service_fn(async || Ok(StatusCode::NOT_FOUND.into_response())).boxed(),
             state,
         }
     }
 
     /// add a GET route to the web service, using the given service.
     #[must_use]
-    pub fn get<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_get<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_get().and_path(path);
-        self.on(matcher, service)
+        self.with_matcher(matcher, service)
+    }
+
+    /// add a GET route to the web service, using the given service.
+    #[inline]
+    pub fn set_get<I, T>(&mut self, path: &str, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_get().and_path(path);
+        self.set_matcher(matcher, service)
     }
 
     /// add a POST route to the web service, using the given service.
     #[must_use]
-    pub fn post<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_post<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_post().and_path(path);
-        self.on(matcher, service)
+        self.with_matcher(matcher, service)
+    }
+
+    /// add a POST route to the web service, using the given service.
+    #[inline]
+    pub fn set_post<I, T>(&mut self, path: &str, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_post().and_path(path);
+        self.set_matcher(matcher, service)
     }
 
     /// add a PUT route to the web service, using the given service.
     #[must_use]
-    pub fn put<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_put<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_put().and_path(path);
-        self.on(matcher, service)
+        self.with_matcher(matcher, service)
+    }
+
+    /// add a PUT route to the web service, using the given service.
+    #[inline]
+    pub fn set_put<I, T>(&mut self, path: &str, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_put().and_path(path);
+        self.set_matcher(matcher, service)
     }
 
     /// add a DELETE route to the web service, using the given service.
     #[must_use]
-    pub fn delete<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_delete<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_delete().and_path(path);
-        self.on(matcher, service)
+        self.with_matcher(matcher, service)
+    }
+
+    /// add a DELETE route to the web service, using the given service.
+    #[inline]
+    pub fn set_delete<I, T>(&mut self, path: &str, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_delete().and_path(path);
+        self.set_matcher(matcher, service)
     }
 
     /// add a PATCH route to the web service, using the given service.
     #[must_use]
-    pub fn patch<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_patch<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_patch().and_path(path);
-        self.on(matcher, service)
+        self.with_matcher(matcher, service)
+    }
+
+    /// add a PATCH route to the web service, using the given service.
+    #[inline]
+    pub fn set_patch<I, T>(&mut self, path: &str, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_patch().and_path(path);
+        self.set_matcher(matcher, service)
     }
 
     /// add a HEAD route to the web service, using the given service.
     #[must_use]
-    pub fn head<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_head<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_head().and_path(path);
-        self.on(matcher, service)
+        self.with_matcher(matcher, service)
+    }
+
+    /// add a HEAD route to the web service, using the given service.
+    #[inline]
+    pub fn set_head<I, T>(&mut self, path: &str, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_head().and_path(path);
+        self.set_matcher(matcher, service)
     }
 
     /// add a OPTIONS route to the web service, using the given service.
     #[must_use]
-    pub fn options<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_options<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_options().and_path(path);
-        self.on(matcher, service)
+        self.with_matcher(matcher, service)
+    }
+
+    /// add a OPTIONS route to the web service, using the given service.
+    #[inline]
+    pub fn set_options<I, T>(&mut self, path: &str, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_options().and_path(path);
+        self.set_matcher(matcher, service)
     }
 
     /// add a TRACE route to the web service, using the given service.
     #[must_use]
-    pub fn trace<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_trace<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_trace().and_path(path);
-        self.on(matcher, service)
+        self.with_matcher(matcher, service)
+    }
+
+    /// add a TRACE route to the web service, using the given service.
+    #[inline]
+    pub fn set_trace<I, T>(&mut self, path: &str, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_trace().and_path(path);
+        self.set_matcher(matcher, service)
     }
 
     /// Nest a web service under the given path.
@@ -159,16 +249,25 @@ where
     ///
     /// Note: this sub-webservice is configured with the same State this router has.
     #[must_use]
-    pub fn nest(self, prefix: &str, configure_svc: impl FnOnce(Self) -> Self) -> Self {
-        let prefix = format!("{}/*", prefix.trim_end_matches(['/', '*']));
-        let matcher = HttpMatcher::path(prefix);
-
-        // TOOD: Revisit this design so we do not need to rely on UriPath, globbing and unwrapping
-
-        let web_service = WebService::default().with_state(self.state.clone());
+    pub fn with_nest_make_fn(self, prefix: &str, configure_svc: impl FnOnce(Self) -> Self) -> Self {
+        let web_service = Self::new_with_state(self.state.clone());
         let web_service = configure_svc(web_service);
-        let service = NestedService(web_service);
-        self.on(matcher, service)
+        self.with_nest_inner(prefix, web_service)
+    }
+
+    /// Nest a web service under the given path.
+    ///
+    /// The nested service will receive a request with the path prefix removed.
+    ///
+    /// Note: this sub-webservice is configured with the same State this router has.
+    pub fn set_nest_make_fn(
+        &mut self,
+        prefix: &str,
+        configure_svc: impl FnOnce(Self) -> Self,
+    ) -> &mut Self {
+        let web_service = Self::new_with_state(self.state.clone());
+        let web_service = configure_svc(web_service);
+        self.set_nest_inner(prefix, web_service)
     }
 
     /// Nest a web service under the given path.
@@ -178,34 +277,83 @@ where
     /// Warning: This sub-service has no notion of the state this webservice has. If you want
     /// to create a nested-service that shares the same state this webservice has, use [WebService::nest] instead.
     #[must_use]
-    pub fn nest_service<I, T>(self, prefix: &str, service: I) -> Self
+    #[inline(always)]
+    pub fn with_nest_service<I, T>(self, prefix: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointService<T>,
     {
-        let prefix = format!("{}/*", prefix.trim_end_matches(['/', '*']));
-        let matcher = HttpMatcher::path(prefix);
-        let service = NestedService(service.into_endpoint_service());
-        self.on(matcher, service)
+        self.with_nest_inner(prefix, service.into_endpoint_service())
+    }
+
+    /// Nest a web service under the given path.
+    ///
+    /// The nested service will receive a request with the path prefix removed.
+    ///
+    /// Warning: This sub-service has no notion of the state this webservice has. If you want
+    /// to create a nested-service that shares the same state this webservice has, use [WebService::nest] instead.
+    #[inline(always)]
+    pub fn set_nest_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointService<T>,
+    {
+        self.set_nest_inner(prefix, service.into_endpoint_service())
+    }
+
+    #[inline]
+    fn with_nest_inner<S>(mut self, prefix: impl AsRef<str>, inner: S) -> Self
+    where
+        S: Service<Request, Response = Response, Error = Infallible>,
+    {
+        self.set_nest_inner(prefix, inner);
+        self
+    }
+
+    fn set_nest_inner<S>(&mut self, prefix: impl AsRef<str>, inner: S) -> &mut Self
+    where
+        S: Service<Request, Response = Response, Error = Infallible>,
+    {
+        let prefix = prefix
+            .as_ref()
+            .trim_end_matches(['/', '*'])
+            .trim_start_matches('/');
+        let matcher = HttpMatcher::path_prefix(prefix);
+        let service = NestedService {
+            inner,
+            prefix: Arc::from(prefix),
+        };
+        self.set_matcher(matcher, service)
     }
 
     /// serve the given file under the given path.
     #[must_use]
-    pub fn file(self, prefix: &str, path: impl AsRef<Path>, mime: Mime) -> Self {
+    pub fn with_file(self, prefix: &str, path: impl AsRef<Path>, mime: Mime) -> Self {
         let service = ServeDir::new_single_file(path, mime).fallback(self.not_found.clone());
-        self.nest_service(prefix, service)
+        self.with_nest_inner(prefix, service)
+    }
+
+    /// serve the given file under the given path.
+    pub fn set_file(&mut self, prefix: &str, path: impl AsRef<Path>, mime: Mime) -> &mut Self {
+        let service = ServeDir::new_single_file(path, mime).fallback(self.not_found.clone());
+        self.set_nest_inner(prefix, service)
     }
 
     /// serve the given directory under the given path.
     #[inline]
     #[must_use]
-    pub fn dir(self, prefix: &str, path: impl AsRef<Path>) -> Self {
-        self.dir_with_serve_mode(prefix, path, Default::default())
+    pub fn with_dir(self, prefix: &str, path: impl AsRef<Path>) -> Self {
+        self.with_dir_with_serve_mode(prefix, path, Default::default())
+    }
+
+    /// serve the given directory under the given path.
+    #[inline]
+    pub fn set_dir(&mut self, prefix: &str, path: impl AsRef<Path>) -> &mut Self {
+        self.set_dir_with_serve_mode(prefix, path, Default::default())
     }
 
     /// serve the given directory under the given path,
     /// with a custom serve move.
     #[must_use]
-    pub fn dir_with_serve_mode(
+    pub fn with_dir_with_serve_mode(
         self,
         prefix: &str,
         path: impl AsRef<Path>,
@@ -214,20 +362,40 @@ where
         let service = ServeDir::new(path)
             .fallback(self.not_found.clone())
             .with_directory_serve_mode(mode);
-        self.nest_service(prefix, service)
+        self.with_nest_service(prefix, service)
+    }
+
+    /// serve the given directory under the given path,
+    /// with a custom serve move.
+    pub fn set_dir_with_serve_mode(
+        &mut self,
+        prefix: &str,
+        path: impl AsRef<Path>,
+        mode: DirectoryServeMode,
+    ) -> &mut Self {
+        let service = ServeDir::new(path)
+            .fallback(self.not_found.clone())
+            .with_directory_serve_mode(mode);
+        self.set_nest_service(prefix, service)
     }
 
     /// serve the given embedded directory under the given path.
     #[inline]
     #[must_use]
-    pub fn dir_embed(self, prefix: &str, dir: include_dir::Dir<'static>) -> Self {
-        self.dir_embed_with_serve_mode(prefix, dir, Default::default())
+    pub fn with_dir_embed(self, prefix: &str, dir: include_dir::Dir<'static>) -> Self {
+        self.with_dir_embed_with_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given embedded directory under the given path.
+    #[inline]
+    pub fn set_dir_embed(&mut self, prefix: &str, dir: include_dir::Dir<'static>) -> &mut Self {
+        self.set_dir_embed_with_serve_mode(prefix, dir, Default::default())
     }
 
     /// serve the given embedded directory under the given path
     /// with a custom serve move.
     #[must_use]
-    pub fn dir_embed_with_serve_mode(
+    pub fn with_dir_embed_with_serve_mode(
         self,
         prefix: &str,
         dir: include_dir::Dir<'static>,
@@ -236,12 +404,41 @@ where
         let service = ServeDir::new_embedded(dir)
             .fallback(self.not_found.clone())
             .with_directory_serve_mode(mode);
-        self.nest_service(prefix, service)
+        self.with_nest_service(prefix, service)
+    }
+
+    /// serve the given embedded directory under the given path
+    /// with a custom serve move.
+    pub fn set_dir_embed_with_serve_mode(
+        &mut self,
+        prefix: &str,
+        dir: include_dir::Dir<'static>,
+        mode: DirectoryServeMode,
+    ) -> &mut Self {
+        let service = ServeDir::new_embedded(dir)
+            .fallback(self.not_found.clone())
+            .with_directory_serve_mode(mode);
+        self.set_nest_service(prefix, service)
     }
 
     /// add a route to the web service which matches the given matcher, using the given service.
     #[must_use]
-    pub fn on<I, T>(mut self, matcher: HttpMatcher<Body>, service: I) -> Self
+    pub fn with_matcher<I, T>(mut self, matcher: HttpMatcher<Body>, service: I) -> Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let endpoint = Endpoint {
+            matcher,
+            service: service
+                .into_endpoint_service_with_state(self.state.clone())
+                .boxed(),
+        };
+        self.endpoints.push(Arc::new(endpoint));
+        self
+    }
+
+    /// add a route to the web service which matches the given matcher, using the given service.
+    pub fn set_matcher<I, T>(&mut self, matcher: HttpMatcher<Body>, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
@@ -257,29 +454,48 @@ where
 
     /// use the given service in case no match could be found.
     #[must_use]
-    pub fn not_found<I, T>(mut self, service: I) -> Self
+    pub fn with_not_found<I, T>(mut self, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
         self.not_found = service
             .into_endpoint_service_with_state(self.state.clone())
             .boxed();
+        self
+    }
 
+    /// use the given service in case no match could be found.
+    pub fn set_not_found<I, T>(&mut self, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        self.not_found = service
+            .into_endpoint_service_with_state(self.state.clone())
+            .boxed();
         self
     }
 }
 
-struct NestedService<S>(S);
+struct NestedService<S> {
+    inner: S,
+    prefix: Arc<str>,
+}
 
 impl<S: fmt::Debug> fmt::Debug for NestedService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("NestedService").field(&self.0).finish()
+        f.debug_struct("NestedService")
+            .field("inner", &self.inner)
+            .field("prefix", &self.prefix.as_ref())
+            .finish()
     }
 }
 
 impl<S: Clone> Clone for NestedService<S> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            inner: self.inner.clone(),
+            prefix: self.prefix.clone(),
+        }
     }
 }
 
@@ -292,30 +508,32 @@ where
 
     fn serve(
         &self,
-
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         // set the nested path
         let (mut parts, body) = req.into_parts();
-        // get nested path
-        let path = parts.extensions.get::<UriParams>().unwrap().glob().unwrap();
 
-        let mut uri_parts = parts.uri.into_parts();
-        let path_and_query = uri_parts.path_and_query.take().unwrap();
-        match path_and_query.query() {
-            Some(query) => {
-                uri_parts.path_and_query =
-                    Some(smol_str::format_smolstr!("{path}?{query}").parse().unwrap());
+        match try_to_strip_path_prefix_from_uri(&parts.uri, self.prefix.as_ref()) {
+            Ok(modified_uri) => {
+                if !parts.extensions.contains::<OriginalRouterUri>() {
+                    parts
+                        .extensions
+                        .insert(OriginalRouterUri(Arc::new(parts.uri)));
+                }
+                parts.uri = modified_uri;
             }
-            None => {
-                uri_parts.path_and_query = Some(path.parse().unwrap());
+            Err(err) => {
+                tracing::debug!(
+                    "failed to strip prefix '{}' from Uri (bug??) preserve og uri as is; err = {err}",
+                    self.prefix.as_ref(),
+                );
             }
         }
-        parts.uri = Uri::from_parts(uri_parts).unwrap();
+
         let req = Request::from_parts(parts, body);
 
         // make the actual request
-        self.0.serve(req)
+        self.inner.serve(req)
     }
 }
 
@@ -460,8 +678,8 @@ mod test {
     #[tokio::test]
     async fn test_web_service() {
         let svc = WebService::new()
-            .get("/hello", "hello")
-            .post("/world", "world");
+            .with_get("/hello", "hello")
+            .with_post("/world", "world");
 
         let res = get_response(&svc, "https://www.test.io/hello").await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -482,7 +700,7 @@ mod test {
 
     #[tokio::test]
     async fn test_web_service_not_found() {
-        let svc = WebService::new().not_found("not found");
+        let svc = WebService::new().with_not_found("not found");
 
         let res = get_response(&svc, "https://www.test.io/hello").await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -494,13 +712,12 @@ mod test {
     async fn test_web_service_nest() {
         let state = "state".to_owned();
 
-        let svc = WebService::new()
-            .with_state(state)
-            .get("/state", async |State(state): State<String>| state)
-            .nest("/api", |web| {
-                web.get("/hello", "hello")
-                    .post("/world", "world")
-                    .get("/state", async |State(state): State<String>| state)
+        let svc = WebService::new_with_state(state)
+            .with_get("/state", async |State(state): State<String>| state)
+            .with_nest_make_fn("/api", |web| {
+                web.with_get("/hello", "hello")
+                    .with_post("/world", "world")
+                    .with_get("/state", async |State(state): State<String>| state)
             });
 
         let res = get_response(&svc, "https://www.test.io/api/hello").await;
@@ -541,9 +758,9 @@ mod test {
         std::fs::write(&file_path, "body { background-color: red }").unwrap();
 
         let svc = WebService::new()
-            .get("/api/version", "v1")
-            .post("/api", StatusCode::FORBIDDEN)
-            .dir("/", tmp_dir.path().to_str().unwrap());
+            .with_get("/api/version", "v1")
+            .with_post("/api", StatusCode::FORBIDDEN)
+            .with_dir("/", tmp_dir.path().to_str().unwrap());
 
         let res = get_response(&svc, "https://www.test.io/index.html").await;
         assert_eq!(res.status(), StatusCode::OK);

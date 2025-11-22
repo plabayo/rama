@@ -18,6 +18,8 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub mod body;
+use std::sync::Arc;
+
 pub use body::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
 };
@@ -26,7 +28,6 @@ pub mod request;
 pub mod response;
 pub use crate::dep::hyperium::http::method;
 pub use crate::dep::hyperium::http::status;
-pub use crate::dep::hyperium::http::uri;
 pub use crate::dep::hyperium::http::version;
 
 #[doc(inline)]
@@ -42,9 +43,17 @@ pub use crate::response::Response;
 #[doc(inline)]
 pub use crate::status::StatusCode;
 #[doc(inline)]
-pub use crate::uri::{Scheme, Uri};
-#[doc(inline)]
 pub use crate::version::Version;
+
+#[derive(Debug, Clone)]
+/// Extension type that can be inserted in case a Uri is modified as part of nested routers
+pub struct OriginalRouterUri(pub Arc<Uri>);
+
+pub mod uri;
+#[doc(inline)]
+pub use uri::{Scheme, Uri, try_to_strip_path_prefix_from_uri};
+
+// TODO: move URI to rama-net :) Somehow...
 
 pub mod proto;
 

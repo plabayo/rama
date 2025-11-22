@@ -102,7 +102,7 @@ fn setup_tracing() {
 async fn run_server(addr: &str, ready: Sender<()>) {
     tracing::info!("running service at: {addr}");
     let http_service =
-        HttpServer::default().service(WebService::default().get("/", "Hello, World!"));
+        HttpServer::default().service(WebService::default().with_get("/", "Hello, World!"));
 
     let serve = TcpListener::build()
         .bind(addr)

@@ -112,13 +112,13 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
 
         let app = Router::new()
-            .get("/", handlers::index)
-            .post("/start", handlers::start)
-            .get("/hello-world", handlers::hello_world)
-            .get("/assets/datastar.js", DatastarScript::default());
+            .with_get("/", handlers::index)
+            .with_post("/start", handlers::start)
+            .with_get("/hello-world", handlers::hello_world)
+            .with_get("/assets/datastar.js", DatastarScript::default());
 
         #[cfg(debug_assertions)]
-        let app = app.get("/hotreload", handlers::hotreload);
+        let app = app.with_get("/hotreload", handlers::hotreload);
 
         let router = Arc::new(app);
         let graceful_router = GracefulRouter(router);
