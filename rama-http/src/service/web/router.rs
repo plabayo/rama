@@ -14,6 +14,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     matcher::Matcher,
     service::{BoxService, Service},
+    telemetry::tracing,
 };
 use rama_http_types::{Body, StatusCode, mime::Mime};
 use rama_utils::include_dir;
@@ -319,14 +320,23 @@ impl Service<Request> for NestedRouterService {
     async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
         let params = match req.extensions().get::<UriParams>() {
             Some(params) => {
-                let nested_path = params.get("nest").unwrap_or_default();
+                let nested_path = params.get("nest").unwrap_or_else(|| {
+                    tracing::debug!("failed to fetch nest value in params: {params:?}; bug?");
+                    Default::default()
+                });
 
                 let filtered_params: UriParams =
                     params.iter().filter(|(key, _)| *key != "nest").collect();
 
                 // build the nested path and update the request URI
                 let path = smol_str::format_smolstr!("/{nested_path}");
-                *req.uri_mut() = path.parse().unwrap();
+                *req.uri_mut() = match path.parse() {
+                    Ok(uri) => uri,
+                    Err(err) => {
+                        tracing::debug!("failed to parse nested path as the req's new uri: {err}");
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                    }
+                };
 
                 filtered_params
             }

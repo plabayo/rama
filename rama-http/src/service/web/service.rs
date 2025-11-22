@@ -1,6 +1,6 @@
 use crate::{
     Body, Request, Response, StatusCode, Uri,
-    matcher::{HttpMatcher, UriParams},
+    matcher::HttpMatcher,
     mime::Mime,
     service::{
         fs::{DirectoryServeMode, ServeDir},
@@ -12,6 +12,7 @@ use rama_core::{
     extensions::ExtensionsMut,
     matcher::Matcher,
     service::{BoxService, Service, service_fn},
+    telemetry::tracing,
 };
 use rama_utils::include_dir;
 
@@ -160,15 +161,9 @@ where
     /// Note: this sub-webservice is configured with the same State this router has.
     #[must_use]
     pub fn nest(self, prefix: &str, configure_svc: impl FnOnce(Self) -> Self) -> Self {
-        let prefix = format!("{}/*", prefix.trim_end_matches(['/', '*']));
-        let matcher = HttpMatcher::path(prefix);
-
-        // TOOD: Revisit this design so we do not need to rely on UriPath, globbing and unwrapping
-
         let web_service = WebService::default().with_state(self.state.clone());
         let web_service = configure_svc(web_service);
-        let service = NestedService(web_service);
-        self.on(matcher, service)
+        self.nest_inner(prefix, web_service)
     }
 
     /// Nest a web service under the given path.
@@ -178,13 +173,27 @@ where
     /// Warning: This sub-service has no notion of the state this webservice has. If you want
     /// to create a nested-service that shares the same state this webservice has, use [WebService::nest] instead.
     #[must_use]
-    pub fn nest_service<I, T>(self, prefix: &str, service: I) -> Self
+    #[inline(always)]
+    pub fn nest_service<I, T>(self, prefix: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointService<T>,
     {
-        let prefix = format!("{}/*", prefix.trim_end_matches(['/', '*']));
-        let matcher = HttpMatcher::path(prefix);
-        let service = NestedService(service.into_endpoint_service());
+        self.nest_inner(prefix, service.into_endpoint_service())
+    }
+
+    fn nest_inner<S>(self, prefix: impl AsRef<str>, inner: S) -> Self
+    where
+        S: Service<Request, Response = Response, Error = Infallible>,
+    {
+        let prefix = prefix
+            .as_ref()
+            .trim_end_matches(['/', '*'])
+            .trim_start_matches('/');
+        let matcher = HttpMatcher::path_prefix(prefix);
+        let service = NestedService {
+            inner,
+            prefix: Arc::from(prefix),
+        };
         self.on(matcher, service)
     }
 
@@ -269,17 +278,26 @@ where
     }
 }
 
-struct NestedService<S>(S);
+struct NestedService<S> {
+    inner: S,
+    prefix: Arc<str>,
+}
 
 impl<S: fmt::Debug> fmt::Debug for NestedService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("NestedService").field(&self.0).finish()
+        f.debug_struct("NestedService")
+            .field("inner", &self.inner)
+            .field("prefix", &self.prefix.as_ref())
+            .finish()
     }
 }
 
 impl<S: Clone> Clone for NestedService<S> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            inner: self.inner.clone(),
+            prefix: self.prefix.clone(),
+        }
     }
 }
 
@@ -292,30 +310,58 @@ where
 
     fn serve(
         &self,
-
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         // set the nested path
         let (mut parts, body) = req.into_parts();
-        // get nested path
-        let path = parts.extensions.get::<UriParams>().unwrap().glob().unwrap();
 
-        let mut uri_parts = parts.uri.into_parts();
+        // TODO: in future we want to have a better URI API,
+        // so we do not need to do cloning here and all this mess...
+        let mut uri_parts = parts.uri.clone().into_parts();
         let path_and_query = uri_parts.path_and_query.take().unwrap();
-        match path_and_query.query() {
-            Some(query) => {
-                uri_parts.path_and_query =
-                    Some(smol_str::format_smolstr!("{path}?{query}").parse().unwrap());
+
+        let prefix = self.prefix.as_ref();
+        let path = path_and_query.path().trim_matches('/')
+            .strip_prefix(prefix)
+            .unwrap_or_else(|| {
+                let path = path_and_query.path();
+                tracing::debug!(
+                    "failed to strip prefix '{}' from req path: '{path}' (bug?); preserve path as-is..",
+                    self.prefix.as_ref(),
+                );
+                path
+            });
+
+        let path_and_query_str = if let Some(query) = path_and_query.query() {
+            smol_str::format_smolstr!("/{path}?{query}")
+        } else {
+            smol_str::format_smolstr!("/{path}")
+        };
+
+        uri_parts.path_and_query = match path_and_query_str.parse() {
+            Ok(value) => Some(value),
+            Err(err) => {
+                tracing::debug!(
+                    "failed to create path-and-query from str: '{path_and_query_str}' (bug?); preserve og as-is...; err = {err}"
+                );
+                uri_parts.path_and_query
             }
-            None => {
-                uri_parts.path_and_query = Some(path.parse().unwrap());
+        };
+
+        parts.uri = match Uri::from_parts(uri_parts) {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::debug!(
+                    "failed to create uri from modified parts: path_and_query_str='{path_and_query_str}' (bug?); preserve og as-is...; err = {err}"
+                );
+                parts.uri
             }
-        }
-        parts.uri = Uri::from_parts(uri_parts).unwrap();
+        };
+
         let req = Request::from_parts(parts, body);
 
         // make the actual request
-        self.0.serve(req)
+        self.inner.serve(req)
     }
 }
 
