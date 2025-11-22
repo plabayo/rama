@@ -58,7 +58,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let tcp_http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(
-            AddRequiredResponseHeaders::new(Router::new().get(
+            AddRequiredResponseHeaders::new(Router::new().with_get(
                 "/",
                 async |req: Request| -> Result<String, (StatusCode, String)> {
                     let client_ip = req

@@ -79,7 +79,7 @@ async fn main() {
                 TraceLayer::new_for_http().
                     layer(
                         WebService::default()
-                            .get(
+                            .with_get(
                                 "/",
                                 Html(
                                     r##"<html>
@@ -96,7 +96,7 @@ async fn main() {
                                         </html>"##,
                                 ),
                             )
-                            .on(HttpMatcher::method_get().or_method_post().and_path("/form"), send_form_data),
+                            .with_matcher(HttpMatcher::method_get().or_method_post().and_path("/form"), send_form_data),
                     ),
                 )
             .await

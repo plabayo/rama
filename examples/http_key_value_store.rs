@@ -128,9 +128,8 @@ async fn main() {
             addr,
             (TraceLayer::new_for_http())
                 .into_layer(
-                    WebService::default()
-                        .with_state(state.clone())
-                        .get("/", Json(json!({
+                    WebService::new_with_state(state.clone())
+                        .with_get("/", Json(json!({
                                 "GET /": "show this API documentation in Json Format",
                                 "GET /keys": "list all keys for which (bytes) data is stored",
                                 "GET /item/:key": "return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise",
@@ -141,19 +140,19 @@ async fn main() {
                                     "DELETE /item/:key": "remove the data stored at <key>, returning a 200 Ok if the key was found, and a 404 Not Found otherwise"
                                 }
                             })))
-                        .get("/keys", list_keys)
-                        .nest_service("/admin", ValidateRequestHeaderLayer::auth(Bearer::new_static("secret-token"))
-                            .into_layer(WebService::default().with_state(state.clone())
-                                .delete("/keys", async |State(db): State<Db>| {
+                        .with_get("/keys", list_keys)
+                        .with_nest_service("/admin", ValidateRequestHeaderLayer::auth(Bearer::new_static("secret-token"))
+                            .into_layer(WebService::new_with_state(state.clone())
+                                .with_delete("/keys", async |State(db): State<Db>| {
                                     db.write().await.clear();
                                 })
-                                .delete("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>| {
+                                .with_delete("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>| {
                                     match db.write().await.remove(&params.key) {
                                         Some(_) => StatusCode::OK,
                                         None => StatusCode::NOT_FOUND,
                                     }
                                 })))
-                        .on(
+                        .with_matcher(
                             HttpMatcher::method_get().or_method_head().and_path("/item/:key"),
                             // only compress the get Action, not the Post Action
                             CompressionLayer::new()
@@ -176,7 +175,7 @@ async fn main() {
                                     }
                                 }).into_endpoint_service_with_state(state.clone())),
                         )
-                        .post("/items", async |State(db): State<Db>, Json(dict): Json<HashMap<String, String>>| {
+                        .with_post("/items", async |State(db): State<Db>, Json(dict): Json<HashMap<String, String>>| {
                             let mut db = db.write().await;
                             for (k, v) in dict {
                                 db.insert(k, bytes::Bytes::from(v));
@@ -184,7 +183,7 @@ async fn main() {
                             StatusCode::OK
                         })
 
-                        .post("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>, Bytes(value): Bytes| {
+                        .with_post("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>, Bytes(value): Bytes| {
                             if value.is_empty() {
                                 return StatusCode::BAD_REQUEST;
                             }

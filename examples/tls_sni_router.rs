@@ -173,7 +173,7 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: Socke
                 guard.clone(),
                 TlsAcceptorLayer::new(acceptor_data).into_layer(
                     HttpServer::auto(Executor::graceful(guard)).service(
-                        TraceLayer::new_for_http().into_layer(Router::new().get("/", name)),
+                        TraceLayer::new_for_http().into_layer(Router::new().with_get("/", name)),
                     ),
                 ),
             )

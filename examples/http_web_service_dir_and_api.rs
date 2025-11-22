@@ -75,22 +75,21 @@ async fn main() {
         .listen(
             addr,
             (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
-                WebService::default()
-                    .with_state(state)
-                    .not_found(Redirect::temporary("/error.html"))
-                    .get("/coin", coin_page)
-                    .post(
+                WebService::new_with_state(state)
+                    .with_not_found(Redirect::temporary("/error.html"))
+                    .with_get("/coin", coin_page)
+                    .with_post(
                         "/coin",
                         async |state: State<Arc<AppState>>, ext: Extensions| {
                             state.0.counter.fetch_add(1, Ordering::AcqRel);
                             coin_page(state, ext).await
                         },
                     )
-                    .on(
+                    .with_matcher(
                         HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
                         Html("Home Sweet Home!".to_owned()),
                     )
-                    .dir("/", "test-files/examples/webservice"),
+                    .with_dir("/", "test-files/examples/webservice"),
             ),
         )
         .await

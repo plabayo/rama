@@ -65,8 +65,8 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     let router = Router::new()
-        .get("/", Html(r##"<h1>Rates Catalogue</h1><ul><li><a href="/api/rates/2024.csv">rates for 2024</a></li></ul>"##.to_owned()))
-        .get("/api/rates/{year}.csv", api_rates_csv);
+        .with_get("/", Html(r##"<h1>Rates Catalogue</h1><ul><li><a href="/api/rates/2024.csv">rates for 2024</a></li></ul>"##.to_owned()))
+        .with_get("/api/rates/{year}.csv", api_rates_csv);
 
     let exec = Executor::graceful(graceful.guard());
     let app = HttpServer::auto(exec).service(

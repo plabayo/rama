@@ -133,8 +133,8 @@ async fn main() {
             HttpServer::auto(executor).service(
                 TraceLayer::new_for_http().into_layer(
                     WebService::default()
-                        .get("/", Redirect::temporary("/hello"))
-                        .get("/hello", Html("<h1>Hello, authorized client!</h1>")),
+                        .with_get("/", Redirect::temporary("/hello"))
+                        .with_get("/hello", Html("<h1>Hello, authorized client!</h1>")),
                 ),
             ),
         );

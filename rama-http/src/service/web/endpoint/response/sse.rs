@@ -97,7 +97,7 @@ mod tests {
     #[tokio::test]
     async fn basic() {
         let client = Router::new()
-            .get("/", async || {
+            .with_get("/", async || {
                 let stream = stream::iter(vec![
                     Event::default()
                         .with_data(Either::A("one"))
@@ -150,7 +150,7 @@ mod tests {
         const DELAY: Duration = Duration::from_secs(5);
 
         let client = Router::new()
-            .get("/", async || {
+            .with_get("/", async || {
                 let stream = stream::repeat_with(|| Event::default().with_data("msg"))
                     .map(Ok::<_, Infallible>)
                     .throttle(DELAY);
@@ -193,7 +193,7 @@ mod tests {
         const DELAY: Duration = Duration::from_secs(5);
 
         let client = Router::new()
-            .get("/", async || {
+            .with_get("/", async || {
                 let stream = stream::repeat_with(|| Event::default().with_data("msg"))
                     .map(Ok::<_, Infallible>)
                     .throttle(DELAY)

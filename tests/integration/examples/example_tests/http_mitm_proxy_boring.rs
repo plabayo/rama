@@ -35,7 +35,7 @@ async fn test_http_mitm_proxy() {
                         ConsumeErrLayer::trace(Level::DEBUG)
                             .into_layer(WebSocketAcceptor::new().into_echo_service()),
                     )
-                    .get("/{*any}", async |req: Request| {
+                    .with_get("/{*any}", async |req: Request| {
                         Json(json!({
                             "method": req.method().as_str(),
                             "path": req.uri().path(),
@@ -72,7 +72,7 @@ async fn test_http_mitm_proxy() {
                             .into_echo_service(),
                     ),
                 )
-                .get("/{*any}", async |req: Request| {
+                .with_get("/{*any}", async |req: Request| {
                     Json(json!({
                         "method": req.method().as_str(),
                         "path": req.uri().path(),

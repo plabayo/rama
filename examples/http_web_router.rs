@@ -70,9 +70,9 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     let router = Router::new()
-        .get("/", Html(r##"<h1>Rama - Web Router</h1>"##.to_owned()))
+        .with_get("/", Html(r##"<h1>Rama - Web Router</h1>"##.to_owned()))
         // route with a parameter
-        .post("/greet/{name}", async |req: Request| {
+        .with_post("/greet/{name}", async |req: Request| {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let name = uri_params.get("name").unwrap();
             Json(json!({
@@ -81,7 +81,7 @@ async fn main() {
             }))
         })
         // catch-all route
-        .get("/lang/{*code}", async |req: Request| {
+        .with_get("/lang/{*code}", async |req: Request| {
             let translations = [
                 ("en", "Welcome to our site!"),
                 ("fr", "Bienvenue sur notre site!"),
@@ -100,16 +100,16 @@ async fn main() {
             }))
         })
         // sub route support - api version health check
-        .sub("/api", |router| {
-            router.sub("/v2", |router| {
-                router.get("/status", async || {
+        .with_sub_router_make_fn("/api", |router| {
+            router.with_sub_router_make_fn("/v2", |router| {
+                router.with_get("/status", async || {
                     Json(json!({
                         "status": "API v2 is up and running",
                     }))
                 })
             })
         })
-        .not_found(Redirect::temporary("/"));
+        .with_not_found(Redirect::temporary("/"));
 
     let middlewares = (
         TraceLayer::new_for_http(),

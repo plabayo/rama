@@ -76,11 +76,10 @@ async fn main() {
 
     let state = AppState::default();
 
-    let router = Router::new()
-        .with_state(state.clone())
-        .get("/", Html(r##"<h1>Hello, Human!?</h1>"##.to_owned()))
-        .get("/robots.txt", ROBOTS_TXT)
-        .get("/internal/clients.csv", infinite_resource);
+    let router = Router::new_with_state(state.clone())
+        .with_get("/", Html(r##"<h1>Hello, Human!?</h1>"##.to_owned()))
+        .with_get("/robots.txt", ROBOTS_TXT)
+        .with_get("/internal/clients.csv", infinite_resource);
 
     let exec = Executor::graceful(graceful.guard());
     let app = HttpServer::auto(exec).service(

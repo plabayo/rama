@@ -31,8 +31,8 @@ async fn main() {
             "127.0.0.1:62003",
             TraceLayer::new_for_http().layer(
                 WebService::default()
-                    .get("/data", serve_binary_data)
-                    .get("/download", serve_download),
+                    .with_get("/data", serve_binary_data)
+                    .with_get("/download", serve_download),
             ),
         )
         .await

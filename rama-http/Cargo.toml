@@ -47,6 +47,7 @@ opentelemetry-http = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
+radix_trie = { workspace = true }
 rama-core = { workspace = true }
 rama-error = { workspace = true }
 rama-http-headers = { workspace = true }

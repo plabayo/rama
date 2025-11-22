@@ -36,7 +36,7 @@
 //!         TimeoutLayer::new(Duration::from_secs(5)),
 //!         ).into_layer(service_fn(handler));
 //!
-//!     let service = WebService::default().get("/", home_handler);
+//!     let service = WebService::default().with_get("/", home_handler);
 //!
 //!     let _ = service.serve(Request::builder()
 //!         .method("GET")

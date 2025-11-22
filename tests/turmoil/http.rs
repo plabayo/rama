@@ -45,7 +45,8 @@ async fn start_server(
     server
         .serve(
             conn,
-            TraceLayer::new_for_http().into_layer(WebService::default().get("/", "Hello, World")),
+            TraceLayer::new_for_http()
+                .into_layer(WebService::default().with_get("/", "Hello, World")),
         )
         .await
         .expect("serving endpoint");

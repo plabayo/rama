@@ -57,7 +57,7 @@ mod tests {
         headers: Vec<(&HeaderName, &str)>,
     ) {
         let svc = GetForwardedHeaderService::x_forwarded_host(
-            WebService::default().get("/", async |Authority(authority): Authority| {
+            WebService::default().with_get("/", async |Authority(authority): Authority| {
                 authority.to_string()
             }),
         );

@@ -6,6 +6,7 @@ use ahash::{HashMap, HashMapExt as _};
 use rama_core::extensions::Extensions;
 use rama_utils::str::starts_with_ignore_ascii_case;
 use smallvec::SmallVec;
+use smol_str::StrExt as _;
 
 mod de;
 
@@ -207,15 +208,15 @@ impl PathMatcher {
                 }
                 if s.starts_with(':') {
                     Some(PathFragment::Param(Arc::from(
-                        s.trim_start_matches(':').to_lowercase(),
+                        s.trim_start_matches(':').to_lowercase_smolstr(),
                     )))
                 } else if s.starts_with('{') && s.ends_with('}') && s.len() > 2 {
-                    let param_name = s[1..s.len() - 1].to_lowercase();
+                    let param_name = s[1..s.len() - 1].to_lowercase_smolstr();
                     Some(PathFragment::Param(Arc::from(param_name)))
                 } else if s == "*" && index == fragment_length - 1 {
                     Some(PathFragment::Glob)
                 } else {
-                    Some(PathFragment::Literal(Arc::from(s.to_lowercase())))
+                    Some(PathFragment::Literal(Arc::from(s.to_lowercase_smolstr())))
                 }
             })
             .collect();

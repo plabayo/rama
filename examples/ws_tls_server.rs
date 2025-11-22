@@ -57,7 +57,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let server = HttpServer::http1().service(
-            Router::new().get("/", Html(INDEX)).get(
+            Router::new().with_get("/", Html(INDEX)).with_get(
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG)
                     .into_layer(WebSocketAcceptor::new().into_echo_service()),

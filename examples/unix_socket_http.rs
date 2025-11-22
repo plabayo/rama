@@ -59,7 +59,7 @@ mod unix_example {
             listener
                 .serve_graceful(
                     guard,
-                    HttpServer::http1().service(Router::new().get("/ping", "pong")),
+                    HttpServer::http1().service(Router::new().with_get("/ping", "pong")),
                 )
                 .await;
         });
