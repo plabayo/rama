@@ -8,13 +8,13 @@
 //! The service has the following endpoints:
 //! - `GET /`: show this API documentation in Json Format
 //! - `GET /keys`: list all keys for which (bytes) data is stored
-//! - `GET /item/:key`: return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise
-//! - `HEAD /item/:key`: return a 200 Ok if found and a 404 Not Found otherwise
-//! - `POST /item/:key`: store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined
+//! - `GET /item/{key}`: return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise
+//! - `HEAD /item/{key}`: return a 200 Ok if found and a 404 Not Found otherwise
+//! - `POST /item/{key}`: store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined
 //!
 //! The service also has admin endpoints:
 //! - `DELETE /keys`: clear all keys and their associated data
-//! - `DELETE /item/:key`: remove the data stored at <key>, returning a 200 Ok if the key was found, and a 404 Not Found otherwise
+//! - `DELETE /item/{key}`: remove the data stored at <key>, returning a 200 Ok if the key was found, and a 404 Not Found otherwise
 //!
 //! # Run the example
 //!
@@ -132,9 +132,9 @@ async fn main() {
                         .with_get("/", Json(json!({
                                 "GET /": "show this API documentation in Json Format",
                                 "GET /keys": "list all keys for which (bytes) data is stored",
-                                "GET /item/:key": "return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise",
-                                "HEAD /item/:key": "return a 200 Ok if found, and a 404 Not Found otherwise",
-                                "POST /item/:key": "store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined",
+                                "GET /item/{key}": "return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise",
+                                "HEAD /item/{key}": "return a 200 Ok if found, and a 404 Not Found otherwise",
+                                "POST /item/{key}": "store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined",
                                 "admin": {
                                     "DELETE /keys": "clear all keys and their associated data",
                                     "DELETE /item/:key": "remove the data stored at <key>, returning a 200 Ok if the key was found, and a 404 Not Found otherwise"
@@ -146,14 +146,14 @@ async fn main() {
                                 .with_delete("/keys", async |State(db): State<Db>| {
                                     db.write().await.clear();
                                 })
-                                .with_delete("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>| {
+                                .with_delete("/item/{key}", async |State(db): State<Db>, Path(params): Path<ItemParam>| {
                                     match db.write().await.remove(&params.key) {
                                         Some(_) => StatusCode::OK,
                                         None => StatusCode::NOT_FOUND,
                                     }
                                 })))
                         .with_matcher(
-                            HttpMatcher::method_get().or_method_head().and_path("/item/:key"),
+                            HttpMatcher::method_get().or_method_head().and_path("/item/{key}"),
                             // only compress the get Action, not the Post Action
                             CompressionLayer::new()
                                 .into_layer((async |State(db): State<Db>, Path(params): Path<ItemParam>, method: Method| {
@@ -183,7 +183,7 @@ async fn main() {
                             StatusCode::OK
                         })
 
-                        .with_post("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>, Bytes(value): Bytes| {
+                        .with_post("/item/{key}", async |State(db): State<Db>, Path(params): Path<ItemParam>, Bytes(value): Bytes| {
                             if value.is_empty() {
                                 return StatusCode::BAD_REQUEST;
                             }

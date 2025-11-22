@@ -392,7 +392,7 @@ mod tests {
         }
 
         let svc = crate::service::web::WebService::default().with_get(
-            "/:foo/bar",
+            "/{foo}/bar",
             async |Host(host): Host, Path(params): Path<Params>| {
                 format!("{} => {}", host, params.foo)
             },

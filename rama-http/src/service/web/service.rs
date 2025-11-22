@@ -16,7 +16,7 @@ use rama_core::{
     service::{BoxService, Service, service_fn},
     telemetry::tracing,
 };
-use rama_http_types::OriginalUri;
+use rama_http_types::OriginalRouterUri;
 use rama_utils::include_dir;
 
 use std::{convert::Infallible, fmt, path::Path, sync::Arc};
@@ -515,7 +515,11 @@ where
 
         match try_to_strip_path_prefix_from_uri(&parts.uri, self.prefix.as_ref()) {
             Ok(modified_uri) => {
-                parts.extensions.insert(OriginalUri(Arc::new(parts.uri)));
+                if !parts.extensions.contains::<OriginalRouterUri>() {
+                    parts
+                        .extensions
+                        .insert(OriginalRouterUri(Arc::new(parts.uri)));
+                }
                 parts.uri = modified_uri;
             }
             Err(err) => {

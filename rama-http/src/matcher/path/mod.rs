@@ -185,7 +185,7 @@ impl PathMatcher {
         let path = path.as_ref();
         let path = path.trim().trim_matches('/');
 
-        if !path.contains([':', '*', '{', '}']) {
+        if !path.contains(['*', '{', '}']) {
             return Self {
                 kind: PathMatcherKind::Literal(Arc::from(path)),
             };
@@ -258,8 +258,97 @@ impl PathMatcher {
         }
     }
 
-    fn matches_path(&self, path: &str) -> PathMatch {
-        let path = path.trim().trim_matches('/');
+    #[must_use]
+    pub fn fragment_count(&self) -> usize {
+        match &self.kind {
+            PathMatcherKind::Prefix(_) | PathMatcherKind::Literal(_) => 0,
+            PathMatcherKind::FragmentList(path_fragments) => path_fragments.len(),
+        }
+    }
+
+    /// Try to remove the literals that prefix other fragments. This can be useful
+    /// for routers which want to first match on a literal, and do the rest as a normal prefix.
+    ///
+    /// Err is returned with the original data in case it doesn't contain literal prefixes.
+    pub fn try_remove_literal_prefix(
+        self,
+        allow_glob: bool,
+    ) -> Result<(Arc<str>, Option<Self>), Self> {
+        match self.kind {
+            PathMatcherKind::Literal(s) | PathMatcherKind::Prefix(s) => Ok((s, None)),
+            PathMatcherKind::FragmentList(fragments) => {
+                let mut pos = 0;
+                for fragment in fragments.iter() {
+                    if !matches!(fragment, PathFragment::Literal(_)) {
+                        break;
+                    }
+                    pos += 1;
+                }
+                if pos == 0 || pos == fragments.len() {
+                    return Err(Self {
+                        kind: PathMatcherKind::FragmentList(fragments),
+                    });
+                }
+                let (fragments, rem) = fragments.split_at(pos);
+
+                let mut output = String::with_capacity(
+                    fragments.len()
+                        + fragments
+                            .iter()
+                            .map(|f| match f {
+                                PathFragment::Literal(s) => s.len(),
+                                PathFragment::Param(_) | PathFragment::Glob => unreachable!(),
+                            })
+                            .sum::<usize>(),
+                );
+                for fragment in fragments {
+                    match fragment {
+                        PathFragment::Literal(s) => output.push_str(s.as_ref()),
+                        PathFragment::Param(_) | PathFragment::Glob => unreachable!(),
+                    }
+                }
+
+                Ok(if rem.is_empty() {
+                    (Arc::from(output), None)
+                } else if !allow_glob
+                    && rem
+                        .last()
+                        .map(|f| matches!(f, PathFragment::Glob))
+                        .unwrap_or_default()
+                {
+                    (
+                        Arc::from(output),
+                        Some(Self {
+                            kind: PathMatcherKind::FragmentList(Arc::from(&rem[..rem.len() - 1])),
+                        }),
+                    )
+                } else {
+                    (
+                        Arc::from(output),
+                        Some(Self {
+                            kind: PathMatcherKind::FragmentList(Arc::from(rem)),
+                        }),
+                    )
+                })
+            }
+        }
+    }
+
+    pub fn matches_path(&self, ext: Option<&mut Extensions>, path: impl AsRef<str>) -> bool {
+        match self.matches_path_inner(path) {
+            PathMatch::None => false,
+            PathMatch::Literal => true,
+            PathMatch::WithParams(params) => {
+                if let Some(ext) = ext {
+                    ext.insert(params);
+                }
+                true
+            }
+        }
+    }
+
+    fn matches_path_inner(&self, path: impl AsRef<str>) -> PathMatch {
+        let path = path.as_ref().trim().trim_matches('/');
         match &self.kind {
             PathMatcherKind::Prefix(prefix) => {
                 if prefix.is_empty() || starts_with_ignore_ascii_case(path, prefix) {
@@ -328,16 +417,7 @@ impl PathMatcher {
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for PathMatcher {
     fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
-        match self.matches_path(req.uri().path()) {
-            PathMatch::None => false,
-            PathMatch::Literal => true,
-            PathMatch::WithParams(params) => {
-                if let Some(ext) = ext {
-                    ext.insert(params);
-                }
-                true
-            }
-        }
+        self.matches_path(ext, req.uri().path())
     }
 }
 
@@ -394,7 +474,7 @@ mod test {
             TestCase::some("/*foo", "/*foo", None),
             TestCase::some("/foo/*bar/baz", "/foo/*bar/baz", None),
             TestCase::none("/foo/*bar/baz", "/foo/*bar"),
-            TestCase::none("/", "/:foo"),
+            TestCase::none("/", "/{foo}"),
             TestCase::some(
                 "/",
                 "/*",
@@ -403,12 +483,12 @@ mod test {
                     ..UriParams::default()
                 }),
             ),
-            TestCase::none("/", "//:foo"),
-            TestCase::none("", "/:foo"),
+            TestCase::none("/", "//{foo}"),
+            TestCase::none("", "/{foo}"),
             TestCase::none("/foo", "/bar"),
             TestCase::some(
                 "/person/glen%20dc/age",
-                "/person/:name/age",
+                "/person/{name}/age",
                 Some(UriParams {
                     params: Some({
                         let mut params = HashMap::new();
@@ -425,7 +505,7 @@ mod test {
             TestCase::some("/foo/bar/", "/foo/bar", None),
             TestCase::some("/foo/bar", "/foo/bar", None),
             TestCase::some("/foo/bar", "foo/bar", None),
-            TestCase::some("/book/oxford-dictionary/author", "/book/:title/author", {
+            TestCase::some("/book/oxford-dictionary/author", "/book/{title}/author", {
                 let mut params = UriParams::default();
                 params.insert("title", "oxford-dictionary");
                 Some(params)
@@ -437,7 +517,7 @@ mod test {
             }),
             TestCase::some(
                 "/book/oxford-dictionary/author/0",
-                "/book/:title/author/:index",
+                "/book/{title}/author/{index}",
                 {
                     let mut params = UriParams::default();
                     params.insert("title", "oxford-dictionary");
@@ -455,12 +535,12 @@ mod test {
                     Some(params)
                 },
             ),
-            TestCase::none("/book/oxford-dictionary", "/book/:title/author"),
+            TestCase::none("/book/oxford-dictionary", "/book/{title}/author"),
             TestCase::none(
                 "/book/oxford-dictionary/author/birthdate",
-                "/book/:title/author",
+                "/book/{title}/author",
             ),
-            TestCase::none("oxford-dictionary/author", "/book/:title/author"),
+            TestCase::none("oxford-dictionary/author", "/book/{title}/author"),
             TestCase::none("/foo", "/"),
             TestCase::none("/foo", "/*f"),
             TestCase::some(
@@ -479,7 +559,7 @@ mod test {
                     ..UriParams::default()
                 }),
             ),
-            TestCase::some("/assets/eu/css/reset.css", "/assets/:local/*", {
+            TestCase::some("/assets/eu/css/reset.css", "/assets/{local}/*", {
                 let mut params = UriParams::default();
                 params.insert("local".to_owned(), "eu".to_owned());
                 params.glob = Some("/css/reset.css".into());
@@ -494,7 +574,7 @@ mod test {
         ];
         for test_case in test_cases.into_iter() {
             let matcher = PathMatcher::new(test_case.matcher_path);
-            let result = matcher.matches_path(test_case.path);
+            let result = matcher.matches_path_inner(test_case.path);
             match (result.clone(), test_case.result.clone()) {
                 (PathMatch::None, PathMatch::None) | (PathMatch::Literal, PathMatch::Literal) => (),
                 (PathMatch::WithParams(result), PathMatch::WithParams(expected_result)) => {
@@ -553,7 +633,7 @@ mod test {
             ("/FoO/42", "/foo/42/", true),
         ] {
             let matcher = PathMatcher::new_literal(prefix);
-            match (matcher.matches_path(path), is_match) {
+            match (matcher.matches_path_inner(path), is_match) {
                 (PathMatch::Literal, true) | (PathMatch::None, false) => (),
                 (result, is_match) => {
                     panic!(
@@ -587,7 +667,7 @@ mod test {
             ("/FoO/42", "/foo/42/1", true),
         ] {
             let matcher = PathMatcher::new_prefix(prefix);
-            match (matcher.matches_path(path), is_match) {
+            match (matcher.matches_path_inner(path), is_match) {
                 (PathMatch::Literal, true) | (PathMatch::None, false) => (),
                 (result, is_match) => {
                     panic!(

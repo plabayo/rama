@@ -75,6 +75,7 @@ tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-test = { workspace = true }
 zstd = { workspace = true }
 
 [lints]

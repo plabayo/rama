@@ -92,7 +92,7 @@ mod tests {
         }
 
         let svc = WebService::default().with_get(
-            "/a/:foo/:bar/b/*",
+            "/a/{foo}/{bar}/b/*",
             async |Path(params): Path<Params>| {
                 assert_eq!(params.foo, "hello");
                 assert_eq!(params.bar, 42);

@@ -9,7 +9,7 @@ pub fn try_to_strip_path_prefix_from_uri(
     uri: &Uri,
     prefix: impl AsRef<str>,
 ) -> Result<Uri, OpaqueError> {
-    let prefix = prefix.as_ref().trim_start_matches('/');
+    let prefix = prefix.as_ref().trim_matches('/');
     let og_path = uri.path().trim_start_matches('/');
 
     if !starts_with_ignore_ascii_case(og_path, prefix) {

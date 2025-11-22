@@ -1,11 +1,11 @@
 use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
-use smol_str::{StrExt, ToSmolStr};
+use smol_str::StrExt;
 use std::{convert::Infallible, path::Path, sync::Arc};
 
 use crate::{
     Request, Response,
-    matcher::{HttpMatcher, UriParams},
+    matcher::{HttpMatcher, PathMatcher, UriParams},
     service::{
         fs::{DirectoryServeMode, ServeDir},
         web::{IntoEndpointService, IntoEndpointServiceWithState, response::IntoResponse},
@@ -19,7 +19,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_types::{
-    Body, OriginalUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
+    Body, OriginalRouterUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
 };
 use rama_utils::include_dir;
 
@@ -31,7 +31,7 @@ use rama_utils::include_dir;
 #[allow(unused)]
 pub struct Router<State = ()> {
     routes: MatchitRouter<Vec<(HttpMatcher<Body>, BoxService<Request, Response, Infallible>)>>,
-    sub_services: Option<Trie<String, BoxService<Request, Response, Infallible>>>,
+    sub_services: Option<Trie<String, SubService>>,
     not_found: Option<BoxService<Request, Response, Infallible>>,
     state: State,
 }
@@ -452,7 +452,39 @@ where
     ) -> &mut Self {
         let prefix = prefix.as_ref().trim().trim_matches('/').to_lowercase();
         let trie = self.sub_services.get_or_insert_default();
-        trie.insert(prefix, nested);
+
+        if !prefix.contains(['*', '{', '}']) {
+            trie.insert(
+                prefix,
+                SubService {
+                    svc: nested,
+                    matcher: None,
+                },
+            );
+        } else {
+            const DISALLOW_GLOB: bool = false;
+            match PathMatcher::new(prefix).try_remove_literal_prefix(DISALLOW_GLOB) {
+                Ok((literal, maybe_matcher)) => {
+                    trie.insert(
+                        literal.to_string(),
+                        SubService {
+                            svc: nested,
+                            matcher: maybe_matcher,
+                        },
+                    );
+                }
+                Err(matcher) => {
+                    trie.insert(
+                        Default::default(),
+                        SubService {
+                            svc: nested,
+                            matcher: Some(matcher),
+                        },
+                    );
+                }
+            }
+        }
+
         self
     }
 
@@ -487,7 +519,7 @@ where
             .boxed();
 
         let path = path.as_ref().trim().trim_matches('/');
-        let path = smol_str::format_smolstr!("/{path}");
+        let path = smol_str::format_smolstr!("/{path}").to_lowercase_smolstr();
 
         if let Ok(matched) = self.routes.at_mut(&path) {
             matched.value.push((matcher, service));
@@ -531,6 +563,11 @@ impl Default for Router {
     }
 }
 
+struct SubService {
+    svc: BoxService<Request, Response, Infallible>,
+    matcher: Option<PathMatcher>,
+}
+
 impl<State> Service<Request> for Router<State>
 where
     State: Send + Sync + Clone + 'static,
@@ -541,7 +578,7 @@ where
     async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
 
-        let path = req.uri().path().to_smolstr();
+        let path = req.uri().path().to_lowercase_smolstr();
 
         if let Ok(matched) = self.routes.at(path.as_str()) {
             let uri_params = matched.params.iter();
@@ -576,24 +613,85 @@ where
                         .and_then(|k| sub_trie.value().map(|v| (k, v)))
                 })
             {
-                match try_to_strip_path_prefix_from_uri(&parts.uri, prefix) {
-                    Ok(modified_uri) => {
-                        parts.extensions.insert(OriginalUri(Arc::new(parts.uri)));
-                        parts.uri = modified_uri;
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            "failed to strip prefix '{prefix}' from Uri (bug??); err = {err}",
-                        );
-                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-                    }
-                }
+                if let Some(matcher) = sub_svc.matcher.as_ref() {
+                    let fragment_count = matcher.fragment_count();
+                    let mut pos = 0;
+                    let mut fragment_index = 0;
+                    let path = parts.uri.path().trim_matches('/');
 
-                tracing::trace!(
-                    "svc request using sub service of router using uri with prefix '{prefix}' removed from path"
-                );
-                let req = Request::from_parts(parts, body);
-                return sub_svc.serve(req).await;
+                    let offset = prefix.len().min(path.len());
+                    let path = &path[offset..].trim_matches('/');
+
+                    for char in path.bytes() {
+                        if fragment_index >= fragment_count {
+                            break;
+                        }
+                        pos += 1;
+                        if char == b'/' {
+                            fragment_index += 1;
+                        }
+                    }
+
+                    let fragments_path = &path[..pos];
+
+                    let mut ext = Extensions::new();
+                    if matcher.matches_path(Some(&mut ext), fragments_path) {
+                        let full_prefix = smol_str::format_smolstr!("{prefix}/{fragments_path}",);
+                        let modified_uri = match try_to_strip_path_prefix_from_uri(
+                            &parts.uri,
+                            &full_prefix,
+                        ) {
+                            Ok(value) => value,
+                            Err(err) => {
+                                tracing::warn!(
+                                    "failed to strip full prefix '{full_prefix}' (static: '{prefix}') from Uri (bug??); err = {err}",
+                                );
+                                return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                            }
+                        };
+
+                        parts.extensions.extend(ext);
+                        parts
+                            .extensions
+                            .insert(OriginalRouterUri(Arc::new(parts.uri)));
+                        parts.uri = modified_uri;
+
+                        tracing::trace!(
+                            "svc request using sub service of router using uri with full prefix '{full_prefix}' (static: '{prefix}') removed from path; new uri: {}",
+                            parts.uri,
+                        );
+                        let req = Request::from_parts(parts, body);
+                        return sub_svc.svc.serve(req).await;
+                    }
+
+                    tracing::trace!(
+                        "svc request using sub service matched with static prefix '{prefix}' (fragment path: '{fragments_path}'), but matcher didn't match"
+                    );
+                } else {
+                    match try_to_strip_path_prefix_from_uri(&parts.uri, prefix) {
+                        Ok(modified_uri) => {
+                            if !parts.extensions.contains::<OriginalRouterUri>() {
+                                parts
+                                    .extensions
+                                    .insert(OriginalRouterUri(Arc::new(parts.uri)));
+                            }
+                            parts.uri = modified_uri;
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                "failed to strip literal prefix '{prefix}' from Uri (bug??); err = {err}",
+                            );
+                            return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                        }
+                    }
+
+                    tracing::trace!(
+                        "svc request using sub service of router using uri with literal prefix '{prefix}' removed from path; new uri: {}",
+                        parts.uri,
+                    );
+                    let req = Request::from_parts(parts, body);
+                    return sub_svc.svc.serve(req).await;
+                }
             }
         }
 
@@ -777,6 +875,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[tracing_test::traced_test]
     async fn test_router_nest() {
         let cases = [
             (Method::GET, "/", "Hello, World!", StatusCode::OK),
@@ -802,6 +901,8 @@ mod tests {
             ),
             (Method::GET, "/api/state", "state", StatusCode::OK),
             (Method::GET, "/api/users/123/state", "state", StatusCode::OK),
+            // to test case insensitive :)
+            (Method::GET, "/Api/USERS/123/State", "state", StatusCode::OK),
         ];
 
         let state = "state".to_owned();
@@ -815,18 +916,21 @@ mod tests {
                 )
                 .with_post(format!("{prefix}users"), create_user_service())
                 .with_delete(format!("{prefix}users/{{user_id}}"), delete_user_service())
-                .with_sub_router_make_fn(format!("{prefix}users/{{user_id}}"), |router| {
-                    router
-                        .with_get(prefix, get_user_service())
-                        .with_get(
-                            format!("{prefix}orders/{{order_id}}"),
-                            get_user_order_service(),
-                        )
-                        .with_get(
-                            format!("{prefix}/state"),
-                            async |State(state): State<String>| state,
-                        )
-                });
+                .with_sub_router_make_fn(
+                    format!("{prefix}users/{{user_id}}/*"), // glob should be dropped by nester
+                    |router| {
+                        router
+                            .with_get(prefix, get_user_service())
+                            .with_get(
+                                format!("{prefix}orders/{{order_id}}"),
+                                get_user_order_service(),
+                            )
+                            .with_get(
+                                format!("{prefix}/state"),
+                                async |State(state): State<String>| state,
+                            )
+                    },
+                );
 
             let app = Router::new()
                 .with_sub_service(format!("{prefix}api"), api_router)

@@ -46,8 +46,8 @@ pub use crate::status::StatusCode;
 pub use crate::version::Version;
 
 #[derive(Debug, Clone)]
-/// Extension type that can be inserted in case a Uri is modified (e.g. nested services)
-pub struct OriginalUri(pub Arc<Uri>);
+/// Extension type that can be inserted in case a Uri is modified as part of nested routers
+pub struct OriginalRouterUri(pub Arc<Uri>);
 
 pub mod uri;
 #[doc(inline)]
