@@ -1,12 +1,14 @@
 use crate::{
-    Body, Request, Response, StatusCode, Uri,
+    Body, Request, Response, StatusCode,
     matcher::HttpMatcher,
     mime::Mime,
     service::{
         fs::{DirectoryServeMode, ServeDir},
         web::{IntoEndpointServiceWithState, endpoint::response::IntoResponse},
     },
+    uri::try_to_strip_path_prefix_from_uri,
 };
+
 use rama_core::{
     extensions::Extensions,
     extensions::ExtensionsMut,
@@ -14,6 +16,7 @@ use rama_core::{
     service::{BoxService, Service, service_fn},
     telemetry::tracing,
 };
+use rama_http_types::OriginalUri;
 use rama_utils::include_dir;
 
 use std::{convert::Infallible, fmt, path::Path, sync::Arc};
@@ -510,48 +513,18 @@ where
         // set the nested path
         let (mut parts, body) = req.into_parts();
 
-        // TODO: in future we want to have a better URI API,
-        // so we do not need to do cloning here and all this mess...
-        let mut uri_parts = parts.uri.clone().into_parts();
-        let path_and_query = uri_parts.path_and_query.take().unwrap();
-
-        let prefix = self.prefix.as_ref();
-        let path = path_and_query.path().trim_matches('/')
-            .strip_prefix(prefix)
-            .unwrap_or_else(|| {
-                let path = path_and_query.path();
+        match try_to_strip_path_prefix_from_uri(&parts.uri, self.prefix.as_ref()) {
+            Ok(modified_uri) => {
+                parts.extensions.insert(OriginalUri(Arc::new(parts.uri)));
+                parts.uri = modified_uri;
+            }
+            Err(err) => {
                 tracing::debug!(
-                    "failed to strip prefix '{}' from req path: '{path}' (bug?); preserve path as-is..",
+                    "failed to strip prefix '{}' from Uri (bug??) preserve og uri as is; err = {err}",
                     self.prefix.as_ref(),
                 );
-                path
-            });
-
-        let path_and_query_str = if let Some(query) = path_and_query.query() {
-            smol_str::format_smolstr!("/{path}?{query}")
-        } else {
-            smol_str::format_smolstr!("/{path}")
-        };
-
-        uri_parts.path_and_query = match path_and_query_str.parse() {
-            Ok(value) => Some(value),
-            Err(err) => {
-                tracing::debug!(
-                    "failed to create path-and-query from str: '{path_and_query_str}' (bug?); preserve og as-is...; err = {err}"
-                );
-                uri_parts.path_and_query
             }
-        };
-
-        parts.uri = match Uri::from_parts(uri_parts) {
-            Ok(value) => value,
-            Err(err) => {
-                tracing::debug!(
-                    "failed to create uri from modified parts: path_and_query_str='{path_and_query_str}' (bug?); preserve og as-is...; err = {err}"
-                );
-                parts.uri
-            }
-        };
+        }
 
         let req = Request::from_parts(parts, body);
 

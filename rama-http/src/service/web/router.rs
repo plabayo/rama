@@ -1,5 +1,6 @@
 use matchit::Router as MatchitRouter;
-use radix_trie::Trie;
+use radix_trie::{Trie, TrieCommon as _};
+use smol_str::{StrExt, ToSmolStr};
 use std::{convert::Infallible, path::Path, sync::Arc};
 
 use crate::{
@@ -12,12 +13,14 @@ use crate::{
 };
 
 use rama_core::{
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsMut},
     matcher::Matcher,
     service::{BoxService, Service},
     telemetry::tracing,
 };
-use rama_http_types::{Body, StatusCode, mime::Mime};
+use rama_http_types::{
+    Body, OriginalUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
+};
 use rama_utils::include_dir;
 
 /// A basic router that can be used to route requests to different services based on the request path.
@@ -28,7 +31,7 @@ use rama_utils::include_dir;
 #[allow(unused)]
 pub struct Router<State = ()> {
     routes: MatchitRouter<Vec<(HttpMatcher<Body>, BoxService<Request, Response, Infallible>)>>,
-    sub_routers: Option<Trie<Arc<str>, Router<State>>>,
+    sub_services: Option<Trie<String, BoxService<Request, Response, Infallible>>>,
     not_found: Option<BoxService<Request, Response, Infallible>>,
     state: State,
 }
@@ -45,7 +48,7 @@ impl Router {
     pub fn new() -> Self {
         Self {
             routes: MatchitRouter::new(),
-            sub_routers: None,
+            sub_services: None,
             not_found: None,
             state: (),
         }
@@ -61,7 +64,7 @@ where
     pub fn new_with_state(state: State) -> Self {
         Self {
             routes: MatchitRouter::new(),
-            sub_routers: None,
+            sub_services: None,
             not_found: None,
             state,
         }
@@ -447,22 +450,10 @@ where
         prefix: impl AsRef<str>,
         nested: BoxService<Request, Response, Infallible>,
     ) -> &mut Self {
-        let prefix = prefix.as_ref();
-
-        let path =
-            smol_str::format_smolstr!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
-
-        let nested_router_service = NestedRouterService {
-            prefix: Arc::from(prefix),
-            nested,
-        };
-
-        self.set_match_route(
-            prefix,
-            HttpMatcher::custom(true),
-            nested_router_service.clone(),
-        )
-        .set_match_route(&path, HttpMatcher::custom(true), nested_router_service)
+        let prefix = prefix.as_ref().trim().trim_matches('/').to_lowercase();
+        let trie = self.sub_services.get_or_insert_default();
+        trie.insert(prefix, nested);
+        self
     }
 
     /// add a route to the router with it's matcher and service.
@@ -534,49 +525,6 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
-struct NestedRouterService {
-    #[expect(unused)]
-    prefix: Arc<str>,
-    nested: BoxService<Request, Response, Infallible>,
-}
-
-impl Service<Request> for NestedRouterService {
-    type Response = Response;
-    type Error = Infallible;
-
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        let params = match req.extensions().get::<UriParams>() {
-            Some(params) => {
-                let nested_path = params.get("nest").unwrap_or_else(|| {
-                    tracing::debug!("failed to fetch nest value in params: {params:?}; bug?");
-                    Default::default()
-                });
-
-                let filtered_params: UriParams =
-                    params.iter().filter(|(key, _)| *key != "nest").collect();
-
-                // build the nested path and update the request URI
-                let path = smol_str::format_smolstr!("/{nested_path}");
-                *req.uri_mut() = match path.parse() {
-                    Ok(uri) => uri,
-                    Err(err) => {
-                        tracing::debug!("failed to parse nested path as the req's new uri: {err}");
-                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-                    }
-                };
-
-                filtered_params
-            }
-            None => UriParams::default(),
-        };
-
-        req.extensions_mut().insert(params);
-
-        self.nested.serve(req).await
-    }
-}
-
 impl Default for Router {
     fn default() -> Self {
         Self::new()
@@ -593,8 +541,9 @@ where
     async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
 
-        let uri = req.uri().path().to_owned();
-        if let Ok(matched) = self.routes.at(&uri) {
+        let path = req.uri().path().to_smolstr();
+
+        if let Ok(matched) = self.routes.at(path.as_str()) {
             let uri_params = matched.params.iter();
 
             match req.extensions_mut().get_mut::<UriParams>() {
@@ -616,7 +565,40 @@ where
             }
         }
 
+        let (mut parts, body) = req.into_parts();
+
+        if let Some(trie) = self.sub_services.as_ref() {
+            let norm_path = parts.uri.path().trim_matches('/').to_lowercase_smolstr();
+            if let Some((prefix, sub_svc)) =
+                trie.get_ancestor(norm_path.as_str()).and_then(|sub_trie| {
+                    sub_trie
+                        .key()
+                        .and_then(|k| sub_trie.value().map(|v| (k, v)))
+                })
+            {
+                match try_to_strip_path_prefix_from_uri(&parts.uri, prefix) {
+                    Ok(modified_uri) => {
+                        parts.extensions.insert(OriginalUri(Arc::new(parts.uri)));
+                        parts.uri = modified_uri;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "failed to strip prefix '{prefix}' from Uri (bug??); err = {err}",
+                        );
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                    }
+                }
+
+                tracing::trace!(
+                    "svc request using sub service of router using uri with prefix '{prefix}' removed from path"
+                );
+                let req = Request::from_parts(parts, body);
+                return sub_svc.serve(req).await;
+            }
+        }
+
         if let Some(not_found) = &self.not_found {
+            let req = Request::from_parts(parts, body);
             not_found.serve(req).await
         } else {
             Ok(StatusCode::NOT_FOUND.into_response())
