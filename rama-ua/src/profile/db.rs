@@ -32,11 +32,10 @@ impl UserAgentDatabase {
     ///
     /// This function is only available if the `embed-profiles` feature is enabled.
     #[cfg(feature = "embed-profiles")]
-    #[must_use]
     #[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
-    pub fn embedded() -> Self {
-        let profiles = crate::profile::load_embedded_profiles();
-        Self::from_iter(profiles)
+    pub fn try_embedded() -> Result<Self, rama_core::error::OpaqueError> {
+        let profiles = crate::profile::try_load_embedded_profiles()?;
+        Ok(Self::from_iter(profiles))
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -565,7 +564,7 @@ mod tests {
     #[cfg(feature = "embed-profiles")]
     #[test]
     fn test_ua_db_embedded() {
-        let db = UserAgentDatabase::embedded();
+        let db = UserAgentDatabase::try_embedded().unwrap();
         assert!(!db.is_empty());
     }
 }

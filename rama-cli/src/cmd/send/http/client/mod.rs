@@ -67,14 +67,16 @@ pub(super) async fn new(
                 writer: writer.clone(),
             }
         }),
-        cfg.emulate.then(|| {
-            (
-                UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::embedded()))
-                    .with_try_auto_detect_user_agent(true)
-                    .with_select_fallback(UserAgentSelectFallback::Random),
-                EmulateTlsProfileLayer::new(),
-            )
-        }),
+        cfg.emulate
+            .then(|| {
+                Ok::<_, OpaqueError>((
+                    UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::try_embedded()?))
+                        .with_try_auto_detect_user_agent(true)
+                        .with_select_fallback(UserAgentSelectFallback::Random),
+                    EmulateTlsProfileLayer::new(),
+                ))
+            })
+            .transpose()?,
         FollowRedirectLayer::with_policy(Limited::new(if cfg.location && cfg.max_redirs > 0 {
             cfg.max_redirs as usize
         } else {

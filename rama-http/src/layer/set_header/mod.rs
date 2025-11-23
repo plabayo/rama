@@ -10,5 +10,3 @@ pub use self::{
     request::{SetRequestHeader, SetRequestHeaderLayer},
     response::{SetResponseHeader, SetResponseHeaderLayer},
 };
-
-pub mod utils;

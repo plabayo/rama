@@ -14,7 +14,7 @@ use rama::{
 use clap::Args;
 use std::{path::PathBuf, time::Duration};
 
-use crate::utils::tls::new_server_config;
+use crate::utils::tls::try_new_server_config;
 
 #[derive(Debug, Args)]
 /// rama serve service (serves a file, directory or placeholder page)
@@ -72,12 +72,15 @@ pub struct CliCommandFs {
 
 /// run the rama serve service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxError> {
-    let maybe_tls_server_config = cfg.secure.then(|| {
-        new_server_config(Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]))
-    });
+    let maybe_tls_server_config = cfg
+        .secure
+        .then(|| {
+            try_new_server_config(Some(vec![
+                ApplicationProtocol::HTTP_2,
+                ApplicationProtocol::HTTP_11,
+            ]))
+        })
+        .transpose()?;
 
     let tcp_service = FsServiceBuilder::new()
         .with_concurrent(cfg.concurrent)

@@ -118,7 +118,6 @@ impl AcmeClient {
     /// [`Self::load_account`] instead.
     pub async fn create_or_load_account(
         &self,
-
         account_key: EcdsaKey,
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
@@ -131,10 +130,11 @@ impl AcmeClient {
     /// Internally this will generate a new [`EcdsaKey`] which will be associated with this account
     pub async fn create_account(
         &self,
-
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
-        let account_key = EcdsaKey::generate().expect("generate key for account");
+        let account_key = EcdsaKey::generate()
+            .context("generate key for account")
+            .map_err(ClientError::Other)?;
         self.create_or_load_account_inner(account_key, options, CreateAccountMode::Create)
             .await
     }
@@ -142,7 +142,6 @@ impl AcmeClient {
     /// Create a new acme account using the provided [`EcdsaKey`]
     pub async fn create_account_with_key(
         &self,
-
         account_key: EcdsaKey,
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
@@ -165,7 +164,6 @@ impl AcmeClient {
 
     async fn create_or_load_account_inner(
         &self,
-
         account_key: EcdsaKey,
         options: CreateAccountOptions,
         mode: CreateAccountMode,
@@ -210,7 +208,6 @@ impl AcmeClient {
 
     async fn post(
         &self,
-
         url: &str,
         payload: Option<&impl Serialize>,
         signer: &impl Signer,

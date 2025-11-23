@@ -73,7 +73,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
     let params = conn
         .extensions()
         .get::<NegotiatedTlsParameters>()
-        .expect("NegotiatedTlsParameters to be available in connector context");
+        .context("NegotiatedTlsParameters missing connector context")?;
 
     if let Some(ref raw_pem_data) = params.peer_certificate_chain {
         let x509_stack = match raw_pem_data {

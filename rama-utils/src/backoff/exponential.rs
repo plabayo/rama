@@ -210,14 +210,16 @@ where
 
 impl Default for ExponentialBackoff<(), HasherRng> {
     fn default() -> Self {
-        Self::new_inner(
-            Duration::from_millis(50),
-            Duration::from_secs(3),
-            0.99,
-            (),
-            HasherRng::default(),
-        )
-        .expect("Unable to create ExponentialBackoff")
+        Self {
+            min: Duration::from_millis(50),
+            max: Duration::from_secs(3),
+            jitter: 0.99,
+            rng_creator: (),
+            state: Mutex::new(ExponentialBackoffState {
+                rng: HasherRng::default(),
+                iterations: 0,
+            }),
+        }
     }
 }
 

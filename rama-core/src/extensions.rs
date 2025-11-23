@@ -124,8 +124,26 @@ impl Extensions {
 
     /// Insert a type into this `Extensions` and get mutable reference
     pub fn insert_mut<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> &mut T {
-        self.insert(val);
-        self.get_mut().unwrap()
+        #[cfg(debug_assertions)]
+        self.type_map
+            .get_or_insert_with(Box::default)
+            .insert(TypeId::of::<T>(), type_name::<T>().to_owned());
+
+        let map = self.map.get_or_insert_with(Box::default);
+
+        let entry = map
+            .entry(TypeId::of::<T>())
+            .insert_entry(Box::new(val))
+            .into_mut();
+
+        #[allow(
+            clippy::expect_used,
+            reason = "by construction, for a given TypeId::<T>() we always store a T"
+        )]
+        (**entry)
+            .as_any_mut()
+            .downcast_mut()
+            .expect("internal invariant: value stored under TypeId::<T>() must be T")
     }
 
     /// Insert a type only into this `Extensions`, if the value is `Some(T)`.
@@ -211,10 +229,10 @@ impl fmt::Debug for Extensions {
                 .map(|key| {
                     self.type_map
                         .as_ref()
-                        .and_then(|type_map| type_map.get(key))
-                        .unwrap()
+                        .and_then(|type_map| type_map.get(key).map(|s| s.as_str()))
+                        .unwrap_or("???")
                 })
-                .collect::<Vec<&String>>()
+                .collect::<Vec<&str>>()
         });
 
         f.debug_struct("Extensions")
@@ -506,9 +524,15 @@ fn test_extensions() {
     extensions.insert(5i32);
     extensions.insert(MyType(10));
 
+    assert_eq!(&mut 3i32, extensions.insert_mut(3i32));
+    assert_eq!(extensions.get(), Some(&3i32));
+
+    assert_eq!(&mut 3., extensions.insert_mut(3.));
+    assert_eq!(extensions.get(), Some(&3.));
+
     let mut extensions2 = Extensions::new();
     extensions2.extend(extensions);
-    assert_eq!(extensions2.get(), Some(&5i32));
+    assert_eq!(extensions2.get(), Some(&3i32));
     assert_eq!(extensions2.get(), Some(&MyType(10)));
 
     // test clear

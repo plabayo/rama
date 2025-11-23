@@ -285,7 +285,11 @@ pub(crate) fn classify_grpc_metadata(
     {
         ParsedGrpcStatus::Success
     } else {
-        ParsedGrpcStatus::NonSuccess(NonZeroI32::new(status).unwrap())
+        // SAFETY:
+        // - 0 is a success code
+        // - negative numbers are unknown, so classifying these as (1) is fine
+        // - all others will be fine to keep as-is
+        ParsedGrpcStatus::NonSuccess(unsafe { NonZeroI32::new_unchecked(status.max(1)) })
     }
 }
 

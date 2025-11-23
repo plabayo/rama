@@ -8,7 +8,7 @@ use rama::{
     extensions::ExtensionsMut,
     graceful::ShutdownGuard,
     http::{
-        Body, Request, Response, StatusCode,
+        Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -134,10 +134,7 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!("error in client request: {err:?}");
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty())
-                .unwrap())
+            Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
     }
 }

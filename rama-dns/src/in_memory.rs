@@ -253,7 +253,7 @@ mod tests {
             serde_html_form::from_str("example.com=127.0.0.1").unwrap();
         assert_eq!(
             dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
+                .ipv4_lookup(Domain::example())
                 .await
                 .unwrap()
                 .into_iter()
@@ -263,7 +263,7 @@ mod tests {
         );
         assert!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
                 .await
                 .unwrap()
                 .is_empty()
@@ -276,7 +276,7 @@ mod tests {
             serde_json::from_str(r##"{"example.com":["127.0.0.1"]}"##).unwrap();
         assert_eq!(
             dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
+                .ipv4_lookup(Domain::example())
                 .await
                 .unwrap()
                 .into_iter()
@@ -286,7 +286,7 @@ mod tests {
         );
         assert!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
                 .await
                 .unwrap()
                 .is_empty()
@@ -298,14 +298,14 @@ mod tests {
         let dns_overwrite: DnsOverwrite = serde_html_form::from_str("example.com=::1").unwrap();
         assert!(
             dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
+                .ipv4_lookup(Domain::example())
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
                 .await
                 .unwrap()
                 .into_iter()
@@ -320,14 +320,14 @@ mod tests {
         let dns_overwrite: DnsOverwrite = serde_html_form::from_str("*=::1").unwrap();
         assert!(
             dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
+                .ipv4_lookup(Domain::example())
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
                 .await
                 .unwrap()
                 .into_iter()
@@ -352,7 +352,7 @@ mod tests {
         let dns_overwrite: DnsOverwrite =
             serde_html_form::from_str("example.com=127.0.0.1&example.com=127.0.0.2").unwrap();
         let mut ipv4_it = dns_overwrite
-            .ipv4_lookup(Domain::from_static("example.com"))
+            .ipv4_lookup(Domain::example())
             .await
             .unwrap()
             .into_iter();
@@ -361,7 +361,7 @@ mod tests {
         assert!(ipv4_it.next().is_none());
         assert!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
                 .await
                 .unwrap()
                 .is_empty()
@@ -374,7 +374,7 @@ mod tests {
             serde_html_form::from_str("example.com=127.0.0.1&example.com=::1").unwrap();
         assert_eq!(
             dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
+                .ipv4_lookup(Domain::example())
                 .await
                 .unwrap()
                 .into_iter()
@@ -384,7 +384,7 @@ mod tests {
         );
         assert_eq!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
                 .await
                 .unwrap()
                 .into_iter()
@@ -415,17 +415,7 @@ mod tests {
     #[tokio::test]
     async fn test_dns_overwrite_deserialize_empty() {
         let dns_overwrite: DnsOverwrite = serde_html_form::from_str("").unwrap();
-        assert!(
-            dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
-                .await
-                .is_err()
-        );
-        assert!(
-            dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
-                .await
-                .is_err()
-        );
+        assert!(dns_overwrite.ipv4_lookup(Domain::example()).await.is_err());
+        assert!(dns_overwrite.ipv6_lookup(Domain::example()).await.is_err());
     }
 }

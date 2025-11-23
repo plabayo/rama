@@ -24,7 +24,7 @@ use rama::{
 use clap::{Args, ValueEnum};
 use std::{fmt, time::Duration};
 
-use crate::utils::tls::new_server_config;
+use crate::utils::tls::try_new_server_config;
 
 #[derive(Debug, Args)]
 /// rama discard (rfc863) service
@@ -82,7 +82,7 @@ impl fmt::Display for Mode {
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), BoxError> {
     let maybe_tls_cfg: Option<TlsAcceptorData> = if cfg.mode == Mode::Tls {
         tracing::info!("create tls server config...");
-        let cfg = new_server_config(None);
+        let cfg = try_new_server_config(None)?;
         Some(cfg.try_into()?)
     } else {
         None

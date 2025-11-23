@@ -128,7 +128,7 @@ async fn main() -> Result<(), BoxError> {
 
     let state = State {
         mitm_tls_service_data,
-        ua_db: Arc::new(UserAgentDatabase::embedded()),
+        ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
         har_layer,
         har_toggle_ctl,
     };

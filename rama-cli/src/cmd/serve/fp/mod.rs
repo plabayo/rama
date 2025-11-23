@@ -56,7 +56,7 @@ mod storage;
 #[doc(inline)]
 use state::State;
 
-use crate::utils::{http::HttpVersion, tls::new_server_config};
+use crate::utils::{http::HttpVersion, tls::try_new_server_config};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StorageAuthorized;
@@ -171,7 +171,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
         CatchPanicLayer::new(),
-        SetResponseHeaderLayer::if_not_present_typed(XClacksOverhead::new()),
+        SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
         AddRequiredResponseHeadersLayer::default(),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-sponsored-by"),
@@ -233,15 +233,18 @@ async fn serve_http<Response>(
 where
     Response: IntoResponse + Send + 'static,
 {
-    let maybe_tls_server_config = cfg.secure.then(|| {
-        new_server_config(Some(match cfg.http_version {
-            HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-            HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-            HttpVersion::Auto => {
-                vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
-            }
-        }))
-    });
+    let maybe_tls_server_config = cfg
+        .secure
+        .then(|| {
+            try_new_server_config(Some(match cfg.http_version {
+                HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+                HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+                HttpVersion::Auto => {
+                    vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                }
+            }))
+        })
+        .transpose()?;
 
     let tls_acceptor_data = match maybe_tls_server_config {
         None => None,
@@ -399,8 +402,19 @@ where
                 })
                 .join("; ");
             if !cookie.is_empty() {
-                req.headers_mut()
-                    .insert(COOKIE, HeaderValue::try_from(cookie).unwrap());
+                match HeaderValue::try_from(cookie) {
+                    Ok(value) => {
+                        let _ = req.headers_mut().insert(COOKIE, value);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "failed to re-insert modified cookie due to creation error: {err}; drop cookie header for security"
+                        );
+                        while req.headers_mut().remove(COOKIE).is_some() {
+                            tracing::debug!("removed cookie header (for security reasons)");
+                        }
+                    }
+                }
             }
         }
 

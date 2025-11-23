@@ -1,5 +1,5 @@
 use crate::sse::{
-    Event, EventDataWrite,
+    Event, EventBuildError, EventDataWrite,
     datastar::{ElementPatchMode, EventType},
 };
 use mime::Mime;
@@ -108,21 +108,17 @@ impl ExecuteScript {
     }
 
     /// Consume `self` as an [`Event`].
-    #[must_use]
-    pub fn into_sse_event(self) -> Event<Self> {
-        Event::new()
-            .try_with_event(Self::TYPE.as_smol_str())
-            .unwrap()
-            .with_data(self)
+    pub fn try_into_sse_event(self) -> Result<Event<Self>, EventBuildError> {
+        Ok(Event::new()
+            .try_with_event(Self::TYPE.as_smol_str())?
+            .with_data(self))
     }
 
     /// Consume `self` as a [`super::DatastarEvent`].
-    #[must_use]
-    pub fn into_datastar_event<T>(self) -> super::DatastarEvent<T> {
-        Event::new()
-            .try_with_event(Self::TYPE.as_smol_str())
-            .unwrap()
-            .with_data(super::EventData::ExecuteScript(self))
+    pub fn try_into_datastar_event<T>(self) -> Result<super::DatastarEvent<T>, EventBuildError> {
+        Ok(Event::new()
+            .try_with_event(Self::TYPE.as_smol_str())?
+            .with_data(super::EventData::ExecuteScript(self)))
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -170,15 +166,21 @@ impl ExecuteScript {
     }
 }
 
-impl From<ExecuteScript> for Event<ExecuteScript> {
-    fn from(value: ExecuteScript) -> Self {
-        value.into_sse_event()
+impl TryFrom<ExecuteScript> for Event<ExecuteScript> {
+    type Error = EventBuildError;
+
+    #[inline(always)]
+    fn try_from(value: ExecuteScript) -> Result<Self, Self::Error> {
+        value.try_into_sse_event()
     }
 }
 
-impl<T> From<ExecuteScript> for super::DatastarEvent<T> {
-    fn from(value: ExecuteScript) -> Self {
-        value.into_datastar_event()
+impl<T> TryFrom<ExecuteScript> for super::DatastarEvent<T> {
+    type Error = EventBuildError;
+
+    #[inline(always)]
+    fn try_from(value: ExecuteScript) -> Result<Self, Self::Error> {
+        value.try_into_datastar_event()
     }
 }
 

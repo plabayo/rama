@@ -3,6 +3,7 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         BodyExtractExt, Request, Response, StatusCode, Version,
+        headers::ContentType,
         proto::h2,
         service::web::{
             extract::{Path, State as StateParam},
@@ -639,22 +640,20 @@ pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), Opaq
 
 const STYLE_CSS: &str = include_str!("../../../../assets/style.css");
 
-pub(super) async fn get_assets_style() -> Response {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/css")
-        .body(STYLE_CSS.into())
-        .expect("build css response")
+pub(super) async fn get_assets_style() -> impl IntoResponse {
+    (
+        response::Headers::single(ContentType::css_utf8()),
+        STYLE_CSS,
+    )
 }
 
 const SCRIPT_JS: &str = include_str!("../../../../assets/script.js");
 
-pub(super) async fn get_assets_script() -> Response {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/javascript")
-        .body(SCRIPT_JS.into())
-        .expect("build js response")
+pub(super) async fn get_assets_script() -> impl IntoResponse {
+    (
+        response::Headers::single(ContentType::javascript_utf8()),
+        SCRIPT_JS,
+    )
 }
 
 //------------------------------------------

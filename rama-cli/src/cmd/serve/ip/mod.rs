@@ -14,7 +14,7 @@ use rama::{
 use clap::Args;
 use std::time::Duration;
 
-use crate::utils::tls::new_server_config;
+use crate::utils::tls::try_new_server_config;
 
 #[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)
@@ -58,12 +58,15 @@ pub struct CliCommandIp {
 
 /// run the rama ip service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxError> {
-    let maybe_tls_server_config = cfg.secure.then(|| {
-        new_server_config((!cfg.transport).then_some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]))
-    });
+    let maybe_tls_server_config = cfg
+        .secure
+        .then(|| {
+            try_new_server_config((!cfg.transport).then_some(vec![
+                ApplicationProtocol::HTTP_2,
+                ApplicationProtocol::HTTP_11,
+            ]))
+        })
+        .transpose()?;
 
     let tcp_service = if cfg.transport {
         Either::A(

@@ -304,7 +304,6 @@ pub struct UdpFramedRelay<C, S> {
     wr: BytesMut,
     out_addr: SocketAddress,
     flushed: bool,
-    is_readable: bool,
     current_addr: Option<SocketAddress>,
 }
 
@@ -331,7 +330,6 @@ impl<C: fmt::Debug, S: fmt::Debug> fmt::Debug for UdpFramedRelay<C, S> {
             .field("wr", &self.wr)
             .field("out_addr", &self.out_addr)
             .field("flushed", &self.flushed)
-            .field("is_readable", &self.is_readable)
             .field("current_addr", &self.current_addr)
             .finish()
     }
@@ -368,17 +366,13 @@ where
 
         loop {
             // Are there still bytes left in the read buffer to decode?
-            if pin.is_readable {
+            if let Some(current_addr) = pin.current_addr {
                 if let Some(frame) = pin.codec.decode_eof(&mut pin.rd).map_err(Into::into)? {
-                    let current_addr = pin
-                        .current_addr
-                        .expect("will always be set before this line is called");
-
                     return Poll::Ready(Some(Ok((frame, current_addr))));
                 }
 
                 // if this line has been reached then decode has returned `None`.
-                pin.is_readable = false;
+                pin.current_addr = None;
                 pin.rd.clear();
             }
 
@@ -403,7 +397,6 @@ where
             };
 
             pin.current_addr = Some(addr);
-            pin.is_readable = true;
         }
     }
 }
@@ -485,7 +478,6 @@ impl<C, S> UdpFramedRelay<C, S> {
             rd: BytesMut::with_capacity(INITIAL_RD_CAPACITY),
             wr: BytesMut::with_capacity(INITIAL_WR_CAPACITY),
             flushed: true,
-            is_readable: false,
             current_addr: None,
         }
     }

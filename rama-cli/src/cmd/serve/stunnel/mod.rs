@@ -54,7 +54,7 @@ use rama::{
 use clap::{Args, Subcommand};
 use std::{path::PathBuf, sync::Arc};
 
-use crate::utils::tls::new_server_config;
+use crate::utils::tls::try_new_server_config;
 
 #[derive(Debug, Args)]
 /// rama stunnel service
@@ -170,7 +170,8 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
 
     let tcp_listener = TcpListener::bind(cfg.bind.clone())
         .await
-        .expect("bind stunnel entry node");
+        .map_err(OpaqueError::from_boxed)
+        .context("bind stunnel entry node")?;
 
     let bind_address = tcp_listener
         .local_addr()
@@ -262,7 +263,7 @@ fn load_server_config(
                 ocsp: None,
             })))
         }
-        (None, None) => Ok(new_server_config(None)),
+        (None, None) => Ok(try_new_server_config(None)?),
         _ => Err("Both certificate and key must be provided together, or neither".into()),
     }
 }

@@ -39,7 +39,7 @@ use rama::{
     },
 };
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -147,7 +147,7 @@ pub mod handlers {
             KeepAlive::new(),
             stream_fn(async |mut yielder| {
                 for event in test_case.events {
-                    let sse_event = match event {
+                    let sse_event_result = match event {
                         TestCaseEvent::ExecuteScript {
                             script,
                             event_id,
@@ -155,7 +155,7 @@ pub mod handlers {
                             attributes,
                             auto_remove,
                         } => {
-                            let mut event = ExecuteScript {
+                            ExecuteScript {
                                 script: script.into(),
                                 auto_remove,
                                 attributes: attributes.map(|attributes| {
@@ -188,16 +188,18 @@ pub mod handlers {
                                         _ => Some(ScriptAttribute::Custom { key, value: Some(value.to_string().trim_matches('"').to_owned()) }),
                                     }).collect()
                                 }),
-                            }.into_datastar_event();
-                            if let Some(id) = event_id
-                                && let Err(err) = event.try_set_id(id)
-                            {
-                                tracing::error!("failed to set id of event: {err}");
-                            }
-                            if let Some(retry) = retry_duration {
-                                event.set_retry(retry);
-                            }
-                            event
+                            }.try_into_datastar_event()
+                            .map(|mut event| {
+                                if let Some(id) = event_id
+                                    && let Err(err) = event.try_set_id(id)
+                                {
+                                    tracing::error!("failed to set id of event: {err}");
+                                }
+                                if let Some(retry) = retry_duration {
+                                    event.set_retry(retry);
+                                }
+                                event
+                            })
                         }
                         TestCaseEvent::PatchElements {
                             elements,
@@ -207,7 +209,7 @@ pub mod handlers {
                             selector,
                             use_view_transition,
                         } => {
-                            let mut event = PatchElements {
+                            PatchElements {
                                 elements: elements.map(Into::into),
                                 selector: selector.map(Into::into),
                                 mode: match mode.as_deref().unwrap_or_default() {
@@ -222,16 +224,18 @@ pub mod handlers {
                                 },
                                 use_view_transition: use_view_transition.unwrap_or_default(),
                             }
-                            .into_datastar_event();
-                            if let Some(id) = event_id
-                                && let Err(err) = event.try_set_id(id)
-                            {
-                                tracing::error!("failed to set id of event: {err}");
-                            }
-                            if let Some(retry) = retry_duration {
-                                event.set_retry(retry);
-                            }
-                            event
+                            .try_into_datastar_event()
+                            .map(|mut event| {
+                                if let Some(id) = event_id
+                                    && let Err(err) = event.try_set_id(id)
+                                {
+                                    tracing::error!("failed to set id of event: {err}");
+                                }
+                                if let Some(retry) = retry_duration {
+                                    event.set_retry(retry);
+                                }
+                                event
+                            })
                         }
                         TestCaseEvent::PatchSignals {
                             signals,
@@ -239,18 +243,18 @@ pub mod handlers {
                             event_id,
                             retry_duration,
                             only_if_missing,
-                        } => {
-                            let mut event = PatchSignals {
-                                signals: signals_raw.unwrap_or_else(|| {
-                                    signals
-                                        .map(|signals| {
-                                            serde_json::to_string(&signals).unwrap_or_default()
-                                        })
-                                        .unwrap_or_default()
-                                }),
-                                only_if_missing: only_if_missing.unwrap_or_default(),
-                            }
-                            .into_datastar_event();
+                        } => PatchSignals {
+                            signals: signals_raw.unwrap_or_else(|| {
+                                signals
+                                    .map(|signals| {
+                                        serde_json::to_string(&signals).unwrap_or_default()
+                                    })
+                                    .unwrap_or_default()
+                            }),
+                            only_if_missing: only_if_missing.unwrap_or_default(),
+                        }
+                        .try_into_datastar_event()
+                        .map(|mut event| {
                             if let Some(id) = event_id
                                 && let Err(err) = event.try_set_id(id)
                             {
@@ -260,10 +264,10 @@ pub mod handlers {
                                 event.set_retry(retry);
                             }
                             event
-                        }
+                        }),
                     };
 
-                    yielder.yield_item(Ok::<_, Infallible>(sse_event)).await;
+                    yielder.yield_item(sse_event_result).await;
                 }
             }),
         ))

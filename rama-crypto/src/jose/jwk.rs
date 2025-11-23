@@ -238,7 +238,10 @@ impl EcdsaKey {
     /// Create a [`JWK`] for this [`EcdsaKey`]
     #[must_use]
     pub fn create_jwk(&self) -> JWK {
-        // `expect` because `new_for_escdsa_keypair`` can only fail if curve is not elliptic but we already check that in `new`
+        #[allow(
+            clippy::expect_used,
+            reason = "`new_for_escdsa_keypair` can only fail if curve is not elliptic but we already check that in `new`"
+        )]
         JWK::new_from_escdsa_keypair(&self.inner).expect("create JWK from escdsa keypair")
     }
 

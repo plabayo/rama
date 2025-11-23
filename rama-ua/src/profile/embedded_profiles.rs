@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use rama_core::error::{ErrorContext as _, OpaqueError};
 use rama_http::proto::h1::Http1HeaderMap;
 use serde::Deserialize;
 
@@ -9,11 +10,11 @@ use crate::*;
 /// Load the profiles embedded with the rama-ua crate.
 ///
 /// This function is only available if the `embed-profiles` feature is enabled.
-pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
+pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProfile>, OpaqueError> {
     let profiles: Vec<UserAgentProfileRow> =
         serde_json::from_str(include_str!("embed_profiles.json"))
-            .expect("Failed to deserialize embedded profiles");
-    profiles.into_iter().filter_map(|row| {
+            .context("deserialize embedded profiles")?;
+    Ok(profiles.into_iter().filter_map(|row| {
         let ua = UserAgent::new(row.uastr);
         Some(UserAgentProfile {
             ua_kind: ua.ua_kind()?,
@@ -59,7 +60,7 @@ pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
                 _ => None,
             },
         })
-    })
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,7 +92,7 @@ mod tests {
 
     #[test]
     fn test_load_embedded_profiles() {
-        let profiles: Vec<_> = load_embedded_profiles().collect();
+        let profiles: Vec<_> = try_load_embedded_profiles().unwrap().collect();
         assert!(!profiles.is_empty());
     }
 }

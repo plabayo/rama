@@ -8,7 +8,7 @@ use pin_project_lite::pin_project;
 use rama_core::futures::stream::Stream;
 use rama_core::futures::task::{Context, Poll};
 use rama_core::telemetry::tracing;
-use rama_error::{BoxError, OpaqueError};
+use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use smol_str::SmolStr;
 use std::fmt;
 use std::marker::PhantomData;
@@ -70,7 +70,7 @@ impl<T: EventDataRead> EventBuilder<T> {
             RawEventLine::Field(field, val) => match *field {
                 "event" => {
                     if let Some(val) = val {
-                        self.event.try_set_event(*val).unwrap();
+                        self.event.try_set_event(*val).context("set event value")?;
                     }
                 }
                 "data" => {
@@ -80,7 +80,7 @@ impl<T: EventDataRead> EventBuilder<T> {
                     if let Some(val) = val
                         && !val.contains('\u{0000}')
                     {
-                        self.event.try_set_id(*val).unwrap();
+                        self.event.try_set_id(*val).context("set event id")?;
                     }
                 }
                 "retry" => {
@@ -93,7 +93,9 @@ impl<T: EventDataRead> EventBuilder<T> {
                 }
             },
             RawEventLine::Comment(comment) => {
-                self.event.try_set_comment(*comment).unwrap();
+                self.event
+                    .try_set_comment(*comment)
+                    .context("set event comment")?;
             }
             RawEventLine::Empty => self.is_complete = true,
         }
@@ -255,7 +257,7 @@ where
                         &string
                     } else {
                         *this.state = EventStreamState::Started;
-                        if is_bom(string.chars().next().unwrap()) {
+                        if string.chars().next().map(is_bom).unwrap_or_default() {
                             &string[1..]
                         } else {
                             &string

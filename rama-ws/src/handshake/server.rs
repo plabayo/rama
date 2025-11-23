@@ -18,13 +18,13 @@ use rama_http::headers::sec_websocket_extensions;
 use rama_http::{
     Method, Request, Response, StatusCode, Version,
     headers::{
-        self, HeaderMapExt, HttpResponseBuilderExt,
+        self, HeaderMapExt,
         sec_websocket_extensions::{Extension, PerMessageDeflateConfig},
     },
     io::upgrade,
     proto::h2::ext::Protocol,
     request,
-    service::web::response::{Headers, IntoResponse},
+    service::web::response::{self, Headers, IntoResponse},
 };
 
 use crate::{
@@ -593,14 +593,16 @@ where
                             StatusCode::BAD_REQUEST.into_response()
                         })?;
 
-                        let mut response = Response::builder()
-                            .status(StatusCode::SWITCHING_PROTOCOLS)
-                            .version(version)
-                            .typed_header(accept_header)
-                            .typed_header(headers::Upgrade::websocket())
-                            .typed_header(headers::Connection::upgrade())
-                            .body(rama_http::Body::empty())
-                            .unwrap();
+                        let mut response = (
+                            StatusCode::SWITCHING_PROTOCOLS,
+                            response::Headers((
+                                accept_header,
+                                headers::Upgrade::websocket(),
+                                headers::Connection::upgrade(),
+                            )),
+                        )
+                            .into_response();
+                        *response.version_mut() = version;
                         if let Some(protocols) = protocols_header {
                             response.headers_mut().typed_insert(protocols);
                         }
@@ -610,11 +612,8 @@ where
                         Ok((response, req))
                     }
                     Version::HTTP_2 => {
-                        let mut response = Response::builder()
-                            .status(StatusCode::OK)
-                            .version(Version::HTTP_2)
-                            .body(rama_http::Body::empty())
-                            .unwrap();
+                        let mut response = StatusCode::OK.into_response();
+                        *response.version_mut() = Version::HTTP_2;
                         if let Some(protocols) = protocols_header {
                             response.headers_mut().typed_insert(protocols);
                         }

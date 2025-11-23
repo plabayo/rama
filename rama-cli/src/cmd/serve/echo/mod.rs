@@ -30,7 +30,7 @@ use clap::{Args, ValueEnum};
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::sync::mpsc::Sender;
 
-use crate::utils::{http::HttpVersion, tls::new_server_config};
+use crate::utils::{http::HttpVersion, tls::try_new_server_config};
 
 #[derive(Debug, Clone, Args)]
 /// rama echo service (rich https echo or else raw tcp/udp bytes)
@@ -122,18 +122,20 @@ pub async fn run(
     etx: Sender<OpaqueError>,
     cfg: CliCommandEcho,
 ) -> Result<(), BoxError> {
-    let maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https).then(|| {
-        tracing::info!("create tls server config...");
-        new_server_config(matches!(cfg.mode, Mode::Http | Mode::Https).then(|| {
-            match cfg.http_version {
-                HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-                HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                HttpVersion::Auto => {
-                    vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+    let maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https)
+        .then(|| {
+            tracing::info!("create tls server config...");
+            try_new_server_config(matches!(cfg.mode, Mode::Http | Mode::Https).then(|| {
+                match cfg.http_version {
+                    HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+                    HttpVersion::Auto => {
+                        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                    }
                 }
-            }
-        }))
-    });
+            }))
+        })
+        .transpose()?;
 
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
@@ -163,7 +165,7 @@ async fn bind_echo_http_service(
         .maybe_with_http_version(cfg.http_version.into())
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_config)
-        .with_user_agent_database(Arc::new(UserAgentDatabase::embedded()))
+        .with_user_agent_database(Arc::new(UserAgentDatabase::try_embedded()?))
         .build(Executor::graceful(graceful.clone()))
         .map_err(OpaqueError::from_boxed)
         .context("build http(s) echo service")?;
@@ -360,9 +362,13 @@ async fn bind_echo_udp_service(
                 let permit = match semaphore.acquire().await {
                     Ok(permit) => permit,
                     Err(err) => {
-                        etx.send(err.context("acquire concurrency permit"))
-                            .await
-                            .unwrap();
+                        let err_str = err.to_string();
+                        if let Err(err) = etx.send(err.context("acquire concurrency permit")).await
+                        {
+                            tracing::error!(
+                                "failed to send 'concurrency permit' error ('{err_str}') over channel: err = {err}"
+                            );
+                        }
                         return;
                     }
                 };
@@ -373,9 +379,13 @@ async fn bind_echo_udp_service(
                         (len, addr)
                     }
                     Err(err) => {
-                        etx.send(err.context("receive bytes from udp socket"))
-                            .await
-                            .unwrap();
+                        let err_str = err.to_string();
+                        if let Err(err) = etx.send(err.context("receive bytes from udp socket"))
+                            .await {
+                                tracing::error!(
+                                    "failed to send 'udp socket I/O on recv' error ('{err_str}') over channel: err = {err}"
+                                );
+                            }
                         return;
                     }
                 };

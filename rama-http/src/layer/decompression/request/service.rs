@@ -95,7 +95,7 @@ where
                     }
                     b"identity" => BodyInner::identity(body),
                     _ if self.pass_through_unaccepted => BodyInner::identity(body),
-                    _ => return unsupported_encoding(self.accept).await,
+                    _ => return unsupported_encoding(self.accept),
                 }
             } else {
                 BodyInner::identity(body)
@@ -110,7 +110,7 @@ where
     }
 }
 
-async fn unsupported_encoding<D>(
+fn unsupported_encoding<D>(
     accept: AcceptEncoding,
 ) -> Result<Response<UnsyncBoxBody<D, BoxError>>, BoxError>
 where
@@ -124,8 +124,7 @@ where
                 .unwrap_or(HeaderValue::from_static("identity")),
         )
         .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
-        .body(Empty::new().map_err(Into::into).boxed_unsync())
-        .unwrap();
+        .body(Empty::new().map_err(Into::into).boxed_unsync())?;
     Ok(res)
 }
 

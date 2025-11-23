@@ -407,7 +407,15 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
 
         let connector = connector.clone();
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = match sem.acquire().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    tracing::trace!(
+                        "[{ip_kind:?}] #{index}: abort conn; failed to acquire permit: {err}"
+                    );
+                    return;
+                }
+            };
             if connected.load(Ordering::Acquire) {
                 tracing::trace!(
                     "[{ip_kind:?}] #{index}: abort spawned attempt to {addr} (connection already established)"

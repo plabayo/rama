@@ -328,7 +328,7 @@ where
 
         let http_service = (
             TraceLayer::new_for_http(),
-            SetResponseHeaderLayer::if_not_present_typed(XClacksOverhead::new()),
+            SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),

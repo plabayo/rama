@@ -1,12 +1,14 @@
 use std::fmt;
 
+use rama_error::{ErrorContext as _, OpaqueError};
+
 use crate::{
     Method,
     header::{self, HeaderName, HeaderValue},
     request::Parts as RequestParts,
 };
 
-use super::{Any, WILDCARD, separated_by_commas};
+use super::{Any, WILDCARD, try_separated_by_commas};
 
 /// Holds configuration for how to set the [`Access-Control-Allow-Methods`][mdn] header.
 ///
@@ -33,10 +35,11 @@ impl AllowMethods {
     /// See [`CorsLayer::allow_methods`] for more details.
     ///
     /// [`CorsLayer::allow_methods`]: super::CorsLayer::allow_methods
-    pub fn exact(method: &Method) -> Self {
-        Self(AllowMethodsInner::Const(Some(
-            HeaderValue::from_str(method.as_str()).unwrap(),
-        )))
+    pub fn try_exact(method: &Method) -> Result<Self, OpaqueError> {
+        Ok(Self(AllowMethodsInner::Const(Some(
+            HeaderValue::from_str(method.as_str())
+                .context("stringified method is not a valid header value")?,
+        ))))
     }
 
     /// Set multiple allowed methods
@@ -44,15 +47,16 @@ impl AllowMethods {
     /// See [`CorsLayer::allow_methods`] for more details.
     ///
     /// [`CorsLayer::allow_methods`]: super::CorsLayer::allow_methods
-    pub fn list<I>(methods: I) -> Self
+    pub fn try_list<I>(methods: I) -> Result<Self, OpaqueError>
     where
         I: IntoIterator<Item = Method>,
     {
-        Self(AllowMethodsInner::Const(separated_by_commas(
-            methods
-                .into_iter()
-                .map(|m| HeaderValue::from_str(m.as_str()).unwrap()),
-        )))
+        Ok(Self(AllowMethodsInner::Const(try_separated_by_commas(
+            methods.into_iter().map(|m| {
+                HeaderValue::from_str(m.as_str())
+                    .context("stringified method is not a valid header value")
+            }),
+        )?)))
     }
 
     /// Allow any method, by mirroring the preflight [`Access-Control-Request-Method`][mdn]
@@ -95,32 +99,45 @@ impl fmt::Debug for AllowMethods {
 }
 
 impl From<Any> for AllowMethods {
+    #[inline(always)]
     fn from(_: Any) -> Self {
         Self::any()
     }
 }
 
-impl From<Method> for AllowMethods {
-    fn from(method: Method) -> Self {
-        Self::exact(&method)
+impl TryFrom<Method> for AllowMethods {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn try_from(value: Method) -> Result<Self, Self::Error> {
+        Self::try_exact(&value)
     }
 }
 
-impl From<&Method> for AllowMethods {
-    fn from(method: &Method) -> Self {
-        Self::exact(method)
+impl TryFrom<&Method> for AllowMethods {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn try_from(value: &Method) -> Result<Self, Self::Error> {
+        Self::try_exact(value)
     }
 }
 
-impl<const N: usize> From<[Method; N]> for AllowMethods {
-    fn from(arr: [Method; N]) -> Self {
-        Self::list(arr)
+impl<const N: usize> TryFrom<[Method; N]> for AllowMethods {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn try_from(arr: [Method; N]) -> Result<Self, Self::Error> {
+        Self::try_list(arr)
     }
 }
 
-impl From<Vec<Method>> for AllowMethods {
-    fn from(vec: Vec<Method>) -> Self {
-        Self::list(vec)
+impl TryFrom<Vec<Method>> for AllowMethods {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn try_from(vec: Vec<Method>) -> Result<Self, Self::Error> {
+        Self::try_list(vec)
     }
 }
 

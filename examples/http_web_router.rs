@@ -113,7 +113,7 @@ async fn main() {
 
     let middlewares = (
         TraceLayer::new_for_http(),
-        SetResponseHeaderLayer::if_not_present_typed(XClacksOverhead::new()),
+        SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
         UriMatchRedirectLayer::permanent([
             UriMatchReplaceRule::try_new("*/v1/*", "$1/v2/$2").unwrap(), // upgrade users as-is to v2 (backwards compatible)
             // this is now a new endpoint,

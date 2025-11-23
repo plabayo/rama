@@ -504,6 +504,9 @@ where
         self
     }
 
+    // TODO: Make this fallible,
+    // and also do not allow empty path, instead folks should use `not_found` for that
+
     /// add a route to the router with it's matcher and service.
     pub fn set_match_route<I, T>(
         &mut self,
@@ -524,9 +527,10 @@ where
         if let Ok(matched) = self.routes.at_mut(&path) {
             matched.value.push((matcher, service));
         } else {
+            #[allow(clippy::expect_used, reason = "TODO later")]
             self.routes
                 .insert(path, vec![(matcher, service)])
-                .expect("Failed to add route");
+                .expect("add route");
         }
 
         self

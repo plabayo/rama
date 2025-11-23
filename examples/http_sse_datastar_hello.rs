@@ -41,7 +41,6 @@
 
 use rama::{
     Layer, Service,
-    error::OpaqueError,
     extensions::ExtensionsRef,
     futures::async_stream::stream_fn,
     graceful::ShutdownGuard,
@@ -156,7 +155,7 @@ impl Service<Request> for GracefulRouter {
 }
 
 pub mod handlers {
-    use rama::{extensions::Extensions, futures::StreamExt};
+    use rama::{error::ErrorExt as _, extensions::Extensions, futures::StreamExt};
 
     use super::*;
 
@@ -184,9 +183,7 @@ pub mod handlers {
             stream_fn(move |mut yielder| async move {
                 if !ONCE.swap(true, atomic::Ordering::SeqCst) {
                     let script = ExecuteScript::new("window.location.reload()");
-                    yielder
-                        .yield_item(Ok::<_, Infallible>(script.into_sse_event()))
-                        .await;
+                    yielder.yield_item(script.try_into_sse_event()).await;
                 }
                 std::future::pending().await
             }),
@@ -209,13 +206,19 @@ pub mod handlers {
             stream_fn(move |mut yielder| async move {
                 while let Some(msg) = stream.next().await {
                     match msg {
-                        Message::Event(event) => {
+                        Ok(Message::Event(event)) => {
                             tracing::trace!("send next event data");
-                            yielder.yield_item(Ok::<_, OpaqueError>(event)).await;
+                            yielder.yield_item(Ok(event)).await;
                         }
-                        Message::Exit => {
+                        Ok(Message::Exit) => {
                             tracing::debug!("exit message received, bye now!");
                             break;
+                        }
+                        Err(err) => {
+                            tracing::trace!("send recv error");
+                            yielder
+                                .yield_item(Err(err.context("stream recv error")))
+                                .await;
                         }
                     };
                 }
@@ -228,7 +231,9 @@ pub mod handlers {
 pub mod controller {
     use super::*;
 
+    use rama::error::ErrorContext as _;
     use rama::futures::Stream;
+    use rama::http::sse::EventBuildError;
     use rama::http::sse::datastar::ExecuteScript;
     use rama::http::sse::datastar::{ElementPatchMode, PatchElements};
     use rama::telemetry::tracing::Instrument as _;
@@ -328,7 +333,9 @@ pub mod controller {
         }
 
         #[must_use]
-        pub fn subscribe(&self) -> Pin<Box<impl Stream<Item = Message> + use<>>> {
+        pub fn subscribe(
+            &self,
+        ) -> Pin<Box<impl Stream<Item = Result<Message, EventBuildError>> + use<>>> {
             let mut subscriber = self.msg_tx.subscribe();
 
             let delay = self.delay.load(Ordering::Acquire);
@@ -338,13 +345,15 @@ pub mod controller {
 
             Box::pin(stream_fn(move |mut yielder| async move {
                 tracing::debug!("subscriber: fresh connect: send current signal/dom state");
-                yielder.yield_item(sse_status_element_message(0f64)).await;
-                yielder.yield_item(remove_server_warning()).await;
                 yielder
-                    .yield_item(data_animation_element_message(text, progress))
+                    .yield_item(try_sse_status_element_message(0f64))
+                    .await;
+                yielder.yield_item(try_remove_server_warning()).await;
+                yielder
+                    .yield_item(try_data_animation_element_message(text, progress))
                     .await;
                 yielder
-                    .yield_item(update_signal_element_message(UpdateSignals {
+                    .yield_item(try_update_signal_element_message(UpdateSignals {
                         delay: Some(delay),
                     }))
                     .await;
@@ -361,14 +370,14 @@ pub mod controller {
                             instant = sse_status_interval.tick() => {
                                 tracing::debug!(
                                     interval.elapsed_ms = %instant.elapsed().as_millis(),
-                                    "subscriber: SSE status interval tick",
+                                  "subscriber: SSE status interval tick",
                                 );
-                                sse_status_element_message(instant.elapsed().as_secs_f64())
+                                try_sse_status_element_message(instant.elapsed().as_secs_f64())
                             }
 
                             result = subscriber.recv() => {
                                 match result {
-                                    Ok(msg) => msg,
+                                    Ok(msg) => Ok(msg),
                                     Err(err) => {
                                         tracing::debug!(%err, "subscriber: exit");
                                         return;
@@ -606,10 +615,13 @@ pub mod controller {
                     Command::Reset(delay) => {
                         self.delay.store(delay, Ordering::Release);
                         if let Err(err) =
-                            self.msg_tx
-                                .send(update_signal_element_message(UpdateSignals {
-                                    delay: Some(delay),
-                                }))
+                            try_update_signal_element_message(UpdateSignals { delay: Some(delay) })
+                                .context("turn update signal element msg into datastar event")
+                                .and_then(|msg| {
+                                    self.msg_tx
+                                        .send(msg)
+                                        .context("send datastar event over msg channel")
+                                })
                         {
                             tracing::error!("failed to update delay signal via broadcast: {err:?}");
                         }
@@ -619,18 +631,22 @@ pub mod controller {
                         tracing::debug!("exit command received: exit controller");
 
                         let exit_events = [
-                            sse_status_failure_element_message(),
-                            sse_failure_alert(
+                            try_sse_status_failure_element_message(),
+                            try_sse_failure_alert(
                                 // mostly just here to showcase the execute script sugar
                                 "Connection with server was lost. Wait or refresh the page.",
                             ),
-                            critical_error_banner(
+                            try_critical_error_banner(
                                 "Server was shutdown. Please wait a bit or refresh page to retry immediately.",
                             ),
-                            Message::Exit,
+                            Ok(Message::Exit),
                         ];
-                        for event in exit_events {
-                            if let Err(err) = self.msg_tx.send(event) {
+                        for result in exit_events {
+                            if let Err(err) =
+                                result.context("build datastar event").and_then(|event| {
+                                    self.msg_tx.send(event).context("send datastar event")
+                                })
+                            {
                                 tracing::error!(
                                     "failed to send exit message to subscribers: {err:?}"
                                 );
@@ -665,10 +681,11 @@ pub mod controller {
                         let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
                         tracing::debug!(?delay, %anim_index, %progress, %text, "animation: play frame");
 
-                        match self
-                            .msg_tx
-                            .send(data_animation_element_message(text, progress))
-                        {
+                        match try_data_animation_element_message(text, progress)
+                            .context("convert data animion element into Datastar event")
+                            .and_then(|msg| {
+                                self.msg_tx.send(msg).context("send msg over msg channel")
+                            }) {
                             Err(err) => {
                                 tracing::error!("failed to merge fragment via broadcast: {err:?}")
                             }
@@ -692,39 +709,46 @@ pub mod controller {
         }
     }
 
-    fn remove_server_warning() -> Message {
-        Message::Event(PatchElements::new_remove("#server-warning").into())
+    fn try_remove_server_warning() -> Result<Message, EventBuildError> {
+        Ok(Message::Event(
+            PatchElements::new_remove("#server-warning").try_into()?,
+        ))
     }
 
-    fn data_animation_element_message(text: &str, progress: f64) -> Message {
-        Message::Event(
+    fn try_data_animation_element_message(
+        text: &str,
+        progress: f64,
+    ) -> Result<Message, EventBuildError> {
+        Ok(Message::Event(
             PatchElements::new(format!(
                 r##"
 <div id='message'>{text}</div>
 <div id="progress-bar" style="width: {progress}%"></div>
 "##,
             ))
-            .into(),
-        )
+            .try_into()?,
+        ))
     }
 
-    fn sse_failure_alert(msg: &str) -> Message {
-        Message::Event(ExecuteScript::new(format!(r##"window.alert("{msg}");"##)).into())
+    fn try_sse_failure_alert(msg: &str) -> Result<Message, EventBuildError> {
+        Ok(Message::Event(
+            ExecuteScript::new(format!(r##"window.alert("{msg}");"##)).try_into()?,
+        ))
     }
 
-    fn sse_status_failure_element_message() -> Message {
-        Message::Event(
+    fn try_sse_status_failure_element_message() -> Result<Message, EventBuildError> {
+        Ok(Message::Event(
             PatchElements::new(
                 r##"
 <div id="sse-status">🔴</div>
 "##,
             )
-            .into(),
-        )
+            .try_into()?,
+        ))
     }
 
-    fn sse_status_element_message(elapsed: f64) -> Message {
-        Message::Event(
+    fn try_sse_status_element_message(elapsed: f64) -> Result<Message, EventBuildError> {
+        Ok(Message::Event(
             PatchElements::new(format!(
                 r##"
 <div id="sse-status">
@@ -736,12 +760,12 @@ pub mod controller {
 </div>
 "##,
             ))
-            .into(),
-        )
+            .try_into()?,
+        ))
     }
 
-    fn critical_error_banner(msg: &'static str) -> Message {
-        Message::Event(
+    fn try_critical_error_banner(msg: &'static str) -> Result<Message, EventBuildError> {
+        Ok(Message::Event(
             PatchElements::new(format!(
                 r##"
 <div id="server-warning" style="
@@ -764,12 +788,16 @@ pub mod controller {
             ))
             .with_selector("body")
             .with_mode(ElementPatchMode::Prepend)
-            .into(),
-        )
+            .try_into()?,
+        ))
     }
 
-    fn update_signal_element_message(update: UpdateSignals) -> Message {
-        Message::Event(PatchSignals::new(JsonEventData(update)).into())
+    fn try_update_signal_element_message(
+        update: UpdateSignals,
+    ) -> Result<Message, EventBuildError> {
+        Ok(Message::Event(
+            PatchSignals::new(JsonEventData(update)).try_into()?,
+        ))
     }
 }
 use controller::{Controller, Message, Signals};
