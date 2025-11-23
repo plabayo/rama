@@ -31,7 +31,7 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         Request,
-        headers::{HeaderEncode, TypedHeader, exotic::XClacksOverhead},
+        headers::exotic::XClacksOverhead,
         layer::set_header::SetResponseHeaderLayer,
         layer::{match_redirect::UriMatchRedirectLayer, trace::TraceLayer},
         matcher::UriParams,
@@ -113,9 +113,7 @@ async fn main() {
 
     let middlewares = (
         TraceLayer::new_for_http(),
-        SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
-            std::future::ready(XClacksOverhead::new().encode_to_value())
-        }),
+        SetResponseHeaderLayer::if_not_present_typed(XClacksOverhead::new()),
         UriMatchRedirectLayer::permanent([
             UriMatchReplaceRule::try_new("*/v1/*", "$1/v2/$2").unwrap(), // upgrade users as-is to v2 (backwards compatible)
             // this is now a new endpoint,

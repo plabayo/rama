@@ -62,7 +62,7 @@ use rama::{
         client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         headers::{
-            HeaderEncode, HeaderMapExt as _, SecWebSocketExtensions, TypedHeader,
+            HeaderMapExt as _, SecWebSocketExtensions, TypedHeader as _,
             sec_websocket_extensions::Extension,
         },
         io::upgrade,
@@ -432,10 +432,8 @@ where
         }) {
             tracing::debug!("use deflate ext for ingress ws cfg: {accept_pmd_cfg:?}");
             ingress_socket_cfg.per_message_deflate = Some((&accept_pmd_cfg).into());
-            let _ = response_parts.headers.insert(
-                SecWebSocketExtensions::name(),
-                SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg)
-                    .encode_to_value(),
+            response_parts.headers.typed_insert(
+                SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg),
             );
         } else {
             tracing::debug!(

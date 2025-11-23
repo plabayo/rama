@@ -17,8 +17,8 @@ use crate::{
         convert::curl,
         core::h2::frame::EarlyFrameCapture,
         header::USER_AGENT,
+        headers::exotic::XClacksOverhead,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
-        headers::{HeaderEncode as _, TypedHeader as _, exotic::XClacksOverhead},
         layer::set_header::SetResponseHeaderLayer,
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
@@ -331,9 +331,7 @@ where
 
         (
             TraceLayer::new_for_http(),
-            SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
-                std::future::ready(XClacksOverhead::new().encode_to_value())
-            }),
+            SetResponseHeaderLayer::if_not_present_typed(XClacksOverhead::new()),
             AddRequiredResponseHeadersLayer::default(),
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),

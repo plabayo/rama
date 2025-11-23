@@ -8,8 +8,8 @@ use crate::{
     error::{BoxError, OpaqueError},
     http::{
         Request, Response, Version,
+        headers::exotic::XClacksOverhead,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
-        headers::{HeaderEncode as _, TypedHeader as _, exotic::XClacksOverhead},
         layer::set_header::SetResponseHeaderLayer,
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
@@ -328,9 +328,7 @@ where
 
         let http_service = (
             TraceLayer::new_for_http(),
-            SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
-                std::future::ready(XClacksOverhead::new().encode_to_value())
-            }),
+            SetResponseHeaderLayer::if_not_present_typed(XClacksOverhead::new()),
             AddRequiredResponseHeadersLayer::default(),
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),

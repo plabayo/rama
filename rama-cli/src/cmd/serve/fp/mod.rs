@@ -11,8 +11,7 @@ use rama::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            Cookie, HeaderEncode, HeaderMapExt, SecWebSocketProtocol, TypedHeader,
-            all_client_hint_header_name_strings,
+            Cookie, HeaderMapExt, SecWebSocketProtocol, all_client_hint_header_name_strings,
             exotic::XClacksOverhead,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
             sec_websocket_extensions,
@@ -172,9 +171,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
         CatchPanicLayer::new(),
-        SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
-            std::future::ready(XClacksOverhead::new().encode_to_value())
-        }),
+        SetResponseHeaderLayer::if_not_present_typed(XClacksOverhead::new()),
         AddRequiredResponseHeadersLayer::default(),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-sponsored-by"),

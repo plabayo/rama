@@ -194,8 +194,9 @@ fn write_curl_command_for_request_parts(
         .or_else(|| parts.extensions().get())
     {
         writer.write_tuple("-x", proxy_addr, true);
-        if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential {
-            let value = ProxyAuthorization(bearer.clone()).encode_to_value();
+        if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential
+            && let Some(value) = ProxyAuthorization(bearer.clone()).encode_to_value()
+        {
             let s_value = String::from_utf8_lossy(value.as_bytes());
             writer.write_header(
                 Http1HeaderName::from(crate::header::PROXY_AUTHORIZATION),

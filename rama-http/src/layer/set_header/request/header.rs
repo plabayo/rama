@@ -1,4 +1,6 @@
+use crate::layer::set_header::utils::TypedHeaderAsMaker;
 use crate::{HeaderName, HeaderValue, Request};
+use rama_http_headers::HeaderEncode;
 use std::{
     future::{Future, ready},
     marker::PhantomData,
@@ -107,6 +109,19 @@ where
     }
 }
 
+impl<B, M> MakeHeaderValue<B> for Option<M>
+where
+    M: MakeHeaderValue<B> + Clone,
+    B: Send + 'static,
+{
+    async fn make_header_value(&self, req: Request<B>) -> (Request<B>, Option<HeaderValue>) {
+        match self {
+            Some(m) => m.make_header_value(req).await,
+            None => (req, None),
+        }
+    }
+}
+
 impl<B> MakeHeaderValue<B> for HeaderValue
 where
     B: Send + 'static,
@@ -119,15 +134,17 @@ where
     }
 }
 
-impl<B> MakeHeaderValue<B> for Option<HeaderValue>
+impl<B, H> MakeHeaderValue<B> for TypedHeaderAsMaker<H>
 where
     B: Send + 'static,
+    H: HeaderEncode + Send + Sync + 'static,
 {
     fn make_header_value(
         &self,
         req: Request<B>,
-    ) -> impl Future<Output = (Request<B>, Self)> + Send + '_ {
-        ready((req, self.clone()))
+    ) -> impl Future<Output = (Request<B>, Option<HeaderValue>)> + Send {
+        let maybe_value = self.0.encode_to_value();
+        ready((req, maybe_value))
     }
 }
 

@@ -137,7 +137,7 @@ mod tests {
                 "BadBot: noindex, nofollow, googlebot: nofollow",
             ),
         ] {
-            let value = header_value.encode_to_value();
+            let value = header_value.encode_to_value().unwrap();
             let s = value.to_str().unwrap();
             assert_eq!(expected, s);
         }

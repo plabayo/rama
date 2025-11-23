@@ -11,9 +11,9 @@ use crate::{
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Request, Response, StatusCode,
+        headers::exotic::XClacksOverhead,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         headers::{Accept, HeaderMapExt},
-        headers::{HeaderEncode as _, TypedHeader as _, exotic::XClacksOverhead},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             set_header::SetResponseHeaderLayer, trace::TraceLayer,
@@ -417,9 +417,7 @@ impl<M> IpServiceBuilder<M> {
 
         let http_service = (
             TraceLayer::new_for_http(),
-            SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
-                std::future::ready(XClacksOverhead::new().encode_to_value())
-            }),
+            SetResponseHeaderLayer::if_not_present_typed(XClacksOverhead::new()),
             AddRequiredResponseHeadersLayer::default(),
             ConsumeErrLayer::default(),
             #[cfg(any(feature = "rustls", feature = "boring"))]

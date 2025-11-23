@@ -16,7 +16,11 @@ impl HttpRequestBuilderExt for request::Builder {
     where
         H: HeaderEncode,
     {
-        self.header(H::name(), header.encode_to_value())
+        if let Some(value) = header.encode_to_value() {
+            self.header(H::name(), value)
+        } else {
+            self
+        }
     }
 }
 

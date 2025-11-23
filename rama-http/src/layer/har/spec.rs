@@ -536,7 +536,8 @@ impl Response {
         let redirect_url = parts
             .headers
             .typed_get::<Location>()
-            .and_then(|h| h.encode_to_value().to_str().ok().map(ToOwned::to_owned));
+            .and_then(|h| h.encode_to_value())
+            .and_then(|v| v.to_str().ok().map(ToOwned::to_owned));
 
         let cookies = parts
             .headers

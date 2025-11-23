@@ -1,4 +1,6 @@
+use crate::layer::set_header::utils::TypedHeaderAsMaker;
 use crate::{HeaderName, HeaderValue, Request, Response};
+use rama_http_headers::HeaderEncode;
 use std::{
     future::{Future, ready},
     marker::PhantomData,
@@ -26,7 +28,6 @@ pub trait MakeHeaderValueFactory<ReqBody, ResBody>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn make_header_value_maker(
         &self,
-
         request: Request<ReqBody>,
     ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_;
 }
@@ -73,6 +74,20 @@ where
     }
 }
 
+impl<B, H> MakeHeaderValue<B> for TypedHeaderAsMaker<H>
+where
+    B: Send + 'static,
+    H: HeaderEncode + Send + Sync + 'static,
+{
+    fn make_header_value(
+        self,
+        response: Response<B>,
+    ) -> impl Future<Output = (Response<B>, Option<HeaderValue>)> + Send {
+        let maybe_value = self.0.encode_to_value();
+        ready((response, maybe_value))
+    }
+}
+
 impl<ReqBody, ResBody> MakeHeaderValueFactory<ReqBody, ResBody> for HeaderValue
 where
     ReqBody: Send + 'static,
@@ -97,7 +112,6 @@ where
 
     fn make_header_value_maker(
         &self,
-
         req: Request<ReqBody>,
     ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_ {
         ready((req, self.clone()))
@@ -111,7 +125,6 @@ pub trait MakeHeaderValueFactoryFn<ReqBody, ResBody, A>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn call(
         &self,
-
         request: Request<ReqBody>,
     ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_;
 }
@@ -200,7 +213,6 @@ where
 
     fn make_header_value_maker(
         &self,
-
         request: Request<ReqBody>,
     ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_ {
         self.f.call(request)

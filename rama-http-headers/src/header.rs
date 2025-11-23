@@ -1,4 +1,3 @@
-use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
 
 use std::error;
@@ -48,13 +47,12 @@ pub trait HeaderEncode: TypedHeader {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E);
 
     /// Encode this header to [`HeaderValue`].
-    fn encode_to_value(&self) -> HeaderValue {
+    ///
+    /// [`None`] is returned in case no header was encoded.
+    fn encode_to_value(&self) -> Option<HeaderValue> {
         let mut container = ExtendOnce(None);
         self.encode(&mut container);
-        container.0.unwrap_or_else(|| {
-            tracing::warn!("failed to get an encoded HeaderValue; default to empty");
-            HeaderValue::from_static("")
-        })
+        container.0
     }
 }
 
@@ -65,7 +63,7 @@ impl<H: HeaderEncode> HeaderEncode for &H {
     }
 
     #[inline]
-    fn encode_to_value(&self) -> HeaderValue {
+    fn encode_to_value(&self) -> Option<HeaderValue> {
         (*self).encode_to_value()
     }
 }
@@ -77,7 +75,7 @@ impl<H: HeaderEncode> HeaderEncode for Arc<H> {
     }
 
     #[inline]
-    fn encode_to_value(&self) -> HeaderValue {
+    fn encode_to_value(&self) -> Option<HeaderValue> {
         self.as_ref().encode_to_value()
     }
 }

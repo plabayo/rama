@@ -80,6 +80,7 @@
 //! # }
 //! ```
 
+use super::utils::TypedHeaderAsMaker;
 use crate::{HeaderValue, Request, Response, header::HeaderName, headers::HeaderEncode};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -142,7 +143,7 @@ impl<M> SetRequestHeaderLayer<M> {
     }
 }
 
-impl SetRequestHeaderLayer<HeaderValue> {
+impl SetRequestHeaderLayer<Option<HeaderValue>> {
     /// Create a new [`SetRequestHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetRequestHeaderLayer::overriding`] for more details.
@@ -247,28 +248,28 @@ pub struct SetRequestHeader<S, M> {
     mode: InsertHeaderMode,
 }
 
-impl<S> SetRequestHeader<S, HeaderValue> {
+impl<S, H: HeaderEncode> SetRequestHeader<S, TypedHeaderAsMaker<H>> {
     /// Create a new [`SetRequestHeader`] using a typed header.
     ///
     /// If a previous value exists for the same header, it is removed and replaced with the new
     /// header value.
-    pub fn overriding_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::overriding(inner, H::name().clone(), header.encode_to_value())
+    pub fn overriding_typed(inner: S, header: H) -> Self {
+        Self::overriding(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 
     /// Create a new [`SetRequestHeader`] using a typed header.
     ///
     /// The new header is always added, preserving any existing values. If previous values exist,
     /// the header will have multiple values.
-    pub fn appending_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::appending(inner, H::name().clone(), header.encode_to_value())
+    pub fn appending_typed(inner: S, header: H) -> Self {
+        Self::appending(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 
     /// Create a new [`SetRequestHeader`] using a typed header.
     ///
     /// If a previous value exists for the header, the new value is not inserted.
-    pub fn if_not_present_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::if_not_present(inner, H::name().clone(), header.encode_to_value())
+    pub fn if_not_present_typed(inner: S, header: H) -> Self {
+        Self::if_not_present(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 }
 

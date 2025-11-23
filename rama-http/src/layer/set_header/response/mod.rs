@@ -155,6 +155,8 @@ use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
+use super::utils::TypedHeaderAsMaker;
+
 mod header;
 use header::InsertHeaderMode;
 
@@ -181,7 +183,7 @@ impl<M> fmt::Debug for SetResponseHeaderLayer<M> {
     }
 }
 
-impl SetResponseHeaderLayer<HeaderValue> {
+impl SetResponseHeaderLayer<Option<HeaderValue>> {
     /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeaderLayer::overriding`] for more details.
@@ -319,26 +321,26 @@ pub struct SetResponseHeader<S, M> {
     mode: InsertHeaderMode,
 }
 
-impl<S> SetResponseHeader<S, HeaderValue> {
+impl<S, H: HeaderEncode> SetResponseHeader<S, TypedHeaderAsMaker<H>> {
     /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeader::overriding`] for more details.
-    pub fn overriding_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::overriding(inner, H::name().clone(), header.encode_to_value())
+    pub fn overriding_typed(inner: S, header: H) -> Self {
+        Self::overriding(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 
     /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeader::appending`] for more details.
-    pub fn appending_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::appending(inner, H::name().clone(), header.encode_to_value())
+    pub fn appending_typed(inner: S, header: H) -> Self {
+        Self::appending(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 
     /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeader::if_not_present`] for more details.
-    pub fn if_not_present_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::if_not_present(inner, H::name().clone(), header.encode_to_value())
+    pub fn if_not_present_typed(inner: S, header: H) -> Self {
+        Self::if_not_present(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 }
 
