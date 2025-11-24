@@ -2,6 +2,7 @@ use std::{convert::Infallible, fmt, net::Ipv4Addr};
 
 use rama_core::{
     Service,
+    error::BoxError,
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
@@ -40,12 +41,11 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-impl<S, Request, Error, Server> Service<Request> for MockConnectorService<S>
+impl<S, Request, Server> Service<Request> for MockConnectorService<S>
 where
     S: Fn() -> Server + Send + Sync + 'static,
-    Server: Service<MockSocket, Error = Error>,
+    Server: Service<MockSocket, Error: Into<BoxError>>,
     Request: Send + 'static,
-    Error: std::fmt::Debug + 'static,
 {
     type Error = Infallible;
     type Response = EstablishedClientConnection<MockSocket, Request>;
@@ -58,7 +58,9 @@ where
         let server = (self.create_server)();
 
         tokio::spawn(async move {
-            server.serve(server_socket).await.unwrap();
+            if let Err(err) = server.serve(server_socket).await {
+                panic!("created mock server failed: {}", err.into())
+            }
         });
 
         Ok(EstablishedClientConnection {

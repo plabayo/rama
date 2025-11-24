@@ -276,6 +276,10 @@ impl FromStr for Protocol {
 impl From<Scheme> for Protocol {
     #[inline]
     fn from(s: Scheme) -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "http crate Scheme is pre-validated; in future rama version we will no longer use ::http::Scheme and this can be removed"
+        )]
         s.as_str()
             .try_into()
             .expect("http crate Scheme is pre-validated by promise")
@@ -285,6 +289,10 @@ impl From<Scheme> for Protocol {
 #[cfg(feature = "http")]
 impl From<&Scheme> for Protocol {
     fn from(s: &Scheme) -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "http crate Scheme is pre-validated; in future rama version we will no longer use ::http::Scheme and this can be removed"
+        )]
         s.as_str()
             .try_into()
             .expect("http crate Scheme is pre-validated by promise")

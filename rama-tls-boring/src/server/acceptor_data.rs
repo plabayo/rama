@@ -311,7 +311,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                         Cache::builder()
                             .time_to_live(match ttl {
                                 None | Some(Duration::ZERO) => {
-                                    Duration::from_secs(60 * 60 * 24 * 89)
+                                    Duration::from_hours(24 * 89) // 89 days
                                 }
                                 Some(custom) => custom,
                             })

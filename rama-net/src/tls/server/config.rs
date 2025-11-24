@@ -85,11 +85,15 @@ pub enum CacheKind {
     Disabled,
 }
 
+#[allow(clippy::expect_used, reason = "8096 != 0 🧌")]
+const CACHE_KIND_DEFAULT_MAX_SIZE: NonZeroU64 =
+    NonZeroU64::new(8096).expect("NonZeroU64: 8096 != 0");
+
 impl Default for CacheKind {
     fn default() -> Self {
         Self::MemCache {
-            max_size: NonZeroU64::new(8096).unwrap(),
-            ttl: Some(std::time::Duration::from_secs(60 * 60 * 24 * 7)), // 7 days
+            max_size: CACHE_KIND_DEFAULT_MAX_SIZE,
+            ttl: Some(std::time::Duration::from_hours(24 * 7)), // 7 days
         }
     }
 }

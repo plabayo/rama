@@ -8,6 +8,7 @@ use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
@@ -109,7 +110,8 @@ where
 /// [`LeasedConnection`]s are considered active pool connections until dropped or
 /// ownership is taken of the internal connection.
 pub struct LeasedConnection<C, ID> {
-    pooled_conn: Option<PooledConnection<C, ID>>,
+    pooled_conn: ManuallyDrop<PooledConnection<C, ID>>,
+    pooled_conn_taken: bool,
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
     failed: AtomicBool,
@@ -117,7 +119,14 @@ pub struct LeasedConnection<C, ID> {
 
 impl<C, ID> LeasedConnection<C, ID> {
     pub fn into_connection(mut self) -> C {
-        self.pooled_conn.take().expect("only None after drop").conn
+        // SAFETY: value is only dropped in `Self::Drop`
+        // and value is only taken here if we move out of leased drop
+        //
+        // We cannot use ::into_inner as we still require
+        // a Drop impl as well, we assign pooled_conn_taken
+        // to tru so that we do not drop there again
+        self.pooled_conn_taken = true;
+        unsafe { ManuallyDrop::take(&mut self.pooled_conn) }.conn
     }
 
     pub fn mark_as_failed(&self) {
@@ -128,21 +137,13 @@ impl<C, ID> LeasedConnection<C, ID> {
 
 impl<C: ExtensionsRef, ID> ExtensionsRef for LeasedConnection<C, ID> {
     fn extensions(&self) -> &Extensions {
-        self.pooled_conn
-            .as_ref()
-            .expect("only None after drop")
-            .conn
-            .extensions()
+        self.pooled_conn.conn.extensions()
     }
 }
 
 impl<C: ExtensionsMut, ID> ExtensionsMut for LeasedConnection<C, ID> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        self.pooled_conn
-            .as_mut()
-            .expect("only None after drop")
-            .conn
-            .extensions_mut()
+        self.pooled_conn.conn.extensions_mut()
     }
 }
 
@@ -362,7 +363,8 @@ where
 
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
-                pooled_conn: Some(pooled_conn),
+                pooled_conn: ManuallyDrop::new(pooled_conn),
+                pooled_conn_taken: false,
                 returner: self.returner.clone(),
                 failed: AtomicBool::new(false),
             }));
@@ -407,13 +409,14 @@ where
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
-            failed: false.into(),
-            pooled_conn: Some(PooledConnection {
+            failed: AtomicBool::new(false),
+            pooled_conn: ManuallyDrop::new(PooledConnection {
                 id,
                 conn,
                 pool_slot,
                 last_used: Instant::now(),
             }),
+            pooled_conn_taken: false,
         }
     }
 }
@@ -448,7 +451,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LeasedConnection")
-            .field("pooled_conn", &self.pooled_conn)
+            .field("pooled_conn", self.pooled_conn.deref())
             .field("active_slot", &self.active_slot)
             .finish()
     }
@@ -458,21 +461,13 @@ impl<C, ID> Deref for LeasedConnection<C, ID> {
     type Target = C;
 
     fn deref(&self) -> &Self::Target {
-        &self
-            .pooled_conn
-            .as_ref()
-            .expect("only None after drop")
-            .conn
+        &self.pooled_conn.conn
     }
 }
 
 impl<C, ID> DerefMut for LeasedConnection<C, ID> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self
-            .pooled_conn
-            .as_mut()
-            .expect("only None after drop")
-            .conn
+        &mut self.pooled_conn.conn
     }
 }
 
@@ -490,11 +485,25 @@ impl<C, ID> AsMut<C> for LeasedConnection<C, ID> {
 
 impl<C, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
-        if let Some(pooled_conn) = self.pooled_conn.take() {
+        if !self.pooled_conn_taken {
             if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
                 trace!("LRU connection pool: dropping pooled connection that was marked as failed");
+
+                // SAFETY: pooled_conn_taken is false,
+                // indicating we didn't move ownership yet by
+                // using Self::into_inner, and we are neither
+                // returning it as is done in the other (else)
+                // branch only.
+                unsafe { ManuallyDrop::drop(&mut self.pooled_conn) };
             } else {
                 trace!("LRU connection pool: returning pooled connection back to pool");
+
+                // SAFETY: pooled_conn_taken is false,
+                // indicating we didn't move ownership yet by
+                // using Self::into_inner, and neither do we drop it as that is only
+                // done in the 'truth' variant of this if-else branching
+                // as can be seen above.
+                let pooled_conn = unsafe { ManuallyDrop::take(&mut self.pooled_conn) };
                 self.returner.return_conn(pooled_conn);
             }
         }
@@ -586,7 +595,7 @@ where
     async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         let result = self.as_ref().serve(req).await;
         if result.is_err() {
-            let id = &self.pooled_conn.as_ref().expect("msg").id;
+            let id = &self.pooled_conn.id;
             trace!(
                 "LRU connection pool: detected error result, marking connection w/ id {id:?} as failed"
             );
@@ -1147,7 +1156,7 @@ mod tests {
         let mut conns = Vec::new();
         for i in 0..2 {
             let mut conn = svc.connect(ServiceInput::new(())).await.unwrap().conn;
-            conn.pooled_conn.as_mut().unwrap().conn.push(i);
+            conn.pooled_conn.conn.push(i);
             conns.push(conn);
         }
 
@@ -1159,6 +1168,6 @@ mod tests {
         // the reuse policy.
         let conn = svc.connect(ServiceInput::new(())).await.unwrap().conn;
 
-        assert_eq!(conn.pooled_conn.as_ref().unwrap().conn[0], expected);
+        assert_eq!(conn.pooled_conn.conn[0], expected);
     }
 }

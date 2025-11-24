@@ -17,9 +17,7 @@
 #![cfg_attr(
     not(test),
     warn(clippy::print_stdout, clippy::dbg_macro),
-    // a lot of legit usage of these still in rama-net
-    // TOOD: revisit later
-    // deny(clippy::unwrap_used, clippy::expect_used)
+    deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
 pub mod address;

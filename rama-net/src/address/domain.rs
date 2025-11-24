@@ -28,6 +28,13 @@ impl Domain {
         Self(SmolStr::new_static(s))
     }
 
+    /// Safety: callee ensures that the given string is a valid domain,
+    /// this can be useful in cases where we store a string but which
+    /// came from a Domain originally.
+    pub(crate) unsafe fn from_maybe_borrowed_unchecked(s: impl Into<SmolStr>) -> Self {
+        Self(s.into())
+    }
+
     /// Creates the example [`Domain].
     #[must_use]
     #[inline(always)]
@@ -349,7 +356,7 @@ fn cmp_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> Ordering {
             (None, Some(_)) => Some(Ordering::Less),
             (None, None) => Some(Ordering::Equal),
         })
-        .unwrap() // should always be possible to find given we are in an infinite zip :)
+        .unwrap_or(Ordering::Equal)
 }
 
 impl PartialOrd<Self> for Domain {

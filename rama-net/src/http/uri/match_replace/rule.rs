@@ -207,6 +207,10 @@ impl UriMatchReplaceRule {
     /// assert_eq!(out.to_string(), "https://a/b?x=1");
     /// ```
     pub fn http_to_https() -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "this is a valid static pattern which is verified to not fail in doc+unit tests"
+        )]
         Self::try_new("http://*", "https://$1").expect("to be always valid")
     }
 

@@ -67,7 +67,7 @@ categories = [
     "web-programming::http-server",
 ]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.88.0"
+rust-version = "1.91.0"
 
 [workspace.dependencies]
 ahash = "0.8"
