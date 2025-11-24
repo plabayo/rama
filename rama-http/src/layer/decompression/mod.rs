@@ -122,6 +122,7 @@ mod tests {
     use rama_core::service::service_fn;
 
     use flate2::write::GzEncoder;
+    use rama_http_types::BodyExtractExt;
 
     #[tokio::test]
     async fn works() {
@@ -213,6 +214,28 @@ mod tests {
         let mut res = Response::new(Body::from(buf));
         res.headers_mut()
             .insert("content-encoding", "zstd".parse().unwrap());
+        Ok(res)
+    }
+
+    #[tokio::test]
+    async fn decompress_empty() {
+        let client = Decompression::new(Compression::new(service_fn(handle_empty)));
+
+        let req = Request::builder()
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = client.serve(req).await.unwrap();
+
+        let decompressed_data = res.try_into_string().await.unwrap();
+
+        assert_eq!(decompressed_data, "");
+    }
+
+    async fn handle_empty(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+        let mut res = Response::new(Body::empty());
+        res.headers_mut()
+            .insert("content-encoding", "gzip".parse().unwrap());
         Ok(res)
     }
 }
