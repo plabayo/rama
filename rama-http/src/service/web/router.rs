@@ -36,7 +36,7 @@ pub struct Router<State = ()> {
     state: State,
 }
 
-impl std::fmt::Debug for Router {
+impl<S> std::fmt::Debug for Router<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Router").finish()
     }

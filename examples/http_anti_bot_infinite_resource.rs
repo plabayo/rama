@@ -33,13 +33,13 @@ use rama::{
     error::{BoxError, OpaqueError},
     extensions::ExtensionsRef,
     http::{
-        InfiniteReader, Request, StatusCode,
+        InfiniteReader,
         headers::ContentType,
         layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{
             Router,
-            extract::{Query, State},
+            extract::{Extension, Query, State},
             response::{Headers, Html, IntoResponse},
         },
     },
@@ -134,17 +134,15 @@ struct InfiniteResourceParameters {
 async fn infinite_resource(
     // We can access global state like this, the easy option for fast prototyping
     State(_global_state): State<AppState>,
+    // request will fail with status 500 in case extension is not available,
+    // use Option<Extension<_>> in case you deem it an optional value
+    Extension(socket_info): Extension<SocketInfo>,
     // But for production usage we should only use the specific state this handler needs by implementing:
     // `FromRef<AppState> for BlockList`. This is considered better practise because
     // handlers only take what they need and never need to know what to GlobalState is.
     State(block_list): State<BlockList>,
     Query(parameters): Query<InfiniteResourceParameters>,
-    request: Request,
 ) -> impl IntoResponse {
-    let Some(socket_info) = request.extensions().get::<SocketInfo>() else {
-        tracing::error!("failed to fetch IP from SocketInfo; fail request with 500");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
     let ip_addr = socket_info.peer_addr().ip();
     let mut block_list = block_list.lock().await;
     block_list.insert(ip_addr);

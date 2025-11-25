@@ -28,16 +28,15 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer,
-    extensions::ExtensionsRef,
     http::{
-        Request,
+        Method,
         headers::exotic::XClacksOverhead,
         layer::set_header::SetResponseHeaderLayer,
         layer::{match_redirect::UriMatchRedirectLayer, trace::TraceLayer},
-        matcher::UriParams,
         server::HttpServer,
         service::web::{
             Router,
+            extract::Path,
             response::{Html, Json, Redirect},
         },
     },
@@ -51,6 +50,7 @@ use rama::{
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
+use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 
@@ -69,36 +69,48 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
+    #[derive(Debug, Deserialize)]
+    struct PostGreetForPathParams {
+        name: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct GetGreetingPathParams {
+        code: String,
+    }
+
     let router = Router::new()
         .with_get("/", Html(r##"<h1>Rama - Web Router</h1>"##.to_owned()))
         // route with a parameter
-        .with_post("/greet/{name}", async |req: Request| {
-            let uri_params = req.extensions().get::<UriParams>().unwrap();
-            let name = uri_params.get("name").unwrap();
-            Json(json!({
-                "method": req.method().as_str(),
-                "message": format!("Hello, {name}!"),
-            }))
-        })
+        .with_post(
+            "/greet/{name}",
+            async |method: Method, Path(PostGreetForPathParams { name }): Path<PostGreetForPathParams>| {
+                Json(json!({
+                    "method": method.as_str(),
+                    "message": format!("Hello, {name}!"),
+                }))
+            },
+        )
         // catch-all route
-        .with_get("/lang/{*code}", async |req: Request| {
-            let translations = [
-                ("en", "Welcome to our site!"),
-                ("fr", "Bienvenue sur notre site!"),
-                ("es", "¡Bienvenido a nuestro sitio!"),
-            ];
-            let uri_params = req.extensions().get::<UriParams>().unwrap();
-            let code = uri_params.get("code").unwrap();
-            let message = translations
-                .iter()
-                .find(|(lang, _)| *lang == code)
-                .map(|(_, message)| *message)
-                .unwrap_or("Language not supported");
+        .with_get(
+            "/lang/{*code}",
+            async |Path(GetGreetingPathParams { code }): Path<GetGreetingPathParams>| {
+                let translations = [
+                    ("en", "Welcome to our site!"),
+                    ("fr", "Bienvenue sur notre site!"),
+                    ("es", "¡Bienvenido a nuestro sitio!"),
+                ];
+                let message = translations
+                    .iter()
+                    .find(|(lang, _)| *lang == code)
+                    .map(|(_, message)| *message)
+                    .unwrap_or("Language not supported");
 
-            Json(json!({
-                "message": message,
-            }))
-        })
+                Json(json!({
+                    "message": message,
+                }))
+            },
+        )
         // sub route support - api version health check
         .with_sub_router_make_fn("/api", |router| {
             router.with_sub_router_make_fn("/v2", |router| {

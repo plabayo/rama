@@ -35,7 +35,6 @@ where
         }
     }
 }
-
 impl<State, T> OptionalFromRequestContextRefPair<State> for Extension<T>
 where
     State: Send + Sync,

@@ -41,7 +41,6 @@
 
 use rama::{
     Layer, Service,
-    extensions::ExtensionsRef,
     futures::async_stream::stream_fn,
     graceful::ShutdownGuard,
     http::{
@@ -59,7 +58,6 @@ use rama::{
             server::{KeepAlive, KeepAliveStream},
         },
     },
-    layer::AddExtensionLayer,
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
@@ -110,7 +108,7 @@ async fn main() {
     graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
 
-        let app = Router::new()
+        let app = Router::new_with_state(controller.clone())
             .with_get("/", handlers::index)
             .with_post("/start", handlers::start)
             .with_get("/hello-world", handlers::hello_world)
@@ -120,13 +118,9 @@ async fn main() {
         let app = app.with_get("/hotreload", handlers::hotreload);
 
         let router = Arc::new(app);
-        let graceful_router = GracefulRouter(router);
+        let graceful_router = GracefulRouter { router, controller };
 
-        let app = (
-            AddExtensionLayer::new(controller),
-            TraceLayer::new_for_http(),
-        )
-            .into_layer(graceful_router);
+        let app = TraceLayer::new_for_http().into_layer(graceful_router);
         listener
             .serve_graceful(guard, HttpServer::auto(exec).service(app))
             .await;
@@ -139,29 +133,31 @@ async fn main() {
 }
 
 #[derive(Debug, Clone)]
-struct GracefulRouter(Arc<Router>);
+struct GracefulRouter {
+    router: Arc<Router<Controller>>,
+    controller: Controller,
+}
 
 impl Service<Request> for GracefulRouter {
     type Response = Response;
     type Error = Infallible;
 
     async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        if req.extensions().get::<Controller>().unwrap().is_closed() {
+        if self.controller.is_closed() {
             tracing::debug!("router received request while shutting down: returning 401");
             return Ok(StatusCode::GONE.into_response());
         }
-        self.0.serve(req).await
+        self.router.serve(req).await
     }
 }
 
 pub mod handlers {
-    use rama::{error::ErrorExt as _, extensions::Extensions, futures::StreamExt};
+    use rama::{error::ErrorExt as _, futures::StreamExt, http::service::web::extract::State};
 
     use super::*;
 
-    pub async fn index(req: Request) -> Html<String> {
-        let content = req.extensions().get::<Controller>().unwrap().render_index();
-        Html(content)
+    pub async fn index(State(controller): State<Controller>) -> impl IntoResponse {
+        Html(controller.render_index())
     }
 
     #[cfg(debug_assertions)]
@@ -191,15 +187,15 @@ pub mod handlers {
     }
 
     pub async fn start(
-        ext: Extensions,
+        State(controller): State<Controller>,
         ReadSignals(Signals { delay }): ReadSignals<Signals>,
     ) -> impl IntoResponse {
-        ext.get::<Controller>().unwrap().reset(delay).await;
+        controller.reset(delay).await;
         StatusCode::OK
     }
 
-    pub async fn hello_world(ext: Extensions) -> impl IntoResponse {
-        let mut stream = ext.get::<Controller>().unwrap().subscribe();
+    pub async fn hello_world(State(controller): State<Controller>) -> impl IntoResponse {
+        let mut stream = controller.subscribe();
 
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),

@@ -22,9 +22,8 @@
 use rama::{
     Layer,
     bytes::Bytes,
-    extensions::ExtensionsRef,
     http::{
-        Request, header,
+        Uri, header,
         layer::{
             compression::CompressionLayer,
             sensitive_headers::{
@@ -33,7 +32,11 @@ use rama::{
             trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
         },
         server::HttpServer,
-        service::web::response::{Html, IntoResponse},
+        service::web::{
+            IntoEndpointService,
+            extract::Extension,
+            response::{Html, IntoResponse},
+        },
     },
     layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
     net::stream::{
@@ -41,7 +44,6 @@ use rama::{
         layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
     },
     rt::Executor,
-    service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -91,11 +93,12 @@ async fn main() {
             SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
             MapResponseLayer::new(IntoResponse::into_response),
         )
-            .into_layer(service_fn(async |req: Request| {
-                let socket_info = req.extensions().get::<SocketInfo>().unwrap();
-                let tracker = req.extensions().get::<BytesRWTrackerHandle>().unwrap();
-                Ok(Html(format!(
-                    r##"
+            .into_layer(
+                (|Extension(socket_info): Extension<SocketInfo>,
+                  Extension(tracker): Extension<BytesRWTrackerHandle>,
+                  uri: Uri| {
+                    std::future::ready(Html(format!(
+                        r##"
                         <html>
                             <head>
                                 <title>Rama — Http Service Hello</title>
@@ -111,12 +114,14 @@ async fn main() {
                                 </ul>
                             </body>
                         </html>"##,
-                    socket_info.peer_addr(),
-                    req.uri().path(),
-                    tracker.read(),
-                    tracker.written(),
-                )))
-            }));
+                        socket_info.peer_addr(),
+                        uri.path(),
+                        tracker.read(),
+                        tracker.written(),
+                    )))
+                })
+                .into_endpoint_service(),
+            );
 
         let tcp_http_service = HttpServer::auto(exec).service(http_service);
 
