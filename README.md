@@ -16,7 +16,7 @@
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
-[rust-version-badge]: https://img.shields.io/badge/rustc-1.88+-blue?style=flat-square&logo=rust
+[rust-version-badge]: https://img.shields.io/badge/rustc-1.91+-blue?style=flat-square&logo=rust
 [rust-version-url]: https://www.rust-lang.org
 [actions-badge]: https://github.com/plabayo/rama/actions/workflows/CI.yml/badge.svg?branch=main
 [actions-url]: https://github.com/plabayo/rama/actions/workflows/CI.yml
@@ -125,7 +125,7 @@ Rama comes with 🔋 batteries included, giving you the full freedom to build th
 > 🗒️ _Footnotes_
 >
 > * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/2)
-> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/3)
+> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2026 Q1)](https://github.com/plabayo/rama/milestone/3)
 > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
 
 The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
@@ -379,7 +379,7 @@ that you'll recognise from `axum`, just as available for `rama` services:
   which is excellent for the typical path-centric routing,
   and an approach you'll recognise from most other web frameworks out there.
 
-For a production-like example of a web service you can also read the [rama cli `fp` cmd source code](https://github.com/plabayo/rama/tree/main/rama-cli/src/cmd/fp).
+For a production-like example of a web service you can also read the [rama cli `fp` cmd source code](https://github.com/plabayo/rama/tree/main/rama-cli/src/cmd/serve/fp).
 This is the webservice behind the Rama fingerprinting service, which is used by the maintainers of 🦙 Rama (ラマ) to generate
 the UA emulation data for the Http and TLS layers. It is not meant to fingerprint humans or users. Instead it is meant to help
 automated processes look like a human.
@@ -485,7 +485,7 @@ and continue to happen with community/ecosystem support.
 
 ### Minimum supported Rust version
 
-Rama's MSRV is `1.88`.
+Rama's MSRV is `1.91`.
 
 [Using GitHub Actions we also test](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) if `rama` on that version still works on
 the stable and beta versions of _rust_ as well.
@@ -574,7 +574,7 @@ You can become a regular financial contributor to Rama by paying for a monthly s
 Sponsors help us continue to maintain and improve `rama`, as well as other
 Free and Open Source (FOSS) technology. It also helps us to create
 educational content such as <https://github.com/plabayo/learn-rust-101>,
-and other open source libraries such as <https://github.com/plabayo/tokio-graceful> and <https://venndb.rs>.
+and other open source libraries such as <https://github.com/plabayo/tokio-graceful> and <https://venndb.plabayo.tech>.
 
 Next to the many unpaid developer hours we put in a project such as `rama`,
 we also have plenty of costs, such as services ranging from hosting to Docker,

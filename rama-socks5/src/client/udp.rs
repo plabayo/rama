@@ -4,8 +4,9 @@ use rama_core::futures::Sink;
 use rama_core::futures::Stream;
 use rama_core::stream::codec::{Decoder, Encoder};
 use rama_core::telemetry::tracing;
+use rama_net::address::HostWithPort;
 use rama_net::{address::SocketAddress, socket::Interface};
-use rama_udp::UdpSocket;
+use rama_udp::{UdpSocket, bind_udp};
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::{fmt, io, net::SocketAddr};
@@ -35,7 +36,7 @@ impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
         mut self,
         interface: impl TryInto<Interface, Error: Into<BoxError>>,
     ) -> Result<UdpSocketRelay<S>, HandshakeError> {
-        let socket = UdpSocket::bind(interface).await.map_err(|err| {
+        let socket = bind_udp(interface).await.map_err(|err| {
             HandshakeError::other(err).with_context("bind udp socket ready for sending")
         })?;
 
@@ -67,7 +68,7 @@ impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
                 .with_context("server responded with non-success reply"));
         }
 
-        let (host, port) = server_reply.bind_address.into_parts();
+        let HostWithPort { host, port } = server_reply.bind_address;
         let bind_address: SocketAddress = match host {
             rama_net::address::Host::Name(_) => {
                 return Err(
@@ -79,9 +80,12 @@ impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
             rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
         };
 
-        socket.connect(bind_address).await.map_err(|err| {
-            HandshakeError::other(err).with_context("connect to socks5 udp association socket")
-        })?;
+        socket
+            .connect(bind_address.into_std())
+            .await
+            .map_err(|err| {
+                HandshakeError::other(err).with_context("connect to socks5 udp association socket")
+            })?;
 
         tracing::trace!(
             network.local.address = %socket_addr.ip(),
@@ -248,7 +252,7 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
 
     let header_offset = header.serialized_len() - 1;
 
-    let (host, port) = header.destination.into_parts();
+    let HostWithPort { host, port } = header.destination;
     let from: SocketAddress = match host {
         rama_net::address::Host::Name(_) => {
             return Err(OpaqueError::from_display(
@@ -300,7 +304,6 @@ pub struct UdpFramedRelay<C, S> {
     wr: BytesMut,
     out_addr: SocketAddress,
     flushed: bool,
-    is_readable: bool,
     current_addr: Option<SocketAddress>,
 }
 
@@ -327,7 +330,6 @@ impl<C: fmt::Debug, S: fmt::Debug> fmt::Debug for UdpFramedRelay<C, S> {
             .field("wr", &self.wr)
             .field("out_addr", &self.out_addr)
             .field("flushed", &self.flushed)
-            .field("is_readable", &self.is_readable)
             .field("current_addr", &self.current_addr)
             .finish()
     }
@@ -364,17 +366,13 @@ where
 
         loop {
             // Are there still bytes left in the read buffer to decode?
-            if pin.is_readable {
+            if let Some(current_addr) = pin.current_addr {
                 if let Some(frame) = pin.codec.decode_eof(&mut pin.rd).map_err(Into::into)? {
-                    let current_addr = pin
-                        .current_addr
-                        .expect("will always be set before this line is called");
-
                     return Poll::Ready(Some(Ok((frame, current_addr))));
                 }
 
                 // if this line has been reached then decode has returned `None`.
-                pin.is_readable = false;
+                pin.current_addr = None;
                 pin.rd.clear();
             }
 
@@ -399,7 +397,6 @@ where
             };
 
             pin.current_addr = Some(addr);
-            pin.is_readable = true;
         }
     }
 }
@@ -481,7 +478,6 @@ impl<C, S> UdpFramedRelay<C, S> {
             rd: BytesMut::with_capacity(INITIAL_RD_CAPACITY),
             wr: BytesMut::with_capacity(INITIAL_WR_CAPACITY),
             flushed: true,
-            is_readable: false,
             current_addr: None,
         }
     }

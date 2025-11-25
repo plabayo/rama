@@ -4,7 +4,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: stable
   RUST_TOOLCHAIN_NIGHTLY: nightly
-  RUST_TOOLCHAIN_MSRV: 1.88.0
+  RUST_TOOLCHAIN_MSRV: 1.91.0
   RUST_TOOLCHAIN_BETA: beta
 
 on:
@@ -215,7 +215,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
-        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
 
   test-ignored-macos:
     needs: [check, check-msrv, check-all-features]
@@ -230,7 +230,25 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
-        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
+
+  # NOTE: port conflicts on windows runners...
+  # ... once we can test without static ports we can try to do this.. again
+  # test-ignored-windows:
+  #   needs: [check, check-msrv, check-all-features]
+  #   runs-on: windows-latest
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: ilammy/setup-nasm@v1
+  #     - uses: actions/checkout@v5
+  #     - uses: dtolnay/rust-toolchain@master
+  #       with:
+  #         toolchain: ${{env.RUST_TOOLCHAIN}}
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+  #     - name: Run tests
+  #       run: cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
 
   test-docs:
     needs: [check, check-msrv, check-all-features]

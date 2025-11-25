@@ -119,7 +119,7 @@ macro_rules! exotic_forward_ip_headers {
                     let node = input
                         .into_iter()
                         .next()?
-                        .ref_forwarded_for()?;
+                        .forwarded_for()?;
                     let ip = node.ip()?;
                     let port = node.port();
                     Some($name(ClientAddr { ip, port }))
@@ -146,7 +146,7 @@ macro_rules! exotic_forward_ip_headers {
                     fn next(&mut self) -> Option<Self::Item> {
                         self.0.take().map(|addr| {
                             let node: NodeId = (addr.ip, addr.port).into();
-                            ForwardedElement::forwarded_for(node)
+                            ForwardedElement::new_forwarded_for(node)
                         })
                     }
                 }

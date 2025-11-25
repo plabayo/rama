@@ -34,15 +34,18 @@ use rama::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::level_filters::LevelFilter,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -55,7 +58,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let tcp_http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(
-            AddRequiredResponseHeaders::new(Router::new().get(
+            AddRequiredResponseHeaders::new(Router::new().with_get(
                 "/",
                 async |req: Request| -> Result<String, (StatusCode, String)> {
                     let client_ip = req

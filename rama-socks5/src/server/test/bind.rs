@@ -1,5 +1,5 @@
 use rama_core::ServiceInput;
-use rama_net::address::Authority;
+use rama_net::address::HostWithPort;
 
 use crate::server::bind::MockBinder;
 use crate::server::*;
@@ -132,7 +132,7 @@ async fn test_socks5_acceptor_no_auth_client_bind_mock_failure_on_second_reply()
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new().with_binder(MockBinder::new_bind_err(
-        Authority::local_ipv4(3),
+        HostWithPort::local_ipv4(3),
         ReplyKind::TtlExpired,
     ));
     let result = server.accept(stream).await;
@@ -157,8 +157,8 @@ async fn test_socks5_acceptor_no_auth_client_bind_mock_success_no_data() {
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new().with_binder(MockBinder::new(
-        Authority::local_ipv4(5),
-        Authority::default_ipv4(0),
+        HostWithPort::local_ipv4(5),
+        HostWithPort::default_ipv4(0),
     ));
     let result = server.accept(stream).await;
     assert!(result.is_ok());
@@ -186,14 +186,15 @@ async fn test_socks5_acceptor_no_auth_client_default_bind_mock_success_with_data
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new().with_binder(
-        MockBinder::new(Authority::local_ipv4(42), Authority::local_ipv4(43)).with_proxy_data(
-            tokio_test::io::Builder::new()
-                // client data
-                .write(b"ping")
-                // server data
-                .read(b"pong")
-                .build(),
-        ),
+        MockBinder::new(HostWithPort::local_ipv4(42), HostWithPort::local_ipv4(43))
+            .with_proxy_data(
+                tokio_test::io::Builder::new()
+                    // client data
+                    .write(b"ping")
+                    // server data
+                    .read(b"pong")
+                    .build(),
+            ),
     );
     let result = server.accept(stream).await;
     assert!(result.is_ok());
@@ -227,14 +228,15 @@ async fn test_socks5_acceptor_with_auth_flow_client_bind_mock_success_with_data(
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer())
         .with_binder(
-            MockBinder::new(Authority::local_ipv4(42), Authority::local_ipv4(43)).with_proxy_data(
-                tokio_test::io::Builder::new()
-                    // client data
-                    .write(b"ping")
-                    // server data
-                    .read(b"pong")
-                    .build(),
-            ),
+            MockBinder::new(HostWithPort::local_ipv4(42), HostWithPort::local_ipv4(43))
+                .with_proxy_data(
+                    tokio_test::io::Builder::new()
+                        // client data
+                        .write(b"ping")
+                        // server data
+                        .read(b"pong")
+                        .build(),
+                ),
         );
     let result = server.accept(stream).await;
     assert!(result.is_ok());
@@ -268,14 +270,15 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_bind_mock_succ
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer())
         .with_binder(
-            MockBinder::new(Authority::local_ipv4(42), Authority::local_ipv4(43)).with_proxy_data(
-                tokio_test::io::Builder::new()
-                    // client data
-                    .write(b"ping")
-                    // server data
-                    .read(b"pong")
-                    .build(),
-            ),
+            MockBinder::new(HostWithPort::local_ipv4(42), HostWithPort::local_ipv4(43))
+                .with_proxy_data(
+                    tokio_test::io::Builder::new()
+                        // client data
+                        .write(b"ping")
+                        // server data
+                        .read(b"pong")
+                        .build(),
+                ),
         );
     let result = server.accept(stream).await;
     assert!(result.is_ok());

@@ -90,14 +90,17 @@ async fn test_http_sse_datastar_hello() {
     // test the actual stream content
 
     let mut expected_events: Vec<TestEvent> = vec![
-        PatchElements::new_remove("#server-warning").into(),
+        PatchElements::new_remove("#server-warning")
+            .try_into()
+            .unwrap(),
         PatchElements::new(
             r##"
 <div id='message'>Hello, Datastar!</div>
 <div id="progress-bar" style="width: 100%"></div>
 "##,
         )
-        .into(),
+        .try_into()
+        .unwrap(),
     ];
 
     // add all messages (as we expect it come as animated frames due to call of `/start` endpoint)
@@ -113,7 +116,8 @@ async fn test_http_sse_datastar_hello() {
 <div id="progress-bar" style="width: {progress}%"></div>
 "##
             ))
-            .into(),
+            .try_into()
+            .unwrap(),
         )
     }
     expected_events.reverse();

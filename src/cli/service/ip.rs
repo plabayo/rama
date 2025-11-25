@@ -5,21 +5,24 @@
 use crate::{
     Layer, Service,
     cli::ForwardKind,
+    combinators::Either,
     combinators::Either7,
     error::{BoxError, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Request, Response, StatusCode,
+        headers::exotic::XClacksOverhead,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         headers::{Accept, HeaderMapExt},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            trace::TraceLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer,
         },
         mime,
         server::HttpServer,
         service::web::response::{Html, IntoResponse, Json, Redirect},
     },
+    layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
@@ -34,7 +37,7 @@ use crate::{
 use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::http::{headers::StrictTransportSecurity, layer::set_header::SetResponseHeaderLayer};
+use crate::http::headers::StrictTransportSecurity;
 
 #[cfg(feature = "boring")]
 use crate::{
@@ -336,9 +339,16 @@ impl<M> IpServiceBuilder<M> {
 
         let tcp_service_builder = (
             ConsumeErrLayer::trace(tracing::Level::DEBUG),
-            (self.concurrent_limit > 0)
-                .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
-            (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
+            LimitLayer::new(if self.concurrent_limit > 0 {
+                Either::A(ConcurrentPolicy::max(self.concurrent_limit))
+            } else {
+                Either::B(UnlimitedPolicy::new())
+            }),
+            if !self.timeout.is_zero() {
+                TimeoutLayer::new(self.timeout)
+            } else {
+                TimeoutLayer::never()
+            },
             tcp_forwarded_layer,
             #[cfg(any(feature = "rustls", feature = "boring"))]
             maybe_tls_accept_layer,
@@ -407,6 +417,7 @@ impl<M> IpServiceBuilder<M> {
 
         let http_service = (
             TraceLayer::new_for_http(),
+            SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
             ConsumeErrLayer::default(),
             #[cfg(any(feature = "rustls", feature = "boring"))]

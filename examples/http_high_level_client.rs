@@ -34,7 +34,11 @@ use rama::{
     net::address::SocketAddress,
     net::user::Basic,
     rt::Executor,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 
@@ -42,9 +46,6 @@ use rama::{
 
 use serde_json::json;
 use std::time::Duration;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62004);
 
@@ -66,8 +67,8 @@ async fn main() {
         // NOTE: the high level http client has also a `::basic` method
         // that can be used to add basic auth headers only for that specific request
         AddAuthorizationLayer::new(Basic::new_static("john", "123"))
-            .as_sensitive(true)
-            .if_not_present(true),
+            .with_sensitive(true)
+            .with_if_not_present(true),
         RetryLayer::new(
             ManagedPolicy::default().with_backoff(
                 ExponentialBackoff::new(
@@ -158,7 +159,7 @@ async fn main() {
 }
 
 fn setup_tracing() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -173,8 +174,8 @@ async fn run_server(addr: SocketAddress) {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     tracing::info!(
-        network.local.address = %addr.ip_addr(),
-        network.local.port = %addr.port(),
+        network.local.address = %addr.ip_addr,
+        network.local.port = %addr.port,
         "running server",
     );
     let exec = Executor::default();
@@ -188,8 +189,8 @@ async fn run_server(addr: SocketAddress) {
             )
                 .into_layer(
                     WebService::default()
-                        .get("/", "Hello, World!")
-                        .get(
+                        .with_get("/", "Hello, World!")
+                        .with_get(
                             "/info",
                             async |req: Request| {
                                 req.headers()
@@ -208,7 +209,7 @@ async fn run_server(addr: SocketAddress) {
                                     )
                             }
                         )
-                        .post(
+                        .with_post(
                             "/introduce",
                             async |Json(data): Json<serde_json::Value>| {
                                 format!("Hello, {}!", data["name"].as_str().unwrap())

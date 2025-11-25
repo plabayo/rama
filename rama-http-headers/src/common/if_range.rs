@@ -38,7 +38,7 @@ use crate::util::{EntityTag, HttpDate, TryFromValues};
 /// use rama_http_headers::IfRange;
 /// use std::time::{SystemTime, Duration};
 ///
-/// let fetched = SystemTime::now() - Duration::from_secs(60 * 60 * 24);
+/// let fetched = SystemTime::now() - Duration::from_hours(24);
 /// let if_range = IfRange::date(fetched);
 /// ```
 #[derive(Clone, Debug, PartialEq)]

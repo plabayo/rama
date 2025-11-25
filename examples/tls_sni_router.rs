@@ -56,17 +56,21 @@ use rama::{
     service::service_fn,
     stream::Stream,
     tcp::{client::service::Forwarder, server::TcpListener},
-    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self, Instrument as _,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio
+
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -84,8 +88,8 @@ async fn main() {
     shutdown.spawn_task_fn(async move |guard| {
         let interface = SocketAddress::default_ipv4(62026);
         tracing::info!(
-            network.local.address = %interface.ip_addr(),
-            network.local.port = %interface.port(),
+            network.local.address = %interface.ip_addr,
+            network.local.port = %interface.port,
             "[tcp] spawn sni router: bind and go",
         );
         TcpListener::bind(interface)
@@ -137,8 +141,8 @@ where
 
     tracing::debug!(
         server.address = %sni.as_ref().map(|s| s.as_str()).unwrap_or_default(),
-        network.local.address = %fwd_interface.ip_addr(),
-        network.local.port = %fwd_interface.port(),
+        network.local.address = %fwd_interface.ip_addr,
+        network.local.port = %fwd_interface.port,
         "forward incoming connection",
     );
 
@@ -158,8 +162,8 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: Socke
     guard.into_spawn_task_fn(async move |guard| {
         tracing::info!(
             host.name = %name,
-            network.local.address = %interface.ip_addr(),
-            network.local.port = %interface.port(),
+            network.local.address = %interface.ip_addr,
+            network.local.port = %interface.port,
             "[tcp] spawn https server: bind and go",
         );
         TcpListener::bind(interface)
@@ -169,7 +173,7 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: Socke
                 guard.clone(),
                 TlsAcceptorLayer::new(acceptor_data).into_layer(
                     HttpServer::auto(Executor::graceful(guard)).service(
-                        TraceLayer::new_for_http().into_layer(Router::new().get("/", name)),
+                        TraceLayer::new_for_http().into_layer(Router::new().with_get("/", name)),
                     ),
                 ),
             )

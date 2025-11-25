@@ -103,6 +103,14 @@ impl PartialEq<Self> for Basic {
 
 impl Eq for Basic {}
 
+impl std::hash::Hash for Basic {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.username().hash(state);
+        ':'.hash(state);
+        self.password().hash(state);
+    }
+}
+
 impl TryFrom<&str> for Basic {
     type Error = OpaqueError;
 

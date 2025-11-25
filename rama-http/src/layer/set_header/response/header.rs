@@ -1,4 +1,6 @@
 use crate::{HeaderName, HeaderValue, Request, Response};
+use rama_http_headers::HeaderEncode;
+use std::fmt;
 use std::{
     future::{Future, ready},
     marker::PhantomData,
@@ -26,7 +28,6 @@ pub trait MakeHeaderValueFactory<ReqBody, ResBody>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn make_header_value_maker(
         &self,
-
         request: Request<ReqBody>,
     ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_;
 }
@@ -73,6 +74,20 @@ where
     }
 }
 
+impl<B, H> MakeHeaderValue<B> for TypedHeaderAsMaker<H>
+where
+    B: Send + 'static,
+    H: HeaderEncode + Send + Sync + 'static,
+{
+    fn make_header_value(
+        self,
+        response: Response<B>,
+    ) -> impl Future<Output = (Response<B>, Option<HeaderValue>)> + Send {
+        let maybe_value = self.0.encode_to_value();
+        ready((response, maybe_value))
+    }
+}
+
 impl<ReqBody, ResBody> MakeHeaderValueFactory<ReqBody, ResBody> for HeaderValue
 where
     ReqBody: Send + 'static,
@@ -97,10 +112,75 @@ where
 
     fn make_header_value_maker(
         &self,
-
         req: Request<ReqBody>,
     ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_ {
         ready((req, self.clone()))
+    }
+}
+
+#[derive(Default)]
+/// Marker type to allow types which are [`MakeHeaderValue`] and
+/// also have a [`Default`] way to construct to let them be constructed
+/// on the fly. Useful alternative for cloning or using a function.
+pub struct MakeHeaderValueDefault<M>(PhantomData<fn(M)>);
+
+impl<M> MakeHeaderValueDefault<M> {
+    #[inline(always)]
+    pub(super) fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<M> fmt::Debug for MakeHeaderValueDefault<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("MakeHeaderValueDefault")
+            .field(&std::any::type_name::<M>())
+            .finish()
+    }
+}
+
+impl<M> Clone for MakeHeaderValueDefault<M> {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl<M, ReqBody, ResBody> MakeHeaderValueFactory<ReqBody, ResBody> for MakeHeaderValueDefault<M>
+where
+    M: MakeHeaderValue<ResBody> + Default,
+    ReqBody: Send + 'static,
+    ResBody: Send + 'static,
+{
+    type Maker = M;
+
+    fn make_header_value_maker(
+        &self,
+        req: Request<ReqBody>,
+    ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_ {
+        ready((req, M::default()))
+    }
+}
+
+/// Wrapper used internally as part of making typed headers
+/// encode header values on the spot, when needed.
+pub struct TypedHeaderAsMaker<H>(pub(super) H);
+
+impl<H: Default> Default for TypedHeaderAsMaker<H> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<H: fmt::Debug> fmt::Debug for TypedHeaderAsMaker<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("TypedHeaderAsMaker").field(&self.0).finish()
+    }
+}
+
+impl<H: Clone> Clone for TypedHeaderAsMaker<H> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
@@ -111,7 +191,6 @@ pub trait MakeHeaderValueFactoryFn<ReqBody, ResBody, A>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn call(
         &self,
-
         request: Request<ReqBody>,
     ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_;
 }
@@ -200,7 +279,6 @@ where
 
     fn make_header_value_maker(
         &self,
-
         request: Request<ReqBody>,
     ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_ {
         self.f.call(request)

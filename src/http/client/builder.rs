@@ -91,7 +91,7 @@ impl<T, Stage> EasyHttpWebClientBuilder<T, Stage> {
     pub fn with_custom_connector<L>(
         self,
         connector_layer: L,
-    ) -> EasyHttpWebClientBuilder<L::Service, TlsStage>
+    ) -> EasyHttpWebClientBuilder<L::Service, Stage>
     where
         L: Layer<T>,
     {

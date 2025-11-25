@@ -73,7 +73,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::{
         client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorLayer},
@@ -93,7 +97,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone)]
 struct State {
@@ -105,7 +108,7 @@ struct State {
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -125,7 +128,7 @@ async fn main() -> Result<(), BoxError> {
 
     let state = State {
         mitm_tls_service_data,
-        ua_db: Arc::new(UserAgentDatabase::embedded()),
+        ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
         har_layer,
         har_toggle_ctl,
     };
@@ -155,7 +158,7 @@ async fn main() -> Result<(), BoxError> {
                 // Remember kids: authentication != security
                 HijackLayer::new(
                     DomainMatcher::exact("har.toggle.internal"),
-                    Arc::new(WebService::default().post("/switch", async |req: Request| {
+                    Arc::new(WebService::default().with_post("/switch", async |req: Request| {
                         let state = req.extensions().get::<State>().unwrap();
                         if let Err(err) = state.har_toggle_ctl.send(()).await {
                             tracing::error!("failed to toggle HAR Recording: {err}");
@@ -200,11 +203,11 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
+    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
         Ok(authority) => {
             tracing::info!(
-                server.address = %authority.host(),
-                server.port = %authority.port(),
+                server.address = %authority.host,
+                server.port = authority.port,
                 "accept CONNECT (lazy): insert proxy target into context",
             );
             req.extensions_mut().insert(ProxyTarget(authority));
@@ -240,7 +243,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
         .unwrap_or_default();
 
     let mut http_tp = HttpServer::auto(executor);
-    http_tp.h2_mut().enable_connect_protocol();
+    http_tp.h2_mut().set_enable_connect_protocol();
 
     let http_transport_service = http_tp.service(http_service);
 
@@ -261,8 +264,8 @@ fn new_http_mitm_proxy(
         TraceLayer::new_for_http(),
         ConsumeErrLayer::default(),
         UserAgentEmulateLayer::new(state.ua_db.clone())
-            .try_auto_detect_user_agent(true)
-            .optional(true),
+            .with_try_auto_detect_user_agent(true)
+            .with_is_optional(true),
         CompressAdaptLayer::default(),
         AddRequiredRequestHeadersLayer::new(),
         EmulateTlsProfileLayer::new(),

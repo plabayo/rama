@@ -37,49 +37,25 @@ impl AddRequiredRequestHeadersLayer {
         }
     }
 
-    /// Set whether to overwrite the existing headers.
-    /// If set to `true`, the headers will be overwritten.
-    ///
-    /// Default is `false`.
-    #[must_use]
-    pub const fn overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite = overwrite;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether to overwrite the existing headers.
+        /// If set to `true`, the headers will be overwritten.
+        ///
+        /// Default is `false`.
+        pub fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
+            self
+        }
     }
 
-    /// Set whether to overwrite the existing headers.
-    /// If set to `true`, the headers will be overwritten.
-    ///
-    /// Default is `false`.
-    pub fn set_overwrite(&mut self, overwrite: bool) -> &mut Self {
-        self.overwrite = overwrite;
-        self
-    }
-
-    /// Set a custom [`USER_AGENT`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    #[must_use]
-    pub fn user_agent_header_value(mut self, value: HeaderValue) -> Self {
-        self.user_agent_header_value = Some(value);
-        self
-    }
-
-    /// Maybe set a custom [`USER_AGENT`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    #[must_use]
-    pub fn maybe_user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
-        self.user_agent_header_value = value;
-        self
-    }
-
-    /// Set a custom [`USER_AGENT`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    pub fn set_user_agent_header_value(&mut self, value: HeaderValue) -> &mut Self {
-        self.user_agent_header_value = Some(value);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the custom [`USER_AGENT`] header value to be used.
+        ///
+        /// By default a versioned `rama` value is used.
+        pub fn user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
+            self.user_agent_header_value = value;
+            self
+        }
     }
 }
 
@@ -121,49 +97,25 @@ impl<S> AddRequiredRequestHeaders<S> {
         }
     }
 
-    /// Set whether to overwrite the existing headers.
-    /// If set to `true`, the headers will be overwritten.
-    ///
-    /// Default is `false`.
-    #[must_use]
-    pub const fn overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite = overwrite;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether to overwrite the existing headers.
+        /// If set to `true`, the headers will be overwritten.
+        ///
+        /// Default is `false`.
+        pub fn overwrite(mut self, overwrite: bool) -> Self {
+            self.overwrite = overwrite;
+            self
+        }
     }
 
-    /// Set whether to overwrite the existing headers.
-    /// If set to `true`, the headers will be overwritten.
-    ///
-    /// Default is `false`.
-    pub fn set_overwrite(&mut self, overwrite: bool) -> &mut Self {
-        self.overwrite = overwrite;
-        self
-    }
-
-    /// Set a custom [`USER_AGENT`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    #[must_use]
-    pub fn user_agent_header_value(mut self, value: HeaderValue) -> Self {
-        self.user_agent_header_value = Some(value);
-        self
-    }
-
-    /// Maybe set a custom [`USER_AGENT`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    #[must_use]
-    pub fn maybe_user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
-        self.user_agent_header_value = value;
-        self
-    }
-
-    /// Set a custom [`USER_AGENT`] header value.
-    ///
-    /// By default a versioned `rama` value is used.
-    pub fn set_user_agent_header_value(&mut self, value: HeaderValue) -> &mut Self {
-        self.user_agent_header_value = Some(value);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the custom [`USER_AGENT`] header value.
+        ///
+        /// By default a versioned `rama` value is used.
+        pub fn user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
+            self.user_agent_header_value = value;
+            self
+        }
     }
 
     define_inner_service_accessors!();
@@ -196,7 +148,7 @@ where
                 "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
             )?;
             if request_ctx.authority_has_default_port() {
-                let host = request_ctx.authority.host().clone();
+                let host = request_ctx.authority.host;
                 tracing::trace!(
                     server.address = %host,
                     "add missing host from authority as host header",
@@ -205,8 +157,8 @@ where
             } else {
                 let authority = request_ctx.authority;
                 tracing::trace!(
-                    server.address = %authority.host(),
-                    server.port = %authority.port(),
+                    server.address = %authority.host,
+                    server.port = authority.port,
                     "add missing authority as host header"
                 );
                 req.headers_mut().typed_insert(Host::from(authority));
@@ -265,7 +217,7 @@ mod test {
     #[tokio::test]
     async fn add_required_request_headers_custom_ua() {
         let svc = AddRequiredRequestHeadersLayer::default()
-            .user_agent_header_value(HeaderValue::from_static("foo"))
+            .with_user_agent_header_value(HeaderValue::from_static("foo"))
             .into_layer(service_fn(async |req: Request| {
                 assert!(req.headers().contains_key(HOST));
                 assert_eq!(
@@ -288,7 +240,7 @@ mod test {
     #[tokio::test]
     async fn add_required_request_headers_overwrite() {
         let svc = AddRequiredRequestHeadersLayer::new()
-            .overwrite(true)
+            .with_overwrite(true)
             .into_layer(service_fn(async |req: Request| {
                 assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1");
                 assert_eq!(
@@ -314,8 +266,8 @@ mod test {
     #[tokio::test]
     async fn add_required_request_headers_overwrite_custom_ua() {
         let svc = AddRequiredRequestHeadersLayer::new()
-            .overwrite(true)
-            .user_agent_header_value(HeaderValue::from_static("foo"))
+            .with_overwrite(true)
+            .with_user_agent_header_value(HeaderValue::from_static("foo"))
             .into_layer(service_fn(async |req: Request| {
                 assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1");
                 assert_eq!(

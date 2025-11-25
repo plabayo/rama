@@ -19,7 +19,7 @@
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let cors = CorsLayer::new()
 //!     // allow `GET` and `POST` when accessing the resource
-//!     .allow_methods([Method::GET, Method::POST])
+//!     .try_allow_methods([Method::GET, Method::POST]).unwrap()
 //!     // allow requests from any origin
 //!     .allow_origin(Any);
 //!
@@ -54,6 +54,7 @@ use rama_core::{
     Layer, Service,
     bytes::{BufMut, BytesMut},
 };
+use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, mem};
 
@@ -127,11 +128,13 @@ impl CorsLayer {
     /// - All origins allowed.
     /// - All headers exposed.
     pub fn permissive() -> Self {
-        Self::new()
-            .allow_headers(Any)
-            .allow_methods(Any)
-            .allow_origin(Any)
-            .expose_headers(Any)
+        Self {
+            allow_headers: AllowHeaders::any(),
+            allow_methods: AllowMethods::any(),
+            allow_origin: AllowOrigin::any(),
+            expose_headers: ExposeHeaders::any(),
+            ..Self::new()
+        }
     }
 
     /// A very permissive configuration:
@@ -144,11 +147,13 @@ impl CorsLayer {
     ///   back as allowed headers.
     /// - No headers are currently exposed, but this may change in the future.
     pub fn very_permissive() -> Self {
-        Self::new()
-            .allow_credentials(true)
-            .allow_headers(AllowHeaders::mirror_request())
-            .allow_methods(AllowMethods::mirror_request())
-            .allow_origin(AllowOrigin::mirror_request())
+        Self {
+            allow_credentials: AllowCredentials::yes(),
+            allow_headers: AllowHeaders::mirror_request(),
+            allow_methods: AllowMethods::mirror_request(),
+            allow_origin: AllowOrigin::mirror_request(),
+            ..Self::new()
+        }
     }
 
     /// Set the [`Access-Control-Allow-Credentials`][mdn] header.
@@ -174,7 +179,7 @@ impl CorsLayer {
     /// use rama_http::layer::cors::CorsLayer;
     /// use rama_http::header::{AUTHORIZATION, ACCEPT};
     ///
-    /// let layer = CorsLayer::new().allow_headers([AUTHORIZATION, ACCEPT]);
+    /// let layer = CorsLayer::new().try_allow_headers([AUTHORIZATION, ACCEPT]).unwrap();
     /// ```
     ///
     /// All headers can be allowed with
@@ -182,7 +187,7 @@ impl CorsLayer {
     /// ```
     /// use rama_http::layer::cors::{Any, CorsLayer};
     ///
-    /// let layer = CorsLayer::new().allow_headers(Any);
+    /// let layer = CorsLayer::new().try_allow_headers(Any).unwrap();
     /// ```
     ///
     /// You can also use an async closure:
@@ -242,12 +247,12 @@ impl CorsLayer {
     /// `Access-Control-Request-Headers`.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Headers
-    pub fn allow_headers<T>(mut self, headers: T) -> Self
+    pub fn try_allow_headers<T>(mut self, headers: T) -> Result<Self, OpaqueError>
     where
-        T: Into<AllowHeaders>,
+        T: TryInto<AllowHeaders, Error: Into<BoxError>>,
     {
-        self.allow_headers = headers.into();
-        self
+        self.allow_headers = headers.try_into().map_err(Into::into)?;
+        Ok(self)
     }
 
     /// Set the value of the [`Access-Control-Max-Age`][mdn] header.
@@ -303,7 +308,7 @@ impl CorsLayer {
     /// use rama_http::layer::cors::CorsLayer;
     /// use rama_http::Method;
     ///
-    /// let layer = CorsLayer::new().allow_methods([Method::GET, Method::POST]);
+    /// let layer = CorsLayer::new().try_allow_methods([Method::GET, Method::POST]).unwrap();
     /// ```
     ///
     /// All methods can be allowed with
@@ -311,19 +316,19 @@ impl CorsLayer {
     /// ```
     /// use rama_http::layer::cors::{Any, CorsLayer};
     ///
-    /// let layer = CorsLayer::new().allow_methods(Any);
+    /// let layer = CorsLayer::new().try_allow_methods(Any).unwrap();
     /// ```
     ///
     /// Note that multiple calls to this method will override any previous
     /// calls.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Methods
-    pub fn allow_methods<T>(mut self, methods: T) -> Self
+    pub fn try_allow_methods<T>(mut self, methods: T) -> Result<Self, OpaqueError>
     where
-        T: Into<AllowMethods>,
+        T: TryInto<AllowMethods, Error: Into<BoxError>>,
     {
-        self.allow_methods = methods.into();
-        self
+        self.allow_methods = methods.try_into().map_err(Into::into)?;
+        Ok(self)
     }
 
     /// Set the value of the [`Access-Control-Allow-Origin`][mdn] header.
@@ -389,7 +394,7 @@ impl CorsLayer {
     /// use rama_http::layer::cors::CorsLayer;
     /// use rama_http::header::CONTENT_ENCODING;
     ///
-    /// let layer = CorsLayer::new().expose_headers([CONTENT_ENCODING]);
+    /// let layer = CorsLayer::new().try_expose_headers([CONTENT_ENCODING]).unwrap();
     /// ```
     ///
     /// All headers can be allowed with
@@ -397,19 +402,19 @@ impl CorsLayer {
     /// ```
     /// use rama_http::layer::cors::{Any, CorsLayer};
     ///
-    /// let layer = CorsLayer::new().expose_headers(Any);
+    /// let layer = CorsLayer::new().try_expose_headers(Any).unwrap();
     /// ```
     ///
     /// Note that multiple calls to this method will override any previous
     /// calls.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Expose-Headers
-    pub fn expose_headers<T>(mut self, headers: T) -> Self
+    pub fn try_expose_headers<T>(mut self, headers: T) -> Result<Self, OpaqueError>
     where
-        T: Into<ExposeHeaders>,
+        T: TryInto<ExposeHeaders, Error: Into<BoxError>>,
     {
-        self.expose_headers = headers.into();
-        self
+        self.expose_headers = headers.try_into().map_err(Into::into)?;
+        Ok(self)
     }
 
     /// Set the value of the [`Access-Control-Allow-Private-Network`][wicg] header.
@@ -473,23 +478,28 @@ pub fn any() -> Any {
     Any
 }
 
-fn separated_by_commas<I>(mut iter: I) -> Option<HeaderValue>
+fn try_separated_by_commas<I, E>(mut iter: I) -> Result<Option<HeaderValue>, OpaqueError>
 where
-    I: Iterator<Item = HeaderValue>,
+    I: Iterator<Item = Result<HeaderValue, E>>,
+    E: Into<BoxError>,
 {
-    match iter.next() {
+    Ok(match iter.next() {
         Some(fst) => {
-            let mut result = BytesMut::from(fst.as_bytes());
-            for val in iter {
+            let mut result = BytesMut::from(fst.map_err(Into::into)?.as_bytes());
+            for maybe_val in iter {
+                let val = maybe_val.map_err(Into::into)?;
                 result.reserve(val.len() + 1);
                 result.put_u8(b',');
                 result.extend_from_slice(val.as_bytes());
             }
 
-            Some(HeaderValue::from_maybe_shared(result.freeze()).unwrap())
+            Some(
+                HeaderValue::from_maybe_shared(result.freeze())
+                    .context("create header value from csv")?,
+            )
         }
         None => None,
-    }
+    })
 }
 
 impl Default for CorsLayer {
@@ -594,12 +604,12 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_headers`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Headers
-    #[must_use]
-    pub fn allow_headers<T>(self, headers: T) -> Self
+    pub fn try_allow_headers<T>(mut self, headers: T) -> Result<Self, OpaqueError>
     where
-        T: Into<AllowHeaders>,
+        T: TryInto<AllowHeaders, Error: Into<BoxError>>,
     {
-        self.map_layer(|layer| layer.allow_headers(headers))
+        self.layer = self.layer.try_allow_headers(headers)?;
+        Ok(self)
     }
 
     /// Set the value of the [`Access-Control-Max-Age`][mdn] header.
@@ -620,12 +630,12 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_methods`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Methods
-    #[must_use]
-    pub fn allow_methods<T>(self, methods: T) -> Self
+    pub fn try_allow_methods<T>(mut self, methods: T) -> Result<Self, OpaqueError>
     where
-        T: Into<AllowMethods>,
+        T: TryInto<AllowMethods, Error: Into<BoxError>>,
     {
-        self.map_layer(|layer| layer.allow_methods(methods))
+        self.layer = self.layer.try_allow_methods(methods)?;
+        Ok(self)
     }
 
     /// Set the value of the [`Access-Control-Allow-Origin`][mdn] header.
@@ -646,12 +656,12 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::expose_headers`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Expose-Headers
-    #[must_use]
-    pub fn expose_headers<T>(self, headers: T) -> Self
+    pub fn try_expose_headers<T>(mut self, headers: T) -> Result<Self, OpaqueError>
     where
-        T: Into<ExposeHeaders>,
+        T: TryInto<ExposeHeaders, Error: Into<BoxError>>,
     {
-        self.map_layer(|layer| layer.expose_headers(headers))
+        self.layer = self.layer.try_expose_headers(headers)?;
+        Ok(self)
     }
 
     /// Set the value of the [`Access-Control-Allow-Private-Network`][wicg] header.

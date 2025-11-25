@@ -126,6 +126,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 ### SNI router
 
 - [`tls_sni_router.rs`](./tls_sni_router.rs) - (TLS) SNI Router with BoringSSL
+- [`tls_sni_proxy_mitm.rs`](./tls_sni_proxy_mitm.rs) - (TLS) SNI Proxy with MITM capabilities using BoringSSL
 
 ### Mutual TLS
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation

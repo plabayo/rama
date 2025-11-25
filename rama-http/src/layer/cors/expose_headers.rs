@@ -1,11 +1,13 @@
-use std::fmt;
+use std::{convert::Infallible, fmt};
+
+use rama_error::OpaqueError;
 
 use crate::{
     header::{self, HeaderName, HeaderValue},
     request::Parts as RequestParts,
 };
 
-use super::{Any, WILDCARD, separated_by_commas};
+use super::{Any, WILDCARD, try_separated_by_commas};
 
 /// Holds configuration for how to set the [`Access-Control-Expose-Headers`][mdn] header.
 ///
@@ -32,13 +34,13 @@ impl ExposeHeaders {
     /// See [`CorsLayer::expose_headers`] for more details.
     ///
     /// [`CorsLayer::expose_headers`]: super::CorsLayer::expose_headers
-    pub fn list<I>(headers: I) -> Self
+    pub fn try_list<I>(headers: I) -> Result<Self, OpaqueError>
     where
         I: IntoIterator<Item = HeaderName>,
     {
-        Self(ExposeHeadersInner::Const(separated_by_commas(
-            headers.into_iter().map(Into::into),
-        )))
+        Ok(Self(ExposeHeadersInner::Const(try_separated_by_commas(
+            headers.into_iter().map(|v| Ok::<_, Infallible>(v.into())),
+        )?)))
     }
 
     #[allow(clippy::borrow_interior_mutable_const)]
@@ -69,15 +71,21 @@ impl From<Any> for ExposeHeaders {
     }
 }
 
-impl<const N: usize> From<[HeaderName; N]> for ExposeHeaders {
-    fn from(arr: [HeaderName; N]) -> Self {
-        Self::list(arr)
+impl<const N: usize> TryFrom<[HeaderName; N]> for ExposeHeaders {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn try_from(arr: [HeaderName; N]) -> Result<Self, Self::Error> {
+        Self::try_list(arr)
     }
 }
 
-impl From<Vec<HeaderName>> for ExposeHeaders {
-    fn from(vec: Vec<HeaderName>) -> Self {
-        Self::list(vec)
+impl TryFrom<Vec<HeaderName>> for ExposeHeaders {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn try_from(vec: Vec<HeaderName>) -> Result<Self, Self::Error> {
+        Self::try_list(vec)
     }
 }
 

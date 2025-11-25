@@ -166,7 +166,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 // add required host header if not defined
                 if !parts.headers.contains_key(HOST) {
                     if request_ctx.authority_has_default_port() {
-                        let host = request_ctx.authority.host().clone();
+                        let host = request_ctx.authority.host;
                         tracing::trace!("add missing host {host} from authority as host header");
                         parts.headers.typed_insert(Host::from(host));
                     } else {
@@ -185,13 +185,13 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                     let authority = request_ctx.authority;
                     tracing::trace!(
                         url.full = %req.uri(),
-                        server.address = %authority.host(),
-                        server.port = %authority.port(),
+                        server.address = %authority.host,
+                        server.port = authority.port,
                         "add host from authority as HOST header to req (was missing it)",
                     );
                     req.headers_mut().typed_insert(Host::from(authority));
                 } else {
-                    let host = request_ctx.authority.host().clone();
+                    let host = request_ctx.authority.host;
                     tracing::trace!(
                         url.full = %req.uri(),
                         "add {host} as HOST header to req (was missing it)",
@@ -233,7 +233,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 // Default port is stripped in browsers. It's important that we also do this
                 // as some reverse proxies such as nginx respond 404 if authority is not an exact match
                 let authority = if request_ctx.authority_has_default_port() {
-                    request_ctx.authority.host().to_string()
+                    request_ctx.authority.host.to_string()
                 } else {
                     request_ctx.authority.to_string()
                 };
@@ -294,10 +294,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
 mod tests {
     use super::*;
     use rama_http::{Scheme, Uri, uri::Authority};
-    use rama_net::{
-        Protocol,
-        address::{Domain, Host},
-    };
+    use rama_net::Protocol;
 
     #[test]
     fn should_sanitize_http1_except_connect() {
@@ -366,7 +363,7 @@ mod tests {
         let mut req = Request::builder().uri(uri).body(()).unwrap();
 
         req.extensions_mut().insert(ProxyAddress {
-            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            address: rama_net::address::HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
         });
@@ -392,7 +389,7 @@ mod tests {
         let mut req = Request::builder().uri(uri).body(()).unwrap();
 
         req.extensions_mut().insert(ProxyAddress {
-            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            address: rama_net::address::HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
         });
@@ -418,7 +415,7 @@ mod tests {
         let mut req = Request::builder().uri(uri).body(()).unwrap();
 
         req.extensions_mut().insert(ProxyAddress {
-            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            address: rama_net::address::HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::SOCKS5),
         });

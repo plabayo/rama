@@ -76,17 +76,17 @@ impl CertIssuerHttpClient {
         let mut tls_config = TlsConnectorDataBuilder::new_http_auto();
 
         if let Ok(remote_ca_raw) = std::env::var("RAMA_TLS_REMOTE_CA") {
-            let mut store_builder = X509StoreBuilder::new().expect("build x509 store builder");
+            let mut store_builder = X509StoreBuilder::new().context("build x509 store builder")?;
             store_builder
                 .add_cert(
                     X509::from_pem(
                         &ENGINE
                             .decode(remote_ca_raw)
-                            .expect("base64 decode RAMA_TLS_REMOTE_CA")[..],
+                            .context("base64 decode RAMA_TLS_REMOTE_CA")?[..],
                     )
-                    .expect("load CA cert"),
+                    .context("load CA cert")?,
                 )
-                .expect("add CA cert to store builder");
+                .context("add CA cert to store builder")?;
             let store = store_builder.build();
             tls_config.set_server_verify_cert_store(Arc::new(store));
         }
@@ -99,12 +99,13 @@ impl CertIssuerHttpClient {
             .with_default_http_connector()
             .build();
 
-        let uri: Uri = uri_raw.parse().expect("RAMA_TLS_REMOTE to be a valid URI");
+        let uri: Uri = uri_raw.parse().context("parse RAMA_TLS_REMOTE as URI")?;
         let mut client = if let Ok(auth_raw) = std::env::var("RAMA_TLS_REMOTE_AUTH") {
             Self::new_with_client(
                 uri,
                 SetRequestHeaderLayer::overriding_typed(Authorization::new(
-                    Bearer::new(auth_raw).expect("RAMA_TLS_REMOTE_AUTH to be a valid Bearer token"),
+                    Bearer::new(auth_raw)
+                        .context("try to create Bearer using RAMA_TLS_REMOTE_AUTH")?,
                 ))
                 .into_layer(client)
                 .boxed(),
@@ -115,7 +116,7 @@ impl CertIssuerHttpClient {
 
         if let Ok(allow_cn_csv_raw) = std::env::var("RAMA_TLS_REMOTE_CN_CSV") {
             for raw_cn_str in allow_cn_csv_raw.split(',') {
-                let cn: Domain = raw_cn_str.parse().expect("CN to be a valid domain");
+                let cn: Domain = raw_cn_str.parse().context("parse CN as a a valid domain")?;
                 client.set_allow_domain(cn);
             }
         }
@@ -145,9 +146,7 @@ impl CertIssuerHttpClient {
         /// By default, if none of the `allow_*` setters are called
         /// the client will fetch for any client.
         pub fn allow_domain(mut self, domain: impl AsDomainRef) -> Self {
-            if let Some(parent) = domain.as_wildcard_parent() {
-                // unwrap should be fine given we were a wildcard to begin with
-                let domain = parent.try_as_wildcard().unwrap();
+            if let Some(parent) = domain.as_wildcard_parent() && let Ok(domain) = parent.try_as_wildcard() {
                 self.allow_list.get_or_insert_default().insert_domain(parent, DomainAllowMode::Parent(domain));
             } else {
                 self.allow_list.get_or_insert_default().insert_domain(domain, DomainAllowMode::Exact);

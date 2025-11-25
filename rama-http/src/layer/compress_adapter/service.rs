@@ -65,17 +65,12 @@ impl<S> CompressAdaptService<S> {
 impl<S> CompressAdaptService<S> {
     define_inner_service_accessors!();
 
-    /// Sets the compression quality.
-    #[must_use]
-    pub fn quality(mut self, quality: CompressionLevel) -> Self {
-        self.quality = quality;
-        self
-    }
-
-    /// Sets the compression quality.
-    pub fn set_quality(&mut self, quality: CompressionLevel) -> &mut Self {
-        self.quality = quality;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the compression quality.
+        pub fn quality(mut self, quality: CompressionLevel) -> Self {
+            self.quality = quality;
+            self
+        }
     }
 }
 

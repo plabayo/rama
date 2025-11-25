@@ -36,6 +36,14 @@ impl Host {
         }
     }
 
+    #[must_use]
+    pub fn into_domain(self) -> Option<Domain> {
+        match self {
+            Self::Name(domain) => Some(domain),
+            Self::Address(_) => None,
+        }
+    }
+
     /// Returns `true` if [`host`] is a [`IpAddr`].
     #[must_use]
     pub fn is_ip(&self) -> bool {
@@ -44,6 +52,14 @@ impl Host {
 
     #[must_use]
     pub fn as_ip(&self) -> Option<&IpAddr> {
+        match self {
+            Self::Name(_) => None,
+            Self::Address(addr) => Some(addr),
+        }
+    }
+
+    #[must_use]
+    pub fn into_ip(self) -> Option<IpAddr> {
         match self {
             Self::Name(_) => None,
             Self::Address(addr) => Some(addr),

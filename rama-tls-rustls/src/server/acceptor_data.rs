@@ -146,50 +146,37 @@ impl TlsAcceptorDataBuilder {
         })
     }
 
-    /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
-    /// and set it in the current config
-    pub fn set_env_key_logger(&mut self) -> Result<&mut Self, OpaqueError> {
-        if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
-            let key_logger = Arc::new(KeyLogFile::new(path)?);
-            self.server_config.key_log = key_logger;
-        };
-        Ok(self)
+    rama_utils::macros::generate_set_and_with! {
+        /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
+        /// and set it in the current config
+        pub fn env_key_logger(mut self) -> Result<Self, OpaqueError> {
+            if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
+                let key_logger = Arc::new(KeyLogFile::new(path)?);
+                self.server_config.key_log = key_logger;
+            };
+            Ok(self)
+        }
     }
 
-    /// Same as [`Self::set_env_key_logger`] but consuming self
-    pub fn with_env_key_logger(mut self) -> Result<Self, OpaqueError> {
-        self.set_env_key_logger()?;
-        Ok(self)
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`ApplicationProtocol`]s supported in alpn extension
+        pub fn alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
+            self.server_config.alpn_protocols = protos
+                .iter()
+                .map(|proto| proto.as_bytes().to_vec())
+                .collect();
+
+            self
+        }
     }
 
-    /// Set [`ApplicationProtocol`]s supported in alpn extension
-    pub fn set_alpn_protocols(&mut self, protos: &[ApplicationProtocol]) -> &mut Self {
-        self.server_config.alpn_protocols = protos
-            .iter()
-            .map(|proto| proto.as_bytes().to_vec())
-            .collect();
-
-        self
-    }
-
-    /// Same as [`Self::set_alpn_protocols`] but consuming self
-    #[must_use]
-    pub fn with_alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
-        self.set_alpn_protocols(protos);
-        self
-    }
-
-    /// Set alpn protocols to most commonly used http protocols: [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
-    pub fn set_alpn_protocols_http_auto(&mut self) -> &mut Self {
-        self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
-        self
-    }
-
-    /// Same as [`Self::set_alpn_protocols_http_auto`] but consuming self
-    #[must_use]
-    pub fn with_alpn_protocols_http_auto(mut self) -> Self {
-        self.set_alpn_protocols_http_auto();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to most commonly used http protocols:
+        /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
+        pub fn alpn_protocols_http_auto(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
+            self
+        }
     }
 
     /// Build [`TlsAcceptorData`] from the current config

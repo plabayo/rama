@@ -8,7 +8,7 @@
 use crate::{
     Layer, Service,
     cli::ForwardKind,
-    combinators::{Either3, Either7},
+    combinators::{Either, Either3, Either7},
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::ExtensionsRef,
     http::{
@@ -17,7 +17,9 @@ use crate::{
         convert::curl,
         core::h2::frame::EarlyFrameCapture,
         header::USER_AGENT,
+        headers::exotic::XClacksOverhead,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        layer::set_header::SetResponseHeaderLayer,
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer,
@@ -28,9 +30,9 @@ use crate::{
         service::web::{extract::Json, response::IntoResponse},
         ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher},
     },
+    layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
-    net::fingerprint::AkamaiH2,
-    net::fingerprint::Ja4H,
+    net::fingerprint::{AkamaiH2, Ja4H},
     net::forwarded::Forwarded,
     net::http::RequestContext,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
@@ -258,9 +260,16 @@ where
 
         let tcp_service_builder = (
             ConsumeErrLayer::trace(tracing::Level::DEBUG),
-            (self.concurrent_limit > 0)
-                .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
-            (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
+            LimitLayer::new(if self.concurrent_limit > 0 {
+                Either::A(ConcurrentPolicy::max(self.concurrent_limit))
+            } else {
+                Either::B(UnlimitedPolicy::new())
+            }),
+            if !self.timeout.is_zero() {
+                TimeoutLayer::new(self.timeout)
+            } else {
+                TimeoutLayer::never()
+            },
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -271,7 +280,7 @@ where
             Some(Version::HTTP_2) => Either3::A({
                 let mut http = HttpServer::h2(executor);
                 if self.ws_support {
-                    http.h2_mut().enable_connect_protocol();
+                    http.h2_mut().set_enable_connect_protocol();
                 }
                 http.service(http_service)
             }),
@@ -284,7 +293,7 @@ where
             None => Either3::C({
                 let mut http = HttpServer::auto(executor);
                 if self.ws_support {
-                    http.h2_mut().enable_connect_protocol();
+                    http.h2_mut().set_enable_connect_protocol();
                 }
                 http.service(http_service)
             }),
@@ -322,6 +331,7 @@ where
 
         (
             TraceLayer::new_for_http(),
+            SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),

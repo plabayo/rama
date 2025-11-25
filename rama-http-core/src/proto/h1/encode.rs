@@ -84,7 +84,7 @@ impl Encoder {
                 kind: Kind::Chunked(Some(trailers)),
                 is_last: self.is_last,
             },
-            _ => self,
+            Kind::CloseDelimited | Kind::Length(_) => self,
         }
     }
 
@@ -202,7 +202,7 @@ impl Encoder {
                 debug!("attempted to encode trailers, but the trailer header is not set");
                 None
             }
-            _ => {
+            Kind::CloseDelimited | Kind::Length(_) => {
                 debug!("attempted to encode trailers for non-chunked response");
                 None
             }

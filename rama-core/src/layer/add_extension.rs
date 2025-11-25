@@ -48,6 +48,10 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! Note though that extensions are best not used for State that you expect to be there,
+//! but instead use extensions for optional behaviour to change. Static typed state
+//! is better embedded in service structs or as state for routers.
 
 use crate::{Layer, Service, extensions::ExtensionsMut};
 use rama_utils::macros::define_inner_service_accessors;

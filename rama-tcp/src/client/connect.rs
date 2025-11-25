@@ -6,14 +6,14 @@ use rama_core::{
     rt::Executor,
 };
 use rama_dns::{DnsOverwrite, DnsResolver, GlobalDnsResolver};
+use rama_net::address::HostWithPort;
 use rama_net::{
-    address::{Authority, Domain, Host, SocketAddress},
+    address::{Domain, Host, SocketAddress},
     mode::{ConnectIpMode, DnsResolveIpMode},
     socket::SocketOptions,
 };
 use std::{
     net::{IpAddr, SocketAddr},
-    ops::Deref,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -76,7 +76,7 @@ impl TcpStreamConnector for SocketAddress {
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let bind_addr = *self;
-        let opts = match bind_addr.ip_addr() {
+        let opts = match bind_addr.ip_addr {
             IpAddr::V4(_ip) => SocketOptions {
                 address: Some(bind_addr),
                 ..SocketOptions::default_tcp()
@@ -174,24 +174,24 @@ macro_rules! impl_stream_connector_either {
 ::rama_core::combinators::impl_either!(impl_stream_connector_either);
 
 #[inline]
-/// Establish a [`TcpStream`] connection for the given [`Authority`],
+/// Establish a [`TcpStream`] connection for the given [`HostWithPort`],
 /// using the default settings and no custom state.
 ///
 /// Use [`tcp_connect`] in case you want to customise any of these settings,
 /// or use a [`rama_net::client::ConnectorService`] for even more advanced possibilities.
 pub async fn default_tcp_connect(
     extensions: &Extensions,
-    authority: Authority,
+    address: HostWithPort,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
 {
-    tcp_connect(extensions, authority, GlobalDnsResolver::default(), ()).await
+    tcp_connect(extensions, address, GlobalDnsResolver::default(), ()).await
 }
 
-/// Establish a [`TcpStream`] connection for the given [`Authority`].
+/// Establish a [`TcpStream`] connection for the given [`HostWithPort`].
 pub async fn tcp_connect<Dns, Connector>(
     extensions: &Extensions,
-    authority: Authority,
+    address: HostWithPort,
     dns: Dns,
     connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
@@ -202,7 +202,7 @@ where
     let ip_mode = extensions.get().copied().unwrap_or_default();
     let dns_mode = extensions.get().copied().unwrap_or_default();
 
-    let (host, port) = authority.into_parts();
+    let HostWithPort { host, port } = address;
     let domain = match host {
         Host::Name(domain) => domain,
         Host::Address(ip) => {
@@ -228,25 +228,20 @@ where
         }
     };
 
-    if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>()
-        && let Ok(tuple) = tcp_connect_inner(
+    if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>().cloned() {
+        tcp_connect_inner(
             extensions,
             domain.clone(),
             port,
             dns_mode,
-            dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
+            (dns_overwrite, dns),
             connector.clone(),
             ip_mode,
         )
         .await
-    {
-        return Ok(tuple);
+    } else {
+        tcp_connect_inner(extensions, domain, port, dns_mode, dns, connector, ip_mode).await
     }
-
-    //... otherwise we'll try to establish a connection,
-    // with dual-stack parallel connections...
-
-    tcp_connect_inner(extensions, domain, port, dns_mode, dns, connector, ip_mode).await
 }
 
 async fn tcp_connect_inner<Dns, Connector>(
@@ -412,7 +407,15 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
 
         let connector = connector.clone();
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = match sem.acquire().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    tracing::trace!(
+                        "[{ip_kind:?}] #{index}: abort conn; failed to acquire permit: {err}"
+                    );
+                    return;
+                }
+            };
             if connected.load(Ordering::Acquire) {
                 tracing::trace!(
                     "[{ip_kind:?}] #{index}: abort spawned attempt to {addr} (connection already established)"

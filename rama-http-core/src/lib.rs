@@ -26,7 +26,14 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    // rama-http-core has due to historic reasons a lot of (legit) unwraps...
+    // Still... to be good we should probably clean these up in near future step by step,
+    // only leaving with comment what is strictly needed
+    // deny(clippy::unwrap_used, clippy::expect_used)
+)]
 #![allow(unreachable_pub)]
 
 pub mod body;

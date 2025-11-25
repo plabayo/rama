@@ -9,16 +9,23 @@ use rama_core::{
     stream::Stream,
     telemetry::tracing,
 };
-use rama_http::{HeaderMap, io::upgrade};
+use rama_http::{
+    HeaderMap, HeaderValue,
+    header::{HOST, PROXY_AUTHORIZATION},
+    io::upgrade,
+    proto::h1::{Http1HeaderMap, IntoHttp1HeaderName, headers::original::OriginalHttp1Headers},
+};
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
 use rama_net::{
+    Protocol,
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
     transport::TryRefIntoTransportContext,
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::generate_set_and_with;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{self, Poll};
@@ -33,9 +40,10 @@ use rama_net::tls::TlsTunnel;
 /// This behaviour is optional and only triggered in case there
 /// is a [`ProxyAddress`] found in the [`Context`].
 pub struct HttpProxyConnector<S> {
-    inner: S,
-    required: bool,
-    version: Option<Version>,
+    pub(super) inner: S,
+    pub(super) required: bool,
+    pub(super) version: Option<Version>,
+    pub(super) headers: Option<Http1HeaderMap>,
 }
 
 impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
@@ -44,6 +52,7 @@ impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
             .field("inner", &self.inner)
             .field("required", &self.required)
             .field("version", &self.version)
+            .field("headers", &self.headers)
             .finish()
     }
 }
@@ -54,6 +63,7 @@ impl<S: Clone> Clone for HttpProxyConnector<S> {
             inner: self.inner.clone(),
             required: self.required,
             version: self.version,
+            headers: self.headers.clone(),
         }
     }
 }
@@ -67,35 +77,30 @@ impl<S> HttpProxyConnector<S> {
             inner,
             required,
             version: Some(Version::HTTP_11),
+            headers: None,
         }
     }
 
-    /// Set the HTTP version to use for the CONNECT request.
-    ///
-    /// By default this is set to HTTP/1.1.
-    #[must_use]
-    pub fn with_version(mut self, version: Version) -> Self {
-        self.version = Some(version);
-        self
+    generate_set_and_with! {
+        /// Set the HTTP version to use for the CONNECT request.
+        ///
+        /// By default this is set to HTTP/1.1.
+        pub fn version(mut self, version: Version) -> Self {
+            self.version = Some(version);
+            self
+        }
     }
 
-    /// Set the HTTP version to use for the CONNECT request.
-    pub fn set_version(&mut self, version: Version) -> &mut Self {
-        self.version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the CONNECT request.
-    #[must_use]
-    pub fn with_auto_version(mut self) -> Self {
-        self.version = None;
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the CONNECT request.
-    pub fn set_auto_version(&mut self) -> &mut Self {
-        self.version = None;
-        self
+    generate_set_and_with! {
+        /// Append a custom header to use for the CONNECT request.
+        pub fn custom_header(
+            mut self,
+            name: impl IntoHttp1HeaderName,
+            value: HeaderValue,
+        ) -> Self {
+            self.headers.get_or_insert_default().append(name, value);
+            self
+        }
     }
 
     /// Create a new [`HttpProxyConnector`]
@@ -129,8 +134,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let address = req.extensions().get::<ProxyAddress>().cloned();
-        if !address
+        let proxy_info = req.extensions().get::<ProxyAddress>().cloned();
+        if !proxy_info
             .as_ref()
             .and_then(|addr| addr.protocol.as_ref())
             .map(|p| p.is_http())
@@ -152,20 +157,20 @@ where
 
         #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
-        if let Some(address) = &address
-            && address
+        if let Some(proxy_info) = &proxy_info
+            && proxy_info
                 .protocol
                 .as_ref()
                 .map(|p| p.is_secure())
                 .unwrap_or_default()
         {
             tracing::trace!(
-                server.address = %transport_ctx.authority.host(),
-                server.port = %transport_ctx.authority.port(),
+                server.address = %proxy_info.address.host,
+                server.port = proxy_info.address.port,
                 "http proxy connector: preparing proxy connection for tls tunnel",
             );
             req.extensions_mut().insert(TlsTunnel {
-                server_host: address.authority.host().clone(),
+                server_host: proxy_info.address.host.clone(),
             });
         }
 
@@ -173,12 +178,12 @@ where
             self.inner
                 .connect(req)
                 .await
-                .map_err(|err| match address.as_ref() {
-                    Some(address) => OpaqueError::from_std(HttpProxyError::Transport(
+                .map_err(|err| match proxy_info.as_ref() {
+                    Some(proxy_info) => OpaqueError::from_std(HttpProxyError::Transport(
                         OpaqueError::from_boxed(err.into())
                             .context(format!(
                                 "establish connection to proxy {} (protocol: {:?})",
-                                address.authority, address.protocol,
+                                proxy_info.address, proxy_info.protocol,
                             ))
                             .into_boxed(),
                     )),
@@ -188,7 +193,7 @@ where
                 })?;
 
         // return early in case we did not use a proxy
-        let Some(address) = address else {
+        let Some(proxy_info) = proxy_info else {
             return if self.required {
                 Err("http proxy required but none is defined".into())
             } else {
@@ -207,8 +212,8 @@ where
         let EstablishedClientConnection { req, conn } = established_conn;
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "http proxy connector: connected to proxy",
         );
 
@@ -216,7 +221,7 @@ where
             .app_protocol
             .map(|p| p.is_secure())
             // TODO: re-evaluate this fallback at some point... seems pretty flawed to me
-            .unwrap_or_else(|| transport_ctx.authority.port() == 443)
+            .unwrap_or_else(|| transport_ctx.authority.port == Some(Protocol::HTTPS_DEFAULT_PORT))
         {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
@@ -227,21 +232,33 @@ where
             });
         }
 
-        let mut connector = InnerHttpProxyConnector::new(&transport_ctx.authority)?;
-        match self.version {
-            Some(version) => connector.set_version(version),
-            None => connector.set_auto_version(),
-        };
+        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
 
-        if let Some(credential) = address.credential.clone() {
+        if let Some(version) = self.version {
+            connector.set_version(version);
+        }
+
+        if let Some(credential) = proxy_info.credential.clone() {
             match credential {
                 ProxyCredential::Basic(basic) => {
-                    connector.with_typed_header(ProxyAuthorization(basic));
+                    connector.set_typed_header(ProxyAuthorization(basic));
                 }
                 ProxyCredential::Bearer(bearer) => {
-                    connector.with_typed_header(ProxyAuthorization(bearer));
+                    connector.set_typed_header(ProxyAuthorization(bearer));
                 }
             }
+        }
+
+        if let Some(headers) = self.headers.clone() {
+            let mut map = OriginalHttp1Headers::new();
+            for (name, value) in headers.into_iter() {
+                let http_name = name.header_name();
+                if http_name != PROXY_AUTHORIZATION && http_name != HOST {
+                    connector.set_header(http_name.clone(), value);
+                }
+                map.push(name);
+            }
+            connector.set_extension(map);
         }
 
         let (headers, conn) = connector
@@ -256,8 +273,8 @@ where
             .insert(HttpProxyConnectResponseHeaders::new(headers));
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "http proxy connector: connected to proxy: ready secure request",
         );
         Ok(EstablishedClientConnection { req, conn })

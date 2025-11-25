@@ -311,14 +311,21 @@ impl Opts {
             if self.http2 {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
                 let tcp = ServiceInput::new(tcp);
-                let (tx, conn) =
-                    rama::http::core::client::conn::http2::Builder::new(Executor::new())
-                        .initial_stream_window_size(self.http2_stream_window)
-                        .initial_connection_window_size(self.http2_conn_window)
-                        .adaptive_window(self.http2_adaptive_window)
-                        .handshake(tcp)
-                        .await
-                        .unwrap();
+                let (tx, conn) = {
+                    let mut builder =
+                        rama::http::core::client::conn::http2::Builder::new(Executor::new())
+                            .with_adaptive_window(self.http2_adaptive_window);
+                    if let Some(http2_stream_window) = self.http2_stream_window {
+                        builder.set_initial_stream_window_size(http2_stream_window);
+                    }
+                    if let Some(http2_conn_window) = self.http2_conn_window {
+                        builder.set_initial_connection_window_size(http2_conn_window);
+                    }
+                    builder
+                }
+                .handshake(tcp)
+                .await
+                .unwrap();
                 tokio::spawn(conn);
                 Client::Http2(tx)
             } else {
@@ -419,24 +426,28 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
         while let Ok((sock, _)) = listener.accept().await {
             let sock = ServiceInput::new(sock);
             if opts.http2 {
-                tokio::spawn(
-                    rama::http::core::server::conn::http2::Builder::new(Executor::new())
-                        .initial_stream_window_size(opts.http2_stream_window)
-                        .initial_connection_window_size(opts.http2_conn_window)
-                        .adaptive_window(opts.http2_adaptive_window)
-                        .serve_connection(
-                            sock,
-                            rama::http::core::service::RamaHttpService::new(service_fn(
-                                move |req: Request| async move {
-                                    let mut req_body = req.into_body();
-                                    while let Some(_chunk) = req_body.frame().await {}
-                                    Ok::<_, std::convert::Infallible>(Response::new(
-                                        rama::http::Body::from(body),
-                                    ))
-                                },
-                            )),
-                        ),
-                );
+                tokio::spawn({
+                    let mut builder =
+                        rama::http::core::server::conn::http2::Builder::new(Executor::new());
+                    if let Some(http2_stream_window) = opts.http2_stream_window {
+                        builder.set_initial_stream_window_size(http2_stream_window);
+                    }
+                    if let Some(http2_conn_window) = opts.http2_conn_window {
+                        builder.set_initial_connection_window_size(http2_conn_window);
+                    }
+                    builder.serve_connection(
+                        sock,
+                        rama::http::core::service::RamaHttpService::new(service_fn(
+                            move |req: Request| async move {
+                                let mut req_body = req.into_body();
+                                while let Some(_chunk) = req_body.frame().await {}
+                                Ok::<_, std::convert::Infallible>(Response::new(
+                                    rama::http::Body::from(body),
+                                ))
+                            },
+                        )),
+                    )
+                });
             } else {
                 tokio::spawn(
                     rama::http::core::server::conn::http1::Builder::new().serve_connection(

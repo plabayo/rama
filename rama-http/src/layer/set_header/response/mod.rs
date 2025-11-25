@@ -152,6 +152,7 @@
 
 use crate::{HeaderValue, Request, Response, header::HeaderName, headers::HeaderEncode};
 use rama_core::{Layer, Service};
+use rama_http_headers::TypedHeader;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -159,7 +160,8 @@ mod header;
 use header::InsertHeaderMode;
 
 pub use header::{
-    BoxMakeHeaderValueFactoryFn, BoxMakeHeaderValueFn, MakeHeaderValue, MakeHeaderValueFactory,
+    BoxMakeHeaderValueFactoryFn, BoxMakeHeaderValueFn, MakeHeaderValue, MakeHeaderValueDefault,
+    MakeHeaderValueFactory, TypedHeaderAsMaker,
 };
 
 /// Layer that applies [`SetResponseHeader`] which adds a response header.
@@ -181,34 +183,12 @@ impl<M> fmt::Debug for SetResponseHeaderLayer<M> {
     }
 }
 
-impl SetResponseHeaderLayer<HeaderValue> {
-    /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
-    ///
-    /// See [`SetResponseHeaderLayer::overriding`] for more details.
-    pub fn overriding_typed<H: HeaderEncode>(header: H) -> Self {
-        Self::overriding(H::name().clone(), header.encode_to_value())
-    }
-
-    /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
-    ///
-    /// See [`SetResponseHeaderLayer::appending`] for more details.
-    pub fn appending_typed<H: HeaderEncode>(header: H) -> Self {
-        Self::appending(H::name().clone(), header.encode_to_value())
-    }
-
-    /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
-    ///
-    /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
-    pub fn if_not_present_typed<H: HeaderEncode>(header: H) -> Self {
-        Self::if_not_present(H::name().clone(), header.encode_to_value())
-    }
-}
-
 impl<M> SetResponseHeaderLayer<M> {
     /// Create a new [`SetResponseHeaderLayer`].
     ///
     /// If a previous value exists for the same header, it is removed and replaced with the new
     /// header value.
+    #[inline(always)]
     pub fn overriding(header_name: HeaderName, make: M) -> Self {
         Self::new(header_name, make, InsertHeaderMode::Override)
     }
@@ -217,6 +197,7 @@ impl<M> SetResponseHeaderLayer<M> {
     ///
     /// The new header is always added, preserving any existing values. If previous values exist,
     /// the header will have multiple values.
+    #[inline(always)]
     pub fn appending(header_name: HeaderName, make: M) -> Self {
         Self::new(header_name, make, InsertHeaderMode::Append)
     }
@@ -224,10 +205,12 @@ impl<M> SetResponseHeaderLayer<M> {
     /// Create a new [`SetResponseHeaderLayer`].
     ///
     /// If a previous value exists for the header, the new value is not inserted.
+    #[inline(always)]
     pub fn if_not_present(header_name: HeaderName, make: M) -> Self {
         Self::new(header_name, make, InsertHeaderMode::IfNotPresent)
     }
 
+    #[inline(always)]
     fn new(header_name: HeaderName, make: M, mode: InsertHeaderMode) -> Self {
         Self {
             make,
@@ -237,10 +220,37 @@ impl<M> SetResponseHeaderLayer<M> {
     }
 }
 
+impl SetResponseHeaderLayer<Option<HeaderValue>> {
+    /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
+    ///
+    /// See [`SetResponseHeaderLayer::overriding`] for more details.
+    #[inline(always)]
+    pub fn overriding_typed<H: HeaderEncode>(header: H) -> Self {
+        Self::overriding(H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
+    ///
+    /// See [`SetResponseHeaderLayer::appending`] for more details.
+    #[inline(always)]
+    pub fn appending_typed<H: HeaderEncode>(header: H) -> Self {
+        Self::appending(H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
+    ///
+    /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
+    #[inline(always)]
+    pub fn if_not_present_typed<H: HeaderEncode>(header: H) -> Self {
+        Self::if_not_present(H::name().clone(), header.encode_to_value())
+    }
+}
+
 impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeaderLayer::overriding`] for more details.
+    #[inline(always)]
     pub fn overriding_fn(header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             header_name,
@@ -252,6 +262,7 @@ impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeaderLayer::appending`] for more details.
+    #[inline(always)]
     pub fn appending_fn(header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             header_name,
@@ -263,10 +274,99 @@ impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
+    #[inline(always)]
     pub fn if_not_present_fn(header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             header_name,
             BoxMakeHeaderValueFactoryFn::new(make_fn),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
+}
+
+impl<M> SetResponseHeaderLayer<M> {
+    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`super::MakeHeaderValue`].
+    ///
+    /// See [`SetResponseHeaderLayer::overriding`] for more details.
+    #[inline(always)]
+    pub fn overriding_default(
+        header_name: HeaderName,
+    ) -> SetResponseHeaderLayer<MakeHeaderValueDefault<M>> {
+        SetResponseHeaderLayer::new(
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`super::MakeHeaderValue`].
+    ///
+    /// See [`SetResponseHeaderLayer::appending`] for more details.
+    #[inline(always)]
+    pub fn appending_default(
+        header_name: HeaderName,
+    ) -> SetResponseHeaderLayer<MakeHeaderValueDefault<M>> {
+        SetResponseHeaderLayer::new(
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`super::MakeHeaderValue`].
+    ///
+    /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
+    #[inline(always)]
+    pub fn if_not_present_default(
+        header_name: HeaderName,
+    ) -> SetResponseHeaderLayer<MakeHeaderValueDefault<M>> {
+        SetResponseHeaderLayer::new(
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
+}
+
+impl<M: TypedHeader> SetResponseHeaderLayer<M> {
+    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetResponseHeaderLayer::overriding`] for more details.
+    #[inline(always)]
+    #[must_use]
+    pub fn overriding_default_typed()
+    -> SetResponseHeaderLayer<MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetResponseHeaderLayer::new(
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetResponseHeaderLayer::appending`] for more details.
+    #[inline(always)]
+    #[must_use]
+    pub fn appending_default_typed()
+    -> SetResponseHeaderLayer<MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetResponseHeaderLayer::new(
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
+    #[inline(always)]
+    #[must_use]
+    pub fn if_not_present_default_typed()
+    -> SetResponseHeaderLayer<MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetResponseHeaderLayer::new(
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
             InsertHeaderMode::IfNotPresent,
         )
     }
@@ -319,26 +419,26 @@ pub struct SetResponseHeader<S, M> {
     mode: InsertHeaderMode,
 }
 
-impl<S> SetResponseHeader<S, HeaderValue> {
+impl<S, H: HeaderEncode> SetResponseHeader<S, TypedHeaderAsMaker<H>> {
     /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeader::overriding`] for more details.
-    pub fn overriding_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::overriding(inner, H::name().clone(), header.encode_to_value())
+    pub fn overriding_typed(inner: S, header: H) -> Self {
+        Self::overriding(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 
     /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeader::appending`] for more details.
-    pub fn appending_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::appending(inner, H::name().clone(), header.encode_to_value())
+    pub fn appending_typed(inner: S, header: H) -> Self {
+        Self::appending(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 
     /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeader::if_not_present`] for more details.
-    pub fn if_not_present_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::if_not_present(inner, H::name().clone(), header.encode_to_value())
+    pub fn if_not_present_typed(inner: S, header: H) -> Self {
+        Self::if_not_present(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 }
 
@@ -347,6 +447,7 @@ impl<S, M> SetResponseHeader<S, M> {
     ///
     /// If a previous value exists for the same header, it is removed and replaced with the new
     /// header value.
+    #[inline(always)]
     pub fn overriding(inner: S, header_name: HeaderName, make: M) -> Self {
         Self::new(inner, header_name, make, InsertHeaderMode::Override)
     }
@@ -355,6 +456,7 @@ impl<S, M> SetResponseHeader<S, M> {
     ///
     /// The new header is always added, preserving any existing values. If previous values exist,
     /// the header will have multiple values.
+    #[inline(always)]
     pub fn appending(inner: S, header_name: HeaderName, make: M) -> Self {
         Self::new(inner, header_name, make, InsertHeaderMode::Append)
     }
@@ -362,6 +464,7 @@ impl<S, M> SetResponseHeader<S, M> {
     /// Create a new [`SetResponseHeader`].
     ///
     /// If a previous value exists for the header, the new value is not inserted.
+    #[inline(always)]
     pub fn if_not_present(inner: S, header_name: HeaderName, make: M) -> Self {
         Self::new(inner, header_name, make, InsertHeaderMode::IfNotPresent)
     }
@@ -382,6 +485,7 @@ impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeader::overriding`] for more details.
+    #[inline(always)]
     pub fn overriding_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             inner,
@@ -394,6 +498,7 @@ impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeader::appending`] for more details.
+    #[inline(always)]
     pub fn appending_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             inner,
@@ -406,11 +511,109 @@ impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeader::if_not_present`] for more details.
+    #[inline(always)]
     pub fn if_not_present_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             inner,
             header_name,
             BoxMakeHeaderValueFactoryFn::new(make_fn),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
+}
+
+impl<S, M> SetResponseHeader<S, M> {
+    /// Create a new [`SetResponseHeader`] from a [`Default`] [`super::MakeHeaderValue`].
+    ///
+    /// See [`SetResponseHeader::overriding`] for more details.
+    #[inline(always)]
+    pub fn overriding_default(
+        inner: S,
+        header_name: HeaderName,
+    ) -> SetResponseHeader<S, MakeHeaderValueDefault<M>> {
+        SetResponseHeader::new(
+            inner,
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetResponseHeader`] from a [`Default`] [`super::MakeHeaderValue`].
+    ///
+    /// See [`SetResponseHeader::appending`] for more details.
+    #[inline(always)]
+    pub fn appending_default(
+        inner: S,
+        header_name: HeaderName,
+    ) -> SetResponseHeader<S, MakeHeaderValueDefault<M>> {
+        SetResponseHeader::new(
+            inner,
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetResponseHeader`] from a [`Default`] [`super::MakeHeaderValue`].
+    ///
+    /// See [`SetResponseHeader::if_not_present`] for more details.
+    #[inline(always)]
+    pub fn if_not_present_default(
+        inner: S,
+        header_name: HeaderName,
+    ) -> SetResponseHeader<S, MakeHeaderValueDefault<M>> {
+        SetResponseHeader::new(
+            inner,
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
+}
+
+impl<S, M: TypedHeader> SetResponseHeader<S, M> {
+    /// Create a new [`SetResponseHeader`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetResponseHeader::overriding`] for more details.
+    #[inline(always)]
+    pub fn overriding_default_typed(
+        inner: S,
+    ) -> SetResponseHeader<S, MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetResponseHeader::new(
+            inner,
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetResponseHeader`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetResponseHeader::appending`] for more details.
+    #[inline(always)]
+    pub fn appending_default_typed(
+        inner: S,
+    ) -> SetResponseHeader<S, MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetResponseHeader::new(
+            inner,
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetResponseHeader`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetResponseHeader::if_not_present`] for more details.
+    #[inline(always)]
+    pub fn if_not_present_default_typed(
+        inner: S,
+    ) -> SetResponseHeader<S, MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetResponseHeader::new(
+            inner,
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
             InsertHeaderMode::IfNotPresent,
         )
     }

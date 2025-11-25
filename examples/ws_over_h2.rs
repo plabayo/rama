@@ -27,20 +27,25 @@ use rama::{
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::ConsumeErrLayer,
-    net::tls::ApplicationProtocol,
-    net::tls::server::{SelfSignedData, ServerAuth, ServerConfig},
+    net::tls::{
+        ApplicationProtocol,
+        server::{SelfSignedData, ServerAuth, ServerConfig},
+    },
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{Level, info, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self, Level, info,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -59,9 +64,9 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let mut h2 = HttpServer::h2(Executor::graceful(guard.clone()));
-        h2.h2_mut().enable_connect_protocol(); // required for WS sockets
+        h2.h2_mut().set_enable_connect_protocol(); // required for WS sockets
         let server = h2.service(
-            Router::new().get("/", Html(INDEX)).connect(
+            Router::new().with_get("/", Html(INDEX)).with_connect(
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG)
                     .into_layer(WebSocketAcceptor::new().into_echo_service()),

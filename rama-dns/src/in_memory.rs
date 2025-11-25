@@ -2,11 +2,11 @@ use crate::DnsResolver;
 use ahash::{HashMap, HashMapExt as _};
 use rama_core::error::{ErrorContext as _, OpaqueError};
 use rama_net::address::{AsDomainRef, Domain, DomainTrie};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 
 use std::{
+    borrow::Cow,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    ops::Deref,
     sync::Arc,
 };
 
@@ -16,18 +16,39 @@ use std::{
 ///
 /// This is supported by the official `rama`
 /// consumers such as [`TcpConnector`].
-pub struct DnsOverwrite(Arc<InMemoryDns>);
+pub struct DnsOverwrite(DnsOverwriteKind);
+
+#[derive(Debug, Clone)]
+enum DnsOverwriteKind {
+    Trie(Arc<InMemoryDns>),
+    Ips(Arc<Vec<IpAddr>>),
+}
 
 impl<'de> Deserialize<'de> for DnsOverwrite {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let map = HashMap::<Domain, Vec<IpAddr>>::deserialize(deserializer)?;
-        Ok(Self(Arc::new(InMemoryDns {
-            trie: map.into_iter().collect(),
-            ..Default::default()
-        })))
+        let mut map = <HashMap<Cow<'de, str>, Vec<IpAddr>>>::deserialize(deserializer)?;
+
+        Ok(Self(
+            if map.len() == 1
+                && let Some(ip_addrs) = map.remove("*")
+            {
+                DnsOverwriteKind::Ips(Arc::new(ip_addrs))
+            } else {
+                let result: Result<DomainTrie<Vec<IpAddr>>, OpaqueError> = map
+                    .into_iter()
+                    .map(|(s, ips)| s.parse().map(|d: Domain| (d, ips)))
+                    .collect();
+
+                let trie = result.map_err(de::Error::custom)?;
+                DnsOverwriteKind::Trie(Arc::new(InMemoryDns {
+                    trie,
+                    ..Default::default()
+                }))
+            },
+        ))
     }
 }
 
@@ -36,31 +57,32 @@ impl Serialize for DnsOverwrite {
     where
         S: serde::Serializer,
     {
-        let mut map = HashMap::new();
-        for (domain, value) in self.trie.iter() {
-            map.insert(domain, value);
+        match &self.0 {
+            DnsOverwriteKind::Trie(in_memory_dns) => {
+                let mut map = HashMap::new();
+                for (domain, value) in in_memory_dns.trie.iter() {
+                    map.insert(domain, value);
+                }
+                map.serialize(serializer)
+            }
+            DnsOverwriteKind::Ips(ip_addrs) => {
+                let mut map = HashMap::new();
+                map.insert("*", ip_addrs.as_ref());
+                map.serialize(serializer)
+            }
         }
-        map.serialize(serializer)
     }
 }
 
 impl From<InMemoryDns> for DnsOverwrite {
     fn from(value: InMemoryDns) -> Self {
-        Self(Arc::new(value))
+        Self(DnsOverwriteKind::Trie(Arc::new(value)))
     }
 }
 
-impl AsRef<InMemoryDns> for DnsOverwrite {
-    fn as_ref(&self) -> &InMemoryDns {
-        self.0.as_ref()
-    }
-}
-
-impl Deref for DnsOverwrite {
-    type Target = InMemoryDns;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref()
+impl From<Vec<IpAddr>> for DnsOverwrite {
+    fn from(value: Vec<IpAddr>) -> Self {
+        Self(DnsOverwriteKind::Ips(Arc::new(value)))
     }
 }
 
@@ -135,6 +157,51 @@ impl InMemoryDns {
     }
 }
 
+impl DnsResolver for DnsOverwrite {
+    type Error = OpaqueError;
+
+    async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
+        match &self.0 {
+            DnsOverwriteKind::Trie(in_memory_dns) => in_memory_dns.txt_lookup(domain).await,
+            DnsOverwriteKind::Ips(_) => Err(OpaqueError::from_display(
+                "no txt record in ip-hardcoded dns overwrite",
+            )),
+        }
+    }
+
+    async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
+        match &self.0 {
+            DnsOverwriteKind::Trie(in_memory_dns) => in_memory_dns.ipv4_lookup(domain).await,
+            DnsOverwriteKind::Ips(ips) => {
+                let ips: Vec<_> = ips
+                    .iter()
+                    .filter_map(|ip| match ip {
+                        IpAddr::V4(ip) => Some(*ip),
+                        IpAddr::V6(_) => None,
+                    })
+                    .collect();
+                Ok(ips)
+            }
+        }
+    }
+
+    async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
+        match &self.0 {
+            DnsOverwriteKind::Trie(in_memory_dns) => in_memory_dns.ipv6_lookup(domain).await,
+            DnsOverwriteKind::Ips(ips) => {
+                let ips: Vec<_> = ips
+                    .iter()
+                    .filter_map(|ip| match ip {
+                        IpAddr::V6(ip) => Some(*ip),
+                        IpAddr::V4(_) => None,
+                    })
+                    .collect();
+                Ok(ips)
+            }
+        }
+    }
+}
+
 impl DnsResolver for InMemoryDns {
     type Error = OpaqueError;
 
@@ -148,15 +215,13 @@ impl DnsResolver for InMemoryDns {
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         self.trie
             .match_exact(domain)
-            .and_then(|ips| {
-                let ips: Vec<_> = ips
-                    .iter()
+            .map(|ips| {
+                ips.iter()
                     .filter_map(|ip| match ip {
                         IpAddr::V4(ip) => Some(*ip),
                         IpAddr::V6(_) => None,
                     })
-                    .collect();
-                (!ips.is_empty()).then_some(ips)
+                    .collect()
             })
             .ok_or_else(|| OpaqueError::from_display("no A records found for domain in memory"))
     }
@@ -164,15 +229,13 @@ impl DnsResolver for InMemoryDns {
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
         self.trie
             .match_exact(domain)
-            .and_then(|ips| {
-                let ips: Vec<_> = ips
-                    .iter()
+            .map(|ips| {
+                ips.iter()
                     .filter_map(|ip| match ip {
                         IpAddr::V4(_) => None,
                         IpAddr::V6(ip) => Some(*ip),
                     })
-                    .collect();
-                (!ips.is_empty()).then_some(ips)
+                    .collect()
             })
             .ok_or_else(|| OpaqueError::from_display("no AAAA records found for domain in memory"))
     }
@@ -190,7 +253,7 @@ mod tests {
             serde_html_form::from_str("example.com=127.0.0.1").unwrap();
         assert_eq!(
             dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
+                .ipv4_lookup(Domain::example())
                 .await
                 .unwrap()
                 .into_iter()
@@ -200,9 +263,33 @@ mod tests {
         );
         assert!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
                 .await
-                .is_err()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dns_overwrite_deserialize_json() {
+        let dns_overwrite: DnsOverwrite =
+            serde_json::from_str(r##"{"example.com":["127.0.0.1"]}"##).unwrap();
+        assert_eq!(
+            dns_overwrite
+                .ipv4_lookup(Domain::example())
+                .await
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap(),
+            Ipv4Addr::LOCALHOST
+        );
+        assert!(
+            dns_overwrite
+                .ipv6_lookup(Domain::example())
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -211,13 +298,46 @@ mod tests {
         let dns_overwrite: DnsOverwrite = serde_html_form::from_str("example.com=::1").unwrap();
         assert!(
             dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
+                .ipv4_lookup(Domain::example())
                 .await
-                .is_err()
+                .unwrap()
+                .is_empty()
         );
         assert_eq!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
+                .await
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap(),
+            Ipv6Addr::LOCALHOST
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dns_overwrite_deserialize_ipv6_for_any() {
+        let dns_overwrite: DnsOverwrite = serde_html_form::from_str("*=::1").unwrap();
+        assert!(
+            dns_overwrite
+                .ipv4_lookup(Domain::example())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            dns_overwrite
+                .ipv6_lookup(Domain::example())
+                .await
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap(),
+            Ipv6Addr::LOCALHOST
+        );
+        assert_eq!(
+            dns_overwrite
+                .ipv6_lookup(Domain::from_static("plabayo.tech"))
                 .await
                 .unwrap()
                 .into_iter()
@@ -232,7 +352,7 @@ mod tests {
         let dns_overwrite: DnsOverwrite =
             serde_html_form::from_str("example.com=127.0.0.1&example.com=127.0.0.2").unwrap();
         let mut ipv4_it = dns_overwrite
-            .ipv4_lookup(Domain::from_static("example.com"))
+            .ipv4_lookup(Domain::example())
             .await
             .unwrap()
             .into_iter();
@@ -241,9 +361,10 @@ mod tests {
         assert!(ipv4_it.next().is_none());
         assert!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
                 .await
-                .is_err()
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -253,7 +374,7 @@ mod tests {
             serde_html_form::from_str("example.com=127.0.0.1&example.com=::1").unwrap();
         assert_eq!(
             dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
+                .ipv4_lookup(Domain::example())
                 .await
                 .unwrap()
                 .into_iter()
@@ -263,7 +384,7 @@ mod tests {
         );
         assert_eq!(
             dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
+                .ipv6_lookup(Domain::example())
                 .await
                 .unwrap()
                 .into_iter()
@@ -294,17 +415,7 @@ mod tests {
     #[tokio::test]
     async fn test_dns_overwrite_deserialize_empty() {
         let dns_overwrite: DnsOverwrite = serde_html_form::from_str("").unwrap();
-        assert!(
-            dns_overwrite
-                .ipv4_lookup(Domain::from_static("example.com"))
-                .await
-                .is_err()
-        );
-        assert!(
-            dns_overwrite
-                .ipv6_lookup(Domain::from_static("example.com"))
-                .await
-                .is_err()
-        );
+        assert!(dns_overwrite.ipv4_lookup(Domain::example()).await.is_err());
+        assert!(dns_overwrite.ipv6_lookup(Domain::example()).await.is_err());
     }
 }

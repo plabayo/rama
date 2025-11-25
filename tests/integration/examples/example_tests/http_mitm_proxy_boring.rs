@@ -35,7 +35,7 @@ async fn test_http_mitm_proxy() {
                         ConsumeErrLayer::trace(Level::DEBUG)
                             .into_layer(WebSocketAcceptor::new().into_echo_service()),
                     )
-                    .get("/{*any}", async |req: Request| {
+                    .with_get("/{*any}", async |req: Request| {
                         Json(json!({
                             "method": req.method().as_str(),
                             "path": req.uri().path(),
@@ -52,14 +52,14 @@ async fn test_http_mitm_proxy() {
     })
     .expect("self signed acceptor data")
     .with_alpn_protocols_http_auto()
-    .with_env_key_logger()
+    .try_with_env_key_logger()
     .expect("with env key logger")
     .build();
 
     let executor = Executor::default();
 
     let mut http_tp = HttpServer::auto(executor);
-    http_tp.h2_mut().enable_connect_protocol();
+    http_tp.h2_mut().set_enable_connect_protocol();
     let tcp_service = TlsAcceptorLayer::new(data).into_layer(
         http_tp.service(
             Router::new()
@@ -72,7 +72,7 @@ async fn test_http_mitm_proxy() {
                             .into_echo_service(),
                     ),
                 )
-                .get("/{*any}", async |req: Request| {
+                .with_get("/{*any}", async |req: Request| {
                     Json(json!({
                         "method": req.method().as_str(),
                         "path": req.uri().path(),

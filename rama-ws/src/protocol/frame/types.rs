@@ -159,7 +159,7 @@ impl FrameHeader {
         let rsv2 = first & 0x20 != 0;
         let rsv3 = first & 0x10 != 0;
 
-        let opcode = OpCode::from(first & 0x0F);
+        let opcode = OpCode::try_from(first & 0x0F)?;
         trace!("Opcode: {:?}", opcode);
 
         let masked = second & 0x80 != 0;
@@ -199,7 +199,7 @@ impl FrameHeader {
             OpCode::Control(OpCodeControl::Reserved(_)) | OpCode::Data(OpCodeData::Reserved(_)) => {
                 return Err(ProtocolError::InvalidOpcode(first & 0x0F));
             }
-            _ => (),
+            OpCode::Control(_) | OpCode::Data(_) => (),
         }
 
         let hdr = Self {

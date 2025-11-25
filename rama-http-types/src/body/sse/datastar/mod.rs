@@ -28,7 +28,9 @@ pub use execute_script::ExecuteScript;
 mod patch_signals;
 pub use patch_signals::{PatchSignals, PatchSignalsReader};
 
-use crate::sse::{Event, EventDataLineReader, EventDataMultiLineReader, EventDataRead};
+use crate::sse::{
+    Event, EventBuildError, EventDataLineReader, EventDataMultiLineReader, EventDataRead,
+};
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use std::marker::PhantomData;
@@ -100,12 +102,11 @@ impl<T> EventData<T> {
     }
 
     /// Consume `self` as an [`Event`].
-    pub fn into_sse_event(self) -> Event<Self> {
+    pub fn try_into_sse_event(self) -> Result<Event<Self>, EventBuildError> {
         let event_type = self.event_type();
-        Event::new()
-            .try_with_event(event_type.as_smol_str())
-            .unwrap()
-            .with_data(self)
+        Ok(Event::new()
+            .try_with_event(event_type.as_smol_str())?
+            .with_data(self))
     }
 }
 

@@ -33,13 +33,13 @@ use rama::{
     error::{BoxError, OpaqueError},
     extensions::ExtensionsRef,
     http::{
-        InfiniteReader, Request, StatusCode,
+        InfiniteReader,
         headers::ContentType,
         layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{
             Router,
-            extract::{Query, State},
+            extract::{Extension, Query, State},
             response::{Headers, Html, IntoResponse},
         },
     },
@@ -47,22 +47,23 @@ use rama::{
     net::{address::SocketAddress, stream::SocketInfo},
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     utils::macros::impl_deref,
 };
 
-use ahash::HashSet;
 /// Everything else we need is provided by the standard library, community crates or tokio.
+use ahash::HashSet;
 use serde::Deserialize;
 use std::{net::IpAddr, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -75,11 +76,10 @@ async fn main() {
 
     let state = AppState::default();
 
-    let router = Router::new()
-        .with_state(state.clone())
-        .get("/", Html(r##"<h1>Hello, Human!?</h1>"##.to_owned()))
-        .get("/robots.txt", ROBOTS_TXT)
-        .get("/internal/clients.csv", infinite_resource);
+    let router = Router::new_with_state(state.clone())
+        .with_get("/", Html(r##"<h1>Hello, Human!?</h1>"##.to_owned()))
+        .with_get("/robots.txt", ROBOTS_TXT)
+        .with_get("/internal/clients.csv", infinite_resource);
 
     let exec = Executor::graceful(graceful.guard());
     let app = HttpServer::auto(exec).service(
@@ -134,17 +134,15 @@ struct InfiniteResourceParameters {
 async fn infinite_resource(
     // We can access global state like this, the easy option for fast prototyping
     State(_global_state): State<AppState>,
+    // request will fail with status 500 in case extension is not available,
+    // use Option<Extension<_>> in case you deem it an optional value
+    Extension(socket_info): Extension<SocketInfo>,
     // But for production usage we should only use the specific state this handler needs by implementing:
     // `FromRef<AppState> for BlockList`. This is considered better practise because
     // handlers only take what they need and never need to know what to GlobalState is.
     State(block_list): State<BlockList>,
     Query(parameters): Query<InfiniteResourceParameters>,
-    request: Request,
 ) -> impl IntoResponse {
-    let Some(socket_info) = request.extensions().get::<SocketInfo>() else {
-        tracing::error!("failed to fetch IP from SocketInfo; fail request with 500");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
     let ip_addr = socket_info.peer_addr().ip();
     let mut block_list = block_list.lock().await;
     block_list.insert(ip_addr);

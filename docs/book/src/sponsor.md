@@ -40,7 +40,7 @@ Donations can also be paid in the following cryptocurrency:
 Sponsors help us continue to maintain and improve `rama`, as well as other
 Free and Open Source (FOSS) technology. It also helps us to create
 educational content such as <https://github.com/plabayo/learn-rust-101>,
-and other open source libraries such as <https://github.com/plabayo/tokio-graceful> and <https://venndb.rs>.
+and other open source libraries such as <https://github.com/plabayo/tokio-graceful> and <https://venndb.plabayo.tech>.
 
 Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise 🛍️ at <https://plabayo.threadless.com/>.
 

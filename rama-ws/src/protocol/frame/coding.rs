@@ -4,6 +4,8 @@ use std::{
     convert::{From, Into},
     fmt,
 };
+
+use crate::ProtocolError;
 /// WebSocket message opcode as in RFC 6455.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OpCode {
@@ -91,13 +93,15 @@ impl From<OpCode> for u8 {
     }
 }
 
-impl From<u8> for OpCode {
-    fn from(byte: u8) -> Self {
+impl TryFrom<u8> for OpCode {
+    type Error = ProtocolError;
+
+    fn try_from(byte: u8) -> Result<Self, Self::Error> {
         use self::{
             OpCodeControl::{Close, Ping, Pong},
             OpCodeData::{Binary, Continue, Text},
         };
-        match byte {
+        Ok(match byte {
             0 => Self::Data(Continue),
             1 => Self::Data(Text),
             2 => Self::Data(Binary),
@@ -106,8 +110,8 @@ impl From<u8> for OpCode {
             9 => Self::Control(Ping),
             10 => Self::Control(Pong),
             i @ 11..=15 => Self::Control(self::OpCodeControl::Reserved(i)),
-            _ => panic!("Bug: OpCode out of range"),
-        }
+            _ => return Err(ProtocolError::InvalidOpcode(byte)),
+        })
     }
 }
 
@@ -266,7 +270,10 @@ mod tests {
     #[test]
     fn opcode_from_u8() {
         let byte = 2u8;
-        assert_eq!(OpCode::from(byte), OpCode::Data(OpCodeData::Binary));
+        assert_eq!(
+            OpCode::try_from(byte).unwrap(),
+            OpCode::Data(OpCodeData::Binary)
+        );
     }
 
     #[test]

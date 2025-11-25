@@ -60,7 +60,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::rustls::{
         client::TlsConnectorDataBuilder,
         server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
@@ -68,7 +72,6 @@ use rama::{
 };
 
 use std::{convert::Infallible, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone)]
 struct State {
@@ -77,7 +80,7 @@ struct State {
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -140,11 +143,11 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
+    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
         Ok(authority) => {
             tracing::info!(
-                server.address = %authority.host(),
-                server.port = %authority.port(),
+                server.address = %authority.host,
+                server.port = authority.port,
                 "accept CONNECT (lazy): insert proxy target into context",
             );
             req.extensions_mut().insert(ProxyTarget(authority));
@@ -216,7 +219,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // such as upstream proxies or other configurations
     let tls_config = TlsConnectorDataBuilder::new()
         .with_alpn_protocols_http_auto()
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("with env keylogger")
         .with_no_cert_verifier()
         .build();
@@ -251,7 +254,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     })
     .context("self signed builder")?
     .with_alpn_protocols_http_auto()
-    .with_env_key_logger()
+    .try_with_env_key_logger()
     .context("with env key logger")?
     .build();
 

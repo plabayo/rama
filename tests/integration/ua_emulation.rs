@@ -346,7 +346,7 @@ async fn test_ua_emulation() {
 
 #[tokio::test]
 async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
-    let ua_db = UserAgentDatabase::embedded();
+    let ua_db = UserAgentDatabase::try_embedded().unwrap();
     assert!(!ua_db.is_empty(), "no profiles found");
 
     let counter = Arc::new(AtomicUsize::new(0));

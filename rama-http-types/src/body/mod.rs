@@ -93,6 +93,7 @@ where
     try_downcast(body).unwrap_or_else(|body| body.map_err(Into::into).boxed())
 }
 
+#[allow(clippy::unwrap_used)]
 pub(crate) fn try_downcast<T, K>(k: K) -> Result<T, K>
 where
     T: 'static,

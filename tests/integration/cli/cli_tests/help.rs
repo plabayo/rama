@@ -17,7 +17,7 @@ async fn test_help() {
 async fn test_help_ip() {
     utils::init_tracing();
 
-    let lines = utils::RamaService::run(vec!["help", "ip"]).unwrap();
+    let lines = utils::RamaService::run(vec!["help", "serve", "ip"]).unwrap();
     assert!(lines.contains("rama ip service"));
     assert!(lines.contains("Usage:"));
     assert!(lines.contains("Options:"));
@@ -28,7 +28,7 @@ async fn test_help_ip() {
 async fn test_help_echo() {
     utils::init_tracing();
 
-    let lines = utils::RamaService::run(vec!["help", "echo"]).unwrap();
+    let lines = utils::RamaService::run(vec!["help", "serve", "echo"]).unwrap();
     assert!(lines.contains("rama echo service"));
     assert!(lines.contains("Usage:"));
     assert!(lines.contains("Options:"));
@@ -39,10 +39,9 @@ async fn test_help_echo() {
 async fn test_help_http() {
     utils::init_tracing();
 
-    let lines = utils::RamaService::run(vec!["help", "http"]).unwrap();
-    assert!(lines.contains("rama http client"));
+    let lines = utils::RamaService::run(vec!["help", "send"]).unwrap();
+    assert!(lines.contains("send (client) request"));
     assert!(lines.contains("Usage:"));
     assert!(lines.contains("Arguments:"));
-    assert!(lines.contains("rama http :3000"));
     assert!(lines.contains("Options:"));
 }

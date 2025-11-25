@@ -32,17 +32,23 @@ use rama::{
     http::{
         layer::trace::TraceLayer,
         server::HttpServer,
-        service::web::WebService,
-        service::web::response::{Html, Redirect},
+        service::web::{
+            WebService,
+            response::{Html, Redirect},
+        },
     },
     layer::TraceErrLayer,
-    net::address::Authority,
+    net::address::SocketAddress,
     rt::Executor,
     tcp::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::rustls::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer, self_signed_client_auth},
         dep::rustls::{
@@ -54,16 +60,16 @@ use rama::{
 };
 
 // everything else is provided by the standard library, community crates or tokio
+
 use std::sync::Arc;
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-const SERVER_AUTHORITY: Authority = Authority::local_ipv4(63014);
-const TUNNEL_AUTHORITY: Authority = Authority::local_ipv4(62014);
+const SERVER_AUTHORITY: SocketAddress = SocketAddress::local_ipv4(63014);
+const TUNNEL_AUTHORITY: SocketAddress = SocketAddress::local_ipv4(62014);
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -83,8 +89,8 @@ async fn main() {
                 .expect("connector with client auth")
                 .with_no_cert_verifier()
                 .with_alpn_protocols_http_auto()
-                .with_server_name(SERVER_AUTHORITY.into_host())
-                .with_env_key_logger()
+                .with_server_name(SERVER_AUTHORITY.ip_addr.into())
+                .try_with_env_key_logger()
                 .expect("connector with env keylogger")
                 .build();
 
@@ -112,7 +118,7 @@ async fn main() {
         // Or convert [`rustls::ServerConfig`] to [`TlsAcceptorDataBuilder`] to make use of some of the utils rama provides
         let tls_server_data = TlsAcceptorDataBuilder::from(server_config)
             .with_alpn_protocols_http_auto()
-            .with_env_key_logger()
+            .try_with_env_key_logger()
             .expect("acceptor with env keylogger")
             .build();
 
@@ -127,15 +133,15 @@ async fn main() {
             HttpServer::auto(executor).service(
                 TraceLayer::new_for_http().into_layer(
                     WebService::default()
-                        .get("/", Redirect::temporary("/hello"))
-                        .get("/hello", Html("<h1>Hello, authorized client!</h1>")),
+                        .with_get("/", Redirect::temporary("/hello"))
+                        .with_get("/hello", Html("<h1>Hello, authorized client!</h1>")),
                 ),
             ),
         );
 
         tracing::info!(
-            server.address = %SERVER_AUTHORITY.host(),
-            server.port = %SERVER_AUTHORITY.port(),
+            server.address = %SERVER_AUTHORITY.ip_addr,
+            server.port = %SERVER_AUTHORITY.port,
             "start mtls (https) web service",
         );
         TcpListener::bind(SERVER_AUTHORITY.to_string())
@@ -150,19 +156,19 @@ async fn main() {
     // create mtls tunnel proxy
     shutdown.spawn_task_fn(async |guard| {
         tracing::info!(
-            server.address = %TUNNEL_AUTHORITY.host(),
-            server.port = %TUNNEL_AUTHORITY.port(),
+            server.address = %TUNNEL_AUTHORITY.ip_addr,
+            server.port = %TUNNEL_AUTHORITY.port,
             "start mTLS TCP Tunnel Proxy",
         );
 
-        let forwarder = Forwarder::new(SERVER_AUTHORITY).connector(
-            TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.into_host()))
+        let forwarder = Forwarder::new(SERVER_AUTHORITY).with_connector(
+            TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
                 .with_connector_data(tls_client_data)
                 .into_layer(TcpConnector::new()),
         );
 
         // L4 Proxy Service
-        TcpListener::bind(TUNNEL_AUTHORITY.to_string())
+        TcpListener::bind(TUNNEL_AUTHORITY)
             .await
             .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
             .serve_graceful(guard, TraceErrLayer::new().into_layer(forwarder))

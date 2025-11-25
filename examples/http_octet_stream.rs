@@ -21,20 +21,18 @@
 use rama::http::layer::trace::TraceLayer;
 use rama::http::service::web::WebService;
 use rama::http::service::web::response::{IntoResponse, OctetStream};
-use rama::rt::Executor;
 use rama::stream::io::ReaderStream;
 use rama::{Layer, http::server::HttpServer};
 
 #[tokio::main]
 async fn main() {
-    let exec = Executor::default();
-    HttpServer::auto(exec)
+    HttpServer::default()
         .listen(
             "127.0.0.1:62003",
             TraceLayer::new_for_http().layer(
                 WebService::default()
-                    .get("/data", serve_binary_data)
-                    .get("/download", serve_download),
+                    .with_get("/data", serve_binary_data)
+                    .with_get("/download", serve_download),
             ),
         )
         .await

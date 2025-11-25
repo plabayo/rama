@@ -23,21 +23,25 @@
 mod unix_example {
     use rama::{
         Layer,
+        combinators::Either,
         error::BoxError,
         extensions::ExtensionsRef,
         graceful::ShutdownGuard,
         layer::AddExtensionLayer,
         service::service_fn,
         stream::Stream,
-        telemetry::tracing::{self, level_filters::LevelFilter},
+        telemetry::tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
         unix::server::UnixListener,
     };
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     pub(super) async fn run() {
-        tracing_subscriber::registry()
+        tracing::subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()
@@ -60,14 +64,18 @@ mod unix_example {
                 mut stream: impl Stream + Unpin + ExtensionsRef,
             ) -> Result<(), BoxError> {
                 let mut buf = [0u8; 1024];
-                // TODO instead of having to do this manually, make this a lot easier by having this
-                // inserted in extensions automatically (part of executor/graceful server)
-                // Should be done when https://github.com/plabayo/rama/issues/462 is finished
-                let guard = stream.extensions().get::<ShutdownGuard>().unwrap().clone();
+
+                let mut cancelled = Box::pin(
+                    stream
+                        .extensions()
+                        .get::<ShutdownGuard>()
+                        .map(|guard| Either::A(guard.clone_weak().into_cancelled()))
+                        .unwrap_or_else(|| Either::B(std::future::pending())),
+                );
 
                 loop {
                     let n = tokio::select! {
-                        _ = guard.cancelled() => {
+                        _ = cancelled.as_mut() => {
                             tracing::info!("stop read loop, shutdown complete");
                             return Ok(());
                         }

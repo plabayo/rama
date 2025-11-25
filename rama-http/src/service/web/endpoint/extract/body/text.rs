@@ -71,7 +71,7 @@ mod test {
 
     #[tokio::test]
     async fn test_text() {
-        let service = WebService::default().post("/", async |Text(body): Text| {
+        let service = WebService::default().with_post("/", async |Text(body): Text| {
             assert_eq!(body, "test");
         });
 
@@ -86,7 +86,7 @@ mod test {
 
     #[tokio::test]
     async fn test_text_missing_content_type() {
-        let service = WebService::default().post("/", async |Text(_): Text| StatusCode::OK);
+        let service = WebService::default().with_post("/", async |Text(_): Text| StatusCode::OK);
 
         let req = Request::builder()
             .method(Method::POST)
@@ -98,7 +98,7 @@ mod test {
 
     #[tokio::test]
     async fn test_text_incorrect_content_type() {
-        let service = WebService::default().post("/", async |Text(_): Text| StatusCode::OK);
+        let service = WebService::default().with_post("/", async |Text(_): Text| StatusCode::OK);
 
         let req = Request::builder()
             .method(Method::POST)
@@ -111,7 +111,7 @@ mod test {
 
     #[tokio::test]
     async fn test_text_invalid_utf8() {
-        let service = WebService::default().post("/", async |Text(_): Text| StatusCode::OK);
+        let service = WebService::default().with_post("/", async |Text(_): Text| StatusCode::OK);
 
         let req = Request::builder()
             .method(Method::POST)

@@ -84,21 +84,33 @@ pub struct Pseudo {
 
 impl PartialEq for Pseudo {
     fn eq(&self, other: &Self) -> bool {
-        (
-            &self.method,
-            &self.scheme,
-            &self.authority,
-            &self.path,
-            &self.protocol,
-            &self.status,
-        ) == (
-            &other.method,
-            &other.scheme,
-            &other.authority,
-            &other.path,
-            &other.protocol,
-            &other.status,
-        )
+        let Self {
+            method,
+            scheme,
+            authority,
+            path,
+            protocol,
+            status,
+            order: _,
+        } = self;
+        let Self {
+            method: other_method,
+            scheme: other_scheme,
+            authority: other_authority,
+            path: other_path,
+            protocol: other_protocol,
+            status: other_status,
+            order: _,
+        } = other;
+        (method, scheme, authority, path, protocol, status)
+            == (
+                other_method,
+                other_scheme,
+                other_authority,
+                other_path,
+                other_protocol,
+                other_status,
+            )
     }
 }
 
@@ -137,17 +149,27 @@ struct HeaderBlock {
 
 impl PartialEq for HeaderBlock {
     fn eq(&self, other: &Self) -> bool {
-        (
-            &self.fields,
-            &self.field_size,
-            &self.is_over_size,
-            &self.pseudo,
-        ) == (
-            &other.fields,
-            &other.field_size,
-            &other.is_over_size,
-            &other.pseudo,
-        )
+        let Self {
+            fields,
+            field_size,
+            field_order: _,
+            is_over_size,
+            pseudo,
+        } = self;
+        let Self {
+            fields: other_fields,
+            field_size: other_field_size,
+            field_order: _,
+            is_over_size: other_is_over_size,
+            pseudo: other_pseudo,
+        } = other;
+        (fields, field_size, is_over_size, pseudo)
+            == (
+                other_fields,
+                other_field_size,
+                other_is_over_size,
+                other_pseudo,
+            )
     }
 }
 

@@ -553,12 +553,8 @@ mod tests {
     fn assert_eq_socket_address(s: &str, bind_address: Interface, ip_addr: &str, port: u16) {
         match bind_address {
             Interface::Address(socket_address) => {
-                assert_eq!(
-                    socket_address.ip_addr().to_string(),
-                    ip_addr,
-                    "parsing: {s}",
-                );
-                assert_eq!(socket_address.port(), port, "parsing: {s}");
+                assert_eq!(socket_address.ip_addr.to_string(), ip_addr, "parsing: {s}",);
+                assert_eq!(socket_address.port, port, "parsing: {s}");
             }
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => panic!("unexpected device name '{name}': parsing '{s}'"),

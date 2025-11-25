@@ -91,12 +91,14 @@ mod tests {
             bar: u32,
         }
 
-        let svc =
-            WebService::default().get("/a/:foo/:bar/b/*", async |Path(params): Path<Params>| {
+        let svc = WebService::default().with_get(
+            "/a/{foo}/{bar}/b/*",
+            async |Path(params): Path<Params>| {
                 assert_eq!(params.foo, "hello");
                 assert_eq!(params.bar, 42);
                 StatusCode::OK
-            });
+            },
+        );
 
         let builder = Request::builder()
             .method("GET")

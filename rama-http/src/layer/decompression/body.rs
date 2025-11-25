@@ -140,7 +140,10 @@ where
     fn size_hint(&self) -> SizeHint {
         match self.inner {
             BodyInner::Identity { ref inner } => inner.size_hint(),
-            _ => SizeHint::default(),
+            BodyInner::Brotli { .. }
+            | BodyInner::Gzip { .. }
+            | BodyInner::Deflate { .. }
+            | BodyInner::Zstd { .. } => SizeHint::default(),
         }
     }
 }

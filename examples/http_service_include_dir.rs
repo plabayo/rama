@@ -8,58 +8,43 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62037`. You can use your browser to interact with the service:
+//! The server will start and listen on `:62037`.
+//! You can use your browser to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62037/test-files/index.html
+//! curl -v http://127.0.0.1:62037
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and the content of the `index.html` file.
 
 use rama::{
     Layer,
-    http::StatusCode,
     http::server::HttpServer,
+    http::service::fs::DirectoryServeMode,
     http::service::web::WebService,
-    http::service::web::{extract::Path, response::IntoResponse},
     layer::TraceErrLayer,
-    rt::Executor,
     tcp::server::TcpListener,
     utils::include_dir::{Dir, include_dir},
 };
 
-use serde::Deserialize;
-
-// TODO: ensure we do not need to import `include_dir` module ourselves
-const ASSETS: Dir<'static> = include_dir!("../test-files");
+const ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/test-files");
 
 #[tokio::main]
 async fn main() {
-    let exec = Executor::default();
-
     let listener = TcpListener::bind("127.0.0.1:62037")
         .await
         .expect("bind TCP Listener");
 
-    // TODO: use ServeDir::new_embedded once available :)
-    // let http_fs_server = HttpServer::auto(exec).service(ServeDir::new_embedded(ASSETS));
-
-    // TODO: remove once no longer needed
-    #[derive(Debug, Deserialize)]
-    struct Params {
-        path: String,
-    }
-    let http_fs_server = HttpServer::auto(exec).service(WebService::default().get(
-        "/test-files/{path}",
-        async |Path(Params { path }): Path<Params>| match ASSETS.get_file(path) {
-            Some(entry) => String::from_utf8_lossy(entry.contents()).into_response(),
-            None => StatusCode::NOT_FOUND.into_response(),
-        },
-    ));
+    let http_fs_server =
+        HttpServer::default().service(WebService::default().with_dir_embed_with_serve_mode(
+            "",
+            ASSETS,
+            DirectoryServeMode::AppendIndexHtml,
+        ));
 
     // Serve the HTTP server over TCP,
     // ...once running you can go in browser for example to:
-    println!("open: http://127.0.0.1:62037/test-files/index.html");
+    println!("open: http://127.0.0.1:62037");
     listener
         .serve(TraceErrLayer::new().into_layer(http_fs_server))
         .await;

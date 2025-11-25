@@ -954,7 +954,12 @@ impl WebSocketContext {
                             if let Some(ref mut msg) = self.incomplete {
                                 msg.extend(frame.into_payload(), self.config.max_message_size)?;
                                 if fin {
-                                    let incomplete_msg = self.incomplete.take().unwrap();
+                                    #[allow(
+                                        clippy::expect_used,
+                                        reason = "we can only reaach here if complete is Some"
+                                    )]
+                                    let incomplete_msg =
+                                        self.incomplete.take().expect("incomplete to be there");
                                     return Ok(Some(incomplete_msg.complete()?));
                                 }
                             } else {
@@ -1057,9 +1062,11 @@ impl WebSocketContext {
                                     deflate_state.decompress_incomplete_msg.reset(match data {
                                         OpCodeData::Text => IncompleteMessageType::Text,
                                         OpCodeData::Binary => IncompleteMessageType::Binary,
-                                        _ => unreachable!(
-                                            "Bug: compressed message is not text nor binary"
-                                        ),
+                                        OpCodeData::Continue | OpCodeData::Reserved(_) => {
+                                            unreachable!(
+                                                "Bug: compressed message is not text nor binary"
+                                            )
+                                        }
                                     });
                                     deflate_state.decompress_incomplete_msg.extend(
                                         frame.into_payload(),
@@ -1076,7 +1083,9 @@ impl WebSocketContext {
                                 let message_type = match data {
                                     OpCodeData::Text => IncompleteMessageType::Text,
                                     OpCodeData::Binary => IncompleteMessageType::Binary,
-                                    _ => unreachable!("Bug: message is not text nor binary"),
+                                    OpCodeData::Continue | OpCodeData::Reserved(_) => {
+                                        unreachable!("Bug: message is not text nor binary")
+                                    }
                                 };
                                 let mut incomplete = IncompleteMessage::new(message_type);
                                 incomplete
@@ -1111,7 +1120,9 @@ impl WebSocketContext {
                         OpaqueError::from_display("Connection closed normally by peer"),
                     )))
                 }
-                _ => Err(ProtocolError::ResetWithoutClosingHandshake),
+                WebSocketState::Active
+                | WebSocketState::ClosedByUs
+                | WebSocketState::Terminated => Err(ProtocolError::ResetWithoutClosingHandshake),
             }
         }
     }
@@ -1232,7 +1243,9 @@ impl WebSocketState {
                 io::ErrorKind::NotConnected,
                 OpaqueError::from_display("Trying to work with closed connection"),
             ))),
-            _ => Ok(()),
+            Self::Active | Self::CloseAcknowledged | Self::ClosedByPeer | Self::ClosedByUs => {
+                Ok(())
+            }
         }
     }
 }

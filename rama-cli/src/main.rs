@@ -2,13 +2,17 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 use clap::{Parser, Subcommand};
 
-pub mod cmd;
-use self::cmd::{discard, echo, fp, http, ip, proxy, serve, stunnel, tls, ws};
+use crate::utils::error::ErrorWithExitCode;
 
+pub mod cmd;
 pub mod trace;
 pub mod utils;
 
@@ -29,39 +33,75 @@ struct Cli {
     cmds: CliCommands,
 }
 
+#[derive(Debug, Parser)]
+#[command(name = "rama")]
+#[command(bin_name = "rama")]
+#[command(version = None, about = None, long_about = None)]
+struct CliDefault {
+    #[command(flatten)]
+    cmd: cmd::send::SendCommand,
+}
+
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum CliCommands {
-    Http(http::CliCommandHttp),
-    Ws(ws::CliCommandWs),
-    Tls(tls::CliCommandTls),
-    Proxy(proxy::CliCommandProxy),
-    Echo(echo::CliCommandEcho),
-    Discard(discard::CliCommandDiscard),
-    Ip(ip::CliCommandIp),
-    Fp(fp::CliCommandFingerprint),
-    Serve(serve::CliCommandServe),
-    Stunnel(stunnel::StunnelCommand),
+    Send(cmd::send::SendCommand),
+    Serve(cmd::serve::ServeCommand),
+    Probe(cmd::probe::ProbeCommand),
 }
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    #[allow(clippy::print_stdout)]
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => match err.kind() {
+            clap::error::ErrorKind::DisplayHelp => {
+                if err.render().to_string().contains("rama <COMMAND>") {
+                    let _ = err.print();
+                    println!();
+                    println!(
+                        "When invoked without a subcommand, `rama` executes the `send` command."
+                    );
+                    println!("Refer to the `send` command section below.");
+                    println!();
+                    CliDefault::parse_from(["rama", "--help"]);
+                    unreachable!("previous statement should exit");
+                } else {
+                    err.exit()
+                }
+            }
+            clap::error::ErrorKind::DisplayVersion => err.exit(),
+            _ => {
+                if std::env::args()
+                    .nth(1)
+                    .map(|s| {
+                        ["-V", "--version", "-h", "--help", "send", "serve", "probe"]
+                            .contains(&s.trim())
+                    })
+                    .unwrap_or_default()
+                {
+                    err.exit()
+                } else {
+                    Cli {
+                        cmds: CliCommands::Send(CliDefault::parse().cmd),
+                    }
+                }
+            }
+        },
+    };
 
     #[allow(clippy::exit)]
     if let Err(err) = match cli.cmds {
-        CliCommands::Http(cfg) => http::run(cfg).await,
-        CliCommands::Ws(cfg) => ws::run(cfg).await,
-        CliCommands::Tls(cfg) => tls::run(cfg).await,
-        CliCommands::Proxy(cfg) => proxy::run(cfg).await,
-        CliCommands::Echo(cfg) => echo::run(cfg).await,
-        CliCommands::Discard(cfg) => discard::run(cfg).await,
-        CliCommands::Ip(cfg) => ip::run(cfg).await,
-        CliCommands::Fp(cfg) => fp::run(cfg).await,
-        CliCommands::Serve(cfg) => serve::run(cfg).await,
-        CliCommands::Stunnel(cfg) => stunnel::run(cfg).await,
+        CliCommands::Send(cfg) => cmd::send::run(cfg).await,
+        CliCommands::Serve(cfg) => cmd::serve::run(cfg).await,
+        CliCommands::Probe(cfg) => cmd::probe::run(cfg).await,
     } {
         eprintln!("🚩 exit with error: {err}");
-        std::process::exit(1);
+        let exit_code = err
+            .downcast_ref::<ErrorWithExitCode>()
+            .map(|err| err.code)
+            .unwrap_or(1);
+        std::process::exit(exit_code);
     }
 }

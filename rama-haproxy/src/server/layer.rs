@@ -176,7 +176,7 @@ where
                 match header.addresses {
                     v1::Addresses::Tcp4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let el = ForwardedElement::forwarded_for(peer_addr);
+                        let el = ForwardedElement::new_forwarded_for(peer_addr);
                         let forwarded = if let Some(mut forwarded) =
                             stream.extensions_mut().get::<Forwarded>().cloned()
                         {
@@ -189,7 +189,7 @@ where
                     }
                     v1::Addresses::Tcp6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let el = ForwardedElement::forwarded_for(peer_addr);
+                        let el = ForwardedElement::new_forwarded_for(peer_addr);
                         let forwarded = if let Some(mut forwarded) =
                             stream.extensions_mut().get::<Forwarded>().cloned()
                         {
@@ -208,7 +208,7 @@ where
                 match header.addresses {
                     v2::Addresses::IPv4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let el = ForwardedElement::forwarded_for(peer_addr);
+                        let el = ForwardedElement::new_forwarded_for(peer_addr);
                         let forwarded = if let Some(mut forwarded) =
                             stream.extensions_mut().get::<Forwarded>().cloned()
                         {
@@ -221,7 +221,7 @@ where
                     }
                     v2::Addresses::IPv6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let el = ForwardedElement::forwarded_for(peer_addr);
+                        let el = ForwardedElement::new_forwarded_for(peer_addr);
                         let forwarded = if let Some(mut forwarded) =
                             stream.extensions_mut().get::<Forwarded>().cloned()
                         {

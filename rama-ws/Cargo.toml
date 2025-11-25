@@ -33,7 +33,6 @@ tokio = { workspace = true, features = ["time", "macros"] }
 [dev-dependencies]
 pin-project-lite = { workspace = true }
 rama-http-backend = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing-test = { workspace = true }
 
 [lints]

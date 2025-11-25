@@ -19,8 +19,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex", "dep:md5"]
-tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
+http = ["dep:rama-http-types", "dep:sha2", "dep:hex", "dep:md5"]
+tls = ["dep:hex", "dep:md5", "dep:sha2"]
 opentelemetry = ["rama-core/opentelemetry"]
 
 [dependencies]
@@ -29,7 +29,7 @@ const_format = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
-itertools = { workspace = true, optional = true }
+itertools = { workspace = true }
 md5 = { workspace = true, optional = true }
 nom = { workspace = true }
 parking_lot = { workspace = true }

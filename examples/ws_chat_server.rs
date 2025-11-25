@@ -29,17 +29,21 @@ use rama::{
     layer::AddExtensionLayer,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{debug, error, info, level_filters::LevelFilter, warn},
+    telemetry::tracing::{
+        self, debug, error, info,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        warn,
+    },
 };
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::sync::broadcast;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -51,7 +55,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1().service(Router::new().get("/", Html(INDEX)).get(
+        let server = HttpServer::http1().service(Router::new().with_get("/", Html(INDEX)).with_get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
                 async |mut ws: ServerWebSocket| {

@@ -472,7 +472,11 @@ where
     where
         H: crate::headers::HeaderEncode,
     {
-        self.header(H::name().clone(), header.encode_to_value())
+        if let Some(value) = header.encode_to_value() {
+            self.header(H::name().clone(), value)
+        } else {
+            self
+        }
     }
 
     /// Add all `Headers` from the [`HeaderMap`] to this [`Request`].
@@ -551,7 +555,11 @@ where
     where
         H: crate::headers::HeaderEncode,
     {
-        self.overwrite_header(H::name().clone(), header.encode_to_value())
+        if let Some(value) = header.encode_to_value() {
+            self.overwrite_header(H::name().clone(), value)
+        } else {
+            self
+        }
     }
 
     /// Enable HTTP authentication.

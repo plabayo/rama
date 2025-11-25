@@ -40,19 +40,20 @@ use rama::{
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde::Deserialize;
 use std::time::Duration;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -64,8 +65,8 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     let router = Router::new()
-        .get("/", Html(r##"<h1>Rates Catalogue</h1><ul><li><a href="/api/rates/2024.csv">rates for 2024</a></li></ul>"##.to_owned()))
-        .get("/api/rates/{year}.csv", api_rates_csv);
+        .with_get("/", Html(r##"<h1>Rates Catalogue</h1><ul><li><a href="/api/rates/2024.csv">rates for 2024</a></li></ul>"##.to_owned()))
+        .with_get("/api/rates/{year}.csv", api_rates_csv);
 
     let exec = Executor::graceful(graceful.guard());
     let app = HttpServer::auto(exec).service(

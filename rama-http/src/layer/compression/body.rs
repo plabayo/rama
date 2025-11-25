@@ -240,7 +240,7 @@ where
         let needs_window_limit = match quality {
             CompressionLevel::Best => true, // level 20
             CompressionLevel::Precise(level) => level >= 17,
-            _ => false,
+            CompressionLevel::Default | CompressionLevel::Fastest => false,
         };
         // The parameter is not set for levels below 17 as it will increase the window size
         // for those levels.

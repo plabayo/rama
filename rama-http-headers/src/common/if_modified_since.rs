@@ -25,7 +25,7 @@ use std::time::SystemTime;
 /// use rama_http_headers::IfModifiedSince;
 /// use std::time::{Duration, SystemTime};
 ///
-/// let time = SystemTime::now() - Duration::from_secs(60 * 60 * 24);
+/// let time = SystemTime::now() - Duration::from_hours(24);
 /// let if_mod = IfModifiedSince::from(time);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

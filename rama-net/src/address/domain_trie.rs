@@ -1,4 +1,6 @@
+use itertools::Itertools as _;
 use radix_trie::{Trie, TrieCommon};
+use smol_str::SmolStrBuilder;
 use std::fmt;
 
 use crate::address::{AsDomainRef, Domain};
@@ -181,17 +183,26 @@ impl<T> DomainTrie<T> {
     pub fn iter(&self) -> impl Iterator<Item = (Domain, &T)> {
         self.trie.iter().map(|(s, v)| {
             let from = s.trim_matches('.');
-            let domain = from.split('.').rev().collect::<Vec<&str>>().join(".");
-            (domain.parse().unwrap(), v)
+            let mut iter = from.split('.').rev();
+            let mut builder = SmolStrBuilder::new();
+            if let Some(part) = iter.next() {
+                builder.push_str(part);
+            }
+            for part in iter {
+                builder.push('.');
+                builder.push_str(part);
+            }
+            // SAFETY: domain is at insertion point of this trie
+            // ensured to be valid, so returning as a str should make no difference.
+            let domain = unsafe { Domain::from_maybe_borrowed_unchecked(builder.finish()) };
+            (domain, v)
         })
     }
 }
 
 fn reverse_domain(domain: &str) -> String {
     let from = domain.trim_matches('.');
-    let mut domain = from.split('.').rev().collect::<Vec<&str>>().join(".");
-    domain.push('.');
-    domain
+    from.split('.').rev().chain(std::iter::once("")).join(".")
 }
 
 impl<S, T> FromIterator<(S, T)> for DomainTrie<T>

@@ -120,7 +120,7 @@
 //!     .unwrap();
 //!
 //!     let service =
-//!         ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default)
+//!         ProxyDBLayer::new(Arc::new(db)).with_filter_mode(ProxyFilterMode::Default)
 //!         .into_layer(service_fn(async  |req: Request| {
 //!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
@@ -140,7 +140,7 @@
 //!     });
 //!
 //!     let proxy_address = service.serve(req).await.unwrap();
-//!     assert_eq!(proxy_address.authority.to_string(), "12.34.12.34:8080");
+//!     assert_eq!(proxy_address.address.to_string(), "12.34.12.34:8080");
 //! }
 //! ```
 //!
@@ -194,8 +194,8 @@
 //!     };
 //!
 //!     let service = ProxyDBLayer::new(Arc::new(proxy))
-//!         .filter_mode(ProxyFilterMode::Default)
-//!         .username_formatter(|_proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+//!         .with_filter_mode(ProxyFilterMode::Default)
+//!         .with_username_formatter(|_proxy: &Proxy, filter: &ProxyFilter, username: &str| {
 //!             use std::fmt::Write;
 //!
 //!             let mut output = String::new();
@@ -242,7 +242,11 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 mod username;
 #[doc(inline)]

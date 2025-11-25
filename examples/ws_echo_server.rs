@@ -20,15 +20,18 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     tcp::server::TcpListener,
-    telemetry::tracing::{Level, info, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self, Level, info,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -41,7 +44,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let server = HttpServer::http1().service(
-            Router::new().get("/", Html(INDEX)).get(
+            Router::new().with_get("/", Html(INDEX)).with_get(
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG)
                     .into_layer(WebSocketAcceptor::new().into_echo_service()),

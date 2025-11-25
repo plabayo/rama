@@ -2,6 +2,7 @@ use std::{convert::Infallible, fmt, net::Ipv4Addr};
 
 use rama_core::{
     Service,
+    error::BoxError,
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
@@ -31,28 +32,20 @@ impl<S> MockConnectorService<S> {
         }
     }
 
-    /// Set `max_buffer_size` that will be used when creating DuplexStream
-    pub fn set_max_buffer_size(&mut self, size: usize) -> &mut Self {
-        self.max_buffer_size = size;
-        self
-    }
-
-    /// [`MockConnectorService`] with `max_buffer_size` that will be used when creating DuplexStream
-    #[must_use]
-    pub fn with_max_buffer_size(self, size: usize) -> Self {
-        Self {
-            max_buffer_size: size,
-            ..self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set `max_buffer_size` that will be used when creating DuplexStream
+        pub fn max_buffer_size(mut self, size: usize) -> Self {
+            self.max_buffer_size = size;
+            self
         }
     }
 }
 
-impl<S, Request, Error, Server> Service<Request> for MockConnectorService<S>
+impl<S, Request, Server> Service<Request> for MockConnectorService<S>
 where
     S: Fn() -> Server + Send + Sync + 'static,
-    Server: Service<MockSocket, Error = Error>,
+    Server: Service<MockSocket, Error: Into<BoxError>>,
     Request: Send + 'static,
-    Error: std::fmt::Debug + 'static,
 {
     type Error = Infallible;
     type Response = EstablishedClientConnection<MockSocket, Request>;
@@ -65,7 +58,9 @@ where
         let server = (self.create_server)();
 
         tokio::spawn(async move {
-            server.serve(server_socket).await.unwrap();
+            if let Err(err) = server.serve(server_socket).await {
+                panic!("created mock server failed: {}", err.into())
+            }
         });
 
         Ok(EstablishedClientConnection {

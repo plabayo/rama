@@ -211,6 +211,10 @@ impl TlsConnectorDataBuilder {
 
     #[must_use]
     pub fn new_http_auto() -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "wiring format for h2,http1 is known to always succeed"
+        )]
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
             .expect("with http2 and http1")
@@ -218,6 +222,10 @@ impl TlsConnectorDataBuilder {
 
     #[must_use]
     pub fn new_http_1() -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "wiring format for http1 is known to always succeed"
+        )]
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_11])
             .expect("with http1")
@@ -225,6 +233,10 @@ impl TlsConnectorDataBuilder {
 
     #[must_use]
     pub fn new_http_2() -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "wiring format for h2 is known to always succeed"
+        )]
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2])
             .expect("with http 2")
@@ -247,11 +259,12 @@ impl TlsConnectorDataBuilder {
         self
     }
 
-    /// Same as [`TlsConnectorDataBuilder::push_base_config`] but consuming self
-    #[must_use]
-    pub fn with_base_config(mut self, config: Arc<Self>) -> Self {
-        self.push_base_config(config);
-        self
+    generate_set_and_with! {
+        /// Add [`ConfigBuilder`] to the start of our base builders
+        pub fn base_config(mut self, config: Arc<Self>) -> Self {
+            self.push_base_config(config);
+            self
+        }
     }
 
     generate_set_and_with!(
@@ -657,12 +670,14 @@ impl TlsConnectorDataBuilder {
 
         if let Some(limit) = self.record_size_limit() {
             trace!("boring connector: setting record size limit");
-            cfg.set_record_size_limit(limit).unwrap();
+            cfg.set_record_size_limit(limit)
+                .context("set record size limit")?;
         }
 
         if let Some(schemes) = self.delegated_credential_schemes() {
             trace!("boring connector: setting delegated credential schemes");
-            cfg.set_delegated_credential_schemes(schemes).unwrap();
+            cfg.set_delegated_credential_schemes(schemes)
+                .context("set delegated credential schemas")?;
         }
 
         if self.encrypted_client_hello().unwrap_or_default() {

@@ -151,36 +151,16 @@ impl GrpcErrorsAsFailures {
         }
     }
 
-    /// Change which gRPC codes are considered success.
-    ///
-    /// Defaults to only considering `Ok` as success.
-    ///
-    /// `Ok` will always be considered a success.
-    ///
-    /// # Example
-    ///
-    /// Servers might not want to consider `Invalid Argument` or `Not Found` as failures since
-    /// thats likely the clients fault:
-    ///
-    /// ```rust
-    /// use rama_http::layer::classify::{GrpcErrorsAsFailures, GrpcCode};
-    ///
-    /// let classifier = GrpcErrorsAsFailures::new()
-    ///     .with_success(GrpcCode::InvalidArgument)
-    ///     .with_success(GrpcCode::NotFound);
-    /// ```
-    #[must_use]
-    pub fn with_success(mut self, code: GrpcCode) -> Self {
-        self.success_codes |= code.into_bitmask();
-        self
-    }
-
-    /// Change which gRPC codes are considered success.
-    ///
-    /// Same as [`Self::with_success`] but without consuming `self`.
-    pub fn set_success(&mut self, code: GrpcCode) -> &mut Self {
-        self.success_codes |= code.into_bitmask();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Change which gRPC codes are considered success.
+        ///
+        /// Defaults to only considering `Ok` as success.
+        ///
+        /// `Ok` will always be considered a success.
+        pub fn success(mut self, code: GrpcCode) -> Self {
+            self.success_codes |= code.into_bitmask();
+            self
+        }
     }
 
     /// Returns a [`MakeClassifier`](super::MakeClassifier) that produces `GrpcErrorsAsFailures`.
@@ -305,7 +285,11 @@ pub(crate) fn classify_grpc_metadata(
     {
         ParsedGrpcStatus::Success
     } else {
-        ParsedGrpcStatus::NonSuccess(NonZeroI32::new(status).unwrap())
+        // SAFETY:
+        // - 0 is a success code
+        // - negative numbers are unknown, so classifying these as (1) is fine
+        // - all others will be fine to keep as-is
+        ParsedGrpcStatus::NonSuccess(unsafe { NonZeroI32::new_unchecked(status.max(1)) })
     }
 }
 

@@ -32,28 +32,22 @@ impl UserAgentDatabase {
     ///
     /// This function is only available if the `embed-profiles` feature is enabled.
     #[cfg(feature = "embed-profiles")]
-    #[must_use]
     #[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
-    pub fn embedded() -> Self {
-        let profiles = crate::profile::load_embedded_profiles();
-        Self::from_iter(profiles)
+    pub fn try_embedded() -> Result<Self, rama_core::error::OpaqueError> {
+        let profiles = crate::profile::try_load_embedded_profiles()?;
+        Ok(Self::from_iter(profiles))
     }
 
-    /// Disabling this option (disable = true) means here that in case
-    /// you try to use [`UserAgentDatabase::get`] with a [`UserAgent`]
-    /// containing no match (not even a platform or device), that it the database
-    /// will return `None` instead of returning a global-random (market-based)
-    /// [`UserAgentProfile`], which it would do by default.
-    #[must_use]
-    pub fn disable_unknown_user_agent_data(mut self, disable: bool) -> Self {
-        self.disable_unknown_user_agent_data = disable;
-        self
-    }
-
-    /// See [`disable_unknown_user_agent_data`], this is the non-consuming version.
-    pub fn set_disable_unknown_user_agent_data(&mut self, disable: bool) -> &mut Self {
-        self.disable_unknown_user_agent_data = disable;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Disabling this option (disable = true) means here that in case
+        /// you try to use [`UserAgentDatabase::get`] with a [`UserAgent`]
+        /// containing no match (not even a platform or device), that it the database
+        /// will return `None` instead of returning a global-random (market-based)
+        /// [`UserAgentProfile`], which it would do by default.
+        pub fn disable_unknown_user_agent_data(mut self, disable: bool) -> Self {
+            self.disable_unknown_user_agent_data = disable;
+            self
+        }
     }
 
     #[inline]
@@ -451,7 +445,7 @@ mod tests {
 
     #[test]
     fn test_ua_db_get_none_due_to_unknown_data_rnd_disabled() {
-        let db = get_dummy_ua_db().disable_unknown_user_agent_data(true);
+        let db = get_dummy_ua_db().with_disable_unknown_user_agent_data(true);
         for _ in 0..100 {
             assert!(db.get(&UserAgent::new("curl")).is_none());
         }
@@ -570,7 +564,7 @@ mod tests {
     #[cfg(feature = "embed-profiles")]
     #[test]
     fn test_ua_db_embedded() {
-        let db = UserAgentDatabase::embedded();
+        let db = UserAgentDatabase::try_embedded().unwrap();
         assert!(!db.is_empty());
     }
 }

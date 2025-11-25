@@ -1,12 +1,5 @@
 //! rama cli subcommands
 
-pub mod discard;
-pub mod echo;
-pub mod fp;
-pub mod http;
-pub mod ip;
-pub mod proxy;
+pub mod probe;
+pub mod send;
 pub mod serve;
-pub mod stunnel;
-pub mod tls;
-pub mod ws;

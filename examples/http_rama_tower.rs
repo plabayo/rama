@@ -19,14 +19,20 @@
 use rama::{
     Layer as _,
     error::{BoxError, OpaqueError},
-    http::service::web::response::Html,
     http::{
-        HeaderValue, Request, layer::trace::TraceLayer, server::HttpServer, service::web::Router,
+        HeaderValue, Request,
+        layer::trace::TraceLayer,
+        server::HttpServer,
+        service::web::{Router, response::Html},
     },
     layer::ConsumeErrLayer,
     net::address::SocketAddress,
     rt::Executor,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     utils::tower::{
         ServiceAdapter,
         core::{Layer, Service},
@@ -43,15 +49,12 @@ use std::{
     time::Duration,
 };
 use tokio::time::Sleep;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62020);
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -62,7 +65,7 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let router: Router = Router::new().get("/", ServiceAdapter::new(HelloSvc));
+    let router: Router = Router::new().with_get("/", ServiceAdapter::new(HelloSvc));
     let app = LayerAdapter::new((
         TimeoutLayer(Duration::from_secs(30)),
         AddHelloMarkerHeaderLayer,
@@ -71,8 +74,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         tracing::info!("running service at: {ADDRESS}");
-        let exec = Executor::graceful(guard);
-        HttpServer::auto(exec)
+        HttpServer::auto(Executor::graceful(guard))
             .listen(
                 ADDRESS,
                 (TraceLayer::new_for_http(), ConsumeErrLayer::default()).into_layer(app),

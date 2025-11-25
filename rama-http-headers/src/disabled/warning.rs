@@ -29,8 +29,8 @@ use {Header, HttpDate, Raw};
 ///
 /// * `Warning: 112 - "network down" "Sat, 25 Aug 2012 23:34:45 GMT"`
 /// * `Warning: 299 - "Deprecated API " "Tue, 15 Nov 1994 08:12:31 GMT"`
-/// * `Warning: 299 api.hyper.rs:8080 "Deprecated API : use newapi.hyper.rs instead."`
-/// * `Warning: 299 api.hyper.rs:8080 "Deprecated API : use newapi.hyper.rs instead." "Tue, 15 Nov 1994 08:12:31 GMT"`
+/// * `Warning: 299 api.rama.rs:8080 "Deprecated API : use newapi.rama.rs instead."`
+/// * `Warning: 299 api.rama.rs:8080 "Deprecated API : use newapi.rama.rs instead." "Tue, 15 Nov 1994 08:12:31 GMT"`
 ///
 /// # Examples
 ///
@@ -41,7 +41,7 @@ use {Header, HttpDate, Raw};
 /// headers.set(
 ///     Warning{
 ///         code: 299,
-///         agent: "api.hyper.rs".to_owned(),
+///         agent: "api.rama.rs".to_owned(),
 ///         text: "Deprecated".to_owned(),
 ///         date: None
 ///     }
@@ -55,7 +55,7 @@ use {Header, HttpDate, Raw};
 /// headers.set(
 ///     Warning{
 ///         code: 299,
-///         agent: "api.hyper.rs".to_owned(),
+///         agent: "api.rama.rs".to_owned(),
 ///         text: "Deprecated".to_owned(),
 ///         date: "Tue, 15 Nov 1994 08:12:31 GMT".parse::<HttpDate>().ok()
 ///     }
@@ -70,7 +70,7 @@ use {Header, HttpDate, Raw};
 /// headers.set(
 ///     Warning{
 ///         code: 199,
-///         agent: "api.hyper.rs".to_owned(),
+///         agent: "api.rama.rs".to_owned(),
 ///         text: "Deprecated".to_owned(),
 ///         date: Some(SystemTime::now().into())
 ///     }
@@ -174,7 +174,7 @@ mod tests {
 
         let warning = Header::parse_header(
             &vec![
-                b"299 api.hyper.rs:8080 \"Deprecated API : use newapi.hyper.rs instead.\"".to_vec(),
+                b"299 api.rama.rs:8080 \"Deprecated API : use newapi.rama.rs instead.\"".to_vec(),
             ]
             .into(),
         );
@@ -182,19 +182,19 @@ mod tests {
             warning.ok(),
             Some(Warning {
                 code: 299,
-                agent: "api.hyper.rs:8080".to_owned(),
-                text: "Deprecated API : use newapi.hyper.rs instead.".to_owned(),
+                agent: "api.rama.rs:8080".to_owned(),
+                text: "Deprecated API : use newapi.rama.rs instead.".to_owned(),
                 date: None
             })
         );
 
-        let warning = Header::parse_header(&vec![b"299 api.hyper.rs:8080 \"Deprecated API : use newapi.hyper.rs instead.\" \"Tue, 15 Nov 1994 08:12:31 GMT\"".to_vec()].into());
+        let warning = Header::parse_header(&vec![b"299 api.rama.rs:8080 \"Deprecated API : use newapi.rama.rs instead.\" \"Tue, 15 Nov 1994 08:12:31 GMT\"".to_vec()].into());
         assert_eq!(
             warning.ok(),
             Some(Warning {
                 code: 299,
-                agent: "api.hyper.rs:8080".to_owned(),
-                text: "Deprecated API : use newapi.hyper.rs instead.".to_owned(),
+                agent: "api.rama.rs:8080".to_owned(),
+                text: "Deprecated API : use newapi.rama.rs instead.".to_owned(),
                 date: "Tue, 15 Nov 1994 08:12:31 GMT".parse::<HttpDate>().ok()
             })
         );

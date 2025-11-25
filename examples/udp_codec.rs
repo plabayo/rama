@@ -24,28 +24,32 @@
 
 // rama provides everything out of the box for your primitive UDP needs,
 // thanks to the underlying implementation from Tokio
+
 use rama::{
     bytes::Bytes,
     error::BoxError,
     futures::{FutureExt, SinkExt, StreamExt},
     net::address::SocketAddress,
     stream::codec::BytesCodec,
-    udp::{UdpFramed, UdpSocket},
+    udp::{UdpFramed, bind_udp},
 };
 
 // everything else is provided by the standard library, community crates or tokio
+
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::{io, time};
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    let mut a = UdpSocket::bind(SocketAddress::local_ipv4(0))
-        .await?
-        .into_framed(BytesCodec::new());
-    let mut b = UdpSocket::bind(SocketAddress::local_ipv4(0))
-        .await?
-        .into_framed(BytesCodec::new());
+    let mut a = UdpFramed::new(
+        bind_udp(SocketAddress::local_ipv4(0)).await?,
+        BytesCodec::new(),
+    );
+    let mut b = UdpFramed::new(
+        bind_udp(SocketAddress::local_ipv4(0)).await?,
+        BytesCodec::new(),
+    );
 
     let b_addr = b.get_ref().local_addr()?;
 

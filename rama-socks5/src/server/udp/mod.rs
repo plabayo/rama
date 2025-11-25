@@ -5,11 +5,11 @@ use rama_core::{
     layer::timeout::DefaultTimeout, stream::Stream, telemetry::tracing,
 };
 use rama_net::{
-    address::{Authority, Host, SocketAddress},
+    address::{Host, HostWithPort, SocketAddress},
     socket::{Interface, SocketService},
 };
-use rama_udp::UdpSocket;
-use rama_utils::macros::generate_field_setters;
+use rama_udp::{UdpSocket, bind_udp};
+use rama_utils::macros::generate_set_and_with;
 
 #[cfg(feature = "dns")]
 use ::{
@@ -46,9 +46,8 @@ impl<S, C> Socks5UdpAssociator<S> for C where C: Socks5UdpAssociatorSeal<S> {}
 pub trait Socks5UdpAssociatorSeal<S>: Send + Sync + 'static {
     fn accept_udp_associate(
         &self,
-
         stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_
     where
         S: Stream + Unpin;
@@ -62,7 +61,7 @@ where
         &self,
 
         mut stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> Result<(), Error> {
         tracing::debug!(
             "socks5 server w/ destination {destination}: abort: command not supported: UDP Associate",
@@ -89,7 +88,7 @@ impl Service<Interface> for DefaultUdpBinder {
     type Error = BoxError;
 
     async fn serve(&self, interface: Interface) -> Result<Self::Response, Self::Error> {
-        let socket = UdpSocket::bind(interface).await?;
+        let socket = bind_udp(interface).await?;
         Ok(socket)
     }
 }
@@ -192,198 +191,96 @@ impl<B, I> UdpRelay<B, I> {
         }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for both north and south direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_bind_north_interface`]: to only set [`Interface`] for the north direction;
-    /// - [`UdpRelay::set_bind_south_interface`]: to only set [`Interface`] for the south direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn set_bind_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
-        let interface = interface.into();
-        self.bind_north_interface = interface.clone();
-        self.bind_south_interface = interface;
-        self
+    generate_set_and_with! {
+        /// Define the (network) [`Interface`] to bind to, for both north and south direction.
+        ///
+        /// By default it binds the udp sockets at `0.0.0.0:0`.
+        pub fn bind_interface(mut self, interface: impl Into<Interface>) -> Self {
+            let interface = interface.into();
+            self.bind_north_interface = interface.clone();
+            self.bind_south_interface = interface;
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for both north and south direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_bind_north_interface`]: to only set [`Interface`] for the north direction;
-    /// - [`UdpRelay::with_bind_south_interface`]: to only set [`Interface`] for the south direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    #[must_use]
-    pub fn with_bind_interface(mut self, interface: impl Into<Interface>) -> Self {
-        let interface = interface.into();
-        self.bind_north_interface = interface.clone();
-        self.bind_south_interface = interface;
-        self
+    generate_set_and_with! {
+        /// Define the (network) [`Interface`] to bind to, for the north direction.
+        ///
+        /// By default it binds the udp sockets at `0.0.0.0:0`.
+        pub fn bind_north_interface(mut self, interface: impl Into<Interface>) -> Self {
+            self.bind_north_interface = interface.into();
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for the north direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_bind_interface`]: to only set [`Interface`] for both the north and south direction;
-    /// - [`UdpRelay::set_bind_south_interface`]: to only set [`Interface`] for the south direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn set_bind_north_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
-        self.bind_north_interface = interface.into();
-        self
+    generate_set_and_with! {
+        /// Define the (network) [`Interface`] to bind to, for the south direction.
+        ///
+        /// By default it binds the udp sockets at `0.0.0.0:0`.
+        pub fn bind_south_interface(mut self, interface: impl Into<Interface>) -> Self {
+            self.bind_south_interface = interface.into();
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for the north direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_bind_interface`]: to only set [`Interface`] for both the north and south direction;
-    /// - [`UdpRelay::with_bind_south_interface`]: to only set [`Interface`] for the south direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    #[must_use]
-    pub fn with_bind_north_interface(mut self, interface: impl Into<Interface>) -> Self {
-        self.bind_north_interface = interface.into();
-        self
+    generate_set_and_with! {
+        /// Set the size of the buffer used to read south traffic.
+        pub fn buffer_size_south(mut self, n: usize) -> Self {
+            self.south_buffer_size = n;
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for the south direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_bind_interface`]: to only set [`Interface`] for both the north and south direction;
-    /// - [`UdpRelay::set_bind_north_interface`]: to only set [`Interface`] for the north direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn set_bind_south_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
-        self.bind_south_interface = interface.into();
-        self
+    generate_set_and_with! {
+        /// Set the size of the buffer used to read north traffic.
+        pub fn buffer_size_north(mut self, n: usize) -> Self {
+            self.north_buffer_size = n;
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to, for the south direction.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_bind_interface`]: to only set [`Interface`] for both the north and south direction;
-    /// - [`UdpRelay::with_bind_north_interface`]: to only set [`Interface`] for the north direction.
-    ///
-    /// By default it binds the udp sockets at `0.0.0.0:0`.
-    #[must_use]
-    pub fn with_bind_south_interface(mut self, interface: impl Into<Interface>) -> Self {
-        self.bind_south_interface = interface.into();
-        self
+    generate_set_and_with! {
+        /// Set the size of the buffer used to read both north and south traffic.
+        pub fn buffer_size(mut self, n: usize) -> Self {
+            self.north_buffer_size = n;
+            self.south_buffer_size = n;
+            self
+        }
     }
 
-    /// Set the size of the buffer used to read south traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_buffer_size`]: to only set the buffer size for both the north and south direction;
-    /// - [`UdpRelay::set_buffer_size_north`]: to only set the buffer size for the north direction.
-    pub fn set_buffer_size_south(&mut self, n: usize) -> &mut Self {
-        self.south_buffer_size = n;
-        self
+    generate_set_and_with! {
+        /// Define the relay timeout for this socks5 UDP server.
+        pub fn relay_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.relay_timeout = timeout;
+            self
+        }
     }
-
-    /// Set the size of the buffer used to read north traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_buffer_size`]: to only set the buffer size for both the north and south direction;
-    /// - [`UdpRelay::set_buffer_size_south`]: to only set the buffer size for the south direction.
-    pub fn set_buffer_size_north(&mut self, n: usize) -> &mut Self {
-        self.north_buffer_size = n;
-        self
-    }
-
-    /// Set the size of the buffer used to read both north and south traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::set_buffer_size_north`]: to only set the buffer size for the north direction.
-    /// - [`UdpRelay::set_buffer_size_south`]: to only set the buffer size for the south direction.
-    pub fn set_buffer_size(&mut self, n: usize) -> &mut Self {
-        self.north_buffer_size = n;
-        self.south_buffer_size = n;
-        self
-    }
-
-    /// Set the size of the buffer used to read south traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_buffer_size`]: to only set the buffer size for both the north and south direction;
-    /// - [`UdpRelay::with_buffer_size_north`]: to only set the buffer size for the north direction.
-    #[must_use]
-    pub fn with_buffer_size_south(mut self, n: usize) -> Self {
-        self.south_buffer_size = n;
-        self
-    }
-
-    /// Set the size of the buffer used to read north traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_buffer_size`]: to only set the buffer size for both the north and south direction;
-    /// - [`UdpRelay::with_buffer_size_south`]: to only set the buffer size for the south direction.
-    #[must_use]
-    pub fn with_buffer_size_north(mut self, n: usize) -> Self {
-        self.north_buffer_size = n;
-        self
-    }
-
-    /// Set the size of the buffer used to read both north and south traffic.
-    ///
-    /// Use:
-    /// - [`UdpRelay::with_buffer_size_north`]: to only set the buffer size for the north direction.
-    /// - [`UdpRelay::with_buffer_size_south`]: to only set the buffer size for the south direction.
-    #[must_use]
-    pub fn with_buffer_size(mut self, n: usize) -> Self {
-        self.north_buffer_size = n;
-        self.south_buffer_size = n;
-        self
-    }
-
-    generate_field_setters!(relay_timeout, Duration);
 }
 
 #[cfg(feature = "dns")]
 impl<B, I> UdpRelay<B, I> {
-    /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
-    ///
-    /// It will be used to best-effort resolve the domain name,
-    /// in case a domain name is passed to forward to the target server.
-    #[must_use]
-    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-    pub fn with_default_dns_resolver(mut self) -> Self {
-        self.dns_resolver = None;
-        self
+    generate_set_and_with! {
+        /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
+        ///
+        /// It will be used to best-effort resolve the domain name,
+        /// in case a domain name is passed to forward to the target server.
+        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
+        pub fn default_dns_resolver(mut self) -> Self {
+            self.dns_resolver = None;
+            self
+        }
     }
 
-    /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
-    ///
-    /// It will be used to best-effort resolve the domain name,
-    /// in case a domain name is passed to forward to the target server.
-    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-    pub fn set_default_dns_resolver(&mut self) -> &mut Self {
-        self.dns_resolver = None;
-        self
-    }
-
-    /// Attach a [`DnsResolver`] to this [`UdpRelay`].
-    ///
-    /// It will be used to best-effort resolve the domain name,
-    /// in case a domain name is passed to forward to the target server.
-    #[must_use]
-    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-    pub fn with_dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
-    }
-
-    /// Attach a [`DnsResolver`] to this [`UdpRelay`].
-    ///
-    /// It will be used to best-effort resolve the domain name,
-    /// in case a domain name is passed to forward to the target server.
-    #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-    pub fn set_dns_resolver(
-        &mut self,
-        resolver: impl DnsResolver<Error = OpaqueError>,
-    ) -> &mut Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Attach a [`DnsResolver`] to this [`UdpRelay`].
+        ///
+        /// It will be used to best-effort resolve the domain name,
+        /// in case a domain name is passed to forward to the target server.
+        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
+        pub fn dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
+            self.dns_resolver = Some(resolver.boxed());
+            self
+        }
     }
 }
 
@@ -445,7 +342,7 @@ where
     async fn accept_udp_associate(
         &self,
         mut stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: udp associate: try to bind incoming socket to destination {destination}",
@@ -453,7 +350,11 @@ where
 
         let extensions = std::mem::take(stream.extensions_mut());
 
-        let (dest_host, dest_port) = destination.into_parts();
+        let HostWithPort {
+            host: dest_host,
+            port: dest_port,
+        } = destination;
+
         let dest_addr = match dest_host {
             Host::Name(domain) => {
                 tracing::debug!(
@@ -561,16 +462,16 @@ where
         tokio::select! {
             _ = &mut drop_stream_fut => {
                 tracing::trace!(
-                    network.peer.address = %client_address.ip_addr(),
-                    network.peer.port = %client_address.port(),
+                    network.peer.address = %client_address.ip_addr,
+                    network.peer.port = %client_address.port,
                     "socks5 server: udp associate: tcp stream dropped from client: drop relay",
                 );
             }
 
             _ = &mut timeout_fut => {
                 tracing::debug!(
-                    network.peer.address = %client_address.ip_addr(),
-                    network.peer.port = %client_address.port(),
+                    network.peer.address = %client_address.ip_addr,
+                    network.peer.port = %client_address.port,
                     "socks5 server: udp associate: timeout reached: drop relay",
                 );
                 return Err(Error::io(std::io::Error::new(std::io::ErrorKind::TimedOut, "relay timeout reached")));
@@ -578,8 +479,8 @@ where
 
             Err(err) = udp_relay => {
                 tracing::debug!(
-                    network.peer.address = %client_address.ip_addr(),
-                    network.peer.port = %client_address.port(),
+                    network.peer.address = %client_address.ip_addr,
+                    network.peer.port = %client_address.port,
                     "socks5 server: udp associate: udp relay: exit with an error",
                 );
                 return Err(err);
@@ -587,8 +488,8 @@ where
         }
 
         tracing::trace!(
-            network.peer.address = %client_address.ip_addr(),
-            network.peer.port = %client_address.port(),
+            network.peer.address = %client_address.ip_addr,
+            network.peer.port = %client_address.port,
             "socks5 server: udp associate: udp relay: done",);
         Ok(())
     }

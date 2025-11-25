@@ -63,30 +63,20 @@ impl UserAgent {
         parse_http_user_agent_header(header.into())
     }
 
-    /// Overwrite the [`HttpAgent`] advertised by the [`UserAgent`].
-    #[must_use]
-    pub fn with_http_agent(mut self, http_agent: HttpAgent) -> Self {
-        self.http_agent_overwrite = Some(http_agent);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Overwrite the [`HttpAgent`] advertised by the [`UserAgent`].
+        pub fn http_agent(mut self, http_agent: HttpAgent) -> Self {
+            self.http_agent_overwrite = Some(http_agent);
+            self
+        }
     }
 
-    /// Overwrite the [`HttpAgent`] advertised by the [`UserAgent`].
-    pub fn set_http_agent(&mut self, http_agent: HttpAgent) -> &mut Self {
-        self.http_agent_overwrite = Some(http_agent);
-        self
-    }
-
-    /// Overwrite the [`TlsAgent`] advertised by the [`UserAgent`].
-    #[must_use]
-    pub fn with_tls_agent(mut self, tls_agent: TlsAgent) -> Self {
-        self.tls_agent_overwrite = Some(tls_agent);
-        self
-    }
-
-    /// Overwrite the [`TlsAgent`] advertised by the [`UserAgent`].
-    pub fn set_tls_agent(&mut self, tls_agent: TlsAgent) -> &mut Self {
-        self.tls_agent_overwrite = Some(tls_agent);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Overwrite the [`TlsAgent`] advertised by the [`UserAgent`].
+        pub fn tls_agent(mut self, tls_agent: TlsAgent) -> Self {
+            self.tls_agent_overwrite = Some(tls_agent);
+            self
+        }
     }
 
     /// returns the `User-Agent` (header) value used by the [`UserAgent`].
@@ -132,7 +122,9 @@ impl UserAgent {
                     info: UserAgentInfo { kind, .. },
                     ..
                 } => Some(*kind),
-                _ => None,
+                UserAgentData::Device(_) | UserAgentData::Platform(_) | UserAgentData::Unknown => {
+                    None
+                }
             },
         }
     }
@@ -142,7 +134,7 @@ impl UserAgent {
     pub fn ua_version(&self) -> Option<usize> {
         match &self.data {
             UserAgentData::Standard { info, .. } => info.version,
-            _ => None,
+            UserAgentData::Device(_) | UserAgentData::Platform(_) | UserAgentData::Unknown => None,
         }
     }
 
@@ -157,7 +149,7 @@ impl UserAgent {
                 None | Some(PlatformLike::Device(_)) => None,
             },
             UserAgentData::Platform(platform) => Some(*platform),
-            _ => None,
+            UserAgentData::Device(_) | UserAgentData::Unknown => None,
         }
     }
 

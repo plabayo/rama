@@ -33,44 +33,32 @@ impl AcceptEncoding {
         Some(HeaderValue::from_static(accept))
     }
 
-    pub fn set_gzip(&mut self, enable: bool) {
-        self.gzip = enable;
+    rama_utils::macros::generate_set_and_with! {
+        pub fn gzip(mut self, enable: bool) -> Self {
+            self.gzip = enable;
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_gzip(mut self, enable: bool) -> Self {
-        self.gzip = enable;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn deflate(mut self, enable: bool) -> Self {
+            self.deflate = enable;
+            self
+        }
     }
 
-    pub fn set_deflate(&mut self, enable: bool) {
-        self.deflate = enable;
+    rama_utils::macros::generate_set_and_with! {
+        pub fn br(mut self, enable: bool) -> Self {
+            self.br = enable;
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_deflate(mut self, enable: bool) -> Self {
-        self.deflate = enable;
-        self
-    }
-
-    pub fn set_br(&mut self, enable: bool) {
-        self.br = enable;
-    }
-
-    #[must_use]
-    pub fn with_br(mut self, enable: bool) -> Self {
-        self.br = enable;
-        self
-    }
-
-    pub fn set_zstd(&mut self, enable: bool) {
-        self.zstd = enable;
-    }
-
-    #[must_use]
-    pub fn with_zstd(mut self, enable: bool) -> Self {
-        self.zstd = enable;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn zstd(mut self, enable: bool) -> Self {
+            self.zstd = enable;
+            self
+        }
     }
 }
 

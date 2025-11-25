@@ -22,13 +22,12 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and an empty body.
 
-use rama::{http::server::HttpServer, rt::Executor, service::service_fn};
+use rama::http::{StatusCode, server::HttpServer, service::web::IntoEndpointService};
 
 #[tokio::main]
 async fn main() {
-    let exec = Executor::default();
-    HttpServer::auto(exec)
-        .listen("127.0.0.1:62003", service_fn(async || Ok(())))
+    HttpServer::default()
+        .listen("127.0.0.1:62003", StatusCode::OK.into_endpoint_service())
         .await
         .unwrap();
 }

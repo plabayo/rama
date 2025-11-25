@@ -249,8 +249,8 @@ where
             .unwrap_or_default()
         {
             tracing::trace!(
-                server.address = %transport_ctx.authority.host(),
-                server.port = %transport_ctx.authority.port(),
+                server.address = %transport_ctx.authority.host,
+                server.port = transport_ctx.authority.port,
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
             return Ok(EstablishedClientConnection {
@@ -259,14 +259,14 @@ where
             });
         }
 
-        let host = transport_ctx.authority.host().clone();
+        let host = transport_ctx.authority.host.clone();
 
         let connector_data = self.connector_data(req.extensions_mut())?;
         let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(auto): protocol secure, established tls connection",
         );
 
@@ -300,13 +300,13 @@ where
                 .context("TlsConnector(auto): compute transport context")
         })?;
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(secure): attempt to secure inner connection w/ app protocol: {:?}",
             transport_ctx.app_protocol,
         );
 
-        let host = transport_ctx.authority.host().clone();
+        let host = transport_ctx.authority.host.clone();
 
         let connector_data = self.connector_data(req.extensions_mut())?;
         let (conn, negotiated_params) = handshake(connector_data, host, conn).await?;

@@ -207,34 +207,6 @@ pub use rama_macros::paste;
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __generate_field_setters {
-    ($field: ident, $type: ty) => {
-        $crate::macros::paste! {
-            /// Set field with Some(value)
-            pub fn [<set_ $field>](&mut self, $field: $type) -> &mut Self {
-                self.$field = Some($field);
-                self
-            }
-
-            /// Replace field with Some(value)
-            pub fn [<with_ $field>](mut self, $field: $type) -> Self {
-                self.$field = Some($field);
-                self
-            }
-
-            /// Replace field with the provided option
-            pub fn [<maybe_with_ $field>](mut self, $field: Option<$type>) -> Self {
-                self.$field = $field;
-                self
-            }
-        }
-    };
-}
-
-pub use crate::__generate_field_setters as generate_field_setters;
-
-#[doc(hidden)]
-#[macro_export]
 macro_rules! __generate_set_and_with {
     (
         $(#[$outer_doc:meta])*
@@ -357,7 +329,7 @@ macro_rules! __generate_set_and_with {
         $crate::macros::paste! {
             $(#[$outer_doc])*
             #[must_use]
-            $vis const fn [<with_static_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
+            $vis const fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
                 $($body)*
             }
         }
@@ -396,6 +368,25 @@ macro_rules! __generate_set_and_with {
 
             $(#[$outer_doc])*
             $vis fn [<try_set_ $fn_name>](&mut $self_token, $($param_name: $param_ty),+) -> Result<&mut Self, $error> {
+                $($body)*
+            }
+        }
+    };
+    (
+        $(#[$outer_doc:meta])*
+        $vis:vis fn $fn_name:ident(mut $self_token:ident) -> Result<Self, $error:ty> {
+            $($body:tt)*
+        }
+    ) => {
+        $crate::macros::paste! {
+            $(#[$outer_doc])*
+            #[must_use]
+            $vis fn [<try_with_ $fn_name>](mut $self_token) -> Result<Self, $error> {
+                $($body)*
+            }
+
+            $(#[$outer_doc])*
+            $vis fn [<try_set_ $fn_name>](&mut $self_token) -> Result<&mut Self, $error> {
                 $($body)*
             }
         }

@@ -29,6 +29,7 @@
 //! - Submit the final report under the agent name "Rama"
 //!
 //! You’ll see output for each test case and potential errors (if any).
+
 use rama::{
     error::{BoxError, ErrorContext},
     extensions::Extensions,
@@ -40,18 +41,21 @@ use rama::{
             protocol::PerMessageDeflateConfig,
         },
     },
-    telemetry::tracing::{error, info},
+    telemetry::tracing::{
+        self, error, info,
+        subscriber::{
+            EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+        },
+    },
 };
+
 use serde::Deserialize;
-use tracing_subscriber::{
-    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
-};
 
 const AGENT: &str = "Rama";
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()

@@ -18,36 +18,35 @@
 
 use rama::{
     Layer,
-    extensions::ExtensionsRef,
     http::{
-        HeaderName, Request, Response,
+        HeaderName,
         server::HttpServer,
-        service::web::response::{IntoResponse, Json},
+        service::web::{
+            IntoEndpointService,
+            extract::Extension,
+            response::{IntoResponse, Json},
+        },
     },
-    rt::Executor,
-    service::service_fn,
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer},
 };
+
 use serde_json::json;
-use std::convert::Infallible;
 
 #[tokio::main]
 async fn main() {
-    let exec = Executor::default();
-    HttpServer::auto(exec)
+    HttpServer::default()
         .listen(
             "127.0.0.1:62015",
             UserAgentClassifierLayer::new()
-                .overwrite_header(HeaderName::from_static("x-proxy-ua"))
-                .into_layer(service_fn(handle)),
+                .with_overwrite_header(HeaderName::from_static("x-proxy-ua"))
+                .into_layer(handle.into_endpoint_service()),
         )
         .await
         .unwrap();
 }
 
-async fn handle(req: Request) -> Result<Response, Infallible> {
-    let ua: &UserAgent = req.extensions().get().unwrap();
-    Ok(Json(json!({
+async fn handle(Extension(ua): Extension<UserAgent>) -> impl IntoResponse {
+    Json(json!({
         "ua": ua.header_str(),
         "kind": ua.info().map(|info| info.kind.to_string()),
         "version": ua.info().and_then(|info| info.version),
@@ -55,5 +54,4 @@ async fn handle(req: Request) -> Result<Response, Infallible> {
         "http_agent": ua.http_agent().as_ref().map(ToString::to_string),
         "tls_agent": ua.tls_agent().as_ref().map(ToString::to_string),
     }))
-    .into_response())
 }

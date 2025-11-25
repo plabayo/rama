@@ -39,7 +39,7 @@ use std::sync::Arc;
 /// extra data derived from the underlying protocol.
 #[derive(Clone, Default)]
 pub struct Extensions {
-    // TODO optimize this storage
+    // TODO potentially optimize this storage https://github.com/plabayo/rama/issues/746
     extensions: Vec<Extension>,
 }
 

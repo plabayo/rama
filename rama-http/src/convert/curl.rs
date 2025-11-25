@@ -15,6 +15,7 @@ use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
 use rama_net::address::ProxyAddress;
 use rama_net::http::{RequestContext, try_request_ctx_from_http_parts};
+use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 use rama_net::user::ProxyCredential;
 
 /// Create a `curl` command string for the given [`HttpRequestParts`].
@@ -132,7 +133,7 @@ fn write_curl_command_for_request_parts(
         .map(|rc| {
             (
                 if rc.authority_has_default_port() {
-                    rc.authority.host().to_string()
+                    rc.authority.host.to_string()
                 } else {
                     rc.authority.to_string()
                 },
@@ -143,7 +144,7 @@ fn write_curl_command_for_request_parts(
             try_request_ctx_from_http_parts(parts).ok().map(|rc| {
                 (
                     if rc.authority_has_default_port() {
-                        rc.authority.host().to_string()
+                        rc.authority.host.to_string()
                     } else {
                         rc.authority.to_string()
                     },
@@ -193,14 +194,38 @@ fn write_curl_command_for_request_parts(
         .or_else(|| parts.extensions().get())
     {
         writer.write_tuple("-x", proxy_addr, true);
-        if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential {
-            let value = ProxyAuthorization(bearer.clone()).encode_to_value();
+        if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential
+            && let Some(value) = ProxyAuthorization(bearer.clone()).encode_to_value()
+        {
             let s_value = String::from_utf8_lossy(value.as_bytes());
             writer.write_header(
                 Http1HeaderName::from(crate::header::PROXY_AUTHORIZATION),
                 s_value,
             );
         }
+    }
+
+    match (
+        parts.extensions().get::<DnsResolveIpMode>(),
+        parts.extensions().get::<ConnectIpMode>(),
+    ) {
+        (Some(DnsResolveIpMode::SingleIpV4), _)
+        | (
+            None | Some(DnsResolveIpMode::DualPreferIpV4 | DnsResolveIpMode::Dual),
+            Some(ConnectIpMode::Ipv4),
+        ) => {
+            // force ipv4
+            writer.write_single("-4");
+        }
+        (Some(DnsResolveIpMode::SingleIpV6), _)
+        | (
+            None | Some(DnsResolveIpMode::DualPreferIpV4 | DnsResolveIpMode::Dual),
+            Some(ConnectIpMode::Ipv6),
+        ) => {
+            // force ipv6
+            writer.write_single("-6");
+        }
+        _ => (), // nothing that can be done
     }
 
     let original_http_headers = parts
@@ -238,7 +263,7 @@ fn write_curl_command_for_request_parts(
 #[cfg(test)]
 mod tests {
     use rama_net::Protocol;
-    use rama_net::address::Authority;
+    use rama_net::address::HostWithPort;
     use rama_net::user::{Basic, Bearer};
 
     use crate::body::util::BodyExt;
@@ -497,7 +522,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: None,
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: None,
         });
 
@@ -506,6 +531,46 @@ mod tests {
             s,
             format!(
                 r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -x '127.0.0.1:8080'"##,
+                NL = rama_utils::str::NATIVE_NEWLINE
+            ),
+        );
+    }
+
+    #[test]
+    fn test_cmd_string_for_request_with_ipv4_preference() {
+        let (mut parts, _) = crate::Request::builder()
+            .uri("example.com")
+            .body(())
+            .unwrap()
+            .into_parts();
+
+        parts.extensions.insert(DnsResolveIpMode::SingleIpV4);
+
+        let s = cmd_string_for_request_parts(&&parts);
+        assert_eq!(
+            s,
+            format!(
+                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -4"##,
+                NL = rama_utils::str::NATIVE_NEWLINE
+            ),
+        );
+    }
+
+    #[test]
+    fn test_cmd_string_for_request_with_ipv6_preference() {
+        let (mut parts, _) = crate::Request::builder()
+            .uri("example.com")
+            .body(())
+            .unwrap()
+            .into_parts();
+
+        parts.extensions.insert(DnsResolveIpMode::SingleIpV6);
+
+        let s = cmd_string_for_request_parts(&&parts);
+        assert_eq!(
+            s,
+            format!(
+                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -6"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
@@ -521,7 +586,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: None,
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(Basic::new_insecure("john"))),
         });
 
@@ -529,7 +594,7 @@ mod tests {
         assert_eq!(
             s,
             format!(
-                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -x 'john:@127.0.0.1:8080'"##,
+                r##"curl 'example.com' \{NL}  --http1.1 \{NL}  -x 'john@127.0.0.1:8080'"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
@@ -545,7 +610,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: None,
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(Basic::new("john", "secret"))),
         });
 
@@ -569,7 +634,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: None,
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Bearer(Bearer::new_static("abc123"))),
         });
 
@@ -594,7 +659,7 @@ mod tests {
 
         parts.extensions.insert(ProxyAddress {
             protocol: Some(Protocol::SOCKS5),
-            authority: Authority::local_ipv4(8080),
+            address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(Basic::new("user", "pass"))),
         });
 

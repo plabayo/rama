@@ -17,7 +17,7 @@
 //!     let service = HeaderFromStrConfigLayer::<String>::required(HeaderName::from_static("x-proxy-labels"))
 //!         .with_repeat(true)
 //!         .into_layer(WebService::default()
-//!             .get("/", async |req: Request| {
+//!             .with_get("/", async |req: Request| {
 //!                 // For production-like code you should prefer a custom type
 //!                 // to avoid possible conflicts. Ideally these are also as
 //!                 // cheap as possible to allocate.
@@ -90,19 +90,13 @@ impl<T, S, C> HeaderFromStrConfigService<T, S, C> {
         }
     }
 
-    /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-    pub fn set_repeat(&mut self, repeat: bool) -> &mut Self {
-        self.repeat = repeat;
-        self
-    }
-
-    /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-    #[must_use]
-    pub fn with_repeat(mut self, repeat: bool) -> Self {
-        self.repeat = repeat;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Toggle repeat on/off. When repeat is enabled the
+        /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
+        pub fn repeat(mut self, repeat: bool) -> Self {
+            self.repeat = repeat;
+            self
+        }
     }
 }
 
@@ -259,19 +253,13 @@ impl<T, C> HeaderFromStrConfigLayer<T, C> {
         }
     }
 
-    /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-    pub fn set_repeat(&mut self, repeat: bool) -> &mut Self {
-        self.repeat = repeat;
-        self
-    }
-
-    /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-    #[must_use]
-    pub fn with_repeat(mut self, repeat: bool) -> Self {
-        self.repeat = repeat;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Toggle repeat on/off. When repeat is enabled the
+        /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
+        pub fn repeat(mut self, repeat: bool) -> Self {
+            self.repeat = repeat;
+            self
+        }
     }
 }
 

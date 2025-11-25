@@ -22,7 +22,7 @@ use rama_http::{
 };
 use rama_net::{
     Protocol,
-    address::{Authority, Host},
+    address::{Host, HostWithOptPort},
     client::{ConnectorService, EstablishedClientConnection},
     http::RequestContext,
 };
@@ -102,73 +102,50 @@ impl<S, P> UserAgentEmulateService<S, P> {
         }
     }
 
-    /// When no user agent profile was found it will
-    /// fail the request unless optional is true. In case of
-    /// the latter the service will do nothing.
-    #[must_use]
-    pub fn optional(mut self, optional: bool) -> Self {
-        self.optional = optional;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// When no user agent profile was found it will
+        /// fail the request unless optional is true. In case of
+        /// the latter the service will do nothing.
+        pub fn is_optional(mut self, optional: bool) -> Self {
+            self.optional = optional;
+            self
+        }
     }
 
-    /// See [`Self::optional`].
-    pub fn set_optional(&mut self, optional: bool) -> &mut Self {
-        self.optional = optional;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// If true, the service will try to auto-detect the user agent from the request,
+        /// but only in case that info is not yet found in the context.
+        pub fn try_auto_detect_user_agent(mut self, try_auto_detect_user_agent: bool) -> Self {
+            self.try_auto_detect_user_agent = try_auto_detect_user_agent;
+            self
+        }
     }
 
-    /// If true, the service will try to auto-detect the user agent from the request,
-    /// but only in case that info is not yet found in the context.
-    #[must_use]
-    pub fn try_auto_detect_user_agent(mut self, try_auto_detect_user_agent: bool) -> Self {
-        self.try_auto_detect_user_agent = try_auto_detect_user_agent;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define a header that if present is to contain a CSV header name list,
+        /// that allows you to define the desired header order for the (extra) headers
+        /// found in the input (http) request.
+        ///
+        /// Extra meaning any headers not considered a base header and already defined
+        /// by the (selected) User Agent Profile.
+        ///
+        /// This can be useful because your http client might not respect the header casing
+        /// and/or order of the headers taken together. Using this metadata allows you to
+        /// communicate this data through anyway. If however your http client does respect
+        /// casing and order, or you don't care about some of it, you might not need it.
+        pub fn input_header_order(mut self, name: Option<HeaderName>) -> Self {
+            self.input_header_order = name;
+            self
+        }
     }
 
-    /// See [`Self::try_auto_detect_user_agent`].
-    pub fn set_try_auto_detect_user_agent(
-        &mut self,
-        try_auto_detect_user_agent: bool,
-    ) -> &mut Self {
-        self.try_auto_detect_user_agent = try_auto_detect_user_agent;
-        self
-    }
-
-    /// Define a header that if present is to contain a CSV header name list,
-    /// that allows you to define the desired header order for the (extra) headers
-    /// found in the input (http) request.
-    ///
-    /// Extra meaning any headers not considered a base header and already defined
-    /// by the (selected) User Agent Profile.
-    ///
-    /// This can be useful because your http client might not respect the header casing
-    /// and/or order of the headers taken together. Using this metadata allows you to
-    /// communicate this data through anyway. If however your http client does respect
-    /// casing and order, or you don't care about some of it, you might not need it.
-    #[must_use]
-    pub fn input_header_order(mut self, name: HeaderName) -> Self {
-        self.input_header_order = Some(name);
-        self
-    }
-
-    /// See [`Self::input_header_order`].
-    pub fn set_input_header_order(&mut self, name: HeaderName) -> &mut Self {
-        self.input_header_order = Some(name);
-        self
-    }
-
-    /// Choose what to do in case no profile could be selected
-    /// using the regular pre-conditions as specified by the provider.
-    #[must_use]
-    pub fn select_fallback(mut self, fb: UserAgentSelectFallback) -> Self {
-        self.select_fallback = Some(fb);
-        self
-    }
-
-    /// See [`Self::select_fallback`].
-    pub fn set_select_fallback(&mut self, fb: UserAgentSelectFallback) -> &mut Self {
-        self.select_fallback = Some(fb);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Choose what to do in case no profile could be selected
+        /// using the regular pre-conditions as specified by the provider.
+        pub fn select_fallback(mut self, fb: Option<UserAgentSelectFallback>) -> Self {
+            self.select_fallback = fb;
+            self
+        }
     }
 }
 
@@ -635,7 +612,7 @@ fn merge_http_headers<'a>(
     original_http_header_order: Option<OriginalHttp1Headers>,
     original_headers: HeaderMap,
     preserve_ua_header: bool,
-    request_authority: Option<Cow<'a, Authority>>,
+    request_authority: Option<Cow<'a, HostWithOptPort>>,
     protocol: Option<Cow<'a, Protocol>>,
     method: Option<&Method>,
     requested_client_hints: Option<&[ClientHint]>,
@@ -753,7 +730,7 @@ fn compute_sec_fetch_site_value(
     original_header_referer_value: Option<&HeaderValue>,
     _method: Option<&Method>,
     protocol: Option<&Protocol>,
-    request_authority: Option<&Authority>,
+    request_authority: Option<&HostWithOptPort>,
 ) -> HeaderValue {
     match &original_header_referer_value {
         Some(referer_value) => {
@@ -773,13 +750,13 @@ fn compute_sec_fetch_site_value(
 
                     let maybe_authority = uri
                         .host()
-                        .and_then(|h| Host::try_from(h).ok().and_then(|h| {
+                        .and_then(|h| Host::try_from(h).ok().map(|h| {
                             if let Some(default_port) = default_port {
                                 tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri");
-                                Some(Authority::new(h, default_port))
+                                HostWithOptPort::new_with_port(h, default_port)
                             } else {
-                                tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no port available");
-                                None
+                                tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no (default) port available");
+                                HostWithOptPort::new(h)
                             }
                         }));
 
@@ -788,10 +765,10 @@ fn compute_sec_fetch_site_value(
                             if Some(&authority) == request_authority {
                                 HeaderValue::from_static("same-origin")
                             } else if let Some(request_host) =
-                                request_authority.as_ref().map(|a| a.host())
+                                request_authority.as_ref().map(|a| &a.host)
                             {
                                 let is_same_registrable_domain =
-                                    match (authority.host(), request_host) {
+                                    match (&authority.host, request_host) {
                                         (Host::Name(a), Host::Name(b)) => {
                                             a.have_same_registrable_domain(b)
                                         }
@@ -844,7 +821,7 @@ mod tests {
     use rama_core::extensions::Extensions;
     use rama_core::{Layer, inspect::RequestInspectorLayer, service::service_fn};
     use rama_http::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
-    use rama_net::address::Host;
+    use rama_net::address::{Domain, Host};
 
     use crate::layer::emulate::UserAgentEmulateLayer;
     use crate::profile::{
@@ -860,7 +837,7 @@ mod tests {
             original_http_header_order: Option<Vec<&'static str>>,
             original_headers: Vec<(&'static str, &'static str)>,
             preserve_ua_header: bool,
-            request_authority: Authority,
+            request_authority: HostWithOptPort,
             protocol: Protocol,
             requested_client_hints: Option<Vec<&'static str>>,
             expected: Vec<(&'static str, &'static str)>,
@@ -873,10 +850,7 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port().unwrap(),
-                ),
+                request_authority: HostWithOptPort::example_domain_http(),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![],
@@ -890,10 +864,7 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port().unwrap(),
-                ),
+                request_authority: HostWithOptPort::example_domain_http(),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![("Accept", "text/html")],
@@ -907,10 +878,7 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![("content-type", "text/xml")],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port().unwrap(),
-                ),
+                request_authority: HostWithOptPort::example_domain_http(),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![("Accept", "text/html"), ("Content-Type", "text/xml")],
@@ -921,10 +889,7 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![("accept", "text/html")],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port().unwrap(),
-                ),
+                request_authority: HostWithOptPort::example_domain_http(),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![("accept", "text/html")],
@@ -935,10 +900,7 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![("content-type", "application/json")],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port().unwrap(),
-                ),
+                request_authority: HostWithOptPort::example_domain_http(),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![
@@ -960,10 +922,7 @@ mod tests {
                     ("user-agent", "php/8.0"),
                 ],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port().unwrap(),
-                ),
+                request_authority: HostWithOptPort::example_domain_http(),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![
@@ -985,10 +944,7 @@ mod tests {
                     ("user-agent", "php/8.0"),
                 ],
                 preserve_ua_header: true,
-                request_authority: Authority::new(
-                    Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port().unwrap(),
-                ),
+                request_authority: HostWithOptPort::example_domain_http(),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![
@@ -1011,10 +967,7 @@ mod tests {
                     ("user-agent", "php/8.0"),
                 ],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port().unwrap(),
-                ),
+                request_authority: HostWithOptPort::example_domain_http(),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![
@@ -1044,9 +997,9 @@ mod tests {
                     ("referer", "https://ramaproxy.org"),
                 ],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::from_str("ramaproxy.org").unwrap(),
-                    Protocol::HTTPS.default_port().unwrap(),
+                request_authority: HostWithOptPort::new_with_port(
+                    Host::Name(Domain::from_static("ramaproxy.org")),
+                    Protocol::HTTPS_DEFAULT_PORT,
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1081,10 +1034,7 @@ mod tests {
                     ("authorization", "Bearer 42"),
                 ],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::EXAMPLE_NAME,
-                    Protocol::HTTPS.default_port().unwrap(),
-                ),
+                request_authority: HostWithOptPort::example_domain_https(),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
                 expected: vec![
@@ -1120,9 +1070,9 @@ mod tests {
                     ("authorization", "Bearer 42"),
                 ],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::from_str("ramaproxy.org").unwrap(),
-                    Protocol::HTTPS.default_port().unwrap(),
+                request_authority: HostWithOptPort::new_with_port(
+                    Host::Name(Domain::from_static("ramaproxy.org")),
+                    Protocol::HTTPS_DEFAULT_PORT,
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1177,9 +1127,9 @@ mod tests {
                     ("host", "www.example.com"),
                 ],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTP.default_port().unwrap(),
+                request_authority: HostWithOptPort::new_with_port(
+                    Host::Name(Domain::from_static("www.google.com")),
+                    Protocol::HTTP_DEFAULT_PORT,
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -1247,9 +1197,9 @@ mod tests {
                     ("x-requested-with", "XMLHttpRequest"),
                 ],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTPS.default_port().unwrap(),
+                request_authority: HostWithOptPort::new_with_port(
+                    Host::Name(Domain::from_static("www.google.com")),
+                    Protocol::HTTPS_DEFAULT_PORT,
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1297,9 +1247,9 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![("referer", "https://maps.google.com/")],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTPS.default_port().unwrap(),
+                request_authority: HostWithOptPort::new_with_port(
+                    Host::Name(Domain::from_static("www.google.com")),
+                    Protocol::HTTPS_DEFAULT_PORT,
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1370,9 +1320,9 @@ mod tests {
                     ("sec-ch-prefers-contrast", "xx"),
                 ],
                 preserve_ua_header: false,
-                request_authority: Authority::new(
-                    Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTPS.default_port().unwrap(),
+                request_authority: HostWithOptPort::new_with_port(
+                    Host::Name(Domain::from_static("www.google.com")),
+                    Protocol::HTTPS_DEFAULT_PORT,
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: Some(vec![
@@ -2129,7 +2079,7 @@ mod tests {
             referer: Option<&'static str>,
             method: Option<Method>,
             protocol: Protocol,
-            request_authority: Authority,
+            request_authority: HostWithOptPort,
             expected_value: &'static str,
         }
 
@@ -2138,70 +2088,79 @@ mod tests {
                 referer: None,
                 method: None,
                 protocol: Protocol::HTTP,
-                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                request_authority: HostWithOptPort::example_domain_http(),
                 expected_value: "none",
             },
             TestCase {
                 referer: Some("http://example.com/foo?q=1"),
                 method: None,
                 protocol: Protocol::HTTP,
-                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                request_authority: HostWithOptPort::example_domain_http(),
                 expected_value: "same-origin",
             },
             TestCase {
                 referer: Some("http://example.com:8080/foo?q=1"),
                 method: None,
                 protocol: Protocol::HTTP,
-                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                request_authority: HostWithOptPort::example_domain_http(),
                 expected_value: "same-site",
             },
             TestCase {
                 referer: Some("https://example.com/foo?q=1"),
                 method: None,
                 protocol: Protocol::HTTP,
-                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                request_authority: HostWithOptPort::example_domain_http(),
                 expected_value: "cross-site",
             },
             TestCase {
                 referer: Some("http://example.com/foo?q=1"),
                 method: None,
                 protocol: Protocol::HTTPS,
-                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                request_authority: HostWithOptPort::example_domain_http(),
                 expected_value: "cross-site",
             },
             TestCase {
                 referer: Some("http://example.be/foo?q=1"),
                 method: None,
                 protocol: Protocol::HTTP,
-                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                request_authority: HostWithOptPort::example_domain_http(),
                 expected_value: "cross-site",
             },
             TestCase {
                 referer: Some("http://sub.example.com/foo?q=1"),
                 method: None,
                 protocol: Protocol::HTTP,
-                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                request_authority: HostWithOptPort::example_domain_http(),
                 expected_value: "same-site",
             },
             TestCase {
                 referer: Some("http://example.com/foo?q=1"),
                 method: None,
                 protocol: Protocol::HTTP,
-                request_authority: Authority::new("sub.example.com".parse().unwrap(), 80),
+                request_authority: HostWithOptPort::new_with_port(
+                    Host::Name(Domain::from_static("sub.example.com")),
+                    Protocol::HTTP_DEFAULT_PORT,
+                ),
                 expected_value: "same-site",
             },
             TestCase {
                 referer: Some("http://a.example.com/foo?q=1"),
                 method: None,
                 protocol: Protocol::HTTP,
-                request_authority: Authority::new("b.example.com".parse().unwrap(), 80),
+                request_authority: HostWithOptPort::new_with_port(
+                    Host::Name(Domain::from_static("b.example.com")),
+                    Protocol::HTTP_DEFAULT_PORT,
+                ),
                 expected_value: "same-site",
             },
             TestCase {
                 referer: Some("......."),
                 method: None,
                 protocol: Protocol::HTTP,
-                request_authority: Authority::new("b.example.com".parse().unwrap(), 80),
+                request_authority: HostWithOptPort::new_with_port(
+                    Host::Name(Domain::from_static("b.example.com")),
+                    Protocol::HTTP_DEFAULT_PORT,
+                ),
                 expected_value: "none",
             },
         ];

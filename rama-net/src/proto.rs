@@ -49,29 +49,46 @@ enum ProtocolKind {
     Custom(SmolStr),
 }
 
-const SCHEME_HTTP: &str = "http";
-const SCHEME_HTTPS: &str = "https";
-const SCHEME_SOCKS5: &str = "socks5";
-const SCHEME_SOCKS5H: &str = "socks5h";
-const SCHEME_WS: &str = "ws";
-const SCHEME_WSS: &str = "wss";
-
 impl Protocol {
+    /// `HTTP` protocol scheme
+    pub const HTTP_SCHEME: &str = "http";
+    /// `HTTP` protocol default port
+    pub const HTTP_DEFAULT_PORT: u16 = 80;
     /// `HTTP` protocol.
     pub const HTTP: Self = Self(ProtocolKind::Http);
 
+    /// `HTTPS` protocol scheme
+    pub const HTTPS_SCHEME: &str = "https";
+    /// `HTTPS` protocol default port
+    pub const HTTPS_DEFAULT_PORT: u16 = 443;
     /// `HTTPS` protocol.
     pub const HTTPS: Self = Self(ProtocolKind::Https);
 
+    /// `WS` protocol scheme
+    pub const WS_SCHEME: &str = "ws";
+    /// `WS` protocol default port
+    pub const WS_DEFAULT_PORT: u16 = Self::HTTP_DEFAULT_PORT;
     /// `WS` protocol.
     pub const WS: Self = Self(ProtocolKind::Ws);
 
+    /// `WSS` protocol scheme
+    pub const WSS_SCHEME: &str = "wss";
+    /// `WSS` protocol default port
+    pub const WSS_DEFAULT_PORT: u16 = Self::HTTPS_DEFAULT_PORT;
     /// `WSS` protocol.
     pub const WSS: Self = Self(ProtocolKind::Wss);
 
+    /// `SOCKS5` protocol scheme
+    pub const SOCKS5_SCHEME: &str = "socks5";
+    /// `SOCKS5` protocol default port
+    pub const SOCKS5_DEFAULT_PORT: u16 = 1080;
     /// `SOCKS5` protocol.
     pub const SOCKS5: Self = Self(ProtocolKind::Socks5);
 
+    /// `SOCKS5H` protocol scheme
+    pub const SOCKS5H_SCHEME: &str = "socks5h";
+    /// `SOCKS5H` protocol default port
+    pub const SOCKS5H_DEFAULT_PORT: u16 = Self::SOCKS5_DEFAULT_PORT;
     /// `SOCKS5H` protocol.
     pub const SOCKS5H: Self = Self(ProtocolKind::Socks5h);
 
@@ -91,17 +108,17 @@ impl Protocol {
         // NOTE: once unwrapping is possible in const we can piggy back on
         // `try_to_convert_str_to_non_custom_protocol`
 
-        Self(if eq_ignore_ascii_case!(s, SCHEME_HTTPS) {
+        Self(if eq_ignore_ascii_case!(s, Self::HTTPS_SCHEME) {
             ProtocolKind::Https
-        } else if s.is_empty() || eq_ignore_ascii_case!(s, SCHEME_HTTP) {
+        } else if s.is_empty() || eq_ignore_ascii_case!(s, Self::HTTP_SCHEME) {
             ProtocolKind::Http
-        } else if eq_ignore_ascii_case!(s, SCHEME_SOCKS5) {
+        } else if eq_ignore_ascii_case!(s, Self::SOCKS5_SCHEME) {
             ProtocolKind::Socks5
-        } else if eq_ignore_ascii_case!(s, SCHEME_SOCKS5H) {
+        } else if eq_ignore_ascii_case!(s, Self::SOCKS5H_SCHEME) {
             ProtocolKind::Socks5h
-        } else if eq_ignore_ascii_case!(s, SCHEME_WS) {
+        } else if eq_ignore_ascii_case!(s, Self::WS_SCHEME) {
             ProtocolKind::Ws
-        } else if eq_ignore_ascii_case!(s, SCHEME_WSS) {
+        } else if eq_ignore_ascii_case!(s, Self::WSS_SCHEME) {
             ProtocolKind::Wss
         } else if validate_scheme_str(s) {
             ProtocolKind::Custom(SmolStr::new_static(s))
@@ -166,9 +183,12 @@ impl Protocol {
     #[must_use]
     pub fn default_port(&self) -> Option<u16> {
         match &self.0 {
-            ProtocolKind::Https | ProtocolKind::Wss => Some(443),
-            ProtocolKind::Http | ProtocolKind::Ws => Some(80),
-            ProtocolKind::Socks5 | ProtocolKind::Socks5h => Some(1080),
+            ProtocolKind::Https => Some(Self::HTTPS_DEFAULT_PORT),
+            ProtocolKind::Wss => Some(Self::WSS_DEFAULT_PORT),
+            ProtocolKind::Http => Some(Self::HTTP_DEFAULT_PORT),
+            ProtocolKind::Ws => Some(Self::WS_DEFAULT_PORT),
+            ProtocolKind::Socks5 => Some(Self::SOCKS5_DEFAULT_PORT),
+            ProtocolKind::Socks5h => Some(Self::SOCKS5H_DEFAULT_PORT),
             ProtocolKind::Custom(_) => None,
         }
     }
@@ -196,23 +216,25 @@ rama_utils::macros::error::static_str_error! {
 fn try_to_convert_str_to_non_custom_protocol(
     s: &str,
 ) -> Result<Option<Protocol>, InvalidProtocolStr> {
-    Ok(Some(Protocol(if eq_ignore_ascii_case!(s, SCHEME_HTTPS) {
-        ProtocolKind::Https
-    } else if s.is_empty() || eq_ignore_ascii_case!(s, SCHEME_HTTP) {
-        ProtocolKind::Http
-    } else if eq_ignore_ascii_case!(s, SCHEME_SOCKS5) {
-        ProtocolKind::Socks5
-    } else if eq_ignore_ascii_case!(s, SCHEME_SOCKS5H) {
-        ProtocolKind::Socks5h
-    } else if eq_ignore_ascii_case!(s, SCHEME_WS) {
-        ProtocolKind::Ws
-    } else if eq_ignore_ascii_case!(s, SCHEME_WSS) {
-        ProtocolKind::Wss
-    } else if validate_scheme_str(s) {
-        return Ok(None);
-    } else {
-        return Err(InvalidProtocolStr);
-    })))
+    Ok(Some(Protocol(
+        if eq_ignore_ascii_case!(s, Protocol::HTTPS_SCHEME) {
+            ProtocolKind::Https
+        } else if s.is_empty() || eq_ignore_ascii_case!(s, Protocol::HTTP_SCHEME) {
+            ProtocolKind::Http
+        } else if eq_ignore_ascii_case!(s, Protocol::SOCKS5_SCHEME) {
+            ProtocolKind::Socks5
+        } else if eq_ignore_ascii_case!(s, Protocol::SOCKS5H_SCHEME) {
+            ProtocolKind::Socks5h
+        } else if eq_ignore_ascii_case!(s, Protocol::WS_SCHEME) {
+            ProtocolKind::Ws
+        } else if eq_ignore_ascii_case!(s, Protocol::WSS_SCHEME) {
+            ProtocolKind::Wss
+        } else if validate_scheme_str(s) {
+            return Ok(None);
+        } else {
+            return Err(InvalidProtocolStr);
+        },
+    )))
 }
 
 impl TryFrom<&str> for Protocol {
@@ -254,6 +276,10 @@ impl FromStr for Protocol {
 impl From<Scheme> for Protocol {
     #[inline]
     fn from(s: Scheme) -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "http crate Scheme is pre-validated; in future rama version we will no longer use ::http::Scheme and this can be removed"
+        )]
         s.as_str()
             .try_into()
             .expect("http crate Scheme is pre-validated by promise")
@@ -263,6 +289,10 @@ impl From<Scheme> for Protocol {
 #[cfg(feature = "http")]
 impl From<&Scheme> for Protocol {
     fn from(s: &Scheme) -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "http crate Scheme is pre-validated; in future rama version we will no longer use ::http::Scheme and this can be removed"
+        )]
         s.as_str()
             .try_into()
             .expect("http crate Scheme is pre-validated by promise")
@@ -272,12 +302,12 @@ impl From<&Scheme> for Protocol {
 impl PartialEq<str> for Protocol {
     fn eq(&self, other: &str) -> bool {
         match &self.0 {
-            ProtocolKind::Https => other.eq_ignore_ascii_case(SCHEME_HTTPS),
-            ProtocolKind::Http => other.eq_ignore_ascii_case(SCHEME_HTTP) || other.is_empty(),
-            ProtocolKind::Socks5 => other.eq_ignore_ascii_case(SCHEME_SOCKS5),
-            ProtocolKind::Socks5h => other.eq_ignore_ascii_case(SCHEME_SOCKS5H),
-            ProtocolKind::Ws => other.eq_ignore_ascii_case("ws"),
-            ProtocolKind::Wss => other.eq_ignore_ascii_case("wss"),
+            ProtocolKind::Https => other.eq_ignore_ascii_case(Self::HTTPS_SCHEME),
+            ProtocolKind::Http => other.eq_ignore_ascii_case(Self::HTTP_SCHEME) || other.is_empty(),
+            ProtocolKind::Socks5 => other.eq_ignore_ascii_case(Self::SOCKS5_SCHEME),
+            ProtocolKind::Socks5h => other.eq_ignore_ascii_case(Self::SOCKS5H_SCHEME),
+            ProtocolKind::Ws => other.eq_ignore_ascii_case(Self::WS_SCHEME),
+            ProtocolKind::Wss => other.eq_ignore_ascii_case(Self::WSS_SCHEME),
             ProtocolKind::Custom(s) => other.eq_ignore_ascii_case(s),
         }
     }

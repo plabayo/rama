@@ -74,7 +74,10 @@ pub(super) fn expand_attr(
                 expanded.extend(iter::once(tt));
                 nested_attr = TokenStream::new();
             }
-            _ => nested_attr.extend(iter::once(tt)),
+            TokenTree::Group(_)
+            | TokenTree::Ident(_)
+            | TokenTree::Literal(_)
+            | TokenTree::Punct(_) => nested_attr.extend(iter::once(tt)),
         }
     }
 

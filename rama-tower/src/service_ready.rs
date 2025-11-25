@@ -33,6 +33,7 @@ where
 {
     type Output = Result<T, T::Error>;
 
+    #[allow(clippy::expect_used, reason = "tower madness")]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         ready!(
             self.inner

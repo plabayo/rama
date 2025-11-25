@@ -48,7 +48,7 @@ mod test {
 
     #[tokio::test]
     async fn test_body() {
-        let service = WebService::default().get("/", async |Body(body): Body| {
+        let service = WebService::default().with_get("/", async |Body(body): Body| {
             let body = body.collect().await.unwrap().to_bytes();
             assert_eq!(body, "test");
         });

@@ -111,11 +111,16 @@ where
                     return Poll::Ready(Some(Ok(Frame::data(chunk))));
                 }
                 Err(err) => {
-                    let body_error: Option<B::Error> = M::get_pin_mut(this.read)
+                    let body_error: Option<B::Error> = M::get_pin_mut(this.read.as_mut())
                         .get_pin_mut()
                         .project()
                         .error
                         .take();
+
+                    let read_some_data = M::get_pin_mut(this.read.as_mut())
+                        .get_pin_mut()
+                        .project()
+                        .read_some_data;
 
                     if let Some(body_error) = body_error {
                         return Poll::Ready(Some(Err(body_error.into())));
@@ -123,7 +128,7 @@ where
                         // SENTINEL_ERROR_CODE only gets used when storing
                         // an underlying body error
                         unreachable!()
-                    } else {
+                    } else if *read_some_data {
                         return Poll::Ready(Some(Err(err.into())));
                     }
                 }
@@ -258,12 +263,17 @@ pin_project! {
         #[pin]
         inner: S,
         error: Option<E>,
+        read_some_data: bool,
     }
 }
 
 impl<S, E> StreamErrorIntoIoError<S, E> {
     pub(crate) fn new(inner: S) -> Self {
-        Self { inner, error: None }
+        Self {
+            inner,
+            error: None,
+            read_some_data: false,
+        }
     }
 
     /// Get a pinned mutable reference to the inner inner
@@ -282,7 +292,10 @@ where
         let this = self.project();
         match ready!(this.inner.poll_next(cx)) {
             None => Poll::Ready(None),
-            Some(Ok(value)) => Poll::Ready(Some(Ok(value))),
+            Some(Ok(value)) => {
+                *this.read_some_data = true;
+                Poll::Ready(Some(Ok(value)))
+            }
             Some(Err(err)) => {
                 *this.error = Some(err);
                 Poll::Ready(Some(Err(io::Error::from_raw_os_error(SENTINEL_ERROR_CODE))))

@@ -23,16 +23,19 @@ use rama::{
         },
     },
     tcp::{client::default_tcp_connect, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
-    udp::UdpSocket,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
+    udp::bind_udp,
 };
 
 use std::convert::Infallible;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -55,7 +58,7 @@ async fn main() {
         .await
         .expect("initiate socks5 UDP Associate handshake");
 
-    let udp_server = UdpSocket::bind(SocketAddress::local_ipv4(0))
+    let udp_server = bind_udp(SocketAddress::local_ipv4(0))
         .await
         .expect("bind udp server");
 
@@ -65,8 +68,8 @@ async fn main() {
         .into();
 
     tracing::info!(
-        network.local.address = %udp_server_addr.ip_addr(),
-        network.local.port = %udp_server_addr.port(),
+        network.local.address = %udp_server_addr.ip_addr,
+        network.local.port = %udp_server_addr.port,
         "server: socket created",
     );
 

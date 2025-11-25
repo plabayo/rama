@@ -38,7 +38,11 @@ use rama::{
     net::tls::server::SelfSignedData,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::level_filters::LevelFilter,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 #[cfg(feature = "boring")]
@@ -54,11 +58,10 @@ use rama::{
 use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -94,7 +97,7 @@ async fn main() {
         })
         .expect("self signed acceptor data")
         .with_alpn_protocols_http_auto()
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("with env key logger")
         .build()
     };
@@ -134,7 +137,9 @@ async fn main() {
                     StrictTransportSecurity::excluding_subdomains(Duration::from_secs(31536000)),
                 ),
             )
-                .into_layer(Router::new().get("/", Html(r##"<h1>Hello HSTS</h1>"##.to_owned()))),
+                .into_layer(
+                    Router::new().with_get("/", Html(r##"<h1>Hello HSTS</h1>"##.to_owned())),
+                ),
         );
 
         tcp_service

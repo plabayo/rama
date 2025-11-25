@@ -41,11 +41,14 @@ use rama::{
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use std::{sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn api_events_endpoint(last_id: Option<TypedHeader<LastEventId>>) -> impl IntoResponse {
     let mut id: u64 = last_id
@@ -79,7 +82,7 @@ async fn api_events_endpoint(last_id: Option<TypedHeader<LastEventId>>) -> impl 
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -106,8 +109,8 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
             Router::new()
-                .get("/", Html(INDEX_CONTENT))
-                .get("/api/events", api_events_endpoint),
+                .with_get("/", Html(INDEX_CONTENT))
+                .with_get("/api/events", api_events_endpoint),
         ));
         listener
             .serve_graceful(guard, HttpServer::auto(exec).service(app))

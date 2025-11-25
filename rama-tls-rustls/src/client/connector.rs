@@ -48,27 +48,12 @@ impl<K: Clone> Clone for TlsConnectorLayer<K> {
 }
 
 impl<K> TlsConnectorLayer<K> {
-    /// Attach [`TlsConnectorData`] to this [`TlsConnectorLayer`],
-    /// to be used instead of a globally shared [`TlsConnectorData::default`].
-    #[must_use]
-    pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
-        self.connector_data = Some(connector_data);
-        self
-    }
-
-    /// Maybe attach [`TlsConnectorData`] to this [`TlsConnectorLayer`],
-    /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
-    #[must_use]
-    pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
-        self.connector_data = connector_data;
-        self
-    }
-
-    /// Attach [`TlsConnectorData`] to this [`TlsConnectorLayer`],
-    /// to be used instead of a globally shared default client config.
-    pub fn set_connector_data(&mut self, connector_data: TlsConnectorData) -> &mut Self {
-        self.connector_data = Some(connector_data);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define [`TlsConnectorData`] for this [`TlsConnectorLayer`].
+        pub fn connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
+            self.connector_data = connector_data;
+            self
+        }
     }
 }
 
@@ -178,33 +163,18 @@ impl<S, K> TlsConnector<S, K> {
         }
     }
 
-    /// Attach [`TlsConnectorData`] to this [`TlsConnector`],
-    /// to be used instead of a globally shared [`TlsConnectorData::default`].
-    ///
-    /// NOTE: for a smooth interaction with HTTP you most likely do want to
-    /// create tls connector data to at the very least define the ALPN's correctly.
-    ///
-    /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
-    /// It will be then also be the [`TlsConnector`] that sets the request http version correctly.
-    #[must_use]
-    pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
-        self.connector_data = Some(connector_data);
-        self
-    }
-
-    /// Maybe attach [`TlsConnectorData`] to this [`TlsConnector`],
-    /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
-    #[must_use]
-    pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
-        self.connector_data = connector_data;
-        self
-    }
-
-    /// Attach [`TlsConnectorData`] to this [`TlsConnector`],
-    /// to be used instead of a globally shared default client config.
-    pub fn set_connector_data(&mut self, connector_data: TlsConnectorData) -> &mut Self {
-        self.connector_data = Some(connector_data);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the [`TlsConnectorData`] for this [`TlsConnector`],
+        ///
+        /// NOTE: for a smooth interaction with HTTP you most likely do want to
+        /// create tls connector data to at the very least define the ALPN's correctly.
+        ///
+        /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
+        /// It will be then also be the [`TlsConnector`] that sets the request http version correctly.
+        pub fn connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
+            self.connector_data = connector_data;
+            self
+        }
     }
 }
 
@@ -262,8 +232,8 @@ where
             .unwrap_or_default()
         {
             tracing::trace!(
-                server.address = %transport_ctx.authority.host(),
-                server.port = %transport_ctx.authority.port(),
+                server.address = %transport_ctx.authority.host,
+                server.port = transport_ctx.authority.port,
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
 
@@ -273,11 +243,11 @@ where
             });
         }
 
-        let server_host = transport_ctx.authority.host().clone();
+        let server_host = transport_ctx.authority.host.clone();
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(auto): attempt to secure inner connection w/ app protcol: {:?}",
             transport_ctx.app_protocol,
         );
@@ -287,8 +257,8 @@ where
         let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(auto): protocol secure, established tls connection w/ app protcol: {:?}",
             transport_ctx.app_protocol,
         );
@@ -322,13 +292,13 @@ where
                 .context("TlsConnector(auto): compute transport context")
         })?;
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(secure): attempt to secure inner connection w/ app protcol: {:?}",
             transport_ctx.app_protocol,
         );
 
-        let server_host = transport_ctx.authority.host().clone();
+        let server_host = transport_ctx.authority.host.clone();
 
         let connector_data = req.extensions().get::<TlsConnectorData>().cloned();
 

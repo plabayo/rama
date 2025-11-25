@@ -48,6 +48,7 @@
 //! ```
 
 // rama provides everything out of the box to build a TLS termination proxy with a dynamic rustls config
+
 use rama::{
     Layer,
     error::{ErrorContext, OpaqueError},
@@ -57,7 +58,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::level_filters::LevelFilter,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::rustls::{
         dep::{
             pemfile,
@@ -68,15 +73,14 @@ use rama::{
     },
 };
 
-use tokio::time::sleep;
-
 // everything else is provided by the standard library, community crates or tokio
+
 use std::{convert::Infallible, io::BufReader, sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -136,7 +140,7 @@ impl DynamicConfigProvider for DynamicConfig {
         let config = TlsAcceptorDataBuilder::new(cert_chain, key_der)
             .unwrap()
             .with_alpn_protocols_http_auto()
-            .with_env_key_logger()
+            .try_with_env_key_logger()
             .expect("with env key logger")
             .into_rustls_config();
 

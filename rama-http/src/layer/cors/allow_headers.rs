@@ -1,11 +1,13 @@
-use std::fmt;
+use std::{convert::Infallible, fmt};
+
+use rama_error::OpaqueError;
 
 use crate::{
     header::{self, HeaderName, HeaderValue},
     request::Parts as RequestParts,
 };
 
-use super::{Any, WILDCARD, separated_by_commas};
+use super::{Any, WILDCARD, try_separated_by_commas};
 
 /// Holds configuration for how to set the [`Access-Control-Allow-Headers`][mdn] header.
 ///
@@ -32,13 +34,13 @@ impl AllowHeaders {
     /// See [`CorsLayer::allow_headers`] for more details.
     ///
     /// [`CorsLayer::allow_headers`]: super::CorsLayer::allow_headers
-    pub fn list<I>(headers: I) -> Self
+    pub fn try_list<I>(headers: I) -> Result<Self, OpaqueError>
     where
         I: IntoIterator<Item = HeaderName>,
     {
-        Self(AllowHeadersInner::Const(separated_by_commas(
-            headers.into_iter().map(Into::into),
-        )))
+        Ok(Self(AllowHeadersInner::Const(try_separated_by_commas(
+            headers.into_iter().map(|v| Ok::<_, Infallible>(v.into())),
+        )?)))
     }
 
     /// Allow any headers, by mirroring the preflight [`Access-Control-Request-Headers`][mdn]
@@ -86,15 +88,21 @@ impl From<Any> for AllowHeaders {
     }
 }
 
-impl<const N: usize> From<[HeaderName; N]> for AllowHeaders {
-    fn from(arr: [HeaderName; N]) -> Self {
-        Self::list(arr)
+impl<const N: usize> TryFrom<[HeaderName; N]> for AllowHeaders {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn try_from(arr: [HeaderName; N]) -> Result<Self, Self::Error> {
+        Self::try_list(arr)
     }
 }
 
-impl From<Vec<HeaderName>> for AllowHeaders {
-    fn from(vec: Vec<HeaderName>) -> Self {
-        Self::list(vec)
+impl TryFrom<Vec<HeaderName>> for AllowHeaders {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn try_from(vec: Vec<HeaderName>) -> Result<Self, Self::Error> {
+        Self::try_list(vec)
     }
 }
 

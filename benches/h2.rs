@@ -1,14 +1,21 @@
-use rama::ServiceInput;
-use rama::http::Request;
-use rama::http::core::h2::{
-    RecvStream, client,
-    server::{self, SendResponse},
+use rama::{
+    ServiceInput,
+    bytes::Bytes,
+    http::{
+        Request,
+        core::h2::{
+            RecvStream, client,
+            server::{self, SendResponse},
+        },
+    },
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
-use rama_core::bytes::Bytes;
-use rama_core::telemetry::tracing::level_filters::LevelFilter;
 use tokio::net::{TcpListener, TcpStream};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use std::{
     error::Error,
@@ -116,7 +123,7 @@ async fn send_requests(addr: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()

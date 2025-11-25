@@ -127,7 +127,7 @@ mod tests {
     #[tokio::test]
     async fn gzip_works() {
         let svc = service_fn(handle);
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()
@@ -153,7 +153,7 @@ mod tests {
     #[tokio::test]
     async fn x_gzip_works() {
         let svc = service_fn(handle);
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()
@@ -189,7 +189,7 @@ mod tests {
     #[tokio::test]
     async fn zstd_works() {
         let svc = service_fn(handle);
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()
@@ -305,7 +305,7 @@ mod tests {
             }
         }
 
-        let svc = Compression::new(svc_fn).compress_when(EveryOtherResponse::default());
+        let svc = Compression::new(svc_fn).with_compress_predicate(EveryOtherResponse::default());
         let req = Request::builder()
             .header("accept-encoding", "br")
             .body(Body::empty())
@@ -393,7 +393,7 @@ mod tests {
             Ok::<_, std::io::Error>(resp)
         });
 
-        let svc = Compression::new(svc).quality(level);
+        let svc = Compression::new(svc).with_quality(level);
 
         // call the service
         let req = Request::builder()
@@ -437,7 +437,7 @@ mod tests {
             headers.insert(CONTENT_RANGE, "bytes 0-4/*".parse().unwrap());
             Ok::<_, std::io::Error>(res)
         });
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()
@@ -464,7 +464,7 @@ mod tests {
                 .insert(ACCEPT_RANGES, "bytes".parse().unwrap());
             Ok::<_, std::io::Error>(res)
         });
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()

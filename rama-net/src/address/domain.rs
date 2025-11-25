@@ -28,9 +28,17 @@ impl Domain {
         Self(SmolStr::new_static(s))
     }
 
+    /// Safety: callee ensures that the given string is a valid domain,
+    /// this can be useful in cases where we store a string but which
+    /// came from a Domain originally.
+    pub(crate) unsafe fn from_maybe_borrowed_unchecked(s: impl Into<SmolStr>) -> Self {
+        Self(s.into())
+    }
+
     /// Creates the example [`Domain].
     #[must_use]
-    pub fn example() -> Self {
+    #[inline(always)]
+    pub const fn example() -> Self {
         Self::from_static("example.com")
     }
 
@@ -41,19 +49,21 @@ impl Domain {
     ///
     /// In specific this means that it will match on any domain with the TLD `.internal`.
     #[must_use]
-    pub fn tld_private() -> Self {
+    #[inline(always)]
+    pub const fn tld_private() -> Self {
         Self::from_static("internal")
     }
 
     /// Creates the localhost [`Domain`].
     #[must_use]
-    pub fn tld_localhost() -> Self {
+    #[inline(always)]
+    pub const fn tld_localhost() -> Self {
         Self::from_static("localhost")
     }
 
     /// Consumes the domain as a host.
     #[must_use]
-    pub fn into_host(self) -> Host {
+    pub const fn into_host(self) -> Host {
         Host::Name(self)
     }
 
@@ -346,7 +356,7 @@ fn cmp_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> Ordering {
             (None, Some(_)) => Some(Ordering::Less),
             (None, None) => Some(Ordering::Equal),
         })
-        .unwrap() // should always be possible to find given we are in an infinite zip :)
+        .unwrap_or(Ordering::Equal)
 }
 
 impl PartialOrd<Self> for Domain {

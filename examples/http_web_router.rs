@@ -28,34 +28,37 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer,
-    extensions::ExtensionsRef,
     http::{
-        Request,
+        Method,
+        headers::exotic::XClacksOverhead,
+        layer::set_header::SetResponseHeaderLayer,
         layer::{match_redirect::UriMatchRedirectLayer, trace::TraceLayer},
-        matcher::UriParams,
         server::HttpServer,
         service::web::{
             Router,
+            extract::Path,
             response::{Html, Json, Redirect},
         },
     },
     net::http::uri::UriMatchReplaceRule,
     rt::Executor,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
+use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 const ADDRESS: &str = "127.0.0.1:62018";
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -66,52 +69,63 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let router = Router::new()
-        .get("/", Html(r##"<h1>Rama - Web Router</h1>"##.to_owned()))
-        // route with a parameter
-        .post("/greet/{name}", async |req: Request| {
-            let uri_params = req.extensions().get::<UriParams>().unwrap();
-            let name = uri_params.get("name").unwrap();
-            Json(json!({
-                "method": req.method().as_str(),
-                "message": format!("Hello, {name}!"),
-            }))
-        })
-        // catch-all route
-        .get("/lang/{*code}", async |req: Request| {
-            let translations = [
-                ("en", "Welcome to our site!"),
-                ("fr", "Bienvenue sur notre site!"),
-                ("es", "¡Bienvenido a nuestro sitio!"),
-            ];
-            let uri_params = req.extensions().get::<UriParams>().unwrap();
-            let code = uri_params.get("code").unwrap();
-            let message = translations
-                .iter()
-                .find(|(lang, _)| *lang == code)
-                .map(|(_, message)| *message)
-                .unwrap_or("Language not supported");
+    #[derive(Debug, Deserialize)]
+    struct PostGreetForPathParams {
+        name: String,
+    }
 
-            Json(json!({
-                "message": message,
-            }))
-        })
+    #[derive(Debug, Deserialize)]
+    struct GetGreetingPathParams {
+        code: String,
+    }
+
+    let router = Router::new()
+        .with_get("/", Html(r##"<h1>Rama - Web Router</h1>"##.to_owned()))
+        // route with a parameter
+        .with_post(
+            "/greet/{name}",
+            async |method: Method, Path(PostGreetForPathParams { name }): Path<PostGreetForPathParams>| {
+                Json(json!({
+                    "method": method.as_str(),
+                    "message": format!("Hello, {name}!"),
+                }))
+            },
+        )
+        // catch-all route
+        .with_get(
+            "/lang/{*code}",
+            async |Path(GetGreetingPathParams { code }): Path<GetGreetingPathParams>| {
+                let translations = [
+                    ("en", "Welcome to our site!"),
+                    ("fr", "Bienvenue sur notre site!"),
+                    ("es", "¡Bienvenido a nuestro sitio!"),
+                ];
+                let message = translations
+                    .iter()
+                    .find(|(lang, _)| *lang == code)
+                    .map(|(_, message)| *message)
+                    .unwrap_or("Language not supported");
+
+                Json(json!({
+                    "message": message,
+                }))
+            },
+        )
         // sub route support - api version health check
-        .sub(
-            "/api",
-            Router::new().sub(
-                "/v2",
-                Router::new().get("/status", async || {
+        .with_sub_router_make_fn("/api", |router| {
+            router.with_sub_router_make_fn("/v2", |router| {
+                router.with_get("/status", async || {
                     Json(json!({
                         "status": "API v2 is up and running",
                     }))
-                }),
-            ),
-        )
-        .not_found(Redirect::temporary("/"));
+                })
+            })
+        })
+        .with_not_found(Redirect::temporary("/"));
 
     let middlewares = (
         TraceLayer::new_for_http(),
+        SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
         UriMatchRedirectLayer::permanent([
             UriMatchReplaceRule::try_new("*/v1/*", "$1/v2/$2").unwrap(), // upgrade users as-is to v2 (backwards compatible)
             // this is now a new endpoint,

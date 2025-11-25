@@ -4,6 +4,7 @@
 
 use byteorder::{BigEndian, ReadBytesExt};
 use rama_core::bytes::BufMut;
+use rama_net::address::HostWithPort;
 use std::io::Read;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -88,7 +89,7 @@ use super::{
 /// encoding said header.
 pub struct UdpHeader {
     pub fragment_number: u8,
-    pub destination: rama_net::address::Authority,
+    pub destination: HostWithPort,
 }
 
 impl UdpHeader {
@@ -147,7 +148,6 @@ impl UdpHeader {
 #[cfg(test)]
 mod tests {
     use rama_core::bytes::BytesMut;
-    use rama_net::address::Authority;
     use std::io::Write;
     use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -181,7 +181,7 @@ mod tests {
         test_write_read_eq!(
             UdpHeader {
                 fragment_number: 2,
-                destination: Authority::local_ipv6(45),
+                destination: HostWithPort::local_ipv6(45),
             },
             UdpHeader
         );
@@ -192,7 +192,7 @@ mod tests {
         test_write_read_sync_eq!(
             UdpHeader {
                 fragment_number: 2,
-                destination: Authority::local_ipv6(45),
+                destination: HostWithPort::local_ipv6(45),
             },
             UdpHeader
         );

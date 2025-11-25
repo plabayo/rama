@@ -66,8 +66,11 @@ use rama::{
                 resource::{HOST_ARCH, OS_NAME},
             },
         },
-        tracing::level_filters::LevelFilter,
-        tracing::subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
     },
 };
 
@@ -99,7 +102,7 @@ impl Metrics {
 #[tokio::main]
 async fn main() {
     // tracing setup
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -145,7 +148,7 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
-                WebService::default().get("/", async |ext: Extensions| {
+                WebService::default().with_get("/", async |ext: Extensions| {
                     ext.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),

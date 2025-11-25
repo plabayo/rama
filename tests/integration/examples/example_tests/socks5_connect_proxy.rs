@@ -58,7 +58,7 @@ async fn test_http_client_over_socks5_proxy_connect(
         .get(uri)
         .extension(ProxyAddress {
             protocol: Some(Protocol::SOCKS5),
-            authority: proxy_socket_addr.into(),
+            address: proxy_socket_addr.into(),
             credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
         })
         .send()
@@ -82,7 +82,7 @@ async fn spawn_http_server() -> SocketAddress {
         .expect("get bind address of http server")
         .into();
 
-    let app = Router::new().get("/ping", "pong");
+    let app = Router::new().with_get("/ping", "pong");
     let server = HttpServer::auto(Executor::default()).service(Arc::new(app));
 
     tokio::spawn(tcp_service.serve(server));

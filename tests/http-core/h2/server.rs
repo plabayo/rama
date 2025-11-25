@@ -35,7 +35,7 @@ async fn server_builder_set_max_concurrent_streams() {
     let (io, mut client) = mock::new();
 
     let mut settings = frame::Settings::default();
-    settings.set_max_concurrent_streams(Some(1));
+    settings.config.max_concurrent_streams = Some(1);
 
     let client = async move {
         let recv_settings = client.assert_server_handshake().await;
@@ -56,7 +56,7 @@ async fn server_builder_set_max_concurrent_streams() {
     };
 
     let mut builder = server::Builder::new();
-    builder.max_concurrent_streams(1);
+    builder.set_max_concurrent_streams(1);
 
     let h2 = async move {
         let mut srv = builder.handshake::<_, Bytes>(io).await.expect("handshake");
@@ -149,7 +149,9 @@ async fn push_request() {
 
     let client = async move {
         client
-            .assert_server_handshake_with_settings(frames::settings().max_concurrent_streams(100))
+            .assert_server_handshake_with_settings(
+                frames::settings().with_max_concurrent_streams(100),
+            )
             .await;
         client
             .send_frame(
@@ -234,7 +236,7 @@ async fn push_request_disabled() {
 
     let client = async move {
         client
-            .assert_server_handshake_with_settings(frames::settings().disable_push())
+            .assert_server_handshake_with_settings(frames::settings().with_disable_push())
             .await;
         client
             .send_frame(
@@ -282,7 +284,9 @@ async fn push_request_against_concurrency() {
 
     let client = async move {
         client
-            .assert_server_handshake_with_settings(frames::settings().max_concurrent_streams(1))
+            .assert_server_handshake_with_settings(
+                frames::settings().with_max_concurrent_streams(1),
+            )
             .await;
         client
             .send_frame(
@@ -367,7 +371,9 @@ async fn push_request_with_data() {
 
     let client = async move {
         client
-            .assert_server_handshake_with_settings(frames::settings().max_concurrent_streams(100))
+            .assert_server_handshake_with_settings(
+                frames::settings().with_max_concurrent_streams(100),
+            )
             .await;
         client
             .send_frame(
@@ -434,7 +440,9 @@ async fn push_request_between_data() {
 
     let client = async move {
         client
-            .assert_server_handshake_with_settings(frames::settings().max_concurrent_streams(100))
+            .assert_server_handshake_with_settings(
+                frames::settings().with_max_concurrent_streams(100),
+            )
             .await;
         client
             .send_frame(
@@ -837,7 +845,7 @@ async fn too_big_headers_sends_431() {
 
     let client = async move {
         let settings = client.assert_server_handshake().await;
-        assert_frame_eq(settings, frames::settings().max_header_list_size(10));
+        assert_frame_eq(settings, frames::settings().with_max_header_list_size(10));
         client
             .send_frame(
                 frames::headers(1)
@@ -854,7 +862,7 @@ async fn too_big_headers_sends_431() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .max_header_list_size(10)
+            .with_max_header_list_size(10)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -874,7 +882,7 @@ async fn too_big_headers_sends_reset_after_431_if_not_eos() {
 
     let client = async move {
         let settings = client.assert_server_handshake().await;
-        assert_frame_eq(settings, frames::settings().max_header_list_size(10));
+        assert_frame_eq(settings, frames::settings().with_max_header_list_size(10));
         client
             .send_frame(
                 frames::headers(1)
@@ -890,7 +898,7 @@ async fn too_big_headers_sends_reset_after_431_if_not_eos() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .max_header_list_size(10)
+            .with_max_header_list_size(10)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -910,7 +918,10 @@ async fn too_many_continuation_frames_sends_goaway() {
 
     let client = async move {
         let settings = client.assert_server_handshake().await;
-        assert_frame_eq(settings, frames::settings().max_header_list_size(1024 * 32));
+        assert_frame_eq(
+            settings,
+            frames::settings().with_max_header_list_size(1024 * 32),
+        );
 
         // the mock impl automatically splits into CONTINUATION frames if the
         // headers are too big for one frame. So without a max header list size
@@ -938,7 +949,7 @@ async fn too_many_continuation_frames_sends_goaway() {
     let srv = async move {
         let mut srv = server::Builder::new()
             // should mean ~3 continuation
-            .max_header_list_size(1024 * 32)
+            .with_max_header_list_size(1024 * 32)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -1293,7 +1304,7 @@ async fn send_reset_explicitly_does_not_affect_local_limit() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .max_local_error_reset_streams(Some(3))
+            .with_max_local_error_reset_streams(3)
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -1319,7 +1330,7 @@ async fn extended_connect_protocol_disabled_by_default() {
     let client = async move {
         let settings = client.assert_server_handshake().await;
 
-        assert_eq!(settings.is_extended_connect_protocol_enabled(), None);
+        assert_eq!(settings.config.enable_connect_protocol, None);
 
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo::request(
@@ -1353,7 +1364,10 @@ async fn extended_connect_protocol_enabled_during_handshake() {
     let client = async move {
         let settings = client.assert_server_handshake().await;
 
-        assert_eq!(settings.is_extended_connect_protocol_enabled(), Some(true));
+        assert_eq!(
+            settings.config.enable_connect_protocol.map(|v| v != 0),
+            Some(true)
+        );
 
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo::request(
@@ -1369,7 +1383,7 @@ async fn extended_connect_protocol_enabled_during_handshake() {
     let srv = async move {
         let mut builder = server::Builder::new();
 
-        builder.enable_connect_protocol();
+        builder.set_enable_connect_protocol();
 
         let mut srv = builder.handshake::<_, Bytes>(io).await.expect("handshake");
 
@@ -1404,7 +1418,10 @@ async fn reject_pseudo_protocol_on_non_connect_request() {
     let client = async move {
         let settings = client.assert_server_handshake().await;
 
-        assert_eq!(settings.is_extended_connect_protocol_enabled(), Some(true));
+        assert_eq!(
+            settings.config.enable_connect_protocol.map(|v| v != 0),
+            Some(true)
+        );
 
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo::request(
@@ -1420,7 +1437,7 @@ async fn reject_pseudo_protocol_on_non_connect_request() {
     let srv = async move {
         let mut builder = server::Builder::new();
 
-        builder.enable_connect_protocol();
+        builder.set_enable_connect_protocol();
 
         let mut srv = builder.handshake::<_, Bytes>(io).await.expect("handshake");
 
@@ -1444,7 +1461,10 @@ async fn reject_extended_connect_request_without_scheme() {
     let client = async move {
         let settings = client.assert_server_handshake().await;
 
-        assert_eq!(settings.is_extended_connect_protocol_enabled(), Some(true));
+        assert_eq!(
+            settings.config.enable_connect_protocol.map(|v| v != 0),
+            Some(true)
+        );
 
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo {
@@ -1461,7 +1481,7 @@ async fn reject_extended_connect_request_without_scheme() {
     let srv = async move {
         let mut builder = server::Builder::new();
 
-        builder.enable_connect_protocol();
+        builder.set_enable_connect_protocol();
 
         let mut srv = builder.handshake::<_, Bytes>(io).await.expect("handshake");
 
@@ -1485,7 +1505,10 @@ async fn reject_extended_connect_request_without_path() {
     let client = async move {
         let settings = client.assert_server_handshake().await;
 
-        assert_eq!(settings.is_extended_connect_protocol_enabled(), Some(true));
+        assert_eq!(
+            settings.config.enable_connect_protocol.map(|v| v != 0),
+            Some(true)
+        );
 
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo {
@@ -1502,7 +1525,7 @@ async fn reject_extended_connect_request_without_path() {
     let srv = async move {
         let mut builder = server::Builder::new();
 
-        builder.enable_connect_protocol();
+        builder.set_enable_connect_protocol();
 
         let mut srv = builder.handshake::<_, Bytes>(io).await.expect("handshake");
 
@@ -1570,7 +1593,7 @@ async fn client_drop_connection_without_close_notify() {
     };
 
     let mut builder = server::Builder::new();
-    builder.max_concurrent_streams(1);
+    builder.set_max_concurrent_streams(1);
 
     let h2 = async move {
         let mut srv = builder.handshake::<_, Bytes>(io).await.expect("handshake");
@@ -1618,8 +1641,8 @@ async fn init_window_size_smaller_than_default_should_use_default_before_ack() {
     };
 
     let mut builder = server::Builder::new();
-    builder.max_concurrent_streams(1);
-    builder.initial_window_size(1);
+    builder.set_max_concurrent_streams(1);
+    builder.set_initial_window_size(1);
     let h2 = async move {
         let mut srv = builder.handshake::<_, Bytes>(io).await.expect("handshake");
         let (req, mut stream) = srv.next().await.unwrap().unwrap();

@@ -1,3 +1,5 @@
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use crate::stream::dep::ipnet::IpNet;
 use rama_core::extensions::Extensions;
 
@@ -35,7 +37,7 @@ impl PrivateIpNetMatcher {
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self::inner_new(false)
     }
 
@@ -48,71 +50,56 @@ impl PrivateIpNetMatcher {
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     #[must_use]
-    pub fn optional() -> Self {
+    pub const fn optional() -> Self {
         Self::inner_new(true)
     }
 
-    fn inner_new(optional: bool) -> Self {
+    const fn inner_new(optional: bool) -> Self {
+        const MATCHERS: [IpNet; 11] = [
+            // This host on this network
+            // https://datatracker.ietf.org/doc/html/rfc1122#section-3.2.1.3
+            IpNet::new_assert(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8), // 0.0.0.0/8
+            // Private-Use
+            // https://datatracker.ietf.org/doc/html/rfc1918
+            IpNet::new_assert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8), // 10.0.0.0/8
+            // Shared Address Space
+            // https://datatracker.ietf.org/doc/html/rfc6598
+            IpNet::new_assert(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0)), 10), // 100.64.0.0/10
+            // Loopback
+            // https://datatracker.ietf.org/doc/html/rfc1122#section-3.2.1.3
+            IpNet::new_assert(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 0)), 8), // 127.0.0.0/8
+            // Link Local
+            // https://datatracker.ietf.org/doc/html/rfc3927
+            IpNet::new_assert(IpAddr::V4(Ipv4Addr::new(169, 254, 0, 0)), 16), // 169.254.0.0/16
+            // Private-Use
+            // https://datatracker.ietf.org/doc/html/rfc1918
+            IpNet::new_assert(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)), 12), // 172.16.0.0/12
+            // Private-Use
+            // https://datatracker.ietf.org/doc/html/rfc1918
+            IpNet::new_assert(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)), 16), // 192.168.0.0/16
+            // Unique-Local
+            // https://datatracker.ietf.org/doc/html/rfc4193
+            IpNet::new_assert(IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0)), 7), // fc00::/7
+            // Linked-Scoped Unicast
+            // https://datatracker.ietf.org/doc/html/rfc4291
+            IpNet::new_assert(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)), 10), // fe80::/10
+            // Loopback Address
+            // https://datatracker.ietf.org/doc/html/rfc4291
+            IpNet::new_assert(IpAddr::V6(Ipv6Addr::LOCALHOST), 128), // ::1/128
+            // Unspecified Address
+            // https://datatracker.ietf.org/doc/html/rfc4291
+            IpNet::new_assert(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 128), // ::/128
+        ];
+
         Self {
-            matchers: [
-                // This host on this network
-                // https://datatracker.ietf.org/doc/html/rfc1122#section-3.2.1.3
-                "0.0.0.0/8"
-                    .parse::<IpNet>()
-                    .expect("parse 0.0.0.0/8 as IpNet"),
-                // Private-Use
-                // https://datatracker.ietf.org/doc/html/rfc1918
-                "10.0.0.0/8"
-                    .parse::<IpNet>()
-                    .expect("parse 10.0.0.0/8 as IpNet"),
-                // Shared Address Space
-                // https://datatracker.ietf.org/doc/html/rfc6598
-                "100.64.0.0/10"
-                    .parse::<IpNet>()
-                    .expect("parse 100.64.0.0/10 as IpNet"),
-                // Loopback
-                // https://datatracker.ietf.org/doc/html/rfc1122#section-3.2.1.3
-                "127.0.0.0/8"
-                    .parse::<IpNet>()
-                    .expect("parse 127.0.0.0/8 as IpNet"),
-                // Link Local
-                // https://datatracker.ietf.org/doc/html/rfc3927
-                "169.254.0.0/16"
-                    .parse::<IpNet>()
-                    .expect("parse 169.254.0.0/16 as IpNet"),
-                // Private-Use
-                // https://datatracker.ietf.org/doc/html/rfc1918
-                "172.16.0.0/12"
-                    .parse::<IpNet>()
-                    .expect("parse 172.16.0.0/12 as IpNet"),
-                // Private-Use
-                // https://datatracker.ietf.org/doc/html/rfc1918
-                "192.168.0.0/16"
-                    .parse::<IpNet>()
-                    .expect("parse 192.168.0.0/16 as IpNet"),
-                // Unique-Local
-                // https://datatracker.ietf.org/doc/html/rfc4193
-                "fc00::/7"
-                    .parse::<IpNet>()
-                    .expect("parse fc00::/7 as IpNet"),
-                // Linked-Scoped Unicast
-                // https://datatracker.ietf.org/doc/html/rfc4291
-                "fe80::/10"
-                    .parse::<IpNet>()
-                    .expect("parse fe80::/10 as IpNet"),
-                // Loopback Address
-                // https://datatracker.ietf.org/doc/html/rfc4291
-                "::1/128".parse::<IpNet>().expect("parse ::1/128 as IpNet"),
-                // Unspecified Address
-                // https://datatracker.ietf.org/doc/html/rfc4291
-                "::/128".parse::<IpNet>().expect("parse ::/128 as IpNet"),
-            ],
+            matchers: MATCHERS,
             optional,
         }
     }
 }
 
 impl Default for PrivateIpNetMatcher {
+    #[inline(always)]
     fn default() -> Self {
         Self::new()
     }

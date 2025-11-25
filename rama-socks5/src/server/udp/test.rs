@@ -7,12 +7,12 @@ pub(crate) struct MockUdpAssociator {
 
 #[derive(Debug)]
 enum MockReply {
-    Success { local_addr: Authority },
+    Success { local_addr: HostWithPort },
     Error(ReplyKind),
 }
 
 impl MockUdpAssociator {
-    pub(crate) fn new(local_addr: Authority) -> Self {
+    pub(crate) fn new(local_addr: HostWithPort) -> Self {
         Self {
             reply: MockReply::Success { local_addr },
         }
@@ -31,7 +31,7 @@ where
     async fn accept_udp_associate(
         &self,
         mut stream: S,
-        _destination: Authority,
+        _destination: HostWithPort,
     ) -> Result<(), Error> {
         match &self.reply {
             MockReply::Success { local_addr } => {

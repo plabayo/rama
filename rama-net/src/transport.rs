@@ -2,8 +2,9 @@
 //!
 //! See [`TransportContext`] for the centerpiece of this module.
 
+use crate::Protocol;
+use crate::address::{HostWithOptPort, HostWithPort};
 use crate::http::RequestContext;
-use crate::{Protocol, address::Authority};
 use rama_core::error::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_http_types::request::Parts;
@@ -25,7 +26,24 @@ pub struct TransportContext {
     /// The authority of the target,
     /// from where this comes depends on the kind of
     /// request it originates from.
-    pub authority: Authority,
+    pub authority: HostWithOptPort,
+}
+
+impl TransportContext {
+    #[must_use]
+    pub fn host_with_port(&self) -> Option<HostWithPort> {
+        let port = self
+            .authority
+            .port
+            .or_else(|| self.app_protocol.as_ref().and_then(|p| p.default_port()))
+            .or_else(|| {
+                self.http_version
+                    .is_some()
+                    .then_some(Protocol::HTTP_DEFAULT_PORT)
+            })?;
+        let host = self.authority.host.clone();
+        Some(HostWithPort { host, port })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

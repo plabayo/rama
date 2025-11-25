@@ -211,6 +211,10 @@ impl FrameCodec {
             }
         };
 
+        #[allow(
+            clippy::expect_used,
+            reason = "we can only reach here in case header is Some (see payload loop)"
+        )]
         let (mut header, length) = self.header.take().expect("Bug: no frame header");
         debug_assert_eq!(payload.len() as u64, length);
 
@@ -267,9 +271,8 @@ impl FrameCodec {
         trace!("writing frame {frame}");
 
         self.out_buffer.reserve(frame.len());
-        frame
-            .format_into_buf(&mut self.out_buffer)
-            .expect("Bug: can't write to vector");
+        // Safety: writing into Vec cannot fail with error (only panics)
+        let _ = frame.format_into_buf(&mut self.out_buffer);
 
         if self.out_buffer.len() > self.out_buffer_write_len {
             self.write_out_buffer(stream)

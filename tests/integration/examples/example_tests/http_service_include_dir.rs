@@ -11,7 +11,7 @@ async fn test_http_service_include_dir() {
     let runner = utils::ExampleRunner::interactive("http_service_include_dir", None);
 
     let file_content = runner
-        .get("http://127.0.0.1:62037/test-files/index.html")
+        .get("http://127.0.0.1:62037")
         .send()
         .await
         .unwrap()

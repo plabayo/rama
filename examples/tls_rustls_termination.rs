@@ -38,6 +38,7 @@
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
 
 // rama provides everything out of the box to build a TLS termination proxy
+
 use rama::{
     Layer,
     extensions::ExtensionsRef,
@@ -55,18 +56,22 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    telemetry::tracing::level_filters::LevelFilter,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio
+
 use std::{convert::Infallible, time::Duration};
 use tokio::io::AsyncWriteExt;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -77,7 +82,7 @@ async fn main() {
 
     let acceptor_data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData::default())
         .expect("tls acceptor with self signed data")
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("with env key logger")
         .build();
 
@@ -86,7 +91,7 @@ async fn main() {
     // create tls proxy
     shutdown.spawn_task_fn(async move |guard| {
         let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(
-            Forwarder::new(([127, 0, 0, 1], 62800)).connector(
+            Forwarder::new(([127, 0, 0, 1], 62800)).with_connector(
                 // ha proxy protocol used to forwarded the client original IP
                 HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
             ),

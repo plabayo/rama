@@ -19,11 +19,17 @@ pub mod query;
 #[doc(inline)]
 pub use query::Query;
 
+mod uri;
+
 mod method;
 mod request;
 
 mod state;
 pub use state::State;
+
+pub mod extension;
+#[doc(inline)]
+pub use extension::Extension;
 
 mod extensions;
 

@@ -507,7 +507,9 @@ mod tests {
 
         match tx_ready.poll() {
             Poll::Ready(Err(ref e)) if e.is_closed() => (),
-            unexpected => panic!("tx poll ready unexpected: {unexpected:?}"),
+            unexpected @ (Poll::Pending | Poll::Ready(_)) => {
+                panic!("tx poll ready unexpected: {unexpected:?}")
+            }
         }
     }
 }

@@ -120,15 +120,14 @@ impl<T> From<Request<T>> for HyperiumRequest<T> {
 
         hyper_extensions.insert(parts.extensions);
 
-        let mut builder = HyperiumRequest::builder()
-            .method(parts.method)
-            .uri(parts.uri)
-            .version(parts.version);
+        let mut request = Self::new(body);
+        *request.method_mut() = parts.method;
+        *request.uri_mut() = parts.uri;
+        *request.version_mut() = parts.version;
+        *request.headers_mut() = parts.headers;
+        *request.extensions_mut() = hyper_extensions;
 
-        *builder.headers_mut().unwrap() = parts.headers;
-        *builder.extensions_mut().unwrap() = hyper_extensions;
-
-        builder.body(body).unwrap()
+        request
     }
 }
 

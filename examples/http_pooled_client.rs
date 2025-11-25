@@ -27,9 +27,12 @@ use rama::{
         LimitLayer,
         limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
-    rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 // Everything else we need is provided by the standard library, community crates or tokio.
@@ -39,10 +42,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use tokio::{sync::oneshot::Sender, sync::oneshot::channel};
-use tokio_test::assert_err;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
 
 const ADDRESS: &str = "127.0.0.1:62024";
 
@@ -86,11 +85,11 @@ async fn main() {
     let client = EasyHttpWebClient::default();
     let result = client.get(format!("http://{ADDRESS}/")).send().await;
 
-    assert_err!(result);
+    let _ = result.unwrap_err();
 }
 
 fn setup_tracing() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -102,10 +101,8 @@ fn setup_tracing() {
 
 async fn run_server(addr: &str, ready: Sender<()>) {
     tracing::info!("running service at: {addr}");
-    let exec = Executor::default();
-
     let http_service =
-        HttpServer::auto(exec).service(WebService::default().get("/", "Hello, World!"));
+        HttpServer::default().service(WebService::default().with_get("/", "Hello, World!"));
 
     let serve = TcpListener::build()
         .bind(addr)

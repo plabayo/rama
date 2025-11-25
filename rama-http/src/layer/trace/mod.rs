@@ -66,15 +66,15 @@
 //! let service = (
 //!     TraceLayer::new_for_http()
 //!         .make_span_with(
-//!             DefaultMakeSpan::new().include_headers(true)
+//!             DefaultMakeSpan::new().with_include_headers(true)
 //!         )
 //!         .on_request(
-//!             DefaultOnRequest::new().level(Level::INFO)
+//!             DefaultOnRequest::new().with_level(Level::INFO)
 //!         )
 //!         .on_response(
 //!             DefaultOnResponse::new()
-//!                 .level(Level::INFO)
-//!                 .latency_unit(LatencyUnit::Micros)
+//!                 .with_level(Level::INFO)
+//!                 .with_latency_unit(LatencyUnit::Micros)
 //!         ),
 //!         // on so on for `on_eos`, `on_body_chunk`, and `on_failure`
 //! ).into_layer(service_fn(handle));

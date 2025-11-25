@@ -357,7 +357,7 @@ mod tests {
                     .unwrap();
                 assert!(forwarded.client_ip().is_none());
                 assert_eq!(
-                    forwarded.iter().next().unwrap().ref_forwarded_by(),
+                    forwarded.iter().next().unwrap().forwarded_by(),
                     Some(&(IpAddr::from([12, 23, 34, 45]), 5000).into())
                 );
                 assert!(forwarded.client_proto().is_none());

@@ -8,8 +8,11 @@ use rama::{
         layer::trace::TraceLayer, server::HttpServer, service::web::WebService,
     },
     net::address::SocketAddress,
+    telemetry::tracing::subscriber::{
+        self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    },
 };
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
 use turmoil::{Builder, ToSocketAddrs};
 
 use crate::{stream::TcpStream, types::TurmoilTcpConnector};
@@ -17,7 +20,7 @@ use crate::{stream::TcpStream, types::TurmoilTcpConnector};
 const ADDRESS: SocketAddress = SocketAddress::default_ipv4(62004);
 
 fn setup_tracing() {
-    tracing_subscriber::registry()
+    subscriber::registry()
         .with(fmt::layer().with_test_writer())
         .with(
             EnvFilter::try_from_env("RUST_LOG")
@@ -42,7 +45,8 @@ async fn start_server(
     server
         .serve(
             conn,
-            TraceLayer::new_for_http().into_layer(WebService::default().get("/", "Hello, World")),
+            TraceLayer::new_for_http()
+                .into_layer(WebService::default().with_get("/", "Hello, World")),
         )
         .await
         .expect("serving endpoint");
@@ -82,7 +86,7 @@ fn http_1_client_server_it() {
 
     let mut sim = Builder::new().enable_tokio_io().build();
 
-    sim.host(ADDRESS.ip_addr(), || start_server(ADDRESS.to_string()));
+    sim.host(ADDRESS.ip_addr, || start_server(ADDRESS.to_string()));
 
     sim.client("client", run_client(ADDRESS));
 

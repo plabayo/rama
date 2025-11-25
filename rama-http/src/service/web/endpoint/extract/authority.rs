@@ -9,9 +9,9 @@ use rama_utils::macros::impl_deref;
 
 /// Extractor that resolves the authority of the request.
 #[derive(Debug, Clone)]
-pub struct Authority(pub address::Authority);
+pub struct Authority(pub address::HostWithOptPort);
 
-impl_deref!(Authority: address::Authority);
+impl_deref!(Authority: address::HostWithOptPort);
 
 define_http_rejection! {
     #[status = BAD_REQUEST]
@@ -57,7 +57,7 @@ mod tests {
         headers: Vec<(&HeaderName, &str)>,
     ) {
         let svc = GetForwardedHeaderService::x_forwarded_host(
-            WebService::default().get("/", async |Authority(authority): Authority| {
+            WebService::default().with_get("/", async |Authority(authority): Authority| {
                 authority.to_string()
             }),
         );
