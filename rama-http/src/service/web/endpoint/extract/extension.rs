@@ -30,7 +30,7 @@ where
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
         match parts.extensions.get::<T>() {
-            Some(ext) => Ok(Extension(ext.clone())),
+            Some(ext) => Ok(Self(ext.clone())),
             None => Err(MissingExtension),
         }
     }
@@ -47,9 +47,71 @@ where
         parts: &Parts,
         _state: &State,
     ) -> Result<Option<Self>, Self::Rejection> {
-        Ok(parts
-            .extensions
-            .get::<T>()
-            .map(|ext| Extension(ext.clone())))
+        Ok(parts.extensions.get::<T>().map(|ext| Self(ext.clone())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::web::IntoEndpointService;
+    use rama_core::Service;
+    use rama_http_types::{Body, Request, Response};
+    use std::convert::Infallible;
+
+    #[derive(Clone, Debug, Default)]
+    struct TestExtension(String);
+
+    #[tokio::test]
+    async fn should_extract_extension() {
+        async fn handler(Extension(ext): Extension<TestExtension>) -> Result<Response, Infallible> {
+            assert_eq!(ext.0, "test");
+            Ok(Response::new(Body::empty()))
+        }
+
+        handler
+            .into_endpoint_service()
+            .serve(
+                Request::builder()
+                    .extension(TestExtension("test".to_owned()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn should_extract_optional_extension() {
+        async fn is_missing_handler(
+            ext: Option<Extension<TestExtension>>,
+        ) -> Result<Response, Infallible> {
+            assert!(ext.is_none());
+            Ok(Response::new(Body::empty()))
+        }
+
+        is_missing_handler
+            .into_endpoint_service()
+            .serve(Request::builder().body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        async fn is_present_handler(
+            ext: Option<Extension<TestExtension>>,
+        ) -> Result<Response, Infallible> {
+            assert_eq!(ext.unwrap().0.0, "test");
+            Ok(Response::new(Body::empty()))
+        }
+
+        is_present_handler
+            .into_endpoint_service()
+            .serve(
+                Request::builder()
+                    .extension(TestExtension("test".to_owned()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
     }
 }
