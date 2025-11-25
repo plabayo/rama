@@ -580,7 +580,6 @@ where
     type Error = Infallible;
 
     async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        let mut ext = Extensions::new();
         let path = req.uri().path().to_lowercase_smolstr();
 
         if let Ok(matched) = self.routes.at(path.as_str()) {
