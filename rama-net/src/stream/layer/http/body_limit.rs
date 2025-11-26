@@ -122,10 +122,10 @@ where
     S: Service<IO>,
     IO: Stream + ExtensionsMut,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: IO) -> Result<Self::Output, Self::Error> {
         stream.extensions_mut().insert(self.limit);
         self.inner.serve(stream).await
     }

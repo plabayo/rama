@@ -29,7 +29,7 @@ where
     S: Stream + Unpin,
     T: Stream + Unpin,
 {
-    type Response = ();
+    type Output = ();
     type Error = OpaqueError;
 
     async fn serve(
@@ -38,7 +38,7 @@ where
             mut source,
             mut target,
         }: ProxyRequest<S, T>,
-    ) -> Result<Self::Response, Self::Error> {
+    ) -> Result<Self::Output, Self::Error> {
         match tokio::io::copy_bidirectional(&mut source, &mut target).await {
             Ok((bytes_copied_north, bytes_copied_south)) => {
                 tracing::trace!(

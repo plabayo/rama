@@ -41,16 +41,16 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-impl<S, Request, Server> Service<Request> for MockConnectorService<S>
+impl<S, Input, Server> Service<Input> for MockConnectorService<S>
 where
     S: Fn() -> Server + Send + Sync + 'static,
     Server: Service<MockSocket, Error: Into<BoxError>>,
-    Request: Send + 'static,
+    Input: Send + 'static,
 {
     type Error = Infallible;
-    type Response = EstablishedClientConnection<MockSocket, Request>;
+    type Output = EstablishedClientConnection<MockSocket, Input>;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let (client, server) = duplex(self.max_buffer_size);
         let client_socket = MockSocket::new(client);
         let server_socket = MockSocket::new(server);
@@ -64,7 +64,7 @@ where
         });
 
         Ok(EstablishedClientConnection {
-            req,
+            input,
             conn: client_socket,
         })
     }

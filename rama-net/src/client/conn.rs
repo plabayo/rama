@@ -1,29 +1,21 @@
 use rama_core::{Service, error::BoxError, extensions::ExtensionsMut, service::BoxService};
 use std::fmt;
 
+#[derive(Clone)]
 /// The established connection to a server returned for the http client to be used.
-pub struct EstablishedClientConnection<S, Request> {
-    /// The `Request` for which a connection was established.
-    pub req: Request,
+pub struct EstablishedClientConnection<S, Input> {
+    /// The `Input` for which a connection was established.
+    pub input: Input,
     /// The established connection stream/service/... to the server.
     pub conn: S,
 }
 
-impl<S: fmt::Debug, Request: fmt::Debug> fmt::Debug for EstablishedClientConnection<S, Request> {
+impl<S: fmt::Debug, Input: fmt::Debug> fmt::Debug for EstablishedClientConnection<S, Input> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EstablishedClientConnection")
-            .field("req", &self.req)
+            .field("input", &self.input)
             .field("conn", &self.conn)
             .finish()
-    }
-}
-
-impl<S: Clone, Request: Clone> Clone for EstablishedClientConnection<S, Request> {
-    fn clone(&self) -> Self {
-        Self {
-            req: self.req.clone(),
-            conn: self.conn.clone(),
-        }
     }
 }
 
@@ -32,7 +24,7 @@ impl<S: Clone, Request: Clone> Clone for EstablishedClientConnection<S, Request>
 ///
 /// Can also be manually implemented as an alternative [`Service`] trait,
 /// but from a Rama POV it is mostly used for UX trait bounds.
-pub trait ConnectorService<Request>: Send + Sync + 'static {
+pub trait ConnectorService<Input>: Send + Sync + 'static {
     /// Connection returned by the [`ConnectorService`]
     type Connection: Send + ExtensionsMut;
     /// Error returned in case of connection / setup failure
@@ -42,18 +34,18 @@ pub trait ConnectorService<Request>: Send + Sync + 'static {
     /// or connection revival.
     fn connect(
         &self,
-        req: Request,
+        input: Input,
     ) -> impl Future<
-        Output = Result<EstablishedClientConnection<Self::Connection, Request>, Self::Error>,
+        Output = Result<EstablishedClientConnection<Self::Connection, Input>, Self::Error>,
     > + Send
     + '_;
 }
 
-impl<S, Request, Connection> ConnectorService<Request> for S
+impl<S, Input, Connection> ConnectorService<Input> for S
 where
     S: Service<
-            Request,
-            Response = EstablishedClientConnection<Connection, Request>,
+            Input,
+            Output = EstablishedClientConnection<Connection, Input>,
             Error: Into<BoxError>,
         >,
     Connection: Send + ExtensionsMut,
@@ -63,13 +55,12 @@ where
 
     fn connect(
         &self,
-
-        req: Request,
+        input: Input,
     ) -> impl Future<
-        Output = Result<EstablishedClientConnection<Self::Connection, Request>, Self::Error>,
+        Output = Result<EstablishedClientConnection<Self::Connection, Input>, Self::Error>,
     > + Send
     + '_ {
-        self.serve(req)
+        self.serve(input)
     }
 }
 
@@ -98,24 +89,19 @@ impl<S: Clone> Clone for BoxedConnectorService<S> {
     }
 }
 
-impl<S, Request, Svc> Service<Request> for BoxedConnectorService<S>
+impl<S, Input, Svc> Service<Input> for BoxedConnectorService<S>
 where
-    S: Service<
-            Request,
-            Response = EstablishedClientConnection<Svc, Request>,
-            Error: Into<BoxError>,
-        >,
-    Svc: Service<Request>,
-    Request: Send + 'static,
+    S: Service<Input, Output = EstablishedClientConnection<Svc, Input>, Error: Into<BoxError>>,
+    Svc: Service<Input>,
+    Input: Send + 'static,
 {
-    type Response =
-        EstablishedClientConnection<BoxService<Request, Svc::Response, Svc::Error>, Request>;
+    type Output = EstablishedClientConnection<BoxService<Input, Svc::Output, Svc::Error>, Input>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { req, conn: svc } = self.0.serve(req).await?;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection { input, conn: svc } = self.0.serve(input).await?;
         Ok(EstablishedClientConnection {
-            req,
+            input,
             conn: svc.boxed(),
         })
     }

@@ -45,10 +45,10 @@ impl<S> Service<S> for DiscardService
 where
     S: Stream + 'static,
 {
-    type Response = u64;
+    type Output = u64;
     type Error = BoxError;
 
-    async fn serve(&self, stream: S) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: S) -> Result<Self::Output, Self::Error> {
         let (mut reader, _) = tokio::io::split(stream);
         let mut writer = tokio::io::empty();
         tokio::io::copy(&mut reader, &mut writer)
