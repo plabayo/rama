@@ -6,75 +6,73 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 /// A [`Service`] that produces rama services,
-/// to serve requests with, be it transport layer requests or application layer requests.
-pub trait Service<Request>: Sized + Send + Sync + 'static {
-    /// The type of response returned by the service.
-    type Response: Send + 'static;
+/// to serve Inputs with, be it transport layer Inputs or application layer Inputs.
+pub trait Service<Input>: Sized + Send + Sync + 'static {
+    /// The type of the output returned by the service.
+    type Output: Send + 'static;
 
     /// The type of error returned by the service.
     type Error: Send + 'static;
 
-    /// Serve a response or error for the given request,
+    /// Serve a Output or error for the given Input,
     /// using the given context.
     fn serve(
         &self,
-
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_;
 
     /// Box this service to allow for dynamic dispatch.
-    fn boxed(self) -> BoxService<Request, Self::Response, Self::Error> {
+    fn boxed(self) -> BoxService<Input, Self::Output, Self::Error> {
         BoxService::new(self)
     }
 }
 
-impl<S, Request> Service<Request> for std::sync::Arc<S>
+impl<S, Input> Service<Input> for std::sync::Arc<S>
 where
-    S: Service<Request>,
+    S: Service<Input>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     #[inline]
     fn serve(
         &self,
-
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.as_ref().serve(req)
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        self.as_ref().serve(input)
     }
 }
 
-impl<S, Request> Service<Request> for &'static S
+impl<S, Input> Service<Input> for &'static S
 where
-    S: Service<Request>,
+    S: Service<Input>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     #[inline(always)]
     fn serve(
         &self,
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        (**self).serve(req)
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        (**self).serve(input)
     }
 }
 
-impl<S, Request> Service<Request> for Box<S>
+impl<S, Input> Service<Input> for Box<S>
 where
-    S: Service<Request>,
+    S: Service<Input>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     #[inline]
     fn serve(
         &self,
 
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.as_ref().serve(req)
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        self.as_ref().serve(input)
     }
 }
 
@@ -82,41 +80,41 @@ where
 /// implemented according to the pioneers of this Design Pattern
 /// found at <https://rust-lang.github.io/async-fundamentals-initiative/evaluation/case-studies/builder-provider-api.html#dynamic-dispatch-behind-the-api>
 /// and widely published at <https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html>.
-trait DynService<Request> {
-    type Response;
+trait DynService<Input> {
+    type Output;
     type Error;
 
     #[allow(clippy::type_complexity)]
     fn serve_box(
         &self,
 
-        req: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + '_>>;
+        input: Input,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send + '_>>;
 }
 
-impl<Request, T> DynService<Request> for T
+impl<Input, T> DynService<Input> for T
 where
-    T: Service<Request>,
+    T: Service<Input>,
 {
-    type Response = T::Response;
+    type Output = T::Output;
     type Error = T::Error;
 
     fn serve_box(
         &self,
 
-        req: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + '_>> {
-        Box::pin(self.serve(req))
+        input: Input,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send + '_>> {
+        Box::pin(self.serve(input))
     }
 }
 
-/// A boxed [`Service`], to serve requests with,
-/// for where you require dynamic dispatch.
-pub struct BoxService<Request, Response, Error> {
-    inner: Arc<dyn DynService<Request, Response = Response, Error = Error> + Send + Sync + 'static>,
+/// A boxed [`Service`], to serve Inputs with,
+/// for where you inputuire dynamic dispatch.
+pub struct BoxService<Input, Output, Error> {
+    inner: Arc<dyn DynService<Input, Output = Output, Error = Error> + Send + Sync + 'static>,
 }
 
-impl<Request, Response, Error> Clone for BoxService<Request, Response, Error> {
+impl<Input, Output, Error> Clone for BoxService<Input, Output, Error> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -124,12 +122,12 @@ impl<Request, Response, Error> Clone for BoxService<Request, Response, Error> {
     }
 }
 
-impl<Request, Response, Error> BoxService<Request, Response, Error> {
+impl<Input, Output, Error> BoxService<Input, Output, Error> {
     /// Create a new [`BoxService`] from the given service.
     #[inline]
     pub fn new<T>(service: T) -> Self
     where
-        T: Service<Request, Response = Response, Error = Error>,
+        T: Service<Input, Output = Output, Error = Error>,
     {
         Self {
             inner: Arc::new(service),
@@ -137,28 +135,28 @@ impl<Request, Response, Error> BoxService<Request, Response, Error> {
     }
 }
 
-impl<Request, Response, Error> std::fmt::Debug for BoxService<Request, Response, Error> {
+impl<Input, Output, Error> std::fmt::Debug for BoxService<Input, Output, Error> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoxService").finish()
     }
 }
 
-impl<Request, Response, Error> Service<Request> for BoxService<Request, Response, Error>
+impl<Input, Output, Error> Service<Input> for BoxService<Input, Output, Error>
 where
-    Request: 'static,
-    Response: Send + 'static,
+    Input: 'static,
+    Output: Send + 'static,
     Error: Send + 'static,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = Error;
 
     #[inline]
     fn serve(
         &self,
 
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.inner.serve_box(req)
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        self.inner.serve_box(input)
     }
 
     #[inline]
@@ -169,23 +167,23 @@ where
 
 macro_rules! impl_service_either {
     ($id:ident, $first:ident $(, $param:ident)* $(,)?) => {
-        impl<$first, $($param,)* Request, Response> Service<Request> for crate::combinators::$id<$first $(,$param)*>
+        impl<$first, $($param,)* Input, Output> Service<Input> for crate::combinators::$id<$first $(,$param)*>
         where
-            $first: Service<Request, Response = Response>,
+            $first: Service<Input, Output = Output>,
             $(
-                $param: Service<Request, Response = Response, Error: Into<$first::Error>>,
+                $param: Service<Input, Output = Output, Error: Into<$first::Error>>,
             )*
-            Request: Send + 'static,
-            Response: Send + 'static,
+            Input: Send + 'static,
+            Output: Send + 'static,
         {
-            type Response = Response;
+            type Output = Output;
             type Error = $first::Error;
 
-            async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+            async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
                 match self {
-                    crate::combinators::$id::$first(s) => s.serve(req).await,
+                    crate::combinators::$id::$first(s) => s.serve(input).await,
                     $(
-                        crate::combinators::$id::$param(s) => s.serve(req).await.map_err(Into::into),
+                        crate::combinators::$id::$param(s) => s.serve(input).await.map_err(Into::into),
                     )*
                 }
             }
@@ -196,7 +194,7 @@ macro_rules! impl_service_either {
 crate::combinators::impl_either!(impl_service_either);
 
 rama_utils::macros::error::static_str_error! {
-    #[doc = "request rejected"]
+    #[doc = "Input rejected"]
     pub struct RejectError;
 }
 
@@ -246,21 +244,21 @@ impl<R, E: fmt::Debug> fmt::Debug for RejectService<R, E> {
     }
 }
 
-impl<Request, Response, Error> Service<Request> for RejectService<Response, Error>
+impl<Input, Output, Error> Service<Input> for RejectService<Output, Error>
 where
-    Request: 'static,
-    Response: Send + 'static,
+    Input: 'static,
+    Output: Send + 'static,
     Error: Clone + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = Error;
 
     #[inline]
     fn serve(
         &self,
 
-        _req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        _input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let error = self.error.clone();
         std::future::ready(Err(error))
     }
@@ -275,11 +273,11 @@ mod tests {
     struct AddSvc(usize);
 
     impl Service<usize> for AddSvc {
-        type Response = usize;
+        type Output = usize;
         type Error = Infallible;
 
-        async fn serve(&self, req: usize) -> Result<Self::Response, Self::Error> {
-            Ok(self.0 + req)
+        async fn serve(&self, input: usize) -> Result<Self::Output, Self::Error> {
+            Ok(self.0 + input)
         }
     }
 
@@ -287,11 +285,11 @@ mod tests {
     struct MulSvc(usize);
 
     impl Service<usize> for MulSvc {
-        type Response = usize;
+        type Output = usize;
         type Error = Infallible;
 
-        async fn serve(&self, req: usize) -> Result<Self::Response, Self::Error> {
-            Ok(self.0 * req)
+        async fn serve(&self, input: usize) -> Result<Self::Output, Self::Error> {
+            Ok(self.0 * input)
         }
     }
 
@@ -319,8 +317,8 @@ mod tests {
     async fn add_svc() {
         let svc = AddSvc(1);
 
-        let response = svc.serve(1).await.unwrap();
-        assert_eq!(response, 2);
+        let Output = svc.serve(1).await.unwrap();
+        assert_eq!(Output, 2);
     }
 
     #[tokio::test]
@@ -328,8 +326,8 @@ mod tests {
         let services = vec![AddSvc(1), AddSvc(2), AddSvc(3)];
 
         for (i, svc) in services.into_iter().enumerate() {
-            let response = svc.serve(i).await.unwrap();
-            assert_eq!(response, i * 2 + 1);
+            let Output = svc.serve(i).await.unwrap();
+            assert_eq!(Output, i * 2 + 1);
         }
     }
 
@@ -344,11 +342,11 @@ mod tests {
         ];
 
         for (i, svc) in services.into_iter().enumerate() {
-            let response = svc.serve(i).await.unwrap();
+            let Output = svc.serve(i).await.unwrap();
             if i < 3 {
-                assert_eq!(response, i * 2 + 1);
+                assert_eq!(Output, i * 2 + 1);
             } else {
-                assert_eq!(response, i * (i + 1));
+                assert_eq!(Output, i * (i + 1));
             }
         }
     }
@@ -357,16 +355,16 @@ mod tests {
     async fn service_arc() {
         let svc = std::sync::Arc::new(AddSvc(1));
 
-        let response = svc.serve(1).await.unwrap();
-        assert_eq!(response, 2);
+        let Output = svc.serve(1).await.unwrap();
+        assert_eq!(Output, 2);
     }
 
     #[tokio::test]
     async fn box_service_arc() {
         let svc = std::sync::Arc::new(AddSvc(1)).boxed();
 
-        let response = svc.serve(1).await.unwrap();
-        assert_eq!(response, 2);
+        let Output = svc.serve(1).await.unwrap();
+        assert_eq!(Output, 2);
     }
 
     #[tokio::test]
