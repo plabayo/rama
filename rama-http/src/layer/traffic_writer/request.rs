@@ -173,9 +173,9 @@ where
     ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Error = BoxError;
-    type Response = Request;
+    type Output = Request;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Request, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let req = if req.extensions().get::<DoNotWriteRequest>().is_some() {
             req.map(Body::new)
         } else {

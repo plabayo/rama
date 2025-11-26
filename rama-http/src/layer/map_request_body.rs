@@ -122,16 +122,16 @@ impl<S, F> MapRequestBody<S, F> {
 
 impl<F, S, ReqBody, ResBody, NewReqBody> Service<Request<ReqBody>> for MapRequestBody<S, F>
 where
-    S: Service<Request<NewReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<NewReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     NewReqBody: Send + 'static,
     ResBody: Send + Sync + 'static,
     F: Fn(ReqBody) -> NewReqBody + Send + Sync + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let req = req.map(&self.f);
         self.inner.serve(req).await
     }

@@ -141,10 +141,10 @@ where
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Output, Self::Error> {
         if self.repeat {
             let headers = request.headers().get_all(&self.header_name);
             let mut parsed_values = headers

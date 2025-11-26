@@ -152,12 +152,12 @@ impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveResponseHeader<S>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let mut resp = self.inner.serve(req).await?;
         match &self.mode {
             RemoveResponseHeaderMode::Hop => {

@@ -28,7 +28,7 @@ impl<S> RamaHttpService<S> {
 
 impl<S, ReqBody, R> HttpService<ReqBody> for RamaHttpService<S>
 where
-    S: Service<Request, Response = R, Error = Infallible> + Clone,
+    S: Service<Request, Output = R, Error = Infallible> + Clone,
     ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     R: IntoResponse + Send + 'static,
 {
@@ -81,7 +81,7 @@ mod sealed {
 
     impl<S, ReqBody, R> Sealed<ReqBody> for RamaHttpService<S>
     where
-        S: Service<Request, Response = R, Error = Infallible> + Clone,
+        S: Service<Request, Output = R, Error = Infallible> + Clone,
         ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
         R: IntoResponse + Send + 'static,
     {

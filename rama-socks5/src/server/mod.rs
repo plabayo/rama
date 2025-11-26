@@ -550,14 +550,14 @@ where
     B: Socks5Binder<S>,
     S: Stream + Unpin + ExtensionsMut,
 {
-    type Response = ();
+    type Output = ();
     type Error = Error;
 
     #[inline]
     fn serve(
         &self,
         stream: S,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         self.accept(stream)
     }
 }

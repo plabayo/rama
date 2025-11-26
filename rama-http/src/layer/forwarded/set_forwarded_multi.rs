@@ -135,15 +135,14 @@ macro_rules! set_forwarded_service_for_tuple {
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
             S: Service<Request<Body>, Error: Into<BoxError>>,
             Body: Send + 'static,
-
         {
-            type Response = S::Response;
+            type Output = S::Output;
             type Error = BoxError;
 
             async fn serve(
                 &self,
                 mut req: Request<Body>,
-            ) -> Result<Self::Response, Self::Error> {
+            ) -> Result<Self::Output, Self::Error> {
                 let forwarded: Option<Forwarded> = req.extensions().get().cloned();
 
                 let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());

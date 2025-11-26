@@ -576,10 +576,10 @@ impl<State> Service<Request> for Router<State>
 where
     State: Send + Sync + Clone + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
         let mut ext = Extensions::new();
 
         let path = req.uri().path().to_lowercase_smolstr();
@@ -716,7 +716,7 @@ mod tests {
     use rama_core::{extensions::ExtensionsRef, service::service_fn};
     use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt};
 
-    fn root_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn root_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
             Ok(Response::builder()
                 .status(200)
@@ -725,7 +725,7 @@ mod tests {
         })
     }
 
-    fn create_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn create_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
             Ok(Response::builder()
                 .status(200)
@@ -734,7 +734,7 @@ mod tests {
         })
     }
 
-    fn get_users_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn get_users_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
             Ok(Response::builder()
                 .status(200)
@@ -743,7 +743,7 @@ mod tests {
         })
     }
 
-    fn get_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn get_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
@@ -754,7 +754,7 @@ mod tests {
         })
     }
 
-    fn delete_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn delete_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
@@ -765,7 +765,7 @@ mod tests {
         })
     }
 
-    fn serve_assets_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn serve_assets_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let path = uri_params.get("path").unwrap();
@@ -776,7 +776,7 @@ mod tests {
         })
     }
 
-    fn not_found_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn not_found_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
             Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -785,7 +785,7 @@ mod tests {
         })
     }
 
-    fn get_user_order_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn get_user_order_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let user_id = uri_params.get("user_id").unwrap();

@@ -49,10 +49,10 @@ where
     Body: Send + Sync + 'static,
     S: Service<Request<Body>, Error: Into<rama_core::error::BoxError> + Send + Sync + 'static>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = OpaqueError;
 
-    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Output, Self::Error> {
         if let Some(header_value) = request.headers().get(&self.header_name) {
             let dns_resolve_mode: DnsResolveMode = header_value.try_into()?;
             request.extensions_mut().insert(dns_resolve_mode);

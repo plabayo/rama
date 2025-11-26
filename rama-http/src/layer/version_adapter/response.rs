@@ -22,13 +22,13 @@ impl<S> ResponseVersionAdapter<S> {
 
 impl<S, Body> Service<Request<Body>> for ResponseVersionAdapter<S>
 where
-    S: Service<Request<Body>, Response = Response, Error: Into<BoxError>>,
+    S: Service<Request<Body>, Output = Response, Error: Into<BoxError>>,
     Body: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let original_req_version = req.version();
 
         let mut resp = self.inner.serve(req).await.map_err(Into::into)?;

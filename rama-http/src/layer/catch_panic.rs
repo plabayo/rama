@@ -218,16 +218,16 @@ impl<S: Clone, T: Clone> Clone for CatchPanic<S, T> {
 
 impl<S, T, ReqBody, ResBody> Service<Request<ReqBody>> for CatchPanic<S, T>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ResBody: Into<Body> + Send + 'static,
     T: ResponseForPanic + Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let future = match std::panic::catch_unwind(AssertUnwindSafe(|| self.inner.serve(req))) {
             Ok(future) => future,
             Err(panic_err) => return Ok(self.panic_handler.response_for_panic(panic_err)),

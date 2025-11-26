@@ -108,14 +108,14 @@ impl std::error::Error for RetryError {
 
 impl<P, S, Body> Service<Request<Body>> for Retry<P, S>
 where
-    P: Policy<S::Response, S::Error>,
+    P: Policy<S::Output, S::Error>,
     S: Service<Request<RetryBody>, Error: Into<BoxError>>,
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = RetryError;
 
-    async fn serve(&self, request: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, request: Request<Body>) -> Result<Self::Output, Self::Error> {
         // consume body so we can clone the request if desired
         let (parts, body) = request.into_parts();
         let body = body.collect().await.map_err(|e| RetryError {
@@ -256,7 +256,7 @@ mod test {
             output: &'static str,
             extensions: Extensions,
             retried: bool,
-            service: &impl Service<Request, Response = Response, Error = E>,
+            service: &impl Service<Request, Output = Response, Error = E>,
         ) {
             let state = extensions.get::<State>().unwrap().clone();
 
@@ -292,7 +292,7 @@ mod test {
             input: &'static str,
             extensions: Extensions,
             retried: bool,
-            service: &impl Service<Request, Response = Response, Error = E>,
+            service: &impl Service<Request, Output = Response, Error = E>,
         ) {
             let state = extensions.get::<State>().unwrap().clone();
 

@@ -165,17 +165,17 @@ impl<S> NormalizePath<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for NormalizePath<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
         mut req: Request<ReqBody>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         match self.mode {
             NormalizeMode::Trim => trim_trailing_slash(req.uri_mut()),
             NormalizeMode::Append => append_trailing_slash(req.uri_mut()),

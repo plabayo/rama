@@ -100,10 +100,10 @@ where
     S: Service<PeekStream<HeapReader, IO>, Error: Into<BoxError>>,
     IO: Stream + Unpin + ExtensionsMut,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: IO) -> Result<Self::Output, Self::Error> {
         let (mut buffer, mut read) = if self.peek {
             tracing::trace!("haproxy protocol peeking enabled: start detection");
 

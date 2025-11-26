@@ -165,55 +165,56 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     define_inner_service_accessors!();
 }
 
-impl<S, D, P, F, Request> Service<Request> for ProxyDBService<S, D, P, F>
+impl<S, D, P, F, Input> Service<Input> for ProxyDBService<S, D, P, F>
 where
-    S: Service<Request, Error: Into<BoxError> + Send + Sync + 'static>,
+    S: Service<Input, Error: Into<BoxError> + Send + Sync + 'static>,
     D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
     F: UsernameFormatter,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + ExtensionsMut
         + Send
         + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        if self.preserve && req.extensions().contains::<ProxyAddress>() {
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+        if self.preserve && input.extensions().contains::<ProxyAddress>() {
             // shortcut in case a proxy address is already set,
             // and we wish to preserve it
-            return self.inner.serve(req).await.map_err(Into::into);
+            return self.inner.serve(input).await.map_err(Into::into);
         }
 
         let maybe_filter = match self.mode {
-            ProxyFilterMode::Optional => req.extensions().get::<ProxyFilter>().cloned(),
+            ProxyFilterMode::Optional => input.extensions().get::<ProxyFilter>().cloned(),
             ProxyFilterMode::Default => Some(
-                if let Some(stored) = req.extensions().get::<ProxyFilter>() {
+                if let Some(stored) = input.extensions().get::<ProxyFilter>() {
                     stored.clone()
                 } else {
-                    req.extensions_mut().insert(ProxyFilter::default());
+                    input.extensions_mut().insert(ProxyFilter::default());
                     ProxyFilter::default()
                 },
             ),
             ProxyFilterMode::Required => Some(
-                req.extensions()
+                input
+                    .extensions()
                     .get::<ProxyFilter>()
                     .cloned()
                     .context("missing proxy filter")?,
             ),
             ProxyFilterMode::Fallback(ref filter) => Some(
-                if let Some(stored) = req.extensions().get::<ProxyFilter>() {
+                if let Some(stored) = input.extensions().get::<ProxyFilter>() {
                     stored.clone()
                 } else {
-                    req.extensions_mut().insert(filter.clone());
+                    input.extensions_mut().insert(filter.clone());
                     filter.clone()
                 },
             ),
         };
 
         if let Some(filter) = maybe_filter {
-            let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+            let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
                 OpaqueError::from_boxed(err.into())
                     .context("proxydb: select proxy: get transport context")
             })?;
@@ -297,17 +298,18 @@ where
             }
 
             // insert proxy address in context so it will be used
-            req.extensions_mut().insert(proxy_address);
+            input.extensions_mut().insert(proxy_address);
 
             // insert the id of the selected proxy
-            req.extensions_mut()
+            input
+                .extensions_mut()
                 .insert(super::ProxyID::from(proxy.id.clone()));
 
             // insert the entire proxy also in there, for full "Context"
-            req.extensions_mut().insert(proxy);
+            input.extensions_mut().insert(proxy);
         }
 
-        self.inner.serve(req).await.map_err(Into::into)
+        self.inner.serve(input).await.map_err(Into::into)
     }
 }
 

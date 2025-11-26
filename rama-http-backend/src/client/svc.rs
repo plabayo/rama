@@ -44,7 +44,7 @@ where
     BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {

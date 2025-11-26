@@ -89,10 +89,10 @@ where
 pub struct DefaultUdpBinder;
 
 impl Service<Interface> for DefaultUdpBinder {
-    type Response = UdpSocket;
+    type Output = UdpSocket;
     type Error = BoxError;
 
-    async fn serve(&self, interface: Interface) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, interface: Interface) -> Result<Self::Output, Self::Error> {
         let socket = bind_udp(interface).await?;
         Ok(socket)
     }

@@ -130,10 +130,10 @@ where
     ReqBody: Send + 'static,
 {
     type Error = <ServeDir as Service<Request<ReqBody>>>::Error;
-    type Response = <ServeDir as Service<Request<ReqBody>>>::Response;
+    type Output = <ServeDir as Service<Request<ReqBody>>>::Output;
 
     #[inline]
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         self.0.serve(req).await
     }
 }

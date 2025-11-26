@@ -46,12 +46,14 @@ where
     S: ConnectorService<Request<Body>, Error: Into<BoxError>>,
     Body: Send + 'static,
 {
-    type Response = EstablishedClientConnection<S::Connection, Request<Body>>;
+    type Output = EstablishedClientConnection<S::Connection, Request<Body>>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { conn, mut req } =
-            self.inner.connect(req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection {
+            conn,
+            input: mut req,
+        } = self.inner.connect(req).await.map_err(Into::into)?;
 
         let ext_chain = (&conn, &req);
         let version = ext_chain
@@ -83,7 +85,7 @@ where
             }
         }
 
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input: req, conn })
     }
 }
 

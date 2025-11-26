@@ -98,14 +98,14 @@ impl<S: Copy> Copy for Timeout<S> {}
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Timeout<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         tokio::select! {
             res = self.inner.serve(req) => res,
             _ = tokio::time::sleep(self.timeout) => {
@@ -171,10 +171,10 @@ where
     S: Service<Request<TimeoutBody<ReqBody>>>,
     ReqBody: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let req = req.map(|body| TimeoutBody::new(self.timeout, body));
         self.inner.serve(req).await
     }
@@ -211,14 +211,14 @@ pub struct ResponseBodyTimeout<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseBodyTimeout<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
 {
-    type Response = Response<TimeoutBody<ResBody>>;
+    type Output = Response<TimeoutBody<ResBody>>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let res = self.inner.serve(req).await?;
         let res = res.map(|body| TimeoutBody::new(self.timeout, body));
         Ok(res)

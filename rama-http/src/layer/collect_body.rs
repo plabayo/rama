@@ -45,17 +45,17 @@ impl<S> CollectBody<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CollectBody<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     ReqBody: Send + 'static,
     ResBody: StreamingBody<Data: Send, Error: std::error::Error + Send + Sync + 'static>
         + Send
         + Sync
         + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let resp = self
             .inner
             .serve(req)

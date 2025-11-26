@@ -50,9 +50,7 @@ impl<S> OtelExporter<S> {
 
 impl<S> HttpClient for OtelExporter<S>
 where
-    S: fmt::Debug
-        + Clone
-        + Service<Request<Body>, Response = Response<Body>, Error: Into<BoxError>>,
+    S: fmt::Debug + Clone + Service<Request<Body>, Output = Response<Body>, Error: Into<BoxError>>,
 {
     fn send_bytes<'life0, 'async_trait>(
         &'life0 self,

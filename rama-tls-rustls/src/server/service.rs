@@ -63,10 +63,10 @@ where
     IO: Stream + Unpin + ExtensionsMut + 'static,
     S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
         let tls_acceptor_data = stream
             .extensions()
             .get::<TlsAcceptorData>()

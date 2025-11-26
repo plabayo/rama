@@ -160,16 +160,16 @@ impl<S, P> Compression<S, P> {
 
 impl<ReqBody, ResBody, S, P> Service<Request<ReqBody>> for Compression<S, P>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ResBody: StreamingBody<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
     P: Predicate + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
-    type Response = Response<CompressionBody<ResBody>>;
+    type Output = Response<CompressionBody<ResBody>>;
     type Error = S::Error;
 
     #[allow(unreachable_code, unused_mut, unused_variables, unreachable_patterns)]
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let encoding = Encoding::from_accept_encoding_headers(req.headers(), self.accept);
 
         let res = self.inner.serve(req).await?;

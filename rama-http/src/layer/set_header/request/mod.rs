@@ -561,13 +561,13 @@ impl<ReqBody, ResBody, S, M> Service<Request<ReqBody>> for SetRequestHeader<S, M
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     M: MakeHeaderValue<ReqBody>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let req = self.mode.apply(&self.header_name, req, &self.make).await;
         self.inner.serve(req).await
     }

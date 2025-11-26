@@ -152,15 +152,15 @@ impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveRequestHeader<S>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
         mut req: Request<ReqBody>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         match &self.mode {
             RemoveRequestHeaderMode::Hop => {
                 super::remove_hop_by_hop_request_headers(req.headers_mut())
