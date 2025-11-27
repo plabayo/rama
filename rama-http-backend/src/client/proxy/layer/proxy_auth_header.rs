@@ -62,13 +62,13 @@ where
     S: Service<Request<Body>>,
     Body: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
         mut req: Request<Body>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         if let Some(pa) = req.extensions().get::<ProxyAddress>()
             && let Some(credential) = pa.credential.clone()
         {

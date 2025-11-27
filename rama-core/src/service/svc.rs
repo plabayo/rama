@@ -1,5 +1,6 @@
 //! [`Service`] and [`BoxService`] traits.
 
+use std::convert::Infallible;
 use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -24,6 +25,18 @@ pub trait Service<Input>: Sized + Send + Sync + 'static {
     /// Box this service to allow for dynamic dispatch.
     fn boxed(self) -> BoxService<Input, Self::Output, Self::Error> {
         BoxService::new(self)
+    }
+}
+
+impl<Input> Service<Input> for ()
+where
+    Input: Send + 'static,
+{
+    type Output = Input;
+    type Error = Infallible;
+
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        Ok(input)
     }
 }
 
@@ -198,7 +211,7 @@ rama_utils::macros::error::static_str_error! {
     pub struct RejectError;
 }
 
-/// A [`Service`]] which always rejects with an error.
+/// A [`Service`] which always rejects with an error.
 pub struct RejectService<R = (), E = RejectError> {
     error: E,
     _phantom: PhantomData<fn() -> R>,
@@ -317,8 +330,8 @@ mod tests {
     async fn add_svc() {
         let svc = AddSvc(1);
 
-        let Output = svc.serve(1).await.unwrap();
-        assert_eq!(Output, 2);
+        let output = svc.serve(1).await.unwrap();
+        assert_eq!(output, 2);
     }
 
     #[tokio::test]
@@ -326,8 +339,8 @@ mod tests {
         let services = vec![AddSvc(1), AddSvc(2), AddSvc(3)];
 
         for (i, svc) in services.into_iter().enumerate() {
-            let Output = svc.serve(i).await.unwrap();
-            assert_eq!(Output, i * 2 + 1);
+            let output = svc.serve(i).await.unwrap();
+            assert_eq!(output, i * 2 + 1);
         }
     }
 
@@ -342,11 +355,11 @@ mod tests {
         ];
 
         for (i, svc) in services.into_iter().enumerate() {
-            let Output = svc.serve(i).await.unwrap();
+            let output = svc.serve(i).await.unwrap();
             if i < 3 {
-                assert_eq!(Output, i * 2 + 1);
+                assert_eq!(output, i * 2 + 1);
             } else {
-                assert_eq!(Output, i * (i + 1));
+                assert_eq!(output, i * (i + 1));
             }
         }
     }
@@ -355,16 +368,16 @@ mod tests {
     async fn service_arc() {
         let svc = std::sync::Arc::new(AddSvc(1));
 
-        let Output = svc.serve(1).await.unwrap();
-        assert_eq!(Output, 2);
+        let output = svc.serve(1).await.unwrap();
+        assert_eq!(output, 2);
     }
 
     #[tokio::test]
     async fn box_service_arc() {
         let svc = std::sync::Arc::new(AddSvc(1)).boxed();
 
-        let Output = svc.serve(1).await.unwrap();
-        assert_eq!(Output, 2);
+        let output = svc.serve(1).await.unwrap();
+        assert_eq!(output, 2);
     }
 
     #[tokio::test]

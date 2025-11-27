@@ -2,7 +2,6 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef, RequestContextExt},
-    inspect::RequestInspector,
     telemetry::tracing,
 };
 use rama_http::{StreamingBody, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY};
@@ -42,12 +41,12 @@ impl<BodyIn, BodyOut, I> Service<Request<BodyIn>> for HttpClientService<BodyOut,
 where
     BodyIn: Send + 'static,
     BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>,
+    I: Service<Request<BodyIn>, Output = Request<BodyOut>, Error: Into<BoxError>>,
 {
     type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
         req.extensions_mut()
             .set_parent_extensions(Arc::new(self.extensions.clone()));
 
@@ -67,9 +66,9 @@ where
             }
         }
 
-        let req = self
+        let req: Request<BodyOut> = self
             .http_req_inspector
-            .inspect_request(req)
+            .serve(req)
             .await
             .map_err(Into::into)?;
 

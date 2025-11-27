@@ -3,7 +3,6 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
-    inspect::RequestInspector,
     rt::Executor,
     stream::Stream,
 };
@@ -31,14 +30,14 @@ use std::fmt;
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S, I = ()> {
     inner: S,
-    http_req_inspector_svc: I,
+    http_req_modifier_svc: I,
 }
 
 impl<S: fmt::Debug, I: fmt::Debug> fmt::Debug for HttpConnector<S, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpConnector")
             .field("inner", &self.inner)
-            .field("http_req_inspector_svc", &self.http_req_inspector_svc)
+            .field("http_req_modifier_svc", &self.http_req_modifier_svc)
             .finish()
     }
 }
@@ -48,17 +47,17 @@ impl<S> HttpConnector<S> {
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
-            http_req_inspector_svc: (),
+            http_req_modifier_svc: (),
         }
     }
 }
 
 impl<S, I> HttpConnector<S, I> {
-    /// Add a http request inspector that will run just before doing the actual http request
-    pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, T> {
+    /// Add a http request modidifier that will run just before doing the actual http request
+    pub fn with_http_req_modifier_svc<T>(self, http_req_modifier_svc: T) -> HttpConnector<S, T> {
         HttpConnector {
             inner: self.inner,
-            http_req_inspector_svc: http_req_inspector,
+            http_req_modifier_svc: http_req_modifier_svc,
         }
     }
 
@@ -73,25 +72,26 @@ where
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
+            http_req_modifier_svc: self.http_req_modifier_svc.clone(),
         }
     }
 }
 
 impl<S, I, BodyIn, BodyOut> Service<Request<BodyIn>> for HttpConnector<S, I>
 where
-    I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>
-        + Clone,
+    I: Service<Request<BodyIn>, Output = Request<BodyOut>, Error: Into<BoxError>> + Clone,
     S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin>,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    type Response = EstablishedClientConnection<HttpClientService<BodyOut, I>, Request<BodyIn>>;
+    type Output = EstablishedClientConnection<HttpClientService<BodyOut, I>, Request<BodyIn>>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { req, mut conn } =
-            self.inner.connect(req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection {
+            input: req,
+            mut conn,
+        } = self.inner.connect(req).await.map_err(Into::into)?;
 
         let extensions = std::mem::take(conn.extensions_mut());
 
@@ -174,11 +174,14 @@ where
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http2(sender),
-                    http_req_inspector: self.http_req_inspector_svc.clone(),
+                    http_req_inspector: self.http_req_modifier_svc.clone(),
                     extensions,
                 };
 
-                Ok(EstablishedClientConnection { req, conn: svc })
+                Ok(EstablishedClientConnection {
+                    input: req,
+                    conn: svc,
+                })
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
                 tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
@@ -215,11 +218,14 @@ where
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http1(Mutex::new(sender)),
-                    http_req_inspector: self.http_req_inspector_svc.clone(),
+                    http_req_inspector: self.http_req_modifier_svc.clone(),
                     extensions,
                 };
 
-                Ok(EstablishedClientConnection { req, conn: svc })
+                Ok(EstablishedClientConnection {
+                    input: req,
+                    conn: svc,
+                })
             }
             version => Err(OpaqueError::from_display(format!(
                 "unsupported Http version: {version:?}",
@@ -232,7 +238,7 @@ where
 #[derive(Clone, Debug)]
 /// A [`Layer`] that produces an [`HttpConnector`].
 pub struct HttpConnectorLayer<I = ()> {
-    http_req_inspector_svc: I,
+    http_req_modifier_svc: I,
 }
 
 impl HttpConnectorLayer {
@@ -240,16 +246,16 @@ impl HttpConnectorLayer {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            http_req_inspector_svc: (),
+            http_req_modifier_svc: (),
         }
     }
 }
 
 impl<I> HttpConnectorLayer<I> {
-    /// Add a http request inspector that will run just before doing the actual http request
-    pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<T> {
+    /// Add a http request modifier that will run just before doing the actual http request
+    pub fn with_http_req_modifier_svc<T>(self, http_req_modifier_svc: T) -> HttpConnectorLayer<T> {
         HttpConnectorLayer {
-            http_req_inspector_svc: http_req_inspector,
+            http_req_modifier_svc,
         }
     }
 }
@@ -266,14 +272,14 @@ impl<I: Clone, S> Layer<S> for HttpConnectorLayer<I> {
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
-            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
+            http_req_modifier_svc: self.http_req_modifier_svc.clone(),
         }
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
-            http_req_inspector_svc: self.http_req_inspector_svc,
+            http_req_modifier_svc: self.http_req_modifier_svc,
         }
     }
 }

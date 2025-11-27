@@ -112,14 +112,13 @@ impl<S, Body> Service<Request<Body>> for UserAgentClassifier<S>
 where
     S: Service<Request<Body>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
-
         mut req: Request<Body>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let overwrites = self
             .overwrite_header
             .as_ref()

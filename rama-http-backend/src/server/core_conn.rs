@@ -92,7 +92,7 @@ mod private {
         ) -> impl Future<Output = HttpServeResult> + Send + '_
         where
             IO: Stream + ExtensionsMut,
-            S: Service<Request, Response = Response, Error = Infallible> + Clone,
+            S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static;
     }
 
@@ -105,7 +105,7 @@ mod private {
         ) -> HttpServeResult
         where
             IO: Stream + ExtensionsMut,
-            S: Service<Request, Response = Response, Error = Infallible> + Clone,
+            S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
             let guard = io
@@ -152,7 +152,7 @@ mod private {
         ) -> HttpServeResult
         where
             IO: Stream + ExtensionsMut,
-            S: Service<Request, Response = Response, Error = Infallible> + Clone,
+            S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
             let guard = io
@@ -199,7 +199,7 @@ mod private {
         ) -> HttpServeResult
         where
             IO: Stream + ExtensionsMut,
-            S: Service<Request, Response = Response, Error = Infallible> + Clone,
+            S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
             let guard = io

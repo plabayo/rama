@@ -147,7 +147,7 @@ where
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
     pub async fn serve<S, Response, IO>(&self, stream: IO, service: S) -> HttpServeResult
     where
-        S: Service<Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
         IO: Stream + ExtensionsMut,
     {
@@ -161,7 +161,7 @@ where
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
     pub async fn listen<S, Response, I>(self, interface: I, service: S) -> HttpServeResult
     where
-        S: Service<Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Output = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
@@ -181,7 +181,7 @@ where
     /// It's a shortcut in case you don't need to operate on the unix transport layer directly.
     pub async fn listen_unix<S, Response, P>(self, path: P, service: S) -> HttpServeResult
     where
-        S: Service<Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Output = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
@@ -235,17 +235,17 @@ impl<B, S> Clone for HttpService<B, S> {
 impl<B, S, Response, IO> Service<IO> for HttpService<B, S>
 where
     B: HttpCoreConnServer,
-    S: Service<Request, Response = Response, Error = Infallible>,
+    S: Service<Request, Output = Response, Error = Infallible>,
     Response: IntoResponse + Send + 'static,
     IO: Stream + ExtensionsMut,
 {
-    type Response = ();
+    type Output = ();
     type Error = rama_core::error::BoxError;
 
     fn serve(
         &self,
         stream: IO,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let service = self.service.clone();
         self.builder.http_core_serve_connection(stream, service)
     }
