@@ -68,7 +68,7 @@ impl TryFromValues for After {
         values
             .next()
             .and_then(|val| {
-                if let Some(delay) = Seconds::from_val(val) {
+                if let Some(delay) = Seconds::try_from_val(val) {
                     return Some(Self::Delay(delay));
                 }
 

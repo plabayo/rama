@@ -17,7 +17,7 @@ use self::internal::IntoQuality;
 ///
 /// The quality value is defined as a number between 0 and 1 with three decimal places. This means
 /// there are 1001 possible values. Since floating point numbers are not exact and the smallest
-/// floating point data type (`f32`) consumes four bytes, hyper uses an `u16` value to store the
+/// floating point data type (`f32`) consumes four bytes, rama uses an `u16` value to store the
 /// quality internally. For performance reasons you may set quality directly to a value between
 /// 0 and 1000 e.g. `Quality(532)` matches the quality `q=0.532`.
 ///
@@ -29,7 +29,13 @@ pub struct Quality(u16);
 impl Quality {
     #[inline]
     #[must_use]
-    pub fn one() -> Self {
+    pub fn new_clamped(v: u16) -> Self {
+        Self(v.clamp(0, 1000))
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn one() -> Self {
         Self(1000)
     }
 
@@ -124,6 +130,14 @@ impl<T> QualityValue<T> {
     /// Creates a new `QualityValue` from an item and a quality.
     pub const fn new(value: T, quality: Quality) -> Self {
         Self { value, quality }
+    }
+
+    /// Creates a new `QualityValue` from an item value alone.
+    pub const fn new_value(value: T) -> Self {
+        Self {
+            value,
+            quality: Quality::one(),
+        }
     }
 
     /*

@@ -16,15 +16,23 @@ impl Seconds {
     }
 
     #[must_use]
-    pub fn from_val(val: &HeaderValue) -> Option<Self> {
+    pub fn try_from_val(val: &HeaderValue) -> Option<Self> {
         let secs = val.to_str().ok()?.parse().ok()?;
 
         Some(Self::new(secs))
     }
 
     #[must_use]
-    pub fn from_duration(duration: Duration) -> Self {
-        Self::new(duration.as_secs())
+    pub fn try_from_duration(dur: Duration) -> Option<Self> {
+        if dur.subsec_nanos() != 0 {
+            return None;
+        }
+        Some(Self::new(dur.as_secs()))
+    }
+
+    #[must_use]
+    pub fn from_duration_rounded(dur: Duration) -> Self {
+        Self::new(dur.as_secs())
     }
 
     #[must_use]
@@ -45,7 +53,7 @@ impl super::TryFromValues for Seconds {
     {
         values
             .just_one()
-            .and_then(Self::from_val)
+            .and_then(Self::try_from_val)
             .ok_or_else(Error::invalid)
     }
 }
@@ -53,13 +61,6 @@ impl super::TryFromValues for Seconds {
 impl<'a> From<&'a Seconds> for HeaderValue {
     fn from(secs: &'a Seconds) -> Self {
         secs.as_u64().into()
-    }
-}
-
-impl From<Duration> for Seconds {
-    fn from(dur: Duration) -> Self {
-        debug_assert!(dur.subsec_nanos() == 0);
-        Self::from_duration(dur)
     }
 }
 

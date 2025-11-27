@@ -399,7 +399,7 @@ impl<M> IpServiceBuilder<M> {
         #[cfg(any(feature = "rustls", feature = "boring"))]
         let hsts_layer = maybe_tls_accept_layer.is_some().then(|| {
             SetResponseHeaderLayer::if_not_present_typed(
-                StrictTransportSecurity::excluding_subdomains(Duration::from_secs(31536000)),
+                StrictTransportSecurity::excluding_subdomains_for_max_seconds(31536000),
             )
         });
 

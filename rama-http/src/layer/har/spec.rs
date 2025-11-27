@@ -13,7 +13,10 @@ use crate::service::web::extract::Query;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
-use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
+use rama_http_headers::{
+    ContentEncoding, ContentEncodingDirective, ContentType, Cookie as RamaCookie, HeaderMapExt,
+    Location,
+};
 use rama_http_headers::{HeaderEncode, SetCookie};
 use rama_http_types::mime::Mime;
 use rama_http_types::proto::h1::Http1HeaderName;
@@ -528,8 +531,8 @@ impl Response {
             }),
             encoding: parts
                 .headers
-                .typed_get::<crate::headers::ContentEncoding>()
-                .and_then(|ce| ce.first_str().map(Into::into)),
+                .typed_get::<ContentEncoding>()
+                .map(|ContentEncoding(ce)| ce.head),
             comment: None,
         };
 
@@ -656,16 +659,6 @@ pub struct PostParam {
     pub comment: Option<String>,
 }
 
-rama_utils::macros::enums::enum_builder! {
-    @String
-    pub enum ContentEncoding {
-        Base64 => "base64",
-        Gzip => "gzip",
-        Deflate => "deflate",
-        Brotli => "br",
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// This object describes details about response content
 ///
@@ -703,7 +696,7 @@ pub struct Content {
     /// (e.g. "base64") representation of the response body.
     ///
     /// Leave out this field if the information is not available.
-    pub encoding: Option<ContentEncoding>,
+    pub encoding: Option<ContentEncodingDirective>,
     /// A comment provided by the user or the application.
     pub comment: Option<String>,
 }

@@ -134,7 +134,7 @@ async fn main() {
                 TraceLayer::new_for_http(),
                 AddRequiredResponseHeadersLayer::default(),
                 SetResponseHeaderLayer::if_not_present_typed(
-                    StrictTransportSecurity::excluding_subdomains(Duration::from_secs(31536000)),
+                    StrictTransportSecurity::excluding_subdomains_for_max_seconds(31536000),
                 ),
             )
                 .into_layer(
