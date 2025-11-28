@@ -1,3 +1,5 @@
+use rama_utils::str::arcstr::ArcStr;
+
 derive_non_empty_flat_csv_header! {
     #[header(name = SEC_WEBSOCKET_PROTOCOL, sep = Comma)]
     /// The `Sec-WebSocket-Protocol` header, containing one or multiple protocols.
@@ -5,21 +7,14 @@ derive_non_empty_flat_csv_header! {
     /// Sub protocols are advertised by the client,
     /// and the server has to match it if defined.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SecWebSocketProtocol(pub NonEmptyVec<String>);
+    pub struct SecWebSocketProtocol(pub NonEmptyVec<ArcStr>);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Utility type containing the accepted [`SecWebSocketProtocol`].
-pub struct AcceptedWebSocketProtocol(String);
+pub struct AcceptedWebSocketProtocol(pub ArcStr);
 
 impl AcceptedWebSocketProtocol {
-    #[inline]
-    #[must_use]
-    /// consume this instance as a `string`.
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-
     #[inline]
     #[must_use]
     /// consume this instance as a [`SecWebSocketProtocol`]
@@ -73,7 +68,7 @@ impl SecWebSocketProtocol {
 
     rama_utils::macros::generate_set_and_with! {
         /// Add the WebSocket protocol, appending it to any existing protocol(s).
-        pub fn additional_protocol(mut self, protocol: impl Into<String>) -> Self {
+        pub fn additional_protocol(mut self, protocol: impl Into<ArcStr>) -> Self {
             self.0.push(protocol.into());
             self
         }
@@ -81,7 +76,7 @@ impl SecWebSocketProtocol {
 
     rama_utils::macros::generate_set_and_with! {
         /// Add the WebSocket protocols, appending it to any existing protocol(s).
-        pub fn additional_protocols(mut self, protocols: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        pub fn additional_protocols(mut self, protocols: impl IntoIterator<Item = impl Into<ArcStr>>) -> Self {
             self.0.extend(protocols.into_iter().map(Into::into));
             self
         }
@@ -90,46 +85,8 @@ impl SecWebSocketProtocol {
 
 impl AcceptedWebSocketProtocol {
     /// Create a new [`AcceptedWebSocketProtocol`]
-    pub fn new(s: impl Into<String>) -> Self {
+    pub fn new(s: impl Into<ArcStr>) -> Self {
         Self(s.into())
-    }
-}
-
-impl AcceptedWebSocketProtocol {
-    #[must_use]
-    /// View the [`AcceptedSubProtocol`] as a `str` reference.
-    pub fn as_str(&self) -> &str {
-        self.0.as_str().trim()
-    }
-}
-
-impl AsRef<str> for AcceptedWebSocketProtocol {
-    fn as_ref(&self) -> &str {
-        self.0.as_str().trim()
-    }
-}
-
-impl PartialEq<str> for AcceptedWebSocketProtocol {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str().eq_ignore_ascii_case(other.trim())
-    }
-}
-impl PartialEq<&str> for AcceptedWebSocketProtocol {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str().eq_ignore_ascii_case(other.trim())
-    }
-}
-
-impl PartialEq<AcceptedWebSocketProtocol> for str {
-    fn eq(&self, other: &AcceptedWebSocketProtocol) -> bool {
-        self.trim().eq_ignore_ascii_case(other.as_str())
-    }
-}
-
-impl PartialEq<AcceptedWebSocketProtocol> for &str {
-    #[inline(always)]
-    fn eq(&self, other: &AcceptedWebSocketProtocol) -> bool {
-        self.trim().eq_ignore_ascii_case(other.as_str())
     }
 }
 
@@ -186,7 +143,7 @@ mod tests {
     #[test]
     fn test_accept_first_protocol() {
         let header: SecWebSocketProtocol = test_decode(&["a, b"]).unwrap();
-        assert_eq!("a", header.accept_first_protocol());
+        assert_eq!("a", header.accept_first_protocol().0);
     }
 
     #[test]
@@ -205,7 +162,7 @@ mod tests {
             let header: SecWebSocketProtocol = test_decode(&[input]).unwrap();
             assert_eq!(
                 expected,
-                header.contains(protocol).as_ref().map(|p| p.as_str()),
+                header.contains(protocol).as_ref().map(|p| p.0.as_str()),
                 "input: '{input}'"
             );
         }
@@ -249,7 +206,7 @@ mod tests {
                 header
                     .contains_any(case.protocols)
                     .as_ref()
-                    .map(|p| p.as_str()),
+                    .map(|p| p.0.as_str()),
                 "input: '{}'",
                 case.input,
             );

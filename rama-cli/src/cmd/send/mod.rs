@@ -1,7 +1,7 @@
 use rama::{
     error::{BoxError, OpaqueError},
     net::{address::ProxyAddress, user::Basic},
-    utils::str::starts_with_ignore_ascii_case,
+    utils::str::{arcstr::ArcStr, starts_with_ignore_ascii_case},
 };
 
 use clap::Args;
@@ -255,5 +255,5 @@ pub struct SendCommand {
 
     #[arg(long, value_delimiter = ',')]
     /// (WebSocket) sub protocols to use
-    subprotocol: Option<Vec<String>>,
+    subprotocol: Option<Vec<ArcStr>>,
 }

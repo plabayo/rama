@@ -19,6 +19,7 @@ use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
 use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
 use rama_http::{request, response};
+use rama_utils::str::arcstr::ArcStr;
 
 use crate::protocol::{Role, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
@@ -168,7 +169,7 @@ pub enum ResponseValidateError {
     MissingUpgradeWebSocketHeader,
     MissingConnectionUpgradeHeader,
     SecWebSocketAcceptKeyMismatch,
-    ProtocolMismatch(Option<String>),
+    ProtocolMismatch(Option<ArcStr>),
     ExtensionMismatch(Option<Extension>),
 }
 
@@ -425,16 +426,14 @@ pub fn validate_http_server_response<Body>(
             return Err(ResponseValidateError::ProtocolMismatch(None));
         }
         (Some(header), None) => {
-            return Err(ResponseValidateError::ProtocolMismatch(Some(
-                header.into_inner(),
-            )));
+            return Err(ResponseValidateError::ProtocolMismatch(Some(header.0)));
         }
         (Some(protocol_header), Some(sub_protocols)) => {
-            match sub_protocols.contains(&protocol_header) {
+            match sub_protocols.contains(&protocol_header.0) {
                 Some(protocol) => accepted_protocol = Some(protocol),
                 None => {
                     return Err(ResponseValidateError::ProtocolMismatch(Some(
-                        protocol_header.into_inner(),
+                        protocol_header.0,
                     )));
                 }
             };
@@ -964,7 +963,7 @@ impl ClientWebSocket {
 
     /// Return the accepted protocol (during the http handshake) of the [`ClientWebSocket`], if any.
     pub fn accepted_protocol(&self) -> Option<&str> {
-        self.accepted_protocol.as_ref().map(|p| p.as_str())
+        self.accepted_protocol.as_ref().map(|p| p.0.as_str())
     }
 
     /// Consume `self` as an [`AsyncWebSocket`]

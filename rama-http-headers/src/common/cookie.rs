@@ -1,5 +1,7 @@
 // TOOD: adapt together <https://github.com/plabayo/rama/issues/44>
 
+use rama_utils::str::arcstr::ArcStr;
+
 derive_non_empty_flat_csv_header! {
     #[header(name = COOKIE, sep = SemiColon)]
     #[derive(Clone, Debug, PartialEq)]
@@ -16,7 +18,7 @@ derive_non_empty_flat_csv_header! {
     /// * `SID=31d4d96e407aad42`
     /// * `SID=31d4d96e407aad42; lang=en-US`
     ///
-    pub struct Cookie(pub NonEmptyVec<String>);
+    pub struct Cookie(pub NonEmptyVec<ArcStr>);
 }
 
 impl Cookie {

@@ -7,12 +7,13 @@ use rama::{
         headers::SecWebSocketProtocol,
         ws::handshake::client::{ClientWebSocket, HttpClientWebSocketExt},
     },
+    utils::str::arcstr::ArcStr,
 };
 
 pub(super) async fn connect<C>(
     req: Request,
     client: C,
-    protocols: Option<Vec<String>>,
+    protocols: Option<Vec<ArcStr>>,
 ) -> Result<ClientWebSocket, OpaqueError>
 where
     C: Service<Request, Response = Response, Error = BoxError>,
