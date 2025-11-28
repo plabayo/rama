@@ -11,6 +11,7 @@ pub use search::{
     submatch_any_ignore_ascii_case, submatch_ignore_ascii_case,
 };
 
+pub mod arcstr;
 pub mod utf8;
 
 #[cfg(not(target_os = "windows"))]

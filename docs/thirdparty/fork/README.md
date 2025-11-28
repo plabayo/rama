@@ -132,8 +132,14 @@ Over time they might diverge from the original as it grows with the rest
 of the rama ecosystem.
 
 - <https://github.com/cloudhead/nonempty/tree/95d5cb131262b12bbe55366cbbd48096f9a05493>
-  - it was more or less unmaintained and missing features due to being behind in rust versions
+  - Integrated in `rama::utils::collections`
   - License:
-    - Original: <https://github.com/cloudhead/nonempty/blob/master/LICENSE>
+    - Original: <https://github.com/cloudhead/nonempty/blob/95d5cb131262b12bbe55366cbbd48096f9a05493/LICENSE>
     - Type: MIT
     - Copy: [./licenses/nonempty](./licenses/nonempty)
+- <https://github.com/thomcc/arcstr/tree/faa7692b0d6662bb177b3aefa80a6a13f897554d>
+  - Integrated in `rama::utils::str::arcstr`
+  - License:
+    - Original: <https://github.com/thomcc/arcstr/blob/faa7692b0d6662bb177b3aefa80a6a13f897554d/LICENSE-MIT>
+    - Type: MIT
+    - Copy: [./licenses/arcstr](./licenses/arcstr)
