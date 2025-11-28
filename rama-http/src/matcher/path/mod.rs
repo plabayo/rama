@@ -4,6 +4,7 @@ use crate::service::web::response::IntoResponse;
 use crate::{Request, StatusCode};
 use ahash::{HashMap, HashMapExt as _};
 use rama_core::extensions::Extensions;
+use rama_utils::str::arcstr::ArcStr;
 use rama_utils::str::starts_with_ignore_ascii_case;
 use smallvec::SmallVec;
 use smol_str::StrExt as _;
@@ -14,15 +15,15 @@ mod de;
 /// parameters that are inserted in the [`Context`],
 /// in case the [`PathMatcher`] found a match for the given [`Request`].
 pub struct UriParams {
-    params: Option<HashMap<Arc<str>, Arc<str>>>,
-    glob: Option<Arc<str>>,
+    params: Option<HashMap<ArcStr, ArcStr>>,
+    glob: Option<ArcStr>,
 }
 
 impl UriParams {
-    fn insert(&mut self, name: impl Into<Arc<str>>, value: impl Into<Arc<str>>) {
+    fn insert(&mut self, name: ArcStr, value: ArcStr) {
         self.params
             .get_or_insert_with(HashMap::new)
-            .insert(name.into(), value.into());
+            .insert(name, value);
     }
 
     /// Some str slice will be returned in case a param could be found for the given name.
@@ -34,11 +35,14 @@ impl UriParams {
     }
 
     fn append_glob(&mut self, value: &str) {
-        self.glob = Some(Arc::from(if let Some(glob) = self.glob.take() {
-            smol_str::format_smolstr!("{glob}/{value}")
-        } else {
-            smol_str::format_smolstr!("/{value}")
-        }))
+        self.glob = Some(ArcStr::from(
+            if let Some(glob) = self.glob.take() {
+                smol_str::format_smolstr!("{glob}/{value}")
+            } else {
+                smol_str::format_smolstr!("/{value}")
+            }
+            .as_str(),
+        ))
     }
 
     /// Some str slice will be returned in case a glob value was captured
@@ -71,8 +75,8 @@ impl UriParams {
     pub fn extend<I, K, V>(&mut self, iter: I) -> &mut Self
     where
         I: IntoIterator<Item = (K, V)>,
-        K: Into<Arc<str>>,
-        V: Into<Arc<str>>,
+        K: Into<ArcStr>,
+        V: Into<ArcStr>,
     {
         let params = self.params.get_or_insert_with(HashMap::new);
         for (k, v) in iter {
@@ -90,11 +94,15 @@ impl UriParams {
     }
 }
 
-impl<'a> FromIterator<(&'a str, &'a str)> for UriParams {
-    fn from_iter<T: IntoIterator<Item = (&'a str, &'a str)>>(iter: T) -> Self {
+impl<K, V> FromIterator<(K, V)> for UriParams
+where
+    K: Into<ArcStr>,
+    V: Into<ArcStr>,
+{
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let mut params = Self::default();
         for (k, v) in iter {
-            params.insert(k.to_owned(), v.to_owned());
+            params.insert(k.into(), v.into());
         }
         params
     }
@@ -161,15 +169,15 @@ impl IntoResponse for UriParamsDeserializeError {
 
 #[derive(Debug, Clone)]
 enum PathFragment {
-    Literal(Arc<str>),
-    Param(Arc<str>),
+    Literal(ArcStr),
+    Param(ArcStr),
     Glob,
 }
 
 #[derive(Debug, Clone)]
 enum PathMatcherKind {
-    Prefix(Arc<str>),
-    Literal(Arc<str>),
+    Prefix(ArcStr),
+    Literal(ArcStr),
     FragmentList(std::sync::Arc<[PathFragment]>),
 }
 
@@ -187,7 +195,7 @@ impl PathMatcher {
 
         if !path.contains(['*', '{', '}']) {
             return Self {
-                kind: PathMatcherKind::Literal(Arc::from(path)),
+                kind: PathMatcherKind::Literal(ArcStr::from(path)),
             };
         }
 
@@ -207,16 +215,18 @@ impl PathMatcher {
                     return None;
                 }
                 if s.starts_with(':') {
-                    Some(PathFragment::Param(Arc::from(
+                    Some(PathFragment::Param(ArcStr::from(
                         s.trim_start_matches(':').to_lowercase_smolstr(),
                     )))
                 } else if s.starts_with('{') && s.ends_with('}') && s.len() > 2 {
                     let param_name = s[1..s.len() - 1].to_lowercase_smolstr();
-                    Some(PathFragment::Param(Arc::from(param_name)))
+                    Some(PathFragment::Param(ArcStr::from(param_name)))
                 } else if s == "*" && index == fragment_length - 1 {
                     Some(PathFragment::Glob)
                 } else {
-                    Some(PathFragment::Literal(Arc::from(s.to_lowercase_smolstr())))
+                    Some(PathFragment::Literal(ArcStr::from(
+                        s.to_lowercase_smolstr(),
+                    )))
                 }
             })
             .collect();
@@ -227,7 +237,7 @@ impl PathMatcher {
         {
             // optimization for pure literal paths..
             return Self {
-                kind: PathMatcherKind::Literal(Arc::from(path)),
+                kind: PathMatcherKind::Literal(ArcStr::from(path)),
             };
         }
 
@@ -273,7 +283,7 @@ impl PathMatcher {
     pub fn try_remove_literal_prefix(
         self,
         allow_glob: bool,
-    ) -> Result<(Arc<str>, Option<Self>), Self> {
+    ) -> Result<(ArcStr, Option<Self>), Self> {
         match self.kind {
             PathMatcherKind::Literal(s) | PathMatcherKind::Prefix(s) => Ok((s, None)),
             PathMatcherKind::FragmentList(fragments) => {
@@ -309,7 +319,7 @@ impl PathMatcher {
                 }
 
                 Ok(if rem.is_empty() {
-                    (Arc::from(output), None)
+                    (ArcStr::from(output), None)
                 } else if !allow_glob
                     && rem
                         .last()
@@ -317,14 +327,14 @@ impl PathMatcher {
                         .unwrap_or_default()
                 {
                     (
-                        Arc::from(output),
+                        ArcStr::from(output),
                         Some(Self {
                             kind: PathMatcherKind::FragmentList(Arc::from(&rem[..rem.len() - 1])),
                         }),
                     )
                 } else {
                     (
-                        Arc::from(output),
+                        ArcStr::from(output),
                         Some(Self {
                             kind: PathMatcherKind::FragmentList(Arc::from(rem)),
                         }),
@@ -386,9 +396,9 @@ impl PathMatcher {
                                 }
                                 let segment = percent_encoding::percent_decode(segment.as_bytes())
                                     .decode_utf8()
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|_| segment.to_owned());
-                                params.insert(name.to_string(), segment);
+                                    .map(Into::into)
+                                    .unwrap_or_else(|_| segment.into());
+                                params.insert(name.clone(), segment);
                             }
                             PathFragment::Glob => {
                                 params.append_glob(segment);
@@ -431,6 +441,7 @@ enum PathMatch {
 #[cfg(test)]
 mod test {
     use super::*;
+    use rama_utils::str::arcstr::arcstr;
 
     #[test]
     fn test_path_matcher_match_path() {
@@ -479,7 +490,7 @@ mod test {
                 "/",
                 "/*",
                 Some(UriParams {
-                    glob: Some(Arc::from("/")),
+                    glob: Some(ArcStr::from("/")),
                     ..UriParams::default()
                 }),
             ),
@@ -492,7 +503,7 @@ mod test {
                 Some(UriParams {
                     params: Some({
                         let mut params = HashMap::new();
-                        params.insert(Arc::from("name"), Arc::from("glen dc"));
+                        params.insert(arcstr!("name"), arcstr!("glen dc"));
                         params
                     }),
                     ..UriParams::default()
@@ -507,12 +518,12 @@ mod test {
             TestCase::some("/foo/bar", "foo/bar", None),
             TestCase::some("/book/oxford-dictionary/author", "/book/{title}/author", {
                 let mut params = UriParams::default();
-                params.insert("title", "oxford-dictionary");
+                params.insert(arcstr!("title"), arcstr!("oxford-dictionary"));
                 Some(params)
             }),
             TestCase::some("/book/oxford-dictionary/author", "/book/{title}/author", {
                 let mut params = UriParams::default();
-                params.insert("title", "oxford-dictionary");
+                params.insert(arcstr!("title"), arcstr!("oxford-dictionary"));
                 Some(params)
             }),
             TestCase::some(
@@ -520,8 +531,8 @@ mod test {
                 "/book/{title}/author/{index}",
                 {
                     let mut params = UriParams::default();
-                    params.insert("title", "oxford-dictionary");
-                    params.insert("index", "0");
+                    params.insert(arcstr!("title"), arcstr!("oxford-dictionary"));
+                    params.insert(arcstr!("index"), arcstr!("0"));
                     Some(params)
                 },
             ),
@@ -530,8 +541,8 @@ mod test {
                 "/book/{title}/author/{index}",
                 {
                     let mut params = UriParams::default();
-                    params.insert("title", "oxford-dictionary");
-                    params.insert("index", "1");
+                    params.insert(arcstr!("title"), arcstr!("oxford-dictionary"));
+                    params.insert(arcstr!("index"), arcstr!("1"));
                     Some(params)
                 },
             ),
@@ -561,13 +572,13 @@ mod test {
             ),
             TestCase::some("/assets/eu/css/reset.css", "/assets/{local}/*", {
                 let mut params = UriParams::default();
-                params.insert("local".to_owned(), "eu".to_owned());
+                params.insert(arcstr!("local"), arcstr!("eu"));
                 params.glob = Some("/css/reset.css".into());
                 Some(params)
             }),
             TestCase::some("/assets/eu/css/reset.css", "/assets/:local/css/*", {
                 let mut params = UriParams::default();
-                params.insert("local".to_owned(), "eu".to_owned());
+                params.insert(arcstr!("local"), arcstr!("eu"));
                 params.glob = Some("/reset.css".into());
                 Some(params)
             }),
@@ -683,8 +694,8 @@ mod test {
         let params = UriParams {
             params: Some({
                 let mut params = HashMap::new();
-                params.insert(Arc::from("name"), Arc::from("glen dc"));
-                params.insert(Arc::from("age"), Arc::from("42"));
+                params.insert(arcstr!("name"), arcstr!("glen dc"));
+                params.insert(arcstr!("age"), arcstr!("42"));
                 params
             }),
             glob: Some("/age".into()),

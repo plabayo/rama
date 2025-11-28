@@ -89,6 +89,7 @@ use rama::{
         },
         profile::UserAgentDatabase,
     },
+    utils::str::non_empty_str,
 };
 
 use std::{
@@ -147,7 +148,7 @@ async fn main() -> Result<(), BoxError> {
                 TraceLayer::new_for_http(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
+                ProxyAuthLayer::new(Basic::new(non_empty_str!("john"), non_empty_str!("secret"))),
                 // used to toggle HAR recording on and off
                 // ...
                 // NOTE that in a production proxy you would probably

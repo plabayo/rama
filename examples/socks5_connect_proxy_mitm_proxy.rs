@@ -60,6 +60,7 @@ use rama::{
         client::TlsConnectorDataBuilder,
         server::{TlsAcceptorData, TlsAcceptorLayer},
     },
+    utils::str::non_empty_str,
 };
 
 use std::{convert::Infallible, time::Duration};
@@ -93,7 +94,9 @@ async fn main() {
         .await
         .expect("bind proxy to 127.0.0.1:62022");
     let socks5_acceptor = Socks5Acceptor::new()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer())
+        .with_authorizer(
+            Basic::new(non_empty_str!("john"), non_empty_str!("secret")).into_authorizer(),
+        )
         .with_connector(LazyConnector::new(auto_https_service));
     graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, socks5_acceptor));
 

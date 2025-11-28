@@ -39,6 +39,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    utils::str::non_empty_str,
 };
 
 use std::time::Duration;
@@ -59,8 +60,9 @@ async fn main() {
     let tcp_service = TcpListener::bind("127.0.0.1:62021")
         .await
         .expect("bind proxy to 127.0.0.1:62021");
-    let socks5_acceptor = Socks5Acceptor::default()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
+    let socks5_acceptor = Socks5Acceptor::default().with_authorizer(
+        Basic::new(non_empty_str!("john"), non_empty_str!("secret")).into_authorizer(),
+    );
     graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, socks5_acceptor));
 
     graceful

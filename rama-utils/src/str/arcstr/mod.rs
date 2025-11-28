@@ -104,7 +104,8 @@ pub mod _private {
         pub p: *const u8,
         pub a: &'static Arr,
     }
-    pub use super::arc_str::StaticArcStrInner;
+
+    pub use super::arc_str::{STATIC_COUNT_VALUE, StaticArcStrInner};
     pub use ::const_format::formatcp;
     pub use std::primitive::{str, u8};
 }

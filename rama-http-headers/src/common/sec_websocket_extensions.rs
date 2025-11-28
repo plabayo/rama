@@ -3,10 +3,11 @@
 //! More information:
 //! <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-WebSocket-Extensions>
 
-use std::{fmt, str::FromStr, sync::Arc};
+use std::{fmt, str::FromStr};
 
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorExt, OpaqueError};
+use rama_utils::str::arcstr::ArcStr;
 
 derive_non_empty_flat_csv_header! {
     #[header(name = SEC_WEBSOCKET_EXTENSIONS, sep = Comma)]
@@ -74,7 +75,7 @@ pub enum Extension {
     /// An extension unknown to this library.
     ///
     /// Up to the user to parse and handle it appropriately, if at all.
-    Unknown(Arc<str>),
+    Unknown(ArcStr),
 }
 
 impl Extension {

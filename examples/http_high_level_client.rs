@@ -32,7 +32,7 @@ use rama::{
         service::web::response::Json,
     },
     net::address::SocketAddress,
-    net::user::Basic,
+    net::user::credentials::basic,
     rt::Executor,
     telemetry::tracing::{
         self,
@@ -66,7 +66,7 @@ async fn main() {
         //
         // NOTE: the high level http client has also a `::basic` method
         // that can be used to add basic auth headers only for that specific request
-        AddAuthorizationLayer::new(Basic::new_static("john", "123"))
+        AddAuthorizationLayer::new(basic!("john", "123"))
             .with_sensitive(true)
             .with_if_not_present(true),
         RetryLayer::new(
@@ -151,7 +151,7 @@ async fn main() {
 
     let resp = client
         .get(format!("http://{ADDRESS}/info"))
-        .auth(Basic::new_static("joe", "456"))
+        .auth(basic!("joe", "456"))
         .send()
         .await
         .unwrap();
@@ -185,7 +185,7 @@ async fn run_server(addr: SocketAddress) {
             (
                 TraceLayer::new_for_http(),
                 CompressionLayer::new(),
-                ValidateRequestHeaderLayer::auth(Basic::new_static("john", "123")),
+                ValidateRequestHeaderLayer::auth(basic!("john", "123")),
             )
                 .into_layer(
                     WebService::default()

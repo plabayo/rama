@@ -9,6 +9,7 @@ use rama_core::futures::TryStream;
 use rama_core::futures::stream::Stream;
 use rama_core::stream::json;
 use rama_error::{BoxError, OpaqueError};
+use rama_utils::str::arcstr::ArcStr;
 use serde::de::DeserializeOwned;
 use sse::{EventDataRead, EventStream};
 use std::pin::Pin;
@@ -246,6 +247,23 @@ body_from_impl!(Vec<u8>);
 body_from_impl!(&'static str);
 body_from_impl!(std::borrow::Cow<'static, str>);
 body_from_impl!(String);
+
+impl From<&ArcStr> for Body {
+    fn from(buf: &ArcStr) -> Self {
+        Self::new(if let Some(s) = ArcStr::as_static(buf) {
+            crate::body::util::Full::from(s)
+        } else {
+            crate::body::util::Full::from(buf.to_string())
+        })
+    }
+}
+
+impl From<ArcStr> for Body {
+    #[inline(always)]
+    fn from(buf: ArcStr) -> Self {
+        Self::from(&buf)
+    }
+}
 
 body_from_impl!(Bytes);
 

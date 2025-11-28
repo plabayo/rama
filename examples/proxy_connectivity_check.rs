@@ -72,6 +72,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    utils::str::non_empty_str,
 };
 
 use std::{convert::Infallible, time::Duration};
@@ -160,7 +161,7 @@ async fn main() {
     let http_service = HttpServer::auto(Executor::graceful(graceful.guard())).service(
         (
             TraceLayer::new_for_http(),
-            ProxyAuthLayer::new(Basic::new_static("tom", "clancy")),
+            ProxyAuthLayer::new(Basic::new(non_empty_str!("tom"), non_empty_str!("clancy"))),
             UpgradeLayer::new(
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
@@ -174,7 +175,9 @@ async fn main() {
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec).service(proxy_service))
         .with_fallback(Forwarder::ctx());
     let socks5_acceptor = Socks5Acceptor::new()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer())
+        .with_authorizer(
+            Basic::new(non_empty_str!("john"), non_empty_str!("secret")).into_authorizer(),
+        )
         .with_connector(LazyConnector::new(socks5_svc));
 
     let auto_socks5_acceptor = Socks5PeekRouter::new(socks5_acceptor).with_fallback(http_service);

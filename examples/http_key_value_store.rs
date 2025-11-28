@@ -68,7 +68,7 @@ use rama::{
             response::{IntoResponse, Json},
         },
     },
-    net::{address::SocketAddress, user::Bearer},
+    net::{address::SocketAddress, user::credentials::bearer},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -141,7 +141,7 @@ async fn main() {
                                 }
                             })))
                         .with_get("/keys", list_keys)
-                        .with_nest_service("/admin", ValidateRequestHeaderLayer::auth(Bearer::new_static("secret-token"))
+                        .with_nest_service("/admin", ValidateRequestHeaderLayer::auth(bearer!("secret-token"))
                             .into_layer(WebService::new_with_state(state.clone())
                                 .with_delete("/keys", async |State(db): State<Db>| {
                                     db.write().await.clear();

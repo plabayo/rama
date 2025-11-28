@@ -8,6 +8,7 @@
 )]
 #[cfg(all(loom, test))]
 pub(crate) use loom::sync::atomic::{AtomicUsize, Ordering};
+use smol_str::SmolStr;
 use std::alloc::Layout;
 use std::mem::{MaybeUninit, align_of, size_of};
 use std::ptr::NonNull;
@@ -1089,9 +1090,10 @@ pub struct StaticArcStrInner<Buf> {
     pub data: Buf,
 }
 
+#[doc(hidden)]
+pub const STATIC_COUNT_VALUE: usize = PackedFlagUint::new_raw(true, 1).encoded_value();
+
 impl<Buf> StaticArcStrInner<Buf> {
-    #[doc(hidden)]
-    pub const STATIC_COUNT_VALUE: usize = PackedFlagUint::new_raw(true, 1).encoded_value();
     #[doc(hidden)]
     #[inline]
     #[must_use]
@@ -1326,6 +1328,50 @@ impl From<&str> for ArcStr {
         } else {
             Self(ThinInner::allocate(s, false))
         }
+    }
+}
+
+impl TryFrom<&[u8]> for ArcStr {
+    type Error = std::str::Utf8Error;
+
+    #[inline(always)]
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let s = std::str::from_utf8(value)?;
+        Ok(s.into())
+    }
+}
+
+impl TryFrom<Vec<u8>> for ArcStr {
+    type Error = std::string::FromUtf8Error;
+
+    #[inline(always)]
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let s = String::from_utf8(value)?;
+        Ok(s.into())
+    }
+}
+
+impl TryFrom<&Vec<u8>> for ArcStr {
+    type Error = std::str::Utf8Error;
+
+    #[inline(always)]
+    fn try_from(value: &Vec<u8>) -> Result<Self, Self::Error> {
+        let s = std::str::from_utf8(value)?;
+        Ok(s.into())
+    }
+}
+
+impl From<SmolStr> for ArcStr {
+    #[inline(always)]
+    fn from(s: SmolStr) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl From<&SmolStr> for ArcStr {
+    #[inline(always)]
+    fn from(s: &SmolStr) -> Self {
+        Self::from(s.as_str())
     }
 }
 

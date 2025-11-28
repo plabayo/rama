@@ -13,6 +13,7 @@ use super::{
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
 use rama_net::{address::HostWithPort, user};
+use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 use smallvec::{SmallVec, smallvec};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -402,20 +403,28 @@ impl UsernamePasswordRequest {
                 byte: username_length,
             });
         }
-        let mut username_bytes = vec![0u8; username_length as usize];
-        r.read_exact(username_bytes.as_mut_slice()).await?;
+        let username_length = username_length as usize;
 
-        let username = String::from_utf8(username_bytes)?;
+        let mut buffer = [0u8; u8::MAX as usize];
+
+        r.read_exact(&mut buffer[..username_length]).await?;
+
+        // SAFETY: above code has username_length check
+        let username =
+            unsafe { NonEmptyStr::new_unchecked(ArcStr::try_from(&buffer[..username_length])?) };
 
         let password_length = r.read_u8().await?;
 
         let basic = if password_length == 0 {
             user::Basic::new_insecure(username)
         } else {
-            let mut password_bytes = vec![0u8; password_length as usize];
-            r.read_exact(password_bytes.as_mut_slice()).await?;
+            let password_length = password_length as usize;
+            r.read_exact(&mut buffer[..password_length]).await?;
 
-            let password = String::from_utf8(password_bytes)?;
+            // SAFETY: above code has username_length check
+            let password = unsafe {
+                NonEmptyStr::new_unchecked(ArcStr::try_from(&buffer[..password_length])?)
+            };
 
             user::Basic::new(username, password)
         };
@@ -528,24 +537,24 @@ impl<'a> UsernamePasswordRequestRef<'a> {
         buf.put_u8(username.len() as u8);
         buf.put_slice(username.as_bytes());
 
-        let password = self.basic.password();
-
-        if password.is_empty() {
-            buf.put_u8(0)
-        } else {
+        if let Some(password) = self.basic.password() {
             debug_assert!((1..=255).contains(&password.len()));
             buf.put_u8(password.len() as u8);
             buf.put_slice(password.as_bytes());
+        } else {
+            buf.put_u8(0);
         }
     }
 
     fn serialized_len(&self) -> usize {
-        3 + self.basic.username().len() + self.basic.password().len()
+        3 + self.basic.username().len() + self.basic.password().map(|p| p.len()).unwrap_or_default()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rama_utils::str::non_empty_str;
+
     use crate::proto::test_write_read_eq;
 
     use super::*;
@@ -595,14 +604,17 @@ mod tests {
     #[tokio::test]
     async fn test_username_password_request_write_read_eq() {
         test_write_read_eq!(
-            UsernamePasswordRequest::new(user::Basic::new_static("john", "secret")),
+            UsernamePasswordRequest::new(user::Basic::new(
+                non_empty_str!("john"),
+                non_empty_str!("secret")
+            )),
             UsernamePasswordRequest,
         );
 
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                basic: &user::Basic::new_static("a", "b"),
+                basic: &user::Basic::new(non_empty_str!("a"), non_empty_str!("b")),
             },
             UsernamePasswordRequest,
         );
@@ -610,9 +622,9 @@ mod tests {
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                basic: &user::Basic::new_static(
-                    "adasdadadadadsadasdasdasdasddada",
-                    "bdafasdfdasdadasfsfsfdsasdasdsadsadsad"
+                basic: &user::Basic::new(
+                    non_empty_str!("adasdadadadadsadasdasdasdasddada"),
+                    non_empty_str!("bdafasdfdasdadasfsfsfdsasdasdsadsadsad"),
                 ),
             },
             UsernamePasswordRequest,
@@ -621,7 +633,7 @@ mod tests {
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                basic: &user::Basic::new_static_insecure("a"),
+                basic: &user::Basic::new_insecure(non_empty_str!("a")),
             },
             UsernamePasswordRequest,
         );

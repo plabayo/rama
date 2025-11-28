@@ -2,7 +2,10 @@
 
 mod non_empty;
 #[doc(inline)]
-pub use non_empty::{EmptyStringErr, NonEmptyString};
+pub use non_empty::{EmptyStrErr, NonEmptyStr};
+
+#[doc(inline)]
+pub use crate::__non_empty_str as non_empty_str;
 
 mod search;
 #[doc(inline)]

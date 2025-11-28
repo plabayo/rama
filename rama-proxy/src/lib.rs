@@ -69,7 +69,7 @@
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
-//! use rama_utils::str::NonEmptyString;
+//! use rama_utils::str::non_empty_str;
 //! use itertools::Itertools;
 //! use std::{convert::Infallible, sync::Arc};
 //!
@@ -77,7 +77,7 @@
 //! async fn main() {
 //!     let db = MemoryProxyDB::try_from_iter([
 //!         Proxy {
-//!             id: NonEmptyString::from_static("42"),
+//!             id: non_empty_str!("42"),
 //!             address: "12.34.12.34:8080".try_into().unwrap(),
 //!             tcp: true,
 //!             udp: true,
@@ -97,7 +97,7 @@
 //!             asn: None,
 //!         },
 //!         Proxy {
-//!             id: NonEmptyString::from_static("100"),
+//!             id: non_empty_str!("100"),
 //!             address: "123.123.123.123:8080".try_into().unwrap(),
 //!             tcp: true,
 //!             udp: false,
@@ -166,14 +166,14 @@
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
-//! use rama_utils::str::NonEmptyString;
+//! use rama_utils::str::non_empty_str;
 //! use itertools::Itertools;
 //! use std::{convert::Infallible, sync::Arc};
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     let proxy = Proxy {
-//!         id: NonEmptyString::from_static("1"),
+//!         id: non_empty_str!("1"),
 //!         address: "john:secret@proxy.example.com:60000".try_into().unwrap(),
 //!         tcp: true,
 //!         udp: true,

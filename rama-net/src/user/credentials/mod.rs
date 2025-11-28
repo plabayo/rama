@@ -3,12 +3,12 @@
 mod basic;
 
 #[doc(inline)]
-pub use basic::Basic;
+pub use basic::{Basic, basic};
 
 mod bearer;
 
 #[doc(inline)]
-pub use bearer::Bearer;
+pub use bearer::{Bearer, bearer};
 
 mod proxy;
 #[doc(inline)]

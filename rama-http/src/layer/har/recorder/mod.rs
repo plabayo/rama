@@ -1,21 +1,22 @@
 use super::spec;
-use std::{borrow::Cow, sync::Arc};
+use std::sync::Arc;
 
 mod fs;
 pub use fs::{FileRecorder, HarFilePath};
 use rama_core::extensions::Extensions;
+use rama_utils::str::arcstr::ArcStr;
 
 #[derive(Debug, Clone)]
 /// This object represents the root of exported data.
 pub struct LogMetaInfo {
     /// Version number of the format. If empty, string "1.1" is assumed by default.
-    pub version: Cow<'static, str>,
+    pub version: ArcStr,
     /// Name and version info of the log creator application.
     pub creator: spec::Creator,
     /// Name and version info of used browser.
     pub browser: Option<spec::Browser>,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 pub trait Recorder: Send + Sync + 'static {

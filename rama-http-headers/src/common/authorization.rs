@@ -35,10 +35,10 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 ///
 /// ```
 /// use rama_http_headers::Authorization;
-/// use rama_net::user::{Basic, Bearer};
+/// use rama_net::user::credentials::{basic, bearer};
 ///
-/// let basic = Authorization::new(Basic::new_static("Aladdin", "open sesame"));
-/// let bearer = Authorization::new(Bearer::new_static("some-opaque-token"));
+/// let basic = Authorization::new(basic!("Aladdin", "open sesame"));
+/// let bearer = Authorization::new(bearer!("some-opaque-token"));
 /// ```
 ///
 #[derive(Clone, PartialEq, Debug)]
@@ -329,6 +329,8 @@ where
 #[cfg(test)]
 mod tests {
     use rama_http_types::header::HeaderMap;
+    use rama_net::user::credentials::bearer;
+    use rama_utils::str::non_empty_str;
 
     use super::super::{test_decode, test_encode};
     use super::{Authorization, Basic, Bearer};
@@ -336,7 +338,10 @@ mod tests {
 
     #[test]
     fn basic_encode() {
-        let auth = Authorization::new(Basic::new_static("Aladdin", "open sesame"));
+        let auth = Authorization::new(Basic::new(
+            non_empty_str!("Aladdin"),
+            non_empty_str!("open sesame"),
+        ));
         let headers = test_encode(auth);
 
         assert_eq!(
@@ -347,7 +352,7 @@ mod tests {
 
     #[test]
     fn basic_username_encode() {
-        let auth = Authorization::new(Basic::new_static_insecure("Aladdin"));
+        let auth = Authorization::new(Basic::new_insecure(non_empty_str!("Aladdin")));
         let headers = test_encode(auth);
 
         assert_eq!(headers["authorization"], "Basic QWxhZGRpbjo=",);
@@ -355,7 +360,10 @@ mod tests {
 
     #[test]
     fn basic_roundtrip() {
-        let auth = Authorization::new(Basic::new_static("Aladdin", "open sesame"));
+        let auth = Authorization::new(Basic::new(
+            non_empty_str!("Aladdin"),
+            non_empty_str!("open sesame"),
+        ));
         let mut h = HeaderMap::new();
         h.typed_insert(&auth);
         assert_eq!(h.typed_get(), Some(auth));
@@ -366,7 +374,7 @@ mod tests {
         let auth: Authorization<Basic> =
             test_decode(&["Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="]).unwrap();
         assert_eq!(auth.0.username(), "Aladdin");
-        assert_eq!(auth.0.password(), "open sesame");
+        assert_eq!(auth.0.password(), Some("open sesame"));
     }
 
     #[test]
@@ -374,7 +382,7 @@ mod tests {
         let auth: Authorization<Basic> =
             test_decode(&["basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="]).unwrap();
         assert_eq!(auth.0.username(), "Aladdin");
-        assert_eq!(auth.0.password(), "open sesame");
+        assert_eq!(auth.0.password(), Some("open sesame"));
     }
 
     #[test]
@@ -382,19 +390,19 @@ mod tests {
         let auth: Authorization<Basic> =
             test_decode(&["Basic  QWxhZGRpbjpvcGVuIHNlc2FtZQ=="]).unwrap();
         assert_eq!(auth.0.username(), "Aladdin");
-        assert_eq!(auth.0.password(), "open sesame");
+        assert_eq!(auth.0.password(), Some("open sesame"));
     }
 
     #[test]
     fn basic_decode_no_password() {
         let auth: Authorization<Basic> = test_decode(&["Basic QWxhZGRpbjo="]).unwrap();
         assert_eq!(auth.0.username(), "Aladdin");
-        assert_eq!(auth.0.password(), "");
+        assert_eq!(auth.0.password(), None);
     }
 
     #[test]
     fn bearer_encode() {
-        let auth = Authorization::new(Bearer::new_static("fpKL54jvWmEGVoRdCNjG"));
+        let auth = Authorization::new(bearer!("fpKL54jvWmEGVoRdCNjG"));
 
         let headers = test_encode(auth);
 
@@ -428,11 +436,15 @@ mod tests {
 mod test_auth {
     use super::*;
     use rama_core::username::{UsernameLabels, UsernameOpaqueLabelParser};
+    use rama_utils::str::non_empty_str;
 
     #[tokio::test]
     async fn basic_authorization() {
-        let auth = Basic::new_static("Aladdin", "open sesame");
-        let auths = vec![Basic::new_static("foo", "bar"), auth.clone()];
+        let auth = Basic::new(non_empty_str!("Aladdin"), non_empty_str!("open sesame"));
+        let auths = vec![
+            Basic::new(non_empty_str!("foo"), non_empty_str!("bar")),
+            auth.clone(),
+        ];
         let ext = Authority::<_, ()>::authorized(&auths, auth).await.unwrap();
         let user: &UserId = ext.get().unwrap();
         assert_eq!(user, "Aladdin");
@@ -441,13 +453,13 @@ mod test_auth {
     #[tokio::test]
     async fn basic_authorization_with_labels_found() {
         let auths = vec![
-            Basic::new_static("foo", "bar"),
-            Basic::new_static("john", "secret"),
+            Basic::new(non_empty_str!("foo"), non_empty_str!("bar")),
+            Basic::new(non_empty_str!("john"), non_empty_str!("secret")),
         ];
 
         let ext = Authority::<_, UsernameOpaqueLabelParser>::authorized(
             &auths,
-            Basic::new_static("john-green-red", "secret"),
+            Basic::new(non_empty_str!("john-green-red"), non_empty_str!("secret")),
         )
         .await
         .unwrap();
@@ -461,8 +473,11 @@ mod test_auth {
 
     #[tokio::test]
     async fn basic_authorization_with_labels_not_found() {
-        let auth = Basic::new_static("john", "secret");
-        let auths = vec![Basic::new_static("foo", "bar"), auth.clone()];
+        let auth = Basic::new(non_empty_str!("john"), non_empty_str!("secret"));
+        let auths = vec![
+            Basic::new(non_empty_str!("foo"), non_empty_str!("bar")),
+            auth.clone(),
+        ];
 
         let ext = Authority::<_, UsernameOpaqueLabelParser>::authorized(&auths, auth)
             .await

@@ -48,6 +48,7 @@ use rama::{
         client::{TlsConnector, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorService},
     },
+    utils::str::non_empty_str,
 };
 
 use std::sync::Arc;
@@ -96,7 +97,10 @@ async fn main() {
     request.extensions_mut().insert(ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
         address: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
+        credential: Some(ProxyCredential::Basic(Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ))),
     });
 
     let EstablishedClientConnection {
@@ -134,8 +138,9 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
         .expect("get bind address of socks5-over-tls proxy server")
         .into();
 
-    let socks5_acceptor = Socks5Acceptor::default()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
+    let socks5_acceptor = Socks5Acceptor::default().with_authorizer(
+        Basic::new(non_empty_str!("john"), non_empty_str!("secret")).into_authorizer(),
+    );
 
     let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
     let acceptor_data =

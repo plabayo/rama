@@ -87,12 +87,14 @@ pub(super) async fn new(
             .as_deref()
             .map(|auth| {
                 let mut basic = Basic::from_str(auth).context("parse basic str")?;
-                if auth.ends_with(':') && basic.password().is_empty() {
+                if auth.ends_with(':') && basic.password().is_none() {
                     let mut terminal =
                         Terminal::open().context("open terminal for password prompting")?;
                     let password = terminal
                         .prompt_sensitive("password: ")
-                        .context("prompt password from terminal")?;
+                        .context("prompt password from terminal")?
+                        .parse()
+                        .context("parse password as non-empty-str")?;
                     basic.set_password(password);
                 }
                 Ok::<_, OpaqueError>(AddAuthorizationLayer::new(basic).with_sensitive(true))

@@ -184,6 +184,8 @@ impl<T: EventDataRead> EventDataLineReader for EventDataReader<T> {
 
 #[cfg(test)]
 mod tests {
+    use rama_utils::str::non_empty_str;
+
     use crate::sse::EventDataWrite;
 
     use super::*;
@@ -199,8 +201,8 @@ mod tests {
     #[test]
     fn test_serialize_deserialize_reflect() {
         let test_cases: Vec<EventData> = vec![
-            PatchElements::new("<div>\nHello, world!\n</div>")
-                .with_selector("#foo")
+            PatchElements::new(non_empty_str!("<div>\nHello, world!\n</div>"))
+                .with_selector(non_empty_str!("#foo"))
                 .with_mode(ElementPatchMode::Append)
                 .with_use_view_transition(true)
                 .into(),

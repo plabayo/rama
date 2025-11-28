@@ -19,7 +19,7 @@ use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
 use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
 use rama_http::{request, response};
-use rama_utils::str::arcstr::ArcStr;
+use rama_utils::str::NonEmptyStr;
 
 use crate::protocol::{Role, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
@@ -169,7 +169,7 @@ pub enum ResponseValidateError {
     MissingUpgradeWebSocketHeader,
     MissingConnectionUpgradeHeader,
     SecWebSocketAcceptKeyMismatch,
-    ProtocolMismatch(Option<ArcStr>),
+    ProtocolMismatch(Option<NonEmptyStr>),
     ExtensionMismatch(Option<Extension>),
 }
 
@@ -963,7 +963,7 @@ impl ClientWebSocket {
 
     /// Return the accepted protocol (during the http handshake) of the [`ClientWebSocket`], if any.
     pub fn accepted_protocol(&self) -> Option<&str> {
-        self.accepted_protocol.as_ref().map(|p| p.0.as_str())
+        self.accepted_protocol.as_ref().map(|p| p.0.as_ref())
     }
 
     /// Consume `self` as an [`AsyncWebSocket`]

@@ -1,4 +1,4 @@
-use rama_utils::str::arcstr::ArcStr;
+use rama_utils::str::NonEmptyStr;
 
 derive_non_empty_flat_csv_header! {
     #[header(name = SEC_WEBSOCKET_PROTOCOL, sep = Comma)]
@@ -7,12 +7,12 @@ derive_non_empty_flat_csv_header! {
     /// Sub protocols are advertised by the client,
     /// and the server has to match it if defined.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SecWebSocketProtocol(pub NonEmptyVec<ArcStr>);
+    pub struct SecWebSocketProtocol(pub NonEmptyVec<NonEmptyStr>);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Utility type containing the accepted [`SecWebSocketProtocol`].
-pub struct AcceptedWebSocketProtocol(pub ArcStr);
+pub struct AcceptedWebSocketProtocol(pub NonEmptyStr);
 
 impl AcceptedWebSocketProtocol {
     #[inline]
@@ -64,29 +64,6 @@ impl SecWebSocketProtocol {
 
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|it| it.as_ref())
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Add the WebSocket protocol, appending it to any existing protocol(s).
-        pub fn additional_protocol(mut self, protocol: impl Into<ArcStr>) -> Self {
-            self.0.push(protocol.into());
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Add the WebSocket protocols, appending it to any existing protocol(s).
-        pub fn additional_protocols(mut self, protocols: impl IntoIterator<Item = impl Into<ArcStr>>) -> Self {
-            self.0.extend(protocols.into_iter().map(Into::into));
-            self
-        }
-    }
-}
-
-impl AcceptedWebSocketProtocol {
-    /// Create a new [`AcceptedWebSocketProtocol`]
-    pub fn new(s: impl Into<ArcStr>) -> Self {
-        Self(s.into())
     }
 }
 
@@ -162,7 +139,7 @@ mod tests {
             let header: SecWebSocketProtocol = test_decode(&[input]).unwrap();
             assert_eq!(
                 expected,
-                header.contains(protocol).as_ref().map(|p| p.0.as_str()),
+                header.contains(protocol).as_ref().map(|p| p.0.as_ref()),
                 "input: '{input}'"
             );
         }
@@ -206,7 +183,7 @@ mod tests {
                 header
                     .contains_any(case.protocols)
                     .as_ref()
-                    .map(|p| p.0.as_str()),
+                    .map(|p| p.0.as_ref()),
                 "input: '{}'",
                 case.input,
             );

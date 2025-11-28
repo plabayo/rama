@@ -31,28 +31,28 @@ macro_rules! __arcstr {
     ($text:expr $(,)?) => {{
         // Note: extra scope to reduce the size of what's in `$text`'s scope
         // (note that consts in macros dont have hygene the way let does).
-        const __TEXT: &$crate::str::arcstr::_private::str = $text;
+        const __ARC_STR_TEXT: &$crate::str::arcstr::_private::str = $text;
         {
             #[allow(clippy::declare_interior_mutable_const)]
-            const SI: &$crate::str::arcstr::_private::StaticArcStrInner<[$crate::str::arcstr::_private::u8; __TEXT.len()]> = unsafe {
+            const __ARC_STR_SI: &$crate::str::arcstr::_private::StaticArcStrInner<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]> = unsafe {
                 &$crate::str::arcstr::_private::StaticArcStrInner {
-                    len_flag: match $crate::str::arcstr::_private::StaticArcStrInner::<[$crate::str::arcstr::_private::u8; __TEXT.len()]>::encode_len(__TEXT.len()) {
+                    len_flag: match $crate::str::arcstr::_private::StaticArcStrInner::<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]>::encode_len(__ARC_STR_TEXT.len()) {
                         Some(len) => len,
                         None => panic!("impossibly long length")
                     },
-                    count_flag: $crate::str::arcstr::_private::StaticArcStrInner::<[$crate::str::arcstr::_private::u8; __TEXT.len()]>::STATIC_COUNT_VALUE,
+                    count_flag: $crate::str::arcstr::_private::STATIC_COUNT_VALUE,
                     // See comment for `_private::ConstPtrDeref` for what the hell's
                     // going on here.
-                    data: *$crate::str::arcstr::_private::ConstPtrDeref::<[$crate::str::arcstr::_private::u8; __TEXT.len()]> {
-                        p: __TEXT.as_ptr(),
+                    data: *$crate::str::arcstr::_private::ConstPtrDeref::<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]> {
+                        p: __ARC_STR_TEXT.as_ptr(),
                     }
                     .a,
-                    // data: __TEXT.as_ptr().cast::<[$crate::str::arcstr::_private::u8; __TEXT.len()]>().read(),
+                    // data: __ARC_STR_TEXT.as_ptr().cast::<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]>().read(),
                 }
             };
             #[allow(clippy::declare_interior_mutable_const)]
-            const S: $crate::str::arcstr::ArcStr = unsafe { $crate::str::arcstr::ArcStr::_private_new_from_static_data(SI) };
-            S
+            const __ARC_STR_FINAL: $crate::str::arcstr::ArcStr = unsafe { $crate::str::arcstr::ArcStr::_private_new_from_static_data(__ARC_STR_SI) };
+            __ARC_STR_FINAL
         }
     }};
 }
@@ -70,7 +70,7 @@ macro_rules! __arcstr {
 #[doc(hidden)]
 macro_rules! __format_arcstr {
     ($format_string:expr $( $(, $expr:expr )+ )? $(,)? ) => {
-        $crate::str::arcstr::ArcStr::from(
+        $crate::str::arcstr::arcstr!(
             $crate::str::arcstr::_private::formatcp!(
                 $format_string $( $(, $expr )+ )?
             )
