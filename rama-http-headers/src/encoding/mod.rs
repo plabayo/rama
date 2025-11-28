@@ -150,7 +150,7 @@ pub fn parse_accept_encoding_headers<'a>(
             let mut v = v.splitn(2, ';');
 
             // ignore unknown encodings
-            let encoding = Encoding::parse(v.next().unwrap().trim(), supported_encoding)?;
+            let encoding = Encoding::parse(v.next()?.trim(), supported_encoding)?;
 
             let qval = if let Some(qval) = v.next() {
                 qval.trim().parse::<Quality>().ok()?

@@ -1,15 +1,46 @@
-use std::{borrow::Cow, fmt, str::FromStr};
+use std::{fmt, str::FromStr};
 
-use rama_core::error::OpaqueError;
+use rama_core::error::{ErrorContext as _, OpaqueError};
+use rama_utils::str::NonEmptyStr;
 
 use crate::user::authority::StaticAuthorizer;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 /// Basic credentials.
 pub struct Basic {
-    username: Cow<'static, str>,
-    password: Option<Cow<'static, str>>,
+    username: NonEmptyStr,
+    password: Option<NonEmptyStr>,
 }
+
+/// Create a [`Basic`] value at const-compile time.
+///
+/// # Panics
+///
+/// Panics in case the username literal is empty.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __basic {
+    ($username:expr $(,)?) => {
+        $crate::user::credentials::basic!($username, "")
+    };
+    ($username:expr, $password:expr $(,)?) => {{
+        const __BASIC_USERNAME_VALUE: $crate::__private::utils::str::NonEmptyStr =
+            $crate::__private::utils::str::non_empty_str!($username);
+        const __BASIC_PASSWORD_TEXT: &str = $password;
+
+        if __BASIC_PASSWORD_TEXT.is_empty() {
+            $crate::user::credentials::Basic::new_insecure(__BASIC_USERNAME_VALUE)
+        } else {
+            $crate::user::credentials::Basic::new(
+                __BASIC_USERNAME_VALUE,
+                $crate::__private::utils::str::non_empty_str!(__BASIC_PASSWORD_TEXT),
+            )
+        }
+    }};
+}
+
+#[doc(inline)]
+pub use crate::__basic as basic;
 
 impl fmt::Debug for Basic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -22,38 +53,35 @@ impl fmt::Debug for Basic {
 
 impl Basic {
     /// Creates a new [`Basic`] credential.
-    pub fn new(username: impl Into<String>, password: impl Into<String>) -> Self {
+    #[must_use]
+    pub const fn new(username: NonEmptyStr, password: NonEmptyStr) -> Self {
         Self {
-            username: Cow::Owned(username.into()),
-            password: {
-                let password = password.into();
-                (!password.is_empty()).then_some(password.into())
-            },
+            username,
+            password: Some(password),
+        }
+    }
+
+    #[must_use]
+    pub fn clone_with_new_username(&self, username: NonEmptyStr) -> Self {
+        Self {
+            username,
+            password: self.password.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn clone_with_new_password(&self, password: NonEmptyStr) -> Self {
+        Self {
+            username: self.username.clone(),
+            password: Some(password),
         }
     }
 
     /// Creates a new [`Basic`] credential.
     #[must_use]
-    pub fn new_static(username: &'static str, password: &'static str) -> Self {
+    pub const fn new_insecure(username: NonEmptyStr) -> Self {
         Self {
-            username: username.into(),
-            password: (!password.is_empty()).then_some(password.into()),
-        }
-    }
-
-    /// Creates a new [`Basic`] credential.
-    pub fn new_insecure(username: impl Into<String>) -> Self {
-        Self {
-            username: Cow::Owned(username.into()),
-            password: None,
-        }
-    }
-
-    /// Creates a new [`Basic`] credential.
-    #[must_use]
-    pub fn new_static_insecure(username: &'static str) -> Self {
-        Self {
-            username: username.into(),
+            username,
             password: None,
         }
     }
@@ -64,24 +92,26 @@ impl Basic {
         self.username.as_ref()
     }
 
-    /// View the decoded password.
-    #[must_use]
-    pub fn password(&self) -> &str {
-        self.password.as_deref().unwrap_or_default()
-    }
-
     rama_utils::macros::generate_set_and_with! {
-        /// Set or overwrite the password with the given heap allocated password.
-        pub fn password(mut self, password: impl Into<String>) -> Self {
-            self.password = Some(Cow::Owned(password.into()));
+        /// Set or overwrite the username with the given value.
+        pub fn username(mut self, username: NonEmptyStr) -> Self {
+            self.username = username;
             self
         }
     }
 
+    /// View the decoded password.
+    ///
+    /// If Some(str) is returned it is guaranteed to be non-empty.
+    #[must_use]
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+
     rama_utils::macros::generate_set_and_with! {
-        /// Set or overwrite the password with the given static password.
-        pub fn static_password(mut self, password: &'static str) -> Self {
-            self.password = Some(password.into());
+        /// Set or overwrite the password with the given value.
+        pub fn password(mut self, password: NonEmptyStr) -> Self {
+            self.password = Some(password);
             self
         }
     }
@@ -94,14 +124,6 @@ impl Basic {
         StaticAuthorizer::new(self)
     }
 }
-
-impl PartialEq<Self> for Basic {
-    fn eq(&self, other: &Self) -> bool {
-        self.username() == other.username() && self.password() == other.password()
-    }
-}
-
-impl Eq for Basic {}
 
 impl std::hash::Hash for Basic {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -120,11 +142,18 @@ impl TryFrom<&str> for Basic {
                 "missing username in basic credential",
             )),
             Some(n) => Ok(Self {
-                username: Cow::Owned(value[..n].to_owned()),
-                password: Some(Cow::Owned(value[n + 1..].to_owned())),
+                username: NonEmptyStr::try_from(&value[..n])
+                    .context("create username for secure basic credentials")?,
+                password: (n + 1 < value.len())
+                    .then(|| {
+                        NonEmptyStr::try_from(&value[n + 1..])
+                            .context("create password for secure basic credentials")
+                    })
+                    .transpose()?,
             }),
             None => Ok(Self {
-                username: Cow::Owned(value.to_owned()),
+                username: NonEmptyStr::try_from(value)
+                    .context("create username for insecure basic credentials")?,
                 password: None,
             }),
         }
@@ -142,6 +171,11 @@ impl FromStr for Basic {
 
 impl fmt::Display for Basic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.username(), self.password())
+        write!(
+            f,
+            "{}:{}",
+            self.username(),
+            self.password().unwrap_or_default()
+        )
     }
 }

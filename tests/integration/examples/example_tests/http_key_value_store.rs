@@ -2,7 +2,7 @@ use super::utils;
 use itertools::Itertools;
 use rama::{
     http::{BodyExtractExt, StatusCode},
-    net::user::Bearer,
+    net::user::credentials::bearer,
 };
 use serde_json::json;
 
@@ -71,7 +71,7 @@ async fn test_example_http_form() {
     // delete a key
     let response = runner
         .delete("http://127.0.0.1:62006/admin/item/key3")
-        .auth(Bearer::new_static("secret-token"))
+        .auth(bearer!("secret-token"))
         .send()
         .await
         .unwrap();

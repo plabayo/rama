@@ -1,6 +1,5 @@
 // NOTE: spec can be found in ./spec.md
 
-use std::borrow::Cow;
 use std::fmt::Debug;
 use std::str::FromStr;
 
@@ -13,7 +12,10 @@ use crate::service::web::extract::Query;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
-use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
+use rama_http_headers::{
+    ContentEncoding, ContentEncodingDirective, ContentType, Cookie as RamaCookie, HeaderMapExt,
+    Location,
+};
 use rama_http_headers::{HeaderEncode, SetCookie};
 use rama_http_types::mime::Mime;
 use rama_http_types::proto::h1::Http1HeaderName;
@@ -23,6 +25,8 @@ use rama_net::address::SocketAddress;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use chrono::{DateTime, Utc};
+use rama_utils::str::arcstr::ArcStr;
+use rama_utils::str::{NonEmptyStr, non_empty_str};
 use serde::{Deserialize, Serialize};
 
 mod mime_serde {
@@ -175,7 +179,7 @@ pub struct LogFile {
 /// This object represents the root of exported data.
 pub struct Log {
     /// Version number of the format. If empty, string "1.1" is assumed by default.
-    pub version: Cow<'static, str>,
+    pub version: NonEmptyStr,
     /// Name and version info of the log creator application.
     pub creator: Creator,
     /// Name and version info of used browser.
@@ -187,16 +191,13 @@ pub struct Log {
     /// List of all exported (tracked) requests.
     pub entries: Vec<Entry>,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
-
-/// HAR Log Version used by rama
-pub const HAR_LOG_VERSION: &str = "1.2";
 
 impl Default for Log {
     fn default() -> Self {
         Self {
-            version: std::borrow::Cow::Borrowed(HAR_LOG_VERSION),
+            version: non_empty_str!("1.2"),
             creator: Creator {
                 name: rama_utils::info::NAME.into(),
                 version: rama_utils::info::VERSION.into(),
@@ -213,9 +214,9 @@ impl Default for Log {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Creator and browser objects share the same structure.
 pub struct Creator {
-    pub name: Cow<'static, str>,
-    pub version: Cow<'static, str>,
-    pub comment: Option<Cow<'static, str>>,
+    pub name: ArcStr,
+    pub version: ArcStr,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,7 +226,7 @@ pub struct Browser {
     /// Version of the application/browser used to export the log.
     pub version: Option<String>,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,7 +242,7 @@ pub struct Page {
     #[serde(rename = "pageTimings")]
     pub page_timings: PageTimings,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,7 +264,7 @@ pub struct PageTimings {
     #[serde(rename = "onLoad")]
     pub on_load: Option<u64>,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,7 +306,7 @@ pub struct Entry {
     /// Leave out this field if the application doesn't support this info.
     pub connection: Option<String>,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -341,7 +342,7 @@ pub struct Request {
     #[serde(rename = "bodySize")]
     pub body_size: i64,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 impl TryFrom<Request> for crate::Request {
@@ -391,7 +392,7 @@ impl TryFrom<Request> for crate::Request {
         req.extensions_mut().insert(orig_headers);
 
         if let Some(comment) = har_request.comment {
-            req.extensions_mut().insert(RequestComment::new(comment));
+            req.extensions_mut().insert(RequestComment(comment));
         }
 
         Ok(req)
@@ -480,7 +481,7 @@ pub struct Response {
     pub status: u16,
     /// Response status description.
     #[serde(rename = "statusText")]
-    pub status_text: Option<Cow<'static, str>>,
+    pub status_text: Option<ArcStr>,
     /// Response HTTP Version.
     pub http_version: HttpVersion,
     /// List of cookie objects.
@@ -510,7 +511,7 @@ pub struct Response {
     #[serde(rename = "bodySize")]
     pub body_size: i64,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 impl Response {
@@ -528,8 +529,8 @@ impl Response {
             }),
             encoding: parts
                 .headers
-                .typed_get::<crate::headers::ContentEncoding>()
-                .and_then(|ce| ce.first_str().map(Into::into)),
+                .typed_get::<ContentEncoding>()
+                .map(|ContentEncoding(ce)| ce.head),
             comment: None,
         };
 
@@ -562,7 +563,7 @@ impl Response {
 
         Ok(Self {
             status: parts.status.as_u16(),
-            status_text: parts.status.canonical_reason().map(Cow::Borrowed),
+            status_text: parts.status.canonical_reason().map(Into::into),
             http_version: parts.version.into(),
             cookies,
             headers: into_har_headers(header_map),
@@ -601,7 +602,7 @@ pub struct Cookie {
     /// True if the cookie was transmitted over ssl, false otherwise.
     pub secure: Option<bool>,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -612,7 +613,7 @@ pub struct Header {
     /// Value of header.
     pub value: String,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -624,7 +625,7 @@ pub struct QueryStringPair {
     /// Value of parameter.
     pub value: String,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -642,7 +643,7 @@ pub struct PostData {
     /// Plain text posted data
     pub text: Option<String>,
     /// A comment provided by the user or the application.
-    pub comment: Option<Cow<'static, str>>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -654,16 +655,6 @@ pub struct PostParam {
     #[serde(rename = "contentType")]
     pub content_type: Option<String>,
     pub comment: Option<String>,
-}
-
-rama_utils::macros::enums::enum_builder! {
-    @String
-    pub enum ContentEncoding {
-        Base64 => "base64",
-        Gzip => "gzip",
-        Deflate => "deflate",
-        Brotli => "br",
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -703,7 +694,7 @@ pub struct Content {
     /// (e.g. "base64") representation of the response body.
     ///
     /// Leave out this field if the information is not available.
-    pub encoding: Option<ContentEncoding>,
+    pub encoding: Option<ContentEncodingDirective>,
     /// A comment provided by the user or the application.
     pub comment: Option<String>,
 }

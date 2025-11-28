@@ -38,7 +38,7 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 /// use std::time::Duration;
 /// use rama_http_headers::StrictTransportSecurity;
 ///
-/// let sts = StrictTransportSecurity::including_subdomains(Duration::from_secs(31_536_000));
+/// let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct StrictTransportSecurity {
@@ -59,20 +59,76 @@ impl StrictTransportSecurity {
 
     /// Create an STS header that includes subdomains
     #[must_use]
-    pub fn including_subdomains(max_age: Duration) -> Self {
+    pub fn including_subdomains_for_max_seconds(max_age: u64) -> Self {
         Self {
-            max_age: max_age.into(),
+            max_age: Seconds::new(max_age),
             include_subdomains: true,
         }
     }
 
+    /// Create an STS header that includes subdomains
+    ///
+    /// The given [`Duration`] is rounded by ignoring any sub nano seconds.
+    /// Use [`Self::including_subdomains_for_max_duration`] in case you want to make
+    /// that a fallible case instead.
+    #[must_use]
+    pub fn including_subdomains_for_max_duration_rounded(dur: Duration) -> Self {
+        Self {
+            max_age: Seconds::from_duration_rounded(dur),
+            include_subdomains: true,
+        }
+    }
+
+    /// Try to create a STS header that includes subdomains
+    ///
+    /// # Error
+    ///
+    /// Errors in case the given [`Duration`] contains sub nano seconds,
+    /// use [`Self::including_subdomains_for_max_seconds`] or
+    /// [`Self::including_subdomains_for_max_duration_rounded`] for a infallible constructor.
+    #[must_use]
+    pub fn including_subdomains_for_max_duration(dur: Duration) -> Option<Self> {
+        Seconds::try_from_duration(dur).map(|max_age| Self {
+            max_age,
+            include_subdomains: true,
+        })
+    }
+
     /// Create an STS header that excludes subdomains
     #[must_use]
-    pub fn excluding_subdomains(max_age: Duration) -> Self {
+    pub fn excluding_subdomains_for_max_seconds(max_age: u64) -> Self {
         Self {
-            max_age: max_age.into(),
+            max_age: Seconds::new(max_age),
             include_subdomains: false,
         }
+    }
+
+    /// Create an STS header that excludes subdomains
+    ///
+    /// The given [`Duration`] is rounded by ignoring any sub nano seconds.
+    /// Use [`Self::excluding_subdomains_for_max_duration`] in case you want to make
+    /// that a fallible case instead.
+    #[must_use]
+    pub fn excluding_subdomains_for_max_duration_rounded(dur: Duration) -> Self {
+        Self {
+            max_age: Seconds::from_duration_rounded(dur),
+            include_subdomains: false,
+        }
+    }
+
+    /// Try to create a STS header that excludes subdomains
+    ///
+    /// # Error
+    ///
+    /// Errors in case the given [`Duration`] contains sub nano seconds,
+    /// use [`Self::excluding_subdomains_for_max_seconds`] or
+    /// [`Self::excluding_subdomains_for_max_duration_rounded`] for a infallible constructor.
+    #[must_use]
+    pub fn excluding_subdomains_for_max_duration(dur: Duration) -> Option<Self> {
+        Seconds::try_from_duration(dur).map(|max_age| Self {
+            max_age,
+            include_subdomains: false,
+        })
     }
 
     // getters
@@ -127,7 +183,7 @@ fn from_str(s: &str) -> Result<StrictTransportSecurity, Error> {
         })
         .and_then(|res| match res {
             (Some(age), sub) => Some(StrictTransportSecurity {
-                max_age: Duration::from_secs(age).into(),
+                max_age: Seconds::new(age),
                 include_subdomains: sub.is_some(),
             }),
             _ => None,
@@ -172,8 +228,7 @@ impl HeaderEncode for StrictTransportSecurity {
 #[cfg(test)]
 mod tests {
     use super::super::test_decode;
-    use super::StrictTransportSecurity;
-    use std::time::Duration;
+    use super::*;
 
     #[test]
     fn test_parse_max_age() {
@@ -182,7 +237,7 @@ mod tests {
             h,
             StrictTransportSecurity {
                 include_subdomains: false,
-                max_age: Duration::from_secs(31536000).into(),
+                max_age: Seconds::new(31536000),
             }
         );
     }
@@ -199,7 +254,7 @@ mod tests {
             h,
             StrictTransportSecurity {
                 include_subdomains: false,
-                max_age: Duration::from_secs(31536000).into(),
+                max_age: Seconds::new(31536000),
             }
         );
     }
@@ -211,7 +266,7 @@ mod tests {
             h,
             StrictTransportSecurity {
                 include_subdomains: false,
-                max_age: Duration::from_secs(31536000).into(),
+                max_age: Seconds::new(31536000),
             }
         );
     }
@@ -224,7 +279,7 @@ mod tests {
             h,
             StrictTransportSecurity {
                 include_subdomains: true,
-                max_age: Duration::from_secs(15768000).into(),
+                max_age: Seconds::new(15768000),
             }
         );
     }

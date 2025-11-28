@@ -1,3 +1,6 @@
+use rama_core::telemetry::tracing;
+use rama_http_types::HeaderValue;
+
 use crate::util::HttpDate;
 use std::time::SystemTime;
 
@@ -31,9 +34,30 @@ use std::time::SystemTime;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IfModifiedSince(HttpDate);
 
-derive_header! {
-    IfModifiedSince(_),
-    name: IF_MODIFIED_SINCE
+impl crate::TypedHeader for IfModifiedSince {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::IF_MODIFIED_SINCE
+    }
+}
+
+impl crate::HeaderDecode for IfModifiedSince {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+    {
+        crate::util::TryFromValues::try_from_values(values).map(IfModifiedSince)
+    }
+}
+
+impl crate::HeaderEncode for IfModifiedSince {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        match HeaderValue::try_from(&self.0) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode if-modified-since value as header: {err}");
+            }
+        }
+    }
 }
 
 impl IfModifiedSince {

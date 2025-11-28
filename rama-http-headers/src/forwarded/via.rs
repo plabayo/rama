@@ -1,5 +1,8 @@
 use crate::{HeaderDecode, HeaderEncode, TypedHeader, util};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::{
+    error::{ErrorContext, OpaqueError},
+    telemetry::tracing,
+};
 use rama_http_types::{HeaderName, HeaderValue, header};
 use rama_net::forwarded::{ForwardedElement, ForwardedProtocol, ForwardedVersion, NodeId};
 
@@ -80,7 +83,10 @@ impl HeaderEncode for Via {
                 util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
             })
         );
-        values.extend(Some(HeaderValue::try_from(s).unwrap()))
+        match HeaderValue::try_from(s) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => tracing::debug!("failed to encode via as header value: {err}"),
+        }
     }
 }
 

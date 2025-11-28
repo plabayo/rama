@@ -1,24 +1,24 @@
-use crate::util::{FlatCsv, SemiColon};
+// TOOD: adapt together <https://github.com/plabayo/rama/issues/44>
 
-/// `Cookie` header, defined in [RFC6265](https://datatracker.ietf.org/doc/html/rfc6265#section-5.4)
-///
-/// If the user agent does attach a Cookie header field to an HTTP
-/// request, the user agent must send the cookie-string
-/// as the value of the header field.
-///
-/// When the user agent generates an HTTP request, the user agent MUST NOT
-/// attach more than one Cookie header field.
-///
-/// # Example values
-/// * `SID=31d4d96e407aad42`
-/// * `SID=31d4d96e407aad42; lang=en-US`
-///
-#[derive(Clone, Debug)]
-pub struct Cookie(FlatCsv<SemiColon>);
+use rama_utils::str::arcstr::ArcStr;
 
-derive_header! {
-    Cookie(_),
-    name: COOKIE
+derive_non_empty_flat_csv_header! {
+    #[header(name = COOKIE, sep = SemiColon)]
+    #[derive(Clone, Debug, PartialEq)]
+    /// `Cookie` header, defined in [RFC6265](https://datatracker.ietf.org/doc/html/rfc6265#section-5.4)
+    ///
+    /// If the user agent does attach a Cookie header field to an HTTP
+    /// request, the user agent must send the cookie-string
+    /// as the value of the header field.
+    ///
+    /// When the user agent generates an HTTP request, the user agent MUST NOT
+    /// attach more than one Cookie header field.
+    ///
+    /// # Example values
+    /// * `SID=31d4d96e407aad42`
+    /// * `SID=31d4d96e407aad42; lang=en-US`
+    ///
+    pub struct Cookie(pub NonEmptyVec<ArcStr>);
 }
 
 impl Cookie {
@@ -42,20 +42,11 @@ impl Cookie {
     /// assert_eq!(cookie.get("lang"), Some("en-US"));
     /// assert_eq!(cookie.get("SID"), None);
     /// ```
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {
         self.iter()
             .find(|&(key, _)| key == name)
             .map(|(_, val)| val)
-    }
-
-    /// Get the number of key-value pairs this `Cookie` contains.
-    pub fn len(&self) -> usize {
-        self.iter().count()
-    }
-
-    /// Returns true if this doesn't contain any cookies
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// Iterator the key-value pairs of this `Cookie` header.

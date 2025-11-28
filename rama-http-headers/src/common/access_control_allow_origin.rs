@@ -1,6 +1,5 @@
-use std::convert::TryFrom;
-
 use rama_http_types::HeaderValue;
+use std::convert::TryFrom;
 
 use super::origin::Origin;
 use crate::Error;
@@ -37,9 +36,28 @@ use crate::util::{IterExt, TryFromValues};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AccessControlAllowOrigin(OriginOrAny);
 
-derive_header! {
-    AccessControlAllowOrigin(_),
-    name: ACCESS_CONTROL_ALLOW_ORIGIN
+impl crate::TypedHeader for AccessControlAllowOrigin {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::ACCESS_CONTROL_ALLOW_ORIGIN
+    }
+}
+
+impl crate::HeaderDecode for AccessControlAllowOrigin {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+    {
+        crate::util::TryFromValues::try_from_values(values).map(AccessControlAllowOrigin)
+    }
+}
+
+impl crate::HeaderEncode for AccessControlAllowOrigin {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        match &self.0 {
+            OriginOrAny::Origin(origin) => origin.encode(values),
+            OriginOrAny::Any => values.extend(::std::iter::once(HeaderValue::from_static("*"))),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -99,15 +117,6 @@ impl TryFromValues for OriginOrAny {
                 Origin::try_from_value(value).map(OriginOrAny::Origin)
             })
             .ok_or_else(Error::invalid)
-    }
-}
-
-impl<'a> From<&'a OriginOrAny> for HeaderValue {
-    fn from(origin: &'a OriginOrAny) -> Self {
-        match origin {
-            OriginOrAny::Origin(origin) => origin.to_value(),
-            OriginOrAny::Any => Self::from_static("*"),
-        }
     }
 }
 

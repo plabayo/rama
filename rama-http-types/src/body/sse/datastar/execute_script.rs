@@ -4,8 +4,8 @@ use crate::sse::{
 };
 use mime::Mime;
 use rama_error::{ErrorContext, OpaqueError};
+use rama_utils::str::NonEmptyStr;
 use smol_str::SmolStr;
-use std::borrow::Cow;
 
 /// [`ExecuteScript`] executes JavaScript in the browser
 ///
@@ -13,7 +13,7 @@ use std::borrow::Cow;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExecuteScript {
     /// `script` is a string that represents the JavaScript to be executed by the browser.
-    pub script: Cow<'static, str>,
+    pub script: NonEmptyStr,
     /// Whether to remove the script after execution.
     ///
     /// If not provided the Datastar client side will default to `true`.
@@ -99,9 +99,10 @@ impl ExecuteScript {
     pub const TYPE: EventType = EventType::PatchElements;
 
     /// Create a new [`ExecuteScript`] data blob.
-    pub fn new(script: impl Into<Cow<'static, str>>) -> Self {
+    #[must_use]
+    pub const fn new(script: NonEmptyStr) -> Self {
         Self {
-            script: script.into(),
+            script,
             auto_remove: None,
             attributes: None,
         }
@@ -274,6 +275,8 @@ impl EventDataWrite for ExecuteScript {
 
 #[cfg(test)]
 mod tests {
+    use rama_utils::str::non_empty_str;
+
     use super::*;
     use crate::sse::{EventDataLineReader, EventDataRead, datastar::PatchElements};
 
@@ -291,16 +294,18 @@ mod tests {
     #[test]
     fn test_execute_script_sugar_simple() {
         let mut output_sugar = Vec::new();
-        ExecuteScript::new("console.alert('hello!');")
+        ExecuteScript::new(non_empty_str!("console.alert('hello!');"))
             .write_data(&mut output_sugar)
             .expect("write data");
 
         let mut output_expected = Vec::new();
-        PatchElements::new("<script data-effect=\"el.remove()\">console.alert('hello!');</script>")
-            .with_mode(ElementPatchMode::Append)
-            .with_selector("body")
-            .write_data(&mut output_expected)
-            .expect("write data");
+        PatchElements::new(non_empty_str!(
+            "<script data-effect=\"el.remove()\">console.alert('hello!');</script>"
+        ))
+        .with_mode(ElementPatchMode::Append)
+        .with_selector(non_empty_str!("body"))
+        .write_data(&mut output_expected)
+        .expect("write data");
 
         let sugar = String::from_utf8(output_sugar).unwrap();
         let expected = String::from_utf8(output_expected).unwrap();
@@ -311,7 +316,7 @@ mod tests {
     #[test]
     fn test_execute_script_sugar_complex() {
         let mut output_sugar = Vec::new();
-        ExecuteScript::new(
+        ExecuteScript::new(non_empty_str!(
             r##"const url = "https://example.org/products.json";
 try {
     const response = await fetch(url);
@@ -324,7 +329,7 @@ try {
 } catch (error) {
     console.error(error.message);
 }"##,
-        )
+        ))
         .with_auto_remove(false)
         .with_attribute(ScriptAttribute::Async)
         .with_additional_attribute(ScriptAttribute::Charset(SmolStr::new_static("utf-8")))
@@ -332,7 +337,7 @@ try {
         .expect("write data");
 
         let mut output_expected = Vec::new();
-        PatchElements::new(
+        PatchElements::new(non_empty_str!(
             r##"<script async charset="utf-8">const url = "https://example.org/products.json";
 try {
     const response = await fetch(url);
@@ -345,9 +350,9 @@ try {
 } catch (error) {
     console.error(error.message);
 }</script>"##,
-        )
+        ))
         .with_mode(ElementPatchMode::Append)
-        .with_selector("body")
+        .with_selector(non_empty_str!("body"))
         .write_data(&mut output_expected)
         .expect("write data");
 

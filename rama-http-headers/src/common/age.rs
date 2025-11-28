@@ -33,7 +33,7 @@ use crate::util::Seconds;
 /// ```
 /// use rama_http_headers::Age;
 ///
-/// let len = Age::from_secs(60);
+/// let len = Age::from_seconds(60);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Age(Seconds);
@@ -44,22 +44,27 @@ derive_header! {
 }
 
 impl Age {
-    /// Creates a new `Age` header from the specified number of whole seconds.
     #[must_use]
-    pub fn from_secs(secs: u64) -> Self {
+    #[inline(always)]
+    pub fn from_seconds(secs: u64) -> Self {
         Self(Seconds::new(secs))
     }
 
-    /// Returns the number of seconds for this `Age` header.
     #[must_use]
-    pub fn as_secs(&self) -> u64 {
-        self.0.into()
+    #[inline(always)]
+    pub fn try_from_duration(dur: Duration) -> Option<Self> {
+        Seconds::try_from_duration(dur).map(Self)
     }
-}
 
-impl From<Duration> for Age {
-    fn from(dur: Duration) -> Self {
-        Self(Seconds::from(dur))
+    #[must_use]
+    #[inline(always)]
+    pub fn from_duration_rounded(dur: Duration) -> Self {
+        Self(Seconds::from_duration_rounded(dur))
+    }
+
+    #[must_use]
+    pub fn as_secs(self) -> u64 {
+        self.0.into()
     }
 }
 

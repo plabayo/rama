@@ -13,7 +13,7 @@ use crate::net::tls::{
 };
 use crate::rt::Executor;
 use crate::telemetry::tracing;
-use crate::utils::str::NonEmptyString;
+use crate::utils::str::NonEmptyStr;
 use crate::{Service, combinators::Either, service::BoxService};
 
 use base64::Engine;
@@ -104,7 +104,7 @@ impl CertIssuerHttpClient {
             Self::new_with_client(
                 uri,
                 SetRequestHeaderLayer::overriding_typed(Authorization::new(
-                    Bearer::new(auth_raw)
+                    Bearer::try_from(auth_raw)
                         .context("try to create Bearer using RAMA_TLS_REMOTE_AUTH")?,
                 ))
                 .into_layer(client)
@@ -301,13 +301,13 @@ async fn fetch_certs(
 
     Ok(ServerAuthData {
         cert_chain: DataEncoding::Pem(
-            NonEmptyString::try_from(
+            NonEmptyStr::try_from(
                 String::from_utf8(crt).context("concert crt pem to utf8 string")?,
             )
             .context("convert crt utf8 string to non-empty")?,
         ),
         private_key: DataEncoding::Pem(
-            NonEmptyString::try_from(
+            NonEmptyStr::try_from(
                 String::from_utf8(key).context("concert private key pem to utf8 string")?,
             )
             .context("convert privatek key pem utf8 string to non-empty")?,

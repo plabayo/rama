@@ -97,7 +97,7 @@ use rama::{
             client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
-        user::Basic,
+        user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
@@ -164,7 +164,7 @@ async fn main() -> Result<(), BoxError> {
                 TraceLayer::new_for_http(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
+                ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
@@ -423,7 +423,7 @@ where
     let mut ingress_socket_cfg: WebSocketConfig = Default::default();
     if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
         tracing::debug!("ingress request contains sec-websocket-extensions header");
-        if let Some(accept_pmd_cfg) = ingress_header.iter().find_map(|ext| {
+        if let Some(accept_pmd_cfg) = ingress_header.0.iter().find_map(|ext| {
             if let Extension::PerMessageDeflate(cfg) = ext {
                 Some(cfg.clone())
             } else {
