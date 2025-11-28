@@ -21,7 +21,7 @@ use super::SecWebSocketKey;
 /// let sec_key: SecWebSocketKey = /* from request headers */
 /// #    unimplemented!();
 ///
-/// let sec_accept = SecWebSocketAccept::from(sec_key);
+/// let sec_accept = SecWebSocketAccept::try_from(sec_key).unwrap();
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecWebSocketAccept(HeaderValue);

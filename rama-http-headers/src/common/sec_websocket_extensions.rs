@@ -320,6 +320,8 @@ impl FromStr for Extension {
                 }
             }
             Ok(Self::PerMessageDeflate(config))
+        } else if s.trim().is_empty() {
+            Ok(Self::Empty)
         } else {
             tracing::trace!(
                 "received unknown extension with identifier: {identifier} (full: {s}); store as unkown"

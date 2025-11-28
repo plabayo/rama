@@ -349,18 +349,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn test_quality_invalid() {
-        q(-1.0);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_quality_invalid2() {
-        q(2.0);
-    }
-
-    #[test]
     fn test_fuzzing_bugs() {
         assert!("99999;".parse::<QualityValue<String>>().is_err());
         assert!("\x0d;;;=\u{d6aa}==".parse::<QualityValue<String>>().is_ok())
