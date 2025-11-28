@@ -106,16 +106,16 @@ impl<C: Credentials> HeaderDecode for Authorization<C> {
 
 impl<C: Credentials> HeaderEncode for Authorization<C> {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        let mut value = self.0.encode();
-        value.set_sensitive(true);
-        debug_assert!(
-            value.as_bytes().starts_with(C::SCHEME.as_bytes()),
-            "Credentials::encode should include its scheme: scheme = {:?}, encoded = {:?}",
-            C::SCHEME,
-            value,
-        );
-
-        values.extend(::std::iter::once(value));
+        values.extend(self.0.encode().map(|mut value| {
+            value.set_sensitive(true);
+            debug_assert!(
+                value.as_bytes().starts_with(C::SCHEME.as_bytes()),
+                "Credentials::encode should include its scheme: scheme = {:?}, encoded = {:?}",
+                C::SCHEME,
+                value,
+            );
+            value
+        }));
     }
 }
 
@@ -135,7 +135,7 @@ pub trait Credentials: Sized {
     /// Encode the credentials to a `HeaderValue`.
     ///
     /// The `SCHEME` must be the first part of the `value`.
-    fn encode(&self) -> HeaderValue;
+    fn encode(&self) -> Option<HeaderValue>;
 }
 
 impl Credentials for Basic {
@@ -186,10 +186,14 @@ impl Credentials for Basic {
             .ok()
     }
 
-    fn encode(&self) -> HeaderValue {
+    fn encode(&self) -> Option<HeaderValue> {
         let mut encoded = format!("{} ", Self::SCHEME);
         ENGINE.encode_string(self.to_string(), &mut encoded);
-        HeaderValue::try_from(encoded).unwrap()
+        HeaderValue::try_from(encoded)
+            .inspect_err(|err| {
+                tracing::debug!("failed to encode basic value as header value: {err}");
+            })
+            .ok()
     }
 }
 
@@ -230,8 +234,12 @@ impl Credentials for Bearer {
             .ok()
     }
 
-    fn encode(&self) -> HeaderValue {
-        HeaderValue::try_from(format!("{} {}", Self::SCHEME, self.token())).unwrap()
+    fn encode(&self) -> Option<HeaderValue> {
+        HeaderValue::try_from(format!("{} {}", Self::SCHEME, self.token()))
+            .inspect_err(|err| {
+                tracing::debug!("failed to encode bearer auth as header value: {err}");
+            })
+            .ok()
     }
 }
 

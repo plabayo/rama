@@ -78,9 +78,8 @@ impl AddAuthorizationLayer {
     /// Authorize requests using the given [`Credentials`].
     #[allow(clippy::needless_pass_by_value)]
     pub fn new(credential: impl Credentials) -> Self {
-        let encoded = credential.encode();
         Self {
-            value: Some(encoded),
+            value: credential.encode(),
             if_not_present: false,
         }
     }

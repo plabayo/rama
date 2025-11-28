@@ -227,6 +227,7 @@ impl HttpBodyContentFormat {
             return Self::default();
         };
         accept
+            .0
             .iter()
             .find_map(|qv| {
                 let r#type = qv.value.subtype();

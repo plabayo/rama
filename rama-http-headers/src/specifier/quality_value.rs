@@ -208,14 +208,7 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
 
 #[inline]
 fn from_f32(f: f32) -> Quality {
-    // this function is only used internally. A check that `f` is within range
-    // should be done before calling this method. Just in case, this
-    // debug_assert should catch if we were forgetful
-    debug_assert!(
-        (0f32..=1f32).contains(&f),
-        "q value must be between 0.0 and 1.0"
-    );
-    Quality((f * 1000f32) as u16)
+    Quality((f.clamp(0f32, 1f32) * 1000f32) as u16)
 }
 
 #[cfg(test)]
@@ -248,18 +241,14 @@ mod internal {
 
     impl IntoQuality for f32 {
         fn into_quality(self) -> Quality {
-            assert!(
-                (0f32..=1f32).contains(&self),
-                "float must be between 0.0 and 1.0"
-            );
             super::from_f32(self)
         }
     }
 
     impl IntoQuality for u16 {
+        #[inline(always)]
         fn into_quality(self) -> Quality {
-            assert!(self <= 1000, "u16 must be between 0 and 1000");
-            Quality(self)
+            Quality::new_clamped(self)
         }
     }
 

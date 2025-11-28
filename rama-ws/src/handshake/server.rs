@@ -242,7 +242,13 @@ pub fn validate_http_client_request<Body>(
             // Only used for http/1.1 style WebSocket upgrade, not h2
             // as in the latter it is deprecated by the `:protocol` PSEUDO header.
             accept_header = match request.headers().typed_get::<headers::SecWebSocketKey>() {
-                Some(key) => Some(headers::SecWebSocketAccept::from(key)),
+                Some(key) => headers::SecWebSocketAccept::try_from(key)
+                    .inspect_err(|err| {
+                        tracing::debug!(
+                            "failed to create accept typed header from given key: {err}"
+                        )
+                    })
+                    .ok(),
                 None => return Err(RequestValidateError::InvalidSecWebSocketKeyHeader),
             };
         }
@@ -341,7 +347,7 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Define the WebSocket rama echo protocols.
         pub fn echo_protocols(mut self) -> Self {
-            self.protocols = Some(headers::SecWebSocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT)
+            self.protocols = Some(headers::SecWebSocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT.to_owned())
                 .with_additional_protocols([
                     ECHO_SERVICE_SUB_PROTOCOL_UPPER,
                     ECHO_SERVICE_SUB_PROTOCOL_LOWER,
@@ -430,7 +436,7 @@ impl WebSocketAcceptor {
         if self.protocols.is_none() {
             self.protocols_flex = true;
             self.protocols = Some(
-                headers::SecWebSocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT)
+                headers::SecWebSocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT.to_owned())
                     .with_additional_protocols([
                         ECHO_SERVICE_SUB_PROTOCOL_UPPER,
                         ECHO_SERVICE_SUB_PROTOCOL_LOWER,
@@ -494,8 +500,8 @@ where
                 let accepted_extension = match (request_data.extensions, self.extensions.as_ref()) {
                     (None, _) | (_, None) => None,
                     (Some(request_extensions), Some(allowed_extensions)) => {
-                        request_extensions.into_iter().find_map(|request_ext| {
-                            for allowed_ext in allowed_extensions.iter() {
+                        request_extensions.0.iter().find_map(|request_ext| {
+                            for allowed_ext in allowed_extensions.0.iter() {
                                 if let (
                                     Extension::PerMessageDeflate(request_pmd),
                                     Extension::PerMessageDeflate(allowed_pmd),
@@ -938,6 +944,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
 mod tests {
     use headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
     use rama_http::Body;
+    use rama_utils::collections::non_empty_vec;
 
     use super::*;
 
@@ -1371,7 +1378,8 @@ mod tests {
         // without protocols, even though we have allow list, fine due to it being optional,
         // but we still only accept allowed protocols if defined
 
-        let acceptor = acceptor.with_protocols(headers::SecWebSocketProtocol::new("foo"));
+        let acceptor =
+            acceptor.with_protocols(headers::SecWebSocketProtocol::new("foo".to_owned()));
 
         assert_websocket_acceptor_ok(
             request! {
@@ -1402,9 +1410,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_websocket_accept_required_protocols() {
-        let acceptor = WebSocketAcceptor::default().with_protocols(
-            headers::SecWebSocketProtocol::new("foo").with_additional_protocols(["a", "b"]),
-        );
+        let acceptor = WebSocketAcceptor::default().with_protocols(headers::SecWebSocketProtocol(
+            non_empty_vec!["foo".to_owned(), "a".to_owned(), "b".to_owned()],
+        ));
 
         // no protocols, required so all bad
 

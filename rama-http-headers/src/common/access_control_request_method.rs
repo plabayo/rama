@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue, Method};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
@@ -51,10 +52,20 @@ impl HeaderEncode for AccessControlRequestMethod {
             Method::POST => "POST",
             Method::PUT => "PUT",
             Method::DELETE => "DELETE",
+            Method::HEAD => "HEAD",
+            Method::OPTIONS => "OPTIONS",
+            Method::CONNECT => "CONNECT",
+            Method::PATCH => "PATCH",
+            Method::TRACE => "TRACE",
             _ => {
-                let val = HeaderValue::from_str(self.0.as_ref())
-                    .expect("Methods are also valid HeaderValues");
-                values.extend(::std::iter::once(val));
+                match HeaderValue::from_str(self.0.as_ref()) {
+                    Ok(value) => values.extend(::std::iter::once(value)),
+                    Err(err) => {
+                        tracing::debug!(
+                            "failed to encode access-control-request-method value as header: {err}"
+                        );
+                    }
+                }
                 return;
             }
         };

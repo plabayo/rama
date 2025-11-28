@@ -423,7 +423,7 @@ where
     let mut ingress_socket_cfg: WebSocketConfig = Default::default();
     if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
         tracing::debug!("ingress request contains sec-websocket-extensions header");
-        if let Some(accept_pmd_cfg) = ingress_header.iter().find_map(|ext| {
+        if let Some(accept_pmd_cfg) = ingress_header.0.iter().find_map(|ext| {
             if let Extension::PerMessageDeflate(cfg) = ext {
                 Some(cfg.clone())
             } else {

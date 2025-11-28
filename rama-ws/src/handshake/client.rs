@@ -2,7 +2,6 @@
 
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 
 use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
@@ -169,7 +168,7 @@ pub enum ResponseValidateError {
     MissingUpgradeWebSocketHeader,
     MissingConnectionUpgradeHeader,
     SecWebSocketAcceptKeyMismatch,
-    ProtocolMismatch(Option<Arc<str>>),
+    ProtocolMismatch(Option<String>),
     ExtensionMismatch(Option<Extension>),
 }
 
@@ -305,7 +304,11 @@ pub fn validate_http_server_response<Body>(
                 let sec_websocket_accept_header = response
                     .headers()
                     .typed_get::<headers::SecWebSocketAccept>();
-                let expected_accept = Some(headers::SecWebSocketAccept::from(key));
+                let expected_accept = headers::SecWebSocketAccept::try_from(key)
+                    .inspect_err(|err| {
+                        tracing::debug!("failed to create WS accept header from key: {err}");
+                    })
+                    .ok();
                 if sec_websocket_accept_header != expected_accept {
                     tracing::trace!(
                         "unexpected websocket accept key: {sec_websocket_accept_header:?} (expected: {expected_accept:?})"
@@ -335,7 +338,7 @@ pub fn validate_http_server_response<Body>(
         response
             .headers()
             .typed_get::<SecWebSocketExtensions>()
-            .map(|ext| ext.into_first()),
+            .map(|ext| ext.0.head),
         extensions,
     ) {
         (None, Some(allowed_extensions)) => {
@@ -346,7 +349,7 @@ pub fn validate_http_server_response<Body>(
         }
         (Some(Extension::PerMessageDeflate(server_cfg)), Some(client_extensions)) => {
             accepted_extension = client_extensions
-                .iter()
+                .0.iter()
                 .find_map(|client_ext| {
                     if let Extension::PerMessageDeflate(client_cfg) = client_ext {
                         return Some(Ok(Extension::PerMessageDeflate(PerMessageDeflateConfig {

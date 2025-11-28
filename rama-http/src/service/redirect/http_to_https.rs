@@ -172,10 +172,13 @@ where
         }
 
         match Uri::from_parts(uri_parts) {
-            Ok(uri) => {
-                let loc = Location::from(uri);
-                Ok((Headers::single(loc), self.status_code).into_response())
-            }
+            Ok(uri) => match Location::try_from(uri) {
+                Ok(loc) => Ok((Headers::single(loc), self.status_code).into_response()),
+                Err(err) => {
+                    tracing::debug!("failed to parse uri as header value: {err}");
+                    Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                }
+            },
             Err(err) => {
                 tracing::debug!("failed to re-create Uri using modified parts: {err} (bug??)");
                 Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
