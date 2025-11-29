@@ -229,7 +229,7 @@ mod tests {
     use super::*;
     use crate::{ProxyFilter, proxydb::ProxyContext};
     use rama_net::transport::TransportProtocol;
-    use rama_utils::str::NonEmptyString;
+    use rama_utils::str::non_empty_str;
     use std::str::FromStr;
 
     #[test]
@@ -286,7 +286,7 @@ mod tests {
             (
                 "id,,,,,,,,,,authority:80,,,,,,,,",
                 Proxy {
-                    id: NonEmptyString::from_static("id"),
+                    id: non_empty_str!("id"),
                     address: ProxyAddress::from_str("authority:80").unwrap(),
                     tcp: false,
                     udp: false,
@@ -310,7 +310,7 @@ mod tests {
             (
                 "id,true,false,true,,false,,true,false,true,authority:80,pool_id,,country,,city,carrier,,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
                 Proxy {
-                    id: NonEmptyString::from_static("id"),
+                    id: non_empty_str!("id"),
                     address: ProxyAddress::from_str("username:password@authority:80").unwrap(),
                     tcp: true,
                     udp: false,
@@ -333,7 +333,7 @@ mod tests {
             (
                 "123,1,0,False,,True,,null,false,true,host:1234,,americas,*,*,*,carrier,13335,",
                 Proxy {
-                    id: NonEmptyString::from_static("123"),
+                    id: non_empty_str!("123"),
                     address: ProxyAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
@@ -356,7 +356,7 @@ mod tests {
             (
                 "123,1,0,False,,True,,null,false,true,host:1234,,europe,*,,*,carrier,0",
                 Proxy {
-                    id: NonEmptyString::from_static("123"),
+                    id: non_empty_str!("123"),
                     address: ProxyAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
@@ -379,7 +379,7 @@ mod tests {
             (
                 "foo,1,0,1,,0,,1,0,0,http://bar,baz,,US,,,,",
                 Proxy {
-                    id: NonEmptyString::from_static("foo"),
+                    id: non_empty_str!("foo"),
                     address: ProxyAddress::from_str("http://bar").unwrap(),
                     tcp: true,
                     udp: false,

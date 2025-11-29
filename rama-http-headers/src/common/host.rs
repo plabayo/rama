@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 use std::fmt;
 
-use rama_core::bytes::Bytes;
+use rama_core::{bytes::Bytes, telemetry::tracing};
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address::{self, HostWithOptPort};
 
@@ -31,9 +31,15 @@ impl HeaderEncode for Host {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.to_string();
         let bytes = Bytes::from_owner(s);
-        let val = HeaderValue::from_maybe_shared(bytes).expect("Authority is a valid HeaderValue");
 
-        values.extend(::std::iter::once(val));
+        match HeaderValue::from_maybe_shared(bytes) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!(
+                    "failed to encode stringified authority (host w/ opt port) as header value: {err}"
+                );
+            }
+        }
     }
 }
 

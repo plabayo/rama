@@ -5,7 +5,11 @@ use crate::Error;
 //pub use self::charset::Charset;
 //pub use self::encoding::Encoding;
 pub(crate) use self::entity::{EntityTag, EntityTagRange};
-pub(crate) use self::flat_csv::{FlatCsv, SemiColon};
+pub(crate) use self::flat_csv::{
+    FlatCsvSeparator, try_decode_flat_csv_header_values_as_non_empty_vec,
+    try_encode_non_empty_vec_as_flat_csv_header_value,
+    try_encode_non_empty_vec_of_bytes_as_flat_csv_header_value,
+};
 pub(crate) use self::fmt::fmt;
 pub use self::http_date::HttpDate;
 pub(crate) use self::iter::IterExt;
@@ -47,6 +51,62 @@ macro_rules! derive_header {
         impl crate::HeaderEncode for $type {
             fn encode<E: Extend<::rama_http_types::HeaderValue>>(&self, values: &mut E) {
                 values.extend(::std::iter::once((&self.0).into()));
+            }
+        }
+    };
+}
+
+macro_rules! derive_non_empty_flat_csv_header {
+    (
+        #[header(name = $name:ident, sep = $sep:ident)]
+        $(#[$m:meta])*
+        pub struct $type:ident(pub NonEmptyVec<$t:ty>);
+    ) => {
+        $(#[$m])*
+        pub struct $type(pub ::rama_utils::collections::NonEmptyVec<$t>);
+
+        impl $type {
+            pub fn new(value: $t) -> Self {
+                Self(::rama_utils::collections::NonEmptyVec::new(value))
+            }
+        }
+
+        impl crate::TypedHeader for $type {
+            fn name() -> &'static ::rama_http_types::header::HeaderName {
+                &::rama_http_types::header::$name
+            }
+        }
+
+        impl crate::HeaderDecode for $type {
+            fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+            where
+                I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+            {
+                crate::util::try_decode_flat_csv_header_values_as_non_empty_vec(
+                   values,
+                   crate::util::FlatCsvSeparator::$sep,
+                ).map($type).map_err(|err| {
+                    rama_core::telemetry::tracing::debug!(
+                      "failed to decode header value(s) as flat csv typed header: {err}"
+                    );
+                    crate::Error::invalid()
+                })
+            }
+        }
+
+        impl crate::HeaderEncode for $type {
+            fn encode<E: Extend<::rama_http_types::HeaderValue>>(&self, values: &mut E) {
+                match crate::util::try_encode_non_empty_vec_as_flat_csv_header_value(
+                   &self.0,
+                   crate::util::FlatCsvSeparator::$sep,
+                ) {
+                    Ok(value) => values.extend(::std::iter::once(value)),
+                    Err(err) => {
+                        rama_core::telemetry::tracing::debug!(
+                          "failed to encode header value(s) as flat csv header: {err}"
+                        );
+                    }
+                }
             }
         }
     };

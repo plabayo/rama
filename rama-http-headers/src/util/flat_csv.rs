@@ -1,202 +1,209 @@
-use std::fmt;
-use std::iter::FromIterator;
-use std::marker::PhantomData;
+use std::fmt::Display;
+use std::str::FromStr;
 
-use rama_core::bytes::BytesMut;
+use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_http_types::HeaderValue;
+use rama_utils::collections::NonEmptyVec;
 
-use crate::Error;
-use crate::util::TryFromValues;
-
-// A single `HeaderValue` that can flatten multiple values with commas.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub(crate) struct FlatCsv<Sep = Comma> {
-    pub(crate) value: HeaderValue,
-    _marker: PhantomData<Sep>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) enum FlatCsvSeparator {
+    #[default]
+    Comma,
+    SemiColon,
 }
 
-pub(crate) trait Separator {
-    const BYTE: u8;
-    const CHAR: char;
+impl FlatCsvSeparator {
+    fn as_byte(self) -> u8 {
+        match self {
+            Self::Comma => b',',
+            Self::SemiColon => b';',
+        }
+    }
+
+    fn as_char(self) -> char {
+        match self {
+            Self::Comma => ',',
+            Self::SemiColon => ';',
+        }
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Comma {}
-
-impl Separator for Comma {
-    const BYTE: u8 = b',';
-    const CHAR: char = ',';
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum SemiColon {}
-
-impl Separator for SemiColon {
-    const BYTE: u8 = b';';
-    const CHAR: char = ';';
-}
-
-impl<Sep: Separator> FlatCsv<Sep> {
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &str> {
-        self.value.to_str().ok().into_iter().flat_map(|value_str| {
-            let mut in_quotes = false;
-            value_str
-                .split(move |c| {
-                    #[allow(clippy::collapsible_else_if)]
-                    if in_quotes {
+pub(crate) fn try_decode_flat_csv_header_values_as_non_empty_vec<'a, T>(
+    values: impl IntoIterator<Item = &'a HeaderValue>,
+    sep: FlatCsvSeparator,
+) -> Result<NonEmptyVec<T>, OpaqueError>
+where
+    T: FromStr<Err: Into<BoxError>>,
+{
+    let mut in_quotes = false;
+    let sep_char = sep.as_char();
+    let mut iter = values
+        .into_iter()
+        .flat_map(|v| {
+            let s = v
+                .to_str()
+                .context("header value is not a valid utf-8 str")?;
+            Ok::<_, OpaqueError>(s.split(move |c| {
+                #[allow(clippy::collapsible_else_if)]
+                if in_quotes {
+                    if c == '"' {
+                        in_quotes = false;
+                    }
+                    false // dont split
+                } else {
+                    if c == sep_char {
+                        true // split
+                    } else {
                         if c == '"' {
-                            in_quotes = false;
+                            in_quotes = true;
                         }
                         false // dont split
-                    } else {
-                        if c == Sep::CHAR {
-                            true // split
-                        } else {
-                            if c == '"' {
-                                in_quotes = true;
-                            }
-                            false // dont split
-                        }
                     }
-                })
-                .map(|item| item.trim())
+                }
+            }))
         })
+        .flatten()
+        .map(|s| s.trim().parse::<T>());
+
+    let mut vec = NonEmptyVec::new(
+        iter.next()
+            .context("header value is an empty (CSV?)")?
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("parse header value CSV colum from str")?,
+    );
+    for result in iter {
+        vec.push(
+            result
+                .map_err(|err| OpaqueError::from_boxed(err.into()))
+                .context("parse header value CSV colum from str")?,
+        );
     }
+    Ok(vec)
 }
 
-impl<Sep: Separator> TryFromValues for FlatCsv<Sep> {
-    fn try_from_values<'i, I>(values: &mut I) -> Result<Self, Error>
-    where
-        I: Iterator<Item = &'i HeaderValue>,
-    {
-        let flat = values.collect();
-        Ok(flat)
+pub(crate) fn try_encode_non_empty_vec_as_flat_csv_header_value<T>(
+    values: &NonEmptyVec<T>,
+    sep: FlatCsvSeparator,
+) -> Result<HeaderValue, OpaqueError>
+where
+    T: Display,
+{
+    use std::io::Write as _;
+
+    let mut v = Vec::new();
+
+    let sep_byte = sep.as_byte();
+
+    let _ = write!(&mut v, "{}", values.head);
+
+    for value in values.tail.iter() {
+        v.push(sep_byte);
+        v.push(b' ');
+        let _ = write!(&mut v, "{value}");
     }
+
+    HeaderValue::try_from(v).context("turn encoded bytes into HeaderValue")
 }
 
-impl<Sep> From<HeaderValue> for FlatCsv<Sep> {
-    fn from(value: HeaderValue) -> Self {
-        Self {
-            value,
-            _marker: PhantomData,
-        }
+pub(crate) fn try_encode_non_empty_vec_of_bytes_as_flat_csv_header_value<T>(
+    values: &NonEmptyVec<T>,
+    sep: FlatCsvSeparator,
+) -> Result<HeaderValue, OpaqueError>
+where
+    T: AsRef<[u8]>,
+{
+    let mut v = Vec::with_capacity(
+        values
+            .iter()
+            .map(|value| value.as_ref().len())
+            .sum::<usize>()
+            + 2 * values.len(),
+    );
+
+    let sep_byte = sep.as_byte();
+
+    v.extend(values.head.as_ref());
+
+    for value in values.tail.iter() {
+        v.push(sep_byte);
+        v.push(b' ');
+        v.extend(value.as_ref());
     }
-}
 
-impl<'a, Sep> From<&'a FlatCsv<Sep>> for HeaderValue {
-    fn from(flat: &'a FlatCsv<Sep>) -> Self {
-        flat.value.clone()
-    }
-}
-
-impl<Sep> fmt::Debug for FlatCsv<Sep> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Debug::fmt(&self.value, f)
-    }
-}
-
-impl<'a, Sep: Separator> FromIterator<&'a HeaderValue> for FlatCsv<Sep> {
-    fn from_iter<I>(iter: I) -> Self
-    where
-        I: IntoIterator<Item = &'a HeaderValue>,
-    {
-        let mut values = iter.into_iter();
-
-        // Common case is there is only 1 value, optimize for that
-        if values.size_hint() == (1, Some(1)) {
-            return values
-                .next()
-                .expect("size_hint claimed 1 item")
-                .clone()
-                .into();
-        }
-
-        // Otherwise, there are multiple, so this should merge them into 1.
-        let mut buf = values
-            .next()
-            .cloned()
-            .map(|val| BytesMut::from(val.as_bytes()))
-            .unwrap_or_default();
-
-        for val in values {
-            buf.extend_from_slice(&[Sep::BYTE, b' ']);
-            buf.extend_from_slice(val.as_bytes());
-        }
-
-        let val = HeaderValue::from_maybe_shared(buf.freeze())
-            .expect("comma separated HeaderValues are valid");
-
-        val.into()
-    }
-}
-
-// TODO: would be great if there was a way to de-dupe these with above
-impl<Sep: Separator> FromIterator<HeaderValue> for FlatCsv<Sep> {
-    fn from_iter<I>(iter: I) -> Self
-    where
-        I: IntoIterator<Item = HeaderValue>,
-    {
-        let mut values = iter.into_iter();
-
-        // Common case is there is only 1 value, optimize for that
-        if values.size_hint() == (1, Some(1)) {
-            return values.next().expect("size_hint claimed 1 item").into();
-        }
-
-        // Otherwise, there are multiple, so this should merge them into 1.
-        let mut buf = values
-            .next()
-            .map(|val| BytesMut::from(val.as_bytes()))
-            .unwrap_or_default();
-
-        for val in values {
-            buf.extend_from_slice(&[Sep::BYTE, b' ']);
-            buf.extend_from_slice(val.as_bytes());
-        }
-
-        let val = HeaderValue::from_maybe_shared(buf.freeze())
-            .expect("comma separated HeaderValues are valid");
-
-        val.into()
-    }
+    HeaderValue::try_from(v).context("turn encoded bytes into HeaderValue")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_utils::collections::non_empty_vec;
 
     #[test]
-    fn comma() {
-        let val = HeaderValue::from_static("aaa, b; bb, ccc");
-        let csv = FlatCsv::<Comma>::from(val);
-
-        let mut values = csv.iter();
-        assert_eq!(values.next(), Some("aaa"));
-        assert_eq!(values.next(), Some("b; bb"));
-        assert_eq!(values.next(), Some("ccc"));
-        assert_eq!(values.next(), None);
+    fn decode_flat_csv_into_non_empty_vec() {
+        for (header_values, separator, expected) in [
+            (
+                vec![HeaderValue::from_static("aaa, b; bb, ccc")],
+                FlatCsvSeparator::SemiColon,
+                non_empty_vec![String::from("aaa, b"), String::from("bb, ccc")],
+            ),
+            (
+                vec![HeaderValue::from_static("aaa; b, bb; ccc")],
+                FlatCsvSeparator::Comma,
+                non_empty_vec![String::from("aaa; b"), String::from("bb; ccc")],
+            ),
+            (
+                vec![HeaderValue::from_static("foo=\"bar,baz\", sherlock=holmes")],
+                FlatCsvSeparator::Comma,
+                non_empty_vec![
+                    String::from("foo=\"bar,baz\""),
+                    String::from("sherlock=holmes")
+                ],
+            ),
+            (
+                vec![
+                    HeaderValue::from_static("foo=\"bar,baz\", sherlock=holmes"),
+                    HeaderValue::from_static("answer=42"),
+                ],
+                FlatCsvSeparator::Comma,
+                non_empty_vec![
+                    String::from("foo=\"bar,baz\""),
+                    String::from("sherlock=holmes"),
+                    String::from("answer=42")
+                ],
+            ),
+        ] {
+            let values =
+                try_decode_flat_csv_header_values_as_non_empty_vec(header_values.iter(), separator)
+                    .unwrap();
+            assert_eq!(expected, values);
+        }
     }
 
     #[test]
-    fn semicolon() {
-        let val = HeaderValue::from_static("aaa; b, bb; ccc");
-        let csv = FlatCsv::<SemiColon>::from(val);
-
-        let mut values = csv.iter();
-        assert_eq!(values.next(), Some("aaa"));
-        assert_eq!(values.next(), Some("b, bb"));
-        assert_eq!(values.next(), Some("ccc"));
-        assert_eq!(values.next(), None);
-    }
-
-    #[test]
-    fn quoted_text() {
-        let val = HeaderValue::from_static("foo=\"bar,baz\", sherlock=holmes");
-        let csv = FlatCsv::<Comma>::from(val);
-
-        let mut values = csv.iter();
-        assert_eq!(values.next(), Some("foo=\"bar,baz\""));
-        assert_eq!(values.next(), Some("sherlock=holmes"));
-        assert_eq!(values.next(), None);
+    fn encode_non_empty_vec_as_flat_csv() {
+        for (values, separator, expected) in [
+            (
+                non_empty_vec![String::from("aaa, b"), String::from("bb, ccc")],
+                FlatCsvSeparator::SemiColon,
+                "aaa, b; bb, ccc",
+            ),
+            (
+                non_empty_vec![String::from("aaa; b"), String::from("bb; ccc")],
+                FlatCsvSeparator::Comma,
+                "aaa; b, bb; ccc",
+            ),
+            (
+                non_empty_vec![
+                    String::from("foo=\"bar,baz\""),
+                    String::from("sherlock=holmes")
+                ],
+                FlatCsvSeparator::Comma,
+                "foo=\"bar,baz\", sherlock=holmes",
+            ),
+        ] {
+            let header_value =
+                try_encode_non_empty_vec_as_flat_csv_header_value(&values, separator).unwrap();
+            assert_eq!(expected, header_value.to_str().unwrap());
+        }
     }
 }

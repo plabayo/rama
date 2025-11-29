@@ -3,26 +3,22 @@
 //! More information:
 //! <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-WebSocket-Extensions>
 
-use std::{fmt, str::FromStr, sync::Arc};
+use std::{fmt, str::FromStr};
 
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorExt, OpaqueError};
-use rama_http_types::{HeaderName, HeaderValue};
+use rama_utils::str::arcstr::ArcStr;
 
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::csv};
-
-/// The `Sec-WebSocket-Extensions` header, containing one or multiple [`Extension`]s.
-///
-/// Read more about it in the [`Extension`] docs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SecWebSocketExtensions(Vec<Extension>);
+derive_non_empty_flat_csv_header! {
+    #[header(name = SEC_WEBSOCKET_EXTENSIONS, sep = Comma)]
+    /// The `Sec-WebSocket-Extensions` header, containing one or multiple [`Extension`]s.
+    ///
+    /// Read more about it in the [`Extension`] docs.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct SecWebSocketExtensions(pub NonEmptyVec<Extension>);
+}
 
 impl SecWebSocketExtensions {
-    /// Create a new [`SecWebSocketExtensions`] headers value.
-    pub fn new(extension: impl Into<Extension>) -> Self {
-        Self(vec![extension.into()])
-    }
-
     #[inline]
     /// Create a new [`SecWebSocketExtensions`] with [`Extension::PerMessageDeflate`],
     /// using the default [`PerMessageDeflateConfig`].
@@ -58,46 +54,6 @@ impl SecWebSocketExtensions {
     }
 }
 
-impl SecWebSocketExtensions {
-    #[must_use]
-    /// Return a reference to the first [`Extension`]
-    pub fn first(&self) -> &Extension {
-        // assumption is that vec is never empty, due
-        // to how we construct it!
-        &self.0[0]
-    }
-
-    #[must_use]
-    pub fn into_first(self) -> Extension {
-        // assumption is that vec is never empty, due
-        // to how we construct it!
-        self.into_iter().next().unwrap()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Extension> {
-        self.0.iter()
-    }
-}
-
-impl IntoIterator for SecWebSocketExtensions {
-    type Item = Extension;
-    type IntoIter = std::vec::IntoIter<Extension>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-impl<Item: Into<Extension>> FromIterator<Item> for SecWebSocketExtensions {
-    fn from_iter<T: IntoIterator<Item = Item>>(iter: T) -> Self {
-        let mut vec: Vec<_> = iter.into_iter().map(Into::into).collect();
-        if vec.is_empty() {
-            vec.push(Extension::Empty);
-        }
-        Self(vec)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// WebSocket extensions as specified in [RFC6455: section 9].
 ///
@@ -119,7 +75,7 @@ pub enum Extension {
     /// An extension unknown to this library.
     ///
     /// Up to the user to parse and handle it appropriately, if at all.
-    Unknown(Arc<str>),
+    Unknown(ArcStr),
 }
 
 impl Extension {
@@ -365,6 +321,8 @@ impl FromStr for Extension {
                 }
             }
             Ok(Self::PerMessageDeflate(config))
+        } else if s.trim().is_empty() {
+            Ok(Self::Empty)
         } else {
             tracing::trace!(
                 "received unknown extension with identifier: {identifier} (full: {s}); store as unkown"
@@ -404,57 +362,6 @@ impl fmt::Display for Extension {
             Self::Empty => Ok(()), // nothing to do
             Self::Unknown(v) => write!(f, "{v}"),
         }
-    }
-}
-
-impl TypedHeader for SecWebSocketExtensions {
-    fn name() -> &'static HeaderName {
-        &::rama_http_types::header::SEC_WEBSOCKET_EXTENSIONS
-    }
-}
-
-impl HeaderDecode for SecWebSocketExtensions {
-    fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        let result: Result<Vec<_>, _> = values
-            .flat_map(|value| {
-                value.to_str().into_iter().flat_map(|string| {
-                    string.split(',').filter_map(|x| match x.trim() {
-                        "" => None,
-                        y => match y.parse::<Extension>() {
-                            Ok(ext) => Some(Ok(ext)),
-                            Err(err) => {
-                                tracing::debug!("fail extension '{y}' due to error: {err}");
-                                Some(Err(Error::invalid()))
-                            }
-                        },
-                    })
-                })
-            })
-            .collect();
-        let mut v = result?;
-        if v.is_empty() {
-            v.push(Extension::Empty);
-        }
-        Ok(Self(v))
-    }
-}
-
-impl HeaderEncode for SecWebSocketExtensions {
-    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        struct Format<F>(F);
-        impl<F> fmt::Display for Format<F>
-        where
-            F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result,
-        {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                (self.0)(f)
-            }
-        }
-        let s = format!(
-            "{}",
-            Format(|f: &mut fmt::Formatter<'_>| { csv::fmt_comma_delimited(&mut *f, self.iter()) })
-        );
-        values.extend(Some(HeaderValue::try_from(s).unwrap()))
     }
 }
 

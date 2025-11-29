@@ -48,7 +48,7 @@ use rama::{
         core::x509::{X509, store::X509StoreBuilder},
         server::{TlsAcceptorData, TlsAcceptorLayer},
     },
-    utils::str::NonEmptyString,
+    utils::str::NonEmptyStr,
 };
 
 use clap::{Args, Subcommand};
@@ -268,10 +268,10 @@ fn load_server_config(
     }
 }
 
-fn read_pem_file(path: &PathBuf, file_type: &str) -> Result<NonEmptyString, BoxError> {
+fn read_pem_file(path: &PathBuf, file_type: &str) -> Result<NonEmptyStr, BoxError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read {file_type} file: {e}"))?;
 
-    NonEmptyString::try_from(content)
+    NonEmptyStr::try_from(content)
         .map_err(|e| format!("Failed to parse {file_type} file: {e}").into())
 }

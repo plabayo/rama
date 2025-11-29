@@ -1,7 +1,9 @@
+use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
+use rama_utils::collections::NonEmptyVec;
 
 use super::ETag;
-use crate::util::EntityTagRange;
+use crate::util::{EntityTagRange, TryFromValues};
 
 /// `If-Match` header, defined in
 /// [RFC7232](https://tools.ietf.org/html/rfc7232#section-3.1)
@@ -39,9 +41,32 @@ use crate::util::EntityTagRange;
 #[derive(Clone, Debug, PartialEq)]
 pub struct IfMatch(EntityTagRange);
 
-derive_header! {
-    IfMatch(_),
-    name: IF_MATCH
+impl crate::TypedHeader for IfMatch {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::IF_MATCH
+    }
+}
+
+impl crate::HeaderDecode for IfMatch {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+    {
+        EntityTagRange::try_from_values(values).map(Self)
+    }
+}
+
+impl crate::HeaderEncode for IfMatch {
+    fn encode<E: Extend<::rama_http_types::HeaderValue>>(&self, values: &mut E) {
+        match HeaderValue::try_from(&self.0) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!(
+                    "failed to encode if-match entity-tag-range as header value: {err}"
+                );
+            }
+        }
+    }
 }
 
 impl IfMatch {
@@ -66,7 +91,7 @@ impl IfMatch {
 
 impl From<ETag> for IfMatch {
     fn from(etag: ETag) -> Self {
-        Self(EntityTagRange::Tags(HeaderValue::from(etag.0).into()))
+        Self(EntityTagRange::Tags(NonEmptyVec::new(etag.0)))
     }
 }
 

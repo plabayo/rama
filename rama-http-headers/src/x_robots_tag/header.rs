@@ -1,12 +1,13 @@
-use super::RobotsTag;
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, x_robots_tag::robots_tag_parse_iter};
+
+use super::RobotsTag;
 use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{collections::NonEmptyVec, macros::generate_set_and_with};
 
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
-pub struct XRobotsTag(Vec<RobotsTag>);
+pub struct XRobotsTag(pub NonEmptyVec<RobotsTag>);
 
 impl TypedHeader for XRobotsTag {
     fn name() -> &'static HeaderName {
@@ -15,13 +16,13 @@ impl TypedHeader for XRobotsTag {
 }
 
 impl XRobotsTag {
+    #[inline(always)]
     pub fn new(tag: RobotsTag) -> Self {
-        Self(vec![tag])
+        Self(NonEmptyVec::new(tag))
     }
 
     generate_set_and_with! {
         /// Set provided header in the header map
-        ///
         /// Warning: this function will replace already existing headers
         /// If more control is needed, use `.header_map()` or `.header_map_raw()`
         /// to get access to the underlying header map
@@ -35,24 +36,13 @@ impl XRobotsTag {
     }
 
     #[must_use]
-    pub fn into_tags(self) -> Vec<RobotsTag> {
-        self.0
-    }
-
-    #[must_use]
-    pub fn tags(&self) -> &[RobotsTag] {
-        &self.0
-    }
-
-    #[must_use]
     pub fn into_first_tag(self) -> RobotsTag {
-        // Safety: API guarantees at least one tag
-        self.0.into_iter().next().unwrap()
+        self.0.head
     }
 
     #[must_use]
     pub fn first_tag(&self) -> &RobotsTag {
-        &self.0[0]
+        self.0.first()
     }
 }
 
@@ -62,10 +52,13 @@ impl HeaderDecode for XRobotsTag {
         Self: Sized,
         I: Iterator<Item = &'i HeaderValue>,
     {
-        let elements = values.try_fold(Vec::new(), |mut acc, value| {
+        let elements = values.try_fold(None, |mut acc, value| {
             for result in robots_tag_parse_iter(value.as_bytes()) {
                 match result {
-                    Ok(extra) => acc.push(extra),
+                    Ok(extra) => match acc {
+                        None => acc = Some(NonEmptyVec::new(extra)),
+                        Some(ref mut acc) => acc.push(extra),
+                    },
                     Err(err) => {
                         tracing::debug!(?err, "x-robots-tag header element decoding failure");
                         return Err(Error::invalid());
@@ -75,7 +68,12 @@ impl HeaderDecode for XRobotsTag {
             Ok(acc)
         })?;
 
-        Ok(Self(elements))
+        if let Some(elements) = elements {
+            Ok(Self(elements))
+        } else {
+            tracing::debug!("no values founds for x-robots-tag header");
+            Err(Error::invalid())
+        }
     }
 }
 
@@ -97,18 +95,19 @@ impl HeaderEncode for XRobotsTag {
                 crate::util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
             })
         );
-        values.extend(Some(unsafe { HeaderValue::from_maybe_shared_unchecked(s) }))
-    }
-}
-
-impl FromIterator<RobotsTag> for XRobotsTag {
-    fn from_iter<T: IntoIterator<Item = RobotsTag>>(iter: T) -> Self {
-        Self(iter.into_iter().collect())
+        match HeaderValue::from_maybe_shared(s) {
+            Ok(v) => values.extend(::std::iter::once(v)),
+            Err(err) => {
+                tracing::debug!("failed to encode x-robots-tag as header value: {err}");
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rama_utils::collections::non_empty_vec;
+
     use super::*;
     use crate::{
         util::HeaderValueString,
@@ -165,76 +164,75 @@ mod tests {
     test_header!(
         one_rule,
         vec![b"noindex"],
-        Some(XRobotsTag(vec![RobotsTag::new_no_index()]))
+        Some(XRobotsTag::new(RobotsTag::new_no_index()))
     );
 
     test_header!(
         one_composite_rule,
         vec![b"max-snippet: 2025"],
-        Some(XRobotsTag(vec![RobotsTag::new_max_snippet(2025)]))
+        Some(XRobotsTag::new(RobotsTag::new_max_snippet(2025)))
     );
 
     test_header!(
         multiple_rules,
         vec![b"noindex, nofollow, nosnippet"],
-        Some(XRobotsTag(vec![
+        Some(XRobotsTag::new(
             RobotsTag::new_no_index()
                 .with_no_follow(true)
                 .with_no_snippet(true)
-        ]))
+        ))
     );
 
     test_header!(
             multiple_rules_with_composite,
             vec![b"max-video-preview: -1, noindex, nofollow, max-snippet: 2025, max-image-preview: standard"],
-            Some(XRobotsTag(vec![RobotsTag::
-                new_max_video_preview(-1)
+            Some(XRobotsTag::new(RobotsTag::new_max_video_preview(-1)
                 .with_no_index(true)
                 .with_no_follow(true)
                 .with_max_snippet(2025)
-                .with_max_image_preview(MaxImagePreviewSetting::Standard)]))
+                .with_max_image_preview(MaxImagePreviewSetting::Standard)))
         );
 
     test_header!(
         one_bot_one_rule,
         vec![b"google_bot: noindex"],
-        Some(XRobotsTag(vec![RobotsTag::new_no_index_for_bot(
+        Some(XRobotsTag::new(RobotsTag::new_no_index_for_bot(
             HeaderValueString::from_static("google_bot")
-        )]))
+        )))
     );
 
     test_header!(
         one_bot_one_composite_rule,
         vec![b"google_bot: max-video-preview: 0"],
-        Some(XRobotsTag(vec![RobotsTag::new_max_video_preview_for_bot(
+        Some(XRobotsTag::new(RobotsTag::new_max_video_preview_for_bot(
             0,
             HeaderValueString::from_static("google_bot")
-        )]))
+        )))
     );
 
     test_header!(
         one_bot_multiple_rules,
         vec![b"google_bot: noindex, nosnippet"],
-        Some(XRobotsTag(vec![
+        Some(XRobotsTag::new(
             RobotsTag::new_no_index_for_bot(HeaderValueString::from_static("google_bot"))
                 .with_no_snippet(true)
-        ]))
+        ))
     );
 
     test_header!(
             one_bot_multiple_rules_with_composite,
             vec![b"google_bot: max-video-preview: -1, noindex, nofollow, max-snippet: 2025, max-image-preview: standard"],
-            Some(XRobotsTag(vec![RobotsTag::new_max_video_preview_for_bot(-1, HeaderValueString::from_static("google_bot"))
+            Some(XRobotsTag::new(RobotsTag::new_max_video_preview_for_bot(-1, HeaderValueString::from_static("google_bot"))
                 .with_no_index(true)
                 .with_no_follow(true)
                 .with_max_snippet(2025)
-                .with_max_image_preview(MaxImagePreviewSetting::Standard)]))
+                .with_max_image_preview(MaxImagePreviewSetting::Standard)))
         );
 
     test_header!(
         multiple_bots_one_rule,
         vec![b"google_bot: noindex, BadBot: nofollow"],
-        Some(XRobotsTag(vec![
+        Some(XRobotsTag(non_empty_vec![
             RobotsTag::new_no_index_for_bot(HeaderValueString::from_static("google_bot")),
             RobotsTag::new_no_follow_for_bot(HeaderValueString::from_static("BadBot")),
         ]))
@@ -243,7 +241,7 @@ mod tests {
     test_header!(
             multiple_bots_one_composite_rule,
             vec![b"google_bot: unavailable_after: 2025-02-18T08:25:15+00:00, BadBot: max-image-preview: large"],
-            Some(XRobotsTag(vec![
+            Some(XRobotsTag(non_empty_vec![
                 RobotsTag::new_unavailable_after_for_bot(DirectiveDateTime::try_new_ymd_and_hms(2025, 2, 18, 8, 25, 15).unwrap().with_format_rfc3339(), HeaderValueString::from_static("google_bot")),
                 RobotsTag::new_max_image_preview_for_bot(MaxImagePreviewSetting::Large, HeaderValueString::from_static("BadBot")),
             ]))
@@ -252,7 +250,7 @@ mod tests {
     test_header!(
         multiple_bots_multiple_rules,
         vec![b"google_bot: none, indexifembedded, BadBot: nofollow, noai, spc"],
-        Some(XRobotsTag(vec![
+        Some(XRobotsTag(non_empty_vec![
             RobotsTag::new_none_for_bot(HeaderValueString::from_static("google_bot"))
                 .with_index_if_embedded(true),
             RobotsTag::new_no_follow_for_bot(HeaderValueString::from_static("BadBot"))
@@ -267,7 +265,7 @@ mod tests {
             b"google_bot: max-snippet: 8, notranslate, max-image-preview: none,\
             BadBot: max-video-preview: 2025, noimageindex, max-snippet: 0"
         ],
-        Some(XRobotsTag(vec![
+        Some(XRobotsTag(non_empty_vec![
             RobotsTag::new_max_snippet_for_bot(8, HeaderValueString::from_static("google_bot"))
                 .with_no_translate(true)
                 .with_max_image_preview(MaxImagePreviewSetting::None),

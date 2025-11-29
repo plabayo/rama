@@ -119,6 +119,7 @@ impl<S, P> Compression<S, P> {
     /// # Changing the compression predicate
     ///
     /// ```
+    /// use rama_utils::str::arcstr::arcstr;
     /// use rama_http::layer::compression::{
     ///     Compression,
     ///     predicate::{Predicate, NotForContentType, DefaultPredicate},
@@ -135,7 +136,7 @@ impl<S, P> Compression<S, P> {
     /// // custom predicates
     /// let predicate = DefaultPredicate::new()
     ///     // don't compress responses who's `content-type` starts with `application/json`
-    ///     .and(NotForContentType::new("application/json"));
+    ///     .and(NotForContentType::new(arcstr!("application/json")));
     ///
     /// let service = Compression::new(service).with_compress_predicate(predicate);
     /// ```

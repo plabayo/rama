@@ -1,5 +1,7 @@
 use std::time::SystemTime;
 
+use rama_core::telemetry::tracing;
+use rama_error::OpaqueError;
 use rama_http_types::HeaderValue;
 
 use super::{ETag, LastModified};
@@ -44,9 +46,30 @@ use crate::util::{EntityTag, HttpDate, TryFromValues};
 #[derive(Clone, Debug, PartialEq)]
 pub struct IfRange(IfRange_);
 
-derive_header! {
-    IfRange(_),
-    name: IF_RANGE
+impl crate::TypedHeader for IfRange {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::IF_RANGE
+    }
+}
+
+impl crate::HeaderDecode for IfRange {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+    {
+        crate::util::TryFromValues::try_from_values(values).map(IfRange)
+    }
+}
+
+impl crate::HeaderEncode for IfRange {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        match HeaderValue::try_from(&self.0) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode if-range value as header: {err}");
+            }
+        }
+    }
 }
 
 impl IfRange {
@@ -100,11 +123,13 @@ impl TryFromValues for IfRange_ {
     }
 }
 
-impl<'a> From<&'a IfRange_> for HeaderValue {
-    fn from(if_range: &'a IfRange_) -> Self {
+impl<'a> TryFrom<&'a IfRange_> for HeaderValue {
+    type Error = OpaqueError;
+
+    fn try_from(if_range: &'a IfRange_) -> Result<Self, Self::Error> {
         match *if_range {
-            IfRange_::EntityTag(ref tag) => tag.into(),
-            IfRange_::Date(ref date) => date.into(),
+            IfRange_::EntityTag(ref tag) => Ok(tag.into()),
+            IfRange_::Date(ref date) => date.try_into(),
         }
     }
 }

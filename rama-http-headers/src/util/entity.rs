@@ -1,9 +1,18 @@
-use std::fmt;
+use std::{fmt, str::FromStr};
 
+use rama_core::telemetry::tracing;
+use rama_error::OpaqueError;
 use rama_http_types::HeaderValue;
+use rama_utils::collections::NonEmptyVec;
 
-use super::{FlatCsv, IterExt};
-use crate::Error;
+use super::IterExt;
+use crate::{
+    Error,
+    util::{
+        FlatCsvSeparator, try_decode_flat_csv_header_values_as_non_empty_vec,
+        try_encode_non_empty_vec_of_bytes_as_flat_csv_header_value,
+    },
+};
 
 /// An entity tag, defined in [RFC7232](https://tools.ietf.org/html/rfc7232#section-2.3)
 ///
@@ -41,7 +50,7 @@ pub(crate) struct EntityTag<T = HeaderValue>(T);
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum EntityTagRange {
     Any,
-    Tags(FlatCsv),
+    Tags(NonEmptyVec<EntityTag>),
 }
 
 // ===== impl EntityTag =====
@@ -173,6 +182,13 @@ impl EntityTag {
     }
 }
 
+impl<T: AsRef<[u8]>> AsRef<[u8]> for EntityTag<T> {
+    #[inline(always)]
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
 impl<T: fmt::Debug> fmt::Debug for EntityTag<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -188,6 +204,14 @@ impl super::TryFromValues for EntityTag {
             .just_one()
             .and_then(Self::from_val)
             .ok_or_else(Error::invalid)
+    }
+}
+
+impl<T: FromStr> FromStr for EntityTag<T> {
+    type Err = T::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.parse()?))
     }
 }
 
@@ -235,14 +259,11 @@ impl EntityTagRange {
 
     fn matches_if<F>(&self, entity: &EntityTag, func: F) -> bool
     where
-        F: Fn(&EntityTag<&str>, &EntityTag) -> bool,
+        F: Fn(&EntityTag, &EntityTag) -> bool,
     {
         match *self {
             Self::Any => true,
-            Self::Tags(ref tags) => tags
-                .iter()
-                .flat_map(EntityTag::<&str>::parse)
-                .any(|tag| func(&tag, entity)),
+            Self::Tags(ref tags) => tags.iter().any(|tag| func(tag, entity)),
         }
     }
 }
@@ -252,20 +273,37 @@ impl super::TryFromValues for EntityTagRange {
     where
         I: Iterator<Item = &'i HeaderValue>,
     {
-        let flat = FlatCsv::try_from_values(values)?;
-        if flat.value == "*" {
-            Ok(Self::Any)
-        } else {
-            Ok(Self::Tags(flat))
+        match try_decode_flat_csv_header_values_as_non_empty_vec::<EntityTag>(
+            values,
+            FlatCsvSeparator::Comma,
+        ) {
+            Ok(values) => {
+                if values.len() == 1 && values.head.0.as_bytes().eq_ignore_ascii_case(b"*") {
+                    Ok(Self::Any)
+                } else {
+                    Ok(Self::Tags(values))
+                }
+            }
+            Err(err) => {
+                tracing::trace!("invalid entity tags: {err}");
+                Err(crate::Error::invalid())
+            }
         }
     }
 }
 
-impl<'a> From<&'a EntityTagRange> for HeaderValue {
-    fn from(tag: &'a EntityTagRange) -> Self {
-        match *tag {
-            EntityTagRange::Any => Self::from_static("*"),
-            EntityTagRange::Tags(ref tags) => tags.into(),
+impl TryFrom<&EntityTagRange> for HeaderValue {
+    type Error = OpaqueError;
+
+    fn try_from(tag: &EntityTagRange) -> Result<Self, Self::Error> {
+        match tag {
+            EntityTagRange::Any => Ok(Self::from_static("*")),
+            EntityTagRange::Tags(tags) => {
+                try_encode_non_empty_vec_of_bytes_as_flat_csv_header_value(
+                    tags,
+                    FlatCsvSeparator::Comma,
+                )
+            }
         }
     }
 }

@@ -264,7 +264,7 @@ fn write_curl_command_for_request_parts(
 mod tests {
     use rama_net::Protocol;
     use rama_net::address::HostWithPort;
-    use rama_net::user::{Basic, Bearer};
+    use rama_net::user::credentials::{basic, bearer};
 
     use crate::body::util::BodyExt;
     use crate::layer::har;
@@ -587,7 +587,7 @@ mod tests {
         parts.extensions.insert(ProxyAddress {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
-            credential: Some(ProxyCredential::Basic(Basic::new_insecure("john"))),
+            credential: Some(ProxyCredential::Basic(basic!("john"))),
         });
 
         let s = cmd_string_for_request_parts(&&parts);
@@ -611,7 +611,7 @@ mod tests {
         parts.extensions.insert(ProxyAddress {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
-            credential: Some(ProxyCredential::Basic(Basic::new("john", "secret"))),
+            credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
         });
 
         let s = cmd_string_for_request_parts(&&parts);
@@ -635,7 +635,7 @@ mod tests {
         parts.extensions.insert(ProxyAddress {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
-            credential: Some(ProxyCredential::Bearer(Bearer::new_static("abc123"))),
+            credential: Some(ProxyCredential::Bearer(bearer!("abc123"))),
         });
 
         let s = cmd_string_for_request_parts(&&parts);
@@ -660,7 +660,7 @@ mod tests {
         parts.extensions.insert(ProxyAddress {
             protocol: Some(Protocol::SOCKS5),
             address: HostWithPort::local_ipv4(8080),
-            credential: Some(ProxyCredential::Basic(Basic::new("user", "pass"))),
+            credential: Some(ProxyCredential::Basic(basic!("user", "pass"))),
         });
 
         let s = cmd_string_for_request_parts(&&parts);

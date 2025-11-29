@@ -91,10 +91,12 @@ impl HeaderEncode for Forwarded {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
 
-        let value = HeaderValue::try_from(s)
-            .expect("Forwarded extension should always result in a valid header value");
-
-        values.extend(std::iter::once(value));
+        match HeaderValue::try_from(s) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode forward extension as header value: {err}")
+            }
+        }
     }
 }
 

@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use rama_utils::str::NonEmptyString;
+use rama_utils::str::NonEmptyStr;
 
 mod enums;
 pub use enums::{
@@ -104,5 +104,5 @@ pub enum DataEncoding {
     /// Same as [`DataEncoding::Der`], but multiple
     DerStack(Vec<Vec<u8>>),
     /// Privacy Enhanced Mail (PEM) (plain text)
-    Pem(NonEmptyString),
+    Pem(NonEmptyStr),
 }

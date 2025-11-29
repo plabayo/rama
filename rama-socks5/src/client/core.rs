@@ -440,6 +440,7 @@ impl Client {
 mod tests {
     use super::*;
     use rama_net::{address::Host, user};
+    use rama_utils::str::non_empty_str;
 
     #[tokio::test]
     async fn test_client_handshake_connect_no_auth_failure_command_not_supported() {
@@ -492,7 +493,10 @@ mod tests {
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ));
         let err = client
             .handshake_connect(&mut stream, &HostWithPort::default_ipv4(0))
             .await
@@ -517,7 +521,10 @@ mod tests {
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ));
         let err = client
             .handshake_connect(&mut stream, &HostWithPort::default_ipv4(0))
             .await
@@ -538,7 +545,10 @@ mod tests {
             .read(b"\x01\x01")
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ));
         let err = client
             .handshake_connect(&mut stream, &HostWithPort::default_ipv4(0))
             .await
@@ -625,7 +635,10 @@ mod tests {
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ));
         let local_addr = client
             .handshake_connect(&mut stream, &HostWithPort::new(Host::EXAMPLE_NAME, 1))
             .await
@@ -651,7 +664,7 @@ mod tests {
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static_insecure("john"));
+        let client = Client::default().with_auth(user::Basic::new_insecure(non_empty_str!("john")));
         let local_addr = client
             .handshake_connect(&mut stream, &HostWithPort::example_domain_with_port(1))
             .await

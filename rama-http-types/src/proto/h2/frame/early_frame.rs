@@ -156,11 +156,11 @@ enum EarlyFrameKind {
 /// Can be used by an h2 backend to record early frames.
 struct EarlyFrameRecorder {
     recording: Option<Vec<EarlyFrame>>,
-    frozen: Option<Arc<Vec<EarlyFrame>>>,
+    frozen: Option<Arc<[EarlyFrame]>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct EarlyFrameCapture(Arc<Vec<EarlyFrame>>);
+pub struct EarlyFrameCapture(Arc<[EarlyFrame]>);
 
 impl EarlyFrameCapture {
     #[must_use]
@@ -195,31 +195,31 @@ impl<'de> serde::Deserialize<'de> for EarlyFrameCapture {
 impl EarlyFrameRecorder {
     const MAX_FRAMES: usize = 16;
 
-    fn record_priority_frame(&mut self, frame: &Priority) {
-        if let Some(ref mut c) = self.recording {
-            c.push(EarlyFrame::Priority(frame.clone()));
-            if c.len() >= Self::MAX_FRAMES {
-                self.frozen = Some(self.recording.take().unwrap().into());
+    fn record_frame_internal<F: Clone>(&mut self, frame: F, map: impl FnOnce(F) -> EarlyFrame) {
+        if let Some(mut recording) = self.recording.take() {
+            recording.push(map(frame));
+            if recording.len() >= Self::MAX_FRAMES {
+                // done recording
+                self.frozen = Some(recording.into());
+            } else {
+                // more to record
+                self.recording = Some(recording);
             }
         }
     }
 
+    #[inline(always)]
+    fn record_priority_frame(&mut self, frame: &Priority) {
+        self.record_frame_internal(frame, |f| EarlyFrame::Priority(f.clone()));
+    }
+
+    #[inline(always)]
     fn record_settings_frame(&mut self, frame: &Settings) {
-        if let Some(ref mut c) = self.recording {
-            c.push(EarlyFrame::Settings(frame.clone()));
-            if c.len() >= Self::MAX_FRAMES {
-                self.frozen = Some(self.recording.take().unwrap().into());
-            }
-        }
+        self.record_frame_internal(frame, |f| EarlyFrame::Settings(f.clone()));
     }
 
     fn record_windows_update_frame(&mut self, frame: WindowUpdate) {
-        if let Some(ref mut c) = self.recording {
-            c.push(EarlyFrame::WindowUpdate(frame));
-            if c.len() >= Self::MAX_FRAMES {
-                self.frozen = Some(self.recording.take().unwrap().into());
-            }
-        }
+        self.record_frame_internal(frame, EarlyFrame::WindowUpdate);
     }
 
     fn freeze(&mut self) -> Option<EarlyFrameCapture> {
@@ -232,7 +232,7 @@ impl EarlyFrameRecorder {
             return None;
         }
 
-        let fc = Arc::new(c);
+        let fc: Arc<[EarlyFrame]> = c.into();
         self.frozen = Some(fc.clone());
         Some(EarlyFrameCapture(fc))
     }

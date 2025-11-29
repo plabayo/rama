@@ -8,6 +8,7 @@ use rama::{
     tcp::client::default_tcp_connect,
     telemetry::tracing,
     udp::bind_udp,
+    utils::str::non_empty_str,
 };
 
 #[cfg(feature = "boring")]
@@ -83,7 +84,7 @@ async fn test_http_echo() {
 
     let mut ws = client
         .websocket("ws://127.0.0.1:63101")
-        .with_protocols(SecWebSocketProtocol::new("echo-upper"))
+        .with_protocols(SecWebSocketProtocol::new(non_empty_str!("echo-upper")))
         .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");
@@ -264,7 +265,7 @@ async fn test_https_echo() {
 
     let mut ws = client
         .websocket("wss://127.0.0.1:63103")
-        .with_protocols(SecWebSocketProtocol::new("echo-upper"))
+        .with_protocols(SecWebSocketProtocol::new(non_empty_str!("echo-upper")))
         .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");

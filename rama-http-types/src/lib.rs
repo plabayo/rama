@@ -18,10 +18,7 @@
 #![cfg_attr(
     not(test),
     warn(clippy::print_stdout, clippy::dbg_macro),
-    // rama-http-types has due to historic reasons a lot of (legit) unwraps...
-    // Still... to be good we should probably clean these up in near future step by step,
-    // only leaving with comment what is strictly needed
-    // deny(clippy::unwrap_used, clippy::expect_used)
+    deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
 pub mod body;

@@ -1,3 +1,6 @@
+use rama_core::telemetry::tracing;
+use rama_http_types::HeaderValue;
+
 use crate::util::HttpDate;
 use std::time::SystemTime;
 
@@ -32,9 +35,30 @@ use std::time::SystemTime;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LastModified(pub(super) HttpDate);
 
-derive_header! {
-    LastModified(_),
-    name: LAST_MODIFIED
+impl crate::TypedHeader for LastModified {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::LAST_MODIFIED
+    }
+}
+
+impl crate::HeaderDecode for LastModified {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+    {
+        crate::util::TryFromValues::try_from_values(values).map(LastModified)
+    }
+}
+
+impl crate::HeaderEncode for LastModified {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        match HeaderValue::try_from(&self.0) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode last-modified value as header: {err}");
+            }
+        }
+    }
 }
 
 impl From<SystemTime> for LastModified {

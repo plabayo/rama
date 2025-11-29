@@ -9,6 +9,7 @@ use rama_core::futures::TryStream;
 use rama_core::futures::stream::Stream;
 use rama_core::stream::json;
 use rama_error::{BoxError, OpaqueError};
+use rama_utils::str::arcstr::ArcStr;
 use serde::de::DeserializeOwned;
 use sse::{EventDataRead, EventStream};
 use std::pin::Pin;
@@ -151,6 +152,16 @@ impl Body {
         Self::new(util::Limited::new(self.0, limit))
     }
 
+    /// Attach a headermap as trailer headers to this body.
+    ///
+    /// In case you want this is also available as `with_trailer`,
+    /// provided by a body extension which allows you to use
+    /// a [`Future`] with as output an option of a result of a headermap.
+    /// This method is a shortcut of that function.
+    pub fn with_trailer_headers(self, headers: crate::HeaderMap) -> Self {
+        Self::new(self.0.with_trailers(std::future::ready(Some(Ok(headers)))))
+    }
+
     /// Convert the body into a [`Stream`] of data frames.
     ///
     /// Non-data frames (such as trailers) will be discarded. Use [`http_body_util::BodyStream`] if
@@ -246,6 +257,23 @@ body_from_impl!(Vec<u8>);
 body_from_impl!(&'static str);
 body_from_impl!(std::borrow::Cow<'static, str>);
 body_from_impl!(String);
+
+impl From<&ArcStr> for Body {
+    fn from(buf: &ArcStr) -> Self {
+        Self::new(if let Some(s) = ArcStr::as_static(buf) {
+            crate::body::util::Full::from(s)
+        } else {
+            crate::body::util::Full::from(buf.to_string())
+        })
+    }
+}
+
+impl From<ArcStr> for Body {
+    #[inline(always)]
+    fn from(buf: ArcStr) -> Self {
+        Self::from(&buf)
+    }
+}
 
 body_from_impl!(Bytes);
 

@@ -41,7 +41,7 @@ use rama::{
         proxy::ProxyTarget,
         stream::layer::http::BodyLimitLayer,
         tls::{SecureTransport, server::SelfSignedData},
-        user::Basic,
+        user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
@@ -124,7 +124,7 @@ async fn main() {
                 TraceLayer::new_for_http(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filter
-                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
+                ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),

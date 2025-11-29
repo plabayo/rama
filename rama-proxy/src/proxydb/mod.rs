@@ -1,6 +1,6 @@
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_net::asn::Asn;
-use rama_utils::str::NonEmptyString;
+use rama_utils::str::NonEmptyStr;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -35,13 +35,13 @@ pub use str::StringFilter;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// `ID` of the selected proxy. To be inserted into the `Context`,
 /// only if that proxy is selected.
-pub struct ProxyID(NonEmptyString);
+pub struct ProxyID(NonEmptyStr);
 
 impl ProxyID {
     /// View  this [`ProxyID`] as a `str`.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        self.0.as_str()
+        self.0.as_ref()
     }
 }
 
@@ -57,8 +57,8 @@ impl fmt::Display for ProxyID {
     }
 }
 
-impl From<NonEmptyString> for ProxyID {
-    fn from(value: NonEmptyString) -> Self {
+impl From<NonEmptyStr> for ProxyID {
+    fn from(value: NonEmptyStr) -> Self {
         Self(value)
     }
 }
@@ -88,7 +88,7 @@ impl From<NonEmptyString> for ProxyID {
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct ProxyFilter {
     /// The ID of the proxy to select.
-    pub id: Option<NonEmptyString>,
+    pub id: Option<NonEmptyStr>,
 
     /// The ID of the pool from which to select the proxy.
     #[serde(alias = "pool")]
@@ -605,7 +605,7 @@ mod memdb {
         use super::*;
         use itertools::Itertools;
         use rama_net::address::ProxyAddress;
-        use rama_utils::str::NonEmptyString;
+        use rama_utils::str::non_empty_str;
         use std::str::FromStr;
 
         const RAW_CSV_DATA: &str = include_str!("./test_proxydb_rows.csv");
@@ -636,7 +636,7 @@ mod memdb {
             let db = memproxydb().await;
             let ctx = h2_proxy_context();
             let filter = ProxyFilter {
-                id: Some(NonEmptyString::from_static("3031533634")),
+                id: Some(non_empty_str!("3031533634")),
                 ..Default::default()
             };
             let proxy = db.get_proxy(ctx, filter).await.unwrap();
@@ -648,7 +648,7 @@ mod memdb {
             let db = memproxydb().await;
             let ctx = h2_proxy_context();
             let filter = ProxyFilter {
-                id: Some(NonEmptyString::from_static("3031533634")),
+                id: Some(non_empty_str!("3031533634")),
                 pool_id: Some(vec![StringFilter::new("poolF")]),
                 country: Some(vec![StringFilter::new("JP")]),
                 city: Some(vec![StringFilter::new("Yokohama")]),
@@ -667,7 +667,7 @@ mod memdb {
             let db = memproxydb().await;
             let ctx = h2_proxy_context();
             let filter = ProxyFilter {
-                id: Some(NonEmptyString::from_static("notfound")),
+                id: Some(non_empty_str!("notfound")),
                 ..Default::default()
             };
             let err = db.get_proxy(ctx, filter).await.unwrap_err();
@@ -680,52 +680,52 @@ mod memdb {
             let ctx = h2_proxy_context();
             let filters = [
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     pool_id: Some(vec![StringFilter::new("poolB")]),
                     ..Default::default()
                 },
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     country: Some(vec![StringFilter::new("US")]),
                     ..Default::default()
                 },
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     city: Some(vec![StringFilter::new("New York")]),
                     ..Default::default()
                 },
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     continent: Some(vec![StringFilter::new("americas")]),
                     ..Default::default()
                 },
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3732488183")),
+                    id: Some(non_empty_str!("3732488183")),
                     state: Some(vec![StringFilter::new("Texas")]),
                     ..Default::default()
                 },
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     datacenter: Some(false),
                     ..Default::default()
                 },
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     residential: Some(true),
                     ..Default::default()
                 },
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     mobile: Some(false),
                     ..Default::default()
                 },
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     carrier: Some(vec![StringFilter::new("AT&T")]),
                     ..Default::default()
                 },
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("292096733")),
+                    id: Some(non_empty_str!("292096733")),
                     asn: Some(vec![Asn::from_static(1)]),
                     ..Default::default()
                 },
@@ -747,7 +747,7 @@ mod memdb {
             let db = memproxydb().await;
             let ctx = h3_proxy_context();
             let filter = ProxyFilter {
-                id: Some(NonEmptyString::from_static("3031533634")),
+                id: Some(non_empty_str!("3031533634")),
                 ..Default::default()
             };
             // this proxy does not support socks5 UDP, which is what we need
@@ -952,7 +952,7 @@ mod memdb {
                 assert_eq!(
                     MemoryProxyDBQueryErrorKind::NotFound,
                     db.get_proxy_if(ctx.clone(), filter.clone(), move |proxy: &Proxy| {
-                        !blocked_proxies.contains(&proxy.id.as_str())
+                        !blocked_proxies.contains(&proxy.id.as_ref())
                     })
                     .await
                     .unwrap_err()
@@ -964,7 +964,7 @@ mod memdb {
 
             let proxy = db
                 .get_proxy_if(ctx, filter.clone(), move |proxy: &Proxy| {
-                    !blocked_proxies.contains(&proxy.id.as_str())
+                    !blocked_proxies.contains(&proxy.id.as_ref())
                 })
                 .await
                 .unwrap();
@@ -974,7 +974,7 @@ mod memdb {
         #[tokio::test]
         async fn test_db_proxy_filter_any_use_filter_property() {
             let db = MemoryProxyDB::try_from_iter([Proxy {
-                id: NonEmptyString::from_static("1"),
+                id: non_empty_str!("1"),
                 address: ProxyAddress::from_str("example.com:80").unwrap(),
                 tcp: true,
                 udp: true,
@@ -999,7 +999,7 @@ mod memdb {
 
             for filter in [
                 ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     ..Default::default()
                 },
                 ProxyFilter {
@@ -1074,7 +1074,7 @@ mod memdb {
         #[tokio::test]
         async fn test_db_proxy_filter_any_only_matches_any_value() {
             let db = MemoryProxyDB::try_from_iter([Proxy {
-                id: NonEmptyString::from_static("1"),
+                id: non_empty_str!("1"),
                 address: ProxyAddress::from_str("example.com:80").unwrap(),
                 tcp: true,
                 udp: true,
@@ -1155,7 +1155,7 @@ mod memdb {
         async fn test_search_proxy_for_any_of_given_pools() {
             let db = MemoryProxyDB::try_from_iter([
                 Proxy {
-                    id: NonEmptyString::from_static("1"),
+                    id: non_empty_str!("1"),
                     address: ProxyAddress::from_str("example.com:80").unwrap(),
                     tcp: true,
                     udp: true,
@@ -1175,7 +1175,7 @@ mod memdb {
                     asn: Some(Asn::from_static(7018)),
                 },
                 Proxy {
-                    id: NonEmptyString::from_static("2"),
+                    id: non_empty_str!("2"),
                     address: ProxyAddress::from_str("example.com:80").unwrap(),
                     tcp: true,
                     udp: true,
@@ -1195,7 +1195,7 @@ mod memdb {
                     asn: Some(Asn::from_static(7018)),
                 },
                 Proxy {
-                    id: NonEmptyString::from_static("3"),
+                    id: non_empty_str!("3"),
                     address: ProxyAddress::from_str("example.com:80").unwrap(),
                     tcp: true,
                     udp: true,
@@ -1215,7 +1215,7 @@ mod memdb {
                     asn: Some(Asn::from_static(7018)),
                 },
                 Proxy {
-                    id: NonEmptyString::from_static("4"),
+                    id: non_empty_str!("4"),
                     address: ProxyAddress::from_str("example.com:80").unwrap(),
                     tcp: true,
                     udp: true,
@@ -1248,7 +1248,7 @@ mod memdb {
             let mut seen_4 = false;
             for _ in 0..100 {
                 let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
-                match proxy.id.as_str() {
+                match proxy.id.as_ref() {
                     "1" => seen_1 = true,
                     "4" => seen_4 = true,
                     _ => panic!("unexpected pool id"),
@@ -1264,7 +1264,7 @@ mod memdb {
                 (
                     "id=1",
                     ProxyFilter {
-                        id: Some(NonEmptyString::from_static("1")),
+                        id: Some(non_empty_str!("1")),
                         ..Default::default()
                     },
                 ),

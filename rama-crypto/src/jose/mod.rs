@@ -33,9 +33,12 @@ mod jwa;
 pub use jwa::JWA;
 
 mod jwk;
-pub use jwk::{EcdsaKey, JWK, JWKEllipticCurves, JWKType, JWKUse};
+pub use jwk::{EcdsaKey, JWK, JWKEllipticCurves, JWKType, JWKUse, RsaKey};
 
+mod constants;
+mod jwk_utils;
 mod jws;
+
 pub use jws::{
     DecodedJWS, DecodedJWSFlattened, DecodedSignature, EMPTY_PAYLOAD, Empty, Headers, JWS,
     JWSBuilder, JWSCompact, JWSFlattened, NO_PAYLOAD, Signer, ToVerifySignature, Verifier,
