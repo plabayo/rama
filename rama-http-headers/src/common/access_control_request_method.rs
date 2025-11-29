@@ -3,8 +3,8 @@ use rama_http_types::{HeaderName, HeaderValue, Method};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
-/// `Access-Control-Request-Method` header, part of
-/// [CORS](http://www.w3.org/TR/cors/#access-control-request-method-request-header)
+/// `Access-Control-Request-Method` header, as defined on
+/// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Request-Method).
 ///
 /// The `Access-Control-Request-Method` header indicates which method will be
 /// used in the actual request as part of the preflight request.
@@ -26,7 +26,7 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 /// let req_method = AccessControlRequestMethod::from(Method::GET);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AccessControlRequestMethod(Method);
+pub struct AccessControlRequestMethod(pub Method);
 
 impl TypedHeader for AccessControlRequestMethod {
     fn name() -> &'static HeaderName {

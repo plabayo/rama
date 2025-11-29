@@ -5,8 +5,8 @@ use super::origin::Origin;
 use crate::Error;
 use crate::util::{IterExt, TryFromValues};
 
-/// The `Access-Control-Allow-Origin` response header,
-/// part of [CORS](http://www.w3.org/TR/cors/#access-control-allow-origin-response-header)
+/// `Access-Control-Allow-Origin` header, as defined on
+/// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Allow-Origin).
 ///
 /// The `Access-Control-Allow-Origin` header indicates whether a resource
 /// can be shared based by returning the value of the Origin request header,
@@ -79,6 +79,11 @@ impl AccessControlAllowOrigin {
             OriginOrAny::Origin(ref origin) => Some(origin),
             OriginOrAny::Any => None,
         }
+    }
+
+    pub fn try_from_origin_header_value(header_value: &HeaderValue) -> Option<Self> {
+        let origin = Origin::try_from_value(header_value)?;
+        Some(Self(OriginOrAny::Origin(origin)))
     }
 }
 

@@ -3,8 +3,8 @@ use rama_http_types::HeaderName;
 derive_non_empty_flat_csv_header! {
     #[header(name = ACCESS_CONTROL_REQUEST_HEADERS, sep = Comma)]
     #[derive(Clone, Debug)]
-    /// `Access-Control-Request-Headers` header, part of
-    /// [CORS](http://www.w3.org/TR/cors/#access-control-request-headers-request-header)
+    /// `Access-Control-Request-Headers` header, as defined on
+    /// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Request-Headers).
     ///
     /// The `Access-Control-Request-Headers` header indicates which headers will
     /// be used in the actual request as part of the preflight request.

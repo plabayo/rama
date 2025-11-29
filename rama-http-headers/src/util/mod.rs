@@ -15,6 +15,7 @@ pub use self::http_date::HttpDate;
 pub(crate) use self::iter::IterExt;
 //pub use language_tags::LanguageTag;
 //pub use self::quality_value::{Quality, QualityValue};
+pub use self::flat_csv::ValuesOrAny;
 pub use self::seconds::Seconds;
 
 //mod charset;
@@ -104,6 +105,118 @@ macro_rules! derive_non_empty_flat_csv_header {
                     Err(err) => {
                         rama_core::telemetry::tracing::debug!(
                           "failed to encode header value(s) as flat csv header: {err}"
+                        );
+                    }
+                }
+            }
+        }
+    };
+}
+
+macro_rules! derive_values_or_any_header {
+    (
+        #[header(name = $name:ident, sep = $sep:ident)]
+        $(#[$m:meta])*
+        pub struct $type:ident(pub ValuesOrAny<$t:ty>);
+    ) => {
+        $(#[$m])*
+        pub struct $type(pub $crate::util::ValuesOrAny<$t>);
+
+        impl $type {
+            #[must_use]
+            pub fn new(value: $t) -> Self {
+                Self($crate::util::ValuesOrAny::Values(
+                    ::rama_utils::collections::NonEmptyVec::new(value),
+                ))
+            }
+
+            #[must_use]
+            pub fn new_values(values: ::rama_utils::collections::NonEmptyVec<$t>) -> Self {
+                Self($crate::util::ValuesOrAny::Values(values))
+            }
+
+            #[must_use]
+            pub fn new_any() -> Self {
+                Self($crate::util::ValuesOrAny::Any)
+            }
+
+            #[must_use]
+            pub fn is_any(&self) -> bool {
+                matches!(&self.0, $crate::util::ValuesOrAny::Any)
+            }
+
+            #[must_use]
+            pub fn as_values(&self) -> Option<&::rama_utils::collections::NonEmptyVec<$t>> {
+                match &self.0 {
+                    $crate::util::ValuesOrAny::Any => None,
+                    $crate::util::ValuesOrAny::Values(values) => Some(values),
+                }
+            }
+
+            #[must_use]
+            pub fn into_values(self) -> Option<::rama_utils::collections::NonEmptyVec<$t>> {
+                match self.0 {
+                    $crate::util::ValuesOrAny::Any => None,
+                    $crate::util::ValuesOrAny::Values(values) => Some(values),
+                }
+            }
+        }
+
+        impl crate::TypedHeader for $type {
+            fn name() -> &'static ::rama_http_types::header::HeaderName {
+                &::rama_http_types::header::$name
+            }
+        }
+
+        impl crate::HeaderDecode for $type {
+            fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+            where
+                I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+            {
+                let Some(first_value) = values.next() else {
+                    rama_core::telemetry::tracing::debug!(
+                      "failed to decode header value(s) as values typed header: no headers provided"
+                    );
+                    return Err(crate::Error::invalid());
+                };
+
+                let second_value = values.next();
+
+                if first_value.as_bytes().trim_ascii() == b"*" && second_value.is_none() {
+                    return Ok(Self::new_any());
+                }
+
+                let mut values = std::iter::once(first_value).chain(second_value).chain(values);
+
+                crate::util::try_decode_flat_csv_header_values_as_non_empty_vec(
+                   &mut values,
+                   crate::util::FlatCsvSeparator::$sep,
+                ).map(Self::new_values).map_err(|err| {
+                    rama_core::telemetry::tracing::debug!(
+                      "failed to decode header value(s) as a multi-value typed header: {err}"
+                    );
+                    crate::Error::invalid()
+                })
+            }
+        }
+
+        impl crate::HeaderEncode for $type {
+            fn encode<E: Extend<::rama_http_types::HeaderValue>>(&self, values: &mut E) {
+                let $crate::util::ValuesOrAny::Values(ref these_values) = self.0 else {
+                    values.extend(::std::iter::once(
+                        ::rama_http_types::header::HeaderValue::from_static("*"),
+                    ));
+                    return;
+                };
+
+                match crate::util::try_encode_non_empty_vec_as_flat_csv_header_value(
+                these_values,
+                crate::util::FlatCsvSeparator::$sep,
+                ) {
+                    Ok(value) => values.extend(::std::iter::once(value)),
+                    Err(err) => {
+                        rama_core::telemetry::tracing::debug!(
+                            "failed to encode header value(s) as multi-value typed header: {err}"
                         );
                     }
                 }

@@ -1,9 +1,47 @@
-use std::fmt::Display;
+use std::fmt::{self, Display};
 use std::str::FromStr;
 
 use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_http_types::HeaderValue;
 use rama_utils::collections::NonEmptyVec;
+
+/// Header value which is either any `*` or
+/// the given values separated by the defined separator.
+pub enum ValuesOrAny<T> {
+    /// The specific values as defined in order.
+    Values(NonEmptyVec<T>),
+    /// The any `*` value, also referred to as "wildcard".
+    Any,
+}
+
+impl<T: fmt::Debug> fmt::Debug for ValuesOrAny<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Values(arg0) => f.debug_tuple("Values").field(arg0).finish(),
+            Self::Any => write!(f, "Any"),
+        }
+    }
+}
+
+impl<T: Clone> Clone for ValuesOrAny<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Values(arg0) => Self::Values(arg0.clone()),
+            Self::Any => Self::Any,
+        }
+    }
+}
+
+impl<T: PartialEq> PartialEq for ValuesOrAny<T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Values(l0), Self::Values(r0)) => l0 == r0,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
+impl<T: Eq> Eq for ValuesOrAny<T> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub(crate) enum FlatCsvSeparator {

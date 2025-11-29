@@ -106,6 +106,12 @@ pub mod header {
         "x-real-ip",
     ];
 
+    // extra access control headers
+    static_header![
+        "access-control-allow-private-network",
+        "access-control-request-private-network",
+    ];
+
     /// Static Header Value that is can be used as `User-Agent` or `Server` header.
     pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(
         const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION),

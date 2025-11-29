@@ -18,8 +18,7 @@
 #![cfg_attr(
     not(test),
     warn(clippy::print_stdout, clippy::dbg_macro),
-    // TODO: in future enable this, for now there are too many in rama-http (still)
-    // deny(clippy::unwrap_used, clippy::expect_used)
+    deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
 #[doc(inline)]
