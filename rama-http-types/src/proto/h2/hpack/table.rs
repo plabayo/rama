@@ -498,7 +498,7 @@ impl Table {
             let mut probe = desired_pos(self.mask, pos.hash);
 
             probe_loop!(probe < self.indices.len(), {
-                #[cfg_attr(not(debug_assertions), expect(unused))]
+                #[allow(unused)]
                 if let Some(them) = self.indices[probe] {
                     debug_assert!({
                         let their_distance = probe_distance(self.mask, them.hash, probe);
