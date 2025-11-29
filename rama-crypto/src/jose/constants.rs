@@ -35,6 +35,18 @@ mod rsa_algorithm_identifier {
     const NULL_TAG: u8 = 0x05;
     const LENGTH_NULL: u8 = 0x00;
 
+    /// This entire thing has 3 layers, and the final goal is to
+    /// get the der algorithm identifier for rsa encoding
+    ///
+    /// 1. The identifier oid: 1.2.840.113549.1.1.1 defined in RFC 8017
+    /// 2. RFC 3279 (Algorithms and Identifiers for the Internet X.509 PKI)
+    ///    specifies tag is needs to be NULL. The general structure is
+    ///    IDENTIFIER, PARAMETER, but for rsa here we dont have PARAMETER
+    ///    so NULL instead
+    /// 3. We need to combine everything in DER encode
+    ///   - 3.1 (IDENTIFIER, PARAMETER) is a sequence, so SEQUENCE_TAG, LENGHT of what follows
+    ///   - 3.2 OBJECT_IDENTIFIER_TAG to specify OID, LENGTH of OID,and actual oid
+    ///   - 3.3 NULL_TAG and LENGTH_NULL to encode null value
     pub(crate) const RSA_ALGORITHM_IDENTIFIER: [u8; 15] = [
         SEQUENCE_TAG,
         LENGTH,
