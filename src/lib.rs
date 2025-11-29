@@ -379,7 +379,7 @@
 #[doc(inline)]
 pub use ::rama_core::{
     Layer, Service, ServiceInput, bytes, combinators, conversion, error, extensions, futures,
-    graceful, inspect, layer, matcher, rt, service, stream, username,
+    graceful, layer, matcher, rt, service, stream, username,
 };
 
 #[cfg(feature = "crypto")]
