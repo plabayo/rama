@@ -34,6 +34,7 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 pub struct AccessControlAllowPrivateNetwork;
 
 impl AccessControlAllowPrivateNetwork {
+    #[must_use]
     pub fn new() -> Self {
         Self
     }

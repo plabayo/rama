@@ -597,6 +597,7 @@ impl<'de> serde::Deserialize<'de> for Authority {
 
 #[cfg(test)]
 mod tests {
+    use crate::user::credentials::basic;
     use rama_utils::str::non_empty_str;
 
     use super::*;
@@ -648,11 +649,7 @@ mod tests {
             ),
             (
                 "user:secret@example.com:80",
-                (
-                    Some(Basic::new(non_empty_str!("user"), non_empty_str!("secret"))),
-                    "example.com",
-                    Some(80),
-                ),
+                (Some(basic!("user", "secret")), "example.com", Some(80)),
             ),
             (
                 "user@::1",
@@ -725,11 +722,7 @@ mod tests {
             ),
             (
                 "user:secret@127.0.0.1:80",
-                (
-                    Some(Basic::new(non_empty_str!("user"), non_empty_str!("secret"))),
-                    "127.0.0.1",
-                    Some(80),
-                ),
+                (Some(basic!("user", "secret")), "127.0.0.1", Some(80)),
             ),
             (
                 "2001:db8:3333:4444:5555:6666:7777:8888",
@@ -746,7 +739,7 @@ mod tests {
             (
                 "user:secret@2001:db8:3333:4444:5555:6666:7777:8888",
                 (
-                    Some(Basic::new(non_empty_str!("user"), non_empty_str!("secret"))),
+                    Some(basic!("user", "secret")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     None,
                 ),
@@ -766,7 +759,7 @@ mod tests {
             (
                 "user:secret@[2001:db8:3333:4444:5555:6666:7777:8888]:80",
                 (
-                    Some(Basic::new(non_empty_str!("user"), non_empty_str!("secret"))),
+                    Some(basic!("user", "secret")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     Some(80),
                 ),

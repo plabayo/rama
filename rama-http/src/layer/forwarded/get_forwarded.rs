@@ -266,9 +266,11 @@ where
                 f.extend(forwarded_elements);
             } else {
                 let mut it = forwarded_elements.into_iter();
-                let mut forwarded = rama_net::forwarded::Forwarded::new(it.next().unwrap());
-                forwarded.extend(it);
-                req.extensions_mut().insert(forwarded);
+                if let Some(first) = it.next() {
+                    let mut forwarded = rama_net::forwarded::Forwarded::new(first);
+                    forwarded.extend(it);
+                    req.extensions_mut().insert(forwarded);
+                }
             }
         }
 

@@ -14,7 +14,7 @@
 
 use rama::{
     extensions::Extensions,
-    net::{address::SocketAddress, user::Basic},
+    net::{address::SocketAddress, user::credentials::basic},
     proxy::socks5::{
         Socks5Acceptor, Socks5Client, client::bind::BindOutput, server::DefaultBinder,
     },
@@ -24,7 +24,6 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    utils::str::non_empty_str,
 };
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -47,8 +46,7 @@ async fn main() {
         .await
         .expect("establish connection to socks5 server (from client)");
 
-    let socks5_client =
-        Socks5Client::new().with_auth(Basic::new(non_empty_str!("john"), non_empty_str!("secret")));
+    let socks5_client = Socks5Client::new().with_auth(basic!("john", "secret"));
 
     let binder = socks5_client
         .handshake_bind(proxy_client_stream, None)
@@ -118,9 +116,7 @@ async fn spawn_socks5_server() -> SocketAddress {
         .into();
 
     let socks5_acceptor = Socks5Acceptor::new()
-        .with_authorizer(
-            Basic::new(non_empty_str!("john"), non_empty_str!("secret")).into_authorizer(),
-        )
+        .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_binder(DefaultBinder::default().with_bind_interface(SocketAddress::local_ipv4(0)));
 
     tokio::spawn(tcp_service.serve(socks5_acceptor));

@@ -1,5 +1,6 @@
 use rama_core::ServiceInput;
 use rama_net::address::HostWithPort;
+use rama_net::user::credentials::basic;
 use rama_utils::str::non_empty_str;
 
 use crate::server::bind::MockBinder;
@@ -64,9 +65,7 @@ async fn test_socks5_acceptor_auth_flow_used_bind_failure_method_not_supported()
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new().with_authorizer(
-        user::Basic::new(non_empty_str!("john"), non_empty_str!("secret")).into_authorizer(),
-    );
+    let server = Socks5Acceptor::new().with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }
@@ -228,9 +227,7 @@ async fn test_socks5_acceptor_with_auth_flow_client_bind_mock_success_with_data(
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
-        .with_authorizer(
-            user::Basic::new(non_empty_str!("john"), non_empty_str!("secret")).into_authorizer(),
-        )
+        .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_binder(
             MockBinder::new(HostWithPort::local_ipv4(42), HostWithPort::local_ipv4(43))
                 .with_proxy_data(

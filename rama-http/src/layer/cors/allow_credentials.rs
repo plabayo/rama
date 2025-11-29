@@ -24,7 +24,7 @@ impl AllowCredentials {
             Self::Const => headers.typed_insert(AccessControlAllowCredentials::default()),
             Self::Predicate(predicate) => {
                 if let Some(origin) = origin
-                    && predicate(origin, &parts)
+                    && predicate(origin, parts)
                 {
                     headers.typed_insert(AccessControlAllowCredentials::default())
                 }

@@ -26,7 +26,7 @@ derive_values_or_any_header! {
     /// use rama_http_types::header::{CONTENT_LENGTH, ETAG};
     /// use rama_http_headers::AccessControlExposeHeaders;
     ///
-    /// let expose = AccessControlExposeHeaders(
+    /// let expose = AccessControlExposeHeaders::new_values(
     ///     non_empty_vec![CONTENT_LENGTH, ETAG],
     /// );
     /// # }

@@ -436,15 +436,12 @@ mod tests {
 mod test_auth {
     use super::*;
     use rama_core::username::{UsernameLabels, UsernameOpaqueLabelParser};
-    use rama_utils::str::non_empty_str;
+    use rama_net::user::credentials::basic;
 
     #[tokio::test]
     async fn basic_authorization() {
-        let auth = Basic::new(non_empty_str!("Aladdin"), non_empty_str!("open sesame"));
-        let auths = vec![
-            Basic::new(non_empty_str!("foo"), non_empty_str!("bar")),
-            auth.clone(),
-        ];
+        let auth = basic!("Aladdin", "open sesame");
+        let auths = vec![basic!("foo", "bar"), auth.clone()];
         let ext = Authority::<_, ()>::authorized(&auths, auth).await.unwrap();
         let user: &UserId = ext.get().unwrap();
         assert_eq!(user, "Aladdin");
@@ -452,14 +449,11 @@ mod test_auth {
 
     #[tokio::test]
     async fn basic_authorization_with_labels_found() {
-        let auths = vec![
-            Basic::new(non_empty_str!("foo"), non_empty_str!("bar")),
-            Basic::new(non_empty_str!("john"), non_empty_str!("secret")),
-        ];
+        let auths = vec![basic!("foo", "bar"), basic!("john", "secret")];
 
         let ext = Authority::<_, UsernameOpaqueLabelParser>::authorized(
             &auths,
-            Basic::new(non_empty_str!("john-green-red"), non_empty_str!("secret")),
+            basic!("john-green-red", "secret"),
         )
         .await
         .unwrap();
@@ -473,11 +467,8 @@ mod test_auth {
 
     #[tokio::test]
     async fn basic_authorization_with_labels_not_found() {
-        let auth = Basic::new(non_empty_str!("john"), non_empty_str!("secret"));
-        let auths = vec![
-            Basic::new(non_empty_str!("foo"), non_empty_str!("bar")),
-            auth.clone(),
-        ];
+        let auth = basic!("john", "secret");
+        let auths = vec![basic!("foo", "bar"), auth.clone()];
 
         let ext = Authority::<_, UsernameOpaqueLabelParser>::authorized(&auths, auth)
             .await

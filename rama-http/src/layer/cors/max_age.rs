@@ -29,7 +29,7 @@ impl MaxAge {
             Self::Const(header) => headers.typed_insert(header),
             Self::Predicate(predicate) => {
                 if let Some(origin) = origin
-                    && let Some(secs) = predicate(origin, &parts)
+                    && let Some(secs) = predicate(origin, parts)
                 {
                     headers.typed_insert(AccessControlMaxAge::from(secs));
                 }

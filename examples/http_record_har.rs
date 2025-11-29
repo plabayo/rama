@@ -68,7 +68,7 @@ use rama::{
             client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
-        user::Basic,
+        user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
@@ -89,7 +89,6 @@ use rama::{
         },
         profile::UserAgentDatabase,
     },
-    utils::str::non_empty_str,
 };
 
 use std::{
@@ -146,9 +145,10 @@ async fn main() -> Result<(), BoxError> {
         let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new(non_empty_str!("john"), non_empty_str!("secret"))),
+                ProxyAuthLayer::new(basic!("john", "secret")),
                 // used to toggle HAR recording on and off
                 // ...
                 // NOTE that in a production proxy you would probably

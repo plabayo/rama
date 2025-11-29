@@ -29,13 +29,14 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 /// ```
 /// use rama_http_headers::AccessControlAllowCredentials;
 ///
-/// let allow_creds = AccessControlAllowCredentials;
+/// let allow_creds = AccessControlAllowCredentials::new();
 /// ```
 #[derive(Default, Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub struct AccessControlAllowCredentials;
 
 impl AccessControlAllowCredentials {
+    #[must_use]
     pub fn new() -> Self {
         Self
     }

@@ -122,6 +122,7 @@ async fn main() {
         let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filter
                 ProxyAuthLayer::new(basic!("john", "secret")),

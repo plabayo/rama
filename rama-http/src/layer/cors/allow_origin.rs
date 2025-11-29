@@ -49,7 +49,7 @@ impl AllowOrigin {
             }
             Self::Predicate(predicate) => {
                 if let Some(origin) = origin
-                    && predicate(origin, &parts)
+                    && predicate(origin, parts)
                     && let Some(header) =
                         AccessControlAllowOrigin::try_from_origin_header_value(origin)
                 {

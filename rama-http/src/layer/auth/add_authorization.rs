@@ -13,8 +13,7 @@
 //! use rama_core::service::service_fn;
 //! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
-//! use rama_net::user::Basic;
-//! use rama_utils::str::non_empty_str;
+//! use rama_net::user::credentials::basic;
 //!
 //! # async fn handle(request: Request) -> Result<Response, BoxError> {
 //! #     Ok(Response::new(Body::default()))
@@ -24,11 +23,11 @@
 //! # async fn main() -> Result<(), BoxError> {
 //! # let service_that_requires_auth = ValidateRequestHeader::auth(
 //! #     service_fn(handle),
-//! #     Basic::new(non_empty_str!("username"), non_empty_str!("password")),
+//! #     basic!("username", "password"),
 //! # );
 //! let mut client = (
 //!     // Use basic auth with the given username and password
-//!     AddAuthorizationLayer::new(Basic::new(non_empty_str!("username"), non_empty_str!("password"))),
+//!     AddAuthorizationLayer::new(basic!("username", "password")),
 //! ).layer(service_that_requires_auth);
 //!
 //! // Make a request, we don't have to add the `Authorization` header manually
@@ -239,25 +238,17 @@ mod tests {
     use rama_core::Service;
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
-    use rama_net::user::Basic;
-    use rama_net::user::credentials::bearer;
-    use rama_utils::str::non_empty_str;
+    use rama_net::user::credentials::{basic, bearer};
     use std::convert::Infallible;
 
     #[tokio::test]
-    async fn basic() {
+    async fn test_basic() {
         // service that requires auth for all requests
-        let svc = ValidateRequestHeaderLayer::auth(Basic::new(
-            non_empty_str!("foo"),
-            non_empty_str!("bar"),
-        ))
-        .into_layer(service_fn(echo));
+        let svc =
+            ValidateRequestHeaderLayer::auth(basic!("foo", "bar")).into_layer(service_fn(echo));
 
         // make a client that adds auth
-        let client = AddAuthorization::new(
-            svc,
-            Basic::new(non_empty_str!("foo"), non_empty_str!("bar")),
-        );
+        let client = AddAuthorization::new(svc, basic!("foo", "bar"));
 
         let res = client.serve(Request::new(Body::empty())).await.unwrap();
 
@@ -265,7 +256,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token() {
+    async fn test_token() {
         // service that requires auth for all requests
         let svc = ValidateRequestHeaderLayer::auth(bearer!("foo")).into_layer(service_fn(echo));
 

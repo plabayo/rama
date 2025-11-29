@@ -553,6 +553,7 @@ impl<'a> UsernamePasswordRequestRef<'a> {
 
 #[cfg(test)]
 mod tests {
+    use rama_net::user::credentials::basic;
     use rama_utils::str::non_empty_str;
 
     use crate::proto::test_write_read_eq;
@@ -614,7 +615,7 @@ mod tests {
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                basic: &user::Basic::new(non_empty_str!("a"), non_empty_str!("b")),
+                basic: &basic!("a", "b"),
             },
             UsernamePasswordRequest,
         );

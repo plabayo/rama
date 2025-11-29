@@ -24,10 +24,10 @@ impl AllowPrivateNetwork {
     ) {
         // Access-Control-Allow-Private-Network is only relevant if the request
         // has the Access-Control-Request-Private-Network header set, else skip
-        if !parts
+        if parts
             .headers
             .typed_get::<AccessControlRequestPrivateNetwork>()
-            .is_some()
+            .is_none()
         {
             return;
         }
@@ -36,7 +36,7 @@ impl AllowPrivateNetwork {
             Self::Const => headers.typed_insert(AccessControlAllowPrivateNetwork::default()),
             Self::Predicate(predicate) => {
                 if let Some(origin) = origin
-                    && predicate(origin, &parts)
+                    && predicate(origin, parts)
                 {
                     headers.typed_insert(AccessControlAllowPrivateNetwork::default())
                 }
