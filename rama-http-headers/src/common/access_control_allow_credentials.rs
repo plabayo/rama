@@ -2,8 +2,8 @@ use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
-/// `Access-Control-Allow-Credentials` header, part of
-/// [CORS](http://www.w3.org/TR/cors/#access-control-allow-headers-response-header)
+/// `Access-Control-Allow-Credentials` header, as defined on
+/// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Allow-Credentials).
 ///
 /// > The Access-Control-Allow-Credentials HTTP response header indicates whether the
 /// > response to request can be exposed when the credentials flag is true. When part
@@ -29,10 +29,18 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 /// ```
 /// use rama_http_headers::AccessControlAllowCredentials;
 ///
-/// let allow_creds = AccessControlAllowCredentials;
+/// let allow_creds = AccessControlAllowCredentials::new();
 /// ```
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Default, Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub struct AccessControlAllowCredentials;
+
+impl AccessControlAllowCredentials {
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 impl TypedHeader for AccessControlAllowCredentials {
     fn name() -> &'static HeaderName {

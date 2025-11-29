@@ -17,7 +17,7 @@
 //! # async fn main() -> Result<(), BoxError> {
 //! let mut service = (
 //!     // Require the `Accept` header to be `application/json`, `*/*` or `application/*`
-//!     ValidateRequestHeaderLayer::accept("application/json"),
+//!     ValidateRequestHeaderLayer::try_accept_for_str("application/json").unwrap(),
 //! ).into_layer(service_fn(handle));
 //!
 //! // Requests with the correct value are allowed through

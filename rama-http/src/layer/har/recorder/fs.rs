@@ -136,7 +136,14 @@ impl FileRecorderTask {
                                 Ok(storage) => storage,
                             },
                         );
-                        let storage_ref = storage.as_mut().unwrap();
+                        #[allow(
+                            clippy::expect_used,
+                            reason = "it was assigned in the previous assignment as Some"
+                        )]
+                        // NOTE: not the cleanest design in this file, but ok for now
+                        let storage_ref = storage
+                            .as_mut()
+                            .expect("storage to be some due to previous statement");
 
                         buf.clear();
                         let header = serde_json::json!({
@@ -183,11 +190,25 @@ impl FileRecorderTask {
                                     && let Err(err) = storage_ref.file.write_u8(b',').await
                                 {
                                     tracing::debug!("failed to write entry separator: {err}");
-                                    finish_file(storage.take().unwrap().file).await;
+                                    #[allow(clippy::expect_used)]
+                                    finish_file(
+                                        storage
+                                            .take()
+                                            .expect("storage to exist as we have reference to it")
+                                            .file,
+                                    )
+                                    .await;
                                     continue 'msg_loop;
                                 } else if let Err(err) = storage_ref.file.write_all(&buf).await {
                                     tracing::debug!("failed to write serialized entry: {err}");
-                                    finish_file(storage.take().unwrap().file).await;
+                                    #[allow(clippy::expect_used)]
+                                    finish_file(
+                                        storage
+                                            .take()
+                                            .expect("storage to exist as we have reference to it")
+                                            .file,
+                                    )
+                                    .await;
                                     continue 'msg_loop;
                                 } else {
                                     storage_ref.has_entries = true;
@@ -197,7 +218,14 @@ impl FileRecorderTask {
                                 tracing::debug!(
                                     "failed entry ({entry:?}) due to json serialize error: {err}"
                                 );
-                                finish_file(storage.take().unwrap().file).await;
+                                #[allow(clippy::expect_used)]
+                                finish_file(
+                                    storage
+                                        .take()
+                                        .expect("storage to exist as we have reference to it")
+                                        .file,
+                                )
+                                .await;
                                 continue 'msg_loop;
                             }
                         }

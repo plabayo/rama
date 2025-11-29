@@ -1,10 +1,10 @@
 use rama_http_types::Method;
 
-derive_non_empty_flat_csv_header! {
+derive_values_or_any_header! {
     #[header(name = ACCESS_CONTROL_ALLOW_METHODS, sep = Comma)]
     #[derive(Clone, Debug, PartialEq)]
-    /// `Access-Control-Allow-Methods` header, part of
-    /// [CORS](http://www.w3.org/TR/cors/#access-control-allow-methods-response-header)
+    /// `Access-Control-Allow-Methods` header, as defined on
+    /// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Allow-Methods).
     ///
     /// The `Access-Control-Allow-Methods` header indicates, as part of the
     /// response to a preflight request, which methods can be used during the
@@ -13,11 +13,12 @@ derive_non_empty_flat_csv_header! {
     /// # ABNF
     ///
     /// ```text
-    /// Access-Control-Allow-Methods: "Access-Control-Allow-Methods" ":" #Method
+    /// Access-Control-Allow-Methods: "Access-Control-Allow-Methods" ":" #Method | *
     /// ```
     ///
     /// # Example values
     /// * `PUT, DELETE, XMODIFY`
+    /// * `*`
     ///
     /// # Examples
     ///
@@ -26,11 +27,13 @@ derive_non_empty_flat_csv_header! {
     /// use rama_http_types::Method;
     /// use rama_http_headers::AccessControlAllowMethods;
     ///
-    /// let allow_methods = AccessControlAllowMethods(
+    /// let allow_methods = AccessControlAllowMethods::new_values(
     ///     non_empty_vec![Method::GET, Method::PUT],
     /// );
+    ///
+    /// let allow_any_methods = AccessControlAllowMethods::new_any();
     /// ```
-    pub struct AccessControlAllowMethods(pub NonEmptyVec<Method>);
+    pub struct AccessControlAllowMethods(pub ValuesOrAny<Method>);
 }
 
 #[cfg(test)]
@@ -41,21 +44,60 @@ mod tests {
 
     #[test]
     fn decode_single() {
-        let AccessControlAllowMethods(allowed) = test_decode(&["GET, PUT"]).unwrap();
+        let allowed_methods = test_decode::<AccessControlAllowMethods>(&["GET, PUT"])
+            .unwrap()
+            .into_values()
+            .unwrap();
 
-        assert_eq!(allowed.len(), 2);
-        assert_eq!(allowed[0], Method::GET);
-        assert_eq!(allowed[1], Method::PUT);
+        assert_eq!(allowed_methods.len(), 2);
+        assert_eq!(allowed_methods[0], Method::GET);
+        assert_eq!(allowed_methods[1], Method::PUT);
+    }
+
+    #[test]
+    fn decode_any() {
+        assert!(
+            test_decode::<AccessControlAllowMethods>(&["*"])
+                .unwrap()
+                .is_any()
+        );
+    }
+
+    #[test]
+    fn decode_any_with_trailer_value() {
+        let allowed_methods = test_decode::<AccessControlAllowMethods>(&["*, GET"])
+            .unwrap()
+            .into_values()
+            .unwrap();
+
+        assert_eq!(allowed_methods.len(), 2);
+        assert_eq!(allowed_methods[0], "*".parse::<Method>().unwrap());
+        assert_eq!(allowed_methods[1], Method::GET);
+    }
+
+    #[test]
+    fn decode_any_with_trailer_header() {
+        let allowed_methods = test_decode::<AccessControlAllowMethods>(&["*", "GET"])
+            .unwrap()
+            .into_values()
+            .unwrap();
+
+        assert_eq!(allowed_methods.len(), 2);
+        assert_eq!(allowed_methods[0], "*".parse::<Method>().unwrap());
+        assert_eq!(allowed_methods[1], Method::GET);
     }
 
     #[test]
     fn decode_multi() {
-        let AccessControlAllowMethods(allowed) = test_decode(&["GET, PUT", "POST"]).unwrap();
+        let allowed_methods = test_decode::<AccessControlAllowMethods>(&["GET, PUT", "POST"])
+            .unwrap()
+            .into_values()
+            .unwrap();
 
-        assert_eq!(allowed.len(), 3);
-        assert_eq!(allowed[0], Method::GET);
-        assert_eq!(allowed[1], Method::PUT);
-        assert_eq!(allowed[2], Method::POST);
+        assert_eq!(allowed_methods.len(), 3);
+        assert_eq!(allowed_methods[0], Method::GET);
+        assert_eq!(allowed_methods[1], Method::PUT);
+        assert_eq!(allowed_methods[2], Method::POST);
     }
 
     #[test]
@@ -69,10 +111,18 @@ mod tests {
     }
 
     #[test]
-    fn encode() {
-        let allow = AccessControlAllowMethods(non_empty_vec![Method::GET, Method::PUT]);
+    fn encode_methods() {
+        let allow = AccessControlAllowMethods::new_values(non_empty_vec![Method::GET, Method::PUT]);
 
         let headers = test_encode(allow);
         assert_eq!(headers["access-control-allow-methods"], "GET, PUT");
+    }
+
+    #[test]
+    fn encodeany() {
+        let allow = AccessControlAllowMethods::new_any();
+
+        let headers = test_encode(allow);
+        assert_eq!(headers["access-control-allow-methods"], "*");
     }
 }

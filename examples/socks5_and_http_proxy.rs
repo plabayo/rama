@@ -38,7 +38,10 @@ use rama::{
         service::web::response::IntoResponse,
     },
     layer::ConsumeErrLayer,
-    net::{http::RequestContext, proxy::ProxyTarget, stream::ClientSocketInfo, user::Basic},
+    net::{
+        http::RequestContext, proxy::ProxyTarget, stream::ClientSocketInfo,
+        user::credentials::basic,
+    },
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
     rt::Executor,
     service::service_fn,
@@ -48,7 +51,6 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    utils::str::non_empty_str,
 };
 
 use std::{convert::Infallible, time::Duration};
@@ -70,15 +72,15 @@ async fn main() {
         .await
         .expect("bind socks5+http proxy to 127.0.0.1:62023");
 
-    let socks5_acceptor = Socks5Acceptor::default().with_authorizer(
-        Basic::new(non_empty_str!("john"), non_empty_str!("secret")).into_authorizer(),
-    );
+    let socks5_acceptor =
+        Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
     let exec = Executor::graceful(graceful.guard());
     let http_service = HttpServer::auto(exec).service(
         (
             TraceLayer::new_for_http(),
-            ProxyAuthLayer::new(Basic::new(non_empty_str!("tom"), non_empty_str!("clancy"))),
+            ConsumeErrLayer::default(),
+            ProxyAuthLayer::new(basic!("tom", "clancy")),
             UpgradeLayer::new(
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),

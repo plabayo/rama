@@ -155,7 +155,15 @@ where
             }
             // drop port
             (Some(_), _) => {
-                *authority = authority.host().parse().unwrap();
+                *authority = match authority.host().parse() {
+                    Ok(v) => v,
+                    Err(err) => {
+                        tracing::debug!(
+                            "failed to overwrite authority with (parsed) host value: {err} (bug??)"
+                        );
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                    }
+                }
             }
             (None, None) => (), // nothing to do
         }
@@ -165,7 +173,15 @@ where
         {
             if path_and_query.query().is_some() {
                 // TOOD: open issue in http to perhaps more easily drop query??
-                uri_parts.path_and_query = Some(path_and_query.path().parse().unwrap());
+                uri_parts.path_and_query = Some(match path_and_query.path().parse() {
+                    Ok(v) => v,
+                    Err(err) => {
+                        tracing::debug!(
+                            "failed to overwrite path-and-query with (parsed) path value: {err} (bug??)"
+                        );
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                    }
+                });
             } else {
                 uri_parts.path_and_query = Some(path_and_query);
             }

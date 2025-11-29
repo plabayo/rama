@@ -48,7 +48,7 @@ use rama::{
             SecureTransport,
             server::{SelfSignedData, TlsPeekRouter},
         },
-        user::Basic,
+        user::credentials::basic,
     },
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
     rt::Executor,
@@ -59,7 +59,6 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    utils::str::non_empty_str,
 };
 
 #[cfg(feature = "boring")]
@@ -123,15 +122,15 @@ async fn main() {
         .await
         .expect("bind http+https+socks5+socks5h proxy to 127.0.0.1:62029");
 
-    let socks5_acceptor = Socks5Acceptor::default().with_authorizer(
-        Basic::new(non_empty_str!("john"), non_empty_str!("secret")).into_authorizer(),
-    );
+    let socks5_acceptor =
+        Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
     let exec = Executor::graceful(graceful.guard());
     let http_service = HttpServer::auto(exec).service(
         (
             TraceLayer::new_for_http(),
-            ProxyAuthLayer::new(Basic::new(non_empty_str!("tom"), non_empty_str!("clancy"))),
+            ConsumeErrLayer::default(),
+            ProxyAuthLayer::new(basic!("tom", "clancy")),
             UpgradeLayer::new(
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),

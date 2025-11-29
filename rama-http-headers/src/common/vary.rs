@@ -1,7 +1,7 @@
 use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
-use rama_http_types::{HeaderName, HeaderValue};
-use rama_utils::collections::NonEmptyVec;
+use rama_http_types::{HeaderName, HeaderValue, header};
+use rama_utils::collections::{NonEmptyVec, non_empty_vec};
 
 use crate::util::{
     FlatCsvSeparator, TryFromValues, try_decode_flat_csv_header_values_as_non_empty_vec,
@@ -112,18 +112,29 @@ impl crate::HeaderEncode for Vary {
 impl Vary {
     /// Create a new `Vary: *` header.
     #[must_use]
-    pub fn any() -> Self {
+    pub const fn any() -> Self {
         Self(Directive::Any)
     }
 
-    /// Create a new `Vary: *` header for the given headern ames.
+    /// Creates a new `Vary` header with the request headers that may be involved in a CORS preflight request.
+    #[must_use]
+    #[inline(always)]
+    pub fn preflight_request_headers() -> Self {
+        Self::headers(non_empty_vec![
+            header::ORIGIN,
+            header::ACCESS_CONTROL_REQUEST_METHOD,
+            header::ACCESS_CONTROL_REQUEST_HEADERS,
+        ])
+    }
+
+    /// Create a new `Vary` header for the given header (CS) names.
     #[must_use]
     pub fn headers(values: NonEmptyVec<HeaderName>) -> Self {
         Self(Directive::Headers(values))
     }
 
     /// Check if this includes `*`.
-    pub fn is_any(&self) -> bool {
+    pub const fn is_any(&self) -> bool {
         matches!(&self.0, Directive::Any)
     }
 

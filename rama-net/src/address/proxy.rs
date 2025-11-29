@@ -118,6 +118,7 @@ impl<'de> serde::Deserialize<'de> for ProxyAddress {
 
 #[cfg(test)]
 mod tests {
+    use crate::user::credentials::basic;
     use rama_utils::str::non_empty_str;
 
     use super::*;
@@ -163,7 +164,7 @@ mod tests {
             ProxyAddress {
                 protocol: None,
                 address: HostWithPort::local_ipv4(8080),
-                credential: Some(Basic::new(non_empty_str!("foo"), non_empty_str!("bar")).into()),
+                credential: Some(basic!("foo", "bar").into()),
             }
         );
     }
@@ -202,7 +203,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTP),
                 address: HostWithPort::local_ipv4(8080),
-                credential: Some(Basic::new(non_empty_str!("foo"), non_empty_str!("bar")).into()),
+                credential: Some(basic!("foo", "bar").into()),
             }
         );
     }
@@ -230,9 +231,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTPS),
                 address: HostWithPort::new(Host::Name(Domain::from_static("my.proxy.io.")), 9999),
-                credential: Some(
-                    Basic::new(non_empty_str!("foo-cc-be"), non_empty_str!("baz")).into()
-                ),
+                credential: Some(basic!("foo-cc-be", "baz").into()),
             }
         );
     }
