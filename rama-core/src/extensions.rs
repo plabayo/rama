@@ -28,7 +28,6 @@
 //! ```
 
 use std::any::{Any, TypeId};
-use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -37,7 +36,7 @@ use std::sync::Arc;
 ///
 /// `Extensions` can be used by `Request` and `Response` to store
 /// extra data derived from the underlying protocol.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct Extensions {
     // TODO potentially optimize this storage https://github.com/plabayo/rama/issues/746
     extensions: Vec<Extension>,
@@ -47,17 +46,14 @@ pub struct Extensions {
 struct Extension(TypeId, Box<dyn ExtensionType>);
 
 impl Extensions {
-    /// Create an empty `Extensions`.
+    /// Create an empty [`Extensions`] store.
     #[inline(always)]
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            extensions: vec![],
-            // parent_extensions: Arc::new([]),
-        }
+        Self { extensions: vec![] }
     }
 
-    /// Insert a type into this `Extensions`.
+    /// Insert a type into this [`Extensions]` store.
     pub fn insert<T>(&mut self, val: T) -> &mut Self
     where
         T: Clone + Send + Sync + std::fmt::Debug + 'static,
@@ -67,30 +63,23 @@ impl Extensions {
         self
     }
 
-    /// Insert a type into this `Extensions`.
-    pub fn maybe_insert<T>(&mut self, val: Option<T>) -> &mut Self
-    where
-        T: Clone + Send + Sync + std::fmt::Debug + 'static,
-    {
-        if let Some(val) = val {
-            self.insert(val);
-        }
-        self
-    }
-
+    /// Extend this [`Extensions`] store with the [`Extension`]s from the provided store
     pub fn extend(&mut self, extensions: Self) -> &mut Self {
         self.extensions.extend(extensions.extensions);
         self
     }
 
-    /// Returns true if the `Extensions` or parents contains the given type.
+    /// Returns true if the [`Extensions`] store contains the given type.
     #[must_use]
     pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
         let type_id = TypeId::of::<T>();
         self.extensions.iter().rev().any(|item| item.0 == type_id)
     }
 
-    /// Get a shared reference to a type previously inserted on this `Extensions` or any of the parents
+    /// Get a shared reference to the most recently insert item of type T
+    ///
+    /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
+    /// if you need the oldest item T use [`Self::first`]
     #[must_use]
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
@@ -98,16 +87,37 @@ impl Extensions {
             .iter()
             .rev()
             .find(|item| item.0 == type_id)
-            .map(|ext| &ext.1)
-            .and_then(|boxed| (**boxed).as_any().downcast_ref())
+            .and_then(|ext| (*ext.1).as_any().downcast_ref())
     }
-}
 
-impl fmt::Debug for Extensions {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Extensions")
-            .field("extensions", &self.extensions)
-            .finish()
+    /// Get a shared reference to the oldest inserted item of type T
+    ///
+    /// Note: [`Self::first`] will return the first added item T, in most cases this is not what you want,
+    /// instead use [`Self::get`] to get the most recently inserted item T
+    #[must_use]
+    pub fn first<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        let type_id = TypeId::of::<T>();
+        self.extensions
+            .iter()
+            .find(|item| item.0 == type_id)
+            .and_then(|ext| (*ext.1).as_any().downcast_ref())
+    }
+
+    /// Iterate over all the inserted items of type T
+    ///
+    /// Note: items are ordered from oldest to newest
+    pub fn iter<T: Send + Sync + 'static>(&self) -> impl Iterator<Item = &T> {
+        let type_id = TypeId::of::<T>();
+
+        // Note: unsafe downcast_ref_unchecked is not stabilized yet, so we have to use the safe version with unwrap
+        #[allow(
+            clippy::unwrap_used,
+            reason = "`downcast_ref` can only be none if TypeId doesn't match, but we already filter on that first"
+        )]
+        self.extensions
+            .iter()
+            .filter(move |item| item.0 == type_id)
+            .map(|ext| (*ext.1).as_any().downcast_ref().unwrap())
     }
 }
 
@@ -172,12 +182,6 @@ where
 pub trait ExtensionsMut: ExtensionsRef {
     /// Get mutable reference to the underlying [`Extensions`] store
     fn extensions_mut(&mut self) -> &mut Extensions;
-
-    // TODO once we have a proper solution to travel across boundaries this will be removed
-    // This will happen in the very near future so this api should not be used
-    fn take_extensions(&mut self) -> Extensions {
-        std::mem::take(self.extensions_mut())
-    }
 }
 
 impl ExtensionsMut for Extensions {
@@ -370,6 +374,31 @@ mod tests {
 
         assert_eq!(*ext.get::<String>().unwrap(), "second".to_owned());
         assert_eq!(*split.get::<String>().unwrap(), "split".to_owned());
+    }
+
+    #[test]
+    fn first_should_return_first_added_extension() {
+        let mut ext = Extensions::new();
+        ext.insert("first".to_owned());
+        ext.insert("second".to_owned());
+
+        assert_eq!(*ext.first::<String>().unwrap(), "first".to_owned());
+    }
+
+    #[test]
+    fn iter_should_work() {
+        let mut ext = Extensions::new();
+        ext.insert("first".to_owned());
+        ext.insert(4);
+        ext.insert(true);
+        ext.insert("second".to_owned());
+
+        let output: Vec<String> = ext.iter::<String>().cloned().collect();
+        assert_eq!(output[0], "first".to_owned());
+        assert_eq!(output[1], "second".to_owned());
+
+        let first_bool = ext.iter::<bool>().next().unwrap();
+        assert!(*first_bool);
     }
 
     #[test]

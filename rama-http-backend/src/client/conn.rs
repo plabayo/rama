@@ -2,7 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Layer, Service,
     error::{BoxError, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     inspect::RequestInspector,
     rt::Executor,
     stream::Stream,
@@ -90,10 +90,10 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { req, mut conn } =
+        let EstablishedClientConnection { req, conn } =
             self.inner.connect(req).await.map_err(Into::into)?;
 
-        let extensions = std::mem::take(conn.extensions_mut());
+        let extensions = conn.extensions().clone();
 
         let server_address = req
             .extensions()

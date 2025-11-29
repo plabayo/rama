@@ -4,9 +4,11 @@ use super::utils;
 
 use rama::{
     Service,
-    extensions::ExtensionsMut,
-    http::layer::required_header::AddRequiredRequestHeaders,
-    http::{Body, BodyExtractExt, Request, client::HttpConnector},
+    extensions::{ExtensionsMut, ExtensionsRef},
+    http::{
+        Body, BodyExtractExt, Request, client::HttpConnector,
+        layer::required_header::AddRequiredRequestHeaders,
+    },
     net::{
         client::{ConnectorService, EstablishedClientConnection},
         forwarded::{Forwarded, ForwardedElement},
@@ -57,14 +59,14 @@ async fn test_server_with_haproxy_v1() {
 
     let EstablishedClientConnection {
         mut req,
-        conn: mut http_service,
+        conn: http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a connection to the http server using haproxy v1");
 
     req.extensions_mut()
-        .extend(std::mem::take(http_service.extensions_mut()));
+        .extend(http_service.extensions().clone());
 
     let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(req)
@@ -96,14 +98,14 @@ async fn test_server_with_haproxy_v2() {
 
     let EstablishedClientConnection {
         mut req,
-        conn: mut http_service,
+        conn: http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a connection to the http server using haproxy v2");
 
     req.extensions_mut()
-        .extend(std::mem::take(http_service.extensions_mut()));
+        .extend(http_service.extensions().clone());
 
     let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(req)

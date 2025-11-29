@@ -267,7 +267,10 @@ impl UsernameLabelParser for PriorityUsernameLabelParser {
     }
 
     fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
-        ext.maybe_insert(self.priority);
+        if let Some(priority) = self.priority {
+            ext.insert(priority);
+        }
+
         Ok(())
     }
 }

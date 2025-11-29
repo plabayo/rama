@@ -144,9 +144,8 @@ where
     async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
 
-        let EstablishedClientConnection { mut req, mut conn } = self.connector.serve(req).await?;
-        req.extensions_mut()
-            .extend(std::mem::take(conn.extensions_mut()));
+        let EstablishedClientConnection { mut req, conn } = self.connector.serve(req).await?;
+        req.extensions_mut().extend(conn.extensions().clone());
         // NOTE: stack might change request version based on connector data,
         tracing::trace!(url.full = %uri, "send http req to connector stack");
 

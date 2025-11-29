@@ -870,7 +870,9 @@ mod tests {
                     .unwrap(),
             ),
         ] {
-            req.extensions_mut().maybe_insert(filter);
+            if let Some(filter) = filter {
+                req.extensions_mut().insert(filter);
+            }
 
             let maybe_proxy_address = service.serve(req).await.unwrap();
 
@@ -917,7 +919,9 @@ mod tests {
                     .body(Body::empty())
                     .unwrap();
 
-                req.extensions_mut().maybe_insert(filter.clone());
+                if let Some(filter) = filter.clone() {
+                    req.extensions_mut().insert(filter);
+                }
 
                 let proxy_address = service.serve(req).await.unwrap().address.to_string();
 
@@ -972,7 +976,9 @@ mod tests {
                     .body(Body::empty())
                     .unwrap();
 
-                req.extensions_mut().maybe_insert(filter.clone());
+                if let Some(filter) = filter.clone() {
+                    req.extensions_mut().insert(filter);
+                }
 
                 let proxy_address = service.serve(req).await.unwrap().address.to_string();
 
@@ -1052,7 +1058,9 @@ mod tests {
                     .unwrap(),
             ),
         ] {
-            req.extensions_mut().maybe_insert(filter.clone());
+            if let Some(filter) = filter.clone() {
+                req.extensions_mut().insert(filter);
+            }
 
             let proxy_address_result = service.serve(req).await;
             match expected_address {
@@ -1150,7 +1158,9 @@ mod tests {
                     .unwrap(),
             ),
         ] {
-            req.extensions_mut().maybe_insert(filter);
+            if let Some(filter) = filter {
+                req.extensions_mut().insert(filter);
+            }
 
             let proxy_result = service.serve(req).await;
             match expected {

@@ -348,7 +348,7 @@ where
             "socks5 server w/ destination {destination}: udp associate: try to bind incoming socket to destination {destination}",
         );
 
-        let extensions = std::mem::take(stream.extensions_mut());
+        let extensions = stream.extensions().clone();
 
         let HostWithPort {
             host: dest_host,
