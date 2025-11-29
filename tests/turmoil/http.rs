@@ -4,7 +4,7 @@ use rama::{
     Layer, Service,
     error::ErrorContext,
     http::{
-        Body, BodyExtractExt, Request, Version, client::EasyHttpWebClientBuilder,
+        Body, BodyExtractExt, Request, Version, client::EasyHttpWebClient,
         layer::trace::TraceLayer, server::HttpServer, service::web::WebService,
     },
     net::address::SocketAddress,
@@ -55,13 +55,13 @@ async fn start_server(
 
 async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std::error::Error>> {
     let client = TraceLayer::new_for_http().into_layer(
-        EasyHttpWebClientBuilder::default()
+        EasyHttpWebClient::connector_builder()
             .with_custom_transport_connector(TurmoilTcpConnector)
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
             .with_default_http_connector()
-            .build(),
+            .build_client(),
     );
 
     let resp = client

@@ -232,7 +232,7 @@ async fn test_https_echo() {
 
     // test default WS protocol
 
-    let client = EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
@@ -241,7 +241,7 @@ async fn test_https_echo() {
                 .with_server_verify_mode(ServerVerifyMode::Disable),
         )))
         .with_default_http_connector()
-        .build();
+        .build_client();
 
     let mut ws = client
         .websocket("wss://127.0.0.1:63103")

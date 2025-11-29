@@ -34,7 +34,7 @@ use rama::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             required_header::AddRequiredRequestHeadersLayer,
             trace::TraceLayer,
-            traffic_writer::{self, RequestWriterInspector},
+            traffic_writer::{self, RequestWriterLayer},
         },
         server::HttpServer,
     },
@@ -147,25 +147,25 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .cloned()
         .unwrap_or_default();
 
-    let client = EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(base_tls_config))
         .with_default_http_connector()
-        .with_svc_req_inspector((
+        .build_client()
+        .with_jit_layer(
             // these layers are for example purposes only,
             // best not to print requests like this in production...
             //
             // If you want to see the request that actually is send to the server
             // you also usually do not want it as a layer, but instead plug the inspector
             // directly JIT-style into your http (client) connector.
-            RequestWriterInspector::stdout_unbounded(
+            RequestWriterLayer::stdout_unbounded(
                 &executor,
                 Some(traffic_writer::WriterMode::Headers),
             ),
-        ))
-        .build();
+        );
 
     match client.serve(req).await {
         Ok(resp) => Ok(resp),
