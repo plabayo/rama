@@ -1,3 +1,5 @@
+use std::convert::Infallible;
+
 use rama::{
     Service,
     error::{ErrorContext as _, OpaqueError},
@@ -5,6 +7,7 @@ use rama::{
         Request, Response, StatusCode, body::util::BodyExt as _, convert::curl,
         service::web::response::IntoResponse as _,
     },
+    service::service_fn,
     ua::layer::emulate::UserAgentEmulateHttpRequestModifier,
 };
 
@@ -20,11 +23,13 @@ impl Service<Request> for CurlWriter {
     type Response = Response;
 
     async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let req = UserAgentEmulateHttpRequestModifier::new()
-            .serve(req)
-            .await
-            .map_err(OpaqueError::from_boxed)
-            .context("rama: (curl-writer) emulate UA")?;
+        let req = UserAgentEmulateHttpRequestModifier::new(service_fn(async |req: Request| {
+            Ok::<_, Infallible>(req)
+        }))
+        .serve(req)
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("rama: (curl-writer) emulate UA")?;
 
         let (parts, body) = req.into_parts();
         let payload = body

@@ -91,13 +91,13 @@ impl CertIssuerHttpClient {
             tls_config.set_server_verify_cert_store(Arc::new(store));
         }
 
-        let client = EasyHttpWebClient::builder()
+        let client = EasyHttpWebClient::connector_builder()
             .with_default_transport_connector()
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_boringssl(Some(Arc::new(tls_config)))
             .with_default_http_connector()
-            .build();
+            .build_client();
 
         let uri: Uri = uri_raw.parse().context("parse RAMA_TLS_REMOTE as URI")?;
         let mut client = if let Ok(auth_raw) = std::env::var("RAMA_TLS_REMOTE_AUTH") {

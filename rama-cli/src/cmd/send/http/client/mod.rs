@@ -27,7 +27,7 @@ use rama::{
     },
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
             UserAgentEmulateLayer, UserAgentSelectFallback,
         },
         profile::UserAgentDatabase,
@@ -174,7 +174,7 @@ fn new_inner_client(
     let proxy_connector =
         ProxyConnectorLayer::optional(Socks5ProxyConnectorLayer::required(), http_proxy_connector);
 
-    Ok(EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_custom_connector(layer_fn(logger_l4::TransportConnInfoLogger))
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config.into_shared_builder())
@@ -183,10 +183,6 @@ fn new_inner_client(
         .with_custom_connector(layer_fn(logger_tls::TlsInfoLogger))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector()
-        .with_svc_req_inspector((
-            UserAgentEmulateHttpRequestModifier::default(),
-            logger_headers_req::RequestHeaderLogger,
-        ))
         .with_custom_connector(
             if let Some(timeout) = cfg.connect_timeout
                 && timeout > 0.
@@ -196,7 +192,13 @@ fn new_inner_client(
                 TimeoutLayer::never()
             },
         )
-        .build())
+        .build_client()
+        .with_jit_layers((
+            UserAgentEmulateHttpRequestModifierLayer::default(),
+            logger_headers_req::RequestHeaderLoggerLayer::default(),
+        ));
+
+    Ok(client)
 }
 
 #[derive(Debug, Clone, Copy)]

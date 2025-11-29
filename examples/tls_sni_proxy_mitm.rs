@@ -168,7 +168,7 @@ async fn main() -> Result<(), BoxError> {
         .map_err(OpaqueError::from_boxed)
         .with_context(|| format!("bind tcp proxy to {INTERFACE}"))?;
 
-    let https_client = EasyHttpWebClient::builder()
+    let https_client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
@@ -184,7 +184,7 @@ async fn main() -> Result<(), BoxError> {
         // NOTE: up to you define if a pool is acceptable, and especially a global one...
         .with_connection_pool(Default::default())
         .context("build easy web client w/ pool")?
-        .build();
+        .build_client();
 
     let optional_dns_overwrite_layer_used_for_e2e_only =
         std::env::var("EXAMPLE_EGRESS_SERVER_ADDR")

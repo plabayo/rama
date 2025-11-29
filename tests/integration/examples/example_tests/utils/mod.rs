@@ -145,13 +145,13 @@ impl ExampleRunner {
                     .with_server_verify_mode(ServerVerifyMode::Disable)
                     .into_shared_builder();
 
-                EasyHttpWebClient::builder()
+                EasyHttpWebClient::connector_builder()
                     .with_default_transport_connector()
                     .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(Some(tls_config))
                     .with_default_http_connector()
-                    .build()
+                    .build_client()
             };
 
             #[cfg(all(feature = "rustls", not(feature = "boring")))]

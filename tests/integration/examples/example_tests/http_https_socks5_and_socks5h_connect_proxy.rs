@@ -101,13 +101,13 @@ async fn test_http_client_over_socks5_proxy_connect(
         .with_server_verify_mode(ServerVerifyMode::Disable)
         .into_shared_builder();
 
-    let client = EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
         .with_default_http_connector()
-        .build();
+        .build_client();
 
     let test_uris = [
         format!("http://{http_socket_addr}/ping"),

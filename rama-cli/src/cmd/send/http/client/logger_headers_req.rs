@@ -1,5 +1,5 @@
 use rama::{
-    Service,
+    Layer, Service,
     extensions::ExtensionsRef,
     http::{
         Request, Version,
@@ -10,19 +10,26 @@ use rama::{
     },
 };
 
-use std::convert::Infallible;
-
 use super::VerboseLogs;
 
 #[derive(Debug, Clone)]
-pub(super) struct RequestHeaderLogger;
+pub(super) struct RequestHeaderLoggerService<S> {
+    inner: S,
+}
 
-impl<ReqBody> Service<Request<ReqBody>> for RequestHeaderLogger
+impl<S> RequestHeaderLoggerService<S> {
+    pub(super) fn new(inner: S) -> Self {
+        Self { inner }
+    }
+}
+
+impl<S, ReqBody> Service<Request<ReqBody>> for RequestHeaderLoggerService<S>
 where
+    S: Service<Request<ReqBody>>,
     ReqBody: Send + 'static,
 {
-    type Error = Infallible;
-    type Response = Request<ReqBody>;
+    type Error = S::Error;
+    type Response = S::Response;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         if req.extensions().contains::<VerboseLogs>() {
@@ -107,6 +114,18 @@ where
             eprintln!(">");
         }
 
-        Ok(req)
+        self.inner.serve(req).await
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub(super) struct RequestHeaderLoggerLayer;
+
+impl<S> Layer<S> for RequestHeaderLoggerLayer {
+    type Service = RequestHeaderLoggerService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        RequestHeaderLoggerService::new(inner)
     }
 }

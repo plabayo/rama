@@ -43,7 +43,7 @@ fn init_default(default_directive: impl Into<Directive>) -> Result<(), BoxError>
 }
 
 fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxError> {
-    let svc = EasyHttpWebClient::builder()
+    let svc = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
@@ -51,7 +51,7 @@ fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxErr
         .with_default_http_connector()
         .with_connection_pool(HttpPooledConnectorConfig::default())
         .context("build http exporter client service")?
-        .build();
+        .build_client();
     let client = OtelExporter::new(svc);
 
     let exportor = SpanExporter::builder()
