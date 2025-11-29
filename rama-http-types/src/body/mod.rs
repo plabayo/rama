@@ -152,6 +152,16 @@ impl Body {
         Self::new(util::Limited::new(self.0, limit))
     }
 
+    /// Attach a headermap as trailer headers to this body.
+    ///
+    /// In case you want this is also available as `with_trailer`,
+    /// provided by a body extension which allows you to use
+    /// a [`Future`] with as output an option of a result of a headermap.
+    /// This method is a shortcut of that function.
+    pub fn with_trailer_headers(self, headers: crate::HeaderMap) -> Self {
+        Self::new(self.0.with_trailers(std::future::ready(Some(Ok(headers)))))
+    }
+
     /// Convert the body into a [`Stream`] of data frames.
     ///
     /// Non-data frames (such as trailers) will be discarded. Use [`http_body_util::BodyStream`] if
