@@ -195,7 +195,7 @@ fn new_inner_client(
             },
         )
         .build_client()
-        .with_jit_layers((
+        .with_jit_layer((
             UserAgentEmulateHttpRequestModifierLayer::default(),
             logger_headers_req::RequestHeaderLoggerLayer::default(),
         ));

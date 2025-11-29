@@ -140,14 +140,14 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
         }
     }
 
-    /// [`Layer`]s which will be applied just in time (JIT) before the request is send, but after
+    /// [`Layer`] which will be applied just in time (JIT) before the request is send, but after
     /// the connection has been established.
     ///
     /// Simplified flow of how the [`EasyHttpWebClient`] works:
     /// 1. External: let response = client.serve(request)
     /// 2. Internal: let http_connection = self.connector.serve(request)
     /// 3. Internal: let response = jit_layers.layer(http_connection).serve(request)
-    pub fn with_jit_layers<T>(self, jit_layers: T) -> EasyHttpWebClient<BodyIn, ConnResponse, T> {
+    pub fn with_jit_layer<T>(self, jit_layers: T) -> EasyHttpWebClient<BodyIn, ConnResponse, T> {
         EasyHttpWebClient {
             connector: self.connector,
             jit_layers,

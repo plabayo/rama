@@ -303,7 +303,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector()
         .build_client()
-        .with_jit_layers((
+        .with_jit_layer((
             UserAgentEmulateHttpRequestModifierLayer::default(),
             // these layers are for example purposes only,
             // best not to print requests like this in production...

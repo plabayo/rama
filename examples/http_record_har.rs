@@ -305,7 +305,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector()
         .build_client()
-        .with_jit_layers(UserAgentEmulateHttpRequestModifierLayer::default());
+        .with_jit_layer(UserAgentEmulateHttpRequestModifierLayer::default());
 
     let state = req.extensions().get::<State>().unwrap();
 
