@@ -2,6 +2,9 @@
 //!
 //! See [request] and [response] for more details.
 
+use rama_core::telemetry::tracing;
+use rama_http_headers::{Connection, HeaderMapExt};
+
 use crate::{HeaderMap, HeaderName, header};
 
 pub mod request;
@@ -34,6 +37,16 @@ fn remove_headers_by_exact_name(headers: &mut HeaderMap, name: &HeaderName) {
 }
 
 fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
+    while let Some(c) = headers.typed_get::<Connection>() {
+        for header in c.iter_headers() {
+            while headers.remove(header).is_some() {
+                tracing::trace!(
+                    "removed hop-by-hop request header listed in Connection header for name: {header}"
+                );
+            }
+        }
+        let _ = headers.remove(header::CONNECTION);
+    }
     for header in [
         &header::CONNECTION,
         &header::PROXY_CONNECTION,
@@ -53,11 +66,23 @@ fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
         &header::CLIENT_IP,
         &header::TRUE_CLIENT_IP,
     ] {
-        headers.remove(header);
+        while headers.remove(header).is_some() {
+            tracing::trace!("removed hop-by-hop request header for name: {header}");
+        }
     }
 }
 
 fn remove_hop_by_hop_response_headers(headers: &mut HeaderMap) {
+    while let Some(c) = headers.typed_get::<Connection>() {
+        for header in c.iter_headers() {
+            while headers.remove(header).is_some() {
+                tracing::trace!(
+                    "removed hop-by-hop response header listed in Connection header for name: {header}"
+                );
+            }
+        }
+        let _ = headers.remove(header::CONNECTION);
+    }
     for header in [
         &header::CONNECTION,
         &header::KEEP_ALIVE,
@@ -66,6 +91,8 @@ fn remove_hop_by_hop_response_headers(headers: &mut HeaderMap) {
         &header::TRANSFER_ENCODING,
         &header::UPGRADE,
     ] {
-        headers.remove(header);
+        while headers.remove(header).is_some() {
+            tracing::trace!("removed hop-by-hop response header for name: {header}");
+        }
     }
 }

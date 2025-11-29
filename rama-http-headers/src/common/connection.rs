@@ -1,4 +1,4 @@
-use rama_core::telemetry::tracing;
+use rama_core::{combinators::Either, telemetry::tracing};
 use rama_error::OpaqueError;
 use rama_http_types::{
     HeaderName, HeaderValue,
@@ -42,6 +42,15 @@ use crate::util::{
 /// ```
 #[derive(Clone, Debug)]
 pub struct Connection(Directive);
+
+impl Connection {
+    pub fn iter_headers(&self) -> impl Iterator<Item = &HeaderName> {
+        match &self.0 {
+            Directive::Close => Either::A(std::iter::empty()),
+            Directive::Open(non_empty_vec) => Either::B(non_empty_vec.iter()),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 enum Directive {
