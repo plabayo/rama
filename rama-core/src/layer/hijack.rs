@@ -58,26 +58,26 @@ impl<S, H, M> HijackService<S, H, M> {
     define_inner_service_accessors!();
 }
 
-impl<S, H, M, Request> Service<Request> for HijackService<S, H, M>
+impl<S, H, M, Input> Service<Input> for HijackService<S, H, M>
 where
-    S: Service<Request>,
-    H: Service<Request, Response: Into<S::Response>, Error: Into<S::Error>>,
-    M: Matcher<Request>,
-    Request: Send + ExtensionsMut + 'static,
+    S: Service<Input>,
+    H: Service<Input, Output: Into<S::Output>, Error: Into<S::Error>>,
+    M: Matcher<Input>,
+    Input: Send + ExtensionsMut + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
         let mut ext = Extensions::new();
-        if self.matcher.matches(Some(&mut ext), &req) {
-            req.extensions_mut().extend(ext);
-            match self.hijack.serve(req).await {
+        if self.matcher.matches(Some(&mut ext), &input) {
+            input.extensions_mut().extend(ext);
+            match self.hijack.serve(input).await {
                 Ok(response) => Ok(response.into()),
                 Err(err) => Err(err.into()),
             }
         } else {
-            self.inner.serve(req).await
+            self.inner.serve(input).await
         }
     }
 }

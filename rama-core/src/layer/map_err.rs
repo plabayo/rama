@@ -51,18 +51,18 @@ impl<S, F> MapErr<S, F> {
     define_inner_service_accessors!();
 }
 
-impl<S, F, Request, Error> Service<Request> for MapErr<S, F>
+impl<S, F, Input, Error> Service<Input> for MapErr<S, F>
 where
-    S: Service<Request>,
+    S: Service<Input>,
     F: Fn(S::Error) -> Error + Send + Sync + 'static,
-    Request: Send + 'static,
+    Input: Send + 'static,
     Error: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = Error;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        match self.inner.serve(req).await {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        match self.inner.serve(input).await {
             Ok(resp) => Ok(resp),
             Err(err) => Err((self.f)(err)),
         }

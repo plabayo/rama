@@ -55,18 +55,18 @@ impl<S> TraceErr<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, Request> Service<Request> for TraceErr<S>
+impl<S, Input> Service<Input> for TraceErr<S>
 where
-    Request: Send + 'static,
-    S: Service<Request, Error: std::fmt::Display + Send + Sync + 'static>,
+    Input: Send + 'static,
+    S: Service<Input, Error: std::fmt::Display + Send + Sync + 'static>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     #[inline]
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let level = self.level;
-        let res = self.inner.serve(req).await;
+        let res = self.inner.serve(input).await;
         if let Err(ref err) = res {
             match level {
                 tracing::Level::TRACE => tracing::trace!("rama service failed: {err}"),

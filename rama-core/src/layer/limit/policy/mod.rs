@@ -37,19 +37,19 @@ pub use concurrent::{ConcurrentCounter, ConcurrentPolicy, ConcurrentTracker, Lim
 mod matcher;
 
 /// The full result of a limit policy.
-pub struct PolicyResult<Request, Guard, Error> {
-    /// The input request
-    pub request: Request,
+pub struct PolicyResult<Input, Guard, Error> {
+    /// The input
+    pub input: Input,
     /// The output part of the limit policy.
     pub output: PolicyOutput<Guard, Error>,
 }
 
-impl<Request: fmt::Debug, Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug
-    for PolicyResult<Request, Guard, Error>
+impl<Input: fmt::Debug, Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug
+    for PolicyResult<Input, Guard, Error>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PolicyResult")
-            .field("request", &self.request)
+            .field("input", &self.input)
             .field("output", &self.output)
             .finish()
     }
@@ -57,13 +57,13 @@ impl<Request: fmt::Debug, Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug
 
 /// The output part of a limit policy.
 pub enum PolicyOutput<Guard, Error> {
-    /// The request is allowed to proceed,
+    /// The input is allowed to proceed,
     /// and the guard is returned to release the limit when it is dropped,
-    /// which should be done after the request is completed.
+    /// which should be done after the input is completed.
     Ready(Guard),
-    /// The request is not allowed to proceed, and should be aborted.
+    /// The input is not allowed to proceed, and should be aborted.
     Abort(Error),
-    /// The request is not allowed to proceed, but should be retried.
+    /// The input is not allowed to proceed, but should be retried.
     Retry,
 }
 
@@ -77,102 +77,102 @@ impl<Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug for PolicyOutput<Guar
     }
 }
 
-/// A limit [`Policy`] is used to determine whether a request is allowed to proceed,
+/// A limit [`Policy`] is used to determine whether a input is allowed to proceed,
 /// and if not, how to handle it.
-pub trait Policy<Request>: Send + Sync + 'static {
-    /// The guard type that is returned when the request is allowed to proceed.
+pub trait Policy<Input>: Send + Sync + 'static {
+    /// The guard type that is returned when the input is allowed to proceed.
     ///
     /// See [`PolicyOutput::Ready`].
     type Guard: Send + 'static;
-    /// The error type that is returned when the request is not allowed to proceed,
+    /// The error type that is returned when the input is not allowed to proceed,
     /// and should be aborted.
     ///
     /// See [`PolicyOutput::Abort`].
     type Error: Send + 'static;
 
-    /// Check whether the request is allowed to proceed.
+    /// Check whether the input is allowed to proceed.
     ///
-    /// Optionally modify the request before it is passed to the inner service,
-    /// which can be used to add metadata to the request regarding how the request
+    /// Optionally modify the input before it is passed to the inner service,
+    /// which can be used to add metadata to the input regarding how the input
     /// was handled by this limit policy.
     fn check(
         &self,
-        request: Request,
-    ) -> impl Future<Output = PolicyResult<Request, Self::Guard, Self::Error>> + Send + '_;
+        input: Input,
+    ) -> impl Future<Output = PolicyResult<Input, Self::Guard, Self::Error>> + Send + '_;
 }
 
-impl<Request, P> Policy<Request> for Option<P>
+impl<Input, P> Policy<Input> for Option<P>
 where
-    P: Policy<Request>,
-    Request: Send + 'static,
+    P: Policy<Input>,
+    Input: Send + 'static,
 {
     type Guard = Option<P::Guard>;
     type Error = P::Error;
 
-    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
+    async fn check(&self, input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         match self {
             Some(policy) => {
-                let result = policy.check(request).await;
+                let result = policy.check(input).await;
                 match result.output {
                     PolicyOutput::Ready(guard) => PolicyResult {
-                        request: result.request,
+                        input: result.input,
                         output: PolicyOutput::Ready(Some(guard)),
                     },
                     PolicyOutput::Abort(err) => PolicyResult {
-                        request: result.request,
+                        input: result.input,
                         output: PolicyOutput::Abort(err),
                     },
                     PolicyOutput::Retry => PolicyResult {
-                        request: result.request,
+                        input: result.input,
                         output: PolicyOutput::Retry,
                     },
                 }
             }
             None => PolicyResult {
-                request,
+                input,
                 output: PolicyOutput::Ready(None),
             },
         }
     }
 }
 
-impl<Request, P> Policy<Request> for &'static P
+impl<Input, P> Policy<Input> for &'static P
 where
-    P: Policy<Request>,
-    Request: Send + 'static,
+    P: Policy<Input>,
+    Input: Send + 'static,
 {
     type Guard = P::Guard;
     type Error = P::Error;
 
     #[inline(always)]
-    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
-        (**self).check(request).await
+    async fn check(&self, input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
+        (**self).check(input).await
     }
 }
 
-impl<Request, P> Policy<Request> for Arc<P>
+impl<Input, P> Policy<Input> for Arc<P>
 where
-    P: Policy<Request>,
-    Request: Send + 'static,
+    P: Policy<Input>,
+    Input: Send + 'static,
 {
     type Guard = P::Guard;
     type Error = P::Error;
 
-    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
-        self.as_ref().check(request).await
+    async fn check(&self, input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
+        self.as_ref().check(input).await
     }
 }
 
-impl<Request, P> Policy<Request> for Box<P>
+impl<Input, P> Policy<Input> for Box<P>
 where
-    P: Policy<Request>,
-    Request: Send + 'static,
+    P: Policy<Input>,
+    Input: Send + 'static,
 {
     type Guard = P::Guard;
     type Error = P::Error;
 
-    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
-        self.as_ref().check(request).await
+    async fn check(&self, input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
+        self.as_ref().check(input).await
     }
 }
 
@@ -189,16 +189,16 @@ impl UnlimitedPolicy {
     }
 }
 
-impl<Request> Policy<Request> for UnlimitedPolicy
+impl<Input> Policy<Input> for UnlimitedPolicy
 where
-    Request: Send + 'static,
+    Input: Send + 'static,
 {
     type Guard = ();
     type Error = Infallible;
 
-    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
+    async fn check(&self, input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         PolicyResult {
-            request,
+            input,
             output: PolicyOutput::Ready(()),
         }
     }
@@ -206,13 +206,13 @@ where
 
 macro_rules! impl_limit_policy_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, Request> Policy<Request> for crate::combinators::$id<$($param),+>
+        impl<$($param),+, Input> Policy<Input> for crate::combinators::$id<$($param),+>
         where
             $(
-                $param: Policy<Request>,
+                $param: Policy<Input>,
                 $param::Error: Into<BoxError>,
             )+
-            Request: Send + 'static,
+            Input: Send + 'static,
 
         {
             type Guard = crate::combinators::$id<$($param::Guard),+>;
@@ -220,23 +220,23 @@ macro_rules! impl_limit_policy_either {
 
             async fn check(
                 &self,
-                req: Request,
-            ) -> PolicyResult<Request, Self::Guard, Self::Error> {
+                req: Input,
+            ) -> PolicyResult<Input, Self::Guard, Self::Error> {
                 match self {
                     $(
                         crate::combinators::$id::$param(policy) => {
                             let result = policy.check(req).await;
                             match result.output {
                                 PolicyOutput::Ready(guard) => PolicyResult {
-                                    request: result.request,
+                                    input: result.input,
                                     output: PolicyOutput::Ready(crate::combinators::$id::$param(guard)),
                                 },
                                 PolicyOutput::Abort(err) => PolicyResult {
-                                    request: result.request,
+                                    input: result.input,
                                     output: PolicyOutput::Abort(err.into()),
                                 },
                                 PolicyOutput::Retry => PolicyResult {
-                                    request: result.request,
+                                    input: result.input,
                                     output: PolicyOutput::Retry,
                                 },
                             }

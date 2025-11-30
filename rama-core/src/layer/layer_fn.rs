@@ -90,16 +90,16 @@ mod tests {
             }
         }
 
-        impl<S, Request> Service<Request> for ToUpper<S>
+        impl<S, Input> Service<Input> for ToUpper<S>
         where
-            Request: Send + 'static,
-            S: Service<Request, Response = &'static str>,
+            Input: Send + 'static,
+            S: Service<Input, Output = &'static str>,
         {
-            type Response = String;
+            type Output = String;
             type Error = S::Error;
 
-            async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-                let res = self.0.serve(req).await;
+            async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+                let res = self.0.serve(input).await;
                 res.map(|msg| msg.to_uppercase())
             }
         }

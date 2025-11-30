@@ -5,35 +5,35 @@ use crate::{
 
 use super::{Policy, PolicyOutput, PolicyResult};
 
-impl<M, P, Request> Policy<Request> for Vec<(M, P)>
+impl<M, P, Input> Policy<Input> for Vec<(M, P)>
 where
-    M: Matcher<Request>,
-    P: Policy<Request>,
-    Request: Send + ExtensionsMut + 'static,
+    M: Matcher<Input>,
+    P: Policy<Input>,
+    Input: Send + ExtensionsMut + 'static,
 {
     type Guard = Option<P::Guard>;
     type Error = P::Error;
 
-    async fn check(&self, mut request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
+    async fn check(&self, mut input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         let mut ext = Extensions::new();
         for (matcher, policy) in self.iter() {
-            if matcher.matches(Some(&mut ext), &request) {
-                request.extensions_mut().extend(ext);
-                let result = policy.check(request).await;
+            if matcher.matches(Some(&mut ext), &input) {
+                input.extensions_mut().extend(ext);
+                let result = policy.check(input).await;
                 return match result.output {
                     PolicyOutput::Ready(guard) => {
                         let guard = Some(guard);
                         PolicyResult {
-                            request: result.request,
+                            input: result.input,
                             output: PolicyOutput::Ready(guard),
                         }
                     }
                     PolicyOutput::Abort(err) => PolicyResult {
-                        request: result.request,
+                        input: result.input,
                         output: PolicyOutput::Abort(err),
                     },
                     PolicyOutput::Retry => PolicyResult {
-                        request: result.request,
+                        input: result.input,
                         output: PolicyOutput::Retry,
                     },
                 };
@@ -41,32 +41,32 @@ where
             ext.clear();
         }
         PolicyResult {
-            request,
+            input,
             output: PolicyOutput::Ready(None),
         }
     }
 }
 
-impl<M, P, Request> Policy<Request> for (Vec<(M, P)>, P)
+impl<M, P, Input> Policy<Input> for (Vec<(M, P)>, P)
 where
-    M: Matcher<Request>,
-    P: Policy<Request>,
-    Request: Send + ExtensionsMut + 'static,
+    M: Matcher<Input>,
+    P: Policy<Input>,
+    Input: Send + ExtensionsMut + 'static,
 {
     type Guard = P::Guard;
     type Error = P::Error;
 
-    async fn check(&self, mut request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
+    async fn check(&self, mut input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         let (matchers, default_policy) = self;
         let mut ext = Extensions::new();
         for (matcher, policy) in matchers.iter() {
-            if matcher.matches(Some(&mut ext), &request) {
-                request.extensions_mut().extend(ext);
-                return policy.check(request).await;
+            if matcher.matches(Some(&mut ext), &input) {
+                input.extensions_mut().extend(ext);
+                return policy.check(input).await;
             }
             ext.clear();
         }
-        default_policy.check(request).await
+        default_policy.check(input).await
     }
 }
 
@@ -173,7 +173,7 @@ mod tests {
             assert_ready(policy.check(NumberedRequest::new(i * 2)).await);
         }
 
-        // only once we drop a guard can we make a new odd request
+        // only once we drop a guard can we make a new odd input
         drop(odd_guard_1);
         let _odd_guard_3 = assert_ready(policy.check(NumberedRequest::new(9)).await);
 
@@ -186,7 +186,7 @@ mod tests {
         // odd limit reached again so no luck here
         assert_abort(&policy.check(NumberedRequest::new(11)).await);
 
-        // dropping another odd guard makes room for a new odd request
+        // dropping another odd guard makes room for a new odd input
         drop(odd_guard_2);
         assert_ready(policy.check(NumberedRequest::new(13)).await);
 

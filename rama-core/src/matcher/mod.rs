@@ -1,5 +1,5 @@
-//! matcher utilities for any middleware where need to match
-//! on incoming requests within a given [`Context`]
+//! Matcher utilities for any middleware where need to match
+//! on incoming inputs/Inputs
 //!
 //! This module provides the [`Matcher`] trait and convenience utilities around it.
 //!
@@ -9,8 +9,6 @@
 //!   to combine and transform any kind of [`Matcher`].
 //! - And finally there is [`MatchFn`], easily created using [`match_fn`] to create a [`Matcher`]
 //!   from any compatible [`Fn`].
-//!
-//! [`Context`]: crate::Context
 
 use std::sync::Arc;
 
@@ -44,36 +42,36 @@ mod ext;
 #[doc(inline)]
 pub use ext::ExtensionMatcher;
 
-/// A condition to decide whether `Request` within the given [`Context`] matches for
+/// A condition to decide whether `Input` matches for
 /// router or other middleware purposes.
-pub trait Matcher<Request>: Send + Sync + 'static {
+pub trait Matcher<Input>: Send + Sync + 'static {
     /// returns true on a match, false otherwise
     ///
     /// `ext` is None in case the callee is not interested in collecting potential
     /// match metadata gathered during the matching process. An example of this
     /// path parameters for an http Uri matcher.
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool;
+    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool;
 
     /// Provide an alternative matcher to match if the current one does not match.
-    fn or<M>(self, other: M) -> impl Matcher<Request>
+    fn or<M>(self, other: M) -> impl Matcher<Input>
     where
         Self: Sized,
-        M: Matcher<Request>,
+        M: Matcher<Input>,
     {
         Or::new((self, other))
     }
 
     /// Add another condition to match on top of the current one.
-    fn and<M>(self, other: M) -> impl Matcher<Request>
+    fn and<M>(self, other: M) -> impl Matcher<Input>
     where
         Self: Sized,
-        M: Matcher<Request>,
+        M: Matcher<Input>,
     {
         And::new((self, other))
     }
 
     /// Negate the current condition.
-    fn not(self) -> impl Matcher<Request>
+    fn not(self) -> impl Matcher<Input>
     where
         Self: Sized,
     {
@@ -81,78 +79,77 @@ pub trait Matcher<Request>: Send + Sync + 'static {
     }
 }
 
-impl<Request, T> Matcher<Request> for Arc<T>
+impl<Input, T> Matcher<Input> for Arc<T>
 where
-    T: Matcher<Request>,
+    T: Matcher<Input>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
-        (**self).matches(ext, req)
+    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+        (**self).matches(ext, input)
     }
 }
 
-impl<Request, T> Matcher<Request> for &'static T
+impl<Input, T> Matcher<Input> for &'static T
 where
-    T: Matcher<Request>,
+    T: Matcher<Input>,
 {
     #[inline(always)]
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
-        (**self).matches(ext, req)
+    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+        (**self).matches(ext, input)
     }
 }
 
-impl<Request, T> Matcher<Request> for Option<T>
+impl<Input, T> Matcher<Input> for Option<T>
 where
-    T: Matcher<Request>,
+    T: Matcher<Input>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
         match self {
-            Some(inner) => inner.matches(ext, req),
+            Some(inner) => inner.matches(ext, input),
             None => false,
         }
     }
 }
 
-impl<Request, T> Matcher<Request> for Box<T>
+impl<Input, T> Matcher<Input> for Box<T>
 where
-    T: Matcher<Request>,
+    T: Matcher<Input>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
-        (**self).matches(ext, req)
+    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+        (**self).matches(ext, input)
     }
 }
 
-impl<Request> Matcher<Request> for Box<dyn Matcher<Request> + 'static>
+impl<Input> Matcher<Input> for Box<dyn Matcher<Input> + 'static>
 where
-    Request: Send + 'static,
+    Input: Send + 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
-        (**self).matches(ext, req)
+    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+        (**self).matches(ext, input)
     }
 }
 
-impl<Request> Matcher<Request> for bool {
-    fn matches(&self, _: Option<&mut Extensions>, _: &Request) -> bool {
+impl<Input> Matcher<Input> for bool {
+    fn matches(&self, _: Option<&mut Extensions>, _: &Input) -> bool {
         *self
     }
 }
 
 macro_rules! impl_matcher_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, Request> Matcher<Request> for crate::combinators::$id<$($param),+>
+        impl<$($param),+, Input> Matcher<Input> for crate::combinators::$id<$($param),+>
         where
-            $($param: Matcher<Request>),+,
-            Request: Send + 'static,
+            $($param: Matcher<Input>),+,
+            Input: Send + 'static,
 
         {
             fn matches(
                 &self,
                 ext: Option<&mut Extensions>,
-
-                req: &Request
+                input: &Input
             ) -> bool{
                 match self {
                     $(
-                        crate::combinators::$id::$param(layer) => layer.matches(ext, req),
+                        crate::combinators::$id::$param(layer) => layer.matches(ext, input),
                     )+
                 }
             }
@@ -183,36 +180,34 @@ macro_rules! impl_matcher_service_tuple {
         paste!{
             #[allow(non_camel_case_types)]
             #[allow(non_snake_case)]
-            impl<$([<M_ $T>], $T),+, S, Request, Response, Error> Service<Request> for MatcherRouter<($(([<M_ $T>], $T)),+, S)>
+            impl<$([<M_ $T>], $T),+, S, Input, Output, Error> Service<Input> for MatcherRouter<($(([<M_ $T>], $T)),+, S)>
             where
-
-                Request: Send + ExtensionsMut + 'static,
-                Response: Send + 'static,
+                Input: Send + ExtensionsMut + 'static,
+                Output: Send + 'static,
                 $(
-                    [<M_ $T>]: Matcher<Request>,
-                    $T: Service<Request, Response = Response, Error = Error>,
+                    [<M_ $T>]: Matcher<Input>,
+                    $T: Service<Input, Output = Output, Error = Error>,
                 )+
-                S: Service<Request, Response = Response, Error = Error>,
+                S: Service<Input, Output = Output, Error = Error>,
                 Error: Send + 'static,
             {
-                type Response = Response;
+                type Output = Output;
                 type Error = Error;
 
                 async fn serve(
                     &self,
-
-                    mut req: Request,
-                ) -> Result<Self::Response, Self::Error> {
+                    mut input: Input,
+                ) -> Result<Self::Output, Self::Error> {
                     let ($(([<M_ $T>], $T)),+, S) = &self.0;
                     let mut ext = Extensions::new();
                     $(
-                        if [<M_ $T>].matches(Some(&mut ext), &req) {
-                            req.extensions_mut().extend(ext);
-                            return $T.serve(req).await;
+                        if [<M_ $T>].matches(Some(&mut ext), &input) {
+                            input.extensions_mut().extend(ext);
+                            return $T.serve(input).await;
                         }
                         ext.clear();
                     )+
-                    S.serve(req).await
+                    S.serve(input).await
                 }
             }
         }

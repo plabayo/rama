@@ -32,12 +32,12 @@ where
     }
 }
 
-impl<Request, F, R, O, E> Factory<(Request,), R, O, E> for F
+impl<Input, F, R, O, E> Factory<(Input,), R, O, E> for F
 where
-    F: Fn(Request) -> R + Send + Sync + 'static,
+    F: Fn(Input) -> R + Send + Sync + 'static,
     R: Future<Output = Result<O, E>>,
 {
-    fn call(&self, (req,): (Request,)) -> R {
+    fn call(&self, (req,): (Input,)) -> R {
         (self)(req)
     }
 }
@@ -93,43 +93,44 @@ where
     }
 }
 
-impl<Request, F, T, R, O, E> Service<Request> for ServiceFn<F, T, R, O, E>
+impl<Input, F, T, R, O, E> Service<Input> for ServiceFn<F, T, R, O, E>
 where
     F: Factory<T, R, O, E>,
     R: Future<Output = Result<O, E>> + Send + 'static,
-    T: FromContextRequest<Request>,
+    T: sealed::FromInput<Input>,
     O: Send + 'static,
     E: Send + Sync + 'static,
 {
-    type Response = O;
+    type Output = O;
     type Error = E;
 
     fn serve(
         &self,
-
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let param = T::from_context_request(req);
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        let param = T::from_input(input);
         self.hnd.call(param)
     }
 }
 
-/// Convert a context+request into a parameter for the [`ServiceFn`] handler function.
-pub trait FromContextRequest<Request>: Send + 'static {
-    /// Convert a context+request into a parameter for the [`ServiceFn`] handler function.
-    fn from_context_request(req: Request) -> Self;
-}
+mod sealed {
+    /// Convert an Input into a parameter for the [`ServiceFn`] handler function.
+    pub trait FromInput<Input>: Send + 'static {
+        /// Convert an Input into a parameter for the [`ServiceFn`] handler function.
+        fn from_input(input: Input) -> Self;
+    }
 
-impl<Request> FromContextRequest<Request> for () {
-    fn from_context_request(_req: Request) -> Self {}
-}
+    impl<Input> FromInput<Input> for () {
+        fn from_input(_input: Input) -> Self {}
+    }
 
-impl<Request> FromContextRequest<Request> for (Request,)
-where
-    Request: Send + 'static,
-{
-    fn from_context_request(req: Request) -> Self {
-        (req,)
+    impl<Input> FromInput<Input> for (Input,)
+    where
+        Input: Send + 'static,
+    {
+        fn from_input(input: Input) -> Self {
+            (input,)
+        }
     }
 }
 
