@@ -1,8 +1,6 @@
 //! Rama's implementation of the Datastar SDK Test suite,
 //! used to verify if the rama datastar module is datastar-spec compliant.
 //!
-//! Learn more at <https://github.com/starfederation/datastar/tree/main/sdk/test>.
-//!
 //! ```sh
 //! cargo run --example http_sse_datastar_test_suite --features=http-full
 //! ```
@@ -11,6 +9,20 @@
 //!
 //! The server will start and listen on `:62036`.
 //! With this setup you can now run the test suite runners from the datastar repo.
+//!
+//! You can run all tests, assuming Go (the language) is installed
+//! on your machine as follows:
+//!
+//! ```sh
+//! go run \
+//!     github.com/starfederation/datastar/sdk/tests/cmd/datastar-sdk-tests@latest \
+//!     -server http://localhost:62036
+//! ```
+//!
+//! If all is well it will end with process exit code `0`
+//! and output the message "PASS".
+//!
+//! Learn more at <https://github.com/starfederation/datastar/tree/main/sdk/tests>.
 
 use rama::{
     Layer,
