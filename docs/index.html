@@ -67,37 +67,57 @@
 
     <main>
         <section class="hero">
-            <h2 id="hero" class="section-title"><a href="#hero">Get Started</a></h2>
-            <p>Rama is a powerful, modular service framework for Rust that helps you build proxies, servers, and clients
-                with full control over your network stack.</p>
+            <h2 id="hero" class="section-title"><a href="#hero">Build With Rama</a></h2>
+            <p>
+                Rama is a modular service framework for Rust that helps you build proxies, web servers, and HTTP clients
+                with full control over your network stack.
+            </p>
+            <p>
+                Use Rama as a Rust framework inside your own codebase, or run the Rama CLI as a standalone network tool
+                for inspection, scraping, debugging, and automation. If you need help designing, integrating, or operating
+                Rama based systems, we also offer professional services and service contracts.
+            </p>
             <div class="cta-buttons">
-                <a href="https://ramaproxy.org/book" class="btn btn-primary">Get Started</a>
+                <a href="https://ramaproxy.org/book" class="btn btn-primary">Read the Rama Book</a>
+                <a href="#installation" class="btn btn-secondary">Install and Try Rama</a>
                 <a href="https://github.com/plabayo/rama" class="btn btn-secondary">View on GitHub</a>
-                <a href="https://ramaproxy.org/book/faq.html" class="btn btn-secondary">FAQ</a>
-                <a href="https://github.com/plabayo/rama/tree/main/examples#rama-examples"
-                    class="btn btn-secondary">Examples</a>
+            </div>
+            <div class="cta-buttons">
+                <a href="https://github.com/plabayo/rama/tree/main/examples#rama-examples" class="btn btn-secondary">Examples</a>
                 <a href="#features-table" class="btn btn-secondary">Features</a>
+                <a href="#partnership" class="btn btn-secondary">Professional Services</a>
             </div>
         </section>
 
         <section class="modularity">
             <h2 id="modularity" class="section-title"><a href="#modularity">Built for Modularity</a></h2>
-            <p>Rama's architecture is built around the <a href="https://docs.rs/tower/latest/tower/">Tower</a>-like
-                service model, enabling services to be stacked, branched, and composed. This design allows for:</p>
+            <p>
+                Rama is built around a service model where services are fallible async methods that can be stacked,
+                branched, and composed. You can wire together transport, TLS, HTTP, proxy logic, and telemetry as a set of
+                reusable building blocks instead of a single large framework.
+            </p>
             <ul>
-                <li>Flexible middleware (Layers) and service composition</li>
-                <li>Custom service implementations using your preferred libraries</li>
-                <li>Easy integration with existing Rust ecosystem crates</li>
+                <li>Flexible middleware layers and service composition</li>
+                <li>Custom service implementations using your preferred Rust libraries or custom code</li>
+                <li>Easy integration with existing crates, tools, and infrastructure</li>
             </ul>
-            <p>Want to use <a href="https://docs.rs/curl/latest/curl/">curl</a> or <a
-                    href="https://docs.rs/hyper/latest/hyper/">hyper</a> for HTTP? Prefer <a
-                    href="https://www.openssl.org/">OpenSSL</a> or <a href="https://www.gnutls.org/">GnuTLS</a> for TLS?
-                Rama's modular design lets you build custom services while still benefiting from its core features.</p>
-            <p>Our built-in services are intentionally minimal, making them easy to extend or modify. The entire
-                codebase is open for you to use as inspiration, adapt, and build upon.</p>
+            <p>
+                You can keep using your existing HTTP or TLS stack, such as <a href="https://docs.rs/curl/latest/curl/">curl</a>
+                or <a href="https://www.openssl.org/">OpenSSL</a>, and attach Rama only where you need it. Or you can start from
+                the built in Rama services and swap out parts of the stack as your needs grow.
+            </p>
+            <p>
+                If you are a developer, you get a composable toolkit for building proxies, servers, and clients that fit your
+                codebase. If you are an organisation, you can treat Rama as a platform component and rely on our professional
+                services for design, integration, and long term maintenance.
+            </p>
+            <p>
+                Our built in services are intentionally minimal, which makes them easy to extend or modify. The entire codebase
+                is open for you to use as inspiration, adapt to your own environment, or harden for production workloads.
+            </p>
             <div class="modularity-cta">
                 <a href="https://ramaproxy.org/book/intro/services_all_the_way_down.html"
-                    class="btn btn-secondary">Learn More About Services</a>
+                   class="btn btn-secondary">Learn More About Services</a>
             </div>
         </section>
 
