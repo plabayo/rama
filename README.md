@@ -57,7 +57,11 @@ Whether you're intercepting traffic for security analysis, writing a web service
 emulating clients with custom user agents, hijacking connections for advanced testing, or building high-performance proxies, rama provides a clean and composable [Tokio](https://tokio.rs/)-native foundation to program network services in Rust.
 
 It's not just a toolkit—it's a mindset shift for how
-to design and operate dynamic, programmable network services
+to design and operate dynamic, programmable network services.
+
+Network protocols supported and implemented by rama allow you to build servers,
+clients and proxies.
+
 
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
@@ -73,8 +77,8 @@ Read further below or skip to one of the following chapters instead:
 - [Who is rama for](#who-is-rama-for)
 - [For organisations](#for-organisations)
 - [Experimental](#--experimental)
-- [Proxies and use cases](#-roxies-and-other-use-cases)
-- [rama binary](#--rama-binary)
+- [Proxies and other use cases](#-proxies-and-other-use-cases)
+- [rama binary](#rama-binary)
 - [rama ecosystem](#--rama-ecosystem)
   - [rama crates](#--rama-crates)
 - [Web Services](#--web-services)
@@ -84,7 +88,6 @@ Read further below or skip to one of the following chapters instead:
 - [Compatibility](#--compatibility)
   - [Minimum supported Rust version](#minimum-supported-rust-version)
 - [Roadmap](#--roadmap)
-- [Contributing](#--contributing)
 
 ## Who is rama for
 
@@ -115,7 +118,7 @@ middleware, services and stacks you'll build yourself:
 | ✅ Diagnostics | ✅ [curl export](https://ramaproxy.org/docs/rama/http/convert/curl/index.html) ⸱ ✅ [HAR](https://ramaproxy.org/docs/rama/http/layer/har/index.html) |
 | ✅ upstream [proxies](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [MemoryProxyDB](https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html) ⸱ ✅ [Username Config](https://ramaproxy.org/docs/rama/username/index.html) ⸱ ✅ [Proxy Filters](https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html) |
 | ✅ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ✅ [Http Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.HttpProfile.html) ⸱ ✅ [Tls Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.TlsProfile.html) ⸱ ✅ [UA Parsing](https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html) |
-| ✅ [Fingerprinting](https://ramaproxy.org/docs/rama/net/fingerprint/index.html) | ✅ [Ja3](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja3.html) ⸱ ✅ [Ja4](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4.html) ⸱ ✅ [Ja4H](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4H.html) ⸱ 🏗️ [Akamai passive h2](https://github.com/plabayo/rama/issues/517) <sup>(1)</sup> ⸱ ✅ [Peetprint (tls)](https://ramaproxy.org/docs/rama/net/fingerprint/struct.PeetPrint.html) |
+| ✅ [Fingerprinting](https://ramaproxy.org/docs/rama/net/fingerprint/index.html) | ✅ [Ja3](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja3.html) ⸱ ✅ [Ja4](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4.html) ⸱ ✅ [Ja4H](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4H.html) ⸱ ✅ [Akamai passive h2](https://ramaproxy.org/docs/rama/net/fingerprint/struct.AkamaiH2.html) ⸱ ✅ [Peetprint (tls)](https://ramaproxy.org/docs/rama/net/fingerprint/struct.PeetPrint.html) |
 | ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ ✅ [Connection Pooling](https://ramaproxy.org/docs/rama/net/client/pool/index.html) ⸱ ✅ [Tower Adapter](https://ramaproxy.org/docs/rama/utils/tower/index.html) ⸱ 🏗️ IP2Loc <sup>(1)</sup> |
 | 🏗️ Graphical Interface | 🏗️ traffic logger <sup>(3)</sup> ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) <sup>(3)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(3)</sup> ⸱ ✅ http client ⸱ ❌ WASM Plugins <sup>(3)</sup> |
@@ -228,7 +231,7 @@ Next to proxies, rama can also be used to develop [Web Services](#--web-services
 > rama also has a public channel on the official Discord of the tokio project.
 > Feel free to join us there instead or as well: <https://discord.com/channels/500028886025895936/1349098858831024209>
 
-## ⌨️ | rama binary
+## rama binary
 
 The `rama` binary allows you to use a lot of what `rama` has to offer without
 having to code yourself. It comes with a working http client for CLI, which emulates
@@ -316,7 +319,9 @@ Repositories that we maintain and are re exported by the root `rama` crate:
 ## 🌐 | Web Services
 
 > [!TIP]
-> See all HTTP(S) server examples at <https://github.com/plabayo/rama/tree/main/examples#http-servers-and-services>.
+> See all HTTP(S) server examples at:
+>
+> <https://github.com/plabayo/rama/tree/main/examples#http-servers-and-services>
 >
 > On that README you also find other kind of server examples listed.
 
@@ -345,6 +350,8 @@ Even when building proxies a (local/private) web service can often still be usef
 > [!TIP]
 > 📖 Learn more about developing web services
 > in the rama book: <https://ramaproxy.org/book/web_servers.html>.
+
+Next to https clients you can use any other protocol supported by Rama as a client.
 
 ### Datastar
 
