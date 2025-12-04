@@ -44,6 +44,7 @@ smallvec = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-test = { workspace = true }
 want = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }

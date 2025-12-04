@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 /// HTTP2 Ping usage
 ///
 /// These HTTP2 pings are for two purposes:
@@ -20,7 +21,7 @@
 ///    3d. If bdp is over 2/3 max, set new max to bdp and update windows.
 use std::fmt;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{self, Poll};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -186,7 +187,7 @@ impl Recorder {
             return;
         };
 
-        let mut locked = shared.lock().unwrap();
+        let mut locked = shared.lock();
 
         locked.update_last_read_at();
 
@@ -218,7 +219,7 @@ impl Recorder {
             return;
         };
 
-        let mut locked = shared.lock().unwrap();
+        let mut locked = shared.lock();
 
         locked.update_last_read_at();
     }
@@ -235,7 +236,7 @@ impl Recorder {
 
     pub(super) fn ensure_not_timed_out(&self) -> crate::Result<()> {
         if let Some(ref shared) = self.shared {
-            let locked = shared.lock().unwrap();
+            let locked = shared.lock();
             if locked.is_keep_alive_timed_out {
                 return Err(KeepAliveTimedOut.crate_error());
             }
@@ -251,7 +252,7 @@ impl Recorder {
 impl Ponger {
     pub(super) fn poll(&mut self, cx: &mut task::Context<'_>) -> Poll<Ponged> {
         let now = Instant::now();
-        let mut locked = self.shared.lock().unwrap();
+        let mut locked = self.shared.lock();
         let is_idle = self.is_idle();
 
         if let Some(ref mut ka) = self.keep_alive {

@@ -606,7 +606,7 @@ where
             }
             None => {
                 tracing::trace!("codec closed");
-                self.streams.recv_eof(false).expect("mutex poisoned");
+                self.streams.recv_eof(false);
                 return Ok(ReceivedFrame::Done);
             }
         }

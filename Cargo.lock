@@ -2656,6 +2656,7 @@ dependencies = [
  "httpdate",
  "indexmap",
  "itoa",
+ "parking_lot",
  "pin-project-lite",
  "quickcheck",
  "rama-core",
