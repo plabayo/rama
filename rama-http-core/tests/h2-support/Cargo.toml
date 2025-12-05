@@ -11,6 +11,7 @@ rama-core = { workspace = true }
 rama-http-core = { workspace = true, features = ["unstable"] }
 rama-http-types = { workspace = true }
 rama-utils = { workspace = true }
+parking_lot = { workspace = true }
 
 tokio = { workspace = true, features = ["time"] }
 tokio-test = { workspace = true }
