@@ -139,7 +139,7 @@ impl Settings {
             let frame = frame::Settings::ack();
 
             // Buffer the settings frame
-            dst.buffer(frame.into()).expect("invalid settings frame");
+            dst.buffer(frame.into())?;
 
             tracing::trace!("ACK sent; applying settings");
 
@@ -163,8 +163,7 @@ impl Settings {
                 }
 
                 // Buffer the settings frame
-                dst.buffer(settings.clone().into())
-                    .expect("invalid settings frame");
+                dst.buffer(settings.clone().into())?;
                 tracing::trace!("local settings sent; waiting for ack: {:?}", settings);
 
                 self.local = Local::WaitingAck(settings.clone());

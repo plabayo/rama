@@ -23,9 +23,9 @@ const UNCLAIMED_DENOMINATOR: i32 = 2;
 #[test]
 #[allow(clippy::assertions_on_constants)]
 fn sanity_unclaimed_ratio() {
-    assert!(UNCLAIMED_NUMERATOR < UNCLAIMED_DENOMINATOR);
-    assert!(UNCLAIMED_NUMERATOR >= 0);
-    assert!(UNCLAIMED_DENOMINATOR > 0);
+    debug_assert!(UNCLAIMED_NUMERATOR < UNCLAIMED_DENOMINATOR);
+    debug_assert!(UNCLAIMED_NUMERATOR >= 0);
+    debug_assert!(UNCLAIMED_DENOMINATOR > 0);
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -186,7 +186,7 @@ impl FlowControl {
         // If send size is zero it's meaningless to update flow control window
         if sz > 0 {
             // Ensure that the argument is correct
-            assert!(self.window_size.0 >= sz as i32);
+            debug_assert!(self.window_size.0 >= sz as i32);
 
             // Update values
             self.window_size.decrease_by(sz)?;
@@ -212,7 +212,7 @@ impl Window {
     }
 
     pub fn checked_size(self) -> WindowSize {
-        assert!(self.0 >= 0, "negative Window");
+        debug_assert!(self.0 >= 0, "negative Window");
         self.0 as WindowSize
     }
 

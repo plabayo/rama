@@ -203,8 +203,14 @@ where
 
         // We start as H2 and switch to H1 as soon as we don't have the preface.
         while buf.filled().len() < H2_PREFACE.len() {
+            let Some(io) = this.io.as_mut() else {
+                return Poll::Ready(Err(std::io::Error::other(OpaqueError::from_display(
+                    "unexpected error: ReadVersion(..., >IO<) already taken in earlier Poll::ready, cannot read from it, report bug in rama repo",
+                ))));
+            };
+
             let len = buf.filled().len();
-            ready!(Pin::new(this.io.as_mut().unwrap()).poll_read(cx, &mut buf))?;
+            ready!(Pin::new(io).poll_read(cx, &mut buf))?;
             *this.filled = buf.filled().len();
 
             // We starts as H2 and switch to H1 when we don't get the preface.
@@ -216,7 +222,12 @@ where
             }
         }
 
-        let io = this.io.take().unwrap();
+        let Some(io) = this.io.take() else {
+            return Poll::Ready(Err(std::io::Error::other(OpaqueError::from_display(
+                "unexpected error: ReadVersion(..., >IO<) already taken in earlier Poll::ready, cannot take it again, report bug in rama repo",
+            ))));
+        };
+
         let buf = buf.filled().to_vec();
         Poll::Ready(Ok((
             *this.version,
@@ -346,7 +357,11 @@ where
                     service,
                 } => {
                     let (version, io) = ready!(read_version.poll(cx))?;
-                    let service = service.take().unwrap();
+                    let Some(service) = service.take() else {
+                        return Poll::Ready(Err(OpaqueError::from_display(
+                            "unexpected error: auto http svc in connection already taken, report bug in rama repo",
+                        ).into_boxed()));
+                    };
                     match version {
                         Version::H1 => {
                             let conn = builder.http1.serve_connection(io, service);
@@ -472,7 +487,11 @@ where
                     service,
                 } => {
                     let (version, io) = ready!(read_version.poll(cx))?;
-                    let service = service.take().unwrap();
+                    let Some(service) = service.take() else {
+                        return Poll::Ready(Err(OpaqueError::from_display(
+                            "unexpected error: auto http svc in upgradeable connection already taken, report bug in rama repo",
+                        ).into_boxed()));
+                    };
                     match version {
                         Version::H1 => {
                             let conn = builder.http1.serve_connection(io, service).with_upgrades();

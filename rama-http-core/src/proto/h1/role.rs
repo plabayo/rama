@@ -130,15 +130,18 @@ impl Http1Transaction for Server {
             let bytes = buf.as_ref();
             match req.parse_with_uninit_headers(bytes, &mut headers) {
                 Ok(httparse::Status::Complete(parsed_len)) => {
-                    trace!("Request.parse Complete({})", parsed_len);
+                    trace!("Request.parse Complete({parsed_len})");
                     len = parsed_len;
-                    let uri = req.path.unwrap();
+                    let Some(uri) = req.path else {
+                        return Err(Parse::Uri);
+                    };
                     if uri.len() > MAX_URI_LEN {
                         return Err(Parse::UriTooLong);
                     }
-                    method = Method::from_bytes(req.method.unwrap().as_bytes())?;
+                    method =
+                        Method::from_bytes(req.method.map(|m| m.as_bytes()).unwrap_or_default())?;
                     path_range = Self::record_path_range(bytes, uri);
-                    version = if req.version.unwrap() == 1 {
+                    version = if req.version == Some(1) {
                         keep_alive = true;
                         is_http_11 = true;
                         Version::HTTP_11
@@ -275,10 +278,12 @@ impl Http1Transaction for Server {
             return Err(Parse::transfer_encoding_invalid());
         }
 
-        let mut extensions = ctx
-            .extensions
-            .take()
-            .expect("extensions should always be set in ParseContext");
+        let mut extensions = ctx.extensions.take().unwrap_or_else(|| {
+            warn!(
+                "extensions should always be set in ParseContext: was None: use default instead..."
+            );
+            Default::default()
+        });
 
         let headers = headers.consume(&mut extensions);
 
@@ -847,19 +852,20 @@ impl Http1Transaction for Client {
                 ) {
                     Ok(httparse::Status::Complete(len)) => {
                         trace!("Response.parse Complete({})", len);
-                        let status = StatusCode::from_u16(res.code.unwrap())?;
+                        let status = StatusCode::from_u16(res.code.unwrap_or(u16::MAX))?;
 
                         let reason = {
-                            let reason = res.reason.unwrap();
                             // Only save the reason phrase if it isn't the canonical reason
-                            if Some(reason) != status.canonical_reason() {
+                            if let Some(reason) = res.reason
+                                && Some(reason) != status.canonical_reason()
+                            {
                                 Some(Bytes::copy_from_slice(reason.as_bytes()))
                             } else {
                                 None
                             }
                         };
 
-                        let version = if res.version.unwrap() == 1 {
+                        let version = if res.version == Some(1) {
                             Version::HTTP_11
                         } else {
                             Version::HTTP_10
@@ -928,7 +934,10 @@ impl Http1Transaction for Client {
                 .extensions
                 .as_ref()
                 .cloned()
-                .expect("extensions should always be set in ParseContext");
+                .unwrap_or_else(|| {
+                    warn!("extensions should always be set in ParseContext but it was missing; falling back to default; report bug in rama");
+                    Default::default()
+                });
 
             // TODO remove but maybe needed for backwards comp for now...
             let req_ext = RequestExtensions::from(extensions.clone());

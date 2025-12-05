@@ -3,7 +3,7 @@ use crate::h2::Reason;
 use super::*;
 
 use rama_core::extensions::Extensions;
-use rama_core::telemetry::tracing;
+use rama_core::telemetry::tracing::{self, warn};
 use std::fmt;
 use std::task::{Context, Waker};
 use std::time::Instant;
@@ -198,27 +198,37 @@ pub(super) struct NextOpen;
 pub(super) struct NextResetExpire;
 
 impl Stream {
-    pub(super) fn new(
+    pub(super) fn try_new(
         id: StreamId,
         init_send_window: WindowSize,
         init_recv_window: WindowSize,
         extensions: Extensions,
-    ) -> Self {
+    ) -> Result<Self, Reason> {
         let mut send_flow = FlowControl::new();
         let mut recv_flow = FlowControl::new();
 
-        recv_flow
-            .inc_window(init_recv_window)
-            .expect("invalid initial receive window");
-        // TODO: proper error handling?
-        let _res = recv_flow.assign_capacity(init_recv_window);
-        debug_assert!(_res.is_ok());
+        if let Err(reason) = recv_flow.inc_window(init_recv_window) {
+            warn!(
+                "h2 new stream creation: recv flow: invalid initail recv window size: reason = {reason}; library go away"
+            );
+            return Err(reason);
+        }
 
-        send_flow
-            .inc_window(init_send_window)
-            .expect("invalid initial send window size");
+        if let Err(reason) = recv_flow.assign_capacity(init_recv_window) {
+            warn!(
+                "h2 new stream creation: recv flow: assign initial capacity: reason = {reason}; library go away"
+            );
+            return Err(reason);
+        }
 
-        Self {
+        if let Err(reason) = send_flow.inc_window(init_send_window) {
+            warn!(
+                "h2 new stream creation: send flow: invalid initial send window size: reason = {reason}; library go away"
+            );
+            return Err(reason);
+        }
+
+        Ok(Self {
             id,
             state: State::default(),
             extensions,
@@ -255,18 +265,18 @@ impl Stream {
             push_task: None,
             pending_push_promises: store::Queue::new(),
             content_length: ContentLength::Omitted,
-        }
+        })
     }
 
     /// Increment the stream's ref count
     pub(super) fn ref_inc(&mut self) {
-        assert!(self.ref_count < usize::MAX);
+        debug_assert!(self.ref_count < usize::MAX);
         self.ref_count += 1;
     }
 
     /// Decrements the stream's ref count
     pub(super) fn ref_dec(&mut self) {
-        assert!(self.ref_count > 0);
+        debug_assert!(self.ref_count > 0);
         self.ref_count -= 1;
     }
 

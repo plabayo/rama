@@ -169,10 +169,23 @@ where
     ///
     /// This errors if the underlying connection protocol is not HTTP/1.
     pub fn without_shutdown(self) -> impl Future<Output = crate::Result<Parts<I, S>>> {
-        let mut zelf = Some(self);
+        let mut this = Some(self);
         std::future::poll_fn(move |cx| {
-            ready!(zelf.as_mut().unwrap().conn.poll_without_shutdown(cx))?;
-            Poll::Ready(Ok(zelf.take().unwrap().into_parts()))
+            if let Some(Self { mut conn }) = this.take() {
+                match conn.poll_without_shutdown(cx) {
+                    Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+                    Poll::Ready(Ok(())) => Poll::Ready(Ok(Self { conn }.into_parts())),
+                    Poll::Pending => {
+                        this = Some(Self { conn });
+                        Poll::Pending
+                    }
+                }
+            } else {
+                Poll::Ready(Err(
+                    crate::Error::new_parse_internal().with_display(
+                        "h1 server connection w/o shutdown: poll: inner connection already taken: poll after ready?",
+                    )))
+            }
         })
     }
 
@@ -485,7 +498,13 @@ where
             match ready!(Pin::new(&mut conn.conn).poll(cx)) {
                 Ok(proto::Dispatched::Shutdown) => Poll::Ready(Ok(())),
                 Ok(proto::Dispatched::Upgrade(pending)) => {
-                    let (io, buf, _) = self.inner.take().unwrap().conn.into_inner();
+                    let Some(Connection { conn }) = self.inner.take() else {
+                        return Poll::Ready(Err(
+                            crate::Error::new_parse_internal().with_display(
+                                "h1 server upgradeable connection: dispatch upgrade: inner connection already taken",
+                            )));
+                    };
+                    let (io, buf, _) = conn.into_inner();
                     pending.fulfill(Upgraded::new(io, buf));
                     Poll::Ready(Ok(()))
                 }

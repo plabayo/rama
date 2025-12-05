@@ -1,7 +1,7 @@
 use super::recv::RecvHeaderBlockError;
 use super::store::{self, Entry, Resolve, Store};
 use super::{Buffer, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
-use crate::h2::codec::{Codec, SendError, UserError};
+use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
@@ -124,14 +124,17 @@ where
     B: Buf,
     P: Peer,
 {
-    pub(crate) fn new(config: Config, extensions: Extensions) -> Self {
+    pub(crate) fn try_new(
+        config: Config,
+        extensions: Extensions,
+    ) -> Result<Self, crate::h2::proto::Error> {
         let peer = P::r#dyn();
 
-        Self {
-            inner: Inner::new(peer, config, extensions),
+        Ok(Self {
+            inner: Inner::try_new(peer, config, extensions)?,
             send_buffer: Arc::new(SendBuffer::new()),
             _p: ::std::marker::PhantomData,
-        }
+        })
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -186,9 +189,7 @@ where
         let mut me = self.inner.lock();
         let me = &mut *me;
 
-        if let Err(err) = ready!(me.actions.recv.send_pending_refusal(cx, dst)) {
-            return Poll::Ready(Err(err.into()));
-        }
+        ready!(me.actions.recv.send_pending_refusal(cx, dst))?;
 
         let next_stream_id = me.actions.send.peek_next_id();
         match me.early_frame_ctx.replay_next_frame(next_stream_id) {
@@ -224,7 +225,7 @@ where
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
     {
@@ -284,7 +285,7 @@ where
         mut request: Request<()>,
         end_of_stream: bool,
         pending: Option<&OpaqueStreamRef>,
-    ) -> Result<(StreamRef<B>, bool), SendError> {
+    ) -> Result<(StreamRef<B>, bool), crate::h2::Error> {
         use super::stream::ContentLength;
         use rama_http_types::Method;
 
@@ -343,12 +344,13 @@ where
             None,
         )?;
 
-        let mut stream = Stream::new(
+        let mut stream = Stream::try_new(
             stream_id,
             me.actions.send.init_window_sz(),
             me.actions.recv.init_window_sz(),
             extensions,
-        );
+        )
+        .map_err(Error::library_go_away)?;
 
         if is_content_length_head {
             stream.content_length = ContentLength::Head;
@@ -498,13 +500,17 @@ impl<B> DynStreams<'_, B> {
 }
 
 impl Inner {
-    fn new(peer: peer::Dyn, config: Config, extensions: Extensions) -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self {
+    fn try_new(
+        peer: peer::Dyn,
+        config: Config,
+        extensions: Extensions,
+    ) -> Result<Arc<Mutex<Self>>, crate::h2::proto::Error> {
+        Ok(Arc::new(Mutex::new(Self {
             counts: Counts::new(peer, &config),
             extensions,
             actions: Actions {
-                recv: Recv::new(peer, &config),
-                send: Send::new(&config),
+                recv: Recv::try_new(peer, &config)?,
+                send: Send::try_new(&config)?,
                 task: None,
                 conn_error: None,
             },
@@ -512,7 +518,7 @@ impl Inner {
             refs: 1,
             headers_pseudo_order: config.headers_pseudo_order,
             early_frame_ctx: config.early_frame_ctx,
-        }))
+        })))
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -557,12 +563,13 @@ impl Inner {
 
                 match self.actions.recv.open(id, Open::Headers, &self.counts)? {
                     Some(stream_id) => {
-                        let stream = Stream::new(
+                        let stream = Stream::try_new(
                             stream_id,
                             self.actions.send.init_window_sz(),
                             self.actions.recv.init_window_sz(),
                             self.extensions.clone(),
-                        );
+                        )
+                        .map_err(Error::library_go_away)?;
 
                         e.insert(stream)
                     }
@@ -658,7 +665,7 @@ impl Inner {
                 let sz = frame.payload().len();
                 // This should have been enforced at the codec::FramedRead layer, so
                 // this is just a sanity check.
-                assert!(sz <= super::MAX_WINDOW_SIZE as usize);
+                debug_assert!(sz <= super::MAX_WINDOW_SIZE as usize);
                 let sz = sz as WindowSize;
 
                 self.actions.recv.ignore_data(sz)?;
@@ -730,7 +737,7 @@ impl Inner {
         self.counts.transition(stream, |counts, stream| {
             actions.recv.recv_reset(frame, stream, counts)?;
             actions.send.handle_error(send_buffer, stream, counts);
-            assert!(stream.state.is_closed());
+            debug_assert!(stream.state.is_closed());
             Ok(())
         })
     }
@@ -894,12 +901,13 @@ impl Inner {
         let child_key: Option<store::Key> = {
             // Create state for the stream
             let stream = self.store.insert(promised_id, {
-                Stream::new(
+                Stream::try_new(
                     promised_id,
                     self.actions.send.init_window_sz(),
                     self.actions.recv.init_window_sz(),
                     self.extensions.clone(),
                 )
+                .map_err(Error::library_go_away)?
             });
 
             let actions = &mut self.actions;
@@ -967,7 +975,7 @@ impl Inner {
         send_buffer: &SendBuffer<B>,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -1032,15 +1040,22 @@ impl Inner {
                     self.actions.recv.maybe_reset_next_stream_id(id);
                 }
 
-                let stream = Stream::new(id, 0, 0, self.extensions.clone());
-
-                e.insert(stream)
+                match Stream::try_new(id, 0, 0, self.extensions.clone()) {
+                    Ok(stream) => e.insert(stream),
+                    Err(reason) => {
+                        return Err(crate::h2::proto::error::GoAway {
+                            debug_data: Default::default(),
+                            reason,
+                        });
+                    }
+                }
             }
         };
 
         let stream = self.store.resolve(key);
         let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
+
         self.actions.send_reset(
             stream,
             reason,
@@ -1271,7 +1286,7 @@ impl<B> StreamRef<B> {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub(crate) fn send_push_promise(&mut self, request: Request<()>) -> Result<Self, UserError> {
+    pub(crate) fn send_push_promise(&mut self, request: Request<()>) -> Result<Self, Error> {
         // We need to keep extensions around so they are dropped after our locks or we risk deadlocking
         let _extensions_ref = request.extensions().clone();
 
@@ -1287,12 +1302,13 @@ impl<B> StreamRef<B> {
         let child_key = {
             let mut child_stream = me.store.insert(
                 promised_id,
-                Stream::new(
+                Stream::try_new(
                     promised_id,
                     actions.send.init_window_sz(),
                     actions.recv.init_window_sz(),
                     me.extensions.clone(),
-                ),
+                )
+                .map_err(Error::library_go_away)?,
             );
             child_stream.state.reserve_local()?;
             child_stream.is_pending_push = true;
@@ -1314,7 +1330,7 @@ impl<B> StreamRef<B> {
             let mut child_stream = me.store.resolve(child_key);
             child_stream.unlink();
             child_stream.remove();
-            return Err(err);
+            return Err(err.into());
         }
 
         me.refs += 1;
@@ -1680,7 +1696,7 @@ impl Actions {
                 } else {
                     tracing::warn!(
                         "locally-reset streams reached limit ({:?})",
-                        counts.max_local_error_resets().unwrap(),
+                        counts.max_local_error_resets(),
                     );
                     return Err(crate::h2::proto::error::GoAway {
                         reason: Reason::ENHANCE_YOUR_CALM,
@@ -1728,7 +1744,7 @@ impl Actions {
             } else {
                 tracing::warn!(
                     "reset_on_recv_stream_err; locally-reset streams reached limit ({:?})",
-                    counts.max_local_error_resets().unwrap(),
+                    counts.max_local_error_resets(),
                 );
                 Err(Error::library_go_away_data(
                     Reason::ENHANCE_YOUR_CALM,

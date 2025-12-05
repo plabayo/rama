@@ -1,10 +1,11 @@
+use std::mem::ManuallyDrop;
 use std::pin::Pin;
 use std::sync::atomic::{self, AtomicBool};
 use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
-use rama_core::telemetry::tracing::trace;
+use rama_core::telemetry::tracing::{self, trace};
 use rama_http_types::{Request, Response, StreamingBody};
 use tokio::sync::{mpsc, oneshot};
 
@@ -95,9 +96,9 @@ impl<T, U> Sender<T, U> {
         }
         let (tx, rx) = oneshot::channel();
         self.inner
-            .send(Envelope(Some((val, Callback::Retry(Some(tx))))))
+            .send(Envelope::new(val, Callback::retry(tx)))
             .map(move |_| rx)
-            .map_err(|mut e| (e.0).0.take().expect("envelope not dropped").0)
+            .map_err(|mpsc::error::SendError(env)| env.into_value())
     }
 
     pub(crate) fn send(&self, val: T) -> Result<Promise<U>, T> {
@@ -106,9 +107,9 @@ impl<T, U> Sender<T, U> {
         }
         let (tx, rx) = oneshot::channel();
         self.inner
-            .send(Envelope(Some((val, Callback::NoRetry(Some(tx))))))
+            .send(Envelope::new(val, Callback::no_retry(tx)))
             .map(move |_| rx)
-            .map_err(|mut e| (e.0).0.take().expect("envelope not dropped").0)
+            .map_err(|mpsc::error::SendError(env)| env.into_value())
     }
 
     pub(crate) fn unbound(self) -> UnboundedSender<T, U> {
@@ -132,17 +133,17 @@ impl<T, U> UnboundedSender<T, U> {
     pub(crate) fn try_send(&mut self, val: T) -> Result<RetryPromise<T, U>, T> {
         let (tx, rx) = oneshot::channel();
         self.inner
-            .send(Envelope(Some((val, Callback::Retry(Some(tx))))))
+            .send(Envelope::new(val, Callback::retry(tx)))
             .map(move |_| rx)
-            .map_err(|mut e| (e.0).0.take().expect("envelope not dropped").0)
+            .map_err(|mpsc::error::SendError(env)| env.into_value())
     }
 
     pub(crate) fn send(&self, val: T) -> Result<Promise<U>, T> {
         let (tx, rx) = oneshot::channel();
         self.inner
-            .send(Envelope(Some((val, Callback::NoRetry(Some(tx))))))
+            .send(Envelope::new(val, Callback::no_retry(tx)))
             .map(move |_| rx)
-            .map_err(|mut e| (e.0).0.take().expect("envelope not dropped").0)
+            .map_err(|mpsc::error::SendError(env)| env.into_value())
     }
 }
 
@@ -163,9 +164,7 @@ pub(crate) struct Receiver<T, U> {
 impl<T, U> Receiver<T, U> {
     pub(crate) fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<(T, Callback<T, U>)>> {
         match self.inner.poll_recv(cx) {
-            Poll::Ready(item) => {
-                Poll::Ready(item.map(|mut env| env.0.take().expect("envelope not dropped")))
-            }
+            Poll::Ready(item) => Poll::Ready(item.map(|env| env.into_inner())),
             Poll::Pending => {
                 self.taker.want();
                 Poll::Pending
@@ -180,7 +179,7 @@ impl<T, U> Receiver<T, U> {
 
     pub(crate) fn try_recv(&mut self) -> Option<(T, Callback<T, U>)> {
         match rama_core::rt::future::now_or_never(self.inner.recv()) {
-            Some(Some(mut env)) => env.0.take(),
+            Some(Some(env)) => Some(env.into_inner()),
             _ => None,
         }
     }
@@ -194,11 +193,38 @@ impl<T, U> Drop for Receiver<T, U> {
     }
 }
 
-struct Envelope<T, U>(Option<(T, Callback<T, U>)>);
+struct Envelope<T, U> {
+    data: ManuallyDrop<(T, Callback<T, U>)>,
+    used: bool,
+}
+
+impl<T, U> Envelope<T, U> {
+    fn new(val: T, cb: Callback<T, U>) -> Self {
+        Self {
+            data: ManuallyDrop::new((val, cb)),
+            used: false,
+        }
+    }
+
+    #[inline(always)]
+    fn into_inner(mut self) -> (T, Callback<T, U>) {
+        debug_assert!(!self.used, "SAFETY: not used used at this point");
+        self.used = true;
+        unsafe { ManuallyDrop::take(&mut self.data) }
+    }
+
+    #[inline(always)]
+    fn into_value(self) -> T {
+        self.into_inner().0
+    }
+}
 
 impl<T, U> Drop for Envelope<T, U> {
     fn drop(&mut self) {
-        if let Some((val, cb)) = self.0.take() {
+        if !self.used {
+            // SAFETY: only if consumed it will be used,
+            // otherwise not taken yet and we can do so now
+            let (val, cb) = unsafe { ManuallyDrop::take(&mut self.data) };
             cb.send(Err(TrySendError {
                 error: crate::Error::new_canceled().with("connection closed"),
                 message: Some(val),
@@ -207,28 +233,41 @@ impl<T, U> Drop for Envelope<T, U> {
     }
 }
 
-pub(crate) enum Callback<T, U> {
-    #[allow(unused)]
-    Retry(Option<oneshot::Sender<Result<U, TrySendError<T>>>>),
-    NoRetry(Option<oneshot::Sender<Result<U, crate::Error>>>),
+pub(crate) struct Callback<T, U> {
+    cb: ManuallyDrop<InnerCallback<T, U>>,
+    used: bool,
+}
+
+impl<T, U> Callback<T, U> {
+    pub(crate) fn retry(tx: oneshot::Sender<Result<U, TrySendError<T>>>) -> Self {
+        Self {
+            cb: ManuallyDrop::new(InnerCallback::Retry(tx)),
+            used: false,
+        }
+    }
+
+    pub(crate) fn no_retry(tx: oneshot::Sender<Result<U, crate::Error>>) -> Self {
+        Self {
+            cb: ManuallyDrop::new(InnerCallback::NoRetry(tx)),
+            used: false,
+        }
+    }
+}
+
+pub(crate) enum InnerCallback<T, U> {
+    Retry(oneshot::Sender<Result<U, TrySendError<T>>>),
+    NoRetry(oneshot::Sender<Result<U, crate::Error>>),
 }
 
 impl<T, U> Drop for Callback<T, U> {
     fn drop(&mut self) {
-        match self {
-            Self::Retry(tx) => {
-                if let Some(tx) = tx.take() {
-                    let _ = tx.send(Err(TrySendError {
-                        error: dispatch_gone(),
-                        message: None,
-                    }));
-                }
-            }
-            Self::NoRetry(tx) => {
-                if let Some(tx) = tx.take() {
-                    let _ = tx.send(Err(dispatch_gone()));
-                }
-            }
+        if !self.used {
+            // SAFETY: guaranteed by API to be not yet used
+            let cb = unsafe { ManuallyDrop::take(&mut self.cb) };
+            cb.send(Err(TrySendError {
+                error: dispatch_gone(),
+                message: None,
+            }));
         }
     }
 }
@@ -245,28 +284,40 @@ fn dispatch_gone() -> crate::Error {
 
 impl<T, U> Callback<T, U> {
     pub(crate) fn is_canceled(&self) -> bool {
-        match *self {
-            Self::Retry(Some(ref tx)) => tx.is_closed(),
-            Self::NoRetry(Some(ref tx)) => tx.is_closed(),
-            Self::NoRetry(_) | Self::Retry(_) => unreachable!(),
+        match &*self.cb {
+            InnerCallback::Retry(tx) => tx.is_closed(),
+            InnerCallback::NoRetry(tx) => tx.is_closed(),
         }
     }
 
     pub(crate) fn poll_canceled(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        match *self {
-            Self::Retry(Some(ref mut tx)) => tx.poll_closed(cx),
-            Self::NoRetry(Some(ref mut tx)) => tx.poll_closed(cx),
-            Self::NoRetry(_) | Self::Retry(_) => unreachable!(),
+        match &mut *self.cb {
+            InnerCallback::Retry(tx) => tx.poll_closed(cx),
+            InnerCallback::NoRetry(tx) => tx.poll_closed(cx),
         }
     }
 
+    #[inline(always)]
     pub(crate) fn send(mut self, val: Result<U, TrySendError<T>>) {
+        debug_assert!(!self.used, "SAFETY: not used used at this point");
+        self.used = true;
+        let cb = unsafe { ManuallyDrop::take(&mut self.cb) };
+        cb.send(val);
+    }
+}
+
+impl<T, U> InnerCallback<T, U> {
+    fn send(self, val: Result<U, TrySendError<T>>) {
         match self {
-            Self::Retry(ref mut tx) => {
-                let _ = tx.take().unwrap().send(val);
+            Self::Retry(tx) => {
+                if tx.send(val).is_err() {
+                    tracing::debug!("client dispatch Callback::Retry: failed to send");
+                }
             }
-            Self::NoRetry(ref mut tx) => {
-                let _ = tx.take().unwrap().send(val.map_err(|e| e.error));
+            Self::NoRetry(tx) => {
+                if tx.send(val.map_err(|e| e.error)).is_err() {
+                    tracing::debug!("client dispatch Callback::NoRetry: failed to send");
+                }
             }
         }
     }
@@ -315,7 +366,12 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
 
-        let mut call_back = this.call_back.take().expect("polled after complete");
+        let Some(mut call_back) = this.call_back.take() else {
+            tracing::warn!(
+                "client::SendWhen: polled after complete: please report bug in rama repo"
+            );
+            return Poll::Ready(());
+        };
 
         match Pin::new(&mut this.when).poll(cx) {
             Poll::Ready(Ok(res)) => {
