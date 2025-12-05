@@ -7,6 +7,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+parking_lot = { workspace = true }
 rama-core = { workspace = true }
 rama-http-core = { workspace = true, features = ["unstable"] }
 rama-http-types = { workspace = true }

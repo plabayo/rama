@@ -61,7 +61,6 @@ fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
             "Connection header illegal in HTTP/2: {}",
             CONNECTION.as_str()
         );
-        let header_contents = header.to_str().unwrap();
 
         // A `Connection` header may have a comma-separated list of names of other headers that
         // are meant for only this specific connection.
@@ -69,9 +68,19 @@ fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
         // Iterate these names and remove them as headers. Connection-specific headers are
         // forbidden in HTTP2, as that information has been moved into frame types of the h2
         // protocol.
-        for name in header_contents.split(',') {
-            let name = name.trim();
-            headers.remove(name);
+        for name in header.as_bytes().split(|b| b == &b',') {
+            match std::str::from_utf8(name.trim_ascii()) {
+                Ok(name_str) => {
+                    if headers.remove(name_str).is_some() {
+                        debug!(
+                            "removed header {name_str} as it was mentioned in connection header"
+                        );
+                    }
+                }
+                Err(err) => {
+                    debug!("ignore non-utf8 header '{name:x?}' in conn header value: {err}")
+                }
+            }
         }
     }
 }
@@ -147,37 +156,43 @@ where
 
             match ready!(me.stream.as_mut().poll_frame(cx)) {
                 Some(Ok(frame)) => {
-                    if frame.is_data() {
-                        let chunk = frame.into_data().unwrap_or_else(|_| unreachable!());
-                        let is_eos = me.stream.is_end_stream();
-                        trace!(
-                            "send body chunk: {} bytes, eos={}",
-                            chunk.remaining(),
-                            is_eos,
-                        );
+                    // NOTE: should we ever fork http crate we can make a more convenient API here,
+                    // or perhaps we can try to first fix it upstream...
+                    match frame.into_data() {
+                        Ok(chunk) => {
+                            let is_eos = me.stream.is_end_stream();
+                            trace!(
+                                "send body chunk: {} bytes, eos={}",
+                                chunk.remaining(),
+                                is_eos,
+                            );
 
-                        let buf = SendBuf::Buf(chunk);
-                        me.body_tx
-                            .send_data(buf, is_eos)
-                            .map_err(crate::Error::new_body_write)?;
+                            let buf = SendBuf::Buf(chunk);
+                            me.body_tx
+                                .send_data(buf, is_eos)
+                                .map_err(crate::Error::new_body_write)?;
 
-                        if is_eos {
-                            return Poll::Ready(Ok(()));
+                            if is_eos {
+                                return Poll::Ready(Ok(()));
+                            }
                         }
-                    } else if frame.is_trailers() {
-                        // no more DATA, so give any capacity back
-                        me.body_tx.reserve_capacity(0);
-                        me.body_tx
-                            .send_trailers(
-                                frame.into_trailers().unwrap_or_else(|_| unreachable!()),
-                                // TODO: support trailer order...
-                                OriginalHttp1Headers::new(),
-                            )
-                            .map_err(crate::Error::new_body_write)?;
-                        return Poll::Ready(Ok(()));
-                    } else {
-                        trace!("discarding unknown frame");
-                        // loop again
+                        Err(frame) => match frame.into_trailers() {
+                            Ok(trailers) => {
+                                // no more DATA, so give any capacity back
+                                me.body_tx.reserve_capacity(0);
+                                me.body_tx
+                                    .send_trailers(
+                                        trailers,
+                                        // TODO: support trailer order...
+                                        OriginalHttp1Headers::new(),
+                                    )
+                                    .map_err(crate::Error::new_body_write)?;
+                                return Poll::Ready(Ok(()));
+                            }
+                            Err(_) => {
+                                trace!("discarding unknown frame");
+                            }
+                        },
                     }
                 }
                 Some(Err(e)) => return Poll::Ready(Err(me.body_tx.on_user_err(e))),
@@ -375,12 +390,9 @@ where
     }
 }
 
+#[inline(always)]
 fn h2_to_io_error(e: crate::h2::Error) -> std::io::Error {
-    if e.is_io() {
-        e.into_io().unwrap()
-    } else {
-        std::io::Error::other(e)
-    }
+    e.force_into_io()
 }
 
 struct UpgradedSendStream<B>(SendStream<SendBuf<Neutered<B>>>);

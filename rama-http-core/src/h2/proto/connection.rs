@@ -108,7 +108,10 @@ where
     P: Peer,
     B: Buf,
 {
-    pub(crate) fn new(mut codec: Codec<T, Prioritized<B>>, config: Config) -> Self {
+    pub(crate) fn try_new(
+        mut codec: Codec<T, Prioritized<B>>,
+        config: Config,
+    ) -> Result<Self, crate::h2::proto::Error> {
         fn streams_config(config: &Config) -> streams::Config {
             streams::Config {
                 initial_max_send_streams: config.initial_max_send_streams,
@@ -142,11 +145,11 @@ where
         }
         // Transfer ownership of extensions to Streams as at this point our connection is esthablished
         // and we only need these extensions as parents for our inner Stream's
-        let streams = Streams::new(
+        let streams = Streams::try_new(
             streams_config(&config),
             std::mem::take(codec.extensions_mut()),
-        );
-        Self {
+        )?;
+        Ok(Self {
             codec,
             inner: ConnectionInner {
                 state: State::Open,
@@ -158,7 +161,7 @@ where
                 span: tracing::debug_span!("Connection", peer = %P::NAME),
                 _phantom: PhantomData,
             },
-        }
+        })
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -239,7 +242,7 @@ where
     ///
     /// This will return `Some(reason)` if the connection should be closed
     /// afterwards. If this is a graceful shutdown, this returns `None`.
-    fn poll_go_away(&mut self, cx: &mut Context) -> Poll<Option<io::Result<Reason>>> {
+    fn poll_go_away(&mut self, cx: &mut Context) -> Poll<Option<Result<Reason, Error>>> {
         self.inner.go_away.send_pending_go_away(cx, &mut self.codec)
     }
 
@@ -606,7 +609,7 @@ where
             }
             None => {
                 tracing::trace!("codec closed");
-                self.streams.recv_eof(false).expect("mutex poisoned");
+                self.streams.recv_eof(false);
                 return Ok(ReceivedFrame::Done);
             }
         }
@@ -672,6 +675,6 @@ where
 {
     fn drop(&mut self) {
         // Ignore errors as this indicates that the mutex is poisoned.
-        let _ = self.inner.streams.recv_eof(true);
+        self.inner.streams.recv_eof(true);
     }
 }

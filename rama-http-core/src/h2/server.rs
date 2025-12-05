@@ -124,6 +124,7 @@ use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsMut};
+use rama_core::telemetry::tracing::warn;
 use rama_core::telemetry::tracing::{
     self,
     instrument::{Instrument, Instrumented},
@@ -135,7 +136,7 @@ use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
 };
 use rama_http_types::proto::h2::{PseudoHeaderOrder, ext};
-use rama_http_types::{HeaderMap, Method, Request, Response};
+use rama_http_types::{HeaderMap, Method, Request, Response, Version, uri};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -407,9 +408,11 @@ where
         }
 
         // Send initial settings frame.
-        codec
-            .buffer(builder.settings.clone().into())
-            .expect("invalid SETTINGS frame");
+        if let Err(err) = codec.buffer(builder.settings.clone().into()) {
+            warn!(
+                "h2 server: invalid SETTINGS frame: failed to buffer: {err}; continue regardless (report bug in rama)"
+            );
+        }
 
         // Create the handshake future.
         let state =
@@ -1335,11 +1338,23 @@ where
     type Output = Result<Codec<T, B>, crate::h2::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Flush the codec
-        ready!(self.codec.as_mut().unwrap().flush(cx)).map_err(crate::h2::Error::from_io)?;
-
-        // Return the codec
-        Poll::Ready(Ok(self.codec.take().unwrap()))
+        if let Some(mut codec) = self.codec.take() {
+            match codec.flush(cx) {
+                Poll::Ready(Ok(())) => Poll::Ready(Ok(codec)),
+                Poll::Ready(Err(err)) => Poll::Ready(Err(crate::h2::Error::from_io(err))),
+                Poll::Pending => {
+                    self.codec = Some(codec);
+                    Poll::Pending
+                }
+            }
+        } else {
+            warn!(
+                "h2 server: Flush: codec no longer available: future polled after ready, report bug in rama repo"
+            );
+            Poll::Ready(Err(crate::h2::Error::from(
+                crate::h2::UserError::PollAfterReady,
+            )))
+        }
     }
 }
 
@@ -1349,10 +1364,6 @@ impl<T, B: Buf> ReadPreface<T, B> {
             codec: Some(codec),
             pos: 0,
         }
-    }
-
-    fn inner_mut(&mut self) -> &mut T {
-        self.codec.as_mut().unwrap().get_mut()
     }
 }
 
@@ -1369,7 +1380,17 @@ where
 
         while rem > 0 {
             let mut buf = ReadBuf::new(&mut buf[..rem]);
-            ready!(Pin::new(self.inner_mut()).poll_read(cx, &mut buf))
+
+            let Some(inner) = self.codec.as_mut() else {
+                warn!(
+                    "h2 server: ReadPreface: poll read: codec no longer available: future polled after ready, report bug in rama repo"
+                );
+                return Poll::Ready(Err(crate::h2::Error::from(
+                    crate::h2::UserError::PollAfterReady,
+                )));
+            };
+
+            ready!(Pin::new(inner.get_mut()).poll_read(cx, &mut buf))
                 .map_err(crate::h2::Error::from_io)?;
             let n = buf.filled().len();
             if n == 0 {
@@ -1389,7 +1410,14 @@ where
             rem -= n; // TODO test
         }
 
-        Poll::Ready(Ok(self.codec.take().unwrap()))
+        Poll::Ready(if let Some(codec) = self.codec.take() {
+            Ok(codec)
+        } else {
+            warn!(
+                "h2 server: ReadPreface: codec no longer available: future polled after ready, report bug in rama repo"
+            );
+            Err(crate::h2::Error::from(crate::h2::UserError::PollAfterReady))
+        })
     }
 }
 
@@ -1432,7 +1460,7 @@ where
 
                     self.state = Handshaking::Done;
 
-                    let connection = proto::Connection::new(
+                    let connection = proto::Connection::try_new(
                         codec,
                         Config {
                             next_stream_id: 2.into(),
@@ -1449,7 +1477,7 @@ where
                             headers_pseudo_order: None,
                             early_frame_ctx: EarlyFrameStreamContext::new_recorder(),
                         },
-                    );
+                    )?;
 
                     tracing::trace!("connection established!");
                     let mut c = Connection { connection };
@@ -1598,10 +1626,7 @@ impl proto::Peer for Peer {
         stream_id: StreamId,
         extensions: Extensions,
     ) -> Result<Self::Poll, Error> {
-        use rama_http_types::{Version, uri};
-
-        let mut b = Request::builder();
-        *b.extensions_mut().unwrap() = extensions;
+        let mut b = Request::builder_with_extensions(extensions);
 
         macro_rules! malformed {
             ($($arg:tt)*) => {{
@@ -1620,15 +1645,17 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: missing method");
         }
 
-        let has_protocol = pseudo.protocol.is_some();
-        if has_protocol {
+        let has_protocol = if let Some(protocol) = pseudo.protocol {
             if is_connect {
                 // Assert that we have the right type.
-                b = b.extension::<ext::Protocol>(pseudo.protocol.unwrap());
+                b = b.extension::<ext::Protocol>(protocol);
             } else {
                 malformed!("malformed headers: :protocol on non-CONNECT request");
             }
-        }
+            true
+        } else {
+            false
+        };
 
         if pseudo.status.is_some() {
             malformed!("malformed headers: :status field on request");

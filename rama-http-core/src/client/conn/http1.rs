@@ -91,10 +91,22 @@ where
     /// Prevent shutdown of the underlying IO object at the end of service the request,
     /// instead run `into_parts`. This is a convenience wrapper over `poll_without_shutdown`.
     pub async fn without_shutdown(self) -> crate::Result<Parts<T>> {
-        let mut conn = Some(self);
+        let mut this = Some(self);
         std::future::poll_fn(move |cx| -> Poll<crate::Result<Parts<T>>> {
-            ready!(conn.as_mut().unwrap().poll_without_shutdown(cx))?;
-            Poll::Ready(Ok(conn.take().unwrap().into_parts()))
+            if let Some(mut conn) = this.take() {
+                match conn.poll_without_shutdown(cx) {
+                    Poll::Ready(result) => Poll::Ready(result.map(|_| conn.into_parts())),
+                    Poll::Pending => {
+                        this = Some(conn);
+                        Poll::Pending
+                    }
+                }
+            } else {
+                Poll::Ready(Err(
+                    crate::Error::new_parse_internal().with_display(
+                        "h1 client connection w/o shutdown: poll: inner connection already taken: poll after ready?",
+                    )))
+            }
         })
         .await
     }
@@ -572,14 +584,27 @@ mod upgrades {
         type Output = crate::Result<()>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            match ready!(Pin::new(&mut self.inner.as_mut().unwrap().inner).poll(cx)) {
-                Ok(proto::Dispatched::Shutdown) => Poll::Ready(Ok(())),
-                Ok(proto::Dispatched::Upgrade(pending)) => {
-                    let Parts { io, read_buf } = self.inner.take().unwrap().into_parts();
-                    pending.fulfill(Upgraded::new(io, read_buf));
-                    Poll::Ready(Ok(()))
+            if let Some(mut inner) = self.inner.take() {
+                match Pin::new(&mut inner.inner).poll(cx) {
+                    Poll::Ready(result) => Poll::Ready(match result {
+                        Ok(proto::Dispatched::Shutdown) => Ok(()),
+                        Ok(proto::Dispatched::Upgrade(pending)) => {
+                            let Parts { io, read_buf } = inner.into_parts();
+                            pending.fulfill(Upgraded::new(io, read_buf));
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }),
+                    Poll::Pending => {
+                        self.inner = Some(inner);
+                        Poll::Pending
+                    }
                 }
-                Err(e) => Poll::Ready(Err(e)),
+            } else {
+                Poll::Ready(Err(
+                    crate::Error::new_parse_internal().with_display(
+                        "h1 client upgradeable connection: poll: inner connection already taken: poll after ready?",
+                    )))
             }
         }
     }

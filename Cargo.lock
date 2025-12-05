@@ -1225,6 +1225,7 @@ dependencies = [
 name = "h2-support"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "rama-core",
  "rama-http-core",
  "rama-http-types",
@@ -2398,6 +2399,7 @@ dependencies = [
  "itertools 0.14.0",
  "itoa",
  "opentelemetry-otlp",
+ "parking_lot",
  "pin-project-lite",
  "rama-core",
  "rama-crypto",
@@ -2656,6 +2658,7 @@ dependencies = [
  "httpdate",
  "indexmap",
  "itoa",
+ "parking_lot",
  "pin-project-lite",
  "quickcheck",
  "rama-core",

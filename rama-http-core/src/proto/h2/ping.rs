@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 /// HTTP2 Ping usage
 ///
 /// These HTTP2 pings are for two purposes:
@@ -20,12 +21,12 @@
 ///    3d. If bdp is over 2/3 max, set new max to bdp and update windows.
 use std::fmt;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{self, Poll};
 use std::time::Duration;
 use tokio::time::Instant;
 
-use rama_core::telemetry::tracing::{debug, trace};
+use rama_core::telemetry::tracing::{debug, trace, warn};
 
 use crate::h2::{Ping, PingPong};
 
@@ -186,7 +187,7 @@ impl Recorder {
             return;
         };
 
-        let mut locked = shared.lock().unwrap();
+        let mut locked = shared.lock();
 
         locked.update_last_read_at();
 
@@ -218,7 +219,7 @@ impl Recorder {
             return;
         };
 
-        let mut locked = shared.lock().unwrap();
+        let mut locked = shared.lock();
 
         locked.update_last_read_at();
     }
@@ -235,7 +236,7 @@ impl Recorder {
 
     pub(super) fn ensure_not_timed_out(&self) -> crate::Result<()> {
         if let Some(ref shared) = self.shared {
-            let locked = shared.lock().unwrap();
+            let locked = shared.lock();
             if locked.is_keep_alive_timed_out {
                 return Err(KeepAliveTimedOut.crate_error());
             }
@@ -251,7 +252,7 @@ impl Recorder {
 impl Ponger {
     pub(super) fn poll(&mut self, cx: &mut task::Context<'_>) -> Poll<Ponged> {
         let now = Instant::now();
-        let mut locked = self.shared.lock().unwrap();
+        let mut locked = self.shared.lock();
         let is_idle = self.is_idle();
 
         if let Some(ref mut ka) = self.keep_alive {
@@ -268,8 +269,11 @@ impl Ponger {
             Poll::Ready(Ok(_pong)) => {
                 let start = locked
                     .ping_sent_at
-                    .expect("pong received implies ping_sent_at");
-                locked.ping_sent_at = None;
+                    .take()
+                    .unwrap_or_else(|| {
+                        warn!("pong received implies ping_sent_at: but value is missing, fall back to now...");
+                        now
+                    });
                 let rtt = now - start;
                 trace!("recv pong");
 
@@ -280,8 +284,10 @@ impl Ponger {
                 }
 
                 if let Some(ref mut bdp) = self.bdp {
-                    let bytes = locked.bytes.expect("bdp enabled implies bytes");
-                    locked.bytes = Some(0); // reset
+                    let bytes = locked.bytes.take().unwrap_or_else(|| {
+                        warn!("h2 Ponger: bdp enabled implies bytes: but locked bytes is None: fall back to 0 bytes");
+                        0
+                    });
                     trace!("received BDP ack; bytes = {}, rtt = {:?}", bytes, rtt);
 
                     let update = bdp.calculate(bytes, rtt);
@@ -337,10 +343,6 @@ impl Shared {
         if self.last_read_at.is_some() {
             self.last_read_at = Some(Instant::now());
         }
-    }
-
-    fn last_read_at(&self) -> Instant {
-        self.last_read_at.expect("keep_alive expects last_read_at")
     }
 }
 
@@ -435,9 +437,15 @@ impl KeepAlive {
     }
 
     fn schedule(&mut self, shared: &Shared) {
-        let interval = shared.last_read_at() + self.interval;
-        self.state = KeepAliveState::Scheduled(interval);
-        self.sleep.as_mut().reset(interval);
+        if let Some(last_read_at) = shared.last_read_at {
+            let interval = last_read_at + self.interval;
+            self.state = KeepAliveState::Scheduled(interval);
+            self.sleep.as_mut().reset(interval);
+        } else {
+            warn!(
+                "h2 ping KeepAlive::schedule: last read at expected for keep alive state schedule state, but not found; report bug in rama"
+            );
+        }
     }
 
     fn maybe_ping(&mut self, cx: &mut task::Context<'_>, is_idle: bool, shared: &mut Shared) {
@@ -447,11 +455,18 @@ impl KeepAlive {
                     return;
                 }
                 // check if we've received a frame while we were scheduled
-                if shared.last_read_at() + self.interval > at {
-                    self.state = KeepAliveState::Init;
-                    cx.waker().wake_by_ref(); // schedule us again
-                    return;
+                if let Some(last_read_at) = shared.last_read_at {
+                    if last_read_at + self.interval > at {
+                        self.state = KeepAliveState::Init;
+                        cx.waker().wake_by_ref(); // schedule us again
+                        return;
+                    }
+                } else {
+                    warn!(
+                        "h2 ping KeepAlive::maybe_ping: last read at expected for state init update check, but not found; report bug in rama"
+                    );
                 }
+
                 if !self.while_idle && is_idle {
                     trace!("keep-alive no need to ping when idle and while_idle=false");
                     return;

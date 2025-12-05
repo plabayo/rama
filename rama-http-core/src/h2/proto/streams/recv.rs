@@ -1,7 +1,7 @@
 use super::*;
 use crate::h2::codec::UserError;
 use crate::h2::proto;
-use rama_core::telemetry::tracing;
+use rama_core::telemetry::tracing::{self, warn};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
@@ -9,7 +9,6 @@ use rama_http_types::proto::h2::frame::{
 use rama_http_types::{HeaderMap, Request, Response};
 
 use std::cmp::Ordering;
-use std::io;
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
@@ -84,18 +83,26 @@ pub(crate) enum Open {
 }
 
 impl Recv {
-    pub(super) fn new(peer: peer::Dyn, config: &Config) -> Self {
+    pub(super) fn try_new(
+        peer: peer::Dyn,
+        config: &Config,
+    ) -> Result<Self, crate::h2::proto::Error> {
         let next_stream_id = if peer.is_server() { 1 } else { 2 };
 
         let mut flow = FlowControl::new();
 
-        // connections always have the default window size, regardless of
-        // settings
-        flow.inc_window(DEFAULT_INITIAL_WINDOW_SIZE)
-            .expect("invalid initial remote window size");
-        flow.assign_capacity(DEFAULT_INITIAL_WINDOW_SIZE).unwrap();
+        // connections always have the default window size,
+        // regardless of settings
+        flow.inc_window(DEFAULT_INITIAL_WINDOW_SIZE).map_err(|reason| {
+            warn!("h2 proto: stream recv: invalid initial remote window size: reason = {reason}; report bug to rama");
+            crate::h2::proto::Error::library_go_away(reason)
+        })?;
+        flow.assign_capacity(DEFAULT_INITIAL_WINDOW_SIZE).map_err(|reason| {
+            warn!("h2 proto: stream recv: failed to assign initial window size capacity: reason = {reason}; report bug to rama");
+            crate::h2::proto::Error::library_go_away(reason)
+        })?;
 
-        Self {
+        Ok(Self {
             init_window_sz: DEFAULT_INITIAL_WINDOW_SIZE,
             flow,
             in_flight_data: 0 as WindowSize,
@@ -110,7 +117,7 @@ impl Recv {
             refused: None,
             is_push_enabled: config.local_push_enabled,
             is_extended_connect_protocol_enabled: config.extended_connect_protocol_enabled,
-        }
+        })
     }
 
     /// Returns the initial receive window size
@@ -132,7 +139,7 @@ impl Recv {
         mode: Open,
         counts: &Counts,
     ) -> Result<Option<StreamId>, Error> {
-        assert!(self.refused.is_none());
+        debug_assert!(self.refused.is_none());
 
         counts.peer().ensure_can_open(id, mode)?;
 
@@ -603,7 +610,7 @@ impl Recv {
 
         // This should have been enforced at the codec::FramedRead layer, so
         // this is just a sanity check.
-        assert!(sz <= MAX_WINDOW_SIZE as usize);
+        debug_assert!(sz <= MAX_WINDOW_SIZE as usize);
 
         let sz = sz as WindowSize;
 
@@ -876,7 +883,7 @@ impl Recv {
     }
 
     pub(super) fn go_away(&mut self, last_processed_id: StreamId) {
-        assert!(self.max_stream_id >= last_processed_id);
+        debug_assert!(self.max_stream_id >= last_processed_id);
         self.max_stream_id = last_processed_id;
     }
 
@@ -966,7 +973,7 @@ impl Recv {
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -978,7 +985,7 @@ impl Recv {
             let frame = frame::Reset::new(stream_id, Reason::REFUSED_STREAM);
 
             // Buffer the frame
-            dst.buffer(frame.into()).expect("invalid RST_STREAM frame");
+            dst.buffer(frame.into())?;
         }
 
         self.refused = None;
@@ -991,7 +998,10 @@ impl Recv {
             let now = Instant::now();
             let reset_duration = self.reset_duration;
             while let Some(stream) = self.pending_reset_expired.pop_if(store, |stream| {
-                let reset_at = stream.reset_at.expect("reset_at must be set if in queue");
+                let Some(reset_at) = stream.reset_at else {
+                    warn!("h2 proto stream: reset_at must be set if in queue; force expired; report bug to rama");
+                    return true;
+                };
                 // rust-lang/rust#86470 tracks a bug in the standard library where `Instant`
                 // subtraction can panic (because, on some platforms, `Instant` isn't actually
                 // monotonic). We use a saturating operation to avoid this panic here.
@@ -1043,7 +1053,7 @@ impl Recv {
         store: &mut Store,
         counts: &mut Counts,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -1062,7 +1072,7 @@ impl Recv {
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -1074,13 +1084,13 @@ impl Recv {
             ready!(dst.poll_ready(cx))?;
 
             // Buffer the WINDOW_UPDATE frame
-            dst.buffer(frame.into())
-                .expect("invalid WINDOW_UPDATE frame");
+            dst.buffer(frame.into())?;
 
             // Update flow control
-            self.flow
-                .inc_window(incr)
-                .expect("unexpected flow control state");
+            self.flow.inc_window(incr).map_err(|reason| {
+                warn!("h2 stream recv: unexpected update flow control error: reason = {reason}");
+                crate::h2::proto::Error::library_go_away(reason)
+            })?;
         }
 
         Poll::Ready(Ok(()))
@@ -1093,7 +1103,7 @@ impl Recv {
         store: &mut Store,
         counts: &mut Counts,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -1118,7 +1128,7 @@ impl Recv {
                     // TODO: is this correct? We could possibly send a window
                     // update on a ReservedRemote stream if we already know
                     // we want to stream the data faster...
-                    return;
+                    return Ok::<_, crate::h2::proto::Error>(());
                 }
 
                 // TODO: de-dup
@@ -1127,16 +1137,20 @@ impl Recv {
                     let frame = frame::WindowUpdate::new(stream.id, incr);
 
                     // Buffer it
-                    dst.buffer(frame.into())
-                        .expect("invalid WINDOW_UPDATE frame");
+                    dst.buffer(frame.into())?;
 
                     // Update flow control
                     stream
                         .recv_flow
                         .inc_window(incr)
-                        .expect("unexpected flow control state");
+                        .map_err(|reason| {
+                            warn!("h2 proto stream: unexpected flow control state error: reason = {reason}");
+                            crate::h2::proto::Error::library_go_away(reason)
+                        })?;
                 }
-            })
+
+                Ok(())
+            })?;
         }
     }
 

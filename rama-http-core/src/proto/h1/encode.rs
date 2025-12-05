@@ -170,7 +170,10 @@ impl Encoder {
                     if let Some(n) = opt_name {
                         cur_name = Some(n);
                     }
-                    let name = cur_name.as_ref().expect("current header name");
+                    let Some(name) = cur_name.as_ref() else {
+                        debug!("trailer value without header name: ignore...");
+                        continue;
+                    };
 
                     if allowed_trailer_field_map.contains_key(name.as_str()) {
                         if is_valid_trailer_field(name) {
@@ -360,7 +363,11 @@ impl ChunkSize {
             pos: 0,
             len: 0,
         };
-        write!(&mut size, "{len:X}\r\n").expect("CHUNK_SIZE_MAX_BYTES should fit any usize");
+        let _write_result = write!(&mut size, "{len:X}\r\n");
+        debug_assert!(
+            _write_result.is_ok(),
+            "CHUNK_SIZE_MAX_BYTES should fit any usize: {_write_result:?}",
+        );
         size
     }
 }
@@ -395,9 +402,7 @@ impl fmt::Debug for ChunkSize {
 impl fmt::Write for ChunkSize {
     fn write_str(&mut self, num: &str) -> fmt::Result {
         use std::io::Write;
-        (&mut self.bytes[self.len.into()..])
-            .write_all(num.as_bytes())
-            .expect("&mut [u8].write() cannot error");
+        let _ = (&mut self.bytes[self.len.into()..]).write_all(num.as_bytes());
         self.len += num.len() as u8; // safe because bytes is never bigger than 256
         Ok(())
     }

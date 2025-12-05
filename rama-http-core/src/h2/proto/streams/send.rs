@@ -11,7 +11,6 @@ use rama_http_types::proto::h2::frame::{self, Reason};
 use tokio::io::AsyncWrite;
 
 use std::cmp::Ordering;
-use std::io;
 use std::task::{Context, Poll, Waker};
 
 /// Manages state transitions related to outbound frames.
@@ -50,15 +49,15 @@ pub(crate) enum PollReset {
 
 impl Send {
     /// Create a new `Send`
-    pub(super) fn new(config: &Config) -> Self {
-        Self {
+    pub(super) fn try_new(config: &Config) -> Result<Self, crate::h2::proto::Error> {
+        Ok(Self {
             init_window_sz: config.remote_init_window_sz,
             max_stream_id: StreamId::MAX,
             next_stream_id: Ok(config.local_next_stream_id),
-            prioritize: Prioritize::new(config),
+            prioritize: Prioritize::try_new(config)?,
             is_push_enabled: true,
             is_extended_connect_protocol_enabled: false,
-        }
+        })
     }
 
     /// Returns the initial send window size
@@ -298,7 +297,7 @@ impl Send {
         store: &mut Store,
         counts: &mut Counts,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
