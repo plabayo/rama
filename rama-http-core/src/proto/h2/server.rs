@@ -102,7 +102,6 @@ enum State<T> {
 struct Serving<T> {
     ping: Option<(ping::Recorder, ping::Ponger)>,
     conn: Connection<T, SendBuf<Bytes>>,
-    closing: Option<crate::Error>,
     date_header: bool,
 }
 
@@ -166,9 +165,7 @@ where
                 self.close_pending = true;
             }
             State::Serving(ref mut srv) => {
-                if srv.closing.is_none() {
-                    srv.conn.graceful_shutdown();
-                }
+                srv.conn.graceful_shutdown();
             }
         }
     }
@@ -204,13 +201,12 @@ where
                     State::Serving(Serving {
                         ping,
                         conn,
-                        closing: None,
                         date_header: me.date_header,
                     })
                 }
                 State::Serving(ref mut srv) => {
                     // graceful_shutdown was called before handshaking finished,
-                    if me.close_pending && srv.closing.is_none() {
+                    if me.close_pending {
                         srv.conn.graceful_shutdown();
                     }
                     ready!(srv.poll_server(cx, &mut me.service, &me.exec))?;
@@ -236,95 +232,82 @@ where
     where
         S: HttpService<IncomingBody>,
     {
-        if let Some(closing) = self.closing.take() {
-            match self.conn.poll_closed(cx) {
-                Poll::Ready(Ok(())) => (),
-                Poll::Ready(Err(err)) => return Poll::Ready(Err(crate::Error::new_h2(err))),
-                Poll::Pending => {
-                    self.closing = Some(closing);
-                    return Poll::Pending;
-                }
-            }
+        loop {
+            self.poll_ping(cx);
 
-            Poll::Ready(Err(closing))
-        } else {
-            loop {
-                self.poll_ping(cx);
+            match ready!(self.conn.poll_accept(cx)) {
+                Some(Ok((req, mut respond))) => {
+                    trace!("incoming request");
+                    let content_length = headers::content_length_parse_all(req.headers());
+                    let ping = self
+                        .ping
+                        .as_ref()
+                        .map(|ping| ping.0.clone())
+                        .unwrap_or_else(ping::disabled);
 
-                match ready!(self.conn.poll_accept(cx)) {
-                    Some(Ok((req, mut respond))) => {
-                        trace!("incoming request");
-                        let content_length = headers::content_length_parse_all(req.headers());
-                        let ping = self
-                            .ping
-                            .as_ref()
-                            .map(|ping| ping.0.clone())
-                            .unwrap_or_else(ping::disabled);
+                    // Record the headers received
+                    ping.record_non_data();
 
-                        // Record the headers received
-                        ping.record_non_data();
-
-                        let is_connect = req.method() == Method::CONNECT;
-                        let (mut parts, stream) = req.into_parts();
-                        let (req, connect_parts) = if !is_connect {
-                            (
-                                Request::from_parts(
-                                    parts,
-                                    IncomingBody::h2(stream, content_length.into(), ping),
-                                ),
-                                None,
-                            )
-                        } else {
-                            if content_length.is_some_and(|len| len != 0) {
-                                warn!("h2 connect request with non-zero body not supported");
-                                respond.send_reset(crate::h2::Reason::INTERNAL_ERROR);
-                                return Poll::Ready(Ok(()));
-                            }
-                            let (pending, upgrade) = upgrade::pending();
-                            parts.extensions.insert(upgrade);
-                            (
-                                Request::from_parts(parts, IncomingBody::empty()),
-                                Some(ConnectParts {
-                                    pending,
-                                    ping,
-                                    recv_stream: stream,
-                                }),
-                            )
-                        };
-
-                        let serve_span = trace_root_span!(
-                            "h2::stream",
-                            otel.kind = "server",
-                            http.request.method = %req.method().as_str(),
-                            url.full = %req.uri(),
-                            url.path = %req.uri().path(),
-                            url.query = req.uri().query().unwrap_or_default(),
-                            url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
-                            network.protocol.name = "http",
-                            network.protocol.version = version_as_protocol_version(req.version()),
-                        );
-
-                        let fut = H2Stream::new(
-                            service.serve_http(req),
-                            connect_parts,
-                            respond,
-                            self.date_header,
-                        );
-
-                        exec.spawn_task(fut.instrument(serve_span));
-                    }
-                    Some(Err(e)) => {
-                        return Poll::Ready(Err(crate::Error::new_h2(e)));
-                    }
-                    None => {
-                        // no more incoming streams...
-                        if let Some((ref ping, _)) = self.ping {
-                            ping.ensure_not_timed_out()?;
+                    let is_connect = req.method() == Method::CONNECT;
+                    let (mut parts, stream) = req.into_parts();
+                    let (req, connect_parts) = if !is_connect {
+                        (
+                            Request::from_parts(
+                                parts,
+                                IncomingBody::h2(stream, content_length.into(), ping),
+                            ),
+                            None,
+                        )
+                    } else {
+                        if content_length.is_some_and(|len| len != 0) {
+                            warn!("h2 connect request with non-zero body not supported");
+                            respond.send_reset(crate::h2::Reason::INTERNAL_ERROR);
+                            return Poll::Ready(Ok(()));
                         }
+                        let (pending, upgrade) = upgrade::pending();
+                        parts.extensions.insert(upgrade);
+                        (
+                            Request::from_parts(parts, IncomingBody::empty()),
+                            Some(ConnectParts {
+                                pending,
+                                ping,
+                                recv_stream: stream,
+                            }),
+                        )
+                    };
 
-                        trace!("incoming connection complete");
-                        return Poll::Ready(Ok(()));
+                    let serve_span = trace_root_span!(
+                        "h2::stream",
+                        otel.kind = "server",
+                        http.request.method = %req.method().as_str(),
+                        url.full = %req.uri(),
+                        url.path = %req.uri().path(),
+                        url.query = req.uri().query().unwrap_or_default(),
+                        url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                        network.protocol.name = "http",
+                        network.protocol.version = version_as_protocol_version(req.version()),
+                    );
+
+                    let fut = H2Stream::new(
+                        service.serve_http(req),
+                        connect_parts,
+                        respond,
+                        self.date_header,
+                    );
+
+                    exec.spawn_task(fut.instrument(serve_span));
+                }
+                Some(Err(e)) => {
+                    return Poll::Ready(Err(crate::Error::new_h2(e)));
+                }
+                None => {
+                    // no more incoming streams...
+                    if let Some((ref ping, _)) = self.ping {
+                        ping.ensure_not_timed_out()?;
                     }
+
+                    trace!("incoming connection complete");
+                    return Poll::Ready(Ok(()));
                 }
             }
         }
