@@ -1338,15 +1338,14 @@ where
     type Output = Result<Codec<T, B>, crate::h2::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(mut codec) = self.codec.take() {
-            match codec.flush(cx) {
-                Poll::Ready(Ok(())) => Poll::Ready(Ok(codec)),
-                Poll::Ready(Err(err)) => Poll::Ready(Err(crate::h2::Error::from_io(err))),
-                Poll::Pending => {
-                    self.codec = Some(codec);
-                    Poll::Pending
-                }
-            }
+        if let Some(codec) = self.codec.as_mut() {
+            ready!(codec.flush(cx)).map_err(crate::h2::Error::from_io)?;
+            #[allow(clippy::expect_used, reason = "memory cannot move in between polls")]
+            let codec = self
+                .codec
+                .take()
+                .expect("codec from Flush future was Some above");
+            Poll::Ready(Ok(codec))
         } else {
             warn!(
                 "h2 server: Flush: codec no longer available: future polled after ready, report bug in rama repo"

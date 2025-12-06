@@ -639,15 +639,11 @@ where
     type Output = Result<SendRequest<B>, crate::h2::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(mut send_request) = self.inner.take() {
-            match send_request.poll_ready(cx) {
-                Poll::Ready(Ok(())) => Poll::Ready(Ok(send_request)),
-                Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-                Poll::Pending => {
-                    self.inner = Some(send_request);
-                    Poll::Pending
-                }
-            }
+        if let Some(send_request) = self.inner.as_mut() {
+            ready!(send_request.poll_ready(cx))?;
+            #[allow(clippy::expect_used, reason = "memory cannot move in between polls")]
+            let send_request = self.inner.take().expect("inner SendRequest was Some above");
+            Poll::Ready(Ok(send_request))
         } else {
             warn!(
                 "h2 client: ReadySendRequest: (inner) SendRequest no longer available: future polled after ready, report bug in rama repo"
