@@ -1,4 +1,4 @@
-//! rama ws client
+//! rama websocket client
 
 use std::time::Duration;
 

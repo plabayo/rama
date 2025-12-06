@@ -195,25 +195,37 @@ comes with [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) emulat
 and data extracted using [`rama-fp`](https://github.com/plabayo/rama/tree/main/rama-fp/). The service is publicly exposed at
 <https://fp.ramaproxy.org>, made possible by our sponsor host <https://fly.io/>.
 
-> 🔁 <https://echo.ramaproxy.org/> is another service publicly exposed.
-> In contrast to the Fingerprinting Service it is aimed at developers
-> and allows you to send any http request you wish in order to get an insight
-> on the Tls Info and Http Request Info the server receives
-> from you when making that request.
->
-> ```bash
-> curl -XPOST 'https://echo.ramaproxy.org/foo?bar=baz' \
->   -H 'x-magic: 42' --data 'whatever forever'
-> ```
->
-> Feel free to make use of while crafting distorted http requests,
-> but please do so with moderation. In case you have ideas on how to improve
-> the service, please let us know [by opening an issue](https://github.com/plabayo/rama/issues).
->
-> Using the [`rama` binary](https://ramaproxy.org/book/deploy/rama-cli.html)
-> you can also run both the `echo` and `fp` service yourself, locally or as an
-> external facing web service.
->
+## Public echo service
+
+🔁 <https://echo.ramaproxy.org/> is another service publicly exposed.
+In contrast to the Fingerprinting Service it is aimed at developers
+and allows you to send any http request you wish in order to get an insight
+on the Tls Info and Http Request Info the server receives
+from you when making that request.
+
+```bash
+curl -XPOST 'https://echo.ramaproxy.org/foo?bar=baz' \
+  -H 'x-magic: 42' --data 'whatever forever'
+```
+
+Feel free to make use of while crafting distorted http requests,
+but please do so with moderation. In case you have ideas on how to improve
+the service, please let us know [by opening an issue](https://github.com/plabayo/rama/issues).
+Using the [`rama` binary](https://ramaproxy.org/book/deploy/rama-cli.html)
+you can also run both the `echo` and `fp` service yourself, locally or as an
+external facing web service.
+
+The echo service also has websocket support to echo back your messages,
+similar to <echo.websocket.org>. As an extra it has support for subprotocols
+to uppercase (`echo-upper`) or lowercase (`echo-lower`) your messages. Default,
+including if none is requested is `echo`. Example that will open a TUI client:
+
+```sh
+rama wss://echo.ramaproxy.org
+```
+
+Learn more about the rama CLI at <https://ramaproxy.org/book/deploy/rama-cli.html>.
+
 > Please run your own echo service instead of using `echo.ramaproxy.org`
 > in case you are planning to send a lot of traffic to the echo service.
 

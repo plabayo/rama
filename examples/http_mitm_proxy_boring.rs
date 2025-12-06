@@ -38,7 +38,7 @@
 //! You can for example test it using:
 //!
 //! ```sh
-//! rama ws -k \
+//! rama -k \
 //!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
 //!     wss://echo.ramaproxy.org
 //! ```
@@ -46,7 +46,7 @@
 //! Or use one of alternative sub protocols available in the echo server:
 //!
 //! ```sh
-//! rama ws -k \
+//! rama -k \
 //!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
 //!     --protocols echo-upper wss://echo.ramaproxy.org
 //! ```
