@@ -195,7 +195,6 @@ rustls = { version = "0.23", default-features = false, features = [
     "aws_lc_rs",
 ] }
 rustls-native-certs = "0.8"
-rustls-pemfile = "2.2"
 rustls-pki-types = "^1"
 rustversion = "1.0"
 schannel = "0.1"

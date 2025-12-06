@@ -64,10 +64,8 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::rustls::{
-        dep::{
-            pemfile,
-            pki_types::{CertificateDer, PrivateKeyDer},
-        },
+        dep::pki_types::{CertificateDer, PrivateKeyDer},
+        pemfile,
         server::DynamicConfigProvider,
         server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
     },

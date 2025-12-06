@@ -33,6 +33,8 @@ pub mod verify;
 
 pub mod key_log;
 
+pub mod pemfile;
+
 mod type_conversion;
 
 pub mod types {
@@ -56,16 +58,6 @@ pub mod dep {
 
         #[doc(inline)]
         pub use rustls_pki_types::*;
-    }
-
-    pub mod pemfile {
-        //! Re-export of the [`rustls-pemfile`] crate.
-        //!
-        //! A basic parser for .pem files containing cryptographic keys and certificates.
-        //!
-        //! [`rustls-pemfile`]: https://docs.rs/rustls-pemfile
-        #[doc(inline)]
-        pub use rustls_pemfile::*;
     }
 
     pub mod native_certs {
