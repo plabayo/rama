@@ -93,14 +93,11 @@ where
     pub async fn without_shutdown(self) -> crate::Result<Parts<T>> {
         let mut this = Some(self);
         std::future::poll_fn(move |cx| -> Poll<crate::Result<Parts<T>>> {
-            if let Some(mut conn) = this.take() {
-                match conn.poll_without_shutdown(cx) {
-                    Poll::Ready(result) => Poll::Ready(result.map(|_| conn.into_parts())),
-                    Poll::Pending => {
-                        this = Some(conn);
-                        Poll::Pending
-                    }
-                }
+            if let Some(conn) = this.as_mut() {
+                ready!(conn.poll_without_shutdown(cx))?;
+                #[allow(clippy::expect_used, reason = "memory cannot move in between polls")]
+                let conn = this.take().expect("inner h1 connection for without shutdown was Some above");
+                Poll::Ready(Ok(conn.into_parts()))
             } else {
                 Poll::Ready(Err(
                     crate::Error::new_parse_internal().with_display(
