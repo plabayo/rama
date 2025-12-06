@@ -1,15 +1,15 @@
 use super::parse_http_user_agent_header;
 use rama_core::error::OpaqueError;
-use rama_utils::macros::match_ignore_ascii_case_str;
+use rama_utils::{macros::match_ignore_ascii_case_str, str::arcstr::ArcStr};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::{convert::Infallible, fmt, str::FromStr, sync::Arc};
+use std::{convert::Infallible, fmt, str::FromStr};
 
 /// User Agent (UA) information.
 ///
 /// See [the module level documentation](crate) for more information.
 #[derive(Debug, Clone)]
 pub struct UserAgent {
-    pub(super) header: Arc<str>,
+    pub(super) header: ArcStr,
     pub(super) data: UserAgentData,
     pub(super) http_agent_overwrite: Option<HttpAgent>,
     pub(super) tls_agent_overwrite: Option<TlsAgent>,
@@ -59,7 +59,7 @@ pub struct UserAgentInfo {
 
 impl UserAgent {
     /// Create a new [`UserAgent`] from a `User-Agent` (header) value.
-    pub fn new(header: impl Into<Arc<str>>) -> Self {
+    pub fn new(header: impl Into<ArcStr>) -> Self {
         parse_http_user_agent_header(header.into())
     }
 

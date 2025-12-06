@@ -17,7 +17,7 @@ use tokio::{
 
 mod request;
 #[doc(inline)]
-pub use request::{DoNotWriteRequest, RequestWriter, RequestWriterInspector};
+pub use request::{DoNotWriteRequest, RequestWriter, RequestWriterLayer, RequestWriterService};
 
 mod response;
 #[doc(inline)]

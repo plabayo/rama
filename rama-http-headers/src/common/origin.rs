@@ -2,6 +2,8 @@ use std::convert::TryFrom;
 use std::fmt;
 
 use rama_core::bytes::Bytes;
+use rama_core::telemetry::tracing;
+use rama_error::{ErrorContext as _, OpaqueError};
 use rama_http_types::HeaderValue;
 use rama_http_types::uri::{self, Authority, Scheme, Uri};
 
@@ -28,9 +30,30 @@ use crate::util::{IterExt, TryFromValues};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Origin(OriginOrNull);
 
-derive_header! {
-    Origin(_),
-    name: ORIGIN
+impl crate::TypedHeader for Origin {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::ORIGIN
+    }
+}
+
+impl crate::HeaderDecode for Origin {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+    {
+        crate::util::TryFromValues::try_from_values(values).map(Origin)
+    }
+}
+
+impl crate::HeaderEncode for Origin {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        match HeaderValue::try_from(&self.0) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode origin value as header: {err}");
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -105,10 +128,6 @@ impl Origin {
     pub(super) fn try_from_value(value: &HeaderValue) -> Option<Self> {
         OriginOrNull::try_from_value(value).map(Origin)
     }
-
-    pub(super) fn to_value(&self) -> HeaderValue {
-        (&self.0).into()
-    }
 }
 
 impl fmt::Display for Origin {
@@ -167,18 +186,20 @@ impl TryFromValues for OriginOrNull {
     }
 }
 
-impl<'a> From<&'a OriginOrNull> for HeaderValue {
-    fn from(origin: &'a OriginOrNull) -> Self {
+impl<'a> TryFrom<&'a OriginOrNull> for HeaderValue {
+    type Error = OpaqueError;
+
+    fn try_from(origin: &'a OriginOrNull) -> Result<Self, Self::Error> {
         match origin {
             OriginOrNull::Origin(scheme, auth) => {
                 let s = format!("{scheme}://{auth}");
                 let bytes = Bytes::from(s);
                 Self::from_maybe_shared(bytes)
-                    .expect("Scheme and Authority are valid header values")
+                    .context("parse Scheme and Authority as a valid header value")
             }
             // Serialized as "null" per ASCII serialization of an origin
             // https://html.spec.whatwg.org/multipage/browsers.html#ascii-serialisation-of-an-origin
-            OriginOrNull::Null => Self::from_static("null"),
+            OriginOrNull::Null => Ok(Self::from_static("null")),
         }
     }
 }

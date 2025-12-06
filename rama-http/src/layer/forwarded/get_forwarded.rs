@@ -268,14 +268,21 @@ where
                 .cloned()
             {
                 forwarded.extend(forwarded_elements);
-                forwarded
+                Some(forwarded)
             } else {
                 let mut it = forwarded_elements.into_iter();
-                let mut forwarded = rama_net::forwarded::Forwarded::new(it.next().unwrap());
-                forwarded.extend(it);
-                forwarded
+                if let Some(first) = it.next() {
+                    let mut forwarded = rama_net::forwarded::Forwarded::new(first);
+                    forwarded.extend(it);
+                    Some(forwarded)
+                } else {
+                    None
+                }
             };
-            req.extensions_mut().insert(forwarded);
+
+            if let Some(forwarded) = forwarded {
+                req.extensions_mut().insert(forwarded);
+            }
         }
 
         self.inner.serve(req)

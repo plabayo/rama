@@ -73,6 +73,9 @@ test-spec: test-spec-h2
 test-ignored:
 	cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
 
+test-loom:
+	RUSTFLAGS="--cfg loom -Dwarnings" cargo test --all-features -p rama-utils
+
 qq: lint check clippy doc extra-checks
 
 qa: qq test
@@ -83,7 +86,7 @@ qa-crate CRATE:
     just doc-crate {{CRATE}}
     just test-crate {{CRATE}}
 
-qa-full: qa hack test-ignored fuzz-60s check-links
+qa-full: qa hack test-ignored test-loom fuzz-60s check-links
 
 clean:
     cargo clean

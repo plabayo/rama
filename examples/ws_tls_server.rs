@@ -11,7 +11,7 @@
 //! # Expected output
 //!
 //! The server will start and listen on `:62034`.
-//! Open it in the browser to see it in action or use `rama ws` cli client to test it.
+//! Open it in the browser to see it in action or use `rama` cli client to test it.
 
 use rama::{
     Layer,
@@ -67,7 +67,7 @@ async fn main() {
         let tls_server = TlsAcceptorLayer::new(acceptor_data).into_layer(server);
 
         info!("open web echo chat @ https://127.0.0.1:62034");
-        info!("or connect directly to wss://127.0.0.1:62034/echo (via 'rama ws')");
+        info!("or connect directly to wss://127.0.0.1:62034/echo (via 'rama')");
         TcpListener::bind("127.0.0.1:62034")
             .await
             .expect("bind TCP Listener")

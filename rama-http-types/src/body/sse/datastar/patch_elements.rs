@@ -5,16 +5,15 @@ use crate::sse::{
 };
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
-use smol_str::SmolStr;
-use std::borrow::Cow;
+use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 
 /// [`PatchElements`] patches HTML elements into the DOM.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PatchElements {
     /// The elements to be patched into the DOM.
-    pub elements: Option<Cow<'static, str>>,
+    pub elements: Option<NonEmptyStr>,
     /// The CSS selector used to patch the elements.
-    pub selector: Option<SmolStr>,
+    pub selector: Option<NonEmptyStr>,
     /// The mode in which elements are patched into the DOM.
     ///
     /// If not provided the Datastar client side will default to [`ElementPatchMode::Outer`].
@@ -25,24 +24,34 @@ pub struct PatchElements {
     pub use_view_transition: bool,
 }
 
+#[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
+struct PatchElementsBuilder {
+    elements: Option<String>,
+    selector: Option<NonEmptyStr>,
+    mode: ElementPatchMode,
+    use_view_transition: bool,
+}
+
 impl PatchElements {
     pub const TYPE: EventType = EventType::PatchElements;
 
     /// Create a new [`PatchElements`] data blob.
-    pub fn new(elements: impl Into<Cow<'static, str>>) -> Self {
+    #[must_use]
+    pub const fn new(elements: NonEmptyStr) -> Self {
         Self {
-            elements: Some(elements.into()),
+            elements: Some(elements),
             selector: None,
-            mode: Default::default(),
+            mode: ElementPatchMode::Outer,
             use_view_transition: false,
         }
     }
 
     /// Create a new [`PatchElements`] data blob for removal
-    pub fn new_remove(selector: impl Into<SmolStr>) -> Self {
+    #[must_use]
+    pub const fn new_remove(selector: NonEmptyStr) -> Self {
         Self {
             elements: None,
-            selector: Some(selector.into()),
+            selector: Some(selector),
             mode: ElementPatchMode::Remove,
             use_view_transition: false,
         }
@@ -64,8 +73,8 @@ impl PatchElements {
 
     rama_utils::macros::generate_set_and_with! {
         /// Set the CSS selector used to patch the elements.
-        pub fn selector(mut self, selector: impl Into<SmolStr>) -> Self {
-            self.selector = Some(selector.into());
+        pub fn selector(mut self, selector: NonEmptyStr) -> Self {
+            self.selector = Some(selector);
             self
         }
     }
@@ -126,7 +135,11 @@ impl EventDataWrite for PatchElements {
             sep = "\n";
         }
 
-        if let Some(ref elements) = self.elements {
+        if let Some(mut elements) = self.elements.as_deref() {
+            if elements.chars().last().map(is_lf).unwrap_or_default() {
+                elements = &elements[..elements.len() - 1];
+            }
+
             let mut elements = elements.lines();
             let mut next_element = elements
                 .next()
@@ -147,7 +160,7 @@ impl EventDataWrite for PatchElements {
 
 /// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`PatchElements`].
 #[derive(Debug)]
-pub struct PatchElementsReader(Option<PatchElements>);
+pub struct PatchElementsReader(Option<PatchElementsBuilder>);
 
 impl EventDataRead for PatchElements {
     type Reader = PatchElementsReader;
@@ -166,9 +179,7 @@ impl EventDataLineReader for PatchElementsReader {
             return Ok(());
         };
 
-        let patch_elements = self
-            .0
-            .get_or_insert_with(|| PatchElements::new(Cow::Owned(Default::default())));
+        let patch_elements = self.0.get_or_insert_default();
 
         let (keyword, value) = line
             .split_once(' ')
@@ -179,7 +190,9 @@ impl EventDataLineReader for PatchElementsReader {
             if value.is_empty() {
                 tracing::trace!("ignore selector property with empty value");
             } else {
-                patch_elements.selector = Some(value.into());
+                // SAFETY: we check above if it is empty :)
+                patch_elements.selector =
+                    Some(unsafe { NonEmptyStr::new_unchecked(ArcStr::from(value)) });
             }
         } else if keyword.eq_ignore_ascii_case("mode") {
             if value.is_empty() {
@@ -192,7 +205,7 @@ impl EventDataLineReader for PatchElementsReader {
                 .parse()
                 .context("PatchElementsReader: parse useViewTransition")?;
         } else if keyword.eq_ignore_ascii_case("elements") {
-            let elements = patch_elements.elements.get_or_insert_default().to_mut();
+            let elements = patch_elements.elements.get_or_insert_default();
             elements.push_str(value);
             elements.push('\n');
         } else {
@@ -207,7 +220,13 @@ impl EventDataLineReader for PatchElementsReader {
     }
 
     fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
-        let Some(mut patch_elements) = self.0.take() else {
+        let Some(PatchElementsBuilder {
+            elements,
+            selector,
+            mode,
+            use_view_transition,
+        }) = self.0.take()
+        else {
             return Ok(None);
         };
 
@@ -224,21 +243,27 @@ impl EventDataLineReader for PatchElementsReader {
             ));
         }
 
-        if let Some(elements) = patch_elements.elements.as_mut() {
-            if elements.chars().next_back().map(is_lf).unwrap_or_default() {
-                elements.to_mut().pop();
-            }
-            if elements.is_empty() {
-                patch_elements.elements = None;
-            }
-        }
-
-        Ok(Some(patch_elements))
+        Ok(Some(PatchElements {
+            elements: elements
+                .map(|mut s| {
+                    if s.chars().last().map(is_lf).unwrap_or_default() {
+                        let _ = s.pop();
+                    }
+                    s.try_into()
+                })
+                .transpose()
+                .context("PatchElementsReader: unexpected empty Some(String)")?,
+            selector,
+            mode,
+            use_view_transition,
+        }))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rama_utils::str::non_empty_str;
+
     use super::*;
 
     fn read_patch_elements(input: &str) -> PatchElements {
@@ -265,8 +290,8 @@ mod tests {
 
     #[test]
     fn test_serialize_deserialize_reflect() {
-        let expected_data = PatchElements::new("<div>\nHello, world!\n</div>")
-            .with_selector("#foo")
+        let expected_data = PatchElements::new(non_empty_str!("<div>\nHello, world!\n</div>"))
+            .with_selector(non_empty_str!("#foo"))
             .with_mode(ElementPatchMode::Append)
             .with_use_view_transition(true);
 

@@ -197,7 +197,7 @@ impl Decoder {
                     if *state == ChunkedState::End {
                         trace!("end of chunked");
 
-                        if trailers_buf.is_some() {
+                        if let Some(mut trailers_buf) = trailers_buf.take() {
                             trace!("found possible trailers");
 
                             // decoder enforces that trailers count will not exceed h1_max_headers
@@ -207,10 +207,7 @@ impl Decoder {
                                     "chunk trailers count overflow",
                                 )));
                             }
-                            match decode_trailers(
-                                &mut trailers_buf.take().expect("Trailer is None"),
-                                *trailers_cnt,
-                            ) {
+                            match decode_trailers(&mut trailers_buf, *trailers_cnt) {
                                 Ok(headers) => {
                                     return Poll::Ready(Ok(Frame::trailers(headers)));
                                 }
@@ -537,11 +534,13 @@ impl ChunkedState {
         trace!("read_trailer");
         let byte = byte!(rdr, cx);
 
-        put_u8!(
-            trailers_buf.as_mut().expect("trailers_buf is None"),
-            byte,
-            h1_max_header_size
-        );
+        let Some(trailers_buf) = trailers_buf.as_mut() else {
+            return Poll::Ready(Err(io::Error::other(
+                "h1 decode: trailer buf is None while it was expected to be available to write read trailer byte",
+            )));
+        };
+
+        put_u8!(trailers_buf, byte, h1_max_header_size);
 
         match byte {
             b'\r' => Poll::Ready(Ok(Self::TrailerLf)),
@@ -568,11 +567,13 @@ impl ChunkedState {
                 }
                 *trailers_cnt += 1;
 
-                put_u8!(
-                    trailers_buf.as_mut().expect("trailers_buf is None"),
-                    byte,
-                    h1_max_header_size
-                );
+                let Some(trailers_buf) = trailers_buf.as_mut() else {
+                    return Poll::Ready(Err(io::Error::other(
+                        "h1 decode: trailer buf is None while it was expected to be available to write NL byte",
+                    )));
+                };
+
+                put_u8!(trailers_buf, byte, h1_max_header_size);
 
                 Poll::Ready(Ok(Self::EndCr))
             }

@@ -5,6 +5,7 @@ use rama::{
         Request, Response, StatusCode, body::util::BodyExt as _, convert::curl,
         service::web::response::IntoResponse as _,
     },
+    service::MirrorService,
     ua::layer::emulate::UserAgentEmulateHttpRequestModifier,
 };
 
@@ -20,7 +21,7 @@ impl Service<Request> for CurlWriter {
     type Response = Response;
 
     async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let req = UserAgentEmulateHttpRequestModifier::new()
+        let req = UserAgentEmulateHttpRequestModifier::new(MirrorService::new())
             .serve(req)
             .await
             .map_err(OpaqueError::from_boxed)

@@ -2,7 +2,6 @@ use crate::h2::codec::Codec;
 
 use rama_core::bytes::Buf;
 use rama_http_types::proto::h2::frame::{self, Reason, StreamId};
-use std::io;
 use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;
 
@@ -121,7 +120,7 @@ impl GoAway {
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, B>,
-    ) -> Poll<Option<io::Result<Reason>>>
+    ) -> Poll<Option<Result<Reason, crate::h2::proto::Error>>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -133,7 +132,9 @@ impl GoAway {
             }
 
             let reason = frame.reason();
-            dst.buffer(frame.into()).expect("invalid GOAWAY frame");
+            if let Err(err) = dst.buffer(frame.into()) {
+                return Poll::Ready(Some(Err(err.into())));
+            }
 
             return Poll::Ready(Some(Ok(reason)));
         } else if self.should_close_now() {

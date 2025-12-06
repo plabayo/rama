@@ -1,7 +1,7 @@
 use rama_core::error::OpaqueError;
 
 use super::common::ReadError;
-use std::{fmt, string::FromUtf8Error};
+use std::{fmt, str::Utf8Error};
 
 #[derive(Debug)]
 pub enum ProtocolError {
@@ -12,7 +12,7 @@ pub enum ProtocolError {
     /// Unexpected error happened
     Unexpected(OpaqueError),
     /// Utf-8 error in case something went wrong during bytes to utf-8 conversion
-    Utf8(FromUtf8Error),
+    Utf8(Utf8Error),
 }
 
 impl ProtocolError {
@@ -68,8 +68,8 @@ impl From<OpaqueError> for ProtocolError {
     }
 }
 
-impl From<FromUtf8Error> for ProtocolError {
-    fn from(value: FromUtf8Error) -> Self {
+impl From<Utf8Error> for ProtocolError {
+    fn from(value: Utf8Error) -> Self {
         Self::Utf8(value)
     }
 }

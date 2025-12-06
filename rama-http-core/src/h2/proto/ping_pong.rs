@@ -141,7 +141,7 @@ impl PingPong {
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, B>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -152,8 +152,7 @@ impl PingPong {
                 return Poll::Pending;
             }
 
-            dst.buffer(Ping::pong(pong).into())
-                .expect("invalid pong frame");
+            dst.buffer(Ping::pong(pong).into())?;
         }
 
         Poll::Ready(Ok(()))
@@ -164,7 +163,7 @@ impl PingPong {
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, B>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -175,8 +174,7 @@ impl PingPong {
                     return Poll::Pending;
                 }
 
-                dst.buffer(Ping::new(ping.payload).into())
-                    .expect("invalid ping frame");
+                dst.buffer(Ping::new(ping.payload).into())?;
                 ping.sent = true;
             }
         } else if let Some(ref users) = self.user_pings {
@@ -185,8 +183,7 @@ impl PingPong {
                     return Poll::Pending;
                 }
 
-                dst.buffer(Ping::new(Ping::USER).into())
-                    .expect("invalid ping frame");
+                dst.buffer(Ping::new(Ping::USER).into())?;
                 users
                     .0
                     .state

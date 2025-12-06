@@ -45,6 +45,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    utils::str::arcstr::ArcStr,
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
@@ -110,7 +111,7 @@ async fn api_rates_csv(
         // at least when generating them on the fly like this... You could of course
         // cache them based on input, so adding a caching layer in front of this endpoint
         // service specific would do a lot already
-        ZipBomb::new(format!("rates_{year}.csv")).into_response()
+        ZipBomb::new(ArcStr::from(format!("rates_{year}.csv"))).into_response()
     } else {
         // assume real user
         if year == 2024 {

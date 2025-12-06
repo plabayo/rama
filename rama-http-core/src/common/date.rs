@@ -80,8 +80,13 @@ impl CachedDate {
     }
 
     fn render_http2(&mut self) {
-        self.header_value = HeaderValue::from_bytes(self.buffer())
-            .expect("Date format should be valid HeaderValue");
+        self.header_value = {
+            #[allow(
+                clippy::expect_used,
+                reason = "input is controlled and we trust http date to always be a valid header value"
+            )]
+            HeaderValue::from_bytes(self.buffer()).expect("Date format should be valid HeaderValue")
+        };
     }
 }
 

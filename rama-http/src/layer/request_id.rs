@@ -64,6 +64,7 @@ use crate::{
 use rama_core::{
     Layer, Service,
     extensions::{ExtensionsMut, ExtensionsRef},
+    telemetry::tracing,
 };
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -404,7 +405,13 @@ pub struct MakeRequestUuid;
 
 impl MakeRequestId for MakeRequestUuid {
     fn make_request_id<B>(&self, _request: &Request<B>) -> Option<RequestId> {
-        let request_id = Uuid::new_v4().to_smolstr().parse().unwrap();
+        let request_id = Uuid::new_v4()
+            .to_smolstr()
+            .parse()
+            .inspect_err(|err| {
+                tracing::debug!("failed to parse UUID4 as RequestId: {err}");
+            })
+            .ok()?;
         Some(RequestId::new(request_id))
     }
 }

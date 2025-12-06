@@ -1,6 +1,7 @@
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
 use crate::mime::Mime;
+use crate::service::web::response::IntoResponse;
 use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
 use percent_encoding::percent_decode;
 use rama_core::Service;
@@ -340,12 +341,7 @@ where
         let result = self.try_call(req).await;
         Ok(result.unwrap_or_else(|err| {
             tracing::error!("Failed to read file: {err:?}");
-
-            let body = Body::empty();
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(body)
-                .unwrap()
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }))
     }
 }

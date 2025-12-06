@@ -191,7 +191,12 @@ where
                 } => {
                     let mut conn = ready!(Pin::new(hs).poll(cx).map_err(crate::Error::new_h2))?;
                     let ping = if ping_config.is_enabled() {
-                        let pp = conn.ping_pong().expect("conn.ping_pong");
+                        let Some(pp) = conn.ping_pong() else {
+                            return Poll::Ready(Err(
+                                crate::Error::new_parse_internal()
+                                    .with_display("bug: report in rama crate: server: conn.ping_pong not available while ping config is enabled"),
+                            ));
+                        };
                         Some(ping::channel(pp, ping_config))
                     } else {
                         None
@@ -231,7 +236,18 @@ where
     where
         S: HttpService<IncomingBody>,
     {
-        if self.closing.is_none() {
+        if let Some(closing) = self.closing.take() {
+            match self.conn.poll_closed(cx) {
+                Poll::Ready(Ok(())) => (),
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(crate::Error::new_h2(err))),
+                Poll::Pending => {
+                    self.closing = Some(closing);
+                    return Poll::Pending;
+                }
+            }
+
+            Poll::Ready(Err(closing))
+        } else {
             loop {
                 self.poll_ping(cx);
 
@@ -312,15 +328,6 @@ where
                 }
             }
         }
-
-        debug_assert!(
-            self.closing.is_some(),
-            "poll_server broke loop without closing"
-        );
-
-        ready!(self.conn.poll_closed(cx).map_err(crate::Error::new_h2))?;
-
-        Poll::Ready(Err(self.closing.take().expect("polled after error")))
     }
 
     fn poll_ping(&mut self, cx: &mut Context<'_>) {

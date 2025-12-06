@@ -1,10 +1,8 @@
 #![allow(dead_code)]
 
-use std::sync::Arc;
-
 use rama_utils::str::{
-    contains_any_ignore_ascii_case, contains_ignore_ascii_case, submatch_any_ignore_ascii_case,
-    submatch_ignore_ascii_case,
+    arcstr::ArcStr, contains_any_ignore_ascii_case, contains_ignore_ascii_case,
+    submatch_any_ignore_ascii_case, submatch_ignore_ascii_case,
 };
 
 use super::{
@@ -27,11 +25,10 @@ const MAX_UA_LENGTH: usize = 512;
 /// - complete: we do not care about all the possible user agents out there, only the popular ones.
 ///
 /// That said. Do open a ticket if you find bugs or think something is missing.
-pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserAgent {
+pub(crate) fn parse_http_user_agent_header(header: impl Into<ArcStr>) -> UserAgent {
     let header = header.into();
-    let ua = header.as_ref();
-    let ua = if ua.len() > MAX_UA_LENGTH {
-        match ua.get(..MAX_UA_LENGTH) {
+    let ua = if header.len() > MAX_UA_LENGTH {
+        match header.get(..MAX_UA_LENGTH) {
             Some(s) => s,
             None => {
                 return UserAgent {
@@ -43,7 +40,7 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserA
             }
         }
     } else {
-        ua
+        header.as_str()
     };
 
     let (kind, kind_version, maybe_platform) =

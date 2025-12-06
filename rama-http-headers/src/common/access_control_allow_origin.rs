@@ -1,13 +1,12 @@
-use std::convert::TryFrom;
-
 use rama_http_types::HeaderValue;
+use std::convert::TryFrom;
 
 use super::origin::Origin;
 use crate::Error;
 use crate::util::{IterExt, TryFromValues};
 
-/// The `Access-Control-Allow-Origin` response header,
-/// part of [CORS](http://www.w3.org/TR/cors/#access-control-allow-origin-response-header)
+/// `Access-Control-Allow-Origin` header, as defined on
+/// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Allow-Origin).
 ///
 /// The `Access-Control-Allow-Origin` header indicates whether a resource
 /// can be shared based by returning the value of the Origin request header,
@@ -37,9 +36,28 @@ use crate::util::{IterExt, TryFromValues};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AccessControlAllowOrigin(OriginOrAny);
 
-derive_header! {
-    AccessControlAllowOrigin(_),
-    name: ACCESS_CONTROL_ALLOW_ORIGIN
+impl crate::TypedHeader for AccessControlAllowOrigin {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::ACCESS_CONTROL_ALLOW_ORIGIN
+    }
+}
+
+impl crate::HeaderDecode for AccessControlAllowOrigin {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+    {
+        crate::util::TryFromValues::try_from_values(values).map(AccessControlAllowOrigin)
+    }
+}
+
+impl crate::HeaderEncode for AccessControlAllowOrigin {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        match &self.0 {
+            OriginOrAny::Origin(origin) => origin.encode(values),
+            OriginOrAny::Any => values.extend(::std::iter::once(HeaderValue::from_static("*"))),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -61,6 +79,11 @@ impl AccessControlAllowOrigin {
             OriginOrAny::Origin(ref origin) => Some(origin),
             OriginOrAny::Any => None,
         }
+    }
+
+    pub fn try_from_origin_header_value(header_value: &HeaderValue) -> Option<Self> {
+        let origin = Origin::try_from_value(header_value)?;
+        Some(Self(OriginOrAny::Origin(origin)))
     }
 }
 
@@ -99,15 +122,6 @@ impl TryFromValues for OriginOrAny {
                 Origin::try_from_value(value).map(OriginOrAny::Origin)
             })
             .ok_or_else(Error::invalid)
-    }
-}
-
-impl<'a> From<&'a OriginOrAny> for HeaderValue {
-    fn from(origin: &'a OriginOrAny) -> Self {
-        match origin {
-            OriginOrAny::Origin(origin) => origin.to_value(),
-            OriginOrAny::Any => Self::from_static("*"),
-        }
     }
 }
 

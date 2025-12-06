@@ -4,7 +4,7 @@
 
 mod svc;
 #[doc(inline)]
-pub use svc::{BoxService, RejectError, RejectService, Service};
+pub use svc::{BoxService, MirrorService, RejectError, RejectService, Service};
 
 pub mod handler;
 pub use handler::service_fn;

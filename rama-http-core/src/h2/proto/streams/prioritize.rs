@@ -1,6 +1,6 @@
 use super::store::Resolve;
 use super::*;
-use rama_core::telemetry::tracing;
+use rama_core::telemetry::tracing::{self, warn};
 
 use crate::h2::codec::UserError;
 
@@ -8,7 +8,7 @@ use rama_core::bytes::buf::Take;
 use rama_http_types::proto::h2::frame::Reason;
 use std::{
     cmp::{self, Ordering},
-    fmt, io, mem,
+    fmt, mem,
     task::{Context, Poll, Waker},
 };
 
@@ -80,19 +80,22 @@ pub(crate) struct Prioritized<B> {
 // ===== impl Prioritize =====
 
 impl Prioritize {
-    pub(crate) fn new(config: &Config) -> Self {
+    pub(crate) fn try_new(config: &Config) -> Result<Self, crate::h2::proto::Error> {
         let mut flow = FlowControl::new();
 
-        flow.inc_window(config.remote_init_window_sz)
-            .expect("invalid initial window size");
+        flow.inc_window(config.remote_init_window_sz).map_err(|reason| {
+            warn!("h2 proto: prioritize stream: invalid initial window size: reason = {reason}; report bug to rama");
+            crate::h2::proto::Error::library_go_away(reason)
+        })?;
 
-        // TODO: proper error handling
-        let _res = flow.assign_capacity(config.remote_init_window_sz);
-        debug_assert!(_res.is_ok());
+        flow.assign_capacity(config.remote_init_window_sz).map_err(|reason| {
+            warn!("h2 proto: prioritize stream: failed to assign init window size as capacity: reason = {reason}; report bug to rama");
+            crate::h2::proto::Error::library_go_away(reason)
+        })?;
 
         tracing::trace!("Prioritize::new; flow={:?}", flow);
 
-        Self {
+        Ok(Self {
             pending_send: store::Queue::new(),
             pending_capacity: store::Queue::new(),
             pending_open: store::Queue::new(),
@@ -100,7 +103,7 @@ impl Prioritize {
             last_opened_id: StreamId::ZERO,
             in_flight_data_frame: InFlightData::Nothing,
             max_buffer_size: config.local_max_buffer_size,
-        }
+        })
     }
 
     pub(crate) fn max_buffer_size(&self) -> u32 {
@@ -356,8 +359,10 @@ impl Prioritize {
             let reserved =
                 stream.send_flow.available().as_size() - stream.buffered_send_data as WindowSize;
 
-            // Panic safety: due to how `reserved` is computed it can't be greater
-            // than what's available.
+            #[allow(
+                clippy::expect_used,
+                reason = "due to how `reserved` is computed it can't be greater than what's available"
+            )]
             stream
                 .send_flow
                 .claim_capacity(reserved)
@@ -520,7 +525,7 @@ impl Prioritize {
         store: &mut Store,
         counts: &mut Counts,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -542,14 +547,14 @@ impl Prioritize {
                 self.try_assign_capacity(&mut stream);
             }
 
-            if let Some(frame) = self.pop_frame(buffer, store, max_frame_len, counts) {
+            if let Some(frame) = self.pop_frame(buffer, store, max_frame_len, counts)? {
                 tracing::trace!("writing; frame = {frame:?}");
 
                 debug_assert_eq!(self.in_flight_data_frame, InFlightData::Nothing);
                 if let Frame::Data(ref frame) = frame {
                     self.in_flight_data_frame = InFlightData::DataFrame(frame.payload().stream);
                 }
-                dst.buffer(frame).expect("invalid frame");
+                dst.buffer(frame)?;
 
                 // Ensure the codec is ready to try the loop again.
                 ready!(dst.poll_ready(cx))?;
@@ -711,7 +716,7 @@ impl Prioritize {
         store: &mut Store,
         max_len: usize,
         counts: &mut Counts,
-    ) -> Option<Frame<Prioritized<B>>>
+    ) -> Result<Option<Frame<Prioritized<B>>>, crate::h2::proto::Error>
     where
         B: Buf,
     {
@@ -828,7 +833,16 @@ impl Prioritize {
                             }))
                         }
                         Some(Frame::PushPromise(pp)) => {
-                            let mut pushed = stream.store_mut().find_mut(pp.promised_id()).unwrap();
+                            let pp_promised_id = pp.promised_id();
+                            let Some(mut pushed) = stream.store_mut().find_mut(pp_promised_id)
+                            else {
+                                warn!(
+                                    "h2 proto: prioritize frame: no push Ptr found for PushPromise promised id: {pp_promised_id:?}"
+                                );
+                                return Err(crate::h2::proto::Error::library_go_away(
+                                    Reason::INTERNAL_ERROR,
+                                ));
+                            };
                             pushed.is_pending_push = false;
                             // Transition stream from pending_push to pending_open
                             // if possible
@@ -842,12 +856,13 @@ impl Prioritize {
                             }
                             Frame::PushPromise(pp)
                         }
-                        Some(frame) => frame.map(|_| {
-                            unreachable!(
-                                "Frame::map closure will only be called \
-                                 on DATA frames."
-                            )
-                        }),
+                        Some(Frame::Headers(frame)) => frame.into(),
+                        Some(Frame::Priority(frame)) => frame.into(),
+                        Some(Frame::Settings(frame)) => frame.into(),
+                        Some(Frame::Ping(frame)) => frame.into(),
+                        Some(Frame::GoAway(frame)) => frame.into(),
+                        Some(Frame::WindowUpdate(frame)) => frame.into(),
+                        Some(Frame::Reset(frame)) => frame.into(),
                         None => {
                             if let Some(reason) = stream.state.get_scheduled_reset() {
                                 stream.set_reset(reason, Initiator::Library);
@@ -886,9 +901,9 @@ impl Prioritize {
 
                     counts.transition_after(stream, is_pending_reset);
 
-                    return Some(frame);
+                    return Ok(Some(frame));
                 }
-                None => return None,
+                None => return Ok(None),
             }
         }
     }

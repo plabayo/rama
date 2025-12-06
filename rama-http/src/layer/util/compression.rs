@@ -134,15 +134,26 @@ where
                 }
             }
         }
+
         // poll any remaining frames, such as trailers
         let body = M::get_pin_mut(this.read).get_pin_mut().get_pin_mut();
-        body.poll_frame(cx).map(|option| {
-            option.map(|result| {
-                result
-                    .map(|frame| frame.map_data(|mut data| data.copy_to_bytes(data.remaining())))
-                    .map_err(|err| err.into())
-            })
-        })
+        match ready!(body.poll_frame(cx)) {
+            Some(Ok(frame)) if frame.is_trailers() => Poll::Ready(Some(Ok(
+                frame.map_data(|mut data| data.copy_to_bytes(data.remaining()))
+            ))),
+            Some(Ok(frame)) => {
+                if let Ok(bytes) = frame.into_data()
+                    && bytes.has_remaining()
+                {
+                    return Poll::Ready(Some(Err(
+                        "there are extra bytes after body has been decompressed".into(),
+                    )));
+                }
+                Poll::Ready(None)
+            }
+            Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
+            None => Poll::Ready(None),
+        }
     }
 }
 

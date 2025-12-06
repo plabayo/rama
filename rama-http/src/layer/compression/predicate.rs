@@ -8,7 +8,7 @@
 
 use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
-use std::{fmt, sync::Arc};
+use rama_utils::str::arcstr::{ArcStr, arcstr};
 
 /// Predicate used to determine if a response should be compressed or not.
 pub trait Predicate: Clone {
@@ -99,6 +99,7 @@ where
 /// by combining types in this module:
 ///
 /// ```rust
+/// use rama_utils::str::arcstr::arcstr;
 /// use rama_http::layer::compression::predicate::{SizeAbove, NotForContentType, Predicate};
 ///
 /// // slightly large min size than the default 32
@@ -108,7 +109,7 @@ where
 ///     // still don't compress images
 ///     .and(NotForContentType::IMAGES)
 ///     // also don't compress JSON
-///     .and(NotForContentType::const_new("application/json"));
+///     .and(NotForContentType::new(arcstr!("application/json")));
 /// ```
 ///
 /// [`Compression`]: super::Compression
@@ -192,37 +193,28 @@ impl Predicate for SizeAbove {
 /// Predicate that wont allow responses with a specific `content-type` to be compressed.
 #[derive(Clone, Debug)]
 pub struct NotForContentType {
-    content_type: Str,
-    exception: Option<Str>,
+    content_type: ArcStr,
+    exception: Option<ArcStr>,
 }
 
 impl NotForContentType {
     /// Predicate that wont compress gRPC responses.
-    pub const GRPC: Self = Self::const_new("application/grpc");
+    pub const GRPC: Self = Self::new(arcstr!("application/grpc"));
 
     /// Predicate that wont compress images.
     pub const IMAGES: Self = Self {
-        content_type: Str::Static("image/"),
-        exception: Some(Str::Static("image/svg+xml")),
+        content_type: arcstr!("image/"),
+        exception: Some(arcstr!("image/svg+xml")),
     };
 
     /// Predicate that wont compress Server-Sent Events (SSE) responses.
-    pub const SSE: Self = Self::const_new("text/event-stream");
+    pub const SSE: Self = Self::new(arcstr!("text/event-stream"));
 
     /// Create a new `NotForContentType`.
     #[must_use]
-    pub fn new(content_type: &str) -> Self {
+    pub const fn new(content_type: ArcStr) -> Self {
         Self {
-            content_type: Str::Shared(content_type.into()),
-            exception: None,
-        }
-    }
-
-    /// Create a new `NotForContentType` from a static string.
-    #[must_use]
-    pub const fn const_new(content_type: &'static str) -> Self {
-        Self {
-            content_type: Str::Static(content_type),
+            content_type,
             exception: None,
         }
     }
@@ -240,30 +232,6 @@ impl Predicate for NotForContentType {
         }
 
         !content_type(response).starts_with(self.content_type.as_str())
-    }
-}
-
-#[derive(Clone)]
-enum Str {
-    Static(&'static str),
-    Shared(Arc<str>),
-}
-
-impl Str {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Static(s) => s,
-            Self::Shared(s) => s,
-        }
-    }
-}
-
-impl fmt::Debug for Str {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Static(inner) => inner.fmt(f),
-            Self::Shared(inner) => inner.fmt(f),
-        }
     }
 }
 

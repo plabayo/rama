@@ -1,5 +1,6 @@
 //! [`Service`] and [`BoxService`] traits.
 
+use std::convert::Infallible;
 use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -195,12 +196,43 @@ macro_rules! impl_service_either {
 
 crate::combinators::impl_either!(impl_service_either);
 
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default)]
+/// A [`Service`] which will simply return the given input as Ok(_),
+/// with an [`Infallible`] error.
+pub struct MirrorService;
+
+impl MirrorService {
+    /// Create a new [`MirrorService`].
+    #[inline(always)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<Input> Service<Input> for MirrorService
+where
+    Input: Send + 'static,
+{
+    type Response = Input;
+    type Error = Infallible;
+
+    #[inline]
+    fn serve(
+        &self,
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        std::future::ready(Ok(input))
+    }
+}
+
 rama_utils::macros::error::static_str_error! {
     #[doc = "request rejected"]
     pub struct RejectError;
 }
 
-/// A [`Service`]] which always rejects with an error.
+/// A [`Service`] which always rejects with an error.
 pub struct RejectService<R = (), E = RejectError> {
     error: E,
     _phantom: PhantomData<fn() -> R>,

@@ -8,7 +8,7 @@ use rama_net::{
     Protocol,
     address::ProxyAddress,
     transport::{TransportProtocol, TryRefIntoTransportContext},
-    user::{Basic, ProxyCredential},
+    user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -236,24 +236,31 @@ where
             let mut proxy_address = proxy.address.clone();
 
             // prepare the credential with labels in username if desired
-            proxy_address.credential = proxy_address.credential.take().map(|credential| {
-                match credential {
-                    ProxyCredential::Basic(ref basic) => {
-                        match self.username_formatter.fmt_username(
-                            &proxy,
-                            &filter,
-                            basic.username(),
-                        ) {
-                            Some(username) => ProxyCredential::Basic(Basic::new(
-                                username,
-                                basic.password().to_owned(),
-                            )),
-                            None => credential, // nothing to do
+            proxy_address.credential = proxy_address
+                .credential
+                .take()
+                .map(|credential| {
+                    Ok::<_, OpaqueError>(match credential {
+                        ProxyCredential::Basic(ref basic) => {
+                            match self.username_formatter.fmt_username(
+                                &proxy,
+                                &filter,
+                                basic.username(),
+                            ) {
+                                Some(username) => ProxyCredential::Basic(
+                                    basic.clone_with_new_username(
+                                        username
+                                            .try_into()
+                                            .context("returned formatted username is invalid")?,
+                                    ),
+                                ),
+                                None => credential, // nothing to do
+                            }
                         }
-                    }
-                    ProxyCredential::Bearer(_) => credential, // Remark: we can support this in future too if needed
-                }
-            });
+                        ProxyCredential::Bearer(_) => credential, // Remark: we can support this in future too if needed
+                    })
+                })
+                .transpose()?;
 
             // overwrite the proxy protocol if not set yet
             if proxy_address.protocol.is_none() {
@@ -516,14 +523,14 @@ mod tests {
         address::{HostWithPort, ProxyAddress},
         asn::Asn,
     };
-    use rama_utils::str::NonEmptyString;
+    use rama_utils::str::non_empty_str;
     use std::{convert::Infallible, str::FromStr, sync::Arc};
 
     #[tokio::test]
     async fn test_proxy_db_default_happy_path_example() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
-                id: NonEmptyString::from_static("42"),
+                id: non_empty_str!("42"),
                 address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
                 tcp: true,
                 udp: true,
@@ -543,7 +550,7 @@ mod tests {
                 asn: Some(Asn::unspecified()),
             },
             Proxy {
-                id: NonEmptyString::from_static("100"),
+                id: non_empty_str!("100"),
                 address: ProxyAddress::from_str("12.34.12.35:8080").unwrap(),
                 tcp: true,
                 udp: false,
@@ -595,7 +602,7 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_db_single_proxy_example() {
         let proxy = Proxy {
-            id: NonEmptyString::from_static("42"),
+            id: non_empty_str!("42"),
             address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
             tcp: true,
             udp: true,
@@ -645,7 +652,7 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_db_single_proxy_with_username_formatter() {
         let proxy = Proxy {
-            id: NonEmptyString::from_static("42"),
+            id: non_empty_str!("42"),
             address: ProxyAddress::from_str("john:secret@12.34.12.34:8080").unwrap(),
             tcp: true,
             udp: true,
@@ -719,7 +726,7 @@ mod tests {
     async fn test_proxy_db_default_happy_path_example_transport_layer() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
-                id: NonEmptyString::from_static("42"),
+                id: non_empty_str!("42"),
                 address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
                 tcp: true,
                 udp: true,
@@ -739,7 +746,7 @@ mod tests {
                 asn: Some(Asn::unspecified()),
             },
             Proxy {
-                id: NonEmptyString::from_static("100"),
+                id: non_empty_str!("100"),
                 address: ProxyAddress::from_str("12.34.12.35:8080").unwrap(),
                 tcp: true,
                 udp: false,
@@ -843,7 +850,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     ..Default::default()
                 }),
                 Some("105.150.55.60:4898"),
@@ -1030,7 +1037,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("FooBar")),
+                    id: Some(non_empty_str!("FooBar")),
                     ..Default::default()
                 }),
                 None,
@@ -1043,7 +1050,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1316455915")),
+                    id: Some(non_empty_str!("1316455915")),
                     country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
@@ -1116,7 +1123,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("FooBar")),
+                    id: Some(non_empty_str!("FooBar")),
                     ..Default::default()
                 }),
                 None,
@@ -1129,7 +1136,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1316455915")),
+                    id: Some(non_empty_str!("1316455915")),
                     country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
@@ -1146,7 +1153,7 @@ mod tests {
             // match found, but due to custom predicate it won't check, given it is not mobile
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1316455915")),
+                    id: Some(non_empty_str!("1316455915")),
                     ..Default::default()
                 }),
                 None,

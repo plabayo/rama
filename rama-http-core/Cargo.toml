@@ -34,6 +34,7 @@ httparse = { workspace = true }
 httpdate = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 itoa = { workspace = true }
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-http = { workspace = true }

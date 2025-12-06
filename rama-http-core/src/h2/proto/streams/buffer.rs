@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing::warn;
 use slab::Slab;
 
 /// Buffers frames for multiple streams.
@@ -84,11 +85,16 @@ impl Deque {
                 let mut slot = buf.slab.remove(idxs.head);
 
                 if idxs.head == idxs.tail {
-                    assert!(slot.next.is_none());
+                    debug_assert!(slot.next.is_none());
                     self.indices = None;
-                } else {
-                    idxs.head = slot.next.take().unwrap();
+                } else if let Some(ptr) = slot.next.take() {
+                    idxs.head = ptr;
                     self.indices = Some(idxs);
+                } else {
+                    warn!(
+                        "h2 proto: streams: buffer: Deque::pop_front: unexpected slot with no next ptr where one was expected: report bug to rama"
+                    );
+                    self.indices = None;
                 }
 
                 Some(slot.value)

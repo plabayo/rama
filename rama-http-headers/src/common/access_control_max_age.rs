@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use crate::util::Seconds;
 
-/// `Access-Control-Max-Age` header, part of
-/// [CORS](http://www.w3.org/TR/cors/#access-control-max-age-response-header)
+/// `Access-Control-Max-Age` header, as defined on
+/// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Max-Age).
 ///
 /// The `Access-Control-Max-Age` header indicates how long the results of a
 /// preflight request can be cached in a preflight result cache.
@@ -21,12 +21,11 @@ use crate::util::Seconds;
 /// # Examples
 ///
 /// ```
-/// use std::time::Duration;
 /// use rama_http_headers::AccessControlMaxAge;
 ///
-/// let max_age = AccessControlMaxAge::from(Duration::from_secs(531));
+/// let max_age = AccessControlMaxAge::from_seconds(531);
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AccessControlMaxAge(Seconds);
 
 derive_header! {
@@ -34,9 +33,34 @@ derive_header! {
     name: ACCESS_CONTROL_MAX_AGE
 }
 
-impl From<Duration> for AccessControlMaxAge {
-    fn from(dur: Duration) -> Self {
-        Self(dur.into())
+impl AccessControlMaxAge {
+    #[must_use]
+    #[inline(always)]
+    pub fn from_seconds(secs: u64) -> Self {
+        Self(Seconds::new(secs))
+    }
+
+    #[must_use]
+    #[inline(always)]
+    pub fn try_from_duration(dur: Duration) -> Option<Self> {
+        Seconds::try_from_duration(dur).map(Self)
+    }
+
+    #[must_use]
+    #[inline(always)]
+    pub fn from_duration_rounded(dur: Duration) -> Self {
+        Self(Seconds::from_duration_rounded(dur))
+    }
+
+    #[must_use]
+    pub fn as_secs(self) -> u64 {
+        self.0.into()
+    }
+}
+
+impl From<Seconds> for AccessControlMaxAge {
+    fn from(value: Seconds) -> Self {
+        Self(value)
     }
 }
 

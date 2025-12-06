@@ -1,7 +1,7 @@
 use super::*;
 
 use indexmap::{self, IndexMap};
-use rama_core::telemetry::tracing;
+use rama_core::telemetry::tracing::{self, warn};
 
 use std::convert::Infallible;
 use std::fmt;
@@ -113,7 +113,7 @@ impl Store {
 
     pub(super) fn insert(&mut self, id: StreamId, val: Stream) -> Ptr<'_> {
         let index = SlabIndex(self.slab.insert(val) as u32);
-        assert!(self.ids.insert(id, index).is_none());
+        debug_assert!(self.ids.insert(id, index).is_none());
 
         Ptr {
             key: Key {
@@ -159,7 +159,11 @@ impl Store {
         while i < len {
             // Get the key by index, this makes the borrow checker happy
             let (stream_id, index) = {
-                let entry = self.ids.get_index(i).unwrap();
+                #[allow(clippy::expect_used)]
+                let entry = self
+                    .ids
+                    .get_index(i)
+                    .expect("stream store index to be valid due to OG source and calc below");
                 (*entry.0, *entry.1)
             };
 
@@ -343,12 +347,17 @@ where
             let mut stream = store.resolve(idxs.head);
 
             if idxs.head == idxs.tail {
-                assert!(N::next(&stream).is_none());
+                debug_assert!(N::next(&stream).is_none());
                 self.indices = None;
-            } else {
-                idxs.head = N::take_next(&mut stream).unwrap();
+            } else if let Some(ptr) = N::take_next(&mut stream) {
+                idxs.head = ptr;
                 self.indices = Some(idxs);
-            }
+            } else {
+                warn!(
+                    "h2 streams Queue: head Ptr expected for resolved steam in store, but none found; report bug in rama"
+                );
+                self.indices = None;
+            };
 
             debug_assert!(N::is_queued(&stream));
             N::set_queued(&mut stream, false);

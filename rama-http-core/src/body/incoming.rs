@@ -305,9 +305,13 @@ impl Sender {
     /// that doesn't have an async context. If in an async context, prefer
     /// `send_data()` instead.
     pub(crate) fn try_send_data(&mut self, chunk: Bytes) -> Result<(), Bytes> {
-        self.data_tx
-            .try_send(Ok(chunk))
-            .map_err(|err| err.into_inner().expect("just sent Ok"))
+        self.data_tx.try_send(Ok(chunk)).map_err(|err| {
+            #[allow(
+                clippy::expect_used,
+                reason = "we only send Ok, so into_inner here is always Ok..."
+            )]
+            err.into_inner().expect("just sent Ok")
+        })
     }
 
     pub(crate) fn try_send_trailers(

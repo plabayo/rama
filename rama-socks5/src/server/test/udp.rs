@@ -2,6 +2,8 @@ use crate::server::udp::MockUdpAssociator;
 use crate::server::*;
 use rama_core::ServiceInput;
 use rama_net::address::HostWithPort;
+use rama_net::user::credentials::basic;
+use rama_utils::str::non_empty_str;
 
 #[tokio::test]
 async fn test_socks5_acceptor_no_auth_client_udp_associate_failure_method_not_supported() {
@@ -62,8 +64,7 @@ async fn test_socks5_acceptor_auth_flow_used_udp_associate_failure_method_not_su
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new()
-        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
+    let server = Socks5Acceptor::new().with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }
@@ -88,7 +89,7 @@ async fn test_socks5_acceptor_auth_flow_username_only_udp_associate_failure_meth
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
-        .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer());
+        .with_authorizer(user::Basic::new_insecure(non_empty_str!("john")).into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }

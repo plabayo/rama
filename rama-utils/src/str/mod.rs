@@ -2,7 +2,10 @@
 
 mod non_empty;
 #[doc(inline)]
-pub use non_empty::{EmptyStringErr, NonEmptyString};
+pub use non_empty::{EmptyStrErr, NonEmptyStr};
+
+#[doc(inline)]
+pub use crate::__non_empty_str as non_empty_str;
 
 mod search;
 #[doc(inline)]
@@ -11,6 +14,7 @@ pub use search::{
     submatch_any_ignore_ascii_case, submatch_ignore_ascii_case,
 };
 
+pub mod arcstr;
 pub mod utf8;
 
 #[cfg(not(target_os = "windows"))]

@@ -58,7 +58,7 @@ use rama::{
         proxy::ProxyTarget,
         stream::ClientSocketInfo,
         tls::SecureTransport,
-        user::Basic,
+        user::credentials::basic,
     },
     proxy::socks5::{
         Socks5Acceptor,
@@ -160,7 +160,8 @@ async fn main() {
     let http_service = HttpServer::auto(Executor::graceful(graceful.guard())).service(
         (
             TraceLayer::new_for_http(),
-            ProxyAuthLayer::new(Basic::new_static("tom", "clancy")),
+            ConsumeErrLayer::default(),
+            ProxyAuthLayer::new(basic!("tom", "clancy")),
             UpgradeLayer::new(
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
@@ -174,7 +175,7 @@ async fn main() {
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec).service(proxy_service))
         .with_fallback(Forwarder::ctx());
     let socks5_acceptor = Socks5Acceptor::new()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer())
+        .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(LazyConnector::new(socks5_svc));
 
     let auto_socks5_acceptor = Socks5PeekRouter::new(socks5_acceptor).with_fallback(http_service);

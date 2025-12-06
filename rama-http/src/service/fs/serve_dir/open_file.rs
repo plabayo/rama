@@ -9,7 +9,7 @@ use http_range_header::RangeUnsatisfiableError;
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
 use rama_http_types::mime::Mime;
-use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
+use rama_utils::include_dir::{self, Dir, Metadata as EmbeddedMetadata};
 use std::io::Cursor;
 use std::{
     ffi::OsStr,
@@ -459,7 +459,11 @@ async fn maybe_serve_directory(
                     Ok(uri) => uri,
                     Err(err) => return Ok(Some(err)),
                 };
-                let location = HeaderValue::from_str(&uri.to_string()).unwrap();
+                let location = HeaderValue::from_str(&uri.to_string())
+                    .inspect_err(|err| {
+                        tracing::debug!("failed to parse uri as header value for loc: {err}");
+                    })
+                    .map_err(std::io::Error::other)?;
                 Ok(Some(OpenFileOutput::Redirect { location }))
             }
         }
@@ -495,26 +499,24 @@ async fn maybe_serve_directory(
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
 
-                        if entry.path().is_dir() {
-                            // Directory entry
-                            let modified = SystemTime::UNIX_EPOCH;
-                            entries.push(DirEntry::new(file_name_str, true, modified, 0));
-                        } else {
-                            // File entry
-                            let file = entry
-                                .as_file()
-                                .expect("Entry should be a file if not a directory");
-                            let modified = file
-                                .metadata()
-                                .map(|m| m.modified())
-                                .unwrap_or(SystemTime::UNIX_EPOCH);
+                        match entry {
+                            include_dir::DirEntry::Dir(_) => {
+                                let modified = SystemTime::UNIX_EPOCH;
+                                entries.push(DirEntry::new(file_name_str, true, modified, 0));
+                            }
+                            include_dir::DirEntry::File(file) => {
+                                let modified = file
+                                    .metadata()
+                                    .map(|m| m.modified())
+                                    .unwrap_or(SystemTime::UNIX_EPOCH);
 
-                            entries.push(DirEntry::new(
-                                file_name_str,
-                                false,
-                                modified,
-                                file.contents().len() as u64,
-                            ));
+                                entries.push(DirEntry::new(
+                                    file_name_str,
+                                    false,
+                                    modified,
+                                    file.contents().len() as u64,
+                                ));
+                            }
                         }
                     }
                 }

@@ -27,7 +27,7 @@ use rama::{
     },
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
             UserAgentEmulateLayer, UserAgentSelectFallback,
         },
         profile::UserAgentDatabase,
@@ -87,12 +87,14 @@ pub(super) async fn new(
             .as_deref()
             .map(|auth| {
                 let mut basic = Basic::from_str(auth).context("parse basic str")?;
-                if auth.ends_with(':') && basic.password().is_empty() {
+                if auth.ends_with(':') && basic.password().is_none() {
                     let mut terminal =
                         Terminal::open().context("open terminal for password prompting")?;
                     let password = terminal
                         .prompt_sensitive("password: ")
-                        .context("prompt password from terminal")?;
+                        .context("prompt password from terminal")?
+                        .parse()
+                        .context("parse password as non-empty-str")?;
                     basic.set_password(password);
                 }
                 Ok::<_, OpaqueError>(AddAuthorizationLayer::new(basic).with_sensitive(true))
@@ -174,7 +176,7 @@ fn new_inner_client(
     let proxy_connector =
         ProxyConnectorLayer::optional(Socks5ProxyConnectorLayer::required(), http_proxy_connector);
 
-    Ok(EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_custom_connector(layer_fn(logger_l4::TransportConnInfoLogger))
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config.into_shared_builder())
@@ -183,10 +185,6 @@ fn new_inner_client(
         .with_custom_connector(layer_fn(logger_tls::TlsInfoLogger))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector()
-        .with_svc_req_inspector((
-            UserAgentEmulateHttpRequestModifier::default(),
-            logger_headers_req::RequestHeaderLogger,
-        ))
         .with_custom_connector(
             if let Some(timeout) = cfg.connect_timeout
                 && timeout > 0.
@@ -196,7 +194,13 @@ fn new_inner_client(
                 TimeoutLayer::never()
             },
         )
-        .build())
+        .build_client()
+        .with_jit_layer((
+            UserAgentEmulateHttpRequestModifierLayer::default(),
+            logger_headers_req::RequestHeaderLoggerLayer::default(),
+        ));
+
+    Ok(client)
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -43,8 +43,6 @@ pub use layer::Layer;
 
 pub mod stream;
 
-pub mod inspect;
-
 pub mod combinators;
 pub mod matcher;
 

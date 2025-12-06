@@ -1,4 +1,4 @@
-use rama_core::bytes::BytesMut;
+use rama_core::{bytes::BytesMut, telemetry::tracing::debug};
 use rama_http_types::{
     HeaderMap, HeaderValue, Method,
     header::{CONTENT_LENGTH, OccupiedEntry, TRANSFER_ENCODING, ValueIter},
@@ -133,8 +133,15 @@ pub(super) fn add_chunked(mut entry: OccupiedEntry<'_, HeaderValue>) {
         buf.extend_from_slice(b", ");
         buf.extend_from_slice(CHUNKED.as_bytes());
 
-        *line = HeaderValue::from_maybe_shared(buf.freeze())
-            .expect("original header value plus ascii is valid");
+        match HeaderValue::from_maybe_shared(buf.freeze()) {
+            Ok(v) => *line = v,
+            Err(err) => {
+                debug!(
+                    "failed to create header with chunked added from original header value: {err}; append entry instead"
+                );
+                entry.append(HeaderValue::from_static(CHUNKED));
+            }
+        }
         return;
     }
 

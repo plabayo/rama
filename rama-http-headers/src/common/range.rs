@@ -1,5 +1,6 @@
 use std::ops::{Bound, RangeBounds};
 
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
@@ -65,7 +66,13 @@ impl Range {
             _ => return Err(InvalidRange),
         };
 
-        Ok(Self(HeaderValue::try_from(v).unwrap()))
+        match HeaderValue::try_from(v) {
+            Ok(v) => Ok(Self(v)),
+            Err(err) => {
+                tracing::debug!("failed to create Range header fro bytes: {err}");
+                Err(InvalidRange)
+            }
+        }
     }
 
     /// Iterate the range sets as a tuple of bounds, if valid with length.
@@ -76,6 +83,7 @@ impl Range {
         &self,
         len: u64,
     ) -> impl Iterator<Item = (Bound<u64>, Bound<u64>)> + '_ {
+        #[allow(clippy::expect_used, reason = "see expect msg")]
         let s = self
             .0
             .to_str()

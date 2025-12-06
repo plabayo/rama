@@ -14,6 +14,7 @@ use rama::{
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
+    utils::str::non_empty_str,
 };
 
 #[tokio::test]
@@ -59,7 +60,10 @@ async fn test_http_client_over_socks5_proxy_connect(
         .extension(ProxyAddress {
             protocol: Some(Protocol::SOCKS5),
             address: proxy_socket_addr.into(),
-            credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
+            credential: Some(ProxyCredential::Basic(Basic::new(
+                non_empty_str!("john"),
+                non_empty_str!("secret"),
+            ))),
         })
         .send()
         .await

@@ -1,3 +1,5 @@
+use rama_error::{ErrorContext, OpaqueError};
+
 use super::ValidateRequest;
 use crate::{
     Body, Request, Response, StatusCode, header,
@@ -12,23 +14,34 @@ pub struct AcceptHeader<ResBody = Body> {
 }
 
 impl<ResBody> AcceptHeader<ResBody> {
-    /// Create a new `AcceptHeader`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `header_value` is not in the form: `type/subtype`, such as `application/json`
-    pub(super) fn new(header_value: &str) -> Self
+    /// Create a new `AcceptHeader` from the given Mime.
+    pub(super) fn new(mime: Mime) -> Self
     where
         ResBody: Default,
     {
         Self {
+            header_value: Arc::new(mime),
+            _ty: PhantomData,
+        }
+    }
+
+    /// Try a new `AcceptHeader` from the given header utf-8 value.
+    ///
+    /// # Errors
+    ///
+    /// Errors if `header_value` is not in the form: `type/subtype`, such as `application/json`
+    pub(super) fn try_new(header_value: &str) -> Result<Self, OpaqueError>
+    where
+        ResBody: Default,
+    {
+        Ok(Self {
             header_value: Arc::new(
                 header_value
                     .parse::<Mime>()
-                    .expect("value is not a valid header value"),
+                    .context("value is not a valid header value")?,
             ),
             _ty: PhantomData,
-        }
+        })
     }
 }
 

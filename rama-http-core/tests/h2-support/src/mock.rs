@@ -11,8 +11,9 @@ use rama_core::futures::{Stream, StreamExt, ready};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use super::assert::assert_frame_eq;
+use parking_lot::Mutex;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 use std::{cmp, io};
@@ -116,7 +117,7 @@ impl Handle {
     }
 
     pub fn close_without_notify(&mut self) {
-        let mut me = self.codec.get_mut().inner.lock().unwrap();
+        let mut me = self.codec.get_mut().inner.lock();
         me.unexpected_eof = true;
     }
 
@@ -271,13 +272,13 @@ impl Handle {
     pub async fn buffer_bytes(&mut self, num: usize) {
         // Set tx_rem to num
         {
-            let mut i = self.codec.get_mut().inner.lock().unwrap();
+            let mut i = self.codec.get_mut().inner.lock();
             i.tx_rem = num;
         }
 
         poll_fn(move |cx| {
             {
-                let mut inner = self.codec.get_mut().inner.lock().unwrap();
+                let mut inner = self.codec.get_mut().inner.lock();
                 if inner.tx_rem == 0 {
                     inner.tx_rem = usize::MAX;
                 } else {
@@ -292,7 +293,7 @@ impl Handle {
     }
 
     pub async fn unbounded_bytes(&mut self) {
-        let mut i = self.codec.get_mut().inner.lock().unwrap();
+        let mut i = self.codec.get_mut().inner.lock();
         i.tx_rem = usize::MAX;
 
         if let Some(task) = i.tx_rem_task.take() {
@@ -366,12 +367,11 @@ impl Drop for Handle {
         let mut cx = Context::from_waker(&waker);
         assert!(self.codec.shutdown(&mut cx).is_ready());
 
-        if let Ok(mut me) = self.codec.get_mut().inner.lock() {
-            me.closed = true;
+        let mut me = self.codec.get_mut().inner.lock();
+        me.closed = true;
 
-            if let Some(task) = me.rx_task.take() {
-                task.wake();
-            }
+        if let Some(task) = me.rx_task.take() {
+            task.wake();
         }
     }
 }
@@ -389,7 +389,7 @@ impl AsyncRead for Mock {
             "attempted read with zero length buffer... wut?"
         );
 
-        let mut me = self.pipe.inner.lock().unwrap();
+        let mut me = self.pipe.inner.lock();
 
         if me.unexpected_eof {
             return Poll::Ready(Err(io::Error::new(
@@ -421,7 +421,7 @@ impl AsyncWrite for Mock {
         cx: &mut Context<'_>,
         mut buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        let mut me = self.pipe.inner.lock().unwrap();
+        let mut me = self.pipe.inner.lock();
 
         if me.closed {
             return Poll::Ready(Ok(buf.len()));
@@ -457,7 +457,7 @@ impl AsyncWrite for Mock {
 
 impl Drop for Mock {
     fn drop(&mut self) {
-        let mut me = self.pipe.inner.lock().unwrap();
+        let mut me = self.pipe.inner.lock();
         me.closed = true;
 
         if let Some(task) = me.tx_task.take() {
@@ -479,7 +479,7 @@ impl AsyncRead for Pipe {
             "attempted read with zero length buffer... wut?"
         );
 
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
 
         if me.tx.is_empty() {
             if me.closed {
@@ -504,7 +504,7 @@ impl AsyncWrite for Pipe {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.rx.extend(buf);
 
         if let Some(task) = me.rx_task.take() {

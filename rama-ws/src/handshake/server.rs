@@ -26,6 +26,10 @@ use rama_http::{
     request,
     service::web::response::{self, Headers, IntoResponse},
 };
+use rama_utils::{
+    collections::non_empty_vec,
+    str::{NonEmptyStr, non_empty_str},
+};
 
 use crate::{
     Message,
@@ -242,7 +246,13 @@ pub fn validate_http_client_request<Body>(
             // Only used for http/1.1 style WebSocket upgrade, not h2
             // as in the latter it is deprecated by the `:protocol` PSEUDO header.
             accept_header = match request.headers().typed_get::<headers::SecWebSocketKey>() {
-                Some(key) => Some(headers::SecWebSocketAccept::from(key)),
+                Some(key) => headers::SecWebSocketAccept::try_from(key)
+                    .inspect_err(|err| {
+                        tracing::debug!(
+                            "failed to create accept typed header from given key: {err}"
+                        )
+                    })
+                    .ok(),
                 None => return Err(RequestValidateError::InvalidSecWebSocketKeyHeader),
             };
         }
@@ -341,8 +351,8 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Define the WebSocket rama echo protocols.
         pub fn echo_protocols(mut self) -> Self {
-            self.protocols = Some(headers::SecWebSocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT)
-                .with_additional_protocols([
+            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_vec![
+                ECHO_SERVICE_SUB_PROTOCOL_DEFAULT,
                     ECHO_SERVICE_SUB_PROTOCOL_UPPER,
                     ECHO_SERVICE_SUB_PROTOCOL_LOWER,
                 ]));
@@ -429,13 +439,11 @@ impl WebSocketAcceptor {
     pub fn into_echo_service(mut self) -> WebSocketAcceptorService<WebSocketEchoService> {
         if self.protocols.is_none() {
             self.protocols_flex = true;
-            self.protocols = Some(
-                headers::SecWebSocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT)
-                    .with_additional_protocols([
-                        ECHO_SERVICE_SUB_PROTOCOL_UPPER,
-                        ECHO_SERVICE_SUB_PROTOCOL_LOWER,
-                    ]),
-            );
+            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_vec![
+                ECHO_SERVICE_SUB_PROTOCOL_DEFAULT,
+                ECHO_SERVICE_SUB_PROTOCOL_UPPER,
+                ECHO_SERVICE_SUB_PROTOCOL_LOWER,
+            ]));
         }
 
         WebSocketAcceptorService {
@@ -494,8 +502,8 @@ where
                 let accepted_extension = match (request_data.extensions, self.extensions.as_ref()) {
                     (None, _) | (_, None) => None,
                     (Some(request_extensions), Some(allowed_extensions)) => {
-                        request_extensions.into_iter().find_map(|request_ext| {
-                            for allowed_ext in allowed_extensions.iter() {
+                        request_extensions.0.iter().find_map(|request_ext| {
+                            for allowed_ext in allowed_extensions.0.iter() {
                                 if let (
                                     Extension::PerMessageDeflate(request_pmd),
                                     Extension::PerMessageDeflate(allowed_pmd),
@@ -822,12 +830,15 @@ where
     }
 }
 
+const ECHO_SERVICE_SUB_PROTOCOL_DEFAULT_STR: &str = "echo";
+
 /// Default protocol used by [`WebSocketEchoService`], incl when no match is found
-pub const ECHO_SERVICE_SUB_PROTOCOL_DEFAULT: &str = "echo";
+pub const ECHO_SERVICE_SUB_PROTOCOL_DEFAULT: NonEmptyStr =
+    non_empty_str!(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT_STR);
 /// Uppercase all characters as part of the echod response in [`WebSocketEchoService`].
-pub const ECHO_SERVICE_SUB_PROTOCOL_UPPER: &str = "echo-upper";
+pub const ECHO_SERVICE_SUB_PROTOCOL_UPPER: NonEmptyStr = non_empty_str!("echo-upper");
 /// Lowercase all characters as part of the echod response in [`WebSocketEchoService`].
-pub const ECHO_SERVICE_SUB_PROTOCOL_LOWER: &str = "echo-lower";
+pub const ECHO_SERVICE_SUB_PROTOCOL_LOWER: NonEmptyStr = non_empty_str!("echo-lower");
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -850,16 +861,16 @@ impl Service<AsyncWebSocket> for WebSocketEchoService {
         let protocol = socket
             .extensions()
             .get::<headers::sec_websocket_protocol::AcceptedWebSocketProtocol>()
-            .map(|p| p.as_str())
-            .unwrap_or(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT);
+            .map(|p| p.0.as_ref())
+            .unwrap_or(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT_STR);
 
-        let transformer = if protocol.eq_ignore_ascii_case(ECHO_SERVICE_SUB_PROTOCOL_LOWER) {
+        let transformer = if protocol.eq_ignore_ascii_case(&ECHO_SERVICE_SUB_PROTOCOL_LOWER) {
             |msg: Message| match msg {
                 Message::Text(original) => Some(original.to_lowercase().into()),
                 msg @ Message::Binary(_) => Some(msg),
                 Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
             }
-        } else if protocol.eq_ignore_ascii_case(ECHO_SERVICE_SUB_PROTOCOL_UPPER) {
+        } else if protocol.eq_ignore_ascii_case(&ECHO_SERVICE_SUB_PROTOCOL_UPPER) {
             |msg: Message| match msg {
                 Message::Text(original) => Some(original.to_uppercase().into()),
                 msg @ Message::Binary(_) => Some(msg),
@@ -937,6 +948,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
 mod tests {
     use headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
     use rama_http::Body;
+    use rama_utils::{collections::non_empty_vec, str::non_empty_str};
 
     use super::*;
 
@@ -1321,7 +1333,7 @@ mod tests {
                 "Sec-WebSocket-Protocol": "foo"
             },
             &acceptor,
-            Some(AcceptedWebSocketProtocol::new("foo")),
+            Some(AcceptedWebSocketProtocol(non_empty_str!("foo"))),
         )
         .await;
         assert_websocket_acceptor_ok(
@@ -1334,7 +1346,7 @@ mod tests {
                 ]
             },
             &acceptor,
-            Some(AcceptedWebSocketProtocol::new("foo")),
+            Some(AcceptedWebSocketProtocol(non_empty_str!("foo"))),
         )
         .await;
 
@@ -1350,7 +1362,7 @@ mod tests {
                 "Sec-WebSocket-Protocol": "foo, bar"
             },
             &acceptor,
-            Some(AcceptedWebSocketProtocol::new("foo")),
+            Some(AcceptedWebSocketProtocol(non_empty_str!("foo"))),
         )
         .await;
         assert_websocket_acceptor_ok(
@@ -1363,14 +1375,15 @@ mod tests {
                 ]
             },
             &acceptor,
-            Some(AcceptedWebSocketProtocol::new("foo")),
+            Some(AcceptedWebSocketProtocol(non_empty_str!("foo"))),
         )
         .await;
 
         // without protocols, even though we have allow list, fine due to it being optional,
         // but we still only accept allowed protocols if defined
 
-        let acceptor = acceptor.with_protocols(headers::SecWebSocketProtocol::new("foo"));
+        let acceptor =
+            acceptor.with_protocols(headers::SecWebSocketProtocol::new(non_empty_str!("foo")));
 
         assert_websocket_acceptor_ok(
             request! {
@@ -1401,9 +1414,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_websocket_accept_required_protocols() {
-        let acceptor = WebSocketAcceptor::default().with_protocols(
-            headers::SecWebSocketProtocol::new("foo").with_additional_protocols(["a", "b"]),
-        );
+        let acceptor = WebSocketAcceptor::default().with_protocols(headers::SecWebSocketProtocol(
+            non_empty_vec![
+                non_empty_str!("foo"),
+                non_empty_str!("a"),
+                non_empty_str!("b")
+            ],
+        ));
 
         // no protocols, required so all bad
 
@@ -1442,7 +1459,7 @@ mod tests {
                 "Sec-WebSocket-Protocol": "foo"
             },
             &acceptor,
-            Some(AcceptedWebSocketProtocol::new("foo")),
+            Some(AcceptedWebSocketProtocol(non_empty_str!("foo"))),
         )
         .await;
         assert_websocket_acceptor_ok(
@@ -1455,7 +1472,7 @@ mod tests {
                 ]
             },
             &acceptor,
-            Some(AcceptedWebSocketProtocol::new("b")),
+            Some(AcceptedWebSocketProtocol(non_empty_str!("b"))),
         )
         .await;
 
@@ -1471,7 +1488,7 @@ mod tests {
                 "Sec-WebSocket-Protocol": "test, b"
             },
             &acceptor,
-            Some(AcceptedWebSocketProtocol::new("b")),
+            Some(AcceptedWebSocketProtocol(non_empty_str!("b"))),
         )
         .await;
         assert_websocket_acceptor_ok(
@@ -1484,7 +1501,7 @@ mod tests {
                 ]
             },
             &acceptor,
-            Some(AcceptedWebSocketProtocol::new("a")),
+            Some(AcceptedWebSocketProtocol(non_empty_str!("a"))),
         )
         .await;
 

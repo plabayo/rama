@@ -378,7 +378,8 @@ impl Table {
         debug_assert!(self.assert_valid_state("one"));
 
         // Remove the header
-        let slot = self.slots.pop_back().unwrap();
+        #[allow(clippy::expect_used)]
+        let slot = self.slots.pop_back().expect("slots to never be empty here");
         let mut probe = desired_pos(self.mask, slot.hash);
 
         // Update the size
@@ -395,9 +396,9 @@ impl Table {
 
         // Find the associated position
         probe_loop!(probe < self.indices.len(), {
-            debug_assert!(self.indices[probe].is_some());
-
-            let mut pos = self.indices[probe].unwrap();
+            #[allow(clippy::expect_used)]
+            let mut pos = self.indices[probe]
+                .expect("position to be Some when found as an active probe slot");
 
             if pos.index == pos_idx {
                 if let Some(idx) = slot.next {
@@ -497,19 +498,19 @@ impl Table {
             let mut probe = desired_pos(self.mask, pos.hash);
 
             probe_loop!(probe < self.indices.len(), {
-                if self.indices[probe].is_none() {
+                #[allow(unused)]
+                if let Some(them) = self.indices[probe] {
+                    debug_assert!({
+                        let their_distance = probe_distance(self.mask, them.hash, probe);
+                        let our_distance = probe_distance(self.mask, pos.hash, probe);
+
+                        their_distance >= our_distance
+                    })
+                } else {
                     // empty bucket, insert here
                     self.indices[probe] = Some(pos);
                     return;
                 }
-
-                debug_assert!({
-                    let them = self.indices[probe].unwrap();
-                    let their_distance = probe_distance(self.mask, them.hash, probe);
-                    let our_distance = probe_distance(self.mask, pos.hash, probe);
-
-                    their_distance >= our_distance
-                });
             });
         }
     }

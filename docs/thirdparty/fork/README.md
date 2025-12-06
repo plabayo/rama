@@ -39,13 +39,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/21e01e977e97a7025ff4beb00b2acd79eadf7285/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/3bf1ba7b7893b57264dfe663165a2bc57a40d2c4>
+- <https://github.com/tower-rs/tower-http/tree/1fe4c091df13eb9dd7c58786615f08abe0d73bc6>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/3bf1ba7b7893b57264dfe663165a2bc57a40d2c4/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/1fe4c091df13eb9dd7c58786615f08abe0d73bc6/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
@@ -121,3 +121,25 @@ but still directly in function of Rama.
     - Original: <https://github.com/Michael-F-Bryan/include_dir/blob/d742c6fffce99ee89da91b934e7ce6fb2a82680c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/include_dir](./licenses/include_dir)
+
+## Small Lib Forks
+
+These are forks initially because the libraries are too simple or small
+to really warrant a permanent entry in our dep tree, yet are useful enough
+to give a foundation for similar functionality that we want.
+
+Over time they might diverge from the original as it grows with the rest
+of the rama ecosystem.
+
+- <https://github.com/cloudhead/nonempty/tree/95d5cb131262b12bbe55366cbbd48096f9a05493>
+  - Integrated in `rama::utils::collections`
+  - License:
+    - Original: <https://github.com/cloudhead/nonempty/blob/95d5cb131262b12bbe55366cbbd48096f9a05493/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/nonempty](./licenses/nonempty)
+- <https://github.com/thomcc/arcstr/tree/faa7692b0d6662bb177b3aefa80a6a13f897554d>
+  - Integrated in `rama::utils::str::arcstr`
+  - License:
+    - Original: <https://github.com/thomcc/arcstr/blob/faa7692b0d6662bb177b3aefa80a6a13f897554d/LICENSE-MIT>
+    - Type: MIT
+    - Copy: [./licenses/arcstr](./licenses/arcstr)

@@ -52,7 +52,7 @@ async fn main() {
     tokio::spawn(run_server(ADDRESS, ready_tx));
     ready_rx.await.unwrap();
 
-    let client = EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
@@ -60,7 +60,7 @@ async fn main() {
         .with_default_http_connector()
         .with_connection_pool(Default::default())
         .expect("connection pool")
-        .build();
+        .build_client();
 
     let resp = client
         .get(format!("http://{ADDRESS}/"))

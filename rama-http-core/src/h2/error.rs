@@ -71,12 +71,25 @@ impl Error {
         }
     }
 
-    /// Returns the error if the error is an io::Error
-    pub fn into_io(self) -> Option<io::Error> {
+    /// Return the underlying io::Error or else return self as Err.
+    pub fn try_into_io(self) -> Result<io::Error, Self> {
         match self.kind {
-            Kind::Io(e) => Some(e),
-            _ => None,
+            Kind::Io(e) => Ok(e),
+            _ => Err(self),
         }
+    }
+
+    /// Returns the error if the error is an io::Error
+    #[inline(always)]
+    pub fn into_io(self) -> Option<io::Error> {
+        self.try_into_io().ok()
+    }
+
+    /// Return the underlying io::Error or otherwise
+    /// it will cast it as an "other" IO Error
+    #[inline(always)]
+    pub fn force_into_io(self) -> io::Error {
+        self.try_into_io().unwrap_or_else(std::io::Error::other)
     }
 
     pub(crate) fn from_io(err: io::Error) -> Self {

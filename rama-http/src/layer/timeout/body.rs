@@ -89,7 +89,11 @@ where
             some
         } else {
             this.sleep.set(Some(sleep(*this.timeout)));
-            this.sleep.as_mut().as_pin_mut().unwrap()
+            #[allow(clippy::expect_used)]
+            this.sleep
+                .as_mut()
+                .as_pin_mut()
+                .expect("Some value to be set in previous statement (line)")
         };
 
         // Error if the timeout has expired.

@@ -17,7 +17,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_types::OriginalRouterUri;
-use rama_utils::include_dir;
+use rama_utils::{include_dir, str::arcstr::ArcStr};
 
 use std::{convert::Infallible, fmt, path::Path, sync::Arc};
 
@@ -319,7 +319,7 @@ where
         let matcher = HttpMatcher::path_prefix(prefix);
         let service = NestedService {
             inner,
-            prefix: Arc::from(prefix),
+            prefix: ArcStr::from(prefix),
         };
         self.set_matcher(matcher, service)
     }
@@ -478,14 +478,14 @@ where
 
 struct NestedService<S> {
     inner: S,
-    prefix: Arc<str>,
+    prefix: ArcStr,
 }
 
 impl<S: fmt::Debug> fmt::Debug for NestedService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NestedService")
             .field("inner", &self.inner)
-            .field("prefix", &self.prefix.as_ref())
+            .field("prefix", &self.prefix)
             .finish()
     }
 }
@@ -513,7 +513,7 @@ where
         // set the nested path
         let (mut parts, body) = req.into_parts();
 
-        match try_to_strip_path_prefix_from_uri(&parts.uri, self.prefix.as_ref()) {
+        match try_to_strip_path_prefix_from_uri(&parts.uri, &self.prefix) {
             Ok(modified_uri) => {
                 if !parts.extensions.contains::<OriginalRouterUri>() {
                     parts
@@ -525,7 +525,7 @@ where
             Err(err) => {
                 tracing::debug!(
                     "failed to strip prefix '{}' from Uri (bug??) preserve og uri as is; err = {err}",
-                    self.prefix.as_ref(),
+                    self.prefix,
                 );
             }
         }

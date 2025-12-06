@@ -3,7 +3,6 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, OpaqueError},
     extensions::ExtensionsRef,
-    inspect::RequestInspector,
     rt::Executor,
     stream::Stream,
 };
@@ -26,67 +25,40 @@ use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
+use std::marker::PhantomData;
 
+#[derive(Debug, Clone)]
 /// A [`Service`] which establishes an HTTP Connection.
-pub struct HttpConnector<S, I = ()> {
+pub struct HttpConnector<S, Body> {
     inner: S,
-    http_req_inspector_svc: I,
+    // Body type this connector will be able to send, this is not
+    // necessarily the same one that was used in the request that
+    // created this connection
+    _phantom: PhantomData<fn() -> Body>,
 }
 
-impl<S: fmt::Debug, I: fmt::Debug> fmt::Debug for HttpConnector<S, I> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpConnector")
-            .field("inner", &self.inner)
-            .field("http_req_inspector_svc", &self.http_req_inspector_svc)
-            .finish()
-    }
-}
-
-impl<S> HttpConnector<S> {
+impl<S, Body> HttpConnector<S, Body> {
     /// Create a new [`HttpConnector`].
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
-            http_req_inspector_svc: (),
-        }
-    }
-}
-
-impl<S, I> HttpConnector<S, I> {
-    /// Add a http request inspector that will run just before doing the actual http request
-    pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, T> {
-        HttpConnector {
-            inner: self.inner,
-            http_req_inspector_svc: http_req_inspector,
+            _phantom: PhantomData,
         }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S, I> Clone for HttpConnector<S, I>
+impl<S, BodyIn, BodyConnection> Service<Request<BodyIn>> for HttpConnector<S, BodyConnection>
 where
-    S: Clone,
-    I: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
-        }
-    }
-}
-
-impl<S, I, BodyIn, BodyOut> Service<Request<BodyIn>> for HttpConnector<S, I>
-where
-    I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>
-        + Clone,
     S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin>,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    // Body type this connector will be able to send, this is not necessarily the same one that
+    // was used in the request that created this connection
+    BodyConnection:
+        StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    type Response = EstablishedClientConnection<HttpClientService<BodyOut, I>, Request<BodyIn>>;
+    type Response = EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>;
     type Error = BoxError;
 
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
@@ -174,7 +146,6 @@ where
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http2(sender),
-                    http_req_inspector: self.http_req_inspector_svc.clone(),
                     extensions,
                 };
 
@@ -215,7 +186,6 @@ where
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http1(Mutex::new(sender)),
-                    http_req_inspector: self.http_req_inspector_svc.clone(),
                     extensions,
                 };
 
@@ -231,49 +201,33 @@ where
 
 #[derive(Clone, Debug)]
 /// A [`Layer`] that produces an [`HttpConnector`].
-pub struct HttpConnectorLayer<I = ()> {
-    http_req_inspector_svc: I,
+pub struct HttpConnectorLayer<Body> {
+    _phantom: PhantomData<Body>,
 }
 
-impl HttpConnectorLayer {
+impl<Body> HttpConnectorLayer<Body> {
     /// Create a new [`HttpConnectorLayer`].
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            http_req_inspector_svc: (),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<I> HttpConnectorLayer<I> {
-    /// Add a http request inspector that will run just before doing the actual http request
-    pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<T> {
-        HttpConnectorLayer {
-            http_req_inspector_svc: http_req_inspector,
-        }
-    }
-}
-
-impl Default for HttpConnectorLayer {
+impl<Body> Default for HttpConnectorLayer<Body> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<I: Clone, S> Layer<S> for HttpConnectorLayer<I> {
-    type Service = HttpConnector<S, I>;
+impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
+    type Service = HttpConnector<S, Body>;
 
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
-            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
-        }
-    }
-
-    fn into_layer(self, inner: S) -> Self::Service {
-        HttpConnector {
-            inner,
-            http_req_inspector_svc: self.http_req_inspector_svc,
+            _phantom: PhantomData,
         }
     }
 }

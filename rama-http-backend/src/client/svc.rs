@@ -2,7 +2,6 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef, RequestContextExt},
-    inspect::RequestInspector,
     telemetry::tracing,
 };
 use rama_http::{StreamingBody, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY};
@@ -32,22 +31,19 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
 }
 
 /// Internal http sender used to send the actual requests.
-pub struct HttpClientService<Body, I = ()> {
+pub struct HttpClientService<Body> {
     pub(super) sender: SendRequest<Body>,
-    pub(super) http_req_inspector: I,
     pub(super) extensions: Extensions,
 }
 
-impl<BodyIn, BodyOut, I> Service<Request<BodyIn>> for HttpClientService<BodyOut, I>
+impl<Body> Service<Request<Body>> for HttpClientService<Body>
 where
-    BodyIn: Send + 'static,
-    BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>,
+    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         // Check if this http connection can actually be used for TargetHttpVersion
         if let Some(target_version) = req.extensions().get::<TargetHttpVersion>() {
             match (&self.sender, target_version.0) {
@@ -63,12 +59,6 @@ where
                 .into_boxed())?,
             }
         }
-
-        let req = self
-            .http_req_inspector
-            .inspect_request(req)
-            .await
-            .map_err(Into::into)?;
 
         // sanitize subject line request uri
         // because Hyper (http) writes the URI as-is
@@ -102,13 +92,13 @@ where
     }
 }
 
-impl<B, I> ExtensionsRef for HttpClientService<B, I> {
+impl<B> ExtensionsRef for HttpClientService<B> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
     }
 }
 
-impl<B, I> ExtensionsMut for HttpClientService<B, I> {
+impl<B> ExtensionsMut for HttpClientService<B> {
     fn extensions_mut(&mut self) -> &mut Extensions {
         &mut self.extensions
     }

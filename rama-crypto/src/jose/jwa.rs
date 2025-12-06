@@ -1,8 +1,16 @@
 use std::ops::Deref;
 
-use aws_lc_rs::signature::{
-    ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING,
-    ECDSA_P521_SHA512_FIXED_SIGNING, EcdsaSigningAlgorithm, EcdsaVerificationAlgorithm,
+use aws_lc_rs::{
+    hmac,
+    hmac::{HMAC_SHA256, HMAC_SHA384, HMAC_SHA512},
+    signature::{
+        ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING,
+        ECDSA_P521_SHA512_FIXED_SIGNING, EcdsaSigningAlgorithm, EcdsaVerificationAlgorithm,
+        RSA_PKCS1_2048_8192_SHA256, RSA_PKCS1_2048_8192_SHA384, RSA_PKCS1_2048_8192_SHA512,
+        RSA_PKCS1_SHA256, RSA_PKCS1_SHA384, RSA_PKCS1_SHA512, RSA_PSS_2048_8192_SHA256,
+        RSA_PSS_2048_8192_SHA384, RSA_PSS_2048_8192_SHA512, RSA_PSS_SHA256, RSA_PSS_SHA384,
+        RSA_PSS_SHA512, RsaEncoding, VerificationAlgorithm,
+    },
 };
 use rama_core::error::OpaqueError;
 use serde::{Deserialize, Serialize};
@@ -110,6 +118,61 @@ impl TryFrom<&'static EcdsaSigningAlgorithm> for JWA {
             alg if *alg == ECDSA_P384_SHA384_FIXED_SIGNING => Ok(Self::ES384),
             alg if *alg == ECDSA_P521_SHA512_FIXED_SIGNING => Ok(Self::ES512),
             _ => Err(OpaqueError::from_display("cannot convert to jwa")),
+        }
+    }
+}
+
+impl TryFrom<JWA> for &'static hmac::Algorithm {
+    type Error = OpaqueError;
+
+    fn try_from(value: JWA) -> Result<Self, Self::Error> {
+        match value {
+            JWA::HS256 => Ok(&HMAC_SHA256),
+            JWA::HS384 => Ok(&HMAC_SHA384),
+            JWA::HS512 => Ok(&HMAC_SHA512),
+            _ => Err(OpaqueError::from_display(
+                "Non-Hmac algorithm cannot be converted to hmac types",
+            )),
+        }
+    }
+}
+
+impl TryFrom<JWA> for &'static dyn RsaEncoding {
+    type Error = OpaqueError;
+
+    fn try_from(value: JWA) -> Result<Self, Self::Error> {
+        match value {
+            JWA::RS256 => Ok(&RSA_PKCS1_SHA256),
+            JWA::RS384 => Ok(&RSA_PKCS1_SHA384),
+            JWA::RS512 => Ok(&RSA_PKCS1_SHA512),
+            JWA::PS256 => Ok(&RSA_PSS_SHA256),
+            JWA::PS384 => Ok(&RSA_PSS_SHA384),
+            JWA::PS512 => Ok(&RSA_PSS_SHA512),
+            _ => Err(OpaqueError::from_display(
+                "Non-RSA algorithm cannot be converted to rsa types",
+            )),
+        }
+    }
+}
+
+impl TryFrom<JWA> for &'static dyn VerificationAlgorithm {
+    type Error = OpaqueError;
+
+    fn try_from(value: JWA) -> Result<Self, Self::Error> {
+        match value {
+            JWA::RS256 => Ok(&RSA_PKCS1_2048_8192_SHA256),
+            JWA::RS384 => Ok(&RSA_PKCS1_2048_8192_SHA384),
+            JWA::RS512 => Ok(&RSA_PKCS1_2048_8192_SHA512),
+            JWA::PS256 => Ok(&RSA_PSS_2048_8192_SHA256),
+            JWA::PS384 => Ok(&RSA_PSS_2048_8192_SHA384),
+            JWA::PS512 => Ok(&RSA_PSS_2048_8192_SHA512),
+            JWA::ES256 | JWA::ES384 | JWA::ES512 => {
+                let signing_algo: &'static EcdsaSigningAlgorithm = value.try_into()?;
+                Ok(signing_algo.deref())
+            }
+            _ => Err(OpaqueError::from_display(
+                "Verification algorithm is not supported",
+            )),
         }
     }
 }

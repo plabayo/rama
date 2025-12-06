@@ -56,3 +56,8 @@ pub mod fingerprint;
 pub mod https;
 
 pub mod socket;
+
+#[doc(hidden)]
+pub mod __private {
+    pub use ::rama_utils as utils;
+}

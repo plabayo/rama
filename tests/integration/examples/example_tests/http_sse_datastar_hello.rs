@@ -13,6 +13,7 @@ use rama::{
             datastar::{DatastarEvent, EventType, PatchElements},
         },
     },
+    utils::str::non_empty_str,
 };
 
 use itertools::Itertools;
@@ -90,15 +91,15 @@ async fn test_http_sse_datastar_hello() {
     // test the actual stream content
 
     let mut expected_events: Vec<TestEvent> = vec![
-        PatchElements::new_remove("#server-warning")
+        PatchElements::new_remove(non_empty_str!("#server-warning"))
             .try_into()
             .unwrap(),
-        PatchElements::new(
+        PatchElements::new(non_empty_str!(
             r##"
 <div id='message'>Hello, Datastar!</div>
 <div id="progress-bar" style="width: 100%"></div>
 "##,
-        )
+        ))
         .try_into()
         .unwrap(),
     ];
@@ -110,12 +111,16 @@ async fn test_http_sse_datastar_hello() {
         let text = &MESSAGE[..i];
         let progress = (i as f64) / (MESSAGE.len() as f64) * 100f64;
         expected_events.push(
-            PatchElements::new(format!(
-                r##"
+            PatchElements::new(
+                format!(
+                    r##"
 <div id='message'>{text}</div>
 <div id="progress-bar" style="width: {progress}%"></div>
 "##
-            ))
+                )
+                .try_into()
+                .unwrap(),
+            )
             .try_into()
             .unwrap(),
         )
@@ -171,7 +176,12 @@ async fn test_http_sse_datastar_hello() {
             .data()
             .cloned()
             .and_then(|d| d.into_patch_elements().ok())
-            .map(|d| d.elements.unwrap_or_default().contains("sse-status"))
+            .map(|d| {
+                d.elements
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("sse-status")
+            })
             .unwrap_or_default()
         {
             sse_status_counter += 1;

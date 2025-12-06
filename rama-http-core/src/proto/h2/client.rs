@@ -203,7 +203,12 @@ where
     let ping_config = new_ping_config(config);
 
     let (conn, ping) = if ping_config.is_enabled() {
-        let pp = conn.ping_pong().expect("conn.ping_pong");
+        let Some(pp) = conn.ping_pong() else {
+            return Err(
+                crate::Error::new_parse_internal()
+                    .with_display("bug: report in rama crate: client: conn.ping_pong not available while ping config is enabled"),
+            );
+        };
         let (recorder, ponger) = ping::channel(pp, &ping_config);
 
         let conn: Conn<_, B> = Conn::new(ponger, conn);
@@ -414,7 +419,9 @@ where
             // the connection some more should start shutdown
             // and then close.
             trace!("send_request dropped, starting conn shutdown");
-            drop(this.cancel_tx.take().expect("ConnTask Future polled twice"));
+            if this.cancel_tx.take().is_none() {
+                warn!("h2 client: ConnTask Future polled twice: cancel_tx was already None");
+            }
         }
 
         Poll::Pending
@@ -541,8 +548,11 @@ where
                 if let Err(_e) = result {
                     debug!("client request body error: {_e:?}");
                 }
-                drop(this.conn_drop_ref.take().expect("Future polled twice"));
-                drop(this.ping.take().expect("Future polled twice"));
+                if this.conn_drop_ref.take().is_none() || this.ping.take().is_none() {
+                    warn!(
+                        "h2 client: ConnTask PipeMap polled twice: conn_drop_ref and/or ping was already None"
+                    );
+                }
                 return Poll::Ready(());
             }
             Poll::Pending => (),
@@ -652,8 +662,17 @@ where
 
         let result = ready!(this.fut.poll(cx));
 
-        let ping = this.ping.take().expect("Future polled twice");
-        let send_stream = this.send_stream.take().expect("Future polled twice");
+        let Some((ping, send_stream)) = this
+            .ping
+            .take()
+            .and_then(|ping| this.send_stream.take().map(|stream| (ping, stream)))
+        else {
+            return Poll::Ready(Err((
+                crate::Error::new_parse_internal()
+                    .with_display("ResponseFutMap polled twice (bug: polled after ready)"),
+                None::<Request<B>>,
+            )));
+        };
 
         match result {
             Ok(res) => {
