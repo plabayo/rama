@@ -3,7 +3,7 @@ use crate::client::Request as TcpRequest;
 use rama_core::{
     Service,
     error::{BoxError, ErrorExt, OpaqueError},
-    extensions::{Extensions, ExtensionsMut},
+    extensions::ExtensionsMut,
     stream::Stream,
 };
 use rama_net::{
@@ -107,8 +107,7 @@ where
         };
 
         // Clone them here so we also have them on source still
-        let parent_extensions = source.extensions().clone().into_frozen_extensions();
-        let extensions = Extensions::new().with_parent_extensions(parent_extensions);
+        let extensions = source.extensions().clone();
         let req = TcpRequest::new_with_extensions(authority.clone(), extensions);
 
         let EstablishedClientConnection { conn: target, .. } =

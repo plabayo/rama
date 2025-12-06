@@ -3,7 +3,7 @@ use crate::h2::proto::*;
 use crate::h2::{client, server};
 
 use rama_core::bytes::Bytes;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::futures::Stream;
 use rama_core::telemetry::tracing;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
@@ -109,7 +109,7 @@ where
     B: Buf,
 {
     pub(crate) fn try_new(
-        mut codec: Codec<T, Prioritized<B>>,
+        codec: Codec<T, Prioritized<B>>,
         config: Config,
     ) -> Result<Self, crate::h2::proto::Error> {
         fn streams_config(config: &Config) -> streams::Config {
@@ -145,10 +145,7 @@ where
         }
         // Transfer ownership of extensions to Streams as at this point our connection is esthablished
         // and we only need these extensions as parents for our inner Stream's
-        let streams = Streams::try_new(
-            streams_config(&config),
-            std::mem::take(codec.extensions_mut()),
-        )?;
+        let streams = Streams::try_new(streams_config(&config), codec.extensions().clone())?;
         Ok(Self {
             codec,
             inner: ConnectionInner {

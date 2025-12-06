@@ -262,15 +262,26 @@ where
         }
 
         if !forwarded_elements.is_empty() {
-            if let Some(ref mut f) = req.extensions_mut().get_mut::<Forwarded>() {
-                f.extend(forwarded_elements);
+            let forwarded = if let Some(mut forwarded) = req
+                .extensions_mut()
+                .get::<rama_net::forwarded::Forwarded>()
+                .cloned()
+            {
+                forwarded.extend(forwarded_elements);
+                Some(forwarded)
             } else {
                 let mut it = forwarded_elements.into_iter();
                 if let Some(first) = it.next() {
                     let mut forwarded = rama_net::forwarded::Forwarded::new(first);
                     forwarded.extend(it);
-                    req.extensions_mut().insert(forwarded);
+                    Some(forwarded)
+                } else {
+                    None
                 }
+            };
+
+            if let Some(forwarded) = forwarded {
+                req.extensions_mut().insert(forwarded);
             }
         }
 

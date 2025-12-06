@@ -8,6 +8,7 @@ use std::fmt;
 use crate::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
     service::BoxService,
@@ -159,7 +160,8 @@ impl<Body, ConnectionBody, Connection, L> Service<Request<Body>>
     for EasyHttpWebClient<Body, EstablishedClientConnection<Connection, Request<ConnectionBody>>, L>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    Connection: Service<Request<ConnectionBody>, Response = Response, Error = BoxError>,
+    Connection:
+        Service<Request<ConnectionBody>, Response = Response, Error = BoxError> + ExtensionsRef,
     // Body type this connection will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
     ConnectionBody:
@@ -179,9 +181,12 @@ where
         let uri = req.uri().clone();
 
         let EstablishedClientConnection {
-            req,
+            mut req,
             conn: http_connection,
         } = self.connector.serve(req).await?;
+
+        req.extensions_mut()
+            .extend(http_connection.extensions().clone());
 
         let http_connection = self.jit_layers.layer(http_connection);
 

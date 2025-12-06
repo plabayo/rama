@@ -22,7 +22,7 @@
 
 use rama::{
     Service,
-    extensions::ExtensionsMut,
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
         service::web::Router,
@@ -100,12 +100,15 @@ async fn main() {
     });
 
     let EstablishedClientConnection {
-        req,
+        mut req,
         conn: http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a proxied connection ready to make http requests");
+
+    req.extensions_mut()
+        .extend(http_service.extensions().clone());
 
     tracing::info!(
         url.full = %uri,

@@ -937,8 +937,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
         };
 
         // TODO improve extensions handling in AsyncWebSocket
-        let parent_extensions = io.extensions().clone().into_frozen_extensions();
-        let extensions = Extensions::new().with_parent_extensions(parent_extensions);
+        let extensions = io.extensions().clone();
         let mut socket = AsyncWebSocket::from_raw_socket(io, Role::Server, maybe_ws_config).await;
         *socket.extensions_mut() = extensions;
         self.serve(socket).await

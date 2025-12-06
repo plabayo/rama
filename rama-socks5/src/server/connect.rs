@@ -1,4 +1,4 @@
-use rama_core::extensions::{Extensions, ExtensionsMut};
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Service, error::BoxError, stream::Stream};
 use rama_net::address::HostWithPort;
@@ -217,10 +217,9 @@ where
         // TODO: replace with timeout layer once possible
 
         // Clone so we also have them on stream still
-        let parent_extensions = stream.extensions().clone().into_frozen_extensions();
         let connect_future = self.connector.connect(TcpRequest::new_with_extensions(
             destination.clone(),
-            Extensions::new().with_parent_extensions(parent_extensions),
+            stream.extensions().clone(),
         ));
 
         let result = match self.connect_timeout {

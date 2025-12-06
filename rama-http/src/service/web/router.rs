@@ -580,29 +580,28 @@ where
     type Error = Infallible;
 
     async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        let mut ext = Extensions::new();
-
         let path = req.uri().path().to_lowercase_smolstr();
 
         if let Ok(matched) = self.routes.at(path.as_str()) {
             let uri_params = matched.params.iter();
 
-            match req.extensions_mut().get_mut::<UriParams>() {
+            let params = match req.extensions_mut().get::<UriParams>() {
                 Some(params) => {
+                    let mut params = params.clone();
                     params.extend(uri_params);
+                    params
                 }
-                None => {
-                    req.extensions_mut()
-                        .insert(uri_params.collect::<UriParams>());
-                }
-            }
+                None => uri_params.collect::<UriParams>(),
+            };
+
+            req.extensions_mut().insert(params);
 
             for (matcher, service) in matched.value.iter() {
+                let mut ext = Extensions::new();
                 if matcher.matches(Some(&mut ext), &req) {
                     req.extensions_mut().extend(ext);
                     return service.serve(req).await;
                 }
-                ext.clear();
             }
         }
 

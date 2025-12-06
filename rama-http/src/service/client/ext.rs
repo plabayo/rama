@@ -571,7 +571,10 @@ where
 
     /// Adds an extension to this builder
     #[must_use]
-    pub fn extension<T: Clone + Send + Sync + 'static>(mut self, extension: T) -> Self {
+    pub fn extension<T>(mut self, extension: T) -> Self
+    where
+        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    {
         match self.state {
             RequestBuilderState::PreBody(builder) => {
                 let builder = builder.extension(extension);

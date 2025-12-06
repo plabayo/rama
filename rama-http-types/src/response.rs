@@ -685,7 +685,7 @@ impl Builder {
     /// ```
     pub fn extension<T>(self, extension: T) -> Self
     where
-        T: Clone + Any + Send + Sync + 'static,
+        T: Clone + Any + Send + Sync + std::fmt::Debug + 'static,
     {
         self.and_then(move |mut head| {
             head.extensions.insert(extension);
