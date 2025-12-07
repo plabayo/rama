@@ -71,18 +71,18 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::rustls::{
+        dep::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
         dep::rustls::{
             ALL_VERSIONS, ServerConfig, crypto::aws_lc_rs, server::ResolvesServerCert,
             sign::CertifiedKey,
         },
-        pemfile,
         server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
     },
 };
 
 // everything else is provided by the standard library, community crates or tokio
 
-use std::{convert::Infallible, io::BufReader, sync::Arc, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -192,13 +192,11 @@ impl ResolvesServerCert for DynamicIssuer {
 }
 
 fn load_certificate(cert_chain: &[u8], private_key: &[u8]) -> Result<CertifiedKey, OpaqueError> {
-    let cert_chain = pemfile::certs(&mut BufReader::new(cert_chain))
+    let cert_chain = CertificateDer::pem_slice_iter(cert_chain)
         .collect::<Result<Vec<_>, _>>()
         .context("collect cert chain")?;
 
-    let priv_key_der = pemfile::private_key(&mut BufReader::new(private_key))
-        .context("load private key")?
-        .context("non empty key")?;
+    let priv_key_der = PrivateKeyDer::from_pem_slice(private_key).context("load private key")?;
 
     let provider = Arc::new(aws_lc_rs::default_provider());
     let signing_key = provider

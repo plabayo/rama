@@ -33,8 +33,6 @@ pub mod verify;
 
 pub mod key_log;
 
-pub mod pemfile;
-
 mod type_conversion;
 
 pub mod types {

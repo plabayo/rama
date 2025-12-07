@@ -121,12 +121,6 @@ but still directly in function of Rama.
     - Original: <https://github.com/Michael-F-Bryan/include_dir/blob/d742c6fffce99ee89da91b934e7ce6fb2a82680c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/include_dir](./licenses/include_dir)
-- <https://github.com/rustls/pemfile/tree/1e4ce69dd97b6bd0657a9dee8503cb8657b49235>
-  - archived, no longer maintained
-  - License:
-    - Original: <https://github.com/rustls/pemfile/blob/1e4ce69dd97b6bd0657a9dee8503cb8657b49235/LICENSE-MIT>
-    - Type: MIT
-    - Copy: [./licenses/pemfile](./licenses/pemfile)
 
 ## Small Lib Forks
 
