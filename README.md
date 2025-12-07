@@ -37,8 +37,8 @@
 It gives you programmable control over how packets move through your stack, so you can build:
 
 - production grade reverse and forward proxies
-- HTTP and TLS termination layers
-- security inspection and distortion proxies
+- HTTP and [TLS termination](./examples/tls_boring_termination.rs) layers
+- security inspection and [distortion proxies](./examples/http_mitm_proxy_boring.rs)
 - high volume scraping and data extraction pipelines
 - custom HTTP clients with deep control over the wire
 
@@ -632,5 +632,5 @@ Available at <https://ramaproxy.org/book/faq.html>.
 
 > [!TIP]
 >
-> 📚 If you like rama, you might also like Netstack.FM.
-> [the NetstackFM podcast](https://ramaproxy.org/book/netstackfm.html).
+> 📚 If you like rama, you might also like [the NetstackFM podcast](https://ramaproxy.org/book/netstackfm.html),
+> a podcast about networking, Rust, and everything in between.
