@@ -382,7 +382,7 @@ impl<S, K> TlsConnector<S, K> {
     {
         let connector_data = connector_data
             .or(self.connector_data.clone())
-            .unwrap_or(TlsConnectorData::new_http_auto()?);
+            .unwrap_or(TlsConnectorData::try_new_http_auto()?);
 
         let server_name = rustls_pki_types::ServerName::rama_try_from(
             connector_data.server_name.unwrap_or(server_host),

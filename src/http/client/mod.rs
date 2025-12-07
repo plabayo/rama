@@ -93,7 +93,7 @@ where
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     fn default() -> Self {
-        let tls_config = rama_tls_rustls::client::TlsConnectorData::new_http_auto()
+        let tls_config = rama_tls_rustls::client::TlsConnectorData::try_new_http_auto()
             .expect("connector data with http auto");
 
         EasyHttpConnectorBuilder::new()

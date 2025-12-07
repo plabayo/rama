@@ -126,7 +126,7 @@ async fn main() {
         .build_client()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client)
+    let client = AcmeClient::try_new(TEST_DIRECTORY_URL, client)
         .await
         .expect("create acme client");
 
@@ -145,7 +145,7 @@ async fn main() {
         .expect("create account");
 
     let mut order = account
-        .new_order(NewOrderPayload {
+        .try_new_order(NewOrderPayload {
             identifiers: vec![Identifier::dns("example.com")],
             ..Default::default()
         })

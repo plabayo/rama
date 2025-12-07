@@ -243,7 +243,7 @@ impl Http1Transaction for Server {
                         // we don't need to append this secondary length
                         continue;
                     }
-                    decoder = DecodedLength::checked_new(len)?;
+                    decoder = DecodedLength::try_checked_new(len)?;
                     con_len = Some(len);
                 }
                 header::CONNECTION => {
@@ -1100,7 +1100,7 @@ impl Client {
                 Ok(Some((DecodedLength::CLOSE_DELIMITED, false)))
             }
         } else if let Some(len) = headers::content_length_parse_all(&inc.headers) {
-            Ok(Some((DecodedLength::checked_new(len)?, false)))
+            Ok(Some((DecodedLength::try_checked_new(len)?, false)))
         } else if inc.headers.contains_key(header::CONTENT_LENGTH) {
             debug!("illegal Content-Length header");
             Err(Parse::content_length_invalid())

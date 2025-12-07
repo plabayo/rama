@@ -8,7 +8,7 @@ impl From<Option<u64>> for DecodedLength {
     fn from(len: Option<u64>) -> Self {
         len.and_then(|len| {
             // If the length is u64::MAX, oh well, just reported chunked.
-            Self::checked_new(len).ok()
+            Self::try_checked_new(len).ok()
         })
         .unwrap_or(Self::CHUNKED)
     }
@@ -46,7 +46,7 @@ impl DecodedLength {
     }
 
     /// Checks the `u64` is within the maximum allowed for content-length.
-    pub(crate) fn checked_new(len: u64) -> Result<Self, crate::error::Parse> {
+    pub(crate) fn try_checked_new(len: u64) -> Result<Self, crate::error::Parse> {
         if len <= MAX_LEN {
             Ok(Self(len))
         } else {

@@ -51,7 +51,11 @@ pub struct AcmeClient {
 
 impl AcmeClient {
     /// Create a new acme [`AcmeClient`] for the given directory url and using the provided https client
-    pub async fn new<S>(directory_url: &str, https_client: S) -> Result<Self, OpaqueError>
+    ///
+    /// # Errors
+    ///
+    /// Fails in case the ACME `Directory` could not be fetched.
+    pub async fn try_new<S>(directory_url: &str, https_client: S) -> Result<Self, OpaqueError>
     where
         S: Service<Request, Output = Response, Error = OpaqueError>,
     {
@@ -80,7 +84,7 @@ impl AcmeClient {
     where
         S: Service<Request, Output = Response, Error = OpaqueError>,
     {
-        Self::new(provider.as_directory_url(), https_client).await
+        Self::try_new(provider.as_directory_url(), https_client).await
     }
 
     generate_set_and_with! {
@@ -307,7 +311,10 @@ impl<'a> Account<'a> {
     }
 
     /// Place a new [`Order`] using this [`Account`]
-    pub async fn new_order(&self, new_order: NewOrderPayload) -> Result<Order<'_>, ClientError> {
+    pub async fn try_new_order(
+        &self,
+        new_order: NewOrderPayload,
+    ) -> Result<Order<'_>, ClientError> {
         let do_request = async || {
             let response = self
                 .post(&self.client.directory.new_order, Some(&new_order))

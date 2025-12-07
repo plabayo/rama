@@ -42,7 +42,7 @@ impl TlsConnectorData {
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.
-    pub fn new_http_auto() -> Result<Self, OpaqueError> {
+    pub fn try_new_http_auto() -> Result<Self, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
             .try_with_env_key_logger()?
             .with_alpn_protocols_http_auto()
@@ -51,7 +51,7 @@ impl TlsConnectorData {
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing http/1.1 connections.
-    pub fn new_http_1() -> Result<Self, OpaqueError> {
+    pub fn try_new_http_1() -> Result<Self, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
             .try_with_env_key_logger()?
             .with_alpn_protocols(&[ApplicationProtocol::HTTP_11])
@@ -60,7 +60,7 @@ impl TlsConnectorData {
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing h2 connections.
-    pub fn new_http_2() -> Result<Self, OpaqueError> {
+    pub fn try_new_http_2() -> Result<Self, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
             .try_with_env_key_logger()?
             .with_alpn_protocols(&[ApplicationProtocol::HTTP_2])
@@ -130,7 +130,7 @@ impl TlsConnectorDataBuilder {
         /// and set it in the current config
         pub fn env_key_logger(mut self) -> Result<Self, OpaqueError> {
             if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
-                let key_logger = Arc::new(KeyLogFile::new(path)?);
+                let key_logger = Arc::new(KeyLogFile::try_new(path)?);
                 self.client_config.key_log = key_logger;
             };
             Ok(self)

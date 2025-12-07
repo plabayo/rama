@@ -237,7 +237,7 @@ impl<C, ID> Clone for LruDropPool<C, ID> {
 }
 
 impl<C, ID> LruDropPool<C, ID> {
-    pub fn new(max_active: usize, max_total: usize) -> Result<Self, OpaqueError> {
+    pub fn try_new(max_active: usize, max_total: usize) -> Result<Self, OpaqueError> {
         if max_active == 0 || max_total == 0 {
             return Err(OpaqueError::from_display(
                 "max_active or max_total of 0 will make this pool unusable",
@@ -913,7 +913,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_reuse_connections() {
-        let pool = LruDropPool::new(5, 10).unwrap();
+        let pool = LruDropPool::try_new(5, 10).unwrap();
         // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
         // acting like like a global connection pool (eg database connection pool where all connections can be used).
         let svc = PooledConnector::new(
@@ -933,7 +933,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_conn_id_to_separate() {
-        let pool = LruDropPool::new(5, 10).unwrap();
+        let pool = LruDropPool::try_new(5, 10).unwrap();
         let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {});
 
         {
@@ -990,7 +990,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_max_size() {
-        let pool = LruDropPool::new(1, 1).unwrap();
+        let pool = LruDropPool::try_new(1, 1).unwrap();
         let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {})
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dont_return_broken_connections_to_pool() {
-        let pool = LruDropPool::new(1, 1).unwrap();
+        let pool = LruDropPool::try_new(1, 1).unwrap();
         let svc = PooledConnector::new(TestConnector::default(), pool, StringInputLengthID {});
 
         let conn = svc
@@ -1106,7 +1106,7 @@ mod tests {
 
     #[tokio::test]
     async fn drop_idle_connections() {
-        let pool = LruDropPool::new(5, 10)
+        let pool = LruDropPool::try_new(5, 10)
             .unwrap()
             .with_idle_timeout(Duration::from_micros(1));
 
@@ -1146,7 +1146,7 @@ mod tests {
     }
 
     async fn test_reuse(strategy: ReuseStrategy, expected: u32) {
-        let pool = LruDropPool::new(5, 10)
+        let pool = LruDropPool::try_new(5, 10)
             .unwrap()
             .with_reuse_strategy(strategy);
 

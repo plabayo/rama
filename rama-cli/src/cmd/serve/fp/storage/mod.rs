@@ -20,12 +20,12 @@ pub(super) struct Storage {
 }
 
 impl Storage {
-    pub(super) async fn new(pg_url: String) -> Result<Self, OpaqueError> {
+    pub(super) async fn try_new(pg_url: String) -> Result<Self, OpaqueError> {
         tracing::debug!(
             url.full = %pg_url,
             "create new PG storage",
         );
-        let pool = postgres::new_pool(pg_url).await?;
+        let pool = postgres::try_new_pool(pg_url).await?;
         Ok(Self { pool })
     }
 }

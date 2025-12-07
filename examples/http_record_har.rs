@@ -118,7 +118,7 @@ async fn main() -> Result<(), BoxError> {
         .init();
 
     let mitm_tls_service_data =
-        new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
+        try_new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -340,7 +340,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+fn try_new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
             ApplicationProtocol::HTTP_2,

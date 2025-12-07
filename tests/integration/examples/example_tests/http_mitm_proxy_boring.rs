@@ -46,7 +46,7 @@ async fn test_http_mitm_proxy() {
             .unwrap();
     });
 
-    let data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
+    let data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
         organisation_name: Some("Example Server Acceptor".to_owned()),
         ..Default::default()
     })

@@ -1,7 +1,7 @@
 use super::TlsAcceptorData;
 use crate::{
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
-    keylog::new_key_log_file_handle,
+    keylog::try_new_key_log_file_handle,
     server::TlsStream,
     types::SecureTransport,
 };
@@ -183,7 +183,7 @@ where
         }
 
         if let Some(keylog_filename) = tls_config.keylog_intent.file_path().as_deref() {
-            let handle = new_key_log_file_handle(keylog_filename)?;
+            let handle = try_new_key_log_file_handle(keylog_filename)?;
             acceptor_builder.set_keylog_callback(move |_, line| {
                 let line = format!("{line}\n");
                 handle.write_log_line(line);

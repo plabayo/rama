@@ -7,7 +7,7 @@ use rama::error::{ErrorContext, OpaqueError};
 
 pub(super) type Pool = bb8::Pool<PostgresConnectionManager<NoTls>>;
 
-pub(super) async fn new_pool(url: String) -> Result<Pool, OpaqueError> {
+pub(super) async fn try_new_pool(url: String) -> Result<Pool, OpaqueError> {
     let config =
         tokio_postgres::config::Config::from_str(&url).context("create PG config from url")?;
     let pg_mgr = PostgresConnectionManager::new(config, tokio_postgres::NoTls);

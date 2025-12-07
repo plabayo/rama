@@ -119,7 +119,7 @@ impl JWK {
     ///
     /// Warning: make sure to specify the correct algorithm.
     /// If `https://github.com/aws/aws-lc-rs/pull/834` gets merged this won't be needed anymore
-    fn new_from_escdsa_keypair(key: &EcdsaKeyPair) -> Result<Self, OpaqueError> {
+    fn try_new_from_escdsa_keypair(key: &EcdsaKeyPair) -> Result<Self, OpaqueError> {
         let alg = JWA::try_from(key.algorithm())?;
         let curve = alg.try_into()?;
         // 0x04 prefix + x + y
@@ -230,7 +230,11 @@ pub struct EcdsaKey {
 
 impl EcdsaKey {
     /// Create a new [`EcdsaKey`] from the given [`EcdsaKeyPair`]
-    pub fn new(key_pair: EcdsaKeyPair, alg: JWA, rng: SystemRandom) -> Result<Self, OpaqueError> {
+    pub fn try_new(
+        key_pair: EcdsaKeyPair,
+        alg: JWA,
+        rng: SystemRandom,
+    ) -> Result<Self, OpaqueError> {
         // Check if passed algorithm is a correct elliptic curve one
         let _curve = JWKEllipticCurves::try_from(alg)?;
         Ok(Self {
@@ -245,7 +249,7 @@ impl EcdsaKey {
         let key_pair = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING)
             .context("generate EcdsaKeyPair")?;
 
-        Self::new(key_pair, JWA::ES256, SystemRandom::new())
+        Self::try_new(key_pair, JWA::ES256, SystemRandom::new())
     }
 
     /// Generate a new [`EcdsaKey`] from the given pkcs8 der
@@ -258,7 +262,7 @@ impl EcdsaKey {
         let key_pair = EcdsaKeyPair::from_pkcs8(ec_alg, pkcs8_der)
             .context("create EcdsaKeyPair from pkcs8")?;
 
-        Self::new(key_pair, alg, rng)
+        Self::try_new(key_pair, alg, rng)
     }
 
     /// Create pkcs8 der for the current [`EcdsaKeyPair`]
@@ -277,7 +281,7 @@ impl EcdsaKey {
             clippy::expect_used,
             reason = "`new_for_escdsa_keypair` can only fail if curve is not elliptic but we already check that in `new`"
         )]
-        JWK::new_from_escdsa_keypair(&self.inner).expect("create JWK from escdsa keypair")
+        JWK::try_new_from_escdsa_keypair(&self.inner).expect("create JWK from escdsa keypair")
     }
 
     #[must_use]
@@ -332,7 +336,7 @@ pub struct RsaKey {
 
 impl RsaKey {
     /// Create a new [`RsaKey`] from the given [`RsaKeyPair`]
-    pub fn new(key_pair: RsaKeyPair, alg: JWA, rng: SystemRandom) -> Result<Self, OpaqueError> {
+    pub fn try_new(key_pair: RsaKeyPair, alg: JWA, rng: SystemRandom) -> Result<Self, OpaqueError> {
         Ok(Self {
             rng,
             alg,
@@ -344,7 +348,7 @@ impl RsaKey {
     pub fn generate(key_size: KeySize) -> Result<Self, OpaqueError> {
         let key_pair = RsaKeyPair::generate(key_size).context("error generating rsa key pair")?;
 
-        Self::new(key_pair, JWA::RS256, SystemRandom::new())
+        Self::try_new(key_pair, JWA::RS256, SystemRandom::new())
     }
 
     /// Generate a new [`RsaKey`] from the given pkcs8 der
@@ -355,7 +359,7 @@ impl RsaKey {
     ) -> Result<Self, OpaqueError> {
         let key_pair = RsaKeyPair::from_pkcs8(pkcs8_der).context("create RSAKeyPair from pkcs8")?;
 
-        Self::new(key_pair, alg, rng)
+        Self::try_new(key_pair, alg, rng)
     }
 
     /// Create pkcs8 der for the current [`RsaKeyPair`]

@@ -100,7 +100,7 @@ async fn main() {
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     let tls_service_data = {
-        TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
+        TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })

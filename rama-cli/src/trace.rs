@@ -49,7 +49,7 @@ fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxErr
         .without_proxy_support()
         .with_tls_support_using_boringssl(None)
         .with_default_http_connector()
-        .with_connection_pool(HttpPooledConnectorConfig::default())
+        .try_with_connection_pool(HttpPooledConnectorConfig::default())
         .context("build http exporter client service")?
         .build_client();
     let client = OtelExporter::new(svc);

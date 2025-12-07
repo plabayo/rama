@@ -35,7 +35,7 @@ use super::compress_certificate::{
     BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
 };
 
-use crate::keylog::new_key_log_file_handle;
+use crate::keylog::try_new_key_log_file_handle;
 
 /// [`TlsConnectorData`] that will be used by the connector
 ///
@@ -522,7 +522,7 @@ impl TlsConnectorDataBuilder {
         }
 
         if let Some(keylog_filename) = self.keylog_filepath().as_deref() {
-            let handle = new_key_log_file_handle(keylog_filename)?;
+            let handle = try_new_key_log_file_handle(keylog_filename)?;
             cfg_builder.set_keylog_callback(move |_, line| {
                 let line = format!("{line}\n");
                 handle.write_log_line(line);

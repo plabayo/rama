@@ -58,7 +58,7 @@ impl Header<Option<HeaderName>> {
 }
 
 impl Header {
-    pub fn new(name: &Bytes, value: Bytes) -> Result<Self, DecoderError> {
+    pub fn try_new(name: &Bytes, value: Bytes) -> Result<Self, DecoderError> {
         if name.is_empty() {
             return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
         }

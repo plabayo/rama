@@ -294,7 +294,7 @@ impl Decoder {
             // Read the name as a literal
             let name = name_marker.consume(buf);
             let value = value_marker.consume(buf);
-            Header::new(&name, value)
+            Header::try_new(&name, value)
         } else {
             let e = self.table.get(table_idx)?;
             let value = self.decode_string(buf)?;

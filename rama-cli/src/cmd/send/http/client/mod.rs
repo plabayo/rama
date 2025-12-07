@@ -53,7 +53,7 @@ mod writer;
 pub(super) async fn new(
     cfg: &SendCommand,
 ) -> Result<impl Service<Request, Output = Response, Error = BoxError>, BoxError> {
-    let writer = writer::new(cfg).await?;
+    let writer = writer::try_new(cfg).await?;
 
     let inner_client = new_inner_client(cfg)?;
 

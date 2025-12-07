@@ -134,7 +134,7 @@ async fn spawn_https_server() -> SocketAddress {
     let app = Router::new().with_get("/ping", "pong");
     let http_server = HttpServer::auto(Executor::default()).service(Arc::new(app));
 
-    let data = new_tls_service_data().expect("create tls service data");
+    let data = try_new_tls_service_data().expect("create tls service data");
     let https_server = TlsAcceptorService::new(data, http_server, false);
 
     tokio::spawn(tcp_service.serve(https_server));
@@ -142,7 +142,7 @@ async fn spawn_https_server() -> SocketAddress {
     bind_addr
 }
 
-fn new_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+fn try_new_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
             ApplicationProtocol::HTTP_2,

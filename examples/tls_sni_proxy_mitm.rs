@@ -182,7 +182,7 @@ async fn main() -> Result<(), BoxError> {
         )))
         .with_default_http_connector()
         // NOTE: up to you define if a pool is acceptable, and especially a global one...
-        .with_connection_pool(Default::default())
+        .try_with_connection_pool(Default::default())
         .context("build easy web client w/ pool")?
         .build_client();
 

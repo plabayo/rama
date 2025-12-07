@@ -457,7 +457,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// If you need a different pool or custom way to group connection you can
     /// use [`EasyHttpConnectorBuilder::with_custom_connection_pool()`] to provide
     /// you own.
-    pub fn with_connection_pool<C>(
+    pub fn try_with_connection_pool<C>(
         self,
         config: HttpPooledConnectorConfig,
     ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
@@ -467,6 +467,14 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
             connector,
             _phantom: PhantomData,
         })
+    }
+
+    #[inline(always)]
+    /// Same as [`Self::try_with_connection_pool`] but using the default [`HttpPooledConnectorConfig`].
+    pub fn try_with_default_connection_pool<C>(
+        self,
+    ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
+        self.try_with_connection_pool(Default::default())
     }
 
     /// Configure this client to use the provided [`Pool`] and [`ReqToConnId`]

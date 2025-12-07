@@ -23,7 +23,7 @@ impl Writer {
     }
 }
 
-pub(super) async fn new(cfg: &SendCommand) -> Result<Writer, OpaqueError> {
+pub(super) async fn try_new(cfg: &SendCommand) -> Result<Writer, OpaqueError> {
     let writer = if let Some(path) = cfg.output.as_deref() {
         Either::A(
             OpenOptions::new()

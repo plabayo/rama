@@ -134,7 +134,7 @@ impl TlsAcceptorDataBuilder {
 
     /// Create a [`TlsAcceptorDataBuilder`] support all tls versions, using no client auth, and a self
     /// generated certificate chain and private key
-    pub fn new_self_signed(data: SelfSignedData) -> Result<Self, OpaqueError> {
+    pub fn try_new_self_signed(data: SelfSignedData) -> Result<Self, OpaqueError> {
         let (cert_chain, key_der) = self_signed_server_auth(data)?;
         let config = rustls::ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_no_client_auth()
@@ -151,7 +151,7 @@ impl TlsAcceptorDataBuilder {
         /// and set it in the current config
         pub fn env_key_logger(mut self) -> Result<Self, OpaqueError> {
             if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
-                let key_logger = Arc::new(KeyLogFile::new(path)?);
+                let key_logger = Arc::new(KeyLogFile::try_new(path)?);
                 self.server_config.key_log = key_logger;
             };
             Ok(self)

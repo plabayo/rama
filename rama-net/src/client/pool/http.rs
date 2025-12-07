@@ -78,7 +78,7 @@ impl HttpPooledConnectorConfig {
         PooledConnector<S, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
         OpaqueError,
     > {
-        let pool = LruDropPool::new(self.max_active, self.max_total)?
+        let pool = LruDropPool::try_new(self.max_active, self.max_total)?
             .maybe_with_idle_timeout(self.idle_timeout);
 
         Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)

@@ -1,6 +1,6 @@
 use crate::dep::rustls::KeyLog;
 use rama_core::error::OpaqueError;
-use rama_net::tls::keylog::{KeyLogFileHandle, new_key_log_file_handle};
+use rama_net::tls::keylog::{KeyLogFileHandle, try_new_key_log_file_handle};
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -9,8 +9,8 @@ pub struct KeyLogFile(KeyLogFileHandle);
 
 impl KeyLogFile {
     /// Makes a new [`KeyLogFile`].
-    pub fn new(path: &str) -> Result<Self, OpaqueError> {
-        let handle = new_key_log_file_handle(path)?;
+    pub fn try_new(path: &str) -> Result<Self, OpaqueError> {
+        let handle = try_new_key_log_file_handle(path)?;
         Ok(Self(handle))
     }
 }

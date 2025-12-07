@@ -82,7 +82,7 @@ impl FileRecorderTask {
         }
 
         impl Storage {
-            async fn new(path: PathBuf) -> Result<Self, OpaqueError> {
+            async fn try_new(path: PathBuf) -> Result<Self, OpaqueError> {
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent)
                         .await
@@ -114,7 +114,7 @@ impl FileRecorderTask {
                         sr
                     } else {
                         storage = Some(
-                            match Storage::new(self.dir.join(format!(
+                            match Storage::try_new(self.dir.join(format!(
                                 "{}_{}_{}_{}.har",
                                 self.prefix,
                                 self.start_epoch,
