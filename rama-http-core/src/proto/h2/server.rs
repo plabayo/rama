@@ -7,7 +7,7 @@ use crate::h2::{Reason, RecvStream};
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_http::StreamingBody;
@@ -481,6 +481,7 @@ where
                                 "successful response to CONNECT request disallows content-length header"
                             );
                         }
+                        let extensions = res.extensions().clone();
                         let send_stream = reply!(me, res, false);
                         connect_parts.pending.fulfill(Upgraded::new(
                             H2Upgraded {
@@ -488,6 +489,7 @@ where
                                 recv_stream: connect_parts.recv_stream,
                                 send_stream: unsafe { UpgradedSendStream::new(send_stream) },
                                 buf: Bytes::new(),
+                                extensions,
                             },
                             Bytes::new(),
                         ));

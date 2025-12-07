@@ -14,7 +14,7 @@ use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, w
 use rama_core::{bytes::Bytes, combinators::Either};
 use rama_core::{error::BoxError, futures::future::FusedFuture};
 use rama_core::{
-    extensions::ExtensionsMut,
+    extensions::{ExtensionsMut, ExtensionsRef},
     futures::{Stream, stream::FusedStream},
 };
 use rama_http::{
@@ -699,6 +699,7 @@ where
                         send_stream: unsafe { UpgradedSendStream::new(send_stream) },
                         recv_stream,
                         buf: Bytes::new(),
+                        extensions: res.extensions().clone(),
                     };
                     let upgraded = Upgraded::new(io, Bytes::new());
 
