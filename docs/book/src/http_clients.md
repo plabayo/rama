@@ -12,40 +12,7 @@ As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramapr
 
 ## Http Client Example
 
-> The full "high level" example can be found at <https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs>.
-
-```rust
-use rama::http::service::client::HttpClientExt;
-
-let client = (
-    TraceLayer::new_for_http(),
-    DecompressionLayer::new(),
-    AddAuthorizationLayer::basic("john", "123")
-        .as_sensitive(true)
-        .if_not_present(),
-    RetryLayer::new(
-        ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
-    )
-    .into_layer(EasyHttpWebClient::default());
-
-#[derive(Debug, Deserialize)]
-struct Info {
-    name: String,
-    example: String,
-    magic: u64,
-}
-
-let info: Info = client
-    .get("http://example.com/info")
-    .header("x-magic", "42")
-    .typed_header(Accept::json())
-    .send(Context::default())
-    .await
-    .unwrap()
-    .try_into_json()
-    .await
-    .unwrap();
-```
+See for a full and tested "high level" example of _a_ http client at <https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs>.
 
 More client examples:
 

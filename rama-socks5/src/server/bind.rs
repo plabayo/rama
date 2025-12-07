@@ -114,7 +114,7 @@ impl<A, S> Binder<A, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (Context, ProxyRequest) -> ((), Into<BoxError>)
+    /// (ProxyRequest) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Binder<A, T> {
         Binder {

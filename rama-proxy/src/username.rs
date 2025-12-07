@@ -10,9 +10,8 @@ use rama_utils::macros::match_ignore_ascii_case_str;
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// A parser which parses [`ProxyFilter`]s from username labels
-/// and adds it to the [`Context`]'s [`Extensions`].
+/// and adds it to the input [`Extensions`].
 ///
-/// [`Context`]: rama_core::Context
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct ProxyFilterUsernameParser {
     key: Option<ProxyFilterKey>,

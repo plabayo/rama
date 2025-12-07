@@ -28,8 +28,8 @@ Here is a list of all `rama` crates:
 - [`rama-macros`](https://crates.io/crates/rama-macros): contains the procedural macros used by `rama`
 - [`rama-utils`](https://crates.io/crates/rama-utils): utilities crate for rama
 - [`rama-ws`](https://crates.io/crates/rama-ws): WebSocket (WS) support for rama
-- [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
-  context used by all other `rama` code, as well as some other _core_ utilities
+- [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service and layer trait
+  used by all other `rama` code, as well as some other _core_ utilities
 - [`rama-crypto`](https://crates.io/crates/rama-crytpo): rama crypto primitives and dependencies
 - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama

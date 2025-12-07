@@ -10,10 +10,10 @@
 //!
 //! If you wish to support proxy filters directly from the username,
 //! you can use the [`ProxyFilterUsernameParser`] to extract the proxy filter
-//! so it will be added to the [`Context`]'s [`Extensions`].
+//! so it will be added to the input [`Extensions`].
 //!
 //! The [`ProxyDB`] is used by Connection Pools to connect via a proxy,
-//! in case a [`ProxyFilter`] is present in the [`Context`]'s [`Extensions`].
+//! in case a [`ProxyFilter`] is present in the input [`Extensions`].
 //!
 //! # DB Live Reloads
 //!
@@ -31,14 +31,13 @@
 //! task and wrap the reader in a [`ProxyDB`] implementation. This way you can live reload based upon
 //! a signal, or more realistically, every x minutes.
 //!
-//! [`Context`]: rama_core::Context
 //! [`Extensions`]: rama_core::extensions::Extensions
 //!
 //! ## ProxyDB layer
 //!
-//! [`ProxyDB`] layer support to select a proxy based on the given [`Context`].
+//! [`ProxyDB`] layer support to select a proxy based on the given input [`Extensions`].
 //!
-//! This layer expects a [`ProxyFilter`] to be available in the [`Context`],
+//! This layer expects a [`ProxyFilter`] to be available in the input [`Extensions`],
 //! which can be added by using the `HeaderConfigLayer` (`rama-http`)
 //! when operating on the HTTP layer and/or by parsing it via the TCP proxy username labels (e.g. `john-country-us-residential`),
 //! in case you support that as part of your transport-layer authentication. And of course you can
@@ -52,7 +51,6 @@
 //!
 //! [`ProxyAddress`]: rama_net::address::ProxyAddress
 //! [`ProxyDB`]: ProxyDB
-//! [`Context`]: rama_core::Context
 //!
 //! # Example
 //!

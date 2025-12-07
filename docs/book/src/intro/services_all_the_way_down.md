@@ -20,21 +20,21 @@ can be represented in reduced form as follows:
 
 ```rust,noplayground
 /// A [`Service`] that produces rama services,
-/// to serve requests with, be it transport layer requests or application layer requests.
-pub trait Service<S, Request>: Send + Sync + 'static {
-    /// The type of response returned by the service.
-    type Response: Send + 'static;
+/// to serve given an input, be it transport layer streams, application layer http requests,
+/// or something else entirely.
+pub trait Service<S, Input>: Send + Sync + 'static {
+    /// The type of output returned by the service.
+    type Output: Send + 'static;
 
     /// The type of error returned by the service.
     type Error: Send + 'static;
 
-    /// Serve a response or error for the given request,
+    /// Serve a an output or error for the given input,
     /// using the given context.
     fn serve(
         &self,
-        ctx: Context,
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_;
 }
 ```
 
@@ -44,10 +44,10 @@ Due to the unfinished async story in Rust and the fact that we want to support a
 target the multithreaded async setting supported by [Tokio](https://tokio.rs/),
 
 The design is all about allowing one to use a `Service` that can take a `Request`,
-process it and return a `Result` which contains a `Response` at success and an `Error` when it failed for some reason.
+process it and return a `Result` which contains an `Output` at success and an `Error` when it failed for some reason.
 As per the design of Rust's _std_ `Result` we do want to make clear that despite the associated type's name,
 that it does not have to mean that the assigned type implements the `std::error::Error` trait. It is perfectly fine
-for that to contain the same or similar type as is used for the `Response` associated type.
+for that to contain the same or similar type as is used for the `Output` associated type.
 
 ## Everything is a service
 

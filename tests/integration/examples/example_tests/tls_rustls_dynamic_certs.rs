@@ -2,7 +2,7 @@ use super::utils::{self, ClientService};
 use rama::{
     Layer, Service,
     error::BoxError,
-    extensions::{ExtensionsRef, RequestContextExt},
+    extensions::{ExtensionsRef, InputExtensions},
     http::{
         Response, StreamingBody,
         client::EasyHttpWebClient,
@@ -71,8 +71,8 @@ async fn test_tls_rustls_dynamic_certs() {
 
         let certificates = response
             .extensions()
-            .get::<RequestContextExt>()
-            .and_then(|ext| ext.get::<NegotiatedTlsParameters>())
+            .get()
+            .and_then(|InputExtensions(ext)| ext.get::<NegotiatedTlsParameters>())
             .unwrap()
             .peer_certificate_chain
             .clone()

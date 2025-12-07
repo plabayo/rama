@@ -79,12 +79,11 @@ impl From<NonEmptyStr> for ProxyID {
 /// ## Usage
 ///
 /// - Use `HeaderConfigLayer` (`rama-http`) to have this proxy filter be given by the http `Request` headers,
-///   which will add the extracted and parsed [`ProxyFilter`] to the [`Context`]'s [`Extensions`].
+///   which will add the extracted and parsed [`ProxyFilter`] to the input [`Extensions`].
 /// - Or extract yourself from the username/token validated in the `ProxyAuthLayer` (`rama-http`)
-///   to add it manually to the [`Context`]'s [`Extensions`].
+///   to add it manually to the input [`Extensions`].
 ///
 /// [`Request`]: crate::http::Request
-/// [`Context`]: rama_core::Context
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct ProxyFilter {
     /// The ID of the proxy to select.

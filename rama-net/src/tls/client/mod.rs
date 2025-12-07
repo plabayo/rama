@@ -26,7 +26,7 @@ use super::{ApplicationProtocol, DataEncoding, ProtocolVersion};
 
 #[derive(Debug, Clone)]
 /// Indicate (some) of the negotiated tls parameters that
-/// can be added to the service context by Tls implementations.
+/// can be added to the input extensions by Tls implementations.
 pub struct NegotiatedTlsParameters {
     /// The used [`ProtocolVersion`].
     ///

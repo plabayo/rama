@@ -13,7 +13,7 @@ use rama_net::{
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
-/// A [`Service`] which selects a [`Proxy`] based on the given [`Context`].
+/// A [`Service`] which selects a [`Proxy`] based on the given input `Extensions`.
 ///
 /// Depending on the [`ProxyFilterMode`] the selection proxies might be optional,
 /// or use the default [`ProxyFilter`] in case none is defined.
@@ -34,7 +34,7 @@ pub struct ProxyDBService<S, D, P, F> {
 }
 
 #[derive(Debug, Clone, Default)]
-/// The modus operandi to decide how to deal with a missing [`ProxyFilter`] in the [`Context`]
+/// The modus operandi to decide how to deal with a missing [`ProxyFilter`] in the input `Extensions`
 /// when selecting a [`Proxy`] from the [`ProxyDB`].
 ///
 /// More advanced behaviour can be achieved by combining one of these modi
@@ -115,7 +115,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define whether or not an existing [`ProxyAddress`] (in the [`Context`])
+        /// Define whether or not an existing [`ProxyAddress`] (in the input `Extensions`)
         /// should be overwritten or not. By default `preserve=false`,
         /// meaning we will overwrite the proxy address in case we selected one now.
         ///
@@ -342,8 +342,8 @@ impl std::error::Error for ProxySelectError {
     }
 }
 
-/// A [`Layer`] which wraps an inner [`Service`] to select a [`Proxy`] based on the given [`Context`],
-/// and insert, if a [`Proxy`] is selected, it in the [`Context`] for further processing.
+/// A [`Layer`] which wraps an inner [`Service`] to select a [`Proxy`] based on the given input `Extensions`,
+/// and insert, if a [`Proxy`] is selected, it in the input `Extensions` for further processing.
 ///
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
 pub struct ProxyDBLayer<D, P, F> {
@@ -413,7 +413,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define whether or not an existing [`ProxyAddress`] (in the [`Context`])
+        /// Define whether or not an existing [`ProxyAddress`] (in the input `Extensions`)
         /// should be overwritten or not. By default `preserve=false`,
         /// meaning we will overwrite the proxy address in case we selected one now.
         ///

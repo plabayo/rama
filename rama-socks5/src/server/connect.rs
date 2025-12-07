@@ -138,7 +138,7 @@ impl<C, S> Connector<C, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (Context, TcpRequest)
+    /// (TcpRequest)
     ///     -> (EstablishedConnection<T, TcpRequest>, Into<BoxError>)
     /// ```
     pub fn with_connector<T>(self, connector: T) -> Connector<T, S> {
@@ -156,7 +156,7 @@ impl<C, S> Connector<C, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (Context, ProxyRequest) -> ((), Into<BoxError>)
+    /// (ProxyRequest) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Connector<C, T> {
         Connector {

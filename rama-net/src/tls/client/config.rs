@@ -8,7 +8,7 @@ use crate::tls::{CipherSuite, CompressionAlgorithm, DataEncoding, KeyLogIntent, 
 ///
 /// See [`ClientConfig`] for more information,
 /// this is only a new-type wrapper to be able to differentiate
-/// the info found in context for a dynamic https client.
+/// the info found in input extensions for a dynamic https client.
 pub struct ProxyClientConfig(pub Arc<ClientConfig>);
 
 #[derive(Debug, Clone, Default)]

@@ -7,7 +7,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 /// A [`Service`] that produces rama services,
-/// to serve Inputs with, be it transport layer Inputs or application layer Inputs.
+/// to serve given an input, be it transport layer Inputs or application layer http requests,
+/// or something else entirely.
 pub trait Service<Input>: Sized + Send + Sync + 'static {
     /// The type of the output returned by the service.
     type Output: Send + 'static;
@@ -15,7 +16,7 @@ pub trait Service<Input>: Sized + Send + Sync + 'static {
     /// The type of error returned by the service.
     type Error: Send + 'static;
 
-    /// Serve a Output or error for the given Input,
+    /// Serve a an output or error for the given input,
     /// using the given context.
     fn serve(
         &self,

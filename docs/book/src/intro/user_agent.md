@@ -71,11 +71,11 @@ These profiles can be applied to outgoing requests using middleware services:
 
 - [`UserAgentEmulateService`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.UserAgentEmulateService.html) - A service that applies the emulation profile to requests;
 - [`UserAgentEmulateHttpConnectModifier`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.UserAgentEmulateHttpConnectModifier.html) - Provides connector the the Http(s) connector with required emulation context (e.g. tls profile, h2 settings, ...);
-- [`UserAgentEmulateHttpRequestModifier`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.UserAgentEmulateHttpRequestModifier.html) - Modifies HTTP requests based on the profile, context and established connection.
+- [`UserAgentEmulateHttpRequestModifier`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.UserAgentEmulateHttpRequestModifier.html) - Modifies HTTP requests based on the profile, input and asociated dynamic state.
 
 Rama includes a database of pre-configured profiles for common browsers and platforms, making it easy to emulate specific user-agents without manual configuration. These profiles are generated from real browser fingerprints collected through Rama's fingerprinting service.
 
-The emulation can be applied selectively based on request context, allowing for sophisticated emulation strategies that can adapt to different scenarios or rotate between multiple profiles to avoid detection.
+The emulation can be applied selectively based on the given input, allowing for sophisticated emulation strategies that can adapt to different scenarios or rotate between multiple profiles to avoid detection.
 
 ### Embedded Profile Data
 

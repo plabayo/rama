@@ -1,7 +1,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext, OpaqueError},
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef, RequestContextExt},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef, InputExtensions},
     telemetry::tracing,
 };
 use rama_http::{StreamingBody, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY};
@@ -86,7 +86,7 @@ where
         }?;
 
         resp.extensions_mut()
-            .insert(RequestContextExt::from(req_extensions));
+            .insert(InputExtensions(req_extensions));
 
         Ok(resp.map(rama_http_types::Body::new))
     }

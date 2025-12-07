@@ -40,9 +40,9 @@ pub struct Socks5ProxyConnectorLayer {
 impl Socks5ProxyConnectorLayer {
     /// Create a new [`Socks5ProxyConnectorLayer`] which creates a [`Socks5ProxyConnector`]
     /// which will only connect via a socks5 proxy in case the [`ProxyAddress`] is available
-    /// in the [`Context`].
+    /// in the input [`Extensions`].
     ///
-    /// [`Context`]: rama_core::Context
+    /// [`Extensions`]: rama_core::extensions::Extensions
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     #[must_use]
     pub fn optional() -> Self {
@@ -55,9 +55,9 @@ impl Socks5ProxyConnectorLayer {
 
     /// Create a new [`Socks5ProxyConnectorLayer`] which creates a [`Socks5ProxyConnector`]
     /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
-    /// not available in the [`Context`].
+    /// not available in the input [`Extensions`].
     ///
-    /// [`Context`]: rama_core::Context
+    /// [`Extensions`]: rama_core::extensions::Extensions
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     #[must_use]
     pub fn required() -> Self {

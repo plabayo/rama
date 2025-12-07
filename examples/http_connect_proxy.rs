@@ -58,7 +58,7 @@
 
 use rama::{
     Layer, Service,
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef, RequestContextExt},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef, InputExtensions},
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -202,8 +202,8 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         Ok(resp) => {
             if let Some(client_socket_info) = resp
                 .extensions()
-                .get::<RequestContextExt>()
-                .and_then(|ext| ext.get::<ClientSocketInfo>())
+                .get()
+                .and_then(|InputExtensions(ext)| ext.get::<ClientSocketInfo>())
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),

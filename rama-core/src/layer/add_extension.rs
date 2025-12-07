@@ -57,9 +57,7 @@ use crate::{Layer, Service, extensions::ExtensionsMut};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
-/// [`Layer`] for adding some shareable value to incoming [Context].
-///
-/// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
+/// [`Layer`] for adding some shareable value to incoming input's extensions.
 pub struct AddExtensionLayer<T> {
     value: T,
 }
@@ -111,9 +109,7 @@ where
     }
 }
 
-/// Middleware for adding some shareable value to incoming [Context].
-///
-/// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
+/// Middleware for adding some shareable value to incoming input's extensions.
 pub struct AddExtension<S, T> {
     inner: S,
     value: T,
