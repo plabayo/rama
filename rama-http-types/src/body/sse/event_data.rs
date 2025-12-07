@@ -1,6 +1,6 @@
 use rama_error::{ErrorContext, OpaqueError};
-use rama_utils::macros::impl_deref;
-use std::{fmt, marker::PhantomData, sync::Arc};
+use rama_utils::{macros::impl_deref, str::arcstr::ArcStr};
+use std::{fmt, marker::PhantomData};
 
 use crate::sse::parser::is_lf;
 
@@ -37,7 +37,7 @@ impl EventDataWrite for &str {
     write_str_data!();
 }
 
-impl EventDataWrite for Arc<str> {
+impl EventDataWrite for ArcStr {
     write_str_data!();
 }
 

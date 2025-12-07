@@ -219,6 +219,12 @@ impl Request<()> {
         Builder::new()
     }
 
+    #[inline]
+    /// Same as [`Request::builder`] but with the given [`Extensions`] to start from.
+    pub fn builder_with_extensions(ext: Extensions) -> Builder {
+        Builder::new_with_extensions(ext)
+    }
+
     /// Creates a new `Builder` initialized with a GET method and the given URI.
     ///
     /// This method returns an instance of `Builder` which can be used to
@@ -736,6 +742,20 @@ impl Builder {
         Self::default()
     }
 
+    #[inline]
+    /// Same as [`Self::new`] but with the given [`Extensions`] to start from.
+    pub fn new_with_extensions(ext: Extensions) -> Self {
+        Self {
+            inner: Ok(Parts {
+                method: Method::default(),
+                uri: Uri::default(),
+                version: Version::default(),
+                headers: HeaderMap::default(),
+                extensions: ext,
+            }),
+        }
+    }
+
     /// Set the HTTP method for this request.
     ///
     /// By default this is `GET`.
@@ -956,7 +976,7 @@ impl Builder {
     /// ```
     pub fn extension<T>(self, extension: T) -> Self
     where
-        T: Clone + Any + Send + Sync + 'static,
+        T: Clone + Any + Send + Sync + std::fmt::Debug + 'static,
     {
         self.and_then(move |mut head| {
             head.extensions.insert(extension);

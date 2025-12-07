@@ -1,4 +1,5 @@
 use rama_core::ServiceInput;
+use rama_net::user::credentials::basic;
 
 use super::*;
 
@@ -21,8 +22,7 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized() {
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new()
-        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
+    let server = Socks5Acceptor::new().with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }
@@ -42,8 +42,7 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized_missing_passwo
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new()
-        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
+    let server = Socks5Acceptor::new().with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }

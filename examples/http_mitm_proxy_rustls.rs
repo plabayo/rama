@@ -55,7 +55,7 @@ use rama::{
     layer::{AddExtensionLayer, ConsumeErrLayer},
     net::{
         http::RequestContext, proxy::ProxyTarget, stream::layer::http::BodyLimitLayer,
-        tls::server::SelfSignedData, user::Basic,
+        tls::server::SelfSignedData, user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
@@ -109,9 +109,10 @@ async fn main() -> Result<(), BoxError> {
         let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
+                ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
@@ -224,13 +225,13 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_no_cert_verifier()
         .build();
 
-    let client = EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_rustls()
         .with_proxy_support()
         .with_tls_support_using_rustls(Some(tls_config))
         .with_default_http_connector()
-        .build();
+        .build_client();
 
     match client.serve(req).await {
         Ok(resp) => Ok(resp),

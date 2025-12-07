@@ -30,7 +30,6 @@ rama-utils = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-native-certs = { workspace = true }
-rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tokio-rustls = { workspace = true }

@@ -10,7 +10,7 @@
 //! # Expected output
 //!
 //! The server will start and listen on `:62033`.
-//! Open it in the browser to see it in action or use `rama ws` cli client to test it.
+//! Open it in the browser to see it in action or use `rama` cli client to test it.
 //!
 //! Try it with some friends over a local network,
 //! or with yourself using different browsers or browser tabs :)
@@ -118,7 +118,7 @@ async fn main() {
             )),
         ));
         info!("open mini web chat @ http://127.0.0.1:62033");
-        info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama ws')");
+        info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama')");
 
 
         TcpListener::bind("127.0.0.1:62033")

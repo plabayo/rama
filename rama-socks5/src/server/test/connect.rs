@@ -1,5 +1,7 @@
 use rama_core::ServiceInput;
 use rama_net::address::HostWithPort;
+use rama_net::user::credentials::basic;
+use rama_utils::str::non_empty_str;
 
 use crate::server::connect::MockConnector;
 use crate::server::*;
@@ -63,8 +65,7 @@ async fn test_socks5_acceptor_auth_flow_used_connect_failure_method_not_supporte
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new()
-        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
+    let server = Socks5Acceptor::new().with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }
@@ -89,7 +90,7 @@ async fn test_socks5_acceptor_auth_flow_username_only_connect_failure_method_not
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
-        .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer());
+        .with_authorizer(user::Basic::new_insecure(non_empty_str!("john")).into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }
@@ -193,7 +194,7 @@ async fn test_socks5_acceptor_with_auth_flow_client_connect_mock_success_with_da
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
-        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer())
+        .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(
             MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(
                 tokio_test::io::Builder::new()
@@ -232,7 +233,7 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_connect_mock_s
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
-        .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer())
+        .with_authorizer(user::Basic::new_insecure(non_empty_str!("john")).into_authorizer())
         .with_connector(
             MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(
                 tokio_test::io::Builder::new()

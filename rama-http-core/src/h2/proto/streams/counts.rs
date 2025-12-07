@@ -87,7 +87,7 @@ impl Counts {
     }
 
     pub(super) fn inc_num_local_error_resets(&mut self) {
-        assert!(self.can_inc_num_local_error_resets());
+        debug_assert!(self.can_inc_num_local_error_resets());
 
         // Increment the number of remote initiated streams
         self.num_local_error_reset_streams += 1;
@@ -108,8 +108,8 @@ impl Counts {
     ///
     /// Panics on failure as this should have been validated before hand.
     pub(super) fn inc_num_recv_streams(&mut self, stream: &mut store::Ptr) {
-        assert!(self.can_inc_num_recv_streams());
-        assert!(!stream.is_counted);
+        debug_assert!(self.can_inc_num_recv_streams());
+        debug_assert!(!stream.is_counted);
 
         // Increment the number of remote initiated streams
         self.num_recv_streams += 1;
@@ -127,8 +127,8 @@ impl Counts {
     ///
     /// Panics on failure as this should have been validated before hand.
     pub(super) fn inc_num_send_streams(&mut self, stream: &mut store::Ptr) {
-        assert!(self.can_inc_num_send_streams());
-        assert!(!stream.is_counted);
+        debug_assert!(self.can_inc_num_send_streams());
+        debug_assert!(!stream.is_counted);
 
         // Increment the number of remote initiated streams
         self.num_send_streams += 1;
@@ -146,7 +146,7 @@ impl Counts {
     ///
     /// Panics on failure as this should have been validated before hand.
     pub(super) fn inc_num_reset_streams(&mut self) {
-        assert!(self.can_inc_num_reset_streams());
+        debug_assert!(self.can_inc_num_reset_streams());
 
         self.num_local_reset_streams += 1;
     }
@@ -167,13 +167,13 @@ impl Counts {
     ///
     /// Panics on failure as this should have been validated before hand.
     pub(super) fn inc_num_remote_reset_streams(&mut self) {
-        assert!(self.can_inc_num_remote_reset_streams());
+        debug_assert!(self.can_inc_num_remote_reset_streams());
 
         self.num_remote_reset_streams += 1;
     }
 
     pub(super) fn dec_num_remote_reset_streams(&mut self) {
-        assert!(self.num_remote_reset_streams > 0);
+        debug_assert!(self.num_remote_reset_streams > 0);
 
         self.num_remote_reset_streams -= 1;
     }
@@ -256,21 +256,21 @@ impl Counts {
     }
 
     fn dec_num_streams(&mut self, stream: &mut store::Ptr) {
-        assert!(stream.is_counted);
+        debug_assert!(stream.is_counted);
 
         if self.peer.is_local_init(stream.id) {
-            assert!(self.num_send_streams > 0);
+            debug_assert!(self.num_send_streams > 0);
             self.num_send_streams -= 1;
             stream.is_counted = false;
         } else {
-            assert!(self.num_recv_streams > 0);
+            debug_assert!(self.num_recv_streams > 0);
             self.num_recv_streams -= 1;
             stream.is_counted = false;
         }
     }
 
     fn dec_num_reset_streams(&mut self) {
-        assert!(self.num_local_reset_streams > 0);
+        debug_assert!(self.num_local_reset_streams > 0);
         self.num_local_reset_streams -= 1;
     }
 }

@@ -379,26 +379,29 @@ fn emulate_http_connect_settings<Body>(req: &mut Request<Body>, profile: &HttpPr
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-// a http service which is to be used in combination
+// A http service which is to be used in combination
 // with the [`UserAgentEmulateService`] to facilitate the
 // http emulation based on the injected http profile.
-pub struct UserAgentEmulateHttpRequestModifier;
+pub struct UserAgentEmulateHttpRequestModifier<S> {
+    inner: S,
+}
 
-impl UserAgentEmulateHttpRequestModifier {
+impl<S> UserAgentEmulateHttpRequestModifier<S> {
     #[inline]
-    /// Create a new (default) [`UserAgentEmulateHttpRequestModifier`].
     #[must_use]
-    pub fn new() -> Self {
-        Self
+    /// Create a new [`UserAgentEmulateHttpRequestModifier`].
+    pub fn new(inner: S) -> Self {
+        Self { inner }
     }
 }
 
-impl<ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpRequestModifier
+impl<S, ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpRequestModifier<S>
 where
+    S: Service<Request<ReqBody>, Error: Into<BoxError>>,
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Output = Request<ReqBody>;
+    type Output = S::Output;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         match req.extensions().get().cloned() {
@@ -479,13 +482,15 @@ where
                 );
             }
         }
-        Ok(req)
+
+        let resp = self.inner.serve(req).await.map_err(Into::into)?;
+        Ok(resp)
     }
 }
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-// a http layer which is to be used in combination
+// A http layer which is to be used in combination
 // with the [`UserAgentEmulateService`] to facilitate the
 // http emulation based on the injected http profile.
 pub struct UserAgentEmulateHttpRequestModifierLayer;
@@ -494,7 +499,7 @@ impl<S> Layer<S> for UserAgentEmulateHttpRequestModifierLayer {
     type Service = UserAgentEmulateHttpRequestModifier<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        UserAgentEmulateHttpRequestModifier::new()
+        UserAgentEmulateHttpRequestModifier::new(inner)
     }
 }
 
@@ -1498,7 +1503,7 @@ mod tests {
 
         let ua_service = (
             UserAgentEmulateLayer::new(ua_profile),
-            RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
+            UserAgentEmulateHttpRequestModifierLayer::default(),
         )
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
@@ -1571,7 +1576,7 @@ mod tests {
 
         let ua_service = (
             UserAgentEmulateLayer::new(ua_profile),
-            UserAgentEmulateHttpRequestModifier::default(),
+            UserAgentEmulateHttpRequestModifierLayer::default(),
         )
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
@@ -1646,7 +1651,7 @@ mod tests {
 
         let ua_service = (
             UserAgentEmulateLayer::new(ua_profile),
-            RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
+            UserAgentEmulateHttpRequestModifierLayer::default(),
         )
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
@@ -1721,7 +1726,7 @@ mod tests {
 
         let ua_service = (
             UserAgentEmulateLayer::new(ua_profile),
-            RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
+            UserAgentEmulateHttpRequestModifierLayer::default(),
         )
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
@@ -1835,7 +1840,7 @@ mod tests {
 
         let ua_service = (
             UserAgentEmulateLayer::new(ua_profile),
-            RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
+            UserAgentEmulateHttpRequestModifierLayer::default(),
         )
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(

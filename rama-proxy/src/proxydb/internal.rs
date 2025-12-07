@@ -1,6 +1,6 @@
 use super::{ProxyContext, ProxyFilter, StringFilter};
 use rama_net::{address::ProxyAddress, asn::Asn, transport::TransportProtocol};
-use rama_utils::str::NonEmptyString;
+use rama_utils::str::NonEmptyStr;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "memory-db")]
@@ -13,7 +13,7 @@ use venndb::VennDB;
 pub struct Proxy {
     #[cfg_attr(feature = "memory-db", venndb(key))]
     /// Unique identifier of the proxy.
-    pub id: NonEmptyString,
+    pub id: NonEmptyStr,
 
     /// The address to be used to connect to the proxy, including credentials if needed.
     pub address: ProxyAddress,

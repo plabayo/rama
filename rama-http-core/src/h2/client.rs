@@ -144,7 +144,7 @@ use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::OpaqueError;
 use rama_core::extensions::{Extensions, ExtensionsMut};
-use rama_core::telemetry::tracing::{self, Instrument};
+use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
@@ -539,7 +539,6 @@ where
     ) -> Result<(ResponseFuture, SendStream<B>), crate::h2::Error> {
         self.inner
             .send_request(request, end_of_stream, self.pending.as_ref())
-            .map_err(Into::into)
             .map(|(stream, is_full)| {
                 if stream.is_pending_open() && is_full {
                     // Only prevent sending another request when the request queue
@@ -640,14 +639,19 @@ where
     type Output = Result<SendRequest<B>, crate::h2::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match &mut self.inner {
-            Some(send_request) => {
-                ready!(send_request.poll_ready(cx))?;
-            }
-            None => panic!("called `poll` after future completed"),
+        if let Some(send_request) = self.inner.as_mut() {
+            ready!(send_request.poll_ready(cx))?;
+            #[allow(clippy::expect_used, reason = "memory cannot move in between polls")]
+            let send_request = self.inner.take().expect("inner SendRequest was Some above");
+            Poll::Ready(Ok(send_request))
+        } else {
+            warn!(
+                "h2 client: ReadySendRequest: (inner) SendRequest no longer available: future polled after ready, report bug in rama repo"
+            );
+            Poll::Ready(Err(crate::h2::Error::from(
+                crate::h2::UserError::PollAfterReady,
+            )))
         }
-
-        Poll::Ready(Ok(self.inner.take().unwrap()))
     }
 }
 
@@ -1489,11 +1493,14 @@ where
         }
 
         // Send initial settings frame
-        codec
-            .buffer(initial_settings.clone().into())
-            .expect("invalid SETTINGS frame");
+        if let Err(err) = codec.buffer(initial_settings.clone().into()) {
+            debug!(
+                "h2 client: invalid SETTINGS frame: failed to buffer: {err}; return error; report bug in rama"
+            );
+            return Err(err.into());
+        }
 
-        let inner = proto::Connection::new(
+        let inner = proto::Connection::try_new(
             codec,
             proto::Config {
                 next_stream_id: builder.stream_id,
@@ -1507,7 +1514,7 @@ where
                 headers_pseudo_order: builder.headers_pseudo_order,
                 early_frame_ctx,
             },
-        );
+        )?;
         let send_request = SendRequest {
             inner: inner.streams().clone(),
             pending: None,
@@ -1868,8 +1875,7 @@ impl proto::Peer for Peer {
         stream_id: StreamId,
         extensions: Extensions,
     ) -> Result<Self::Poll, Error> {
-        let mut b = Response::builder();
-        *b.extensions_mut().unwrap() = extensions;
+        let mut b = Response::builder_with_extensions(extensions);
 
         b = b.version(Version::HTTP_2);
 

@@ -1,117 +1,66 @@
-use std::{fmt, sync::Arc};
-
 use crate::{
-    header::{HeaderName, HeaderValue},
+    header::{HeaderMap, HeaderValue},
+    headers::{
+        AccessControlAllowPrivateNetwork, AccessControlRequestPrivateNetwork, HeaderMapExt as _,
+    },
     request::Parts as RequestParts,
 };
+use std::{fmt, sync::Arc};
 
-/// Holds configuration for how to set the [`Access-Control-Allow-Private-Network`][wicg] header.
-///
-/// See [`CorsLayer::allow_private_network`] for more details.
-///
-/// [wicg]: https://wicg.github.io/private-network-access/
-/// [`CorsLayer::allow_private_network`]: super::CorsLayer::allow_private_network
-#[derive(Clone, Default)]
-#[must_use]
-pub struct AllowPrivateNetwork(AllowPrivateNetworkInner);
-
-static TRUE: HeaderValue = HeaderValue::from_static("true");
-
-impl AllowPrivateNetwork {
-    /// Allow requests via a more private network than the one used to access the origin
-    ///
-    /// See [`CorsLayer::allow_private_network`] for more details.
-    ///
-    /// [`CorsLayer::allow_private_network`]: super::CorsLayer::allow_private_network
-    pub fn yes() -> Self {
-        Self(AllowPrivateNetworkInner::Yes)
-    }
-
-    /// Allow requests via private network for some requests, based on a given predicate
-    ///
-    /// The first argument to the predicate is the request origin.
-    ///
-    /// See [`CorsLayer::allow_private_network`] for more details.
-    ///
-    /// [`CorsLayer::allow_private_network`]: super::CorsLayer::allow_private_network
-    pub fn predicate<F>(f: F) -> Self
-    where
-        F: Fn(&HeaderValue, &RequestParts) -> bool + Send + Sync + 'static,
-    {
-        Self(AllowPrivateNetworkInner::Predicate(Arc::new(f)))
-    }
-
-    pub(super) fn to_header(
-        &self,
-        origin: Option<&HeaderValue>,
-        parts: &RequestParts,
-    ) -> Option<(HeaderName, HeaderValue)> {
-        #[allow(clippy::declare_interior_mutable_const)]
-        const REQUEST_PRIVATE_NETWORK: HeaderName =
-            HeaderName::from_static("access-control-request-private-network");
-
-        #[allow(clippy::declare_interior_mutable_const)]
-        const ALLOW_PRIVATE_NETWORK: HeaderName =
-            HeaderName::from_static("access-control-allow-private-network");
-
-        // Cheapest fallback: allow_private_network hasn't been set
-        if matches!(&self.0, AllowPrivateNetworkInner::No) {
-            return None;
-        }
-
-        // Access-Control-Allow-Private-Network is only relevant if the request
-        // has the Access-Control-Request-Private-Network header set, else skip
-        if parts.headers.get(REQUEST_PRIVATE_NETWORK) != Some(&TRUE) {
-            return None;
-        }
-
-        let allow_private_network = match &self.0 {
-            AllowPrivateNetworkInner::Yes => true,
-            AllowPrivateNetworkInner::No => false, // unreachable, but not harmful
-            AllowPrivateNetworkInner::Predicate(c) => c(origin?, parts),
-        };
-
-        allow_private_network.then_some((ALLOW_PRIVATE_NETWORK, TRUE.clone()))
-    }
+#[derive(Clone)]
+pub(super) enum AllowPrivateNetwork {
+    Const,
+    Predicate(
+        Arc<dyn for<'a> Fn(&'a HeaderValue, &'a RequestParts) -> bool + Send + Sync + 'static>,
+    ),
 }
 
-impl From<bool> for AllowPrivateNetwork {
-    fn from(v: bool) -> Self {
-        match v {
-            true => Self(AllowPrivateNetworkInner::Yes),
-            false => Self(AllowPrivateNetworkInner::No),
+impl AllowPrivateNetwork {
+    pub(super) fn extend_headers(
+        &self,
+        headers: &mut HeaderMap,
+        origin: Option<&HeaderValue>,
+        parts: &RequestParts,
+    ) {
+        // Access-Control-Allow-Private-Network is only relevant if the request
+        // has the Access-Control-Request-Private-Network header set, else skip
+        if parts
+            .headers
+            .typed_get::<AccessControlRequestPrivateNetwork>()
+            .is_none()
+        {
+            return;
+        }
+
+        match self {
+            Self::Const => headers.typed_insert(AccessControlAllowPrivateNetwork::default()),
+            Self::Predicate(predicate) => {
+                if let Some(origin) = origin
+                    && predicate(origin, parts)
+                {
+                    headers.typed_insert(AccessControlAllowPrivateNetwork::default())
+                }
+            }
         }
     }
 }
 
 impl fmt::Debug for AllowPrivateNetwork {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            AllowPrivateNetworkInner::Yes => f.debug_tuple("Yes").finish(),
-            AllowPrivateNetworkInner::No => f.debug_tuple("No").finish(),
-            AllowPrivateNetworkInner::Predicate(_) => f.debug_tuple("Predicate").finish(),
+        match self {
+            Self::Const => f.debug_tuple("Yes").finish(),
+            Self::Predicate(_) => f.debug_tuple("Predicate").finish(),
         }
     }
 }
 
-#[derive(Clone, Default)]
-enum AllowPrivateNetworkInner {
-    Yes,
-    #[default]
-    No,
-    Predicate(
-        Arc<dyn for<'a> Fn(&'a HeaderValue, &'a RequestParts) -> bool + Send + Sync + 'static>,
-    ),
-}
-
 #[cfg(test)]
 mod tests {
-    use super::AllowPrivateNetwork;
-
     use crate::layer::cors::CorsLayer;
     use crate::{Body, HeaderName, HeaderValue, Request, Response, header::ORIGIN, request::Parts};
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
+    use rama_core::telemetry::tracing;
     use rama_core::{Layer, Service};
 
     static REQUEST_PRIVATE_NETWORK: HeaderName =
@@ -123,9 +72,10 @@ mod tests {
     static TRUE: HeaderValue = HeaderValue::from_static("true");
 
     #[tokio::test]
+    #[tracing_test::traced_test]
     async fn cors_private_network_header_is_added_correctly() {
         let service = CorsLayer::new()
-            .allow_private_network(true)
+            .with_allow_private_network()
             .into_layer(service_fn(echo));
 
         let req = Request::builder()
@@ -143,13 +93,18 @@ mod tests {
     }
 
     #[tokio::test]
+    #[tracing_test::traced_test]
     async fn cors_private_network_header_is_added_correctly_with_predicate() {
-        let allow_private_network =
-            AllowPrivateNetwork::predicate(|origin: &HeaderValue, parts: &Parts| {
-                parts.uri.path() == "/allow-private" && origin == "localhost"
-            });
         let service = CorsLayer::new()
-            .allow_private_network(allow_private_network)
+            .with_allow_private_network_if(|origin: &HeaderValue, parts: &Parts| {
+                let result = parts.uri.path() == "/allow-private" && origin == "localhost";
+                tracing::info!(
+                    "path = {}; origin = {:?}; result = {result}",
+                    parts.uri.path(),
+                    origin
+                );
+                result
+            })
             .into_layer(service_fn(echo));
 
         let req = Request::builder()
@@ -160,6 +115,7 @@ mod tests {
             .unwrap();
 
         let res = service.serve(req).await.unwrap();
+        tracing::info!("response headers = {:?}", res.headers());
         assert_eq!(res.headers().get(&ALLOW_PRIVATE_NETWORK).unwrap(), TRUE);
 
         let req = Request::builder()

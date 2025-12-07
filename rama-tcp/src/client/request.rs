@@ -26,7 +26,7 @@ pub struct Request {
 impl Request {
     /// Create a new Tcp [`Request`] with default [`Extensions`].
     #[must_use]
-    pub const fn new(authority: HostWithPort) -> Self {
+    pub fn new(authority: HostWithPort) -> Self {
         Self {
             authority,
             protocol: None,

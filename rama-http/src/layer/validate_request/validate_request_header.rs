@@ -1,6 +1,8 @@
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
 use crate::{Request, Response};
 use rama_core::{Layer, Service};
+use rama_error::OpaqueError;
+use rama_http_types::mime::Mime;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -36,26 +38,26 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
     /// The `Accept` header is required to be `*/*`, `type/*` or `type/subtype`,
     /// as configured.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `header_value` is not in the form: `type/subtype`, such as `application/json`
-    /// See `AcceptHeader::new` for when this method panics.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use rama_http::layer::validate_request::{AcceptHeader, ValidateRequestHeaderLayer};
-    ///
-    /// let layer = ValidateRequestHeaderLayer::<AcceptHeader>::accept("application/json");
-    /// ```
-    ///
-    /// [`Accept`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept
-    #[must_use]
-    pub fn accept(value: &str) -> Self
+    /// Errors if `header_value` is not in the form: `type/subtype`, such as `application/json`
+    pub fn try_accept_for_str(value: &str) -> Result<Self, OpaqueError>
     where
         ResBody: Default,
     {
-        Self::custom(AcceptHeader::new(value))
+        Ok(Self::custom(AcceptHeader::try_new(value)?))
+    }
+
+    /// Validate requests have the required Accept header.
+    ///
+    /// The `Accept` header is required to be `*/*`, `type/*` or `type/subtype`,
+    /// as configured.
+    #[must_use]
+    pub fn accept(mime: Mime) -> Self
+    where
+        ResBody: Default,
+    {
+        Self::custom(AcceptHeader::new(mime))
     }
 }
 
@@ -134,14 +136,26 @@ impl<S, ResBody> ValidateRequestHeader<S, AcceptHeader<ResBody>> {
     /// The `Accept` header is required to be `*/*`, `type/*` or `type/subtype`,
     /// as configured.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// See `AcceptHeader::new` for when this method panics.
-    pub fn accept(inner: S, value: &str) -> Self
+    /// Errors if `header_value` is not in the form: `type/subtype`, such as `application/json`
+    pub fn try_accept_for_str(inner: S, value: &str) -> Result<Self, OpaqueError>
     where
         ResBody: Default,
     {
-        Self::custom(inner, AcceptHeader::new(value))
+        Ok(Self::custom(inner, AcceptHeader::try_new(value)?))
+    }
+
+    /// Validate requests have the required Accept header.
+    ///
+    /// The `Accept` header is required to be `*/*`, `type/*` or `type/subtype`,
+    /// as configured.
+    #[must_use]
+    pub fn accept(inner: S, mime: Mime) -> Self
+    where
+        ResBody: Default,
+    {
+        Self::custom(inner, AcceptHeader::new(mime))
     }
 }
 
@@ -187,11 +201,28 @@ mod tests {
 
     use crate::{Body, StatusCode, header};
     use rama_core::{Layer, error::BoxError, service::service_fn};
+    use rama_http_types::mime::APPLICATION_JSON;
 
     #[tokio::test]
     async fn valid_accept_header() {
+        let service = ValidateRequestHeaderLayer::try_accept_for_str("application/json")
+            .unwrap()
+            .into_layer(service_fn(echo));
+
+        let request = Request::get("/")
+            .header(header::ACCEPT, "application/json")
+            .body(Body::empty())
+            .unwrap();
+
+        let res = service.serve(request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn valid_accept_header_with_mime() {
         let service =
-            ValidateRequestHeaderLayer::accept("application/json").into_layer(service_fn(echo));
+            ValidateRequestHeaderLayer::accept(APPLICATION_JSON).into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "application/json")
@@ -205,8 +236,9 @@ mod tests {
 
     #[tokio::test]
     async fn valid_accept_header_accept_all_json() {
-        let service =
-            ValidateRequestHeaderLayer::accept("application/json").into_layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::try_accept_for_str("application/json")
+            .unwrap()
+            .into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "application/*")
@@ -220,8 +252,9 @@ mod tests {
 
     #[tokio::test]
     async fn valid_accept_header_accept_all() {
-        let service =
-            ValidateRequestHeaderLayer::accept("application/json").into_layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::try_accept_for_str("application/json")
+            .unwrap()
+            .into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "*/*")
@@ -236,7 +269,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_accept_header() {
         let service =
-            ValidateRequestHeaderLayer::accept("application/json").into_layer(service_fn(echo));
+            ValidateRequestHeaderLayer::accept(APPLICATION_JSON).into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "invalid")
@@ -250,7 +283,7 @@ mod tests {
     #[tokio::test]
     async fn not_accepted_accept_header_subtype() {
         let service =
-            ValidateRequestHeaderLayer::accept("application/json").into_layer(service_fn(echo));
+            ValidateRequestHeaderLayer::accept(APPLICATION_JSON).into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "application/strings")
@@ -265,7 +298,7 @@ mod tests {
     #[tokio::test]
     async fn not_accepted_accept_header() {
         let service =
-            ValidateRequestHeaderLayer::accept("application/json").into_layer(service_fn(echo));
+            ValidateRequestHeaderLayer::accept(APPLICATION_JSON).into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "text/strings")
@@ -280,7 +313,7 @@ mod tests {
     #[tokio::test]
     async fn accepted_multiple_header_value() {
         let service =
-            ValidateRequestHeaderLayer::accept("application/json").into_layer(service_fn(echo));
+            ValidateRequestHeaderLayer::accept(APPLICATION_JSON).into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "text/strings")
@@ -296,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn accepted_inner_header_value() {
         let service =
-            ValidateRequestHeaderLayer::accept("application/json").into_layer(service_fn(echo));
+            ValidateRequestHeaderLayer::accept(APPLICATION_JSON).into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "text/strings, invalid, application/json")
@@ -311,8 +344,9 @@ mod tests {
     #[tokio::test]
     async fn accepted_header_with_quotes_valid() {
         let value = "foo/bar; parisien=\"baguette, text/html, jambon, fromage\", application/*";
-        let service =
-            ValidateRequestHeaderLayer::accept("application/xml").into_layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::try_accept_for_str("application/xml")
+            .unwrap()
+            .into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, value)
@@ -327,7 +361,9 @@ mod tests {
     #[tokio::test]
     async fn accepted_header_with_quotes_invalid() {
         let value = "foo/bar; parisien=\"baguette, text/html, jambon, fromage\"";
-        let service = ValidateRequestHeaderLayer::accept("text/html").into_layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::try_accept_for_str("text/html")
+            .unwrap()
+            .into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, value)

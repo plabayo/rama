@@ -1,4 +1,5 @@
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use rama_core::telemetry::tracing;
 use rama_http_types::header;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address::Host;
@@ -48,7 +49,12 @@ impl HeaderDecode for XForwardedHost {
 impl HeaderEncode for XForwardedHost {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
-        values.extend(Some(HeaderValue::try_from(s).unwrap()))
+        match HeaderValue::try_from(s) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode x-forwarded-host as header value: {err}")
+            }
+        }
     }
 }
 

@@ -2,10 +2,11 @@
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
+use parking_lot::Mutex;
 use rama::ServiceInput;
 use rama::futures::FutureExt;
 use rama::http::StatusCode;
@@ -365,7 +366,7 @@ async fn async_test(cfg: __TestConfig) {
             // Move a clone into the service_fn
             let serve_handles = serve_handles.clone();
             let service = RamaHttpService::new(service_fn(move |req: Request| {
-                let (sreq, sres) = serve_handles.lock().unwrap().remove(0);
+                let (sreq, sres) = serve_handles.lock().remove(0);
 
                 assert_eq!(req.uri().path(), sreq.uri, "client path");
                 assert_eq!(req.method(), &sreq.method, "client method");

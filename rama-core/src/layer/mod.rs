@@ -950,9 +950,6 @@ pub use add_extension::{AddExtension, AddExtensionLayer};
 pub mod get_extension;
 pub use get_extension::{GetExtension, GetExtensionLayer};
 
-pub mod return_input;
-pub use return_input::{ReturnInput, ReturnInputLayer};
-
 use crate::Service;
 
 macro_rules! impl_layer_either {

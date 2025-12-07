@@ -38,6 +38,7 @@
 //! ```
 
 use crate::{Request, Response, Uri};
+use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
@@ -200,15 +201,16 @@ fn trim_trailing_slash(uri: &mut Uri) {
             new_path.as_str()
         };
 
-        let new_path_and_query = if let Some(query) = path_and_query.query() {
+        if let Some(query) = path_and_query.query() {
             Cow::Owned(format!("{new_path}?{query}"))
         } else {
             new_path.into()
         }
         .parse()
-        .unwrap();
-
-        Some(new_path_and_query)
+        .inspect_err(|err| {
+            tracing::debug!("failed to parse modified path-and-query: {err}");
+        })
+        .ok()
     } else {
         None
     };
@@ -234,17 +236,23 @@ fn append_trailing_slash(uri: &mut Uri) {
     let mut parts = uri.clone().into_parts();
 
     let new_path_and_query = if let Some(path_and_query) = &parts.path_and_query {
-        let new_path_and_query = if let Some(query) = path_and_query.query() {
+        if let Some(query) = path_and_query.query() {
             Cow::Owned(format!("{new_path}?{query}"))
         } else {
             new_path.into()
         }
         .parse()
-        .unwrap();
-
-        Some(new_path_and_query)
+        .inspect_err(|err| {
+            tracing::debug!("failed to parse modified path-and-query: {err}");
+        })
+        .ok()
     } else {
-        Some(new_path.parse().unwrap())
+        new_path
+            .parse()
+            .inspect_err(|err| {
+                tracing::debug!("failed to parse modified path: {err}");
+            })
+            .ok()
     };
 
     parts.path_and_query = new_path_and_query;

@@ -1,4 +1,5 @@
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue, header};
 use rama_net::forwarded::{ForwardedElement, ForwardedProtocol};
 
@@ -46,7 +47,12 @@ impl HeaderDecode for XForwardedProto {
 impl HeaderEncode for XForwardedProto {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
-        values.extend(Some(HeaderValue::try_from(s).unwrap()))
+        match HeaderValue::try_from(s) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode x-forwarded-proto as header value: {err}")
+            }
+        }
     }
 }
 

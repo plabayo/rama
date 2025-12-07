@@ -8,13 +8,14 @@
 //! use rama_core::{extensions::{Extensions, ExtensionsRef}, Service, Layer, service::service_fn};
 //! use rama_core::layer::add_extension::AddExtensionLayer;
 //! use rama_core::error::BoxError;
-//!
+//! # #[derive(Debug)]
 //! # struct DatabaseConnectionPool;
 //! # impl DatabaseConnectionPool {
 //! #     fn new() -> DatabaseConnectionPool { DatabaseConnectionPool }
 //! # }
 //! #
 //! // Shared state across all request handlers --- in this case, a pool of database connections.
+//! #[derive(Debug)]
 //! struct State {
 //!     pool: DatabaseConnectionPool,
 //! }
@@ -153,7 +154,7 @@ impl<Input, S, T> Service<Input> for AddExtension<S, T>
 where
     Input: Send + ExtensionsMut + 'static,
     S: Service<Input>,
-    T: Clone + Send + Sync + 'static,
+    T: Clone + Send + Sync + std::fmt::Debug + 'static,
 {
     type Output = S::Output;
     type Error = S::Error;
@@ -173,6 +174,7 @@ mod tests {
     use crate::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
     use std::{convert::Infallible, sync::Arc};
 
+    #[derive(Debug)]
     struct State(i32);
 
     #[tokio::test]

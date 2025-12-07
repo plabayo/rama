@@ -1,8 +1,6 @@
 //! Rama's implementation of the Datastar SDK Test suite,
 //! used to verify if the rama datastar module is datastar-spec compliant.
 //!
-//! Learn more at <https://github.com/starfederation/datastar/tree/main/sdk/test>.
-//!
 //! ```sh
 //! cargo run --example http_sse_datastar_test_suite --features=http-full
 //! ```
@@ -11,6 +9,20 @@
 //!
 //! The server will start and listen on `:62036`.
 //! With this setup you can now run the test suite runners from the datastar repo.
+//!
+//! You can run all tests, assuming Go (the language) is installed
+//! on your machine as follows:
+//!
+//! ```sh
+//! go run \
+//!     github.com/starfederation/datastar/sdk/tests/cmd/datastar-sdk-tests@latest \
+//!     -server http://localhost:62036
+//! ```
+//!
+//! If all is well it will end with process exit code `0`
+//! and output the message "PASS".
+//!
+//! Learn more at <https://github.com/starfederation/datastar/tree/main/sdk/tests>.
 
 use rama::{
     Layer,
@@ -92,6 +104,7 @@ pub mod handlers {
         ElementPatchMode, ExecuteScript, PatchElements,
         execute_script::{ScriptAttribute, ScriptType},
     };
+    use rama_utils::str::NonEmptyStr;
     use serde::Deserialize;
     use serde_json::{Map, Value};
 
@@ -107,7 +120,7 @@ pub mod handlers {
     pub enum TestCaseEvent {
         #[serde(alias = "executeScript")]
         ExecuteScript {
-            script: String,
+            script: NonEmptyStr,
             #[serde(alias = "eventId")]
             event_id: Option<String>,
             #[serde(alias = "retryDuration")]
@@ -118,12 +131,12 @@ pub mod handlers {
         },
         #[serde(rename = "patchElements")]
         PatchElements {
-            elements: Option<String>,
+            elements: Option<NonEmptyStr>,
             #[serde(alias = "eventId")]
             event_id: Option<String>,
             #[serde(alias = "retryDuration")]
             retry_duration: Option<u64>,
-            selector: Option<String>,
+            selector: Option<NonEmptyStr>,
             mode: Option<String>,
             #[serde(alias = "useViewTransition")]
             use_view_transition: Option<bool>,
@@ -156,7 +169,7 @@ pub mod handlers {
                             auto_remove,
                         } => {
                             ExecuteScript {
-                                script: script.into(),
+                                script,
                                 auto_remove,
                                 attributes: attributes.map(|attributes| {
                                     attributes.into_iter().filter_map(|(key, value)| match key.as_str() {
@@ -210,8 +223,8 @@ pub mod handlers {
                             use_view_transition,
                         } => {
                             PatchElements {
-                                elements: elements.map(Into::into),
-                                selector: selector.map(Into::into),
+                                elements,
+                                selector,
                                 mode: match mode.as_deref().unwrap_or_default() {
                                     "inner" => ElementPatchMode::Inner,
                                     "remove" => ElementPatchMode::Remove,

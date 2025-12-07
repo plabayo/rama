@@ -248,4 +248,31 @@ mod test {
             Some("bar")
         );
     }
+
+    #[tokio::test]
+    async fn remove_response_header_hop_by_hop_with_headers_in_connect() {
+        let svc = RemoveResponseHeaderLayer::hop_by_hop().into_layer(service_fn(
+            async |_req: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("connection", "x-foo, x-bar")
+                        .header("keep-alive", "timeout=5")
+                        .header("x-foo", "1")
+                        .header("foo", "bar")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            },
+        ));
+        let req = Request::builder().body(Body::empty()).unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert!(res.headers().get("connection").is_none());
+        assert!(res.headers().get("x-foo").is_none());
+        assert!(res.headers().get("x-bar").is_none());
+        assert!(res.headers().get("keep-alive").is_none());
+        assert_eq!(
+            res.headers().get("foo").map(|v| v.to_str().unwrap()),
+            Some("bar")
+        );
+    }
 }

@@ -13,7 +13,7 @@ use crate::net::tls::{
 };
 use crate::rt::Executor;
 use crate::telemetry::tracing;
-use crate::utils::str::NonEmptyString;
+use crate::utils::str::NonEmptyStr;
 use crate::{Service, combinators::Either, service::BoxService};
 
 use base64::Engine;
@@ -91,20 +91,20 @@ impl CertIssuerHttpClient {
             tls_config.set_server_verify_cert_store(Arc::new(store));
         }
 
-        let client = EasyHttpWebClient::builder()
+        let client = EasyHttpWebClient::connector_builder()
             .with_default_transport_connector()
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_boringssl(Some(Arc::new(tls_config)))
             .with_default_http_connector()
-            .build();
+            .build_client();
 
         let uri: Uri = uri_raw.parse().context("parse RAMA_TLS_REMOTE as URI")?;
         let mut client = if let Ok(auth_raw) = std::env::var("RAMA_TLS_REMOTE_AUTH") {
             Self::new_with_client(
                 uri,
                 SetRequestHeaderLayer::overriding_typed(Authorization::new(
-                    Bearer::new(auth_raw)
+                    Bearer::try_from(auth_raw)
                         .context("try to create Bearer using RAMA_TLS_REMOTE_AUTH")?,
                 ))
                 .into_layer(client)
@@ -301,13 +301,13 @@ async fn fetch_certs(
 
     Ok(ServerAuthData {
         cert_chain: DataEncoding::Pem(
-            NonEmptyString::try_from(
+            NonEmptyStr::try_from(
                 String::from_utf8(crt).context("concert crt pem to utf8 string")?,
             )
             .context("convert crt utf8 string to non-empty")?,
         ),
         private_key: DataEncoding::Pem(
-            NonEmptyString::try_from(
+            NonEmptyStr::try_from(
                 String::from_utf8(key).context("concert private key pem to utf8 string")?,
             )
             .context("convert privatek key pem utf8 string to non-empty")?,

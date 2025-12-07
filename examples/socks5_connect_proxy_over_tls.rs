@@ -22,7 +22,7 @@
 
 use rama::{
     Service,
-    extensions::ExtensionsMut,
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
         service::web::Router,
@@ -35,7 +35,7 @@ use rama::{
             client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
-        user::{Basic, ProxyCredential},
+        user::{ProxyCredential, credentials::basic},
     },
     proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
     tcp::{client::service::TcpConnector, server::TcpListener},
@@ -96,16 +96,19 @@ async fn main() {
     request.extensions_mut().insert(ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
         address: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
+        credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
     });
 
     let EstablishedClientConnection {
-        req,
+        input: mut req,
         conn: http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a proxied connection ready to make http requests");
+
+    req.extensions_mut()
+        .extend(http_service.extensions().clone());
 
     tracing::info!(
         url.full = %uri,
@@ -134,8 +137,8 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
         .expect("get bind address of socks5-over-tls proxy server")
         .into();
 
-    let socks5_acceptor = Socks5Acceptor::default()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
+    let socks5_acceptor =
+        Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
     let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
     let acceptor_data =

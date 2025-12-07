@@ -89,8 +89,8 @@ where
     async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
         let mut ext = Extensions::new();
         for handler in &self.handlers {
+            let mut ext = Extensions::new();
             if !handler.matcher.matches(Some(&mut ext), &req) {
-                ext.clear();
                 continue;
             }
             req.extensions_mut().extend(ext);
@@ -120,9 +120,7 @@ where
                         async move {
                             match rama_http::io::upgrade::handle_upgrade(&req).await {
                                 Ok(mut upgraded) => {
-                                    upgraded
-                                        .extensions_mut()
-                                        .set_parent_extensions(Arc::new(req.extensions().clone()));
+                                    upgraded.extensions_mut().extend(req.extensions().clone());
                                     let _ = handler.serve(upgraded).await;
                                 }
                                 Err(e) => {

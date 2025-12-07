@@ -6,14 +6,12 @@ use rama_core::{bytes::Bytes, futures::Stream};
 use rama_error::{ErrorContext, OpaqueError};
 use rama_http_types::{Body, HeaderValue, Response};
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::str::arcstr::{ArcStr, arcstr};
 use rawzip::{CompressionMethod, ZipArchiveWriter};
 use std::fmt;
+use std::io::{self, Cursor, Read, Write};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::{
-    borrow::Cow,
-    io::{self, Cursor, Read, Write},
-};
 use tokio::io::{BufReader, duplex};
 
 #[derive(Debug, Clone)]
@@ -31,7 +29,7 @@ use tokio::io::{BufReader, duplex};
 /// - Anti-bot traps
 /// - Defensive deception systems
 pub struct ZipBomb {
-    filename: Cow<'static, str>,
+    filename: ArcStr,
 
     depth: usize,
     fanout: usize,
@@ -41,7 +39,7 @@ pub struct ZipBomb {
 impl Default for ZipBomb {
     #[inline]
     fn default() -> Self {
-        Self::new_static("token_backup")
+        Self::new(arcstr!("token_backup"))
     }
 }
 
@@ -52,21 +50,9 @@ impl ZipBomb {
 
     #[must_use]
     /// Create a new [`ZipBomb`].
-    pub fn new(filename: String) -> Self {
+    pub const fn new(filename: ArcStr) -> Self {
         Self {
-            filename: Cow::Owned(filename),
-
-            depth: Self::DEFAULT_DEPTH,
-            fanout: Self::DEFAULT_FANOUT,
-            file_size: Self::DEFAULT_FILE_SIZE,
-        }
-    }
-
-    #[must_use]
-    /// Create a new [`ZipBomb`] with a _static_ filename.
-    pub const fn new_static(filename: &'static str) -> Self {
-        Self {
-            filename: Cow::Borrowed(filename),
+            filename,
 
             depth: Self::DEFAULT_DEPTH,
             fanout: Self::DEFAULT_FANOUT,
@@ -113,7 +99,7 @@ impl ZipBomb {
             file_size,
         } = self.clone();
 
-        let stream = RecursiveZipBomb::new(filename.clone(), depth, fanout, file_size);
+        let stream = RecursiveZipBomb::new(filename, depth, fanout, file_size);
         Body::from_stream(stream)
     }
 
@@ -154,7 +140,7 @@ impl ZipBomb {
             file_size,
         } = self;
 
-        let stream = RecursiveZipBomb::new(filename.clone(), depth, fanout, file_size);
+        let stream = RecursiveZipBomb::new(filename, depth, fanout, file_size);
         Body::from_stream(stream)
     }
 
@@ -202,7 +188,7 @@ impl fmt::Debug for RecursiveZipBomb {
 }
 
 impl RecursiveZipBomb {
-    fn new(filename: Cow<'static, str>, depth: usize, fanout: usize, file_size: usize) -> Self {
+    fn new(filename: ArcStr, depth: usize, fanout: usize, file_size: usize) -> Self {
         let mut buffer_size = 64 * 1024;
         buffer_size += fanout * 32 * 1024;
         buffer_size += file_size.min(4 * 1024 * 1024);

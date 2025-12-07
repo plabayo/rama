@@ -1,87 +1,111 @@
-use std::iter::FromIterator;
+use rama_http_types::HeaderName;
 
-use rama_http_types::{HeaderName, HeaderValue};
-
-use crate::util::FlatCsv;
-
-/// `Access-Control-Allow-Headers` header, part of
-/// [CORS](http://www.w3.org/TR/cors/#access-control-allow-headers-response-header)
-///
-/// The `Access-Control-Allow-Headers` header indicates, as part of the
-/// response to a preflight request, which header field names can be used
-/// during the actual request.
-///
-/// # ABNF
-///
-/// ```text
-/// Access-Control-Allow-Headers: "Access-Control-Allow-Headers" ":" #field-name
-/// ```
-///
-/// # Example values
-/// * `accept-language, date`
-///
-/// # Examples
-///
-/// ```
-/// use rama_http_types::header::{CACHE_CONTROL, CONTENT_TYPE};
-/// use rama_http_headers::AccessControlAllowHeaders;
-///
-/// let allow_headers = vec![CACHE_CONTROL, CONTENT_TYPE]
-///     .into_iter()
-///     .collect::<AccessControlAllowHeaders>();
-/// ```
-#[derive(Clone, Debug, PartialEq)]
-pub struct AccessControlAllowHeaders(FlatCsv);
-
-derive_header! {
-    AccessControlAllowHeaders(_),
-    name: ACCESS_CONTROL_ALLOW_HEADERS
-}
-
-impl AccessControlAllowHeaders {
-    /// Returns an iterator over `HeaderName`s contained within.
-    pub fn iter(&self) -> impl Iterator<Item = HeaderName> + '_ {
-        self.0
-            .iter()
-            .map(|s| s.parse().ok())
-            .take_while(|val| val.is_some())
-            .flatten()
-    }
-}
-
-impl FromIterator<HeaderName> for AccessControlAllowHeaders {
-    fn from_iter<I>(iter: I) -> Self
-    where
-        I: IntoIterator<Item = HeaderName>,
-    {
-        let flat = iter.into_iter().map(HeaderValue::from).collect();
-        Self(flat)
-    }
+derive_values_or_any_header! {
+    #[header(name = ACCESS_CONTROL_ALLOW_HEADERS, sep = Comma)]
+    #[derive(Clone, Debug, PartialEq)]
+    /// `Access-Control-Allow-Headers` header, as defined on
+    /// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Allow-Headers).
+    ///
+    /// The `Access-Control-Allow-Headers` header indicates, as part of the
+    /// response to a preflight request, which header field names can be used
+    /// during the actual request.
+    ///
+    /// # ABNF
+    ///
+    /// ```text
+    /// Access-Control-Allow-Headers: "Access-Control-Allow-Headers" ":" #field-name
+    /// ```
+    ///
+    /// # Example values
+    /// * `accept-language, date`
+    /// * `*` (any)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama_utils::collections::non_empty_vec;
+    /// use rama_http_types::header::{CACHE_CONTROL, CONTENT_TYPE};
+    /// use rama_http_headers::AccessControlAllowHeaders;
+    ///
+    /// let allow_headers = AccessControlAllowHeaders::new_values(
+    ///     non_empty_vec![CACHE_CONTROL, CONTENT_TYPE],
+    /// );
+    ///
+    /// let any_allow_headers = AccessControlAllowHeaders::new_any();
+    /// ```
+    pub struct AccessControlAllowHeaders(pub ValuesOrAny<HeaderName>);
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::{test_decode, test_encode};
     use super::*;
+    use rama_utils::collections::non_empty_vec;
 
     #[test]
-    fn iter() {
-        let allow_headers = test_decode::<AccessControlAllowHeaders>(&["foo, bar"]).unwrap();
+    fn decode_header_single() {
+        let allow_headers = test_decode::<AccessControlAllowHeaders>(&["foo, bar"])
+            .unwrap()
+            .into_values()
+            .unwrap();
 
-        let as_vec = allow_headers.iter().collect::<Vec<_>>();
-        assert_eq!(as_vec.len(), 2);
-        assert_eq!(as_vec[0], "foo");
-        assert_eq!(as_vec[1], "bar");
+        assert_eq!(allow_headers.len(), 2);
+        assert_eq!(allow_headers[0], "foo");
+        assert_eq!(allow_headers[1], "bar");
     }
 
     #[test]
-    fn from_iter() {
-        let allow: AccessControlAllowHeaders = vec![
+    fn decode_any() {
+        assert!(
+            test_decode::<AccessControlAllowHeaders>(&["*"])
+                .unwrap()
+                .is_any(),
+        );
+    }
+
+    #[test]
+    fn decode_any_with_trailer_value() {
+        let allow_headers = test_decode::<AccessControlAllowHeaders>(&["*, bar"])
+            .unwrap()
+            .into_values()
+            .unwrap();
+
+        assert_eq!(allow_headers.len(), 2);
+        assert_eq!(allow_headers[0], "*");
+        assert_eq!(allow_headers[1], "bar");
+    }
+
+    #[test]
+    fn decode_any_with_trailer_header() {
+        let allow_headers = test_decode::<AccessControlAllowHeaders>(&["*", "bar"])
+            .unwrap()
+            .into_values()
+            .unwrap();
+
+        assert_eq!(allow_headers.len(), 2);
+        assert_eq!(allow_headers[0], "*");
+        assert_eq!(allow_headers[1], "bar");
+    }
+
+    #[test]
+    fn decode_header_multi() {
+        let allow_headers = test_decode::<AccessControlAllowHeaders>(&["foo, bar", "baz"])
+            .unwrap()
+            .into_values()
+            .unwrap();
+
+        assert_eq!(allow_headers.len(), 3);
+        assert_eq!(allow_headers[0], "foo");
+        assert_eq!(allow_headers[1], "bar");
+        assert_eq!(allow_headers[2], "baz");
+    }
+
+    #[test]
+    fn encode() {
+        let allow = AccessControlAllowHeaders::new_values(non_empty_vec![
             ::rama_http_types::header::CACHE_CONTROL,
             ::rama_http_types::header::IF_RANGE,
-        ]
-        .into_iter()
-        .collect();
+        ]);
 
         let headers = test_encode(allow);
         assert_eq!(
@@ -91,9 +115,24 @@ mod tests {
     }
 
     #[test]
-    fn test_with_invalid() {
-        let allow_headers = test_decode::<AccessControlAllowHeaders>(&["foo foo, bar"]).unwrap();
+    fn encode_any() {
+        let allow = AccessControlAllowHeaders::new_any();
+        let headers = test_encode(allow);
+        assert_eq!(headers["access-control-allow-headers"], "*");
+    }
 
-        assert!(allow_headers.iter().collect::<Vec<_>>().is_empty());
+    #[test]
+    fn decode_with_empty_header_value() {
+        assert!(test_decode::<AccessControlAllowHeaders>(&[""]).is_none());
+    }
+
+    #[test]
+    fn decode_with_no_headers() {
+        assert!(test_decode::<AccessControlAllowHeaders>(&[]).is_none());
+    }
+
+    #[test]
+    fn decode_with_invalid_value_str() {
+        assert!(test_decode::<AccessControlAllowHeaders>(&["foo foo, bar"]).is_none());
     }
 }

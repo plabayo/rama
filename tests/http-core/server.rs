@@ -6,14 +6,15 @@ use std::io::{self, Read, Write};
 use std::net::TcpListener as StdTcpListener;
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::thread;
 use std::time::Duration;
 
 use futures_channel::oneshot;
+use parking_lot::Mutex;
 use rama::ServiceInput;
 use rama::error::{BoxError, OpaqueError};
 use rama::extensions::Extensions;
@@ -2935,14 +2936,13 @@ struct ReplyBuilder<'a> {
 
 impl ReplyBuilder<'_> {
     fn status(self, status: rama::http::StatusCode) -> Self {
-        self.tx.lock().unwrap().send(Reply::Status(status)).unwrap();
+        self.tx.lock().send(Reply::Status(status)).unwrap();
         self
     }
 
     fn reason_phrase(self, reason: &str) -> Self {
         self.tx
             .lock()
-            .unwrap()
             .send(Reply::ReasonPhrase(
                 reason.as_bytes().try_into().expect("reason phrase"),
             ))
@@ -2951,29 +2951,21 @@ impl ReplyBuilder<'_> {
     }
 
     fn version(self, version: rama::http::Version) -> Self {
-        self.tx
-            .lock()
-            .unwrap()
-            .send(Reply::Version(version))
-            .unwrap();
+        self.tx.lock().send(Reply::Version(version)).unwrap();
         self
     }
 
     fn header<V: AsRef<str>>(self, name: &str, value: V) -> Self {
         let name = HeaderName::from_bytes(name.as_bytes()).expect("header name");
         let value = HeaderValue::from_str(value.as_ref()).expect("header value");
-        self.tx
-            .lock()
-            .unwrap()
-            .send(Reply::Header(name, value))
-            .unwrap();
+        self.tx.lock().send(Reply::Header(name, value)).unwrap();
         self
     }
 
     fn body<T: AsRef<[u8]>>(self, body: T) {
         let chunk = Bytes::copy_from_slice(body.as_ref());
         let body = BodyExt::boxed(rama::http::body::util::Full::new(chunk).map_err(|e| match e {}));
-        self.tx.lock().unwrap().send(Reply::Body(body)).unwrap();
+        self.tx.lock().send(Reply::Body(body)).unwrap();
     }
 
     fn body_stream<S>(self, stream: S)
@@ -2983,7 +2975,7 @@ impl ReplyBuilder<'_> {
         use rama::futures::TryStreamExt;
         use rama::http::core::body::Frame;
         let body = BodyExt::boxed(StreamBody::new(stream.map_ok(Frame::data)));
-        self.tx.lock().unwrap().send(Reply::Body(body)).unwrap();
+        self.tx.lock().send(Reply::Body(body)).unwrap();
     }
 
     fn body_stream_with_trailers<S>(self, stream: S, trailers: HeaderMap)
@@ -2996,15 +2988,14 @@ impl ReplyBuilder<'_> {
         let mut stream_body = StreamBodyWithTrailers::new(stream.map_ok(Frame::data));
         stream_body.set_trailers(trailers);
         let body = BodyExt::boxed(stream_body);
-        self.tx.lock().unwrap().send(Reply::Body(body)).unwrap();
+        self.tx.lock().send(Reply::Body(body)).unwrap();
     }
 }
 
 impl Drop for ReplyBuilder<'_> {
     fn drop(&mut self) {
-        if let Ok(mut tx) = self.tx.lock() {
-            let _ = tx.send(Reply::End);
-        }
+        let mut tx = self.tx.lock();
+        let _ = tx.send(Reply::End);
     }
 }
 

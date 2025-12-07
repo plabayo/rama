@@ -1,3 +1,4 @@
+use rama_error::{ErrorContext as _, OpaqueError};
 use rama_http_types::{HeaderValue, Uri, header::ToStrError};
 
 /// `Location` header, defined in
@@ -38,19 +39,22 @@ impl Location {
     }
 }
 
-impl From<Uri> for Location {
+impl TryFrom<Uri> for Location {
+    type Error = OpaqueError;
+
     #[inline]
-    fn from(value: Uri) -> Self {
-        Self::from(&value)
+    fn try_from(value: Uri) -> Result<Self, Self::Error> {
+        Self::try_from(&value)
     }
 }
 
-impl From<&Uri> for Location {
-    fn from(value: &Uri) -> Self {
-        Self(
-            HeaderValue::try_from(value.to_string())
-                .expect("uri to be always a valid header value"),
-        )
+impl TryFrom<&Uri> for Location {
+    type Error = OpaqueError;
+
+    fn try_from(value: &Uri) -> Result<Self, Self::Error> {
+        Ok(Self(
+            HeaderValue::try_from(value.to_string()).context("parse uri as header value")?,
+        ))
     }
 }
 

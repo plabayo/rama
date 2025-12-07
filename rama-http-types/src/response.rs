@@ -232,6 +232,12 @@ impl Response<()> {
     pub fn builder() -> Builder {
         Builder::new()
     }
+
+    #[inline]
+    /// Same as [`Response::builder`] but with the given [`Extensions`] to start from.
+    pub fn builder_with_extensions(ext: Extensions) -> Builder {
+        Builder::new_with_extensions(ext)
+    }
 }
 
 impl<T> Response<T> {
@@ -524,6 +530,19 @@ impl Builder {
         Self::default()
     }
 
+    #[inline]
+    /// Same as [`Self::new`] but with the given [`Extensions`] to start from.
+    pub fn new_with_extensions(ext: Extensions) -> Self {
+        Self {
+            inner: Ok(Parts {
+                status: StatusCode::default(),
+                version: Version::default(),
+                headers: HeaderMap::default(),
+                extensions: ext,
+            }),
+        }
+    }
+
     /// Set the HTTP status for this response.
     ///
     /// By default this is `200`.
@@ -666,7 +685,7 @@ impl Builder {
     /// ```
     pub fn extension<T>(self, extension: T) -> Self
     where
-        T: Clone + Any + Send + Sync + 'static,
+        T: Clone + Any + Send + Sync + std::fmt::Debug + 'static,
     {
         self.and_then(move |mut head| {
             head.extensions.insert(extension);

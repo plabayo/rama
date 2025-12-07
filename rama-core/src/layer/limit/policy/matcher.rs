@@ -15,8 +15,8 @@ where
     type Error = P::Error;
 
     async fn check(&self, mut input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
-        let mut ext = Extensions::new();
         for (matcher, policy) in self.iter() {
+            let mut ext = Extensions::new();
             if matcher.matches(Some(&mut ext), &input) {
                 input.extensions_mut().extend(ext);
                 let result = policy.check(input).await;
@@ -38,7 +38,6 @@ where
                     },
                 };
             }
-            ext.clear();
         }
         PolicyResult {
             input,
@@ -58,13 +57,12 @@ where
 
     async fn check(&self, mut input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         let (matchers, default_policy) = self;
-        let mut ext = Extensions::new();
         for (matcher, policy) in matchers.iter() {
+            let mut ext = Extensions::new();
             if matcher.matches(Some(&mut ext), &input) {
                 input.extensions_mut().extend(ext);
                 return policy.check(input).await;
             }
-            ext.clear();
         }
         default_policy.check(input).await
     }

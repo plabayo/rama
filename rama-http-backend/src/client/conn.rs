@@ -2,7 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Layer, Service,
     error::{BoxError, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     rt::Executor,
     stream::Stream,
 };
@@ -25,75 +25,47 @@ use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
+use std::marker::PhantomData;
 
+#[derive(Debug, Clone)]
 /// A [`Service`] which establishes an HTTP Connection.
-pub struct HttpConnector<S, I = ()> {
+pub struct HttpConnector<S, Body> {
     inner: S,
-    http_req_modifier_svc: I,
+    // Body type this connector will be able to send, this is not
+    // necessarily the same one that was used in the request that
+    // created this connection
+    _phantom: PhantomData<fn() -> Body>,
 }
 
-impl<S: fmt::Debug, I: fmt::Debug> fmt::Debug for HttpConnector<S, I> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpConnector")
-            .field("inner", &self.inner)
-            .field("http_req_modifier_svc", &self.http_req_modifier_svc)
-            .finish()
-    }
-}
-
-impl<S> HttpConnector<S> {
+impl<S, Body> HttpConnector<S, Body> {
     /// Create a new [`HttpConnector`].
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
-            http_req_modifier_svc: (),
-        }
-    }
-}
-
-impl<S, I> HttpConnector<S, I> {
-    /// Add a http request modidifier that will run just before doing the actual http request
-    pub fn with_http_req_modifier_svc<T>(self, http_req_modifier_svc: T) -> HttpConnector<S, T> {
-        HttpConnector {
-            inner: self.inner,
-            http_req_modifier_svc: http_req_modifier_svc,
+            _phantom: PhantomData,
         }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S, I> Clone for HttpConnector<S, I>
+impl<S, BodyIn, BodyConnection> Service<Request<BodyIn>> for HttpConnector<S, BodyConnection>
 where
-    S: Clone,
-    I: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            http_req_modifier_svc: self.http_req_modifier_svc.clone(),
-        }
-    }
-}
-
-impl<S, I, BodyIn, BodyOut> Service<Request<BodyIn>> for HttpConnector<S, I>
-where
-    I: Service<Request<BodyIn>, Output = Request<BodyOut>, Error: Into<BoxError>> + Clone,
     S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin>,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    // Body type this connector will be able to send, this is not necessarily the same one that
+    // was used in the request that created this connection
+    BodyConnection:
+        StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    type Output = EstablishedClientConnection<HttpClientService<BodyOut, I>, Request<BodyIn>>;
+    type Output = EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>;
     type Error = BoxError;
 
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection {
-            input: req,
-            mut conn,
-        } = self.inner.connect(req).await.map_err(Into::into)?;
+        let EstablishedClientConnection { input: req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
-        let extensions = std::mem::take(conn.extensions_mut());
+        let extensions = conn.extensions().clone();
 
         let server_address = req
             .extensions()
@@ -174,7 +146,6 @@ where
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http2(sender),
-                    http_req_inspector: self.http_req_modifier_svc.clone(),
                     extensions,
                 };
 
@@ -218,7 +189,6 @@ where
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http1(Mutex::new(sender)),
-                    http_req_inspector: self.http_req_modifier_svc.clone(),
                     extensions,
                 };
 
@@ -237,49 +207,33 @@ where
 
 #[derive(Clone, Debug)]
 /// A [`Layer`] that produces an [`HttpConnector`].
-pub struct HttpConnectorLayer<I = ()> {
-    http_req_modifier_svc: I,
+pub struct HttpConnectorLayer<Body> {
+    _phantom: PhantomData<Body>,
 }
 
-impl HttpConnectorLayer {
+impl<Body> HttpConnectorLayer<Body> {
     /// Create a new [`HttpConnectorLayer`].
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            http_req_modifier_svc: (),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<I> HttpConnectorLayer<I> {
-    /// Add a http request modifier that will run just before doing the actual http request
-    pub fn with_http_req_modifier_svc<T>(self, http_req_modifier_svc: T) -> HttpConnectorLayer<T> {
-        HttpConnectorLayer {
-            http_req_modifier_svc,
-        }
-    }
-}
-
-impl Default for HttpConnectorLayer {
+impl<Body> Default for HttpConnectorLayer<Body> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<I: Clone, S> Layer<S> for HttpConnectorLayer<I> {
-    type Service = HttpConnector<S, I>;
+impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
+    type Service = HttpConnector<S, Body>;
 
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
-            http_req_modifier_svc: self.http_req_modifier_svc.clone(),
-        }
-    }
-
-    fn into_layer(self, inner: S) -> Self::Service {
-        HttpConnector {
-            inner,
-            http_req_modifier_svc: self.http_req_modifier_svc,
+            _phantom: PhantomData,
         }
     }
 }

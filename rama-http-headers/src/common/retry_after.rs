@@ -1,5 +1,7 @@
 use std::time::SystemTime;
 
+use rama_core::telemetry::tracing;
+use rama_error::OpaqueError;
 use rama_http_types::HeaderValue;
 
 use crate::Error;
@@ -28,9 +30,30 @@ use crate::util::{HttpDate, Seconds, TryFromValues};
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct RetryAfter(After);
 
-derive_header! {
-    RetryAfter(_),
-    name: RETRY_AFTER
+impl crate::TypedHeader for RetryAfter {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::RETRY_AFTER
+    }
+}
+
+impl crate::HeaderDecode for RetryAfter {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+    {
+        crate::util::TryFromValues::try_from_values(values).map(RetryAfter)
+    }
+}
+
+impl crate::HeaderEncode for RetryAfter {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        match HeaderValue::try_from(&self.0) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode retry-after value as header: {err}");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -68,7 +91,7 @@ impl TryFromValues for After {
         values
             .next()
             .and_then(|val| {
-                if let Some(delay) = Seconds::from_val(val) {
+                if let Some(delay) = Seconds::try_from_val(val) {
                     return Some(Self::Delay(delay));
                 }
 
@@ -79,11 +102,13 @@ impl TryFromValues for After {
     }
 }
 
-impl<'a> From<&'a After> for HeaderValue {
-    fn from(after: &'a After) -> Self {
+impl<'a> TryFrom<&'a After> for HeaderValue {
+    type Error = OpaqueError;
+
+    fn try_from(after: &'a After) -> Result<Self, Self::Error> {
         match *after {
-            After::Delay(ref delay) => delay.into(),
-            After::DateTime(ref date) => date.into(),
+            After::Delay(ref delay) => Ok(delay.into()),
+            After::DateTime(ref date) => date.try_into(),
         }
     }
 }

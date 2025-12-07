@@ -17,7 +17,7 @@ use self::internal::IntoQuality;
 ///
 /// The quality value is defined as a number between 0 and 1 with three decimal places. This means
 /// there are 1001 possible values. Since floating point numbers are not exact and the smallest
-/// floating point data type (`f32`) consumes four bytes, hyper uses an `u16` value to store the
+/// floating point data type (`f32`) consumes four bytes, rama uses an `u16` value to store the
 /// quality internally. For performance reasons you may set quality directly to a value between
 /// 0 and 1000 e.g. `Quality(532)` matches the quality `q=0.532`.
 ///
@@ -29,7 +29,13 @@ pub struct Quality(u16);
 impl Quality {
     #[inline]
     #[must_use]
-    pub fn one() -> Self {
+    pub fn new_clamped(v: u16) -> Self {
+        Self(v.clamp(0, 1000))
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn one() -> Self {
         Self(1000)
     }
 
@@ -126,6 +132,14 @@ impl<T> QualityValue<T> {
         Self { value, quality }
     }
 
+    /// Creates a new `QualityValue` from an item value alone.
+    pub const fn new_value(value: T) -> Self {
+        Self {
+            value,
+            quality: Quality::one(),
+        }
+    }
+
     /*
     /// Convenience function to set a `Quality` from a float or integer.
     ///
@@ -194,14 +208,7 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
 
 #[inline]
 fn from_f32(f: f32) -> Quality {
-    // this function is only used internally. A check that `f` is within range
-    // should be done before calling this method. Just in case, this
-    // debug_assert should catch if we were forgetful
-    debug_assert!(
-        (0f32..=1f32).contains(&f),
-        "q value must be between 0.0 and 1.0"
-    );
-    Quality((f * 1000f32) as u16)
+    Quality((f.clamp(0f32, 1f32) * 1000f32) as u16)
 }
 
 #[cfg(test)]
@@ -234,18 +241,14 @@ mod internal {
 
     impl IntoQuality for f32 {
         fn into_quality(self) -> Quality {
-            assert!(
-                (0f32..=1f32).contains(&self),
-                "float must be between 0.0 and 1.0"
-            );
             super::from_f32(self)
         }
     }
 
     impl IntoQuality for u16 {
+        #[inline(always)]
         fn into_quality(self) -> Quality {
-            assert!(self <= 1000, "u16 must be between 0 and 1000");
-            Quality(self)
+            Quality::new_clamped(self)
         }
     }
 
@@ -343,18 +346,6 @@ mod tests {
     #[test]
     fn test_quality() {
         assert_eq!(q(0.5), Quality(500));
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_quality_invalid() {
-        q(-1.0);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_quality_invalid2() {
-        q(2.0);
     }
 
     #[test]

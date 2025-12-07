@@ -68,7 +68,7 @@ use rama::{
             client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
-        user::Basic,
+        user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
@@ -84,7 +84,7 @@ use rama::{
     },
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
             UserAgentEmulateLayer,
         },
         profile::UserAgentDatabase,
@@ -145,9 +145,10 @@ async fn main() -> Result<(), BoxError> {
         let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
+                ProxyAuthLayer::new(basic!("john", "secret")),
                 // used to toggle HAR recording on and off
                 // ...
                 // NOTE that in a production proxy you would probably
@@ -296,15 +297,15 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
     // but instead have a pre-built one as a struct local
-    let client = EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector()
-        .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default())
-        .build();
+        .build_client()
+        .with_jit_layer(UserAgentEmulateHttpRequestModifierLayer::default());
 
     let state = req.extensions().get::<State>().unwrap();
 

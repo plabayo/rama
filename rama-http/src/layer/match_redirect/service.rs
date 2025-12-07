@@ -153,15 +153,22 @@ where
             })
             && uri != full_uri
         {
-            tracing::debug!(
-                "redirct request '{full_uri}' to '{uri}' w/ status code {}",
-                self.status_code
-            );
-            return Ok((
-                Headers::single(Location::from(uri.as_ref())),
-                self.status_code,
-            )
-                .into_response());
+            return match Location::try_from(uri.as_ref()) {
+                Ok(loc) => {
+                    tracing::debug!(
+                        "redirct request '{full_uri}' to '{uri}' w/ status code {}",
+                        self.status_code
+                    );
+                    Ok((Headers::single(loc), self.status_code).into_response())
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        "failed to send response for redirct request '{full_uri}' to '{uri}' w/ status code {}; loc header encoding failed: {err}",
+                        self.status_code
+                    );
+                    Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                }
+            };
         }
 
         let resp = self.inner.serve(req).await?;

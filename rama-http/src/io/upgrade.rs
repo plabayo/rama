@@ -282,7 +282,7 @@ impl Future for OnUpgrade {
 
 impl fmt::Debug for OnUpgrade {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OnUpgrade").finish()
+        f.debug_struct("OnUpgrade").field("rx", &self.rx).finish()
     }
 }
 

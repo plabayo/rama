@@ -41,14 +41,14 @@ impl<C: Credentials> HeaderDecode for ProxyAuthorization<C> {
 
 impl<C: Credentials> HeaderEncode for ProxyAuthorization<C> {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        let value = self.0.encode();
-        debug_assert!(
-            value.as_bytes().starts_with(C::SCHEME.as_bytes()),
-            "Credentials::encode should include its scheme: scheme = {:?}, encoded = {:?}",
-            C::SCHEME,
-            value,
-        );
-
-        values.extend(::std::iter::once(value));
+        values.extend(self.0.encode().map(|value| {
+            debug_assert!(
+                value.as_bytes().starts_with(C::SCHEME.as_bytes()),
+                "Credentials::encode should include its scheme: scheme = {:?}, encoded = {:?}",
+                C::SCHEME,
+                value,
+            );
+            value
+        }));
     }
 }

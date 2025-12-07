@@ -8,6 +8,7 @@ use crate::{
     service::web::response::{Html, IntoResponse},
 };
 use rama_core::bytes::Bytes;
+use rama_core::telemetry::tracing;
 use rama_core::{Service, error::BoxError};
 use rama_http_headers::{AcceptRanges, ContentType, HttpResponseBuilderExt};
 use std::{convert::Infallible, io};
@@ -80,6 +81,7 @@ where
     }
 }
 
+#[inline(always)]
 pub(super) fn method_not_allowed() -> Response {
     let mut res = response_with_status(StatusCode::METHOD_NOT_ALLOWED);
     res.headers_mut()
@@ -87,13 +89,12 @@ pub(super) fn method_not_allowed() -> Response {
     res
 }
 
+#[inline(always)]
 fn response_with_status(status: StatusCode) -> Response {
-    Response::builder()
-        .status(status)
-        .body(empty_body())
-        .unwrap()
+    status.into_response()
 }
 
+#[inline(always)]
 pub(super) fn not_found() -> Response {
     response_with_status(StatusCode::NOT_FOUND)
 }
@@ -146,10 +147,13 @@ fn build_response(output: FileOpened) -> Response {
                     builder
                         .header(header::CONTENT_RANGE, format!("bytes */{size}"))
                         .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .body(body_from_bytes(Bytes::from(
+                        .body(Body::from(Bytes::from(
                             "Cannot serve multipart range requests",
                         )))
-                        .unwrap()
+                        .unwrap_or_else(|err| {
+                            tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
+                            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                        })
                 } else {
                     let range_size = range.end() - range.start() + 1;
                     let body = if let Some(reader) = output.extent.into_reader() {
@@ -162,7 +166,7 @@ fn build_response(output: FileOpened) -> Response {
                             .boxed(),
                         )
                     } else {
-                        empty_body()
+                        Body::empty()
                     };
 
                     let content_length = if size == 0 {
@@ -179,45 +183,49 @@ fn build_response(output: FileOpened) -> Response {
                         .header(header::CONTENT_LENGTH, content_length)
                         .status(StatusCode::PARTIAL_CONTENT)
                         .body(body)
-                        .unwrap()
+                        .unwrap_or_else(|err| {
+                            tracing::debug!("failed to create PARTIAL_CONTENT response: {err}; error 500 resp instead...");
+                            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                        })
                 }
             } else {
                 builder
                     .header(header::CONTENT_RANGE, format!("bytes */{size}"))
                     .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                    .body(body_from_bytes(Bytes::from(
+                    .body(Body::from(Bytes::from(
                         "No range found after parsing range header, please file an issue",
                     )))
-                    .unwrap()
+                    .unwrap_or_else(|err| {
+                        tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
+                        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    })
             }
         }
 
         Some(Err(_)) => builder
             .header(header::CONTENT_RANGE, format!("bytes */{size}"))
             .status(StatusCode::RANGE_NOT_SATISFIABLE)
-            .body(empty_body())
-            .unwrap(),
+            .body(Body::empty())
+            .unwrap_or_else(|err| {
+                tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }),
 
         // Not a range request
         None => {
             let body = if let Some(reader) = output.extent.into_reader() {
                 Body::new(AsyncReadBody::with_capacity(reader, output.chunk_size).boxed())
             } else {
-                empty_body()
+                Body::empty()
             };
 
             builder
                 .header(header::CONTENT_LENGTH, size)
                 .body(body)
-                .unwrap()
+                .unwrap_or_else(|err| {
+                    tracing::debug!("failed to create non-range content-length response: {err}; error 500 resp instead...");
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                })
         }
     }
-}
-
-fn body_from_bytes(bytes: Bytes) -> Body {
-    Body::from(bytes)
-}
-
-fn empty_body() -> Body {
-    Body::empty()
 }

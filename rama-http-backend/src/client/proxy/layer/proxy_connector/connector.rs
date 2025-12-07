@@ -2,6 +2,8 @@
 //!
 //! As defined in <https://www.ietf.org/rfc/rfc2068.txt>.
 
+use std::fmt::Debug;
+
 use super::HttpProxyError;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::extensions::ExtensionsMut;
@@ -61,7 +63,7 @@ impl InnerHttpProxyConnector {
         /// Add a header to the request.
         pub(super) fn extension(
             mut self,
-            value: impl Clone + Send + Sync + 'static,
+            value: impl Clone + Send + Sync + Debug + 'static,
         ) -> Self {
             self.req.extensions_mut().insert(value);
             self

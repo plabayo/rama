@@ -1,13 +1,8 @@
 use std::{fmt, time::Duration};
 
 use rama_core::{
-    Service,
-    combinators::Either,
-    error::BoxError,
-    extensions::{Extensions, ExtensionsMut},
-    layer::timeout::DefaultTimeout,
-    stream::Stream,
-    telemetry::tracing,
+    Service, combinators::Either, error::BoxError, extensions::ExtensionsMut,
+    layer::timeout::DefaultTimeout, stream::Stream, telemetry::tracing,
 };
 use rama_net::{
     address::{Host, HostWithPort, SocketAddress},
@@ -353,8 +348,7 @@ where
             "socks5 server w/ destination {destination}: udp associate: try to bind incoming socket to destination {destination}",
         );
 
-        let parent_extensions = std::mem::take(stream.extensions_mut()).into_frozen_extensions();
-        let extensions = Extensions::new().with_parent_extensions(parent_extensions);
+        let extensions = stream.extensions().clone();
 
         let HostWithPort {
             host: dest_host,

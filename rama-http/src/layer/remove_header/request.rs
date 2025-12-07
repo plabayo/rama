@@ -241,4 +241,28 @@ mod test {
             .unwrap();
         let _ = svc.serve(req).await.unwrap();
     }
+
+    #[tokio::test]
+    async fn remove_request_header_hop_by_hop_with_connection_list() {
+        let svc =
+            RemoveRequestHeaderLayer::hop_by_hop().into_layer(service_fn(async |req: Request| {
+                assert!(req.headers().get("connection").is_none());
+                assert!(req.headers().get("x-foo").is_none());
+                assert!(req.headers().get("x-bar").is_none());
+                assert!(req.headers().get("connection").is_none());
+                assert_eq!(
+                    req.headers().get("foo").map(|v| v.to_str().unwrap()),
+                    Some("bar")
+                );
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        let req = Request::builder()
+            .header("connection", "x-foo, x-bar")
+            .header("x-foo", "1")
+            .header("x-real-ip", "1.2.3.4")
+            .header("foo", "bar")
+            .body(Body::empty())
+            .unwrap();
+        let _ = svc.serve(req).await.unwrap();
+    }
 }

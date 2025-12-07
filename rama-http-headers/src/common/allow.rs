@@ -1,66 +1,80 @@
-use std::iter::FromIterator;
+use rama_http_types::Method;
 
-use rama_http_types::{HeaderValue, Method};
-
-use crate::util::FlatCsv;
-
-/// `Allow` header, defined in [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-7.4.1)
-///
-/// The `Allow` header field lists the set of methods advertised as
-/// supported by the target resource.  The purpose of this field is
-/// strictly to inform the recipient of valid request methods associated
-/// with the resource.
-///
-/// # ABNF
-///
-/// ```text
-/// Allow = #method
-/// ```
-///
-/// # Example values
-/// * `GET, HEAD, PUT`
-/// * `OPTIONS, GET, PUT, POST, DELETE, HEAD, TRACE, CONNECT, PATCH, fOObAr`
-/// * ``
-///
-/// # Examples
-///
-/// ```
-/// use rama_http_headers::Allow;
-/// use rama_http_types::Method;
-///
-/// let allow = vec![Method::GET, Method::POST]
-///     .into_iter()
-///     .collect::<Allow>();
-/// ```
-#[derive(Clone, Debug, PartialEq)]
-pub struct Allow(FlatCsv);
-
-derive_header! {
-    Allow(_),
-    name: ALLOW
+derive_non_empty_flat_csv_header! {
+    #[header(name = ALLOW, sep = Comma)]
+    #[derive(Clone, Debug, PartialEq)]
+    /// `Allow` header, defined in [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-7.4.1)
+    ///
+    /// The `Allow` header field lists the set of methods advertised as
+    /// supported by the target resource.  The purpose of this field is
+    /// strictly to inform the recipient of valid request methods associated
+    /// with the resource.
+    ///
+    /// # ABNF
+    ///
+    /// ```text
+    /// Allow = #method
+    /// ```
+    ///
+    /// # Example values
+    /// * `GET, HEAD, PUT`
+    /// * `OPTIONS, GET, PUT, POST, DELETE, HEAD, TRACE, CONNECT, PATCH, fOObAr`
+    /// * ``
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama_utils::collections::non_empty_vec;
+    /// use rama_http_types::Method;
+    /// use rama_http_headers::Allow;
+    ///
+    /// let allow_methods = Allow(
+    ///     non_empty_vec![Method::GET, Method::PUT],
+    /// );
+    /// ```
+    pub struct Allow(pub NonEmptyVec<Method>);
 }
 
-impl Allow {
-    /// Returns an iterator over `Method`s contained within.
-    pub fn iter(&self) -> impl Iterator<Item = Method> + '_ {
-        self.0.iter().filter_map(|s| s.parse().ok())
+#[cfg(test)]
+mod tests {
+    use super::super::{test_decode, test_encode};
+    use super::*;
+    use rama_utils::collections::non_empty_vec;
+
+    #[test]
+    fn decode_single() {
+        let Allow(allowed) = test_decode(&["GET, PUT"]).unwrap();
+
+        assert_eq!(allowed.len(), 2);
+        assert_eq!(allowed[0], Method::GET);
+        assert_eq!(allowed[1], Method::PUT);
     }
-}
 
-impl FromIterator<Method> for Allow {
-    fn from_iter<I>(iter: I) -> Self
-    where
-        I: IntoIterator<Item = Method>,
-    {
-        let flat = iter
-            .into_iter()
-            .map(|method| {
-                method
-                    .as_str()
-                    .parse::<HeaderValue>()
-                    .expect("Method is a valid HeaderValue")
-            })
-            .collect();
-        Self(flat)
+    #[test]
+    fn decode_multi() {
+        let Allow(allowed) = test_decode(&["GET, PUT", "POST"]).unwrap();
+
+        assert_eq!(allowed.len(), 3);
+        assert_eq!(allowed[0], Method::GET);
+        assert_eq!(allowed[1], Method::PUT);
+        assert_eq!(allowed[2], Method::POST);
+    }
+
+    #[test]
+    fn decode_single_empty_value() {
+        assert!(test_decode::<Allow>(&[""]).is_none());
+    }
+
+    #[test]
+    fn decode_single_no_header_values() {
+        assert!(test_decode::<Allow>(&[]).is_none());
+    }
+
+    #[test]
+    fn encode() {
+        let allow = Allow(non_empty_vec![Method::GET, Method::PUT]);
+
+        let headers = test_encode(allow);
+        assert_eq!(headers["allow"], "GET, PUT");
     }
 }

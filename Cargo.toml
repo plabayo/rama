@@ -122,6 +122,7 @@ itertools = "0.14"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 libfuzzer-sys = "0.4"
+loom = "0.7"
 matchit = "0.9"
 md5 = "0.8"
 memchr = "2.7"
@@ -194,13 +195,13 @@ rustls = { version = "0.23", default-features = false, features = [
     "aws_lc_rs",
 ] }
 rustls-native-certs = "0.8"
-rustls-pemfile = "2.2"
 rustls-pki-types = "^1"
 rustversion = "1.0"
 schannel = "0.1"
 serde = "1.0"
 serde_html_form = "0.2"
 serde_json = "1.0"
+serde_test = "1"
 sha1 = "0.10"
 sha2 = "0.10"
 slab = "0.4"
@@ -246,7 +247,7 @@ zstd = "0.13"
 [workspace.lints.rust]
 unreachable_pub = "deny"
 unused_imports = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -426,6 +427,7 @@ h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }

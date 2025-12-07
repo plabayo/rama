@@ -71,13 +71,11 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::rustls::{
-        dep::{
-            pemfile,
-            rustls::{
-                ALL_VERSIONS, ServerConfig, crypto::aws_lc_rs, server::ResolvesServerCert,
-                sign::CertifiedKey,
-            },
+        dep::rustls::{
+            ALL_VERSIONS, ServerConfig, crypto::aws_lc_rs, server::ResolvesServerCert,
+            sign::CertifiedKey,
         },
+        pemfile,
         server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
     },
 };

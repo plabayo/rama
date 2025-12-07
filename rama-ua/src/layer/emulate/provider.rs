@@ -1,4 +1,5 @@
 use rama_core::extensions::Extensions;
+use rama_utils::str::arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use crate::{
 /// is already injected separately.
 pub struct SelectedUserAgentProfile {
     /// The user agent header of the selected profile.
-    pub user_agent_header: Option<Arc<str>>,
+    pub user_agent_header: Option<ArcStr>,
 
     /// The kind of [`crate::UserAgent`]
     pub ua_kind: UserAgentKind,

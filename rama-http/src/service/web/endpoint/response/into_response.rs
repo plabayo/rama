@@ -15,6 +15,7 @@ use rama_http_headers::{ContentDisposition, ContentType};
 use rama_http_types::InfiniteReader;
 use rama_http_types::mime;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
+use rama_utils::str::arcstr::ArcStr;
 use std::{
     borrow::Cow,
     convert::Infallible,
@@ -144,6 +145,28 @@ impl IntoResponse for Box<str> {
 }
 
 impl IntoResponse for Cow<'static, str> {
+    fn into_response(self) -> Response {
+        let mut res = Body::from(self).into_response();
+        res.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
+        );
+        res
+    }
+}
+
+impl IntoResponse for ArcStr {
+    fn into_response(self) -> Response {
+        let mut res = Body::from(self).into_response();
+        res.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
+        );
+        res
+    }
+}
+
+impl IntoResponse for &ArcStr {
     fn into_response(self) -> Response {
         let mut res = Body::from(self).into_response();
         res.headers_mut().insert(

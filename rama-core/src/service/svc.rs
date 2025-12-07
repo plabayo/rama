@@ -206,6 +206,37 @@ macro_rules! impl_service_either {
 
 crate::combinators::impl_either!(impl_service_either);
 
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default)]
+/// A [`Service`] which will simply return the given input as Ok(_),
+/// with an [`Infallible`] error.
+pub struct MirrorService;
+
+impl MirrorService {
+    /// Create a new [`MirrorService`].
+    #[inline(always)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<Input> Service<Input> for MirrorService
+where
+    Input: Send + 'static,
+{
+    type Output = Input;
+    type Error = Infallible;
+
+    #[inline]
+    fn serve(
+        &self,
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        std::future::ready(Ok(input))
+    }
+}
+
 rama_utils::macros::error::static_str_error! {
     #[doc = "Input rejected"]
     pub struct RejectError;

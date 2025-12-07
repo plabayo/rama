@@ -141,7 +141,7 @@ where
 impl<T, S, Body, E> Service<Request<Body>> for HeaderConfigService<T, S>
 where
     S: Service<Request<Body>, Error = E>,
-    T: DeserializeOwned + Clone + Send + Sync + 'static,
+    T: DeserializeOwned + Clone + Send + Sync + std::fmt::Debug + 'static,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {

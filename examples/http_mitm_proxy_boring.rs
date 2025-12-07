@@ -38,7 +38,7 @@
 //! You can for example test it using:
 //!
 //! ```sh
-//! rama ws -k \
+//! rama -k \
 //!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
 //!     wss://echo.ramaproxy.org
 //! ```
@@ -46,7 +46,7 @@
 //! Or use one of alternative sub protocols available in the echo server:
 //!
 //! ```sh
-//! rama ws -k \
+//! rama -k \
 //!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
 //!     --protocols echo-upper wss://echo.ramaproxy.org
 //! ```
@@ -73,7 +73,7 @@ use rama::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             required_header::AddRequiredRequestHeadersLayer,
             trace::TraceLayer,
-            traffic_writer::{self, RequestWriterInspector},
+            traffic_writer::{self, RequestWriterLayer},
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
@@ -97,7 +97,7 @@ use rama::{
             client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
-        user::Basic,
+        user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
@@ -113,7 +113,7 @@ use rama::{
     },
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
             UserAgentEmulateLayer,
         },
         profile::UserAgentDatabase,
@@ -162,9 +162,10 @@ async fn main() -> Result<(), BoxError> {
         let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
+                ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
@@ -295,27 +296,27 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
     // but instead have a pre-built one as a struct local
-    let client = EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector()
-        .with_svc_req_inspector((
-            UserAgentEmulateHttpRequestModifier::default(),
+        .build_client()
+        .with_jit_layer((
+            UserAgentEmulateHttpRequestModifierLayer::default(),
             // these layers are for example purposes only,
             // best not to print requests like this in production...
             //
             // If you want to see the request that actually is send to the server
             // you also usually do not want it as a layer, but instead plug the inspector
             // directly JIT-style into your http (client) connector.
-            RequestWriterInspector::stdout_unbounded(
+            RequestWriterLayer::stdout_unbounded(
                 &executor,
                 Some(traffic_writer::WriterMode::Headers),
             ),
-        ))
-        .build();
+        ));
 
     if WebSocketMatcher::new().matches(None, &req) {
         return Ok(mitm_websocket(&client, req).await);
@@ -358,7 +359,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
 
 async fn mitm_websocket<S>(client: &S, req: Request) -> Response
 where
-    S: Service<Request, Response = Response, Error = OpaqueError>,
+    S: Service<Request, Response = Response, Error: Into<BoxError>>,
 {
     tracing::debug!("detected websocket request: starting MITM WS upgrade...");
 
@@ -423,7 +424,7 @@ where
     let mut ingress_socket_cfg: WebSocketConfig = Default::default();
     if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
         tracing::debug!("ingress request contains sec-websocket-extensions header");
-        if let Some(accept_pmd_cfg) = ingress_header.iter().find_map(|ext| {
+        if let Some(accept_pmd_cfg) = ingress_header.0.iter().find_map(|ext| {
             if let Extension::PerMessageDeflate(cfg) = ext {
                 Some(cfg.clone())
             } else {

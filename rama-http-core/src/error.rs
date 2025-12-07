@@ -5,12 +5,11 @@ use std::fmt;
 
 use crate::h2;
 use rama_core::error::BoxError;
+use rama_core::error::OpaqueError;
 use rama_http_types as http;
 
 /// Result type often returned from methods that can have hyper `Error`s.
 pub type Result<T> = std::result::Result<T, Error>;
-
-type Cause = BoxError;
 
 /// Represents errors that can occur handling HTTP streams.
 ///
@@ -39,7 +38,7 @@ pub struct Error {
 
 struct ErrorImpl {
     kind: Kind,
-    cause: Option<Cause>,
+    cause: Option<BoxError>,
 }
 
 #[derive(Debug)]
@@ -116,12 +115,14 @@ pub(super) struct TimedOut;
 impl Error {
     /// Returns true if this was an HTTP parse error.
     #[must_use]
+    #[inline(always)]
     pub fn is_parse(&self) -> bool {
         matches!(self.inner.kind, Kind::Parse(_))
     }
 
     /// Returns true if this was an HTTP parse error caused by a message that was too large.
     #[must_use]
+    #[inline(always)]
     pub fn is_parse_too_large(&self) -> bool {
         matches!(
             self.inner.kind,
@@ -132,41 +133,48 @@ impl Error {
     /// Returns true if this was an HTTP parse error caused by an invalid response status code or
     /// reason phrase.
     #[must_use]
+    #[inline(always)]
     pub fn is_parse_status(&self) -> bool {
         matches!(self.inner.kind, Kind::Parse(Parse::Status))
     }
 
     /// Returns true if this error was caused by user code.
     #[must_use]
+    #[inline(always)]
     pub fn is_user(&self) -> bool {
         matches!(self.inner.kind, Kind::User(_))
     }
 
     /// Returns true if this was about a `Request` that was canceled.
     #[must_use]
+    #[inline(always)]
     pub fn is_canceled(&self) -> bool {
         matches!(self.inner.kind, Kind::Canceled)
     }
 
     /// Returns true if a sender's channel is closed.
     #[must_use]
+    #[inline(always)]
     pub fn is_closed(&self) -> bool {
         matches!(self.inner.kind, Kind::ChannelClosed)
     }
 
     /// Returns true if the connection closed before a message could complete.
+    #[inline(always)]
     #[must_use]
     pub fn is_incomplete_message(&self) -> bool {
         matches!(self.inner.kind, Kind::IncompleteMessage)
     }
 
     /// Returns true if the body write was aborted.
+    #[inline(always)]
     #[must_use]
     pub fn is_body_write_aborted(&self) -> bool {
         matches!(self.inner.kind, Kind::User(User::BodyWriteAborted))
     }
 
     /// Returns true if the error was caused while calling `AsyncWrite::shutdown()`.
+    #[inline(always)]
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
         if matches!(self.inner.kind, Kind::Shutdown) {
@@ -176,6 +184,7 @@ impl Error {
     }
 
     /// Returns true if the error was caused by a timeout.
+    #[inline(always)]
     #[must_use]
     pub fn is_timeout(&self) -> bool {
         if matches!(self.inner.kind, Kind::HeaderTimeout) {
@@ -184,17 +193,29 @@ impl Error {
         self.find_source::<TimedOut>().is_some()
     }
 
+    #[inline(always)]
     pub(super) fn new(kind: Kind) -> Self {
         Self {
             inner: Box::new(ErrorImpl { kind, cause: None }),
         }
     }
 
-    pub(super) fn with<C: Into<Cause>>(mut self, cause: C) -> Self {
+    #[inline(always)]
+    pub(super) fn with<C: Into<BoxError>>(mut self, cause: C) -> Self {
         self.inner.cause = Some(cause.into());
         self
     }
 
+    #[inline(always)]
+    pub(super) fn with_display(
+        mut self,
+        msg: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+    ) -> Self {
+        self.inner.cause = Some(OpaqueError::from_display(msg).into_boxed());
+        self
+    }
+
+    #[inline(always)]
     pub(super) fn kind(&self) -> &Kind {
         &self.inner.kind
     }
@@ -220,83 +241,106 @@ impl Error {
             .unwrap_or(h2::Reason::INTERNAL_ERROR)
     }
 
+    #[inline(always)]
     pub(super) fn new_canceled() -> Self {
         Self::new(Kind::Canceled)
     }
 
+    #[inline(always)]
+    pub(super) fn new_parse_internal() -> Self {
+        Self::new(Kind::Parse(Parse::Internal))
+    }
+
+    #[inline(always)]
     pub(super) fn new_incomplete() -> Self {
         Self::new(Kind::IncompleteMessage)
     }
 
+    #[inline(always)]
     pub(super) fn new_too_large() -> Self {
         Self::new(Kind::Parse(Parse::TooLarge))
     }
 
+    #[inline(always)]
     pub(super) fn new_version_h2() -> Self {
         Self::new(Kind::Parse(Parse::VersionH2))
     }
 
+    #[inline(always)]
     pub(super) fn new_unexpected_message() -> Self {
         Self::new(Kind::UnexpectedMessage)
     }
 
+    #[inline(always)]
     pub(super) fn new_io(cause: std::io::Error) -> Self {
         Self::new(Kind::Io).with(cause)
     }
 
+    #[inline(always)]
     pub(super) fn new_closed() -> Self {
         Self::new(Kind::ChannelClosed)
     }
 
-    pub(super) fn new_body<E: Into<Cause>>(cause: E) -> Self {
+    #[inline(always)]
+    pub(super) fn new_body<E: Into<BoxError>>(cause: E) -> Self {
         Self::new(Kind::Body).with(cause)
     }
 
-    pub(super) fn new_body_write<E: Into<Cause>>(cause: E) -> Self {
+    #[inline(always)]
+    pub(super) fn new_body_write<E: Into<BoxError>>(cause: E) -> Self {
         Self::new(Kind::BodyWrite).with(cause)
     }
 
+    #[inline(always)]
     pub(super) fn new_body_write_aborted() -> Self {
         Self::new(Kind::User(User::BodyWriteAborted))
     }
 
+    #[inline(always)]
     fn new_user(user: User) -> Self {
         Self::new(Kind::User(user))
     }
 
+    #[inline(always)]
     pub(super) fn new_user_header() -> Self {
         Self::new_user(User::UnexpectedHeader)
     }
 
+    #[inline(always)]
     pub(super) fn new_header_timeout() -> Self {
         Self::new(Kind::HeaderTimeout)
     }
 
+    #[inline(always)]
     pub(super) fn new_user_unsupported_status_code() -> Self {
         Self::new_user(User::UnsupportedStatusCode)
     }
 
-    pub(super) fn new_user_service<E: Into<Cause>>(cause: E) -> Self {
+    #[inline(always)]
+    pub(super) fn new_user_service<E: Into<BoxError>>(cause: E) -> Self {
         Self::new_user(User::Service).with(cause)
     }
 
-    pub(super) fn new_user_body<E: Into<Cause>>(cause: E) -> Self {
+    #[inline(always)]
+    pub(super) fn new_user_body<E: Into<BoxError>>(cause: E) -> Self {
         Self::new_user(User::Body).with(cause)
     }
 
+    #[inline(always)]
     pub(super) fn new_shutdown(cause: std::io::Error) -> Self {
         Self::new(Kind::Shutdown).with(cause)
     }
 
+    #[inline(always)]
     pub(super) fn new_user_dispatch_gone() -> Self {
         Self::new(Kind::User(User::DispatchGone))
     }
 
+    #[inline(always)]
     pub(super) fn new_h2(cause: h2::Error) -> Self {
-        if cause.is_io() {
-            Self::new_io(cause.into_io().expect("h2::Error::is_io"))
-        } else {
-            Self::new(Kind::Http2).with(cause)
+        match cause.try_into_io() {
+            Ok(io_err) => Self::new_io(io_err),
+            Err(cause) => Self::new(Kind::Http2).with(cause),
         }
     }
 

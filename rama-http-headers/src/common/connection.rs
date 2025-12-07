@@ -1,9 +1,15 @@
-use std::iter::FromIterator;
+use rama_core::{combinators::Either, telemetry::tracing};
+use rama_error::OpaqueError;
+use rama_http_types::{
+    HeaderName, HeaderValue,
+    header::{KEEP_ALIVE, UPGRADE},
+};
+use rama_utils::collections::NonEmptyVec;
 
-use rama_http_types::{HeaderName, HeaderValue};
-
-use self::sealed::AsConnectionOption;
-use crate::util::FlatCsv;
+use crate::util::{
+    FlatCsvSeparator, TryFromValues, try_decode_flat_csv_header_values_as_non_empty_vec,
+    try_encode_non_empty_vec_as_flat_csv_header_value,
+};
 
 /// `Connection` header, defined in
 /// [RFC7230](https://datatracker.ietf.org/doc/html/rfc7230#section-6.1)
@@ -24,6 +30,7 @@ use crate::util::FlatCsv;
 /// * `close`
 /// * `keep-alive`
 /// * `upgrade`
+/// * `keep-alive, upgrade`
 /// ```
 ///
 /// # Examples
@@ -33,62 +40,127 @@ use crate::util::FlatCsv;
 ///
 /// let keep_alive = Connection::keep_alive();
 /// ```
-// This is frequently just 1 or 2 values, so optimize for that case.
 #[derive(Clone, Debug)]
-pub struct Connection(FlatCsv);
+pub struct Connection(Directive);
 
-derive_header! {
-    Connection(_),
-    name: CONNECTION
+impl Connection {
+    pub fn iter_headers(&self) -> impl Iterator<Item = &HeaderName> {
+        match &self.0 {
+            Directive::Close => Either::A(std::iter::empty()),
+            Directive::Open(non_empty_vec) => Either::B(non_empty_vec.iter()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Directive {
+    Close,
+    Open(NonEmptyVec<HeaderName>),
+}
+
+impl TryFrom<&Directive> for HeaderValue {
+    type Error = OpaqueError;
+
+    fn try_from(value: &Directive) -> Result<Self, Self::Error> {
+        match value {
+            Directive::Close => Ok(DIRECTIVE_HEADER_VALUE_CLOSE),
+            Directive::Open(values) => {
+                try_encode_non_empty_vec_as_flat_csv_header_value(values, FlatCsvSeparator::Comma)
+            }
+        }
+    }
+}
+
+impl TryFromValues for Directive {
+    fn try_from_values<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        Self: Sized,
+        I: Iterator<Item = &'i HeaderValue>,
+    {
+        match try_decode_flat_csv_header_values_as_non_empty_vec(values, FlatCsvSeparator::Comma) {
+            Ok(values) => {
+                if values.len() == 1 && values.first() == "close" {
+                    Ok(Self::Close)
+                } else {
+                    Ok(Self::Open(values))
+                }
+            }
+            Err(err) => {
+                tracing::trace!("invalid connection directive: {err}");
+                Err(crate::Error::invalid())
+            }
+        }
+    }
+}
+
+const DIRECTIVE_HEADER_VALUE_CLOSE: HeaderValue = HeaderValue::from_static("close");
+
+impl crate::TypedHeader for Connection {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::CONNECTION
+    }
+}
+
+impl crate::HeaderDecode for Connection {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
+    {
+        Directive::try_from_values(values).map(Self)
+    }
+}
+
+impl crate::HeaderEncode for Connection {
+    fn encode<E: Extend<::rama_http_types::HeaderValue>>(&self, values: &mut E) {
+        match HeaderValue::try_from(&self.0) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                rama_core::telemetry::tracing::debug!(
+                    "failed to encode connection directive {:?} as flat csv header: {err}",
+                    self.0,
+                );
+            }
+        }
+    }
 }
 
 impl Connection {
+    /// A constructor to easily create a `Connection` header,
+    /// for the given header names.
+    #[inline]
+    #[must_use]
+    pub fn open(headers: NonEmptyVec<HeaderName>) -> Self {
+        Self(Directive::Open(headers))
+    }
+
     /// A constructor to easily create a `Connection: close` header.
     #[inline]
     #[must_use]
     pub fn close() -> Self {
-        Self(HeaderValue::from_static("close").into())
+        Self(Directive::Close)
     }
 
     /// Returns true if this [`Connection`] header contains `close`.
     #[inline]
-    pub fn contains_close(&self) -> bool {
-        self.contains("close")
+    pub fn is_close(&self) -> bool {
+        matches!(self.0, Directive::Close)
     }
 
     /// A constructor to easily create a `Connection: keep-alive` header.
     #[inline]
     #[must_use]
     pub fn keep_alive() -> Self {
-        Self(HeaderValue::from_static("keep-alive").into())
-    }
-
-    /// Returns true if this [`Connection`] header contains `keep-alive`.
-    #[inline]
-    pub fn contains_keep_alive(&self) -> bool {
-        self.contains("keep-alive")
+        Self(Directive::Open(NonEmptyVec::new(KEEP_ALIVE.clone())))
     }
 
     /// A constructor to easily create a `Connection: Upgrade` header.
     #[inline]
     #[must_use]
     pub fn upgrade() -> Self {
-        Self(HeaderValue::from_static("upgrade").into())
+        Self(Directive::Open(NonEmptyVec::new(UPGRADE.clone())))
     }
 
-    /// Returns true if this [`Connection`] header contains `Upgrade`.
-    #[inline]
-    pub fn contains_upgrade(&self) -> bool {
-        self.contains("upgrade")
-    }
-
-    /// Check if this header contains a given "connection option".
-    ///
-    /// This can be used with various argument types:
-    ///
-    /// - `&str`
-    /// - `&HeaderName`
-    /// - `HeaderName`
+    /// Returns true if this [`Connection`] header contains the given header.
     ///
     /// # Example
     ///
@@ -98,59 +170,103 @@ impl Connection {
     ///
     /// let conn = Connection::keep_alive();
     ///
-    /// assert!(!conn.contains("close"));
-    /// assert!(!conn.contains(UPGRADE));
-    /// assert!(conn.contains("keep-alive"));
-    /// assert!(conn.contains("Keep-Alive"));
+    /// assert!(!conn.contains_header(UPGRADE));
+    /// assert!(conn.contains_header("keep-alive"));
+    /// assert!(conn.contains_header("Keep-Alive"));
     /// ```
+    #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub fn contains(&self, name: impl AsConnectionOption) -> bool {
-        let s = name.as_connection_option();
-        self.0.iter().any(|opt| opt.eq_ignore_ascii_case(s))
+    pub fn contains_header(&self, name: impl PartialEq<HeaderName>) -> bool {
+        match &self.0 {
+            Directive::Close => false,
+            Directive::Open(values) => values.iter().any(|candidate| name.eq(candidate)),
+        }
+    }
+
+    /// Returns true if this [`Connection`] header contains `Upgrade`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_http_headers::Connection;
+    ///
+    /// assert!(!Connection::keep_alive().contains_upgrade());
+    /// assert!(Connection::upgrade().contains_upgrade());
+    /// ```
+    #[inline]
+    pub fn contains_upgrade(&self) -> bool {
+        self.contains_header(&UPGRADE)
+    }
+
+    /// Returns true if this [`Connection`] header contains `Keep-Alive`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_http_headers::Connection;
+    ///
+    /// assert!(Connection::keep_alive().contains_keep_alive());
+    /// assert!(!Connection::upgrade().contains_keep_alive());
+    /// ```
+    #[inline]
+    pub fn contains_keep_alive(&self) -> bool {
+        self.contains_header(&KEEP_ALIVE)
     }
 }
 
-impl FromIterator<HeaderName> for Connection {
-    fn from_iter<I>(iter: I) -> Self
-    where
-        I: IntoIterator<Item = HeaderName>,
-    {
-        let flat = iter.into_iter().map(HeaderValue::from).collect();
-        Self(flat)
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::super::{test_decode, test_encode};
+    use super::*;
+    use rama_utils::collections::non_empty_vec;
 
-mod sealed {
-    use rama_http_types::HeaderName;
-
-    pub trait AsConnectionOption: Sealed {
-        fn as_connection_option(&self) -> &str;
-    }
-    pub trait Sealed {}
-
-    impl AsConnectionOption for &str {
-        #[inline(always)]
-        fn as_connection_option(&self) -> &str {
-            self
+    #[test]
+    fn decode_header_single_open() {
+        let Connection(directive) = test_decode(&["foo, bar"]).unwrap();
+        match directive {
+            Directive::Close => panic!("unexpecte close directive"),
+            Directive::Open(non_empty_vec) => {
+                assert_eq!(2, non_empty_vec.len());
+                assert_eq!(non_empty_vec[0], "foo");
+                assert_eq!(non_empty_vec[1], "bar");
+            }
         }
     }
 
-    impl Sealed for &str {}
-
-    impl AsConnectionOption for &HeaderName {
-        #[inline(always)]
-        fn as_connection_option(&self) -> &str {
-            self.as_ref()
+    #[test]
+    fn decode_header_single_close() {
+        let Connection(directive) = test_decode(&["close"]).unwrap();
+        match directive {
+            Directive::Close => (),
+            Directive::Open(non_empty_vec) => {
+                panic!("unexpected open directive, headers: {non_empty_vec:?}")
+            }
         }
     }
 
-    impl Sealed for &HeaderName {}
+    #[test]
+    fn encode_open() {
+        let allow = Connection::open(non_empty_vec![
+            ::rama_http_types::header::KEEP_ALIVE.clone(),
+            ::rama_http_types::header::TRAILER,
+        ]);
 
-    impl AsConnectionOption for HeaderName {
-        fn as_connection_option(&self) -> &str {
-            self.as_ref()
-        }
+        let headers = test_encode(allow);
+        assert_eq!(headers["connection"], "keep-alive, trailer");
     }
 
-    impl Sealed for HeaderName {}
+    #[test]
+    fn decode_with_empty_header_value() {
+        assert!(test_decode::<Connection>(&[""]).is_none());
+    }
+
+    #[test]
+    fn decode_with_no_headers() {
+        assert!(test_decode::<Connection>(&[]).is_none());
+    }
+
+    #[test]
+    fn decode_with_invalid_value_str() {
+        assert!(test_decode::<Connection>(&["foo foo, bar"]).is_none());
+    }
 }

@@ -8,6 +8,7 @@ use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credential
 use crate::{Request, Response, StatusCode};
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::{Layer, Service};
+use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_net::user::UserId;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -163,13 +164,13 @@ impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for ProxyAuthServic
 where
     A: Authority<C, L>,
     C: Credentials + Clone + Send + Sync + 'static,
-    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     L: 'static,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
 {
     type Output = S::Output;
-    type Error = S::Error;
+    type Error = OpaqueError;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let Some(credentials) = req
@@ -180,23 +181,29 @@ where
         {
             if let Some(ext) = self.proxy_auth.authorized(credentials).await {
                 req.extensions_mut().extend(ext);
-                self.inner.serve(req).await
+                self.inner
+                    .serve(req)
+                    .await
+                    .map_err(|err| OpaqueError::from_boxed(err.into()))
             } else {
                 Ok(Response::builder()
                     .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                     .header(PROXY_AUTHENTICATE, C::SCHEME)
                     .body(Default::default())
-                    .unwrap())
+                    .context("create auth-required response")?)
             }
         } else if self.allow_anonymous {
             req.extensions_mut().insert(UserId::Anonymous);
-            self.inner.serve(req).await
+            self.inner
+                .serve(req)
+                .await
+                .map_err(|err| OpaqueError::from_boxed(err.into()))
         } else {
             Ok(Response::builder()
                 .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                 .header(PROXY_AUTHENTICATE, C::SCHEME)
                 .body(Default::default())
-                .unwrap())
+                .context("create auth-required response")?)
         }
     }
 }

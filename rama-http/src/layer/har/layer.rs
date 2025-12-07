@@ -66,8 +66,9 @@ mod tests {
     use crate::layer::har::recorder::Recorder;
     use crate::layer::har::spec::Log;
     use crate::layer::har::toggle::mpsc_unbounded_toggle;
+    use parking_lot::Mutex;
     use std::future::ready;
-    use std::sync::{Arc, Mutex, atomic::Ordering};
+    use std::sync::{Arc, atomic::Ordering};
 
     // simple alternative implementation
 
@@ -86,7 +87,7 @@ mod tests {
 
     impl Recorder for InMemoryRecorder {
         async fn record(&self, log: Log) -> Option<Extensions> {
-            let mut lock = self.logs.lock().unwrap();
+            let mut lock = self.logs.lock();
             lock.push(log);
             None
         }
@@ -126,7 +127,7 @@ mod tests {
         assert!(!flag.load(Ordering::Relaxed));
 
         // Check that the recorder captured something
-        let data = layer.recorder.logs.lock().unwrap();
+        let data = layer.recorder.logs.lock();
         assert!(
             !data.is_empty(),
             "Expected recorder to have recorded at least one HAR log"

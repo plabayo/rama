@@ -79,11 +79,10 @@ impl Display for ProxyAddress {
             match credential {
                 ProxyCredential::Basic(basic) => {
                     let username = basic.username();
-                    let password = basic.password();
-                    if password.is_empty() {
-                        write!(f, "{username}@")?;
-                    } else {
+                    if let Some(password) = basic.password() {
                         write!(f, "{username}:{password}@")?;
+                    } else {
+                        write!(f, "{username}@")?;
                     }
                 }
                 ProxyCredential::Bearer(_) => {
@@ -119,6 +118,9 @@ impl<'de> serde::Deserialize<'de> for ProxyAddress {
 
 #[cfg(test)]
 mod tests {
+    use crate::user::credentials::basic;
+    use rama_utils::str::non_empty_str;
+
     use super::*;
     use crate::{
         address::{Domain, Host},
@@ -162,7 +164,7 @@ mod tests {
             ProxyAddress {
                 protocol: None,
                 address: HostWithPort::local_ipv4(8080),
-                credential: Some(Basic::new_static("foo", "bar").into()),
+                credential: Some(basic!("foo", "bar").into()),
             }
         );
     }
@@ -175,7 +177,7 @@ mod tests {
             ProxyAddress {
                 protocol: None,
                 address: HostWithPort::local_ipv4(8080),
-                credential: Some(Basic::new_static_insecure("foo").into()),
+                credential: Some(Basic::new_insecure(non_empty_str!("foo")).into()),
             }
         );
     }
@@ -201,7 +203,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTP),
                 address: HostWithPort::local_ipv4(8080),
-                credential: Some(Basic::new_static("foo", "bar").into()),
+                credential: Some(basic!("foo", "bar").into()),
             }
         );
     }
@@ -214,7 +216,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTP),
                 address: HostWithPort::local_ipv4(8080),
-                credential: Some(Basic::new_static_insecure("foo").into()),
+                credential: Some(Basic::new_insecure(non_empty_str!("foo")).into()),
             }
         );
     }
@@ -229,7 +231,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTPS),
                 address: HostWithPort::new(Host::Name(Domain::from_static("my.proxy.io.")), 9999),
-                credential: Some(Basic::new_static("foo-cc-be", "baz").into()),
+                credential: Some(basic!("foo-cc-be", "baz").into()),
             }
         );
     }
@@ -242,7 +244,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTPS),
                 address: HostWithPort::new(Host::Name(Domain::from_static("my.proxy.io.")), 9999),
-                credential: Some(Basic::new_static_insecure("foo-cc-be").into()),
+                credential: Some(Basic::new_insecure(non_empty_str!("foo-cc-be")).into()),
             }
         );
     }
@@ -255,7 +257,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::SOCKS5H),
                 address: HostWithPort::local_ipv6(60000),
-                credential: Some(Basic::new_insecure("foo").into()),
+                credential: Some(Basic::new_insecure(non_empty_str!("foo")).into()),
             }
         );
     }
@@ -268,7 +270,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::SOCKS5H),
                 address: HostWithPort::local_ipv6(60000),
-                credential: Some(Basic::new_insecure("foo").into()),
+                credential: Some(Basic::new_insecure(non_empty_str!("foo")).into()),
             }
         );
     }

@@ -120,7 +120,7 @@ impl<T: fmt::Debug> fmt::Debug for LiveUpdateProxyDBSetter<T> {
 mod tests {
     use crate::{Proxy, ProxyFilter, proxydb::ProxyContext};
     use rama_net::{asn::Asn, transport::TransportProtocol};
-    use rama_utils::str::NonEmptyString;
+    use rama_utils::str::non_empty_str;
 
     use super::*;
 
@@ -157,7 +157,7 @@ mod tests {
         );
 
         writer.set(Proxy {
-            id: NonEmptyString::from_static("id"),
+            id: non_empty_str!("id"),
             address: "authority:80".parse().unwrap(),
             tcp: true,
             udp: false,
