@@ -1,5 +1,5 @@
 //! Matcher utilities for any middleware where need to match
-//! on incoming inputs/Inputs
+//! on incoming inputs.
 //!
 //! This module provides the [`Matcher`] trait and convenience utilities around it.
 //!

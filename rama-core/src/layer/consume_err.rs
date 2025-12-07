@@ -2,11 +2,11 @@ use crate::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt};
 
-use sealed::{DefaulOutput, StaticOutput, Trace};
+use sealed::{DefaultOutput, StaticOutput, Trace};
 
 /// Consumes this service's error value and returns [`Infallible`].
 #[derive(Clone)]
-pub struct ConsumeErr<S, F, O = DefaulOutput> {
+pub struct ConsumeErr<S, F, O = DefaultOutput> {
     inner: S,
     f: F,
     output: O,
@@ -30,7 +30,7 @@ where
 ///
 /// [`Layer`]: crate::Layer
 #[derive(Clone)]
-pub struct ConsumeErrLayer<F, O = DefaulOutput> {
+pub struct ConsumeErrLayer<F, O = DefaultOutput> {
     f: F,
     output: O,
 }
@@ -50,20 +50,20 @@ impl Default for ConsumeErrLayer<Trace> {
     }
 }
 
-impl<S, F> ConsumeErr<S, F, DefaulOutput> {
+impl<S, F> ConsumeErr<S, F, DefaultOutput> {
     /// Creates a new [`ConsumeErr`] service.
     pub const fn new(inner: S, f: F) -> Self {
         Self {
             f,
             inner,
-            output: DefaulOutput,
+            output: DefaultOutput,
         }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S, F> ConsumeErr<S, F, DefaulOutput> {
+impl<S, F> ConsumeErr<S, F, DefaultOutput> {
     /// Set an output to be used in case of errors,
     /// instead of requiring and using the [`Default::default`] implementation
     /// of the inner service's response type.
@@ -76,14 +76,14 @@ impl<S, F> ConsumeErr<S, F, DefaulOutput> {
     }
 }
 
-impl<S> ConsumeErr<S, Trace, DefaulOutput> {
+impl<S> ConsumeErr<S, Trace, DefaultOutput> {
     /// Trace the error passed to this [`ConsumeErr`] service for the provided trace level.
     pub const fn trace(inner: S, level: tracing::Level) -> Self {
         Self::new(inner, Trace(level))
     }
 }
 
-impl<S, F, Input> Service<Input> for ConsumeErr<S, F, DefaulOutput>
+impl<S, F, Input> Service<Input> for ConsumeErr<S, F, DefaultOutput>
 where
     S: Service<Input, Output: Default>,
     F: Fn(S::Error) + Send + Sync + 'static,
@@ -124,7 +124,7 @@ where
     }
 }
 
-impl<S, Input> Service<Input> for ConsumeErr<S, Trace, DefaulOutput>
+impl<S, Input> Service<Input> for ConsumeErr<S, Trace, DefaultOutput>
 where
     S: Service<Input, Output: Default, Error: Into<BoxError>>,
     Input: Send + 'static,
@@ -202,7 +202,7 @@ impl<F> ConsumeErrLayer<F> {
     pub const fn new(f: F) -> Self {
         Self {
             f,
-            output: DefaulOutput,
+            output: DefaultOutput,
         }
     }
 }
@@ -215,9 +215,9 @@ impl ConsumeErrLayer<Trace> {
     }
 }
 
-impl<F> ConsumeErrLayer<F, DefaulOutput> {
+impl<F> ConsumeErrLayer<F, DefaultOutput> {
     /// Set a response to be used in case of errors,
-    /// instead of inputuiring and using the [`Default::default`] implementation
+    /// instead of requiring and using the [`Default::default`] implementation
     /// of the inner service's response type.
     pub fn with_response<R>(self, output: R) -> ConsumeErrLayer<F, StaticOutput<R>> {
         ConsumeErrLayer {
@@ -262,7 +262,7 @@ mod sealed {
     #[derive(Debug, Clone)]
     #[non_exhaustive]
     /// A sealed type to indicate default output is to be used.
-    pub struct DefaulOutput;
+    pub struct DefaultOutput;
 
     #[derive(Debug, Clone)]
     #[non_exhaustive]

@@ -444,7 +444,7 @@ fn set_target_http_version(
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 /// A connector which can be used to establish a connection to a server
-/// in function of the Input, meaning either it will be a secure
+/// in function of the input, meaning either it will be a secure
 /// connector or it will be a plain connector.
 ///
 /// This connector can be handy as it allows to have a single layer
