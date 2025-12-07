@@ -801,11 +801,9 @@ where
                                 #[cfg(not(feature = "compression"))]
                                 let maybe_ws_config = None;
 
-                                let mut socket =
+                                let socket =
                                     AsyncWebSocket::from_raw_socket(upgraded, Role::Server, maybe_ws_config)
                                         .await;
-
-                                *socket.extensions_mut() = req.extensions().clone();
 
                                 let (parts, _) = req.into_parts();
 
@@ -936,10 +934,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
             ws_cfg
         };
 
-        // TODO improve extensions handling in AsyncWebSocket
-        let extensions = io.extensions().clone();
-        let mut socket = AsyncWebSocket::from_raw_socket(io, Role::Server, maybe_ws_config).await;
-        *socket.extensions_mut() = extensions;
+        let socket = AsyncWebSocket::from_raw_socket(io, Role::Server, maybe_ws_config).await;
         self.serve(socket).await
     }
 }

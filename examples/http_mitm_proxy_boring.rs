@@ -456,17 +456,8 @@ where
 
         let ingress_socket = match upgrade::handle_upgrade(&request).await {
             Ok(upgraded) => {
-                let socket = AsyncWebSocket::from_raw_socket(
-                    upgraded,
-                    Role::Server,
-                    Some(ingress_socket_cfg),
-                )
-                .await;
-                // TODO in a place like this we dont really want to extend but instead prepend
-                // which probably means we should do it here, but it should have already happened
-                // socket.extensions_mut().extend(request.extensions().clone());
-                #[allow(clippy::let_and_return)]
-                socket
+                AsyncWebSocket::from_raw_socket(upgraded, Role::Server, Some(ingress_socket_cfg))
+                    .await
             }
             Err(err) => {
                 tracing::error!("error in upgrading ingress websocket: {err:?}");
