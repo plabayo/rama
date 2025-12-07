@@ -132,7 +132,7 @@ where
 }
 
 rama_utils::macros::error::static_str_error! {
-    #[doc = "input aborted due to exhausted concurrency limit"]
+    #[doc = "serve aborted due to exhausted concurrency limit"]
     pub struct LimitReached;
 }
 
