@@ -458,10 +458,10 @@ impl<Body> Service<Request<Body>> for WebSocketAcceptor
 where
     Body: Send + 'static,
 {
-    type Response = (Response, Request<Body>);
+    type Output = (Response, Request<Body>);
     type Error = Response;
 
-    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
         match validate_http_client_request(&req) {
             Ok(request_data) => {
                 let accepted_protocol = match (
@@ -741,13 +741,13 @@ impl ServerWebSocket {
 
 impl<S, Body> Service<Request<Body>> for WebSocketAcceptorService<S>
 where
-    S: Clone + Service<ServerWebSocket, Response = ()>,
+    S: Clone + Service<ServerWebSocket, Output = ()>,
     Body: Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         match self.acceptor.serve(req).await {
             Ok((resp, req)) => {
                 #[cfg(not(feature = "compression"))]
@@ -854,10 +854,10 @@ impl WebSocketEchoService {
 }
 
 impl Service<AsyncWebSocket> for WebSocketEchoService {
-    type Response = ();
+    type Output = ();
     type Error = OpaqueError;
 
-    async fn serve(&self, mut socket: AsyncWebSocket) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut socket: AsyncWebSocket) -> Result<Self::Output, Self::Error> {
         let protocol = socket
             .extensions()
             .get::<headers::sec_websocket_protocol::AcceptedWebSocketProtocol>()
@@ -893,20 +893,20 @@ impl Service<AsyncWebSocket> for WebSocketEchoService {
 }
 
 impl Service<ServerWebSocket> for WebSocketEchoService {
-    type Response = ();
+    type Output = ();
     type Error = OpaqueError;
 
-    async fn serve(&self, socket: ServerWebSocket) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, socket: ServerWebSocket) -> Result<Self::Output, Self::Error> {
         let socket = socket.into_inner();
         self.serve(socket).await
     }
 }
 
 impl Service<upgrade::Upgraded> for WebSocketEchoService {
-    type Response = ();
+    type Output = ();
     type Error = OpaqueError;
 
-    async fn serve(&self, io: upgrade::Upgraded) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, io: upgrade::Upgraded) -> Result<Self::Output, Self::Error> {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
             if let Some(Extension::PerMessageDeflate(_)) = io.extensions().get() {

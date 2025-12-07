@@ -13,16 +13,16 @@ use rama::{
 #[derive(Debug, Clone)]
 pub struct TurmoilTcpConnector;
 
-impl<Request> Service<Request> for TurmoilTcpConnector
+impl<Input> Service<Input> for TurmoilTcpConnector
 where
-    Request: TryRefIntoTransportContext + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Input: TryRefIntoTransportContext + Send + 'static,
+    Input::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<TcpStream, Request>;
+    type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let transport_context = req.try_ref_into_transport_ctx().map_err(Into::into)?;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let transport_context = input.try_ref_into_transport_ctx().map_err(Into::into)?;
         let address = transport_context
             .host_with_port()
             .context("convert to host with port")?
@@ -50,7 +50,7 @@ where
         conn.extensions_mut().insert(info);
 
         Ok(EstablishedClientConnection {
-            req,
+            input,
             conn, // Raw turmoil::net::TcpStream
         })
     }

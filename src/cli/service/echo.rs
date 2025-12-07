@@ -234,14 +234,14 @@ impl<H> EchoServiceBuilder<H> {
 
 impl<H> EchoServiceBuilder<H>
 where
-    H: Layer<EchoService, Service: Service<Request, Response = Response, Error = BoxError>>,
+    H: Layer<EchoService, Service: Service<Request, Output = Response, Error = BoxError>>,
 {
     #[allow(unused_mut)]
     /// build a tcp service ready to echo http traffic back
     pub fn build(
         mut self,
         executor: Executor,
-    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             _ => None,
@@ -305,7 +305,7 @@ where
     /// build an http service ready to echo http traffic back
     pub fn build_http(
         &self,
-    ) -> impl Service<Request, Response: IntoResponse, Error = Infallible> + use<H> {
+    ) -> impl Service<Request, Output: IntoResponse, Error = Infallible> + use<H> {
         let http_forwarded_layer = match &self.forward {
             None | Some(ForwardKind::HaProxy) => None,
             Some(ForwardKind::Forwarded) => Some(Either7::A(GetForwardedHeaderLayer::forwarded())),
@@ -372,10 +372,10 @@ pub struct EchoService {
 }
 
 impl Service<Request> for EchoService {
-    type Response = Response;
+    type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let user_agent_info = req
             .extensions()
             .get()

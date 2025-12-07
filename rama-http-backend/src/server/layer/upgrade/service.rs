@@ -87,7 +87,6 @@ where
     type Error = E;
 
     async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
-        let mut ext = Extensions::new();
         for handler in &self.handlers {
             let mut ext = Extensions::new();
             if !handler.matcher.matches(Some(&mut ext), &req) {

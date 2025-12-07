@@ -18,9 +18,9 @@ pub(super) struct CurlWriter {
 
 impl Service<Request> for CurlWriter {
     type Error = OpaqueError;
-    type Response = Response;
+    type Output = Response;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let req = UserAgentEmulateHttpRequestModifier::new(MirrorService::new())
             .serve(req)
             .await

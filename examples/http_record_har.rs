@@ -259,7 +259,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
 fn new_http_mitm_proxy(
     state: &State,
-) -> impl Service<Request, Response = Response, Error = Infallible> {
+) -> impl Service<Request, Output = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),

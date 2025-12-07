@@ -161,23 +161,22 @@ impl<Body, ConnectionBody, Connection, L> Service<Request<Body>>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     Connection:
-        Service<Request<ConnectionBody>, Response = Response, Error = BoxError> + ExtensionsRef,
+        Service<Request<ConnectionBody>, Output = Response, Error = BoxError> + ExtensionsRef,
     // Body type this connection will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
     ConnectionBody:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     L: Layer<
             Connection,
-            Service: Service<Request<ConnectionBody>, Response = Response, Error = BoxError>,
+            Service: Service<Request<ConnectionBody>, Output = Response, Error = BoxError>,
         > + Send
         + Sync
         + 'static,
 {
     type Output = Response;
-
     type Error = OpaqueError;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let uri = req.uri().clone();
 
         let EstablishedClientConnection {

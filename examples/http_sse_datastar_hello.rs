@@ -140,15 +140,15 @@ struct GracefulRouter {
 }
 
 impl Service<Request> for GracefulRouter {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Request) -> Result<Self::Output, Self::Error> {
         if self.controller.is_closed() {
             tracing::debug!("router received request while shutting down: returning 401");
             return Ok(StatusCode::GONE.into_response());
         }
-        self.router.serve(req).await
+        self.router.serve(input).await
     }
 }
 

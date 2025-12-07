@@ -252,7 +252,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
 fn new_http_mitm_proxy(
     state: &State,
-) -> impl Service<Request, Response = Response, Error = Infallible> {
+) -> impl Service<Request, Output = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),
@@ -359,7 +359,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
 
 async fn mitm_websocket<S>(client: &S, req: Request) -> Response
 where
-    S: Service<Request, Response = Response, Error: Into<BoxError>>,
+    S: Service<Request, Output = Response, Error: Into<BoxError>>,
 {
     tracing::debug!("detected websocket request: starting MITM WS upgrade...");
 

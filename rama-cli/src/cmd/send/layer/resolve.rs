@@ -59,24 +59,24 @@ impl<S: Clone> Clone for OptDnsOverwriteService<S> {
     }
 }
 
-impl<Request, S> Service<Request> for OptDnsOverwriteService<S>
+impl<Input, S> Service<Input> for OptDnsOverwriteService<S>
 where
-    Request: TryRefIntoTransportContext<Error: fmt::Debug> + ExtensionsMut + Send + 'static,
-    S: Service<Request>,
+    Input: TryRefIntoTransportContext<Error: fmt::Debug> + ExtensionsMut + Send + 'static,
+    S: Service<Input>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
         let Some(ref info) = self.info else {
-            return self.inner.serve(req).await;
+            return self.inner.serve(input).await;
         };
 
         if info.port.is_none()
-            || req
+            || input
                 .try_ref_into_transport_ctx()
                 .inspect_err(|err| {
-                    tracing::error!("failed to fetch transport ctx for req: {err:?}")
+                    tracing::error!("failed to fetch transport ctx for input: {err:?}")
                 })
                 .ok()
                 .and_then(|ctx| ctx.host_with_port())
@@ -91,9 +91,9 @@ where
                 }
                 None => info.addresses.clone().into(),
             };
-            req.extensions_mut().insert(overwrite);
+            input.extensions_mut().insert(overwrite);
         }
 
-        self.inner.serve(req).await
+        self.inner.serve(input).await
     }
 }

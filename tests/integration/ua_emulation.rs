@@ -454,12 +454,12 @@ struct ServerExtensions(Extensions);
 
 impl<S> Service<Request> for MockConnectorService<S>
 where
-    S: Service<Request, Response = Response, Error = Infallible> + Clone,
+    S: Service<Request, Output = Response, Error = Infallible> + Clone,
 {
     type Error = S::Error;
     type Output = EstablishedClientConnection<MockSocket, Request>;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let (client_socket, mut server_socket) = new_mock_sockets();
 
         if let Some(extensions) = req.extensions().get::<ServerExtensions>() {

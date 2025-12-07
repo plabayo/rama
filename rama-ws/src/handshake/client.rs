@@ -108,7 +108,7 @@ fn new_ws_request_builder_from_uri_with_service<'a, S, Body, T>(
     version: Version,
 ) -> RequestBuilder<'a, S, Response<Body>>
 where
-    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
     T: IntoUrl,
 {
     let builder = match version {
@@ -129,7 +129,7 @@ fn new_ws_request_builder_from_request<'a, S, Body, RequestBody>(
     mut request: Request<RequestBody>,
 ) -> RequestBuilder<'a, S, Response<Body>>
 where
-    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
     RequestBody: Into<rama_http::Body>,
 {
     if !request
@@ -544,7 +544,7 @@ impl WebSocketRequestBuilder<request::Builder> {
 
 impl<'a, S, Body> WebSocketRequestBuilder<WithService<'a, S, Body>>
 where
-    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
     /// Create a new `http/1.1` WebSocket [`Request`] builder.
     pub fn new_with_service<T>(service: &'a S, uri: T) -> Self
@@ -1008,7 +1008,7 @@ pub trait HttpClientWebSocketExt<Body>:
 
 impl<S, Body> HttpClientWebSocketExt<Body> for S
 where
-    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
     fn websocket(&self, url: impl IntoUrl) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
         WebSocketRequestBuilder::new_with_service(self, url)
@@ -1035,7 +1035,7 @@ mod private {
     pub trait HttpClientWebSocketExtSealed<Body> {}
 
     impl<S, Body> HttpClientWebSocketExtSealed<Body> for S where
-        S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>
+        S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>
     {
     }
 }

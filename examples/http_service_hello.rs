@@ -38,7 +38,7 @@ use rama::{
             response::{Html, IntoResponse},
         },
     },
-    layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
+    layer::{MapOutputLayer, TimeoutLayer, TraceErrLayer},
     net::stream::{
         SocketInfo,
         layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
@@ -91,7 +91,7 @@ async fn main() {
                         .with_latency_unit(LatencyUnit::Micros),
                 ),
             SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
-            MapResponseLayer::new(IntoResponse::into_response),
+            MapOutputLayer::new(IntoResponse::into_response),
         )
             .into_layer(
                 (|Extension(socket_info): Extension<SocketInfo>,

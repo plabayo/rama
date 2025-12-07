@@ -103,7 +103,7 @@ impl App {
         protocols: Option<NonEmptyVec<NonEmptyStr>>,
     ) -> Result<Self, OpaqueError>
     where
-        C: Service<Request, Response = Response, Error = BoxError>,
+        C: Service<Request, Output = Response, Error = BoxError>,
     {
         let title = format!("  rama-ws @ {}", req.uri());
 

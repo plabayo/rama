@@ -58,7 +58,7 @@ async fn test_server_with_haproxy_v1() {
         ))));
 
     let EstablishedClientConnection {
-        mut req,
+        input: mut req,
         conn: http_service,
     } = client
         .connect(request)
@@ -97,7 +97,7 @@ async fn test_server_with_haproxy_v2() {
         ))));
 
     let EstablishedClientConnection {
-        mut req,
+        input: mut req,
         conn: http_service,
     } = client
         .connect(request)

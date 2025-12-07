@@ -29,14 +29,14 @@ impl<S: Clone> Clone for ResponseHeaderLogger<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseHeaderLogger<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
     type Error = S::Error;
-    type Response = S::Response;
+    type Output = S::Output;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let res = self.inner.serve(req).await?;
         if self.show_headers || res.extensions().contains::<VerboseLogs>() {
             eprintln!(

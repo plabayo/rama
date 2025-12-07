@@ -29,9 +29,9 @@ where
     ReqBody: Send + 'static,
 {
     type Error = S::Error;
-    type Response = S::Response;
+    type Output = S::Output;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if req.extensions().contains::<VerboseLogs>() {
             eprintln!("* using {:?}", req.version());
 
