@@ -581,28 +581,29 @@ mod upgrades {
         type Output = crate::Result<()>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            if let Some(mut inner) = self.inner.take() {
-                match Pin::new(&mut inner.inner).poll(cx) {
-                    Poll::Ready(result) => Poll::Ready(match result {
-                        Ok(proto::Dispatched::Shutdown) => Ok(()),
-                        Ok(proto::Dispatched::Upgrade(pending)) => {
-                            let Parts { io, read_buf } = inner.into_parts();
-                            pending.fulfill(Upgraded::new(io, read_buf));
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    }),
-                    Poll::Pending => {
-                        self.inner = Some(inner);
-                        Poll::Pending
+            Poll::Ready(if let Some(inner) = self.inner.as_mut() {
+                match ready!(Pin::new(&mut inner.inner).poll(cx)) {
+                    Ok(proto::Dispatched::Shutdown) => Ok(()),
+                    Ok(proto::Dispatched::Upgrade(pending)) => {
+                        #[allow(
+                            clippy::expect_used,
+                            reason = "memory cannot move in between polls"
+                        )]
+                        let inner = self.inner.take().expect(
+                            "inner h1 connection for upgradeable connection was Some above",
+                        );
+                        let Parts { io, read_buf } = inner.into_parts();
+                        pending.fulfill(Upgraded::new(io, read_buf));
+                        Ok(())
                     }
+                    Err(e) => Err(e),
                 }
             } else {
-                Poll::Ready(Err(
+                Err(
                     crate::Error::new_parse_internal().with_display(
                         "h1 client upgradeable connection: poll: inner connection already taken: poll after ready?",
-                    )))
-            }
+                    ))
+            })
         }
     }
 }

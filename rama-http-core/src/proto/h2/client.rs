@@ -419,7 +419,9 @@ where
             // the connection some more should start shutdown
             // and then close.
             trace!("send_request dropped, starting conn shutdown");
-            if this.cancel_tx.take().is_none() {
+            if let Some(cancel_tx) = this.cancel_tx.take() {
+                drop(cancel_tx);
+            } else {
                 warn!("h2 client: ConnTask Future polled twice: cancel_tx was already None");
             }
         }
@@ -548,11 +550,21 @@ where
                 if let Err(_e) = result {
                     debug!("client request body error: {_e:?}");
                 }
-                if this.conn_drop_ref.take().is_none() || this.ping.take().is_none() {
+
+                if let Some(conn_drop_ref) = this.conn_drop_ref.take() {
+                    drop(conn_drop_ref);
+                } else {
                     warn!(
-                        "h2 client: ConnTask PipeMap polled twice: conn_drop_ref and/or ping was already None"
+                        "h2 client: ConnTask PipeMap polled twice: conn_drop_ref was already None"
                     );
                 }
+
+                if let Some(ping) = this.ping.take() {
+                    drop(ping);
+                } else {
+                    warn!("h2 client: ConnTask PipeMap polled twice: ping was already None");
+                }
+
                 return Poll::Ready(());
             }
             Poll::Pending => (),
