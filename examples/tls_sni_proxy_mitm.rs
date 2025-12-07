@@ -245,15 +245,15 @@ struct SniRouterService<T> {
 impl<T, S> Service<SniRequest<S>> for SniRouterService<T>
 where
     S: Stream + Unpin + ExtensionsMut,
-    T: Service<SniPeekStream<S>, Response = (), Error: Into<BoxError>>,
+    T: Service<SniPeekStream<S>, Output = (), Error: Into<BoxError>>,
 {
-    type Response = ();
+    type Output = ();
     type Error = OpaqueError;
 
     async fn serve(
         &self,
         SniRequest { sni, mut stream }: SniRequest<S>,
-    ) -> Result<Self::Response, Self::Error> {
+    ) -> Result<Self::Output, Self::Error> {
         let Some(sni) = sni else {
             // NOTE: in production systems you may want
             // to handle traffic which has no SNI differently,
@@ -306,12 +306,12 @@ struct HttpsMITMService<C> {
 
 impl<C> Service<Request> for HttpsMITMService<C>
 where
-    C: Service<Request, Response = Response, Error = OpaqueError>,
+    C: Service<Request, Output = Response, Error = OpaqueError>,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = OpaqueError;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
         let Some(domain) = req
             .extensions()
             .get::<IngressSNI>()

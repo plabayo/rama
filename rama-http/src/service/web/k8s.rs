@@ -20,7 +20,7 @@ pub fn k8s_health_builder() -> K8sHealthServiceBuilder<(), ()> {
 
 /// create a default k8s web health service
 #[must_use]
-pub fn k8s_health() -> impl Service<Request, Response = Response, Error = Infallible> + Clone {
+pub fn k8s_health() -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
     k8s_health_builder().build()
 }
 
@@ -91,7 +91,7 @@ where
     R: ToK8sService,
 {
     /// build the k8s health web server
-    pub fn build(self) -> impl Service<Request, Response = Response, Error = Infallible> + Clone {
+    pub fn build(self) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
         Arc::new(match_service! {
             HttpMatcher::get("/k8s/alive") => self.alive.to_k8s_service(),
             HttpMatcher::get("/k8s/ready") => self.ready.to_k8s_service(),
@@ -133,10 +133,10 @@ impl<F> Service<Request> for K8sService<F>
 where
     F: Fn() -> bool + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, _: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _: Request) -> Result<Self::Output, Self::Error> {
         Ok(if (self.f)() {
             StatusCode::OK
         } else {

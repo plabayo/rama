@@ -305,10 +305,10 @@ where
     H: ForwardHeader + Send + Sync + 'static,
     Body: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let forwarded: Option<rama_net::forwarded::Forwarded> = req.extensions().get().cloned();
 
         let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());

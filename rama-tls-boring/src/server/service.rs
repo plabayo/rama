@@ -71,10 +71,10 @@ where
     IO: Stream + Unpin + ExtensionsMut + 'static,
     S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
         // allow tls acceptor data to be injected,
         // e.g. useful for TLS environments where some data (such as server auth, think ACME)
         // is updated at runtime, be it infrequent

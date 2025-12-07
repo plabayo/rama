@@ -30,31 +30,29 @@ use crate::client::EstablishedClientConnection;
 macro_rules! impl_service_either_conn {
     ($id:ident, $($param:ident),+ $(,)?) => {
         rama_macros::paste! {
-            impl<$($param, [<Conn $param>]),+, Request> Service<Request> for $id<$($param),+>
+            impl<$($param, [<Conn $param>]),+, Input> Service<Input> for $id<$($param),+>
             where
                 $(
                     $param: Service<
-                        Request,
-                        Response = EstablishedClientConnection<[<Conn $param>], Request>,
+                        Input,
+                        Output = EstablishedClientConnection<[<Conn $param>], Input>,
                         Error: Into<BoxError>,
                     >,
                     [<Conn $param>]: Send + 'static,
                 )+
-                Request: Send + 'static,
-
-
+                Input: Send + 'static,
             {
-                type Response = EstablishedClientConnection<[<$id Connected>]<$([<Conn $param>]),+,>, Request>;
+                type Output = EstablishedClientConnection<[<$id Connected>]<$([<Conn $param>]),+,>, Input>;
                 type Error = BoxError;
 
-                async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+                async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
                     match self {
                         $(
                             $id::$param(s) => {
-                                let resp = s.serve(req).await.map_err(Into::into)?;
+                                let resp = s.serve(input).await.map_err(Into::into)?;
                                 Ok(EstablishedClientConnection {
                                     conn: [<$id Connected>]::$param(resp.conn),
-                                    req: resp.req,
+                                    input: resp.input,
                                 })
                             },
                         )+
@@ -88,22 +86,21 @@ impl_either_conn_connected!(impl_iterator_either);
 
 macro_rules! impl_service_either_conn_connected {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, Request, Response> Service<Request> for $id<$($param),+>
+        impl<$($param),+, Input, Output> Service<Input> for $id<$($param),+>
         where
             $(
-                $param: Service<Request, Response = Response, Error: Into<BoxError>>,
+                $param: Service<Input, Output = Output, Error: Into<BoxError>>,
             )+
-            Request: Send + 'static,
-
-            Response: Send + 'static,
+            Input: Send + 'static,
+            Output: Send + 'static,
         {
-            type Response = Response;
+            type Output = Output;
             type Error = BoxError;
 
-            async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+            async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
                 match self {
                     $(
-                        $id::$param(s) => s.serve(req).await.map_err(Into::into),
+                        $id::$param(s) => s.serve(input).await.map_err(Into::into),
                     )+
                 }
             }

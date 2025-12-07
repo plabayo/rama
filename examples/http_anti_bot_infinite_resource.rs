@@ -200,10 +200,10 @@ impl<S> Service<TcpStream> for IpFirewallService<S>
 where
     S: Service<TcpStream, Error: Into<BoxError>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: TcpStream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: TcpStream) -> Result<Self::Output, Self::Error> {
         let ip_addr = stream
             .extensions()
             .get::<SocketInfo>()

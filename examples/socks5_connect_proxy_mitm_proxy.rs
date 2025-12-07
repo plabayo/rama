@@ -103,7 +103,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-fn new_http_mitm_proxy() -> impl Service<Request, Response = Response, Error = Infallible> {
+fn new_http_mitm_proxy() -> impl Service<Request, Output = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),

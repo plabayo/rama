@@ -191,17 +191,17 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for HttpPeekRouter<T, F> {
     }
 }
 
-impl<Stream, Response, T, F> Service<Stream> for HttpPeekRouter<HttpAutoAcceptor<T>, F>
+impl<Stream, Output, T, F> Service<Stream> for HttpPeekRouter<HttpAutoAcceptor<T>, F>
 where
     Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
-    Response: Send + 'static,
-    T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    Output: Send + 'static,
+    T: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
         let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         if version.is_some() {
             tracing::trace!("http peek: serve[auto]: http acceptor; version = {version:?}");
@@ -213,17 +213,17 @@ where
     }
 }
 
-impl<Stream, Response, T, F> Service<Stream> for HttpPeekRouter<Http1Acceptor<T>, F>
+impl<Stream, Output, T, F> Service<Stream> for HttpPeekRouter<Http1Acceptor<T>, F>
 where
     Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
-    Response: Send + 'static,
-    T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    Output: Send + 'static,
+    T: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
         let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::Http1x) {
             tracing::trace!("http peek: serve[http1]: http/1x acceptor; version = {version:?}");
@@ -235,17 +235,17 @@ where
     }
 }
 
-impl<Stream, Response, T, F> Service<Stream> for HttpPeekRouter<H2Acceptor<T>, F>
+impl<Stream, Output, T, F> Service<Stream> for HttpPeekRouter<H2Acceptor<T>, F>
 where
     Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
-    Response: Send + 'static,
-    T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    Output: Send + 'static,
+    T: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
         let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::H2) {
             tracing::trace!("http peek: serve[h2]: http acceptor; version = {version:?}");
@@ -257,18 +257,18 @@ where
     }
 }
 
-impl<Stream, Response, T, U, F> Service<Stream> for HttpPeekRouter<HttpDualAcceptor<T, U>, F>
+impl<Stream, Output, T, U, F> Service<Stream> for HttpPeekRouter<HttpDualAcceptor<T, U>, F>
 where
     Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
-    Response: Send + 'static,
-    T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    U: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    Output: Send + 'static,
+    T: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    U: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
         let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         match version {
             Some(HttpPeekVersion::H2) => {

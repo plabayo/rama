@@ -256,7 +256,7 @@ impl<F> ServeDir<F> {
         req: Request<ReqBody>,
     ) -> Result<Response, std::io::Error>
     where
-        F: Service<Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
+        F: Service<Request<ReqBody>, Output = Response<FResBody>, Error = Infallible> + Clone,
         FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         if req.method() != Method::GET && req.method() != Method::HEAD {
@@ -331,13 +331,13 @@ impl<F> ServeDir<F> {
 impl<ReqBody, F, FResBody> Service<Request<ReqBody>> for ServeDir<F>
 where
     ReqBody: Send + 'static,
-    F: Service<Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
+    F: Service<Request<ReqBody>, Output = Response<FResBody>, Error = Infallible> + Clone,
     FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let result = self.try_call(req).await;
         Ok(result.unwrap_or_else(|err| {
             tracing::error!("Failed to read file: {err:?}");
@@ -460,10 +460,10 @@ impl<ReqBody> Service<Request<ReqBody>> for DefaultServeDirFallback
 where
     ReqBody: Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, _req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         match self.0 {}
     }
 }

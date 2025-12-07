@@ -302,7 +302,7 @@ where
     #[inline]
     fn with_nest_inner<S>(mut self, prefix: impl AsRef<str>, inner: S) -> Self
     where
-        S: Service<Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Output = Response, Error = Infallible>,
     {
         self.set_nest_inner(prefix, inner);
         self
@@ -310,7 +310,7 @@ where
 
     fn set_nest_inner<S>(&mut self, prefix: impl AsRef<str>, inner: S) -> &mut Self
     where
-        S: Service<Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Output = Response, Error = Infallible>,
     {
         let prefix = prefix
             .as_ref()
@@ -503,13 +503,13 @@ impl<S> Service<Request> for NestedService<S>
 where
     S: Service<Request>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
         req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         // set the nested path
         let (mut parts, body) = req.into_parts();
 
@@ -547,10 +547,10 @@ impl<State> Service<Request> for WebService<State>
 where
     State: Send + Sync + Clone + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
         for endpoint in &self.endpoints {
             let mut ext = Extensions::new();
             if endpoint.matcher.matches(Some(&mut ext), &req) {
@@ -651,7 +651,7 @@ mod test {
 
     async fn get_response<S>(service: &S, uri: &str) -> Response
     where
-        S: Service<Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Output = Response, Error = Infallible>,
     {
         let req = Request::get(uri).body(Body::empty()).unwrap();
         service.serve(req).await.unwrap()
@@ -659,7 +659,7 @@ mod test {
 
     async fn post_response<S>(service: &S, uri: &str) -> Response
     where
-        S: Service<Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Output = Response, Error = Infallible>,
     {
         let req = Request::post(uri).body(Body::empty()).unwrap();
         service.serve(req).await.unwrap()
@@ -667,7 +667,7 @@ mod test {
 
     async fn connect_response<S>(service: &S, uri: &str) -> Response
     where
-        S: Service<Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Output = Response, Error = Infallible>,
     {
         let req = Request::connect(uri).body(Body::empty()).unwrap();
         service.serve(req).await.unwrap()

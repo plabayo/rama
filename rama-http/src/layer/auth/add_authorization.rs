@@ -207,14 +207,14 @@ impl<S: Clone> Clone for AddAuthorization<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for AddAuthorization<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let Some(value) = &self.value
             && (!self.if_not_present
                 || !req

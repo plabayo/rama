@@ -32,8 +32,8 @@ impl<O> UpgradeHandler<O> {
     pub(crate) fn new<M, R, H>(matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<Request>,
-        R: Service<Request, Response = (O, Request), Error = O> + Clone,
-        H: Service<Upgraded, Response = (), Error = Infallible> + Clone,
+        R: Service<Request, Output = (O, Request), Error = O> + Clone,
+        H: Service<Upgraded, Output = (), Error = Infallible> + Clone,
     {
         Self {
             matcher: Box::new(matcher),
@@ -79,14 +79,14 @@ where
 
 impl<S, O, E> Service<Request> for UpgradeService<S, O>
 where
-    S: Service<Request, Response = O, Error = E>,
+    S: Service<Request, Output = O, Error = E>,
     O: Send + Sync + 'static,
     E: Send + Sync + 'static,
 {
-    type Response = O;
+    type Output = O;
     type Error = E;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
         for handler in &self.handlers {
             let mut ext = Extensions::new();
             if !handler.matcher.matches(Some(&mut ext), &req) {

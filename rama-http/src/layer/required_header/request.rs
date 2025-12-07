@@ -137,12 +137,12 @@ impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for AddRequiredRequestHeader
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if self.overwrite || !req.headers().contains_key(HOST) {
             let request_ctx = RequestContext::try_from(&req).context(
                 "AddRequiredRequestHeaders: get/compute RequestContext to set authority",

@@ -98,14 +98,14 @@ impl<S> PropagateHeader<S> {
 
 impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for PropagateHeader<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let value = req.headers().get(&self.header).cloned();
 
         let mut res = self.inner.serve(req).await?;

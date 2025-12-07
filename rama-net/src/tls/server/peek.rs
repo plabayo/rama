@@ -60,17 +60,17 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for TlsPeekRouter<T, F> {
     }
 }
 
-impl<Stream, Response, T, F> Service<Stream> for TlsPeekRouter<T, F>
+impl<Stream, Output, T, F> Service<Stream> for TlsPeekRouter<T, F>
 where
     Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
-    Response: Send + 'static,
-    T: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    Output: Send + 'static,
+    T: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)

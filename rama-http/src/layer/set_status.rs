@@ -120,14 +120,14 @@ impl<S: Copy> Copy for SetStatus<S> {}
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for SetStatus<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let mut response = self.inner.serve(req).await?;
         *response.status_mut() = self.status;
         Ok(response)

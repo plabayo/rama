@@ -74,17 +74,17 @@ impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for SniRouter<S, F> {
     }
 }
 
-impl<Stream, Response, S, F> Service<Stream> for SniRouter<S, F>
+impl<Stream, Output, S, F> Service<Stream> for SniRouter<S, F>
 where
     Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
-    Response: Send + 'static,
-    S: Service<SniRequest<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    Output: Send + 'static,
+    S: Service<SniRequest<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)

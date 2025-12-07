@@ -156,13 +156,13 @@ impl<S> ErrorHandler<S> {
 
 impl<S, Body> Service<Request<Body>> for ErrorHandler<S, ()>
 where
-    S: Service<Request<Body>, Response: IntoResponse, Error: IntoResponse>,
+    S: Service<Request<Body>, Output: IntoResponse, Error: IntoResponse>,
     Body: Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         match self.inner.serve(req).await {
             Ok(response) => Ok(response.into_response()),
             Err(error) => Ok(error.into_response()),
@@ -172,15 +172,15 @@ where
 
 impl<S, F, R, Body> Service<Request<Body>> for ErrorHandler<S, F>
 where
-    S: Service<Request<Body>, Response: IntoResponse>,
+    S: Service<Request<Body>, Output: IntoResponse>,
     F: Fn(S::Error) -> R + Clone + Send + Sync + 'static,
     R: IntoResponse + 'static,
     Body: Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         match self.inner.serve(req).await {
             Ok(response) => Ok(response.into_response()),
             Err(error) => Ok((self.error_mapper)(error).into_response()),

@@ -671,7 +671,6 @@ where
     B: Buf,
 {
     fn drop(&mut self) {
-        // Ignore errors as this indicates that the mutex is poisoned.
         self.inner.streams.recv_eof(true);
     }
 }

@@ -91,10 +91,10 @@ where
     T: Stream + Unpin + ExtensionsMut,
     C: ConnectorService<crate::client::Request, Connection: Stream + Unpin>,
 {
-    type Response = ();
+    type Output = ();
     type Error = BoxError;
 
-    async fn serve(&self, source: T) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, source: T) -> Result<Self::Output, Self::Error> {
         let authority = match &self.kind {
             ForwarderKind::Static(target) => target.clone(),
             ForwarderKind::Dynamic => source

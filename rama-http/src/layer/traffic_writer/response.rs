@@ -287,15 +287,15 @@ impl<S, W> ResponseWriterService<S, W> {}
 
 impl<S, W, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseWriterService<S, W>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     W: ResponseWriter,
     ReqBody: Send + 'static,
     ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let do_not_print_response: Option<DoNotWriteResponse> = req.extensions().get().cloned();
         let resp = self.inner.serve(req).await.map_err(Into::into)?;
         let resp = if do_not_print_response.is_some() {

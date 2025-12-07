@@ -25,7 +25,7 @@ async fn test_unix_socket_http() {
                 .connect(request)
                 .await
             {
-                Ok(EstablishedClientConnection { conn, req }) => return Some((req, conn)),
+                Ok(EstablishedClientConnection { conn, input: req }) => return Some((req, conn)),
                 Err(e) => {
                     eprintln!("unix connect error: {e}");
                     tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;

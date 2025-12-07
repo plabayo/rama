@@ -230,7 +230,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
 async fn serve_http<Response>(
     graceful: ShutdownGuard,
     cfg: CliCommandFingerprint,
-    http_service: impl Service<Request, Response = Response, Error = Infallible>,
+    http_service: impl Service<Request, Output = Response, Error = Infallible>,
     maybe_ha_proxy_layer: Option<HaProxyLayer>,
 ) -> Result<(), BoxError>
 where
@@ -384,10 +384,10 @@ where
     Body: Send + 'static,
     S: Service<Request<Body>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {
             let cookie = cookie
                 .iter()

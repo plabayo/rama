@@ -37,24 +37,23 @@ impl<S> EmulateTlsProfileService<S> {
     );
 }
 
-impl<S, Request> Service<Request> for EmulateTlsProfileService<S>
+impl<S, Input> Service<Input> for EmulateTlsProfileService<S>
 where
-    Request: TryRefIntoTransportContext<Error: Into<BoxError>> + Send + ExtensionsMut + 'static,
-    S: Service<Request, Error: Into<BoxError>>,
+    Input: TryRefIntoTransportContext<Error: Into<BoxError>> + Send + ExtensionsMut + 'static,
+    S: Service<Input, Error: Into<BoxError>>,
 {
-    type Response = S::Response;
-
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        let tls_profile = req.extensions().get::<TlsProfile>().cloned();
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+        let tls_profile = input.extensions().get::<TlsProfile>().cloned();
 
         // Right now this is very simple, but it will get a lot more complex, which is why it is separated from the connector itself
         if let Some(profile) = tls_profile {
             let mut domain_overwrite = None;
             let mut emulate_config = Cow::Borrowed(profile.client_config.as_ref());
 
-            let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+            let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
                 OpaqueError::from_boxed(err.into())
                     .context("UA TLS Emulator: compute transport context to get authority")
             })?;
@@ -116,7 +115,7 @@ where
                 ));
             }
 
-            let mut builder = req
+            let mut builder = input
                 .extensions_mut()
                 .get::<TlsConnectorDataBuilder>()
                 .cloned()
@@ -139,10 +138,10 @@ where
                 builder.push_base_config(overwrite);
             }
 
-            req.extensions_mut().insert(builder);
+            input.extensions_mut().insert(builder);
         }
 
-        self.inner.serve(req).await.map_err(Into::into)
+        self.inner.serve(input).await.map_err(Into::into)
     }
 }
 

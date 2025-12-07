@@ -20,7 +20,7 @@ pub(super) async fn consume_open_file_result<ReqBody, ResBody, F>(
     fallback_and_request: Option<(&F, Request<ReqBody>)>,
 ) -> Result<Response, std::io::Error>
 where
-    F: Service<Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
+    F: Service<Request<ReqBody>, Output = Response<ResBody>, Error = Infallible> + Clone,
     ResBody: StreamingBody<Data = Bytes> + Send + Sync + 'static,
     ResBody::Error: Into<BoxError>,
 {
@@ -105,7 +105,7 @@ pub(super) async fn serve_fallback<F, B, FResBody>(
     req: Request<B>,
 ) -> Result<Response, std::io::Error>
 where
-    F: Service<Request<B>, Response = Response<FResBody>, Error = Infallible>,
+    F: Service<Request<B>, Output = Response<FResBody>, Error = Infallible>,
     FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     let response = fallback.serve(req).await.unwrap();

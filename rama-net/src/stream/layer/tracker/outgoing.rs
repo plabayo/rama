@@ -42,20 +42,20 @@ where
     }
 }
 
-impl<S, Request> Service<Request> for OutgoingBytesTrackerService<S>
+impl<S, Input> Service<Input> for OutgoingBytesTrackerService<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin>,
-    Request: Send + 'static,
+    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    Input: Send + 'static,
 {
-    type Response = EstablishedClientConnection<BytesRWTracker<S::Connection>, Request>;
+    type Output = EstablishedClientConnection<BytesRWTracker<S::Connection>, Input>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { req, conn } = self.inner.connect(req).await?;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         let mut conn = BytesRWTracker::new(conn);
         let handle = conn.handle();
         conn.extensions_mut().insert(handle);
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }
 

@@ -122,19 +122,19 @@ impl<S> HttpProxyConnector<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, Request> Service<Request> for HttpProxyConnector<S>
+impl<S, Input> Service<Input> for HttpProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
         + 'static,
 {
-    type Response = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Request>;
+    type Output = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let proxy_info = req.extensions().get::<ProxyAddress>().cloned();
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let proxy_info = input.extensions().get::<ProxyAddress>().cloned();
         if !proxy_info
             .as_ref()
             .and_then(|addr| addr.protocol.as_ref())
@@ -147,13 +147,13 @@ where
             .into_boxed());
         }
 
-        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("http proxy connector: get transport context")
         })?;
 
         #[cfg(feature = "tls")]
-        let mut req = req;
+        let mut input = input;
 
         #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
@@ -169,14 +169,14 @@ where
                 server.port = proxy_info.address.port,
                 "http proxy connector: preparing proxy connection for tls tunnel",
             );
-            req.extensions_mut().insert(TlsTunnel {
+            input.extensions_mut().insert(TlsTunnel {
                 server_host: proxy_info.address.host.clone(),
             });
         }
 
         let established_conn =
             self.inner
-                .connect(req)
+                .connect(input)
                 .await
                 .map_err(|err| match proxy_info.as_ref() {
                     Some(proxy_info) => OpaqueError::from_std(HttpProxyError::Transport(
@@ -200,16 +200,16 @@ where
                 tracing::trace!(
                     "http proxy connector: no proxy required or set: proceed with direct connection"
                 );
-                let EstablishedClientConnection { req, conn } = established_conn;
+                let EstablishedClientConnection { input, conn } = established_conn;
                 return Ok(EstablishedClientConnection {
-                    req,
+                    input,
                     conn: MaybeHttpProxiedConnection::direct(conn),
                 });
             };
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { req, conn } = established_conn;
+        let EstablishedClientConnection { input, conn } = established_conn;
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
@@ -227,7 +227,7 @@ where
             // we do however need to add authorization headers if credentials are present
             // => for this the user has to use another middleware as we do not have access to that here
             return Ok(EstablishedClientConnection {
-                req,
+                input,
                 conn: MaybeHttpProxiedConnection::proxied(conn),
             });
         }
@@ -277,7 +277,7 @@ where
             server.port = transport_ctx.authority.port,
             "http proxy connector: connected to proxy: ready secure request",
         );
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }
 

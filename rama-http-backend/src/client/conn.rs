@@ -58,11 +58,11 @@ where
     BodyConnection:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    type Response = EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>;
+    type Output = EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { req, conn } =
+    async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection { input: req, conn } =
             self.inner.connect(req).await.map_err(Into::into)?;
 
         let extensions = conn.extensions().clone();
@@ -149,7 +149,10 @@ where
                     extensions,
                 };
 
-                Ok(EstablishedClientConnection { req, conn: svc })
+                Ok(EstablishedClientConnection {
+                    input: req,
+                    conn: svc,
+                })
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
                 tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
@@ -189,7 +192,10 @@ where
                     extensions,
                 };
 
-                Ok(EstablishedClientConnection { req, conn: svc })
+                Ok(EstablishedClientConnection {
+                    input: req,
+                    conn: svc,
+                })
             }
             version => Err(OpaqueError::from_display(format!(
                 "unsupported Http version: {version:?}",

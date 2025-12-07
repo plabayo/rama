@@ -113,10 +113,10 @@ where
     R: UriMatchReplace + Send + Sync + 'static,
     Body: Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let full_uri = match self.rewrite_uri_rule.match_replace_uri(request_uri(&req)) {
             Ok(uri) => uri,
             Err(UriMatchError::NoMatch(uri)) => {

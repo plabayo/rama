@@ -46,13 +46,13 @@ where
     S: Service<BytesRWTracker<IO>>,
     IO: Stream + ExtensionsMut,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
         stream: IO,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let mut tracked_stream = BytesRWTracker::new(stream);
         let handle = tracked_stream.handle();
         tracked_stream.extensions_mut().insert(handle);

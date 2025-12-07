@@ -181,12 +181,12 @@ where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
     V: ValidateRequest<ReqBody, ResponseBody = ResBody>,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
 {
-    type Response = Response<ResBody>;
+    type Output = Response<ResBody>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         match self.validate.validate(req).await {
             Ok(req) => self.inner.serve(req).await,
             Err(res) => Ok(res),

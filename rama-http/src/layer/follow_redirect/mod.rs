@@ -226,19 +226,19 @@ impl<S, P> FollowRedirect<S, P> {
 
 impl<ReqBody, ResBody, S, P> Service<Request<ReqBody>> for FollowRedirect<S, P>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: StreamingBody + Default + Send + 'static,
     ResBody: Send + 'static,
     P: Policy<ReqBody, S::Error> + Clone,
 {
-    type Response = Response<ResBody>;
+    type Output = Response<ResBody>;
     type Error = S::Error;
 
     fn serve(
         &self,
 
         mut req: Request<ReqBody>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> {
         let mut method = req.method().clone();
         let mut uri = req.uri().clone();
         let version = req.version();

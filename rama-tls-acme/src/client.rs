@@ -53,7 +53,7 @@ impl AcmeClient {
     /// Create a new acme [`AcmeClient`] for the given directory url and using the provided https client
     pub async fn new<S>(directory_url: &str, https_client: S) -> Result<Self, OpaqueError>
     where
-        S: Service<Request, Response = Response, Error = OpaqueError>,
+        S: Service<Request, Output = Response, Error = OpaqueError>,
     {
         let https_client = https_client.boxed();
 
@@ -78,7 +78,7 @@ impl AcmeClient {
         https_client: S,
     ) -> Result<Self, OpaqueError>
     where
-        S: Service<Request, Response = Response, Error = OpaqueError>,
+        S: Service<Request, Output = Response, Error = OpaqueError>,
     {
         Self::new(provider.as_directory_url(), https_client).await
     }

@@ -21,7 +21,7 @@ pub trait SocketService: Send + Sync + 'static {
 
 impl<S, Socket> SocketService for S
 where
-    S: Service<Interface, Response = Socket, Error: Into<BoxError> + Send + 'static>,
+    S: Service<Interface, Output = Socket, Error: Into<BoxError> + Send + 'static>,
     Socket: Send + 'static,
 {
     type Socket = Socket;

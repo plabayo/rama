@@ -57,17 +57,17 @@ impl<S, ReqBody, ResBody, D> Service<Request<ReqBody>> for RequestDecompression<
 where
     S: Service<
             Request<DecompressionBody<ReqBody>>,
-            Response = Response<ResBody>,
+            Output = Response<ResBody>,
             Error: Into<BoxError>,
         >,
     ReqBody: StreamingBody + Send + 'static,
     ResBody: StreamingBody<Data = D, Error: Into<BoxError>> + Send + 'static,
     D: Buf + 'static,
 {
-    type Response = Response<UnsyncBoxBody<D, BoxError>>;
+    type Output = Response<UnsyncBoxBody<D, BoxError>>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let (mut parts, body) = req.into_parts();
 
         let body =

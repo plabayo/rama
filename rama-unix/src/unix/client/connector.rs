@@ -80,18 +80,18 @@ where {
     }
 }
 
-impl<Request, ConnectorFactory> Service<Request> for UnixConnector<ConnectorFactory>
+impl<Input, ConnectorFactory> Service<Input> for UnixConnector<ConnectorFactory>
 where
-    Request: Send + 'static,
+    Input: Send + 'static,
     ConnectorFactory: UnixStreamConnectorFactory<
             Connector: UnixStreamConnector<Error: Into<BoxError> + Send + 'static>,
             Error: Into<BoxError> + Send + 'static,
         > + Clone,
 {
-    type Response = EstablishedClientConnection<UnixStream, Request>;
+    type Output = EstablishedClientConnection<UnixStream, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let CreatedUnixStreamConnector { connector } = self
             .connector_factory
             .make_connector()
@@ -118,7 +118,7 @@ where
         ));
         conn.extensions_mut().insert(info);
 
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }
 

@@ -184,10 +184,10 @@ impl<A: Clone, S: Clone> Clone for Binder<A, S> {
 pub struct DefaultAcceptorFactory;
 
 impl Service<Interface> for DefaultAcceptorFactory {
-    type Response = TcpListener;
+    type Output = TcpListener;
     type Error = BoxError;
 
-    async fn serve(&self, interface: Interface) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, interface: Interface) -> Result<Self::Output, Self::Error> {
         let acceptor = TcpListener::bind(interface).await?;
         Ok(acceptor)
     }
@@ -239,7 +239,7 @@ where
     F: SocketService<Socket: Acceptor<Stream: Unpin>>,
     StreamService: Service<
             ProxyRequest<S, <F::Socket as Acceptor>::Stream>,
-            Response = (),
+            Output = (),
             Error: Into<BoxError>,
         >,
 {

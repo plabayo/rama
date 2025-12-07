@@ -74,10 +74,10 @@ where
     Body: Send + 'static,
     ResBody: Default + Send + 'static,
 {
-    type Response = Response<ResBody>;
+    type Output = Response<ResBody>;
     type Error = Infallible;
 
-    async fn serve(&self, _req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let mut res = Response::default();
         *res.status_mut() = self.resp.status_code();
         res.headers_mut()

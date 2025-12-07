@@ -152,7 +152,7 @@ impl IpServiceBuilder<mode::Http> {
     pub fn build(
         mut self,
         executor: Executor,
-    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config.take();
 
@@ -179,10 +179,10 @@ impl IpServiceBuilder<mode::Http> {
 struct HttpIpService;
 
 impl Service<Request> for HttpIpService {
-    type Response = Response;
+    type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let norm_req_path = req.uri().path().trim_matches('/');
         if !norm_req_path.is_empty() {
             tracing::debug!("unexpected request path '{norm_req_path}', redirect to root");
@@ -254,10 +254,10 @@ impl<Input> Service<Input> for TcpIpService
 where
     Input: Stream + Unpin + ExtensionsRef,
 {
-    type Response = ();
+    type Output = ();
     type Error = BoxError;
 
-    async fn serve(&self, stream: Input) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Input) -> Result<Self::Output, Self::Error> {
         tracing::info!("connection received");
         let peer_ip = stream
             .extensions()
@@ -299,7 +299,7 @@ impl IpServiceBuilder<mode::Transport> {
     /// build a tcp service ready to echo client IP back
     pub fn build(
         mut self,
-    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config.take();
 
@@ -326,7 +326,7 @@ impl<M> IpServiceBuilder<M> {
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
             TlsAcceptorLayer,
         >,
-    ) -> Result<impl Service<S, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<S, Output = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
             None => None,
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
@@ -364,7 +364,7 @@ impl<M> IpServiceBuilder<M> {
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
             TlsAcceptorLayer,
         >,
-    ) -> Result<impl Service<S, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<S, Output = (), Error = Infallible>, BoxError> {
         let (tcp_forwarded_layer, http_forwarded_layer) = match &self.forward {
             None => (None, None),
             Some(ForwardKind::Forwarded) => {

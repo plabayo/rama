@@ -117,17 +117,17 @@ struct LoggingService<S> {
     inner: S,
 }
 
-impl<S, Req> Service<Req> for LoggingService<S>
+impl<S, Input> Service<Input> for LoggingService<S>
 where
-    S: Service<Req, Response = EstablishedClientConnection<TcpStream, Req>>,
+    S: Service<Input, Output = EstablishedClientConnection<TcpStream, Input>>,
     S::Error: Send + 'static,
-    Req: Send + 'static,
+    Input: Send + 'static,
 {
-    type Response = EstablishedClientConnection<TcpStream, Req>;
+    type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Req) -> Result<Self::Response, Self::Error> {
-        let result = self.inner.serve(req).await;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let result = self.inner.serve(input).await;
 
         if let Ok(ref established_conn) = result
             && let Ok(Some(peer_addr)) = established_conn.conn.peer_addr().map(Some)

@@ -1,5 +1,5 @@
 use crate::{Body, Request, Response, matcher::HttpMatcher};
-use rama_core::{Layer, Service, layer::MapResponseLayer, service::BoxService};
+use rama_core::{Layer, Service, layer::MapOutputLayer, service::BoxService};
 use std::{convert::Infallible, fmt};
 
 pub mod extract;
@@ -15,9 +15,7 @@ pub(crate) struct Endpoint {
 /// utility trait to accept multiple types as an endpoint service for [`super::WebService`]
 pub trait IntoEndpointService<T>: private::Sealed<T, ()> {
     /// convert the type into a [`rama_core::Service`].
-    fn into_endpoint_service(
-        self,
-    ) -> impl Service<Request, Response = Response, Error = Infallible>;
+    fn into_endpoint_service(self) -> impl Service<Request, Output = Response, Error = Infallible>;
 }
 
 pub trait IntoEndpointServiceWithState<T, State>: private::Sealed<T, State> {
@@ -25,31 +23,29 @@ pub trait IntoEndpointServiceWithState<T, State>: private::Sealed<T, State> {
     fn into_endpoint_service_with_state(
         self,
         state: State,
-    ) -> impl Service<Request, Response = Response, Error = Infallible>;
+    ) -> impl Service<Request, Output = Response, Error = Infallible>;
 }
 
 impl<S, R> IntoEndpointService<(R,)> for S
 where
-    S: Service<Request, Response = R, Error = Infallible>,
+    S: Service<Request, Output = R, Error = Infallible>,
     R: IntoResponse + Send + Sync + 'static,
 {
-    fn into_endpoint_service(
-        self,
-    ) -> impl Service<Request, Response = Response, Error = Infallible> {
-        MapResponseLayer::new(R::into_response).into_layer(self)
+    fn into_endpoint_service(self) -> impl Service<Request, Output = Response, Error = Infallible> {
+        MapOutputLayer::new(R::into_response).into_layer(self)
     }
 }
 
 impl<S, R, State> IntoEndpointServiceWithState<(R,), State> for S
 where
-    S: Service<Request, Response = R, Error = Infallible>,
+    S: Service<Request, Output = R, Error = Infallible>,
     R: IntoResponse + Send + Sync + 'static,
 {
     fn into_endpoint_service_with_state(
         self,
         _state: State,
-    ) -> impl Service<Request, Response = Response, Error = Infallible> {
-        MapResponseLayer::new(R::into_response).into_layer(self)
+    ) -> impl Service<Request, Output = Response, Error = Infallible> {
+        MapOutputLayer::new(R::into_response).into_layer(self)
     }
 }
 
@@ -57,9 +53,7 @@ impl<R> IntoEndpointService<()> for R
 where
     R: IntoResponse + Clone + Send + Sync + 'static,
 {
-    fn into_endpoint_service(
-        self,
-    ) -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn into_endpoint_service(self) -> impl Service<Request, Output = Response, Error = Infallible> {
         StaticService(self)
     }
 }
@@ -71,7 +65,7 @@ where
     fn into_endpoint_service_with_state(
         self,
         _state: State,
-    ) -> impl Service<Request, Response = Response, Error = Infallible> {
+    ) -> impl Service<Request, Output = Response, Error = Infallible> {
         StaticService(self)
     }
 }
@@ -111,10 +105,10 @@ impl<R> Service<Request> for StaticService<R>
 where
     R: IntoResponse + Clone + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, _: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _: Request) -> Result<Self::Output, Self::Error> {
         Ok(self.0.clone().into_response())
     }
 }
@@ -164,10 +158,10 @@ where
     T: Send + 'static,
     State: Send + Sync + Clone + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         Ok(self.inner.call(req, &self.state).await)
     }
 }
@@ -177,9 +171,7 @@ where
     F: EndpointServiceFn<T, ()>,
     T: Send + 'static,
 {
-    fn into_endpoint_service(
-        self,
-    ) -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn into_endpoint_service(self) -> impl Service<Request, Output = Response, Error = Infallible> {
         EndpointServiceFnWrapper {
             inner: self,
             _marker: std::marker::PhantomData,
@@ -197,7 +189,7 @@ where
     fn into_endpoint_service_with_state(
         self,
         state: State,
-    ) -> impl Service<Request, Response = Response, Error = Infallible> {
+    ) -> impl Service<Request, Output = Response, Error = Infallible> {
         EndpointServiceFnWrapper {
             inner: self,
             _marker: std::marker::PhantomData,
@@ -213,7 +205,7 @@ mod private {
 
     impl<S, R, State> Sealed<(R,), State> for S
     where
-        S: Service<Request, Response = R, Error = Infallible>,
+        S: Service<Request, Output = R, Error = Infallible>,
         R: IntoResponse + Send + Sync + 'static,
     {
     }
@@ -249,10 +241,10 @@ mod tests {
         struct OkService;
 
         impl Service<Request> for OkService {
-            type Response = StatusCode;
+            type Output = StatusCode;
             type Error = Infallible;
 
-            async fn serve(&self, _req: Request) -> Result<Self::Response, Self::Error> {
+            async fn serve(&self, _req: Request) -> Result<Self::Output, Self::Error> {
                 Ok(StatusCode::OK)
             }
         }

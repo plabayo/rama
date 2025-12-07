@@ -85,14 +85,14 @@ impl<S: Clone> Clone for Decompression<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Decompression<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: StreamingBody<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
 {
-    type Response = Response<DecompressionBody<ResBody>>;
+    type Output = Response<DecompressionBody<ResBody>>;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let header::Entry::Vacant(entry) = req.headers_mut().entry(ACCEPT_ENCODING)
             && let Some(accept) = self.accept.maybe_to_header_value()
         {

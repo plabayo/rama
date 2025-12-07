@@ -207,7 +207,7 @@ where
     S: Stream + Unpin + ExtensionsMut,
     InnerConnector: ConnectorService<TcpRequest, Connection: Stream + Socket + Unpin>,
     StreamService:
-        Service<ProxyRequest<S, InnerConnector::Connection>, Response = (), Error: Into<BoxError>>,
+        Service<ProxyRequest<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
@@ -354,7 +354,7 @@ impl<S: Clone> Clone for LazyConnector<S> {
 impl<S, StreamService> Socks5ConnectorSeal<S> for LazyConnector<StreamService>
 where
     S: Stream + Unpin + ExtensionsMut,
-    StreamService: Service<S, Response = (), Error: Into<BoxError>>,
+    StreamService: Service<S, Output = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(

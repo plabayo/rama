@@ -77,10 +77,10 @@ where
     R: UriMatchReplace + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let full_uri = request_uri(&req);
         if let Ok(uri) = self
             .match_replace

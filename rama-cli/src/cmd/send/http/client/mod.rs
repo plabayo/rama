@@ -52,7 +52,7 @@ mod writer;
 
 pub(super) async fn new(
     cfg: &SendCommand,
-) -> Result<impl Service<Request, Response = Response, Error = BoxError>, BoxError> {
+) -> Result<impl Service<Request, Output = Response, Error = BoxError>, BoxError> {
     let writer = writer::new(cfg).await?;
 
     let inner_client = new_inner_client(cfg)?;
@@ -124,7 +124,7 @@ pub(super) async fn new(
 
 fn new_inner_client(
     cfg: &SendCommand,
-) -> Result<impl Service<Request, Response = Response, Error = OpaqueError> + Clone, BoxError> {
+) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate {
         TlsConnectorDataBuilder::new()
     } else {

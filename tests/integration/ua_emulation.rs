@@ -318,8 +318,10 @@ async fn test_ua_emulation() {
                     ))),
                 ));
 
-                let EstablishedClientConnection { mut req, conn } =
-                    connector.serve(req).await.expect(description);
+                let EstablishedClientConnection {
+                    input: mut req,
+                    conn,
+                } = connector.serve(req).await.expect(description);
 
                 req.extensions_mut().extend(conn.extensions().clone());
 
@@ -393,8 +395,10 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     let profile = req.extensions().get::<SelectedUserAgentProfile>().unwrap();
                     let expect_msg = format!("selected profile to work: {profile:?}");
 
-                    let EstablishedClientConnection { mut req, conn } =
-                        connector.serve(req).await.expect(&expect_msg);
+                    let EstablishedClientConnection {
+                        input: mut req,
+                        conn,
+                    } = connector.serve(req).await.expect(&expect_msg);
 
                     req.extensions_mut().extend(conn.extensions().clone());
                     let svc = (UserAgentEmulateHttpRequestModifierLayer::default()).layer(conn);
@@ -450,12 +454,12 @@ struct ServerExtensions(Extensions);
 
 impl<S> Service<Request> for MockConnectorService<S>
 where
-    S: Service<Request, Response = Response, Error = Infallible> + Clone,
+    S: Service<Request, Output = Response, Error = Infallible> + Clone,
 {
     type Error = S::Error;
-    type Response = EstablishedClientConnection<MockSocket, Request>;
+    type Output = EstablishedClientConnection<MockSocket, Request>;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let (client_socket, mut server_socket) = new_mock_sockets();
 
         if let Some(extensions) = req.extensions().get::<ServerExtensions>() {
@@ -482,7 +486,7 @@ where
         });
 
         Ok(EstablishedClientConnection {
-            req,
+            input: req,
             conn: client_socket,
         })
     }

@@ -16,7 +16,7 @@ pub(super) async fn connect<C>(
     protocols: Option<NonEmptyVec<NonEmptyStr>>,
 ) -> Result<ClientWebSocket, OpaqueError>
 where
-    C: Service<Request, Response = Response, Error = BoxError>,
+    C: Service<Request, Output = Response, Error = BoxError>,
 {
     client
         .websocket_with_request(req)

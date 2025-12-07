@@ -300,7 +300,7 @@ impl<S, ReqBody, ResBody, M, OnRequestT, OnResponseT, OnFailureT, OnBodyChunkT, 
     Service<Request<ReqBody>>
     for Trace<S, M, MakeSpanT, OnRequestT, OnResponseT, OnBodyChunkT, OnEosT, OnFailureT>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: fmt::Display>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: fmt::Display>,
     ReqBody: StreamingBody + Send + 'static,
     ResBody: StreamingBody<Error: fmt::Display> + Send + Sync + 'static,
     M: MakeClassifier<Classifier: Clone>,
@@ -311,11 +311,10 @@ where
     OnEosT: OnEos + Clone,
     OnFailureT: OnFailure<M::FailureClass> + Clone,
 {
-    type Response =
-        Response<ResponseBody<ResBody, M::ClassifyEos, OnBodyChunkT, OnEosT, OnFailureT>>;
+    type Output = Response<ResponseBody<ResBody, M::ClassifyEos, OnBodyChunkT, OnEosT, OnFailureT>>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let start = Instant::now();
 
         let span = self.make_span.make_span(&req);

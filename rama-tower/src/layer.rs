@@ -113,12 +113,12 @@ where
     }
 }
 
-impl<T, Request> TowerService<Request> for TowerAdapterService<T>
+impl<T, Input> TowerService<Input> for TowerAdapterService<T>
 where
-    T: rama_core::Service<Request, Error: Into<BoxError>>,
-    Request: Send + 'static,
+    T: rama_core::Service<Input, Error: Into<BoxError>>,
+    Input: Send + 'static,
 {
-    type Response = T::Response;
+    type Response = T::Output;
     type Error = BoxError;
     type Future =
         Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
@@ -130,34 +130,34 @@ where
         std::task::Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, req: Request) -> Self::Future {
+    fn call(&mut self, input: Input) -> Self::Future {
         let svc = self.inner.clone();
-        Box::pin(async move { svc.serve(req).await.map_err(Into::into) })
+        Box::pin(async move { svc.serve(input).await.map_err(Into::into) })
     }
 }
 
-impl<T, Request> rama_core::Service<Request> for LayerAdapterService<T>
+impl<T, Input> rama_core::Service<Input> for LayerAdapterService<T>
 where
-    T: TowerService<Request, Response: Send + 'static, Error: Send + 'static, Future: Send>
+    T: TowerService<Input, Response: Send + 'static, Error: Send + 'static, Future: Send>
         + Clone
         + Send
         + Sync
         + 'static,
-    Request: Send + 'static,
+    Input: Send + 'static,
 {
-    type Response = T::Response;
+    type Output = T::Response;
     type Error = T::Error;
 
     fn serve(
         &self,
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let svc = self.0.clone();
         async move {
             let mut svc = svc;
             let ready = Ready::new(&mut svc);
             let ready_svc = ready.await?;
-            ready_svc.call(req).await
+            ready_svc.call(input).await
         }
     }
 }

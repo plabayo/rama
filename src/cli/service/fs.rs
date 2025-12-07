@@ -222,13 +222,13 @@ impl<H> FsServiceBuilder<H> {
 
 impl<H> FsServiceBuilder<H>
 where
-    H: Layer<ServeService, Service: Service<Request, Response = Response, Error: Into<BoxError>>>,
+    H: Layer<ServeService, Service: Service<Request, Output = Response, Error: Into<BoxError>>>,
 {
     /// build a tcp service ready to serve files
     pub fn build(
         self,
         executor: Executor,
-    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             _ => None,
@@ -285,7 +285,7 @@ where
     /// build an http service ready to serve files
     pub fn build_http(
         &self,
-    ) -> Result<impl Service<Request, Response: IntoResponse, Error = Infallible> + use<H>, BoxError>
+    ) -> Result<impl Service<Request, Output: IntoResponse, Error = Infallible> + use<H>, BoxError>
     {
         let http_forwarded_layer = match &self.forward {
             None | Some(ForwardKind::HaProxy) => None,

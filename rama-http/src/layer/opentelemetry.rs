@@ -316,14 +316,14 @@ impl<S, F> RequestMetricsService<S, F> {
 
 impl<S, F, Body> Service<Request<Body>> for RequestMetricsService<S, F>
 where
-    S: Service<Request, Response: IntoResponse>,
+    S: Service<Request, Output: IntoResponse>,
     F: AttributesFactory,
     Body: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let mut attributes: Vec<KeyValue> = self.compute_attributes(&req);
 
         self.metrics.http_server_total_requests.add(1, &attributes);

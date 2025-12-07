@@ -128,23 +128,23 @@ impl<S, T, Fut, F> GetExtension<S, T, Fut, F> {
     define_inner_service_accessors!();
 }
 
-impl<Request, S, T, Fut, F> Service<Request> for GetExtension<S, T, Fut, F>
+impl<Input, S, T, Fut, F> Service<Input> for GetExtension<S, T, Fut, F>
 where
-    Request: Send + ExtensionsRef + 'static,
-    S: Service<Request>,
+    Input: Send + ExtensionsRef + 'static,
+    S: Service<Input>,
     T: Clone + Send + Sync + 'static,
     F: Fn(T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        if let Some(value) = req.extensions().get::<T>() {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        if let Some(value) = input.extensions().get::<T>() {
             let value = value.clone();
             (self.callback)(value).await;
         }
-        self.inner.serve(req).await
+        self.inner.serve(input).await
     }
 }
 

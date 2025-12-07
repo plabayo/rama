@@ -129,7 +129,6 @@ where
     Request: Send + 'static,
 {
     type Guard = ();
-
     type Error = OpaqueError;
 
     async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
@@ -139,6 +138,9 @@ where
                 "Only first connection is allowed",
             )),
         };
-        PolicyResult { request, output }
+        PolicyResult {
+            input: request,
+            output,
+        }
     }
 }

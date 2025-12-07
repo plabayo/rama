@@ -1,6 +1,6 @@
-//! Middleware that applies a timeout to requests.
+//! Middleware that applies a timeout to inputs.
 //!
-//! If the response does not complete within the specified timeout, the response
+//! If the inner service does not complete within the specified timeout, the output
 //! will be aborted.
 
 use super::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
@@ -118,23 +118,23 @@ where
     }
 }
 
-impl<T, F, Request, E> Service<Request> for Timeout<T, F>
+impl<T, F, Input, E> Service<Input> for Timeout<T, F>
 where
-    Request: Send + 'static,
+    Input: Send + 'static,
     F: MakeLayerError<Error = E>,
     E: Into<T::Error> + Send + 'static,
-    T: Service<Request>,
+    T: Service<Input>,
 {
-    type Response = T::Response;
+    type Output = T::Output;
     type Error = T::Error;
 
-    async fn serve(&self, request: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         match self.timeout {
             Some(duration) => tokio::select! {
-                res = self.inner.serve(request) => res,
+                res = self.inner.serve(input) => res,
                 _ = tokio::time::sleep(duration) => Err(self.into_error.make_layer_error().into()),
             },
-            None => self.inner.serve(request).await,
+            None => self.inner.serve(input).await,
         }
     }
 }

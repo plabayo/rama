@@ -164,15 +164,15 @@ impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for ProxyAuthServic
 where
     A: Authority<C, L>,
     C: Credentials + Clone + Send + Sync + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     L: 'static,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = OpaqueError;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let Some(credentials) = req
             .headers()
             .typed_get::<ProxyAuthorization<C>>()

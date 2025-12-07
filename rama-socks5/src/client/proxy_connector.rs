@@ -343,19 +343,19 @@ impl<S> Socks5ProxyConnector<S> {
     }
 }
 
-impl<S, Request> Service<Request> for Socks5ProxyConnector<S>
+impl<S, Input> Service<Input> for Socks5ProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
         + 'static,
 {
-    type Response = EstablishedClientConnection<S::Connection, Request>;
+    type Output = EstablishedClientConnection<S::Connection, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        let address = req.extensions_mut().get::<ProxyAddress>().cloned();
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+        let address = input.extensions_mut().get::<ProxyAddress>().cloned();
         if !address
             .as_ref()
             .and_then(|addr| addr.protocol.as_ref())
@@ -373,11 +373,11 @@ where
             Some(addr) => {
                 let addr = self
                     .normalize_socks5_proxy_addr(
-                        req.extensions().get().copied().unwrap_or_default(),
+                        input.extensions().get().copied().unwrap_or_default(),
                         addr,
                     )
                     .await;
-                req.extensions_mut().insert(addr.clone());
+                input.extensions_mut().insert(addr.clone());
                 Some(addr)
             }
             None => None,
@@ -385,7 +385,7 @@ where
 
         let established_conn =
             self.inner
-                .connect(req)
+                .connect(input)
                 .await
                 .map_err(|err| match address.as_ref() {
                     Some(proxy_info) => OpaqueError::from_std(Socks5ProxyError::Transport(
@@ -414,9 +414,9 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { req, mut conn } = established_conn;
+        let EstablishedClientConnection { input, mut conn } = established_conn;
 
-        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("socks5 proxy connector: get transport context")
         })?;
@@ -484,6 +484,6 @@ where
             Err(err) => return Err(Box::new(Socks5ProxyError::Handshake(err))),
         }
 
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }

@@ -116,7 +116,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
 
 impl<S, Body> HttpClientExt for S
 where
-    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
     type ExecuteResponse = Response<Body>;
     type ExecuteError = S::Error;
@@ -375,7 +375,7 @@ mod private {
     pub trait HttpClientExtSealed {}
 
     impl<S, Body> HttpClientExtSealed for S where
-        S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>
+        S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>
     {
     }
 }
@@ -410,7 +410,7 @@ enum RequestBuilderState {
 
 impl<S, Body> RequestBuilder<'_, S, Response<Body>>
 where
-    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
     /// Add a `Header` to this [`Request`].
     #[must_use]

@@ -495,14 +495,14 @@ impl<T, S> EasyHttpConnectorBuilder<T, S> {
     /// Build a [`super::EasyHttpWebClient`] using the currently configured connector
     pub fn build_client<Body, ModifiedBody, ConnResponse>(
         self,
-    ) -> super::EasyHttpWebClient<Body, T::Response, ()>
+    ) -> super::EasyHttpWebClient<Body, T::Output, ()>
     where
         Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
         ModifiedBody:
             StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
         T: Service<
                 Request<Body>,
-                Response = EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>,
+                Output = EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>,
                 Error = BoxError,
             >,
         ConnResponse: ExtensionsMut,

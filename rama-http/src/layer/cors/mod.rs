@@ -598,14 +598,14 @@ impl<S> Cors<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Cors<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let (parts, body) = req.into_parts();
         let origin = parts.headers.get(&header::ORIGIN);
 

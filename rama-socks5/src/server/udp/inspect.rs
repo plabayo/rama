@@ -148,7 +148,7 @@ impl<S: Clone> Clone for AsyncUdpInspector<S> {
 
 impl<S> UdpPacketProxy for AsyncUdpInspector<S>
 where
-    S: Service<RelayRequest, Response = RelayResponse, Error: Into<BoxError>>,
+    S: Service<RelayRequest, Output = RelayResponse, Error: Into<BoxError>>,
 {
     async fn proxy_udp_packets(
         &self,

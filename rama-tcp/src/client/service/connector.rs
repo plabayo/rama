@@ -101,29 +101,29 @@ impl Default for TcpConnector {
     }
 }
 
-impl<Request, Dns, ConnectorFactory> Service<Request> for TcpConnector<Dns, ConnectorFactory>
+impl<Input, Dns, ConnectorFactory> Service<Input> for TcpConnector<Dns, ConnectorFactory>
 where
-    Request: TryRefIntoTransportContext + Send + ExtensionsMut + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Input: TryRefIntoTransportContext + Send + ExtensionsMut + 'static,
+    Input::Error: Into<BoxError> + Send + Sync + 'static,
     Dns: DnsResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
             Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
             Error: Into<BoxError> + Send + 'static,
         > + Clone,
 {
-    type Response = EstablishedClientConnection<TcpStream, Request>;
+    type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let CreatedTcpStreamConnector { connector } = self
             .connector_factory
             .make_connector()
             .await
             .map_err(Into::into)?;
 
-        if let Some(proxy) = req.extensions().get::<ProxyAddress>() {
+        if let Some(proxy) = input.extensions().get::<ProxyAddress>() {
             let (mut conn, addr) = crate::client::tcp_connect(
-                req.extensions(),
+                input.extensions(),
                 proxy.address.clone(),
                 self.dns.clone(),
                 connector,
@@ -143,12 +143,13 @@ where
             ));
             conn.extensions_mut().insert(socket_info);
 
-            return Ok(EstablishedClientConnection { req, conn });
+            return Ok(EstablishedClientConnection { input, conn });
         }
 
-        if let Some(ConnectorTarget(target)) = req.extensions().get::<ConnectorTarget>().cloned() {
+        if let Some(ConnectorTarget(target)) = input.extensions().get::<ConnectorTarget>().cloned()
+        {
             let (mut conn, addr) =
-                crate::client::tcp_connect(req.extensions(), target, self.dns.clone(), connector)
+                crate::client::tcp_connect(input.extensions(), target, self.dns.clone(), connector)
                     .await
                     .context("tcp connector: conncept to connector target (overwrite?)")?;
 
@@ -164,10 +165,10 @@ where
             ));
             conn.extensions_mut().insert(socket_info);
 
-            return Ok(EstablishedClientConnection { req, conn });
+            return Ok(EstablishedClientConnection { input, conn });
         }
 
-        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("tcp connecter: compute transport context to get authority")
         })?;
@@ -187,7 +188,7 @@ where
             .host_with_port()
             .context("get host:port from transport ctx")?;
         let (mut conn, addr) =
-            crate::client::tcp_connect(req.extensions(), authority, self.dns.clone(), connector)
+            crate::client::tcp_connect(input.extensions(), authority, self.dns.clone(), connector)
                 .await
                 .context("tcp connector: connect to server")?;
 
@@ -203,6 +204,6 @@ where
         ));
         conn.extensions_mut().insert(socket_info);
 
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }

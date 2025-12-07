@@ -19,10 +19,10 @@ async fn retry_errors() {
     }
 
     impl Service<Request<RetryBody>> for Svc {
-        type Response = Response;
+        type Output = Response;
         type Error = OpaqueError;
 
-        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             if self.errored.swap(true, Ordering::AcqRel) {
                 self.response_counter.fetch_add(1, Ordering::AcqRel);
@@ -56,10 +56,10 @@ async fn retry_limit() {
     }
 
     impl Service<Request<RetryBody>> for Svc {
-        type Response = Response;
+        type Output = Response;
         type Error = OpaqueError;
 
-        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             self.error_counter.fetch_add(1, Ordering::AcqRel);
             Err(error!("error forever"))
@@ -84,10 +84,10 @@ async fn retry_error_inspection() {
     }
 
     impl Service<Request<RetryBody>> for Svc {
-        type Response = Response;
+        type Output = Response;
         type Error = OpaqueError;
 
-        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             if self.errored.swap(true, Ordering::AcqRel) {
                 Err(error!("reject"))
@@ -110,10 +110,10 @@ async fn retry_cannot_clone_request() {
     struct Svc;
 
     impl Service<Request<RetryBody>> for Svc {
-        type Response = Response;
+        type Output = Response;
         type Error = OpaqueError;
 
-        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             Err(error!("failed"))
         }
@@ -130,10 +130,10 @@ async fn success_with_cannot_clone() {
     struct Svc;
 
     impl Service<Request<RetryBody>> for Svc {
-        type Response = Response;
+        type Output = Response;
         type Error = OpaqueError;
 
-        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             Ok("world".into_response())
         }
@@ -153,10 +153,10 @@ async fn retry_mutating_policy() {
     }
 
     impl Service<Request<RetryBody>> for Svc {
-        type Response = Response;
+        type Output = Response;
         type Error = OpaqueError;
 
-        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             self.response_counter.fetch_add(1, Ordering::AcqRel);
             if self.responded.swap(true, Ordering::AcqRel) {
                 assert_eq!(req.try_into_string().await.unwrap(), "retrying");

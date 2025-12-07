@@ -244,10 +244,10 @@ where
     F: AttributesFactory,
     Stream: rama_core::stream::Stream + ExtensionsRef,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
         let attributes: Vec<KeyValue> = self.compute_attributes(stream.extensions());
 
         self.metrics.network_total_connections.add(1, &attributes);

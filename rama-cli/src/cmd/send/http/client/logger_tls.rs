@@ -14,18 +14,18 @@ use super::VerboseLogs;
 #[derive(Debug)]
 pub(super) struct TlsInfoLogger<C>(pub(super) C);
 
-impl<R, C> Service<R> for TlsInfoLogger<C>
+impl<Input, C> Service<Input> for TlsInfoLogger<C>
 where
-    R: Send + ExtensionsRef + 'static,
-    C: ConnectorService<R>,
+    Input: Send + ExtensionsRef + 'static,
+    C: ConnectorService<Input>,
 {
     type Error = C::Error;
-    type Response = EstablishedClientConnection<C::Connection, R>;
+    type Output = EstablishedClientConnection<C::Connection, Input>;
 
-    async fn serve(&self, request: R) -> Result<Self::Response, Self::Error> {
-        let ec = self.0.connect(request).await?;
-        if ec.req.extensions().contains::<VerboseLogs>() {
-            if let Some(client_tls_data) = ec.req.extensions().get::<TlsConnectorDataBuilder>()
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let ec = self.0.connect(input).await?;
+        if ec.input.extensions().contains::<VerboseLogs>() {
+            if let Some(client_tls_data) = ec.input.extensions().get::<TlsConnectorDataBuilder>()
                 && let Some(alpn) = client_tls_data.alpn_protos()
             {
                 let mut protocols = Vec::new();

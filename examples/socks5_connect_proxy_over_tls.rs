@@ -100,7 +100,7 @@ async fn main() {
     });
 
     let EstablishedClientConnection {
-        mut req,
+        input: mut req,
         conn: http_service,
     } = client
         .connect(request)

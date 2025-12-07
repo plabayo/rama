@@ -155,10 +155,10 @@ where
     S: Service<Request<Body>, Error: Into<BoxError>>,
     P: UserAgentProvider,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
         if let Some(fallback) = self.select_fallback {
             req.extensions_mut().insert(fallback);
         }
@@ -304,11 +304,13 @@ where
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = EstablishedClientConnection<S::Connection, Request<ReqBody>>;
+    type Output = EstablishedClientConnection<S::Connection, Request<ReqBody>>;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { conn, mut req } =
-            self.inner.connect(req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection {
+            conn,
+            input: mut req,
+        } = self.inner.connect(req).await.map_err(Into::into)?;
 
         match (&conn, &req).get().cloned() {
             Some(http_profile) => {
@@ -325,7 +327,7 @@ where
                 );
             }
         }
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input: req, conn })
     }
 }
 
@@ -399,9 +401,9 @@ where
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = S::Response;
+    type Output = S::Output;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         match req.extensions().get().cloned() {
             Some(http_profile) => {
                 tracing::trace!(

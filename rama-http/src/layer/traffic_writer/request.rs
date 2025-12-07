@@ -185,9 +185,9 @@ where
     W: RequestWriter,
 {
     type Error = BoxError;
-    type Response = S::Response;
+    type Output = S::Output;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let req = if req.extensions().get::<DoNotWriteRequest>().is_some() {
             req.map(Body::new)
         } else {

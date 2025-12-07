@@ -20,7 +20,7 @@ pub(super) async fn run<C>(
     protocols: Option<NonEmptyVec<NonEmptyStr>>,
 ) -> Result<(), BoxError>
 where
-    C: Service<Request, Response = Response, Error = BoxError>,
+    C: Service<Request, Output = Response, Error = BoxError>,
 {
     let app = tui::App::new(req, client, protocols)
         .await

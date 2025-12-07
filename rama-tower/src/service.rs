@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 
 #[derive(Clone)]
 /// Adapter to use a [`tower::Service`] as a [`rama::Service`],
-/// cloning the servicer for each request it has to serve.
+/// cloning the servicer for each input it has to serve.
 ///
 /// Note that:
 /// - you should use [`SharedServiceAdapter`] in case you do not want it to be [`Clone`]d,
@@ -53,34 +53,34 @@ impl<T: fmt::Debug> fmt::Debug for ServiceAdapter<T> {
     }
 }
 
-impl<T, Request> rama_core::Service<Request> for ServiceAdapter<T>
+impl<T, Input> rama_core::Service<Input> for ServiceAdapter<T>
 where
-    T: TowerService<Request, Response: Send + 'static, Error: Send + 'static, Future: Send>
+    T: TowerService<Input, Response: Send + 'static, Error: Send + 'static, Future: Send>
         + Clone
         + Send
         + Sync
         + 'static,
-    Request: Send + 'static,
+    Input: Send + 'static,
 {
-    type Response = T::Response;
+    type Output = T::Response;
     type Error = T::Error;
 
     fn serve(
         &self,
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let svc = self.0.clone();
         async move {
             let mut svc = svc;
             let ready = Ready::new(&mut svc);
             let ready_svc = ready.await?;
-            ready_svc.call(req).await
+            ready_svc.call(input).await
         }
     }
 }
 
 /// Adapter to use a [`tower::Service`] as a [`rama::Service`],
-/// sharing the service between each request it has to serve.
+/// sharing the service between each input it has to serve.
 ///
 /// Note that:
 /// - you should use [`ServiceAdapter`] in case you do not want it to be shared,
@@ -129,28 +129,28 @@ impl<T: fmt::Debug> fmt::Debug for SharedServiceAdapter<T> {
     }
 }
 
-impl<T, Request> rama_core::Service<Request> for SharedServiceAdapter<T>
+impl<T, Input> rama_core::Service<Input> for SharedServiceAdapter<T>
 where
-    T: TowerService<Request, Response: Send + 'static, Error: Send + 'static, Future: Send>
+    T: TowerService<Input, Response: Send + 'static, Error: Send + 'static, Future: Send>
         + Send
         + Sync
         + 'static,
-    Request: Send + 'static,
+    Input: Send + 'static,
 {
-    type Response = T::Response;
+    type Output = T::Response;
     type Error = T::Error;
 
     fn serve(
         &self,
-        req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let svc = self.0.clone();
         async move {
             let svc = svc;
             let mut svc_guard = svc.lock().await;
             let ready = Ready::new(&mut *svc_guard);
             let ready_svc = ready.await?;
-            ready_svc.call(req).await
+            ready_svc.call(input).await
         }
     }
 }

@@ -90,19 +90,19 @@ impl<S, F> MapResult<S, F> {
     define_inner_service_accessors!();
 }
 
-impl<S, F, Request, Response, Error> Service<Request> for MapResult<S, F>
+impl<S, F, Input, Output, Error> Service<Input> for MapResult<S, F>
 where
-    S: Service<Request>,
-    F: Fn(Result<S::Response, S::Error>) -> Result<Response, Error> + Send + Sync + 'static,
-    Request: Send + 'static,
-    Response: Send + 'static,
+    S: Service<Input>,
+    F: Fn(Result<S::Output, S::Error>) -> Result<Output, Error> + Send + Sync + 'static,
+    Input: Send + 'static,
+    Output: Send + 'static,
     Error: Send + 'static,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = Error;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let result = self.inner.serve(req).await;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let result = self.inner.serve(input).await;
         (self.f)(result)
     }
 }

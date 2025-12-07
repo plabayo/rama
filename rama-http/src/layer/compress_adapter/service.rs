@@ -76,17 +76,17 @@ impl<S> CompressAdaptService<S> {
 
 impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for CompressAdaptService<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ResBody: StreamingBody<Data: Send + 'static, Error: Into<BoxError> + Send + Sync + 'static>
         + Send
         + 'static,
     ReqBody: Send + 'static,
 {
-    type Response = Response<CompressionBody<DecompressionBody<ResBody>>>;
+    type Output = Response<CompressionBody<DecompressionBody<ResBody>>>;
     type Error = S::Error;
 
     #[allow(unreachable_code, unused_mut, unused_variables, unreachable_patterns)]
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let requested_encoding =
             parse_accept_encoding_headers(req.headers(), true).collect::<Vec<_>>();
 

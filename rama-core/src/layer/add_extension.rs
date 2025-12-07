@@ -150,22 +150,21 @@ impl<S, T> AddExtension<S, T> {
     define_inner_service_accessors!();
 }
 
-impl<Request, S, T> Service<Request> for AddExtension<S, T>
+impl<Input, S, T> Service<Input> for AddExtension<S, T>
 where
-    Request: Send + ExtensionsMut + 'static,
-    S: Service<Request>,
+    Input: Send + ExtensionsMut + 'static,
+    S: Service<Input>,
     T: Clone + Send + Sync + std::fmt::Debug + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
-
-        mut req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        req.extensions_mut().insert(self.value.clone());
-        self.inner.serve(req)
+        mut input: Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
+        input.extensions_mut().insert(self.value.clone());
+        self.inner.serve(input)
     }
 }
 

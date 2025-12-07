@@ -23,16 +23,16 @@ impl<S: Clone> Clone for ResponseBodyLogger<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseBodyLogger<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     ReqBody: Send + 'static,
     ResBody: StreamingBody<Data: Send + 'static, Error: Into<BoxError> + Send + Sync + 'static>
         + Send
         + 'static,
 {
     type Error = OpaqueError;
-    type Response = Response;
+    type Output = Response;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let res = self
             .inner
             .serve(req)
