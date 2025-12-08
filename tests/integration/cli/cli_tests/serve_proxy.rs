@@ -5,7 +5,7 @@ use super::utils;
 async fn test_http_proxy_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63125, "http");
+    let _guard = utils::RamaService::serve_echo(63125, utils::EchoMode::Http);
     let _guard = utils::RamaService::serve_proxy(63126);
 
     let lines = utils::RamaService::http(vec![
@@ -23,7 +23,7 @@ async fn test_http_proxy_echo() {
 async fn test_https_proxy_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63127, "https");
+    let _guard = utils::RamaService::serve_echo(63127, utils::EchoMode::Https);
     let _guard = utils::RamaService::serve_proxy(63128);
 
     let lines = utils::RamaService::http(vec![

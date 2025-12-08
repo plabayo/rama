@@ -501,11 +501,18 @@ fn self_signed_server_auth(data: &SelfSignedData) -> Result<IssuedCert, OpaqueEr
 }
 
 #[inline]
-fn self_signed_server_ca(data: &SelfSignedData) -> Result<(X509, PKey<Private>), OpaqueError> {
+/// Generate a self-signed server CA from the given [`SelfSignedData`].
+///
+/// This should not be used in production but mostly for experimental / testing purposes.
+pub fn self_signed_server_ca(data: &SelfSignedData) -> Result<(X509, PKey<Private>), OpaqueError> {
     self_signed_server_auth_gen_ca(data)
 }
 
-fn self_signed_server_auth_gen_cert(
+/// Generate a server cert for the [`SelfSignedData`] using the given CA Cert + Key.
+///
+/// In most cases you probably want more refined configuration and controls,
+/// so in general we recommend to not use this utility outside of experimental or testing purposes.
+pub fn self_signed_server_auth_gen_cert(
     data: &SelfSignedData,
     ca_cert: &X509,
     ca_privkey: &PKey<Private>,

@@ -21,9 +21,9 @@ async fn test_http_ip() {
     test_http_ip_inner("http://127.0.0.1:63100");
 }
 
-#[cfg(feature = "boring")]
-#[tokio::test]
 #[ignore]
+#[tokio::test]
+#[cfg(feature = "boring")]
 async fn test_https_ip() {
     utils::init_tracing();
     let _guard = utils::RamaService::serve_ip(63118, false, true);
@@ -86,9 +86,9 @@ async fn test_tcp_ip() {
     assert_eq!(&buf, &[127, 0, 0, 1]);
 }
 
-#[cfg(feature = "boring")]
-#[tokio::test]
 #[ignore]
+#[tokio::test]
+#[cfg(feature = "boring")]
 async fn test_tls_tcp_ip() {
     utils::init_tracing();
 

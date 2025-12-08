@@ -5,7 +5,7 @@ use super::utils;
 async fn test_stunnel_full() {
     utils::init_tracing();
 
-    let _echo = utils::RamaService::serve_echo(63121, "http");
+    let _echo = utils::RamaService::serve_echo(63121, utils::EchoMode::Http);
 
     // stunnel exit node on 63122 (TLS termination -> forwards to localhost:63121)
     let _stunnel_exit_node =

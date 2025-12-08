@@ -59,9 +59,9 @@ async fn test_tcp_discard() {
     );
 }
 
-#[cfg(feature = "boring")]
-#[tokio::test]
 #[ignore]
+#[tokio::test]
+#[cfg(feature = "boring")]
 async fn test_tls_tcp_discard() {
     utils::init_tracing();
 
@@ -107,8 +107,8 @@ async fn test_tls_tcp_discard() {
     );
 }
 
-#[tokio::test]
 #[ignore]
+#[tokio::test]
 async fn test_udp_discard() {
     utils::init_tracing();
 
