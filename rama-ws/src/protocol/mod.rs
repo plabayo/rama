@@ -1,5 +1,6 @@
 //! Generic WebSocket message stream.
 
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::{
     error::OpaqueError,
@@ -541,6 +542,18 @@ impl<Stream: Read + Write> WebSocket<Stream> {
     /// is returned from [`read`](Self::read) or [`flush`](Self::flush).
     pub fn close(&mut self, code: Option<CloseFrame>) -> Result<(), ProtocolError> {
         self.context.close(&mut self.socket, code)
+    }
+}
+
+impl<Stream: ExtensionsRef> ExtensionsRef for WebSocket<Stream> {
+    fn extensions(&self) -> &Extensions {
+        self.socket.extensions()
+    }
+}
+
+impl<Stream: ExtensionsMut> ExtensionsMut for WebSocket<Stream> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.socket.extensions_mut()
     }
 }
 

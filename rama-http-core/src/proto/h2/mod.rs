@@ -7,6 +7,7 @@ use crate::h2::{Reason, RecvStream, SendStream};
 use pin_project_lite::pin_project;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
 use rama_http_types::header::{
@@ -284,6 +285,7 @@ where
     send_stream: UpgradedSendStream<B>,
     recv_stream: RecvStream,
     buf: Bytes,
+    extensions: Extensions,
 }
 
 impl<B> AsyncRead for H2Upgraded<B>
@@ -387,6 +389,18 @@ where
                 Err(e) => e,
             },
         )))
+    }
+}
+
+impl<B: Buf> ExtensionsRef for H2Upgraded<B> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<B: Buf> ExtensionsMut for H2Upgraded<B> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 

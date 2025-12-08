@@ -920,8 +920,7 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
             None
         };
 
-        let mut socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, maybe_ws_cfg).await;
-        *socket.extensions_mut() = parts.extensions.clone();
+        let socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, maybe_ws_cfg).await;
 
         Ok(ClientWebSocket {
             socket,

@@ -133,11 +133,11 @@ impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
     pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
-        T: Stream + Unpin,
+        T: Stream + Unpin + ExtensionsMut,
     {
         Self {
+            extensions: io.extensions().clone(),
             io: Rewind::new_buffered(Box::new(io), read_buf),
-            extensions: Extensions::new(),
         }
     }
 
@@ -372,14 +372,17 @@ mod sealed {
 
 #[cfg(test)]
 mod tests {
+    use rama_core::ServiceInput;
     use tokio_test::io::{Builder, Mock};
 
     use super::*;
 
     #[test]
     fn upgraded_downcast() {
-        let upgraded = Upgraded::new(Builder::default().build(), Bytes::new());
+        let io = Builder::default().build();
+        let io = ServiceInput::new(io);
+        let upgraded = Upgraded::new(io, Bytes::new());
         let upgraded = upgraded.downcast::<std::io::Cursor<Vec<u8>>>().unwrap_err();
-        upgraded.downcast::<Mock>().unwrap();
+        upgraded.downcast::<ServiceInput<Mock>>().unwrap();
     }
 }
