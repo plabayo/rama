@@ -359,6 +359,13 @@ async fn test_https_with_remote_tls_cert_issuer() {
         Layer as _,
         error::OpaqueError,
         http::{
+            Body,
+            headers::StrictTransportSecurity,
+            layer::{
+                compression::CompressionLayer, cors, map_response_body::MapResponseBodyLayer,
+                required_header::AddRequiredResponseHeadersLayer,
+                set_header::SetResponseHeaderLayer, trace::TraceLayer,
+            },
             server::HttpServer,
             service::web::{
                 Router,
@@ -373,6 +380,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
                 server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
             },
         },
+        proxy::haproxy::server::HaProxyLayer,
         rt::Executor,
         tcp::server::TcpListener,
         tls::boring::{
@@ -428,8 +436,22 @@ async fn test_https_with_remote_tls_cert_issuer() {
         key: PKey<Private>,
     }
 
-    let crt_issuer_https_svc = TlsAcceptorLayer::new(tls_acceptor_data).into_layer(
+    let crt_issuer_https_svc = (
+        HaProxyLayer::new().with_peek(true),
+        TlsAcceptorLayer::new(tls_acceptor_data),
+    ).into_layer(
         HttpServer::auto(Executor::default()).service(
+            (
+                MapResponseBodyLayer::new(Body::new),
+                TraceLayer::new_for_http(),
+                CompressionLayer::new(),
+                cors::CorsLayer::permissive(),
+                SetResponseHeaderLayer::if_not_present_typed(
+                    StrictTransportSecurity::including_subdomains_for_max_seconds(31536000),
+                ),
+                AddRequiredResponseHeadersLayer::new(),
+            )
+                .into_layer(
             Router::new_with_state(CaInfo {
                 crt: ca_issuer_cert,
                 key: ca_issuer_key,
@@ -467,13 +489,13 @@ async fn test_https_with_remote_tls_cert_issuer() {
                         key_pem_base64,
                     }))
                 },
-            ),
+            )),
         ),
     );
 
     tracing::info!("spawning tcp listener for remote tls issuer");
 
-    let tpc_listener = TcpListener::bind("127.0.0.1:63132").await.unwrap();
+    let tpc_listener = TcpListener::bind("[::1]:63132").await.unwrap();
 
     tracing::info!("spawning tokio task for remote tls https");
 
