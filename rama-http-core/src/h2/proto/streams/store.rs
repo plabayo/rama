@@ -113,7 +113,8 @@ impl Store {
 
     pub(super) fn insert(&mut self, id: StreamId, val: Stream) -> Ptr<'_> {
         let index = SlabIndex(self.slab.insert(val) as u32);
-        debug_assert!(self.ids.insert(id, index).is_none());
+        let prev = self.ids.insert(id, index);
+        debug_assert!(prev.is_none());
 
         Ptr {
             key: Key {
