@@ -948,7 +948,9 @@ pub mod add_extension;
 pub use add_extension::{AddExtension, AddExtensionLayer};
 
 pub mod get_extension;
-pub use get_extension::{GetInputExtension, GetInputExtensionLayer, GetOutputExtension, GetOutputExtensionLayer};
+pub use get_extension::{
+    GetInputExtension, GetInputExtensionLayer, GetOutputExtension, GetOutputExtensionLayer,
+};
 
 use crate::Service;
 
@@ -1008,8 +1010,9 @@ mod tests {
 
     #[tokio::test]
     async fn simple_output_layer() {
-        let svc = (GetOutputExtensionLayer::new(async |_: String| {}))
-            .into_layer(service_fn(async || Ok::<_, OpaqueError>(ServiceInput::new(()))));
+        let svc = (GetOutputExtensionLayer::new(async |_: String| {})).into_layer(service_fn(
+            async || Ok::<_, OpaqueError>(ServiceInput::new(())),
+        ));
 
         svc.serve(ServiceInput::new(())).await.unwrap();
     }
@@ -1018,8 +1021,9 @@ mod tests {
     async fn simple_optional_output_layer() {
         let maybe_layer = Some(GetOutputExtensionLayer::new(async |_: String| {}));
 
-        let svc = (maybe_layer)
-            .into_layer(service_fn(async || Ok::<_, OpaqueError>(ServiceInput::new(()))));
+        let svc = (maybe_layer).into_layer(service_fn(async || {
+            Ok::<_, OpaqueError>(ServiceInput::new(()))
+        }));
 
         svc.serve(ServiceInput::new(())).await.unwrap();
     }
