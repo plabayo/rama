@@ -113,11 +113,9 @@ watch-rama-fp *ARGS:
 	@cargo install cargo-watch
 	cargo watch -x 'run -p rama-fp -- {{ARGS}}'
 
-docker-build-rama-fp:
-	docker build -f rama-fp/infra/Dockerfile -t glendc/rama-fp:latest .
-
-docker-push-rama-fp: docker-build-rama-fp
-	docker push glendc/rama-fp:latest
+docker-build-rama-cli:
+	docker build -f rama-cli/infra/Dockerfile -t glendc/rama-cli:latest .
+	echo 'glendc/rama-cli:latest ready to use'
 
 browserstack-rama-fp:
 	cd rama-fp/browserstack && \

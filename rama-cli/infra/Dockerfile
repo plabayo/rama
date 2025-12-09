@@ -1,4 +1,4 @@
-FROM rust:1-bookworm as builder
+FROM rust:1-bookworm AS builder
 
 RUN apt-get update && \
     apt-get install --no-install-recommends -y cmake clang
