@@ -349,8 +349,10 @@ where
             me.actions.send.init_window_sz(),
             me.actions.recv.init_window_sz(),
             extensions,
-        )
-        .map_err(Error::library_go_away)?;
+        ).map_err(|err| {
+            tracing::warn!("failed to create stream for id {stream_id:?} in send_request: {err}; library GO AWAY");
+            Error::library_go_away(err)
+        })?;
 
         if is_content_length_head {
             stream.content_length = ContentLength::Head;
@@ -569,7 +571,10 @@ impl Inner {
                             self.actions.recv.init_window_sz(),
                             self.extensions.clone(),
                         )
-                        .map_err(Error::library_go_away)?;
+                        .map_err(|err| {
+                            tracing::warn!("failed to create recv stream for id {stream_id:?}: {err}; library GO AWAY");
+                            Error::library_go_away(err)
+                        })?;
 
                         e.insert(stream)
                     }
@@ -906,8 +911,10 @@ impl Inner {
                     self.actions.send.init_window_sz(),
                     self.actions.recv.init_window_sz(),
                     self.extensions.clone(),
-                )
-                .map_err(Error::library_go_away)?
+                ).map_err(|err| {
+                    tracing::warn!("failed to create pushed stream for promised id {promised_id:?}: {err}; library GO AWAY");
+                    Error::library_go_away(err)
+                })?
             });
 
             let actions = &mut self.actions;
@@ -1307,8 +1314,10 @@ impl<B> StreamRef<B> {
                     actions.send.init_window_sz(),
                     actions.recv.init_window_sz(),
                     me.extensions.clone(),
-                )
-                .map_err(Error::library_go_away)?,
+                ).map_err(|err| {
+                    tracing::warn!("failed to create stream for promised id {promised_id:?} in send_push_promise: {err}; library GO AWAY");
+                    Error::library_go_away(err)
+                })?,
             );
             child_stream.state.reserve_local()?;
             child_stream.is_pending_push = true;
