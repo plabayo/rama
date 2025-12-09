@@ -203,3 +203,6 @@ publish *ARGS:
 update-deps:
     cargo upgrades
     cargo update
+
+oss-endpoint-healthcheck:
+    bash rama-fp/infra/scripts/remote-healthcheck.sh

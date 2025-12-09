@@ -1,0 +1,15 @@
+name: Rama OSS basic health check
+
+on:
+  schedule:
+    - cron: "0 */8 * * *"
+  workflow_dispatch:
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          bash rama-fp/infra/scripts/remote-healthcheck.sh
