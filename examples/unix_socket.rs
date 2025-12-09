@@ -27,7 +27,7 @@ mod unix_example {
         error::BoxError,
         extensions::ExtensionsRef,
         graceful::ShutdownGuard,
-        layer::AddExtensionLayer,
+        layer::AddInputExtensionLayer,
         service::service_fn,
         stream::Stream,
         telemetry::tracing::{
@@ -112,7 +112,7 @@ mod unix_example {
             listener
                 .serve_graceful(
                     guard.clone(),
-                    AddExtensionLayer::new(guard).into_layer(service_fn(handle)),
+                    AddInputExtensionLayer::new(guard).into_layer(service_fn(handle)),
                 )
                 .await;
         });

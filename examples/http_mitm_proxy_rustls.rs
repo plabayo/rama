@@ -52,7 +52,7 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
-    layer::{AddExtensionLayer, ConsumeErrLayer},
+    layer::{AddInputExtensionLayer, ConsumeErrLayer},
     net::{
         http::RequestContext, proxy::ProxyTarget, stream::layer::http::BodyLimitLayer,
         tls::server::SelfSignedData, user::credentials::basic,
@@ -126,7 +126,7 @@ async fn main() -> Result<(), BoxError> {
             .serve_graceful(
                 guard,
                 (
-                    AddExtensionLayer::new(state),
+                    AddInputExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
                 )

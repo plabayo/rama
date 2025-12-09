@@ -48,7 +48,7 @@ use rama::{
             web::{WebService, response::Html},
         },
     },
-    layer::AddExtensionLayer,
+    layer::AddInputExtensionLayer,
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,
     tcp::server::TcpListener,
@@ -163,7 +163,7 @@ async fn main() {
             .serve_graceful(
                 guard,
                 (
-                    AddExtensionLayer::new(state),
+                    AddInputExtensionLayer::new(state),
                     NetworkMetricsLayer::default(),
                 )
                     .into_layer(http_service),
