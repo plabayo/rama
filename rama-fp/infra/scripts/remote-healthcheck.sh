@@ -14,6 +14,8 @@ endpoints=(
     "http://h1.fp.ramaproxy.org;--http1.1"
     "http://ipv4.ramaproxy.org;--http1.1"
     "http://ipv4.ramaproxy.org;--http2"
+    "https://ipv4.ramaproxy.org;--http1.1"
+    "https://ipv4.ramaproxy.org;--http2"
     # Do not test ipv6 one as some networks,
     # including in CI can have flaky IPv6 support... sigh
     # "https://ipv6.ramaproxy.org;--http1.1"
