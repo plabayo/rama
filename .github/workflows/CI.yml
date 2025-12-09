@@ -536,7 +536,7 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: |
           cd rama-fp/infra/deployments/fp
-          flyctl deploy --remote-only
+          fly deploy --verbose --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -548,7 +548,7 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: |
           cd rama-fp/infra/deployments/fp-h1
-          flyctl deploy --remote-only
+          fly deploy --verbose --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -560,7 +560,7 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: |
           cd rama-fp/infra/deployments/ipv4
-          flyctl deploy --remote-only
+          fly deploy --verbose --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -572,7 +572,7 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: |
           cd rama-fp/infra/deployments/ipv6
-          flyctl deploy --remote-only
+          fly deploy --verbose --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -584,6 +584,6 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: |
           cd rama-fp/infra/deployments/echo
-          flyctl deploy --remote-only
+          fly deploy --verbose --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
