@@ -1050,6 +1050,9 @@ impl Inner {
                 match Stream::try_new(id, 0, 0, self.extensions.clone()) {
                     Ok(stream) => e.insert(stream),
                     Err(reason) => {
+                        tracing::debug!(
+                            "h2 streams: failed to create new stream in send_reset: reason = {reason}; go away"
+                        );
                         return Err(crate::h2::proto::error::GoAway {
                             debug_data: Default::default(),
                             reason,
