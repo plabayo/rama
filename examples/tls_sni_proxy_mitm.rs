@@ -100,7 +100,7 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
-    layer::{AddExtensionLayer, ConsumeErrLayer},
+    layer::{AddInputExtensionLayer, ConsumeErrLayer},
     net::{
         Protocol,
         address::{Domain, HostWithPort, SocketAddress},
@@ -194,7 +194,7 @@ async fn main() -> Result<(), BoxError> {
                     .parse()
                     .context("parse raw addr as SocketAddress")?;
                 let connect_target = ConnectorTarget(addr.into());
-                Ok::<_, OpaqueError>(AddExtensionLayer::new(connect_target))
+                Ok::<_, OpaqueError>(AddInputExtensionLayer::new(connect_target))
             })
             .transpose()
             .context(

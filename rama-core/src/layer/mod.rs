@@ -945,7 +945,9 @@ pub mod limit;
 pub use limit::{Limit, LimitLayer};
 
 pub mod add_extension;
-pub use add_extension::{AddExtension, AddExtensionLayer};
+pub use add_extension::{
+    AddInputExtension, AddInputExtensionLayer, AddOutputExtension, AddOutputExtensionLayer,
+};
 
 pub mod get_extension;
 pub use get_extension::{

@@ -26,7 +26,7 @@ use rama::{
             handshake::server::{ServerWebSocket, WebSocketAcceptor},
         },
     },
-    layer::AddExtensionLayer,
+    layer::AddInputExtensionLayer,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -124,7 +124,7 @@ async fn main() {
         TcpListener::bind("127.0.0.1:62033")
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(guard, AddExtensionLayer::new(State::default()).into_layer(server))
+            .serve_graceful(guard, AddInputExtensionLayer::new(State::default()).into_layer(server))
             .await;
     });
 
