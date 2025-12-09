@@ -16,6 +16,7 @@ use rama_utils::macros::define_inner_service_accessors;
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
+#[derive(Debug, Clone)]
 pub struct TlsAcceptorService<S> {
     data: TlsAcceptorData,
     store_client_hello: bool,
@@ -33,29 +34,6 @@ impl<S> TlsAcceptorService<S> {
     }
 
     define_inner_service_accessors!();
-}
-
-impl<S: std::fmt::Debug> std::fmt::Debug for TlsAcceptorService<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TlsAcceptorService")
-            .field("data", &self.data)
-            .field("store_client_hello", &self.store_client_hello)
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<S> Clone for TlsAcceptorService<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-            store_client_hello: self.store_client_hello,
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 impl<S, IO> Service<IO> for TlsAcceptorService<S>

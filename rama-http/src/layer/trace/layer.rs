@@ -6,7 +6,6 @@ use crate::layer::classify::{
     GrpcErrorsAsFailures, MakeClassifier, ServerErrorsAsFailures, SharedClassifier,
 };
 use rama_core::Layer;
-use std::fmt;
 
 /// [`Layer`] that adds high level [tracing] to a [`Service`].
 ///
@@ -15,6 +14,7 @@ use std::fmt;
 /// [`Layer`]: rama_core::Layer
 /// [tracing]: https://crates.io/crates/tracing
 /// [`Service`]: rama_core::Service
+#[derive(Debug, Clone)]
 pub struct TraceLayer<
     M,
     MakeSpan = DefaultMakeSpan,
@@ -31,52 +31,6 @@ pub struct TraceLayer<
     pub(crate) on_body_chunk: OnBodyChunk,
     pub(crate) on_eos: OnEos,
     pub(crate) on_failure: OnFailure,
-}
-
-impl<
-    M: fmt::Debug,
-    MakeSpan: fmt::Debug,
-    OnRequest: fmt::Debug,
-    OnResponse: fmt::Debug,
-    OnBodyChunk: fmt::Debug,
-    OnEos: fmt::Debug,
-    OnFailure: fmt::Debug,
-> fmt::Debug for TraceLayer<M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("TraceLayer")
-            .field("make_classifier", &self.make_classifier)
-            .field("make_span", &self.make_span)
-            .field("on_request", &self.on_request)
-            .field("on_response", &self.on_response)
-            .field("on_body_chunk", &self.on_body_chunk)
-            .field("on_eos", &self.on_eos)
-            .field("on_failure", &self.on_failure)
-            .finish()
-    }
-}
-
-impl<
-    M: Clone,
-    MakeSpan: Clone,
-    OnRequest: Clone,
-    OnResponse: Clone,
-    OnBodyChunk: Clone,
-    OnEos: Clone,
-    OnFailure: Clone,
-> Clone for TraceLayer<M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
-{
-    fn clone(&self) -> Self {
-        Self {
-            make_classifier: self.make_classifier.clone(),
-            make_span: self.make_span.clone(),
-            on_request: self.on_request.clone(),
-            on_response: self.on_response.clone(),
-            on_body_chunk: self.on_body_chunk.clone(),
-            on_eos: self.on_eos.clone(),
-            on_failure: self.on_failure.clone(),
-        }
-    }
 }
 
 impl<M> TraceLayer<M> {

@@ -8,7 +8,7 @@ use rama_core::{
     stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
-use std::{fmt, time::Duration};
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
 /// A [`Service`] router that can be used to support
@@ -16,6 +16,7 @@ use tokio::io::AsyncReadExt;
 ///
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`TlsPeekRouter::with_fallback`] to configure the fallback service.
+#[derive(Debug, Clone)]
 pub struct HttpPeekRouter<T, F = RejectService<(), NoHttpRejectError>> {
     http_acceptor: T,
     fallback: F,
@@ -24,76 +25,27 @@ pub struct HttpPeekRouter<T, F = RejectService<(), NoHttpRejectError>> {
 
 /// Type wrapper used by [`HttpPeekRouter::new_dual`]
 /// to serve http/1x and h2 separately.
+#[derive(Debug, Clone)]
 pub struct HttpDualAcceptor<T, U> {
     http1: T,
     h2: U,
 }
 
-impl<T: Clone, U: Clone> Clone for HttpDualAcceptor<T, U> {
-    fn clone(&self) -> Self {
-        Self {
-            http1: self.http1.clone(),
-            h2: self.h2.clone(),
-        }
-    }
-}
-
-impl<T: fmt::Debug, U: fmt::Debug> fmt::Debug for HttpDualAcceptor<T, U> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpDualAcceptor")
-            .field("http1", &self.http1)
-            .field("h2", &self.h2)
-            .finish()
-    }
-}
-
 /// Type wrapper used by [`HttpPeekRouter::new`]
 /// to serve http/1x and h2 with a single service.
+#[derive(Debug, Clone)]
 pub struct HttpAutoAcceptor<T>(T);
-
-impl<T: Clone> Clone for HttpAutoAcceptor<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for HttpAutoAcceptor<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("HttpAutoAcceptor").field(&self.0).finish()
-    }
-}
 
 /// Type wrapper used by [`HttpPeekRouter::new_http1`]
 /// to only serve http/1x, and send h2 to the fallback.
+#[derive(Debug, Clone)]
 pub struct Http1Acceptor<T>(T);
-
-impl<T: Clone> Clone for Http1Acceptor<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for Http1Acceptor<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Http1Acceptor").field(&self.0).finish()
-    }
-}
 
 /// Type wrapper used by [`HttpPeekRouter::new_h2`]
 /// to only serve h2, and send http/1x to the fallback.
+#[derive(Debug, Clone)]
 pub struct H2Acceptor<T>(T);
 
-impl<T: Clone> Clone for H2Acceptor<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for H2Acceptor<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("H2Acceptor").field(&self.0).finish()
-    }
-}
 rama_utils::macros::error::static_str_error! {
     #[doc = "non-http connection is rejected"]
     pub struct NoHttpRejectError;
@@ -168,26 +120,6 @@ impl<T, U> HttpPeekRouter<HttpDualAcceptor<T, U>> {
             fallback: RejectService::new(NoHttpRejectError),
             peek_timeout: None,
         }
-    }
-}
-
-impl<T: Clone, F: Clone> Clone for HttpPeekRouter<T, F> {
-    fn clone(&self) -> Self {
-        Self {
-            http_acceptor: self.http_acceptor.clone(),
-            fallback: self.fallback.clone(),
-            peek_timeout: self.peek_timeout,
-        }
-    }
-}
-
-impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for HttpPeekRouter<T, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpPeekRouter")
-            .field("http_acceptor", &self.http_acceptor)
-            .field("fallback", &self.fallback)
-            .field("peek_timeout", &self.peek_timeout)
-            .finish()
     }
 }
 

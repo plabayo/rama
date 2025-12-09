@@ -31,6 +31,7 @@ use super::{NoTlsRejectError, TlsPeekStream};
 ///
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`SniRouter::with_fallback`] to configure the fallback service.
+#[derive(Debug, Clone)]
 pub struct SniRouter<S, F = RejectService<(), NoTlsRejectError>> {
     service: S,
     fallback: F,
@@ -53,24 +54,6 @@ impl<S> SniRouter<S> {
             service: self.service,
             fallback,
         }
-    }
-}
-
-impl<S: Clone, F: Clone> Clone for SniRouter<S, F> {
-    fn clone(&self) -> Self {
-        Self {
-            service: self.service.clone(),
-            fallback: self.fallback.clone(),
-        }
-    }
-}
-
-impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for SniRouter<S, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SniRouter")
-            .field("service", &self.service)
-            .field("fallback", &self.fallback)
-            .finish()
     }
 }
 
@@ -154,6 +137,7 @@ pub type SniPeekStream<S> = PeekStream<HeapReader, S>;
 pin_project! {
     /// A request ready for SNI routing,
     /// usually used in combination with [`SniRouter`].
+    #[derive(Debug, Clone)]
     pub struct SniRequest<S> {
         #[pin]
         pub stream: SniPeekStream<S>,
@@ -294,24 +278,6 @@ where
     #[inline]
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
         self.stream.write_vectored(bufs)
-    }
-}
-
-impl<S: Clone> Clone for SniRequest<S> {
-    fn clone(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
-            sni: self.sni.clone(),
-        }
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for SniRequest<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SniRequest")
-            .field("stream", &self.stream)
-            .field("sni", &self.sni)
-            .finish()
     }
 }
 

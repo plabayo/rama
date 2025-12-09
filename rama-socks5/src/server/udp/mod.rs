@@ -1,4 +1,4 @@
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use rama_core::{
     Service, combinators::Either, error::BoxError, extensions::ExtensionsMut,
@@ -108,6 +108,7 @@ pub type DefaultUdpRelay = UdpRelay<DefaultTimeout<DefaultUdpBinder>, DirectUdpR
 /// You can customise the [`UdpRelay`] fully by creating it using [`UdpRelay::new`]
 /// or overwrite any of the default components using either or both of [`UdpRelay::with_binder`]
 /// and [`Binder::with_inspector`].
+#[derive(Debug, Clone)]
 pub struct UdpRelay<B, I> {
     binder: B,
     inspector: I,
@@ -280,40 +281,6 @@ impl<B, I> UdpRelay<B, I> {
         pub fn dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
             self.dns_resolver = Some(resolver.boxed());
             self
-        }
-    }
-}
-
-impl<B: fmt::Debug, I: fmt::Debug> fmt::Debug for UdpRelay<B, I> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut d = f.debug_struct("Binder");
-        d.field("binder", &self.binder)
-            .field("inspector", &self.inspector);
-
-        #[cfg(feature = "dns")]
-        d.field("dns_resolver", &self.dns_resolver);
-
-        d.field("north_buffer_size", &self.north_buffer_size)
-            .field("south_buffer_size", &self.south_buffer_size)
-            .field("bind_north_interface", &self.bind_north_interface)
-            .field("bind_south_interface", &self.bind_south_interface)
-            .field("relay_timeout", &self.relay_timeout)
-            .finish()
-    }
-}
-
-impl<B: Clone, I: Clone> Clone for UdpRelay<B, I> {
-    fn clone(&self) -> Self {
-        Self {
-            binder: self.binder.clone(),
-            inspector: self.inspector.clone(),
-            #[cfg(feature = "dns")]
-            dns_resolver: self.dns_resolver.clone(),
-            bind_north_interface: self.bind_north_interface.clone(),
-            bind_south_interface: self.bind_south_interface.clone(),
-            north_buffer_size: self.north_buffer_size,
-            south_buffer_size: self.south_buffer_size,
-            relay_timeout: self.relay_timeout,
         }
     }
 }

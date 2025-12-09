@@ -1,4 +1,4 @@
-use std::{fmt, io, time::Duration};
+use std::{io, time::Duration};
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, error::BoxError, layer::timeout::DefaultTimeout, stream::Stream};
@@ -70,6 +70,7 @@ pub type DefaultBinder = Binder<DefaultTimeout<DefaultAcceptorFactory>, StreamFo
 /// You can customise the [`Binder`] fully by creating it using [`Binder::new`]
 /// or overwrite any of the default components using either or both of [`Binder::with_acceptor`]
 /// and [`Binder::with_service`].
+#[derive(Debug, Clone)]
 pub struct Binder<A, S> {
     acceptor: A,
     service: S,
@@ -152,28 +153,6 @@ impl<A, S> Binder<A, S> {
         pub fn accept_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.accept_timeout = timeout;
             self
-        }
-    }
-}
-
-impl<A: fmt::Debug, S: fmt::Debug> fmt::Debug for Binder<A, S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Binder")
-            .field("acceptor", &self.acceptor)
-            .field("service", &self.service)
-            .field("bind_interface", &self.bind_interface)
-            .field("accept_timeout", &self.accept_timeout)
-            .finish()
-    }
-}
-
-impl<A: Clone, S: Clone> Clone for Binder<A, S> {
-    fn clone(&self) -> Self {
-        Self {
-            acceptor: self.acceptor.clone(),
-            service: self.service.clone(),
-            bind_interface: self.bind_interface.clone(),
-            accept_timeout: self.accept_timeout,
         }
     }
 }

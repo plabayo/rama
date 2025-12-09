@@ -8,6 +8,7 @@ use serde::de::DeserializeOwned;
 use std::ops::{Deref, DerefMut};
 
 /// Extractor to get path parameters from the context in deserialized form.
+#[derive(Debug, Clone)]
 pub struct Path<T>(pub T);
 
 define_http_rejection! {
@@ -25,18 +26,6 @@ composite_http_rejection! {
     pub enum PathRejection {
         UriParamsDeserializeError,
         MissingPathParams,
-    }
-}
-
-impl<T: std::fmt::Debug> std::fmt::Debug for Path<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Path").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for Path<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
     }
 }
 

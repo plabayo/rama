@@ -1,5 +1,3 @@
-use std::fmt;
-
 use rama_core::Layer;
 use rama_http::HeaderName;
 
@@ -14,39 +12,13 @@ use super::UserAgentSelectFallback;
 ///
 /// [`UserAgentProvider`]: crate::emulate::UserAgentProvider
 /// [`UserAgentEmulateService`]: crate::emulate::UserAgentEmulateService
+#[derive(Debug, Clone)]
 pub struct UserAgentEmulateLayer<P> {
     provider: P,
     optional: bool,
     try_auto_detect_user_agent: bool,
     input_header_order: Option<HeaderName>,
     select_fallback: Option<UserAgentSelectFallback>,
-}
-
-impl<P: fmt::Debug> fmt::Debug for UserAgentEmulateLayer<P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UserAgentEmulateLayer")
-            .field("provider", &self.provider)
-            .field("optional", &self.optional)
-            .field(
-                "try_auto_detect_user_agent",
-                &self.try_auto_detect_user_agent,
-            )
-            .field("input_header_order", &self.input_header_order)
-            .field("select_fallback", &self.select_fallback)
-            .finish()
-    }
-}
-
-impl<P: Clone> Clone for UserAgentEmulateLayer<P> {
-    fn clone(&self) -> Self {
-        Self {
-            provider: self.provider.clone(),
-            optional: self.optional,
-            try_auto_detect_user_agent: self.try_auto_detect_user_agent,
-            input_header_order: self.input_header_order.clone(),
-            select_fallback: self.select_fallback,
-        }
-    }
 }
 
 impl<P> UserAgentEmulateLayer<P> {

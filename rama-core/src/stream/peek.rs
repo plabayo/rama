@@ -15,6 +15,7 @@ pin_project! {
     ///
     /// It's similar to `ChainReader`, except that writing is also
     /// supported and happening directly in function of the inner stream.
+    #[derive(Debug, Clone)]
     pub struct PeekStream<P, S> {
         done_peek: bool,
         #[pin]
@@ -34,34 +35,6 @@ impl<P, S: ExtensionsMut> PeekStream<P, S> {
             done_peek: false,
             peek,
             inner,
-        }
-    }
-}
-
-impl<P, S> fmt::Debug for PeekStream<P, S>
-where
-    P: fmt::Debug,
-    S: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PeekStream")
-            .field("done_peek", &self.done_peek)
-            .field("peek", &self.peek)
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<P, S> Clone for PeekStream<P, S>
-where
-    P: Clone,
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            done_peek: self.done_peek,
-            peek: self.peek.clone(),
-            inner: self.inner.clone(),
         }
     }
 }

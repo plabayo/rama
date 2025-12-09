@@ -36,27 +36,10 @@ impl<S> Layer<S> for OptDnsOverwriteLayer {
     }
 }
 
+#[derive(Debug, Clone)]
 pub(in crate::cmd::send) struct OptDnsOverwriteService<S> {
     inner: S,
     info: Option<ResolveArg>,
-}
-
-impl<S: fmt::Debug> fmt::Debug for OptDnsOverwriteService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OptDnsOverwriteService")
-            .field("inner", &self.inner)
-            .field("info", &self.info)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for OptDnsOverwriteService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            info: self.info.clone(),
-        }
-    }
 }
 
 impl<Input, S> Service<Input> for OptDnsOverwriteService<S>

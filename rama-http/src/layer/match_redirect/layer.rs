@@ -1,30 +1,11 @@
-use std::fmt;
-
 use super::UriMatchRedirectService;
 use crate::StatusCode;
 use rama_core::Layer;
 
+#[derive(Debug, Clone)]
 pub struct UriMatchRedirectLayer<R> {
     status_code: StatusCode,
     match_replace: R,
-}
-
-impl<R: fmt::Debug> fmt::Debug for UriMatchRedirectLayer<R> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UriMatchRedirectLayer")
-            .field("status_code", &self.status_code)
-            .field("match_replace", &self.match_replace)
-            .finish()
-    }
-}
-
-impl<R: Clone> Clone for UriMatchRedirectLayer<R> {
-    fn clone(&self) -> Self {
-        Self {
-            status_code: self.status_code,
-            match_replace: self.match_replace.clone(),
-        }
-    }
 }
 
 impl<R: Clone, S> Layer<S> for UriMatchRedirectLayer<R> {

@@ -1,12 +1,13 @@
 use crate::{Body, Request, Response, matcher::HttpMatcher};
 use rama_core::{Layer, Service, layer::MapOutputLayer, service::BoxService};
-use std::{convert::Infallible, fmt};
+use std::convert::Infallible;
 
 pub mod extract;
 pub mod response;
 
 use response::IntoResponse;
 
+#[derive(Debug, Clone)]
 pub(crate) struct Endpoint {
     pub(crate) matcher: HttpMatcher<Body>,
     pub(crate) service: BoxService<Request, Response, Infallible>,
@@ -71,6 +72,7 @@ where
 }
 
 /// A static [`Service`] that serves a pre-defined response.
+#[derive(Debug, Clone)]
 pub struct StaticService<R>(R);
 
 impl<R> StaticService<R>
@@ -80,24 +82,6 @@ where
     /// Create a new [`StaticService`] with the given response.
     pub fn new(response: R) -> Self {
         Self(response)
-    }
-}
-
-impl<T> fmt::Debug for StaticService<T>
-where
-    T: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("StaticService").field(&self.0).finish()
-    }
-}
-
-impl<R> Clone for StaticService<R>
-where
-    R: Clone,
-{
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
     }
 }
 

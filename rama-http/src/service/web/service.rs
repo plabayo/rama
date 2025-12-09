@@ -19,7 +19,7 @@ use rama_core::{
 use rama_http_types::OriginalRouterUri;
 use rama_utils::{include_dir, str::arcstr::ArcStr};
 
-use std::{convert::Infallible, fmt, path::Path, sync::Arc};
+use std::{convert::Infallible, path::Path, sync::Arc};
 
 use super::{IntoEndpointService, endpoint::Endpoint};
 
@@ -29,26 +29,11 @@ use super::{IntoEndpointService, endpoint::Endpoint};
 /// For those locations where you need do not desire the convenience over performance,
 /// you can instead use a tuple of `(M, S)` tuples, where M is a matcher and S is a service,
 /// e.g. `((MethodMatcher::GET, service_a), (MethodMatcher::POST, service_b), service_fallback)`.
+#[derive(Debug, Clone)]
 pub struct WebService<State = ()> {
     endpoints: Vec<Arc<Endpoint>>,
     not_found: BoxService<Request, Response, Infallible>,
     state: State,
-}
-
-impl std::fmt::Debug for WebService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebService").finish()
-    }
-}
-
-impl<State: Clone> Clone for WebService<State> {
-    fn clone(&self) -> Self {
-        Self {
-            endpoints: self.endpoints.clone(),
-            not_found: self.not_found.clone(),
-            state: self.state.clone(),
-        }
-    }
 }
 
 impl WebService {
@@ -476,27 +461,10 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
 struct NestedService<S> {
     inner: S,
     prefix: ArcStr,
-}
-
-impl<S: fmt::Debug> fmt::Debug for NestedService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NestedService")
-            .field("inner", &self.inner)
-            .field("prefix", &self.prefix)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for NestedService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            prefix: self.prefix.clone(),
-        }
-    }
 }
 
 impl<S> Service<Request> for NestedService<S>

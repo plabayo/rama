@@ -29,7 +29,7 @@ use rama_utils::macros::generate_set_and_with;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{self, Poll};
-use std::{fmt, ops, sync::Arc};
+use std::{ops, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 #[cfg(feature = "tls")]
@@ -39,33 +39,12 @@ use rama_net::tls::TlsTunnel;
 ///
 /// This behaviour is optional and only triggered in case there
 /// is a [`ProxyAddress`] found in the [`Context`].
+#[derive(Debug, Clone)]
 pub struct HttpProxyConnector<S> {
     pub(super) inner: S,
     pub(super) required: bool,
     pub(super) version: Option<Version>,
     pub(super) headers: Option<Http1HeaderMap>,
-}
-
-impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpProxyConnector")
-            .field("inner", &self.inner)
-            .field("required", &self.required)
-            .field("version", &self.version)
-            .field("headers", &self.headers)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for HttpProxyConnector<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            required: self.required,
-            version: self.version,
-            headers: self.headers.clone(),
-        }
-    }
 }
 
 impl<S> HttpProxyConnector<S> {

@@ -12,19 +12,10 @@ use rama::{
 
 use super::VerboseLogs;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct ResponseHeaderLogger<S> {
     pub(super) inner: S,
     pub(super) show_headers: bool,
-}
-
-impl<S: Clone> Clone for ResponseHeaderLogger<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            show_headers: self.show_headers,
-        }
-    }
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseHeaderLogger<S>

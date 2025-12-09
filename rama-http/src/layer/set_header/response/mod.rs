@@ -167,6 +167,7 @@ pub use header::{
 /// Layer that applies [`SetResponseHeader`] which adds a response header.
 ///
 /// See [`SetResponseHeader`] for more details.
+#[derive(Clone)]
 pub struct SetResponseHeaderLayer<M> {
     header_name: HeaderName,
     make: M,
@@ -392,19 +393,6 @@ where
             inner,
             header_name: self.header_name,
             make: self.make,
-            mode: self.mode,
-        }
-    }
-}
-
-impl<M> Clone for SetResponseHeaderLayer<M>
-where
-    M: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            make: self.make.clone(),
-            header_name: self.header_name.clone(),
             mode: self.mode,
         }
     }

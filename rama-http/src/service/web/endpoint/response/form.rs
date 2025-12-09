@@ -1,5 +1,3 @@
-use std::fmt;
-
 use super::IntoResponse;
 use crate::Body;
 use crate::Response;
@@ -63,19 +61,8 @@ use super::Headers;
 ///     }
 /// }
 /// ```
+#[derive(Debug, Clone, Copy)]
 pub struct Form<T>(pub T);
-
-impl<T: fmt::Debug> fmt::Debug for Form<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Form").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for Form<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl_deref!(Form);
 

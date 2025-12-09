@@ -24,6 +24,7 @@ use std::fmt;
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
 ///
 /// [`Proxy`]: crate::Proxy
+#[derive(Debug, Clone)]
 pub struct ProxyDBService<S, D, P, F> {
     inner: S,
     db: D,
@@ -49,44 +50,6 @@ pub enum ProxyFilterMode {
     Required,
     /// The [`ProxyFilter`] is optional, and if not present, the provided fallback [`ProxyFilter`] is used.
     Fallback(ProxyFilter),
-}
-
-impl<S, D, P, F> fmt::Debug for ProxyDBService<S, D, P, F>
-where
-    S: fmt::Debug,
-    D: fmt::Debug,
-    P: fmt::Debug,
-    F: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProxyDBService")
-            .field("inner", &self.inner)
-            .field("db", &self.db)
-            .field("mode", &self.mode)
-            .field("predicate", &self.predicate)
-            .field("username_formatter", &self.username_formatter)
-            .field("preserve", &self.preserve)
-            .finish()
-    }
-}
-
-impl<S, D, P, F> Clone for ProxyDBService<S, D, P, F>
-where
-    S: Clone,
-    D: Clone,
-    P: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            db: self.db.clone(),
-            mode: self.mode.clone(),
-            predicate: self.predicate.clone(),
-            username_formatter: self.username_formatter.clone(),
-            preserve: self.preserve,
-        }
-    }
 }
 
 impl<S, D> ProxyDBService<S, D, bool, ()> {
@@ -346,46 +309,13 @@ impl std::error::Error for ProxySelectError {
 /// and insert, if a [`Proxy`] is selected, it in the input `Extensions` for further processing.
 ///
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
+#[derive(Debug, Clone)]
 pub struct ProxyDBLayer<D, P, F> {
     db: D,
     mode: ProxyFilterMode,
     predicate: P,
     username_formatter: F,
     preserve: bool,
-}
-
-impl<D, P, F> fmt::Debug for ProxyDBLayer<D, P, F>
-where
-    D: fmt::Debug,
-    P: fmt::Debug,
-    F: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProxyDBLayer")
-            .field("db", &self.db)
-            .field("mode", &self.mode)
-            .field("predicate", &self.predicate)
-            .field("username_formatter", &self.username_formatter)
-            .field("preserve", &self.preserve)
-            .finish()
-    }
-}
-
-impl<D, P, F> Clone for ProxyDBLayer<D, P, F>
-where
-    D: Clone,
-    P: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            db: self.db.clone(),
-            mode: self.mode.clone(),
-            predicate: self.predicate.clone(),
-            username_formatter: self.username_formatter.clone(),
-            preserve: self.preserve,
-        }
-    }
 }
 
 impl<D> ProxyDBLayer<D, bool, ()> {

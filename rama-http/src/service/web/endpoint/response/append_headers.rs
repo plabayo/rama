@@ -29,19 +29,8 @@ use std::fmt;
 ///     )
 /// }
 /// ```
+#[derive(Debug, Clone)]
 pub struct AppendHeaders<I>(pub I);
-
-impl<I: fmt::Debug> fmt::Debug for AppendHeaders<I> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("AppendHeaders").field(&self.0).finish()
-    }
-}
-
-impl<I: Clone> Clone for AppendHeaders<I> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl_deref!(AppendHeaders);
 

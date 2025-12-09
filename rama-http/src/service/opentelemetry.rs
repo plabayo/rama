@@ -9,33 +9,10 @@ use std::{fmt, pin::Pin};
 
 /// Wrapper type which allows you to use an rama http [`Service`]
 /// as an http exporter for your OTLP setup.
+#[derive(Debug, Clone)]
 pub struct OtelExporter<S = ()> {
     service: S,
     handle: tokio::runtime::Handle,
-}
-
-impl<S> Clone for OtelExporter<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            service: self.service.clone(),
-            handle: self.handle.clone(),
-        }
-    }
-}
-
-impl<S> fmt::Debug for OtelExporter<S>
-where
-    S: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OtelExporter")
-            .field("service", &self.service)
-            .field("handle", &self.handle)
-            .finish()
-    }
 }
 
 impl<S> OtelExporter<S> {

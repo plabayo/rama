@@ -11,12 +11,12 @@ use rama_http_types::{
         server::{KeepAlive, KeepAliveStream, SseResponseBody},
     },
 };
-use std::fmt;
 
 use super::{Headers, IntoResponse};
 
 /// An SSE response
 #[must_use]
+#[derive(Debug, Clone)]
 pub struct Sse<S> {
     stream: S,
 }
@@ -45,20 +45,6 @@ impl<S> Sse<S> {
         Sse {
             stream: KeepAliveStream::new(keep_alive, self.stream),
         }
-    }
-}
-
-impl<S: Clone> Clone for Sse<S> {
-    fn clone(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
-        }
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for Sse<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Sse").field("stream", &self.stream).finish()
     }
 }
 

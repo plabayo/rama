@@ -4,7 +4,6 @@ use rama_core::{Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
 use rama_http_types::Request;
 use rama_net::{address::ProxyAddress, http::RequestContext, user::ProxyCredential};
-use std::fmt;
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -30,24 +29,9 @@ impl<S> Layer<S> for SetProxyAuthHttpHeaderLayer {
 
 /// A [`Service`] wwhich will set the http auth header
 /// in case there is a [`ProxyAddress`] in the [`Context`].
+#[derive(Debug, Clone)]
 pub struct SetProxyAuthHttpHeaderService<S> {
     inner: S,
-}
-
-impl<S: fmt::Debug> fmt::Debug for SetProxyAuthHttpHeaderService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SetProxyAuthHttpHeaderService")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for SetProxyAuthHttpHeaderService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 impl<S> SetProxyAuthHttpHeaderService<S> {

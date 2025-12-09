@@ -16,7 +16,6 @@ use rama_net::{
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 #[cfg(feature = "dns")]
 use ::{
@@ -128,33 +127,12 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 ///
 /// This behaviour is optional and only triggered in case there
 /// is a [`ProxyAddress`] found in the [`Context`].
+#[derive(Debug, Clone)]
 pub struct Socks5ProxyConnector<S> {
     inner: S,
     required: bool,
     #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsResolver>,
-}
-
-impl<S: fmt::Debug> fmt::Debug for Socks5ProxyConnector<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut d = f.debug_struct("Socks5ProxyConnector");
-        d.field("inner", &self.inner)
-            .field("required", &self.required);
-        #[cfg(feature = "dns")]
-        d.field("dns_resolver", &self.dns_resolver);
-        d.finish()
-    }
-}
-
-impl<S: Clone> Clone for Socks5ProxyConnector<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            required: self.required,
-            #[cfg(feature = "dns")]
-            dns_resolver: self.dns_resolver.clone(),
-        }
-    }
 }
 
 impl<S> Socks5ProxyConnector<S> {

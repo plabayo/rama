@@ -2,7 +2,7 @@ use super::DEFAULT_USERNAME_LABEL_SEPARATOR;
 use crate::error::{BoxError, OpaqueError};
 use crate::extensions::Extensions;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
-use std::{convert::Infallible, fmt};
+use std::convert::Infallible;
 
 /// Parse a username, extracting the username (first part)
 /// and passing everything else to the [`UsernameLabelParser`].
@@ -109,27 +109,8 @@ pub trait UsernameLabelParser: Default + Send + Sync + 'static {
 
 /// Wrapper type that can be used with a tuple of [`UsernameLabelParser`]s
 /// in order for it to stop iterating over the parsers once there was one that consumed the label.
+#[derive(Debug, Clone, Default)]
 pub struct ExclusiveUsernameParsers<P>(pub P);
-
-impl<P: Clone> Clone for ExclusiveUsernameParsers<P> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<P: Default> Default for ExclusiveUsernameParsers<P> {
-    fn default() -> Self {
-        Self(P::default())
-    }
-}
-
-impl<P: fmt::Debug> fmt::Debug for ExclusiveUsernameParsers<P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("ExclusiveUsernameParsers")
-            .field(&self.0)
-            .finish()
-    }
-}
 
 macro_rules! username_label_parser_tuple_impl {
     ($($T:ident),+ $(,)?) => {

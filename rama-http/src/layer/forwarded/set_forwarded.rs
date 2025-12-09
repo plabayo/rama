@@ -88,7 +88,7 @@ pub struct SetForwardedHeaderLayer<T = Forwarded> {
     _headers: PhantomData<fn() -> T>,
 }
 
-impl<T: fmt::Debug> fmt::Debug for SetForwardedHeaderLayer<T> {
+impl<T> fmt::Debug for SetForwardedHeaderLayer<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("SetForwardedHeaderLayer")
             .field("by_node", &self.by_node)
@@ -100,7 +100,7 @@ impl<T: fmt::Debug> fmt::Debug for SetForwardedHeaderLayer<T> {
     }
 }
 
-impl<T: Clone> Clone for SetForwardedHeaderLayer<T> {
+impl<T> Clone for SetForwardedHeaderLayer<T> {
     fn clone(&self) -> Self {
         Self {
             by_node: self.by_node.clone(),

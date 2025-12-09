@@ -17,41 +17,12 @@ use rama_utils::str::submatch_ignore_ascii_case;
 /// `Content-Encoding` header to responses.
 ///
 /// See the [module docs](crate::layer::compression) for more details.
+#[derive(Debug, Clone)]
 pub struct Compression<S, P = DefaultPredicate> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,
     pub(crate) predicate: P,
     pub(crate) quality: CompressionLevel,
-}
-
-impl<S, P> std::fmt::Debug for Compression<S, P>
-where
-    S: std::fmt::Debug,
-    P: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Compression")
-            .field("inner", &self.inner)
-            .field("accept", &self.accept)
-            .field("predicate", &self.predicate)
-            .field("quality", &self.quality)
-            .finish()
-    }
-}
-
-impl<S, P> Clone for Compression<S, P>
-where
-    S: Clone,
-    P: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            accept: self.accept,
-            predicate: self.predicate.clone(),
-            quality: self.quality,
-        }
-    }
 }
 
 impl<S> Compression<S, DefaultPredicate> {

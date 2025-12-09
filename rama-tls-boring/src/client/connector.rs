@@ -11,7 +11,6 @@ use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use rama_utils::macros::generate_set_and_with;
-use std::fmt;
 use std::sync::Arc;
 
 use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder, TlsStream};
@@ -23,27 +22,10 @@ use rama_http_types::{Version, conn::TargetHttpVersion};
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
 /// See [`TlsConnector`] for more information.
+#[derive(Debug, Clone)]
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
     connector_data: Option<Arc<TlsConnectorDataBuilder>>,
     kind: K,
-}
-
-impl<K: fmt::Debug> std::fmt::Debug for TlsConnectorLayer<K> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TlsConnectorLayer")
-            .field("connector_data", &self.connector_data)
-            .field("kind", &self.kind)
-            .finish()
-    }
-}
-
-impl<K: Clone> Clone for TlsConnectorLayer<K> {
-    fn clone(&self) -> Self {
-        Self {
-            connector_data: self.connector_data.clone(),
-            kind: self.kind.clone(),
-        }
-    }
 }
 
 impl<K> TlsConnectorLayer<K> {
@@ -138,30 +120,11 @@ impl Default for TlsConnectorLayer<ConnectorKindAuto> {
 /// only if the request requires a secure connection. You can instead use
 /// [`TlsConnector::secure_only`] to force the connector to always
 /// establish a secure connection.
+#[derive(Debug, Clone)]
 pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
     connector_data: Option<Arc<TlsConnectorDataBuilder>>,
     kind: K,
-}
-
-impl<S: fmt::Debug, K: fmt::Debug> fmt::Debug for TlsConnector<S, K> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TlsConnector")
-            .field("inner", &self.inner)
-            .field("connector_data", &self.connector_data)
-            .field("kind", &self.kind)
-            .finish()
-    }
-}
-
-impl<S: Clone, K: Clone> Clone for TlsConnector<S, K> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            connector_data: self.connector_data.clone(),
-            kind: self.kind.clone(),
-        }
-    }
 }
 
 impl<S, K> TlsConnector<S, K> {

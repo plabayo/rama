@@ -18,6 +18,7 @@ pin_project! {
     /// This is mainly useful for testing or less import request types. In most
     /// cases you should create a new type that implements all the needed traits,
     /// but that is focussed specifically on that use case.
+    #[derive(Debug, Clone, Default)]
     pub struct ServiceInput<T> {
         #[pin]
         pub input: T,
@@ -30,33 +31,6 @@ impl<T> ServiceInput<T> {
         Self {
             input,
             extensions: Extensions::new(),
-        }
-    }
-}
-
-impl<T: std::fmt::Debug> std::fmt::Debug for ServiceInput<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ServiceInput")
-            .field("input", &self.input)
-            .field("extensions", &self.extensions)
-            .finish()
-    }
-}
-
-impl<T: Default> Default for ServiceInput<T> {
-    fn default() -> Self {
-        Self {
-            input: Default::default(),
-            extensions: Default::default(),
-        }
-    }
-}
-
-impl<T: Clone> Clone for ServiceInput<T> {
-    fn clone(&self) -> Self {
-        Self {
-            input: self.input.clone(),
-            extensions: self.extensions.clone(),
         }
     }
 }

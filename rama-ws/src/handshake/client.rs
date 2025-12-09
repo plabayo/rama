@@ -25,6 +25,7 @@ use crate::protocol::{Role, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
 
 /// Builder that can be used by clients to initiate the WebSocket handshake.
+#[derive(Debug, Clone)]
 pub struct WebSocketRequestBuilder<B> {
     inner: B,
     protocols: Option<SecWebSocketProtocol>,
@@ -39,28 +40,6 @@ pub struct HandshakeRequest {
     pub protocols: Option<SecWebSocketProtocol>,
     pub extensions: Option<SecWebSocketExtensions>,
     pub key: Option<SecWebSocketKey>,
-}
-
-impl<B: fmt::Debug> fmt::Debug for WebSocketRequestBuilder<B> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WebSocketRequestBuilder")
-            .field("inner", &self.inner)
-            .field("protocols", &self.protocols)
-            .field("extensions", &self.extensions)
-            .field("key", &self.key)
-            .finish()
-    }
-}
-
-impl<B: Clone> Clone for WebSocketRequestBuilder<B> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            protocols: self.protocols.clone(),
-            extensions: self.extensions.clone(),
-            key: self.key.clone(),
-        }
-    }
 }
 
 /// [`WebSocketRequestBuilder`] inner wrapper type used for a builder,

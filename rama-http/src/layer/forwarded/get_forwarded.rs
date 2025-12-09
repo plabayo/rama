@@ -75,7 +75,7 @@ pub struct GetForwardedHeaderLayer<T = rama_http_headers::forwarded::Forwarded> 
     _headers: PhantomData<fn() -> T>,
 }
 
-impl<T: fmt::Debug> fmt::Debug for GetForwardedHeaderLayer<T> {
+impl<T> fmt::Debug for GetForwardedHeaderLayer<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("GetForwardedHeaderLayer")
             .field(
@@ -86,7 +86,7 @@ impl<T: fmt::Debug> fmt::Debug for GetForwardedHeaderLayer<T> {
     }
 }
 
-impl<T: Clone> Clone for GetForwardedHeaderLayer<T> {
+impl<T> Clone for GetForwardedHeaderLayer<T> {
     fn clone(&self) -> Self {
         Self {
             _headers: PhantomData,

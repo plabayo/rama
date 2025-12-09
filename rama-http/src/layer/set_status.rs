@@ -34,8 +34,6 @@
 //! # }
 //! ```
 
-use std::fmt;
-
 use crate::{Request, Response, StatusCode};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -75,6 +73,7 @@ impl<S> Layer<S> for SetStatusLayer {
 /// Middleware to override status codes.
 ///
 /// See the [module docs](self) for more details.
+#[derive(Debug, Clone)]
 pub struct SetStatus<S> {
     inner: S,
     status: StatusCode,
@@ -96,24 +95,6 @@ impl<S> SetStatus<S> {
     }
 
     define_inner_service_accessors!();
-}
-
-impl<S: fmt::Debug> fmt::Debug for SetStatus<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SetStatus")
-            .field("inner", &self.inner)
-            .field("status", &self.status)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for SetStatus<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            status: self.status,
-        }
-    }
 }
 
 impl<S: Copy> Copy for SetStatus<S> {}

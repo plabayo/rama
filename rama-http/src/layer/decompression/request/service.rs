@@ -1,5 +1,3 @@
-use std::fmt;
-
 use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::{
     decompression::DecompressionBody,
@@ -27,30 +25,11 @@ use rama_utils::macros::define_inner_service_accessors;
 /// This is disabled by default.
 ///
 /// See the [module docs](crate::layer::decompression) for more details.
+#[derive(Debug, Clone)]
 pub struct RequestDecompression<S> {
     pub(super) inner: S,
     pub(super) accept: AcceptEncoding,
     pub(super) pass_through_unaccepted: bool,
-}
-
-impl<S: fmt::Debug> fmt::Debug for RequestDecompression<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RequestDecompression")
-            .field("inner", &self.inner)
-            .field("accept", &self.accept)
-            .field("pass_through_unaccepted", &self.pass_through_unaccepted)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for RequestDecompression<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            accept: self.accept,
-            pass_through_unaccepted: self.pass_through_unaccepted,
-        }
-    }
 }
 
 impl<S, ReqBody, ResBody, D> Service<Request<ReqBody>> for RequestDecompression<S>

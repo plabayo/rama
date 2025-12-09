@@ -1,5 +1,3 @@
-use std::fmt;
-
 use super::{DecompressionBody, body::BodyInner};
 use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::util::compression::{CompressionLevel, WrapBody};
@@ -16,6 +14,7 @@ use rama_utils::macros::define_inner_service_accessors;
 /// bodies based on the `Content-Encoding` header.
 ///
 /// See the [module docs](crate::layer::decompression) for more details.
+#[derive(Debug, Clone)]
 pub struct Decompression<S> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,
@@ -61,24 +60,6 @@ impl<S> Decompression<S> {
         pub fn zstd(mut self, enable: bool) -> Self {
             self.accept.set_zstd(enable);
             self
-        }
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for Decompression<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Decompression")
-            .field("inner", &self.inner)
-            .field("accept", &self.accept)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for Decompression<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            accept: self.accept,
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt};
+use std::borrow::Cow;
 
 use rama_core::{
     Layer, Service,
@@ -49,6 +49,7 @@ use super::{SelectedUserAgentProfile, UserAgentProvider, UserAgentSelectFallback
 /// one can make use of this profile to emulate a user agent on the tls layer.
 ///
 /// [`EasyHttpWebClient`]: https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html
+#[derive(Debug, Clone)]
 pub struct UserAgentEmulateService<S, P> {
     inner: S,
     provider: P,
@@ -56,35 +57,6 @@ pub struct UserAgentEmulateService<S, P> {
     try_auto_detect_user_agent: bool,
     input_header_order: Option<HeaderName>,
     select_fallback: Option<UserAgentSelectFallback>,
-}
-
-impl<S: fmt::Debug, P: fmt::Debug> fmt::Debug for UserAgentEmulateService<S, P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UserAgentEmulateService")
-            .field("inner", &self.inner)
-            .field("provider", &self.provider)
-            .field("optional", &self.optional)
-            .field(
-                "try_auto_detect_user_agent",
-                &self.try_auto_detect_user_agent,
-            )
-            .field("input_header_order", &self.input_header_order)
-            .field("select_fallback", &self.select_fallback)
-            .finish()
-    }
-}
-
-impl<S: Clone, P: Clone> Clone for UserAgentEmulateService<S, P> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            provider: self.provider.clone(),
-            optional: self.optional,
-            try_auto_detect_user_agent: self.try_auto_detect_user_agent,
-            input_header_order: self.input_header_order.clone(),
-            select_fallback: self.select_fallback,
-        }
-    }
 }
 
 impl<S, P> UserAgentEmulateService<S, P> {

@@ -75,19 +75,8 @@ impl<A: Authorizer<C>, C: Send + 'static> Authorizer<C> for Arc<A> {
 }
 
 /// [`Authorizer`] that can be used to validate against static credentials.
+#[derive(Debug, Clone)]
 pub struct StaticAuthorizer<C>(C);
-
-impl<C: fmt::Debug> fmt::Debug for StaticAuthorizer<C> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("StaticAuthorizer").field(&self.0).finish()
-    }
-}
-
-impl<C: Clone> Clone for StaticAuthorizer<C> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<C> StaticAuthorizer<C> {
     /// Create a new [`StaticAuthorizer`] for the given credentials.

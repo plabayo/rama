@@ -17,6 +17,7 @@ pub fn layer_fn<T>(f: T) -> LayerFn<T> {
 }
 
 /// A `Layer` implemented by a closure. See the docs for [`layer_fn`] for more details.
+#[derive(Clone)]
 pub struct LayerFn<F> {
     f: F,
 }
@@ -33,15 +34,6 @@ where
 
     fn into_layer(self, inner: S) -> Self::Service {
         (self.f)(inner)
-    }
-}
-
-impl<F> Clone for LayerFn<F>
-where
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self { f: self.f.clone() }
     }
 }
 
@@ -70,25 +62,8 @@ mod tests {
         use crate::{Service, service::service_fn};
         use std::convert::Infallible;
 
+        #[derive(Debug, Clone)]
         struct ToUpper<S>(S);
-
-        impl<S> fmt::Debug for ToUpper<S>
-        where
-            S: fmt::Debug,
-        {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.debug_tuple("ToUpper").field(&self.0).finish()
-            }
-        }
-
-        impl<S> Clone for ToUpper<S>
-        where
-            S: Clone,
-        {
-            fn clone(&self) -> Self {
-                Self(self.0.clone())
-            }
-        }
 
         impl<S, Input> Service<Input> for ToUpper<S>
         where

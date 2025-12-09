@@ -6,19 +6,10 @@ use rama::{
 
 use super::writer::Writer;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct ResponseBodyLogger<S> {
     pub(super) inner: S,
     pub(super) writer: Writer,
-}
-
-impl<S: Clone> Clone for ResponseBodyLogger<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            writer: self.writer.clone(),
-        }
-    }
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseBodyLogger<S>

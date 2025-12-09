@@ -8,22 +8,10 @@ use std::fmt;
 /// into a different type. It is similar to the [`Result::map`]
 /// method. You can use this method to chain along a computation once the
 /// service's output has been resolved.
+#[derive(Clone)]
 pub struct MapOutput<S, F> {
     inner: S,
     f: F,
-}
-
-impl<S, F> Clone for MapOutput<S, F>
-where
-    S: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            f: self.f.clone(),
-        }
-    }
 }
 
 impl<S, F> fmt::Debug for MapOutput<S, F>
@@ -41,17 +29,9 @@ where
 /// A [`Layer`] that produces a [`MapOutput`] service.
 ///
 /// [`Layer`]: crate::Layer
+#[derive(Clone)]
 pub struct MapOutputLayer<F> {
     f: F,
-}
-
-impl<F> Clone for MapOutputLayer<F>
-where
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self { f: self.f.clone() }
-    }
 }
 
 impl<F> fmt::Debug for MapOutputLayer<F>

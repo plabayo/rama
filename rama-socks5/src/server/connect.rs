@@ -13,7 +13,7 @@ use rama_tcp::client::{
     service::{DefaultForwarder, TcpConnector},
 };
 use rama_utils::macros::generate_set_and_with;
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
@@ -82,6 +82,7 @@ pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
 /// Please use [`LazyConnector`] in case you do not want the connctor to establish
 /// a connection yet and instead only want to do so once you have the first request,
 /// which can be useful for things such as MITM socks5 proxies for http(s) traffic.
+#[derive(Debug, Clone)]
 pub struct Connector<C, S> {
     connector: C,
     service: S,
@@ -175,28 +176,6 @@ impl Default for DefaultConnector {
             service: StreamForwardService::default(),
             hide_local_address: false,
             connect_timeout: Some(Duration::from_secs(60)),
-        }
-    }
-}
-
-impl<C: fmt::Debug, S: fmt::Debug> fmt::Debug for Connector<C, S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Connector")
-            .field("connector", &self.connector)
-            .field("service", &self.service)
-            .field("hide_local_address", &self.hide_local_address)
-            .field("connect_timeout", &self.connect_timeout)
-            .finish()
-    }
-}
-
-impl<C: Clone, S: Clone> Clone for Connector<C, S> {
-    fn clone(&self) -> Self {
-        Self {
-            connector: self.connector.clone(),
-            service: self.service.clone(),
-            hide_local_address: self.hide_local_address,
-            connect_timeout: self.connect_timeout,
         }
     }
 }
@@ -313,6 +292,7 @@ where
 /// Please use [`Connector`] for a more common use-case for socks5 proxies,
 /// where it does establish a connection eagerly, ready for piping
 /// between incoming src stream and (established) target stream.
+#[derive(Debug, Clone)]
 pub struct LazyConnector<S> {
     service: S,
 }
@@ -331,22 +311,6 @@ impl Default for LazyConnector<DefaultForwarder> {
     fn default() -> Self {
         Self {
             service: DefaultForwarder::ctx(),
-        }
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for LazyConnector<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LazyConnector")
-            .field("service", &self.service)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for LazyConnector<S> {
-    fn clone(&self) -> Self {
-        Self {
-            service: self.service.clone(),
         }
     }
 }

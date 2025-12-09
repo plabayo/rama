@@ -4,32 +4,13 @@ use rama_core::{Layer, Service};
 use rama_error::OpaqueError;
 use rama_http_types::mime::Mime;
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// Layer that applies [`ValidateRequestHeader`] which validates all requests.
 ///
 /// See the [module docs](crate::layer::validate_request) for an example.
+#[derive(Debug, Clone)]
 pub struct ValidateRequestHeaderLayer<T> {
     pub(crate) validate: T,
-}
-
-impl<T: fmt::Debug> fmt::Debug for ValidateRequestHeaderLayer<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ValidateRequestHeaderLayer")
-            .field("validate", &self.validate)
-            .finish()
-    }
-}
-
-impl<T> Clone for ValidateRequestHeaderLayer<T>
-where
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            validate: self.validate.clone(),
-        }
-    }
 }
 
 impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
@@ -95,31 +76,10 @@ where
 /// Middleware that validates requests.
 ///
 /// See the [module docs](crate::layer::validate_request) for an example.
+#[derive(Debug, Clone)]
 pub struct ValidateRequestHeader<S, T> {
     inner: S,
     pub(crate) validate: T,
-}
-
-impl<S: fmt::Debug, T: fmt::Debug> fmt::Debug for ValidateRequestHeader<S, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ValidateRequestHeader")
-            .field("inner", &self.inner)
-            .field("validate", &self.validate)
-            .finish()
-    }
-}
-
-impl<S, T> Clone for ValidateRequestHeader<S, T>
-where
-    S: Clone,
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            validate: self.validate.clone(),
-        }
-    }
 }
 
 impl<S, T> ValidateRequestHeader<S, T> {

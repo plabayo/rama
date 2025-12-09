@@ -7,6 +7,7 @@ use std::{fmt, time::Duration};
 use super::{EventDataWrite, JsonEventData};
 
 /// Server-sent event
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event<T = String> {
     pub(super) event: Option<SmolStr>,
     pub(super) id: Option<SmolStr>,
@@ -20,42 +21,6 @@ impl<T> Default for Event<T> {
         Self::new()
     }
 }
-
-impl<T: fmt::Debug> fmt::Debug for Event<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Event")
-            .field("event", &self.event)
-            .field("id", &self.id)
-            .field("data", &self.data)
-            .field("retry", &self.retry)
-            .field("comments", &self.comments)
-            .finish()
-    }
-}
-
-impl<T: Clone> Clone for Event<T> {
-    fn clone(&self) -> Self {
-        Self {
-            event: self.event.clone(),
-            id: self.id.clone(),
-            data: self.data.clone(),
-            retry: self.retry,
-            comments: self.comments.clone(),
-        }
-    }
-}
-
-impl<T: PartialEq> PartialEq for Event<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.comments == other.comments
-            && self.data == other.data
-            && self.event == other.event
-            && self.id == other.id
-            && self.retry == other.retry
-    }
-}
-
-impl<T: Eq> Eq for Event<T> {}
 
 #[derive(Debug)]
 pub struct EventBuildError {

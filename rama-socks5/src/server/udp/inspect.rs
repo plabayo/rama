@@ -1,5 +1,3 @@
-use std::fmt;
-
 use super::relay::{UdpRelayState, UdpSocketRelay};
 use crate::server::Error;
 use rama_core::bytes::Bytes;
@@ -132,19 +130,8 @@ impl ExtensionsMut for RelayResponse {
 ///
 /// Only exposed so you are able to define the type, it is not
 /// intended to be created directly by a rama user.
+#[derive(Debug, Clone)]
 pub struct AsyncUdpInspector<S>(pub(super) S);
-
-impl<S: fmt::Debug> fmt::Debug for AsyncUdpInspector<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("AsyncUdpInspector").field(&self.0).finish()
-    }
-}
-
-impl<S: Clone> Clone for AsyncUdpInspector<S> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<S> UdpPacketProxy for AsyncUdpInspector<S>
 where
@@ -316,19 +303,8 @@ where
 ///
 /// Only exposed so you are able to define the type, it is not
 /// intended to be created directly by a rama user.
+#[derive(Debug, Clone)]
 pub struct SyncUdpInspector<S>(pub(super) S);
-
-impl<S: fmt::Debug> fmt::Debug for SyncUdpInspector<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("SyncUdpInspector").field(&self.0).finish()
-    }
-}
-
-impl<S: Clone> Clone for SyncUdpInspector<S> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<S> UdpPacketProxy for SyncUdpInspector<S>
 where

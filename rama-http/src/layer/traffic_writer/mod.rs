@@ -37,6 +37,7 @@ pub enum WriterMode {
 }
 
 /// A writer that can write both requests and responses.
+#[derive(Clone)]
 pub struct BidirectionalWriter<S> {
     sender: S,
 }
@@ -46,14 +47,6 @@ impl<S> std::fmt::Debug for BidirectionalWriter<S> {
         f.debug_struct("BidirectionalWriter")
             .field("sender", &format_args!("{}", std::any::type_name::<S>()))
             .finish()
-    }
-}
-
-impl<S: Clone> Clone for BidirectionalWriter<S> {
-    fn clone(&self) -> Self {
-        Self {
-            sender: self.sender.clone(),
-        }
     }
 }
 

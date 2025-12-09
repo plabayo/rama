@@ -5,7 +5,6 @@ use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::error::OpaqueError;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;
-use std::fmt;
 
 use super::Headers;
 
@@ -53,19 +52,8 @@ use super::Headers;
 ///     }
 /// }
 /// ```
+#[derive(Debug, Clone)]
 pub struct Json<T>(pub T);
-
-impl<T: fmt::Debug> fmt::Debug for Json<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Json").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for Json<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl_deref!(Json);
 

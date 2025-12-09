@@ -14,7 +14,7 @@ use rama_http_headers::{
 };
 use rama_http_types::request::Parts as RequestParts;
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{fmt, mem, sync::Arc};
+use std::{mem, sync::Arc};
 
 mod allow_credentials;
 mod allow_headers;
@@ -361,27 +361,10 @@ impl<S> Layer<S> for CorsLayer {
 /// See the [module docs](crate::layer::cors) for an example.
 ///
 /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+#[derive(Debug, Clone)]
 pub struct Cors<S> {
     inner: S,
     layer: CorsLayer,
-}
-
-impl<S: fmt::Debug> fmt::Debug for Cors<S> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Cors")
-            .field("inner", &self.inner)
-            .field("layer", &self.layer)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for Cors<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            layer: self.layer.clone(),
-        }
-    }
 }
 
 impl<S> Cors<S> {

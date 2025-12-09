@@ -661,30 +661,11 @@ where
 ///
 /// Created via [`WebSocketAcceptor::into_service`]
 /// or `WebSocketAcceptor::into_echo_service`].
+#[derive(Debug, Clone)]
 pub struct WebSocketAcceptorService<S> {
     acceptor: WebSocketAcceptor,
     config: Option<WebSocketConfig>,
     service: S,
-}
-
-impl<S: fmt::Debug> fmt::Debug for WebSocketAcceptorService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WebSocketAcceptorService")
-            .field("acceptor", &self.acceptor)
-            .field("config", &self.config)
-            .field("service", &self.service)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for WebSocketAcceptorService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            acceptor: self.acceptor.clone(),
-            config: self.config,
-            service: self.service.clone(),
-        }
-    }
 }
 
 impl<S> WebSocketAcceptorService<S> {

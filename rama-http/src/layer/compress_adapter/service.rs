@@ -23,33 +23,10 @@ use rama_utils::macros::define_inner_service_accessors;
 /// ```text
 /// compress_gzip(decompress_zstd(body))
 /// ```
+#[derive(Debug, Clone)]
 pub struct CompressAdaptService<S> {
     pub(crate) inner: S,
     pub(crate) quality: CompressionLevel,
-}
-
-impl<S> std::fmt::Debug for CompressAdaptService<S>
-where
-    S: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CompressAdaptService")
-            .field("inner", &self.inner)
-            .field("quality", &self.quality)
-            .finish()
-    }
-}
-
-impl<S> Clone for CompressAdaptService<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            quality: self.quality,
-        }
-    }
 }
 
 impl<S> CompressAdaptService<S> {

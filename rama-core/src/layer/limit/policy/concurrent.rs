@@ -26,35 +26,13 @@
 use super::{Policy, PolicyOutput, PolicyResult};
 use parking_lot::Mutex;
 use rama_utils::backoff::Backoff;
-use std::fmt;
 use std::sync::Arc;
 
 /// A [`Policy`] that limits the number of concurrent requests.
+#[derive(Debug, Clone)]
 pub struct ConcurrentPolicy<B, C> {
     tracker: C,
     backoff: B,
-}
-
-impl<B: fmt::Debug, C: fmt::Debug> std::fmt::Debug for ConcurrentPolicy<B, C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConcurrentPolicy")
-            .field("tracker", &self.tracker)
-            .field("backoff", &self.backoff)
-            .finish()
-    }
-}
-
-impl<B, C> Clone for ConcurrentPolicy<B, C>
-where
-    B: Clone,
-    C: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            tracker: self.tracker.clone(),
-            backoff: self.backoff.clone(),
-        }
-    }
 }
 
 impl<B, C> ConcurrentPolicy<B, C> {

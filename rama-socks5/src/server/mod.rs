@@ -51,6 +51,7 @@ pub use udp::{DefaultUdpRelay, Socks5UdpAssociator, UdpRelay};
 /// supports the [`Command::Connect`] method using the [`DefaultConnector`],
 /// but custom connectors as well as binders and udp associators
 /// are optionally possible.
+#[derive(Debug, Clone)]
 pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = (), A = ()> {
     connector: C,
     binder: B,
@@ -66,27 +67,10 @@ pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = (), A = ()> {
     auth_opt: bool,
 }
 
+#[derive(Debug, Clone)]
 enum AuthKind<A> {
     NoAuth(A),
     WithAuth(A),
-}
-
-impl<A: fmt::Debug> fmt::Debug for AuthKind<A> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoAuth(auth) => write!(f, "AuthKind::NoAuth({auth:?})"),
-            Self::WithAuth(auth) => write!(f, "AuthKind::WithAuth({auth:?})"),
-        }
-    }
-}
-
-impl<A: Clone> Clone for AuthKind<A> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::NoAuth(auth) => Self::NoAuth(auth.clone()),
-            Self::WithAuth(auth) => Self::WithAuth(auth.clone()),
-        }
-    }
 }
 
 impl Socks5Acceptor<(), (), (), ()> {
@@ -215,32 +199,6 @@ impl Default for Socks5Acceptor {
     #[inline]
     fn default() -> Self {
         Socks5Acceptor::new().with_default_connector()
-    }
-}
-
-impl<C: fmt::Debug, B: fmt::Debug, U: fmt::Debug, A: fmt::Debug> fmt::Debug
-    for Socks5Acceptor<C, B, U, A>
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Socks5Acceptor")
-            .field("connector", &self.connector)
-            .field("binder", &self.binder)
-            .field("udp_associator", &self.udp_associator)
-            .field("auth", &self.auth)
-            .field("auth_opt", &self.auth_opt)
-            .finish()
-    }
-}
-
-impl<C: Clone, B: Clone, U: Clone, A: Clone> Clone for Socks5Acceptor<C, B, U, A> {
-    fn clone(&self) -> Self {
-        Self {
-            connector: self.connector.clone(),
-            binder: self.binder.clone(),
-            udp_associator: self.udp_associator.clone(),
-            auth: self.auth.clone(),
-            auth_opt: self.auth_opt,
-        }
     }
 }
 

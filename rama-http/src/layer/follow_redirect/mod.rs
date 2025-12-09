@@ -177,6 +177,7 @@ where
 /// Middleware that retries requests with a [`Service`] to follow redirection responses.
 ///
 /// See the [module docs](self) for more details.
+#[derive(Debug, Clone)]
 pub struct FollowRedirect<S, P = Standard> {
     inner: S,
     policy: P,
@@ -186,32 +187,6 @@ impl<S> FollowRedirect<S> {
     /// Create a new [`FollowRedirect`] with a [`Standard`] redirection policy.
     pub fn new(inner: S) -> Self {
         Self::with_policy(inner, Standard::default())
-    }
-}
-
-impl<S, P> fmt::Debug for FollowRedirect<S, P>
-where
-    S: fmt::Debug,
-    P: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FollowRedirect")
-            .field("inner", &self.inner)
-            .field("policy", &self.policy)
-            .finish()
-    }
-}
-
-impl<S, P> Clone for FollowRedirect<S, P>
-where
-    S: Clone,
-    P: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            policy: self.policy.clone(),
-        }
     }
 }
 

@@ -2,22 +2,14 @@ use super::bytes::BytesRWTracker;
 use crate::client::{ConnectorService, EstablishedClientConnection};
 use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// A [`Service`] that wraps a [`Service`]'s output IO [`Stream`] with an atomic R/W tracker.
 ///
 /// [`Service`]: rama_core::Service
 /// [`Stream`]: rama_core::stream::Stream
+#[derive(Debug, Clone)]
 pub struct OutgoingBytesTrackerService<S> {
     inner: S,
-}
-
-impl<S: fmt::Debug> fmt::Debug for OutgoingBytesTrackerService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OutgoingBytesTrackerService")
-            .field("inner", &self.inner)
-            .finish()
-    }
 }
 
 impl<S> OutgoingBytesTrackerService<S> {
@@ -29,17 +21,6 @@ impl<S> OutgoingBytesTrackerService<S> {
     }
 
     define_inner_service_accessors!();
-}
-
-impl<S> Clone for OutgoingBytesTrackerService<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 impl<S, Input> Service<Input> for OutgoingBytesTrackerService<S>

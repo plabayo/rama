@@ -26,6 +26,7 @@ pub struct DoNotRetry;
 /// [`DoNotRetry`] can be added to the [`Context`] of a [`Request`]
 /// to signal that the request should not be retried, regardless
 /// of the retry functionality defined.
+#[derive(Debug, Clone)]
 pub struct ManagedPolicy<B = Undefined, C = Undefined, R = Undefined> {
     backoff: B,
     clone: C,
@@ -64,36 +65,6 @@ where
             None
         } else {
             self.clone.clone_input(req)
-        }
-    }
-}
-
-impl<B, C, R> std::fmt::Debug for ManagedPolicy<B, C, R>
-where
-    B: std::fmt::Debug,
-    C: std::fmt::Debug,
-    R: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ManagedPolicy")
-            .field("backoff", &self.backoff)
-            .field("clone", &self.clone)
-            .field("retry", &self.retry)
-            .finish()
-    }
-}
-
-impl<B, C, R> Clone for ManagedPolicy<B, C, R>
-where
-    B: Clone,
-    C: Clone,
-    R: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            backoff: self.backoff.clone(),
-            clone: self.clone.clone(),
-            retry: self.retry.clone(),
         }
     }
 }

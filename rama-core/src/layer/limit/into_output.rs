@@ -1,5 +1,3 @@
-use std::fmt;
-
 pub(super) trait ErrorIntoOutput<Error>: Send + Sync + 'static {
     type Output: Send + 'static;
     type Error: Send + 'static;
@@ -8,19 +6,8 @@ pub(super) trait ErrorIntoOutput<Error>: Send + Sync + 'static {
 }
 
 /// Wrapper around a user-specific transformer callback.
+#[derive(Debug, Clone)]
 pub struct ErrorIntoOutputFn<F>(pub(super) F);
-
-impl<F: fmt::Debug> fmt::Debug for ErrorIntoOutputFn<F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("ErrorIntoOutputFn").field(&self.0).finish()
-    }
-}
-
-impl<F: Clone> Clone for ErrorIntoOutputFn<F> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<Output, ErrorIn, ErrorOut, F> ErrorIntoOutput<ErrorIn> for ErrorIntoOutputFn<F>
 where

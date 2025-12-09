@@ -161,19 +161,8 @@ crate::combinators::impl_either!(impl_matcher_either);
 
 /// Wrapper type that can be used to turn a tuple of ([`Matcher`], [`Service`]) tuples
 /// into a single [`Service`].
+#[derive(Debug, Clone)]
 pub struct MatcherRouter<N>(pub N);
-
-impl<N: std::fmt::Debug> std::fmt::Debug for MatcherRouter<N> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("MatcherRouter").field(&self.0).finish()
-    }
-}
-
-impl<N: Clone> Clone for MatcherRouter<N> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 macro_rules! impl_matcher_service_tuple {
     ($($T:ident),+ $(,)?) => {

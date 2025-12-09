@@ -1,5 +1,5 @@
 //! Middleware that gets called with a clone of the value of to given type
-//! if it is available in the current input and output extensions.
+//! if it is available in the current input/output extensions.
 
 use crate::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
@@ -286,61 +286,76 @@ where
 mod tests {
     use super::*;
     use crate::{ServiceInput, extensions::ExtensionsMut, service::service_fn};
-    use std::{convert::Infallible, sync::Arc};
+    use std::{
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{self, AtomicI32},
+        },
+    };
 
     #[derive(Debug, Clone)]
     struct State(i32);
 
     #[tokio::test]
     async fn get_extension_basic() {
-        let value = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let value = Arc::new(AtomicI32::new(0));
 
         let cloned_value = value.clone();
         let svc = GetInputExtensionLayer::new(move |state: State| {
             let cloned_value = cloned_value.clone();
             async move {
-                cloned_value.store(state.0, std::sync::atomic::Ordering::Release);
+                cloned_value.store(state.0, atomic::Ordering::Release);
             }
         })
-        .into_layer(service_fn(async |req: ServiceInput<()>| {
-            let state = req.extensions().get::<State>().unwrap();
-            Ok::<_, Infallible>(state.0)
+        .into_layer(service_fn(async |req: ServiceInput<Arc<AtomicI32>>| {
+            let State(n) = req.extensions().get().cloned().unwrap();
+            assert_eq!(42, n);
+
+            let value = req.input.load(atomic::Ordering::Acquire);
+            assert_eq!(42, value);
+
+            Ok::<_, Infallible>(ServiceInput::new(()))
         }));
 
-        let mut request = ServiceInput::new(());
+        let mut request = ServiceInput::new(value.clone());
         request.extensions_mut().insert(State(42));
 
         let res = svc.serve(request).await.unwrap();
 
-        assert_eq!(42, res);
+        assert!(res.extensions.get::<State>().is_none());
 
-        let value = value.load(std::sync::atomic::Ordering::Acquire);
+        let value = value.load(atomic::Ordering::Acquire);
         assert_eq!(42, value);
     }
 
     #[tokio::test]
     async fn get_extension_output() {
-        let value = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let value = Arc::new(AtomicI32::new(0));
 
         let cloned_value = value.clone();
         let svc = GetOutputExtensionLayer::new(move |state: State| {
             let cloned_value = cloned_value.clone();
             async move {
-                cloned_value.store(state.0, std::sync::atomic::Ordering::Release);
+                cloned_value.store(state.0, atomic::Ordering::Release);
             }
         })
-        .into_layer(service_fn(async |req: ServiceInput<()>| {
-            Ok::<_, Infallible>(req)
+        .into_layer(service_fn(async |req: ServiceInput<Arc<AtomicI32>>| {
+            let value = req.input.load(atomic::Ordering::Acquire);
+            assert_eq!(0, value);
+
+            assert!(req.extensions.get::<State>().is_none());
+
+            let mut res = ServiceInput::new(());
+            res.extensions_mut().insert(State(42));
+            Ok::<_, Infallible>(res)
         }));
 
-        let mut request = ServiceInput::new(());
-        request.extensions_mut().insert(State(42));
+        let res = svc.serve(ServiceInput::new(value.clone())).await.unwrap();
+        let State(n) = res.extensions.get().cloned().unwrap();
+        assert_eq!(42, n);
 
-        let res = svc.serve(request).await.unwrap();
-
-        assert_eq!(42, res.extensions().get::<State>().unwrap().0);
-
-        let value = value.load(std::sync::atomic::Ordering::Acquire);
+        let value = value.load(atomic::Ordering::Acquire);
         assert_eq!(42, value);
     }
 }

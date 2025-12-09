@@ -18,31 +18,11 @@ use rama_utils::macros::define_inner_service_accessors;
 ///
 /// [`Service`]: crate
 /// [`Matcher`]: crate::matcher::Matcher
+#[derive(Debug, Clone)]
 pub struct HijackService<S, H, M> {
     inner: S,
     hijack: H,
     matcher: M,
-}
-
-impl<S, H, M> std::fmt::Debug for HijackService<S, H, M> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HijackService").finish()
-    }
-}
-
-impl<S, H, M> Clone for HijackService<S, H, M>
-where
-    S: Clone,
-    H: Clone,
-    M: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            hijack: self.hijack.clone(),
-            matcher: self.matcher.clone(),
-        }
-    }
 }
 
 impl<S, H, M> HijackService<S, H, M> {
@@ -90,28 +70,10 @@ where
 ///
 /// [`Service`]: crate
 /// [`Matcher`]: crate::matcher::Matcher
+#[derive(Debug, Clone)]
 pub struct HijackLayer<H, M> {
     hijack: H,
     matcher: M,
-}
-
-impl<H, M> std::fmt::Debug for HijackLayer<H, M> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HijackLayer").finish()
-    }
-}
-
-impl<H, M> Clone for HijackLayer<H, M>
-where
-    H: Clone,
-    M: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            hijack: self.hijack.clone(),
-            matcher: self.matcher.clone(),
-        }
-    }
 }
 
 impl<H, M> HijackLayer<H, M> {

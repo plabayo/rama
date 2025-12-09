@@ -39,25 +39,12 @@ pub trait IntoResponse {
 
 /// Wrapper that can be used to turn an `IntoResponse` type into
 /// something that implements `Into<Response>`.
+#[derive(Debug, Clone)]
 pub struct StaticResponseFactory<T>(pub T);
 
 impl<T: IntoResponse> From<StaticResponseFactory<T>> for Response {
     fn from(value: StaticResponseFactory<T>) -> Self {
         value.0.into_response()
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for StaticResponseFactory<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("StaticResponseFactory")
-            .field(&self.0)
-            .finish()
-    }
-}
-
-impl<T: Clone> Clone for StaticResponseFactory<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
     }
 }
 

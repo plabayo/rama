@@ -24,35 +24,10 @@ pub use self::policy::{Policy, PolicyResult};
 /// Configure retrying requests of "failed" responses.
 ///
 /// A [`Policy`] classifies what is a "failed" response.
+#[derive(Debug, Clone)]
 pub struct Retry<P, S> {
     policy: P,
     inner: S,
-}
-
-impl<P, S> std::fmt::Debug for Retry<P, S>
-where
-    P: std::fmt::Debug,
-    S: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Retry")
-            .field("policy", &self.policy)
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<P, S> Clone for Retry<P, S>
-where
-    P: Clone,
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            policy: self.policy.clone(),
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 // ===== impl Retry =====

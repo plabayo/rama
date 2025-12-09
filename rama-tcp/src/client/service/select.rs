@@ -1,35 +1,13 @@
 use rama_core::error::BoxError;
-use std::fmt;
 use std::{convert::Infallible, sync::Arc};
 
 use crate::client::TcpStreamConnector;
 
 /// Contains a `Connector` created by a [`TcpStreamConnectorFactory`],
 /// together with the [`Context`] used to create it in relation to.
+#[derive(Debug, Clone)]
 pub struct CreatedTcpStreamConnector<Connector> {
     pub connector: Connector,
-}
-
-impl<Connector> fmt::Debug for CreatedTcpStreamConnector<Connector>
-where
-    Connector: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CreatedTcpStreamConnector")
-            .field("connector", &self.connector)
-            .finish()
-    }
-}
-
-impl<Connector> Clone for CreatedTcpStreamConnector<Connector>
-where
-    Connector: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            connector: self.connector.clone(),
-        }
-    }
 }
 
 /// Factory to create a [`TcpStreamConnector`]. This is used by the TCP
@@ -80,27 +58,8 @@ impl TcpStreamConnectorFactory for () {
 ///
 /// This struct cannot be created by third party crates
 /// and instead is to be used via other API's provided by this crate.
+#[derive(Debug, Clone)]
 pub struct TcpStreamConnectorCloneFactory<C>(pub(super) C);
-
-impl<C> fmt::Debug for TcpStreamConnectorCloneFactory<C>
-where
-    C: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("TcpStreamConnectorCloneFactory")
-            .field(&self.0)
-            .finish()
-    }
-}
-
-impl<C> Clone for TcpStreamConnectorCloneFactory<C>
-where
-    C: Clone,
-{
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<C> TcpStreamConnectorFactory for TcpStreamConnectorCloneFactory<C>
 where

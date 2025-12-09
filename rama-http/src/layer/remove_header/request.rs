@@ -32,7 +32,6 @@ use crate::{HeaderName, Request, Response};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use smol_str::SmolStr;
-use std::fmt;
 
 #[derive(Debug, Clone)]
 /// Layer that applies [`RemoveRequestHeader`] which removes request headers.
@@ -99,6 +98,7 @@ impl<S> Layer<S> for RemoveRequestHeaderLayer {
 }
 
 /// Middleware that removes headers from a request.
+#[derive(Debug, Clone)]
 pub struct RemoveRequestHeader<S> {
     inner: S,
     mode: RemoveRequestHeaderMode,
@@ -128,24 +128,6 @@ impl<S> RemoveRequestHeader<S> {
     }
 
     define_inner_service_accessors!();
-}
-
-impl<S: fmt::Debug> fmt::Debug for RemoveRequestHeader<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RemoveRequestHeader")
-            .field("inner", &self.inner)
-            .field("mode", &self.mode)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for RemoveRequestHeader<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            mode: self.mode.clone(),
-        }
-    }
 }
 
 impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveRequestHeader<S>

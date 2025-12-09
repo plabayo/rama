@@ -1,6 +1,5 @@
 use pin_project_lite::pin_project;
 use std::{
-    fmt,
     io::{Cursor, Read},
     pin::Pin,
     task::{Context, Poll, ready},
@@ -215,6 +214,7 @@ impl<const N: usize> Read for StackReader<N> {
 pin_project! {
     /// Reader that can be used to chain two readers together.
     #[must_use = "streams do nothing unless polled"]
+    #[derive(Debug, Clone)]
     pub struct ChainReader<T, U> {
         #[pin]
         first: T,
@@ -266,34 +266,6 @@ where
     /// Consumes the `ChainReader`, returning the wrapped readers.
     pub fn into_inner(self) -> (T, U) {
         (self.first, self.second)
-    }
-}
-
-impl<T, U> fmt::Debug for ChainReader<T, U>
-where
-    T: fmt::Debug,
-    U: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ChainReader")
-            .field("done_first", &self.done_first)
-            .field("first", &self.first)
-            .field("second", &self.second)
-            .finish()
-    }
-}
-
-impl<T, U> Clone for ChainReader<T, U>
-where
-    T: Clone,
-    U: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            done_first: self.done_first,
-            first: self.first.clone(),
-            second: self.second.clone(),
-        }
     }
 }
 

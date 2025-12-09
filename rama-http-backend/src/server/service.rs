@@ -29,6 +29,7 @@ use ::{rama_unix::server::UnixListener, std::path::Path};
 /// Supported Protocols: HTTP/1, H2, Auto (HTTP/1 + H2)
 ///
 /// [`Service`]: rama_core::Service
+#[derive(Debug, Clone)]
 pub struct HttpServer<B> {
     builder: B,
     guard: Option<ShutdownGuard>,
@@ -38,29 +39,6 @@ impl Default for HttpServer<AutoConnBuilder> {
     #[inline(always)]
     fn default() -> Self {
         Self::auto(Executor::default())
-    }
-}
-
-impl<B> fmt::Debug for HttpServer<B>
-where
-    B: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpServer")
-            .field("builder", &self.builder)
-            .finish()
-    }
-}
-
-impl<B> Clone for HttpServer<B>
-where
-    B: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            builder: self.builder.clone(),
-            guard: self.guard.clone(),
-        }
     }
 }
 

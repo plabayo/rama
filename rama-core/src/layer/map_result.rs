@@ -27,6 +27,7 @@ use std::fmt;
 ///
 /// [`MapResponse`]: crate::layer::MapResponse
 /// [`MapErr`]: crate::layer::MapErr
+#[derive(Clone)]
 pub struct MapResult<S, F> {
     inner: S,
     f: F,
@@ -44,22 +45,10 @@ where
     }
 }
 
-impl<S, F> Clone for MapResult<S, F>
-where
-    S: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            f: self.f.clone(),
-        }
-    }
-}
-
 /// A [`Layer`] that produces a [`MapResult`] service.
 ///
 /// [`Layer`]: crate::Layer
+#[derive(Clone)]
 pub struct MapResultLayer<F> {
     f: F,
 }
@@ -69,15 +58,6 @@ impl<F> fmt::Debug for MapResultLayer<F> {
         f.debug_struct("MapResultLayer")
             .field("f", &format_args!("{}", std::any::type_name::<F>()))
             .finish()
-    }
-}
-
-impl<F> Clone for MapResultLayer<F>
-where
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self { f: self.f.clone() }
     }
 }
 

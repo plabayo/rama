@@ -36,37 +36,12 @@ macro_rules! __define_either {
         /// You can use [`crate::combinators::impl_either`] to
         /// implement the `Either` type for the available number of type parameters
         /// on your own Trait implementations.
+        #[derive(Debug, Clone)]
         pub enum $id<$($param),+> {
             $(
                 /// one of the Either variants
                 $param($param),
             )+
-        }
-
-        impl<$($param),+> Clone for $id<$($param),+>
-        where
-            $($param: Clone),+
-        {
-            fn clone(&self) -> Self {
-                match self {
-                    $(
-                        $id::$param(s) => $id::$param(s.clone()),
-                    )+
-                }
-            }
-        }
-
-        impl<$($param),+> fmt::Debug for $id<$($param),+>
-        where
-            $($param: fmt::Debug),+
-        {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                match self {
-                    $(
-                        $id::$param(s) => write!(f, "{:?}", s),
-                    )+
-                }
-            }
         }
 
         impl<$($param),+> fmt::Display for $id<$($param),+>

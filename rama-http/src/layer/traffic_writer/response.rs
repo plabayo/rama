@@ -13,6 +13,7 @@ use tokio::io::{AsyncWrite, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
 
 /// Layer that applies [`ResponseWriterService`] which prints the http response in std format.
+#[derive(Clone)]
 pub struct ResponseWriterLayer<W> {
     writer: W,
 }
@@ -22,14 +23,6 @@ impl<W> Debug for ResponseWriterLayer<W> {
         f.debug_struct("ResponseWriterLayer")
             .field("writer", &format_args!("{}", std::any::type_name::<W>()))
             .finish()
-    }
-}
-
-impl<W: Clone> Clone for ResponseWriterLayer<W> {
-    fn clone(&self) -> Self {
-        Self {
-            writer: self.writer.clone(),
-        }
     }
 }
 
@@ -182,6 +175,7 @@ impl<S, W: Clone> Layer<S> for ResponseWriterLayer<W> {
 /// Middleware to print Http request in std format.
 ///
 /// See the [module docs](super) for more details.
+#[derive(Clone)]
 pub struct ResponseWriterService<S, W> {
     inner: S,
     writer: W,
@@ -202,15 +196,6 @@ impl<S: Debug, W> Debug for ResponseWriterService<S, W> {
             .field("inner", &self.inner)
             .field("writer", &format_args!("{}", std::any::type_name::<W>()))
             .finish()
-    }
-}
-
-impl<S: Clone, W: Clone> Clone for ResponseWriterService<S, W> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            writer: self.writer.clone(),
-        }
     }
 }
 

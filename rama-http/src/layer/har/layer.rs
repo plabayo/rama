@@ -1,10 +1,9 @@
-use std::fmt;
-
 use crate::layer::har::service::HARExportService;
 use crate::layer::har::toggle::Toggle;
 use rama_core::Layer;
 
 #[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct HARExportLayer<R, T> {
     pub recorder: R,
     pub toggle: T,
@@ -13,24 +12,6 @@ pub struct HARExportLayer<R, T> {
 impl<R, T> HARExportLayer<R, T> {
     pub fn new(recorder: R, toggle: T) -> Self {
         Self { recorder, toggle }
-    }
-}
-
-impl<R: fmt::Debug, T: fmt::Debug> fmt::Debug for HARExportLayer<R, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HARExportLayer")
-            .field("recorder", &self.recorder)
-            .field("toggle", &self.toggle)
-            .finish()
-    }
-}
-
-impl<R: Clone, T: Clone> Clone for HARExportLayer<R, T> {
-    fn clone(&self) -> Self {
-        Self {
-            recorder: self.recorder.clone(),
-            toggle: self.toggle.clone(),
-        }
     }
 }
 

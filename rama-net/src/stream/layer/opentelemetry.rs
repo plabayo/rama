@@ -20,7 +20,7 @@ use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 use std::net::IpAddr;
-use std::{fmt, sync::Arc, time::SystemTime};
+use std::{sync::Arc, time::SystemTime};
 
 const NETWORK_CONNECTION_DURATION: &str = "network.server.connection_duration";
 const NETWORK_SERVER_TOTAL_CONNECTIONS: &str = "network.server.total_connections";
@@ -62,30 +62,11 @@ impl Metrics {
 }
 
 /// A layer that records network server metrics using OpenTelemetry.
+#[derive(Debug, Clone)]
 pub struct NetworkMetricsLayer<F = ()> {
     metrics: Arc<Metrics>,
     base_attributes: Vec<KeyValue>,
     attributes_factory: F,
-}
-
-impl<F: fmt::Debug> fmt::Debug for NetworkMetricsLayer<F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("NetworkMetricsLayer")
-            .field("metrics", &self.metrics)
-            .field("base_attributes", &self.base_attributes)
-            .field("attributes_factory", &self.attributes_factory)
-            .finish()
-    }
-}
-
-impl<F: Clone> Clone for NetworkMetricsLayer<F> {
-    fn clone(&self) -> Self {
-        Self {
-            metrics: self.metrics.clone(),
-            base_attributes: self.base_attributes.clone(),
-            attributes_factory: self.attributes_factory.clone(),
-        }
-    }
 }
 
 impl NetworkMetricsLayer {
@@ -171,6 +152,7 @@ impl<S, F: Clone> Layer<S> for NetworkMetricsLayer<F> {
 }
 
 /// A [`Service`] that records network server metrics using OpenTelemetry.
+#[derive(Debug, Clone)]
 pub struct NetworkMetricsService<S, F = ()> {
     inner: S,
     metrics: Arc<Metrics>,
@@ -185,28 +167,6 @@ impl<S> NetworkMetricsService<S, ()> {
     }
 
     define_inner_service_accessors!();
-}
-
-impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for NetworkMetricsService<S, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NetworkMetricsService")
-            .field("inner", &self.inner)
-            .field("metrics", &self.metrics)
-            .field("base_attributes", &self.base_attributes)
-            .field("attributes_factory", &self.attributes_factory)
-            .finish()
-    }
-}
-
-impl<S: Clone, F: Clone> Clone for NetworkMetricsService<S, F> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            metrics: self.metrics.clone(),
-            base_attributes: self.base_attributes.clone(),
-            attributes_factory: self.attributes_factory.clone(),
-        }
-    }
 }
 
 impl<S, F> NetworkMetricsService<S, F> {

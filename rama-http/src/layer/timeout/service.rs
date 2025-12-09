@@ -2,7 +2,6 @@ use super::TimeoutBody;
 use crate::{Request, Response, StatusCode};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 use std::time::Duration;
 
 /// Layer that applies the [`Timeout`] middleware which apply a timeout to requests.
@@ -46,6 +45,7 @@ impl<S> Layer<S> for TimeoutLayer {
 /// Middleware which apply a timeout to requests.
 ///
 /// See the [module docs](super) for an example.
+#[derive(Debug, Clone)]
 pub struct Timeout<S> {
     inner: S,
     timeout: Duration,
@@ -73,28 +73,6 @@ impl<S> Timeout<S> {
 
     define_inner_service_accessors!();
 }
-
-impl<S: fmt::Debug> fmt::Debug for Timeout<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Timeout")
-            .field("inner", &self.inner)
-            .field("timeout", &self.timeout)
-            .field("status_code", &self.status_code)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for Timeout<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            timeout: self.timeout,
-            status_code: self.status_code,
-        }
-    }
-}
-
-impl<S: Copy> Copy for Timeout<S> {}
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Timeout<S>
 where

@@ -2,26 +2,12 @@ use super::{Headers, IntoResponse};
 use crate::headers::ContentType;
 use crate::{Body, Response};
 use rama_utils::macros::impl_deref;
-use std::fmt;
 
 /// An HTML response.
 ///
 /// Will automatically get `Content-Type: application/javascript; charset=utf-8`.
+#[derive(Debug, Clone, Copy)]
 pub struct Script<T>(pub T);
-
-impl<T: fmt::Debug> fmt::Debug for Script<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Script").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for Script<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T: Copy> Copy for Script<T> {}
 
 impl_deref!(Script);
 

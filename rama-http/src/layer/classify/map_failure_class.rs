@@ -1,12 +1,12 @@
 use super::{ClassifiedResponse, ClassifyEos, ClassifyResponse};
 use crate::{HeaderMap, Response};
-use std::fmt;
 
 /// Response classifier that transforms the failure class of some other
 /// classifier.
 ///
 /// Created with [`ClassifyResponse::map_failure_class`] or
 /// [`ClassifyEos::map_failure_class`].
+#[derive(Debug, Clone)]
 pub struct MapFailureClass<C, F> {
     inner: C,
     f: F,
@@ -15,32 +15,6 @@ pub struct MapFailureClass<C, F> {
 impl<C, F> MapFailureClass<C, F> {
     pub(super) fn new(classify: C, f: F) -> Self {
         Self { inner: classify, f }
-    }
-}
-
-impl<C, F> fmt::Debug for MapFailureClass<C, F>
-where
-    C: fmt::Debug,
-    F: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MapFailureClass")
-            .field("inner", &self.inner)
-            .field("f", &self.f)
-            .finish()
-    }
-}
-
-impl<C, F> Clone for MapFailureClass<C, F>
-where
-    C: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            f: self.f.clone(),
-        }
     }
 }
 

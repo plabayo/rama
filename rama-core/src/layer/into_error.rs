@@ -2,8 +2,6 @@
 //!
 //! See [`MakeLayerError`] for more details.
 
-use std::fmt;
-
 /// Utility error trait to allow Rama layers
 /// to return a default error as well as a user-defined one,
 /// being it a [`Clone`]-able type or a [`Fn`] returning an error type.
@@ -23,6 +21,7 @@ pub trait MakeLayerError: sealed::Sealed + Send + Sync + 'static {
 
 /// A [`MakeLayerError`] implementation that
 /// returns a new error value every time.
+#[derive(Debug, Clone)]
 pub struct LayerErrorFn<F>(F);
 
 impl<F, E> LayerErrorFn<F>
@@ -32,24 +31,6 @@ where
 {
     pub(crate) const fn new(f: F) -> Self {
         Self(f)
-    }
-}
-
-impl<F> fmt::Debug for LayerErrorFn<F>
-where
-    F: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("LayerErrorFn").field(&self.0).finish()
-    }
-}
-
-impl<F> Clone for LayerErrorFn<F>
-where
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
     }
 }
 
@@ -67,25 +48,8 @@ where
 
 /// A [`MakeLayerError`] implementation that
 /// always returns clone of the same error value.
+#[derive(Debug, Clone)]
 pub struct LayerErrorStatic<E>(E);
-
-impl<E> fmt::Debug for LayerErrorStatic<E>
-where
-    E: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("LayerErrorStatic").field(&self.0).finish()
-    }
-}
-
-impl<E> Clone for LayerErrorStatic<E>
-where
-    E: Clone,
-{
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<E> LayerErrorStatic<E>
 where

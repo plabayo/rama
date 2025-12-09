@@ -66,26 +66,13 @@ where
 
 /// A [`ConnectorService`] which only job is to [`Box`]
 /// the created [`Service`] by the inner [`ConnectorService`].
+#[derive(Debug, Clone)]
 pub struct BoxedConnectorService<S>(S);
 
 impl<S> BoxedConnectorService<S> {
     /// Create a new [`BoxedConnector`].
     pub fn new(connector: S) -> Self {
         Self(connector)
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for BoxedConnectorService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("BoxedConnectorService")
-            .field(&self.0)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for BoxedConnectorService<S> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
     }
 }
 

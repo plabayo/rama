@@ -1,11 +1,10 @@
-use std::fmt;
-
 use super::{Limit, into_output::ErrorIntoOutputFn, policy::UnlimitedPolicy};
 use crate::Layer;
 
 /// Limit requests based on a [`Policy`].
 ///
 /// [`Policy`]: crate::layer::limit::Policy
+#[derive(Debug, Clone)]
 pub struct LimitLayer<P, F = ()> {
     policy: P,
     error_into_output: F,
@@ -37,28 +36,6 @@ impl LimitLayer<UnlimitedPolicy> {
     #[must_use]
     pub fn unlimited() -> Self {
         Self::new(UnlimitedPolicy::default())
-    }
-}
-
-impl<P: fmt::Debug, F: fmt::Debug> std::fmt::Debug for LimitLayer<P, F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LimitLayer")
-            .field("policy", &self.policy)
-            .field("self.error_into_output", &self.error_into_output)
-            .finish()
-    }
-}
-
-impl<P, F> Clone for LimitLayer<P, F>
-where
-    P: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            policy: self.policy.clone(),
-            error_into_output: self.error_into_output.clone(),
-        }
     }
 }
 

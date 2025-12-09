@@ -6,7 +6,7 @@ use std::{cmp, io};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// Combine a buffer with an IO, rewinding reads to use the buffer.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Rewind<T> {
     pre: Option<Bytes>,
     inner: T,

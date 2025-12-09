@@ -6,24 +6,9 @@ use std::fmt;
 use crate::address::{AsDomainRef, Domain};
 
 /// An efficient radix tree that can be used to match (sub)domains.
+#[derive(Debug, Clone)]
 pub struct DomainTrie<T> {
     trie: Trie<String, T>,
-}
-
-impl<T: fmt::Debug> fmt::Debug for DomainTrie<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DomainTrie")
-            .field("trie", &self.trie)
-            .finish()
-    }
-}
-
-impl<T: Clone> Clone for DomainTrie<T> {
-    fn clone(&self) -> Self {
-        Self {
-            trie: self.trie.clone(),
-        }
-    }
 }
 
 impl<T> Default for DomainTrie<T> {

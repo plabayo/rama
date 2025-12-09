@@ -44,7 +44,6 @@ use crate::{HeaderValue, Request, Response};
 use rama_core::{Layer, Service};
 use rama_http_headers::authorization::Credentials;
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// Layer that applies [`AddAuthorization`] which adds authorization to all requests using the
 /// [`Authorization`] header.
@@ -138,6 +137,7 @@ impl<S> Layer<S> for AddAuthorizationLayer {
 ///
 /// [`Authorization`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization
 /// [`SetRequestHeader`]: crate::layer::set_header::SetRequestHeader
+#[derive(Debug, Clone)]
 pub struct AddAuthorization<S> {
     inner: S,
     value: Option<HeaderValue>,
@@ -181,26 +181,6 @@ impl<S> AddAuthorization<S> {
         pub fn if_not_present(mut self, value: bool) -> Self {
             self.if_not_present = value;
             self
-        }
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for AddAuthorization<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AddAuthorization")
-            .field("inner", &self.inner)
-            .field("value", &self.value)
-            .field("if_not_present", &self.if_not_present)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for AddAuthorization<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            value: self.value.clone(),
-            if_not_present: self.if_not_present,
         }
     }
 }

@@ -42,7 +42,6 @@ use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
-use std::fmt;
 
 /// Different modes of normalizing paths
 #[derive(Debug, Copy, Clone)]
@@ -107,27 +106,10 @@ impl<S> Layer<S> for NormalizePathLayer {
 /// Middleware that normalizes paths.
 ///
 /// See the [module docs](self) for more details.
+#[derive(Debug, Clone)]
 pub struct NormalizePath<S> {
     mode: NormalizeMode,
     inner: S,
-}
-
-impl<S: fmt::Debug> fmt::Debug for NormalizePath<S> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("NormalizePath")
-            .field("mode", &self.mode)
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for NormalizePath<S> {
-    fn clone(&self) -> Self {
-        Self {
-            mode: self.mode,
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 impl<S> NormalizePath<S> {

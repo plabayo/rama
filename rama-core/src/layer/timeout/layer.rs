@@ -1,4 +1,4 @@
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use crate::{
     Layer,
@@ -8,30 +8,10 @@ use crate::{
 use super::{Timeout, error::Elapsed};
 
 /// Applies a timeout to requests via the supplied inner service.
+#[derive(Debug, Clone)]
 pub struct TimeoutLayer<F> {
     timeout: Option<Duration>,
     into_error: F,
-}
-
-impl<P: fmt::Debug> fmt::Debug for TimeoutLayer<P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TimeoutLayer")
-            .field("timeout", &self.timeout)
-            .field("into_error", &self.into_error)
-            .finish()
-    }
-}
-
-impl<F> Clone for TimeoutLayer<F>
-where
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            timeout: self.timeout,
-            into_error: self.into_error.clone(),
-        }
-    }
 }
 
 impl TimeoutLayer<LayerErrorStatic<Elapsed>> {

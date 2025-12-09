@@ -3,19 +3,8 @@ use crate::extensions::Extensions;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
 /// A matcher that matches if all of the inner matchers match.
+#[derive(Debug, Clone)]
 pub struct And<T>(T);
-
-impl<T: std::fmt::Debug> std::fmt::Debug for And<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("And").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for And<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<T> And<T> {
     /// Create a new `And` matcher.

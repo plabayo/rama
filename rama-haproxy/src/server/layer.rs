@@ -8,7 +8,7 @@ use rama_core::{
 };
 use rama_net::forwarded::{Forwarded, ForwardedElement};
 use rama_utils::macros::generate_set_and_with;
-use std::{fmt, net::SocketAddr};
+use std::net::SocketAddr;
 use tokio::io::AsyncReadExt;
 
 /// Layer to decode the HaProxy Protocol
@@ -53,6 +53,7 @@ impl<S> Layer<S> for HaProxyLayer {
 ///
 /// This service will decode the HaProxy Protocol header and pass the decoded
 /// information to the inner service.
+#[derive(Debug, Clone)]
 pub struct HaProxyService<S> {
     inner: S,
     peek: bool,
@@ -75,24 +76,6 @@ impl<S> HaProxyService<S> {
             self
         }
     );
-}
-
-impl<S: fmt::Debug> fmt::Debug for HaProxyService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HaProxyService")
-            .field("inner", &self.inner)
-            .field("peek", &self.peek)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for HaProxyService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            peek: self.peek,
-        }
-    }
 }
 
 impl<S, IO> Service<IO> for HaProxyService<S>

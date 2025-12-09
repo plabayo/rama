@@ -12,31 +12,10 @@ use crate::{ClientUnixSocketInfo, TokioUnixStream, UnixSocketInfo, UnixStream};
 use std::{convert::Infallible, path::PathBuf, sync::Arc};
 
 /// A connector which can be used to establish a Unix connection to a server.
+#[derive(Debug, Clone)]
 pub struct UnixConnector<ConnectorFactory = (), T = UnixTarget> {
     connector_factory: ConnectorFactory,
     target: T,
-}
-
-impl<ConnectorFactory: std::fmt::Debug, UnixTarget: std::fmt::Debug> std::fmt::Debug
-    for UnixConnector<ConnectorFactory, UnixTarget>
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UnixConnector")
-            .field("connector_factory", &self.connector_factory)
-            .field("target", &self.target)
-            .finish()
-    }
-}
-
-impl<ConnectorFactory: Clone, UnixTarget: Clone> Clone
-    for UnixConnector<ConnectorFactory, UnixTarget>
-{
-    fn clone(&self) -> Self {
-        Self {
-            connector_factory: self.connector_factory.clone(),
-            target: self.target.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +71,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let CreatedUnixStreamConnector { connector } = self
+        let connector = self
             .connector_factory
             .make_connector()
             .await
@@ -180,34 +159,6 @@ macro_rules! impl_stream_connector_either {
 
 ::rama_core::combinators::impl_either!(impl_stream_connector_either);
 
-/// Contains a `Connector` created by a [`UnixStreamConnectorFactory`],
-/// together with the [`Context`] used to create it in relation to.
-pub struct CreatedUnixStreamConnector<Connector> {
-    pub connector: Connector,
-}
-
-impl<Connector> std::fmt::Debug for CreatedUnixStreamConnector<Connector>
-where
-    Connector: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CreatedUnixStreamConnector")
-            .field("connector", &self.connector)
-            .finish()
-    }
-}
-
-impl<Connector> Clone for CreatedUnixStreamConnector<Connector>
-where
-    Connector: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            connector: self.connector.clone(),
-        }
-    }
-}
-
 /// Factory to create a [`UnixStreamConnector`]. This is used by the Unix
 /// stream service to create a stream within a specific [`Context`].
 ///
@@ -225,7 +176,7 @@ pub trait UnixStreamConnectorFactory: Send + Sync + 'static {
     /// Try to create a [`UnixStreamConnector`], and return an error or otherwise.
     fn make_connector(
         &self,
-    ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Self::Connector, Self::Error>> + Send + '_;
 }
 
 impl UnixStreamConnectorFactory for () {
@@ -234,9 +185,8 @@ impl UnixStreamConnectorFactory for () {
 
     fn make_connector(
         &self,
-    ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_
-    {
-        std::future::ready(Ok(CreatedUnixStreamConnector { connector: () }))
+    ) -> impl Future<Output = Result<Self::Connector, Self::Error>> + Send + '_ {
+        std::future::ready(Ok(()))
     }
 }
 
@@ -246,27 +196,8 @@ impl UnixStreamConnectorFactory for () {
 ///
 /// This struct cannot be created by third party crates
 /// and instead is to be used via other API's provided by this crate.
+#[derive(Debug, Clone)]
 pub struct UnixStreamConnectorCloneFactory<C>(pub(super) C);
-
-impl<C> std::fmt::Debug for UnixStreamConnectorCloneFactory<C>
-where
-    C: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("UnixStreamConnectorCloneFactory")
-            .field(&self.0)
-            .finish()
-    }
-}
-
-impl<C> Clone for UnixStreamConnectorCloneFactory<C>
-where
-    C: Clone,
-{
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<C> UnixStreamConnectorFactory for UnixStreamConnectorCloneFactory<C>
 where
@@ -277,11 +208,8 @@ where
 
     fn make_connector(
         &self,
-    ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_
-    {
-        std::future::ready(Ok(CreatedUnixStreamConnector {
-            connector: self.0.clone(),
-        }))
+    ) -> impl Future<Output = Result<Self::Connector, Self::Error>> + Send + '_ {
+        std::future::ready(Ok(self.0.clone()))
     }
 }
 
@@ -294,8 +222,7 @@ where
 
     fn make_connector(
         &self,
-    ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_
-    {
+    ) -> impl Future<Output = Result<Self::Connector, Self::Error>> + Send + '_ {
         (**self).make_connector()
     }
 }
@@ -314,14 +241,12 @@ macro_rules! impl_stream_connector_factory_either {
 
             async fn make_connector(
                 &self,
-            ) -> Result<CreatedUnixStreamConnector< Self::Connector>, Self::Error> {
+            ) -> Result<Self::Connector, Self::Error> {
                 match self {
                     $(
                         ::rama_core::combinators::$id::$param(s) => match s.make_connector().await {
                             Err(e) => Err(e.into()),
-                            Ok(CreatedUnixStreamConnector{ connector }) => Ok(CreatedUnixStreamConnector {
-                                connector: ::rama_core::combinators::$id::$param(connector),
-                            }),
+                            Ok(connector) => Ok(::rama_core::combinators::$id::$param(connector)),
                         },
                     )+
                 }

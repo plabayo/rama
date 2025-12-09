@@ -2,7 +2,6 @@ use super::DnsResolveMode;
 use crate::{HeaderName, Request};
 use rama_core::{Service, error::OpaqueError, extensions::ExtensionsMut};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// Service to support configuring the DNS resolve mode.
 ///
@@ -13,6 +12,7 @@ use std::fmt;
 /// to reoslve DNS even if it is not needed.
 ///
 /// See `Dns` (`rama_core`) and [`DnsResolveMode`] for more information.
+#[derive(Debug, Clone)]
 pub struct DnsResolveModeService<S> {
     inner: S,
     header_name: HeaderName,
@@ -25,23 +25,6 @@ impl<S> DnsResolveModeService<S> {
     }
 
     define_inner_service_accessors!();
-}
-
-impl<S: fmt::Debug> fmt::Debug for DnsResolveModeService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DnsResolveModeService")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for DnsResolveModeService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            header_name: self.header_name.clone(),
-        }
-    }
 }
 
 impl<Body, S> Service<Request<Body>> for DnsResolveModeService<S>

@@ -127,30 +127,11 @@ impl Metrics {
 }
 
 /// A layer that records http server metrics using OpenTelemetry.
+#[derive(Debug, Clone)]
 pub struct RequestMetricsLayer<F = ()> {
     metrics: Arc<Metrics>,
     base_attributes: Vec<KeyValue>,
     attributes_factory: F,
-}
-
-impl<F: fmt::Debug> fmt::Debug for RequestMetricsLayer<F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("RequestMetricsLayer")
-            .field("metrics", &self.metrics)
-            .field("base_attributes", &self.base_attributes)
-            .field("attributes_factory", &self.attributes_factory)
-            .finish()
-    }
-}
-
-impl<F: Clone> Clone for RequestMetricsLayer<F> {
-    fn clone(&self) -> Self {
-        Self {
-            metrics: self.metrics.clone(),
-            base_attributes: self.base_attributes.clone(),
-            attributes_factory: self.attributes_factory.clone(),
-        }
-    }
 }
 
 impl RequestMetricsLayer<()> {
@@ -236,6 +217,7 @@ impl<S, F: Clone> Layer<S> for RequestMetricsLayer<F> {
 }
 
 /// A [`Service`] that records [http] server metrics using OpenTelemetry.
+#[derive(Debug, Clone)]
 pub struct RequestMetricsService<S, F = ()> {
     inner: S,
     metrics: Arc<Metrics>,
@@ -250,28 +232,6 @@ impl<S> RequestMetricsService<S, ()> {
     }
 
     define_inner_service_accessors!();
-}
-
-impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for RequestMetricsService<S, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RequestMetricsService")
-            .field("inner", &self.inner)
-            .field("metrics", &self.metrics)
-            .field("base_attributes", &self.base_attributes)
-            .field("attributes_factory", &self.attributes_factory)
-            .finish()
-    }
-}
-
-impl<S: Clone, F: Clone> Clone for RequestMetricsService<S, F> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            metrics: self.metrics.clone(),
-            base_attributes: self.base_attributes.clone(),
-            attributes_factory: self.attributes_factory.clone(),
-        }
-    }
 }
 
 impl<S, F> RequestMetricsService<S, F> {

@@ -6,7 +6,6 @@ use rama_core::{
 };
 use rama_http::Request;
 use rama_net::address::ProxyAddress;
-use std::fmt;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which allows you to add a [`ProxyAddress`]
@@ -91,30 +90,11 @@ impl<S> Layer<S> for HttpProxyAddressLayer {
 ///
 /// [`Context`]: rama_core::Context
 /// [`HttpProxyConnectorLayer`]: crate::client::proxy::layer::HttpProxyConnectorLayer
+#[derive(Debug, Clone)]
 pub struct HttpProxyAddressService<S> {
     inner: S,
     proxy_info: Option<ProxyAddress>,
     preserve: bool,
-}
-
-impl<S: fmt::Debug> fmt::Debug for HttpProxyAddressService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpProxyAddressService")
-            .field("inner", &self.inner)
-            .field("address", &self.proxy_info)
-            .field("preserve", &self.preserve)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for HttpProxyAddressService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            proxy_info: self.proxy_info.clone(),
-            preserve: self.preserve,
-        }
-    }
 }
 
 impl<S> HttpProxyAddressService<S> {

@@ -8,19 +8,8 @@ use crate::{HeaderName, Response};
 use std::ops::Deref;
 
 /// Extractor to get a TypedHeader from the request.
+#[derive(Debug, Clone)]
 pub struct TypedHeader<H>(pub H);
-
-impl<H: std::fmt::Debug> std::fmt::Debug for TypedHeader<H> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("TypedHeader").field(&self.0).finish()
-    }
-}
-
-impl<H: Clone> Clone for TypedHeader<H> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<H, State> FromRequestContextRefPair<State> for TypedHeader<H>
 where

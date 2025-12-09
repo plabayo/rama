@@ -2,8 +2,6 @@
 //!
 //! See [`Limit`].
 
-use std::fmt;
-
 use crate::Service;
 use crate::error::BoxError;
 use into_output::{ErrorIntoOutput, ErrorIntoOutputFn};
@@ -22,6 +20,7 @@ mod into_output;
 /// Limit requests based on a [`Policy`].
 ///
 /// [`Policy`]: crate::layer::limit::Policy
+#[derive(Debug, Clone)]
 pub struct Limit<S, P, F = ()> {
     inner: S,
     policy: P,
@@ -61,31 +60,6 @@ impl<T> Limit<T, UnlimitedPolicy, ()> {
             inner,
             policy: UnlimitedPolicy,
             error_into_output: (),
-        }
-    }
-}
-
-impl<T: fmt::Debug, P: fmt::Debug, F: fmt::Debug> fmt::Debug for Limit<T, P, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Limit")
-            .field("inner", &self.inner)
-            .field("policy", &self.policy)
-            .field("error_into_output", &self.error_into_output)
-            .finish()
-    }
-}
-
-impl<T, P, F> Clone for Limit<T, P, F>
-where
-    T: Clone,
-    P: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            policy: self.policy.clone(),
-            error_into_output: self.error_into_output.clone(),
         }
     }
 }

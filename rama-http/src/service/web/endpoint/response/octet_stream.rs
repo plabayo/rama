@@ -6,7 +6,6 @@ use rama_core::futures::TryStream;
 use rama_core::stream::io::ReaderStream;
 use rama_error::BoxError;
 use rama_http_headers::{ContentDisposition, ContentLength, ContentRange, Error, HeaderMapExt};
-use std::fmt;
 use std::ops::RangeBounds;
 use std::path::Path;
 use tokio::fs::File;
@@ -73,7 +72,7 @@ use tokio::fs::File;
 /// # Ok(())
 /// # }
 /// ```
-///
+#[derive(Debug, Clone)]
 pub struct OctetStream<S> {
     stream: S,
     filename: Option<String>,
@@ -293,26 +292,6 @@ impl<S> OctetStream<S> {
         octet_stream
             .try_into_range_response(start..end)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for OctetStream<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OctetStream")
-            .field("stream", &self.stream)
-            .field("filename", &self.filename)
-            .field("content_size", &self.content_size)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for OctetStream<S> {
-    fn clone(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
-            filename: self.filename.clone(),
-            content_size: self.content_size,
-        }
     }
 }
 

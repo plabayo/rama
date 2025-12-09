@@ -7,7 +7,6 @@ use rama_core::error::OpaqueError;
 use rama_http_headers::ContentType;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;
-use std::fmt;
 
 use super::Headers;
 
@@ -59,19 +58,8 @@ use super::Headers;
 ///     }
 /// }
 /// ```
+#[derive(Debug, Clone, Copy)]
 pub struct Csv<T>(pub T);
-
-impl<T: fmt::Debug> fmt::Debug for Csv<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Csv").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for Csv<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl_deref!(Csv);
 

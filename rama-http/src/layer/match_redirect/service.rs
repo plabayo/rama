@@ -1,5 +1,3 @@
-use std::fmt;
-
 use crate::service::web::response::{Headers, IntoResponse};
 use crate::utils::request_uri;
 use crate::{Body, Request, Response, StatusCode, StreamingBody};
@@ -18,38 +16,11 @@ use rama_utils::macros::define_inner_service_accessors;
 /// instead makes serves the request and produces a response.
 ///
 /// [`Uri`]: crate::Uri
+#[derive(Debug, Clone)]
 pub struct UriMatchRedirectService<R, S> {
     status_code: StatusCode,
     match_replace: R,
     inner: S,
-}
-
-impl<R, S> fmt::Debug for UriMatchRedirectService<R, S>
-where
-    R: fmt::Debug,
-    S: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UriMatchRedirectService")
-            .field("status_code", &self.status_code)
-            .field("match_replace", &self.match_replace)
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<R, S> Clone for UriMatchRedirectService<R, S>
-where
-    R: Clone,
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            status_code: self.status_code,
-            match_replace: self.match_replace.clone(),
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 impl<R, S> UriMatchRedirectService<R, S> {
