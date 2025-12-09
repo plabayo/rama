@@ -465,6 +465,8 @@ impl KeepAlive {
                     warn!(
                         "h2 ping KeepAlive::maybe_ping: last read at expected for state init update check, but not found; report bug in rama"
                     );
+                    cx.waker().wake_by_ref(); // schedule us again
+                    return;
                 }
 
                 if !self.while_idle && is_idle {
