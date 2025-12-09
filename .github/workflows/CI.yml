@@ -233,6 +233,21 @@ jobs:
       - name: Run tests
         run: cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
 
+  test-ignored-release:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+      - name: Run tests
+        run: cargo test --features=cli,http-full,proxy-full,rustls --release --workspace -- --ignored
+
   test-ignored-macos:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
@@ -487,6 +502,7 @@ jobs:
       - test-beta
       - test-examples-msrv
       - test-ignored
+      - test-ignored-release
       - test-docs
       - test-ws-autobahn-client
       - test-ws-autobahn-server

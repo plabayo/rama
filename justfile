@@ -73,6 +73,9 @@ test-spec: test-spec-h2
 test-ignored:
 	cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
 
+test-ignored-release:
+	cargo test --features=cli,http-full,proxy-full,rustls --release --workspace -- --ignored
+
 test-loom:
 	RUSTFLAGS="--cfg loom -Dwarnings" cargo test --all-features -p rama-utils
 
@@ -86,7 +89,7 @@ qa-crate CRATE:
     just doc-crate {{CRATE}}
     just test-crate {{CRATE}}
 
-qa-full: qa hack test-ignored test-loom fuzz-60s check-links
+qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 clean:
     cargo clean
