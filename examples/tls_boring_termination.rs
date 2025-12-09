@@ -35,7 +35,7 @@ use rama::{
     extensions::ExtensionsRef,
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer},
-    layer::{ConsumeErrLayer, GetExtensionLayer},
+    layer::{ConsumeErrLayer, GetInputExtensionLayer},
     net::{
         forwarded::Forwarded,
         stream::SocketInfo,
@@ -86,7 +86,7 @@ async fn main() {
     shutdown.spawn_task_fn(async move |guard| {
         let tcp_service = (
             TlsAcceptorLayer::new(acceptor_data).with_store_client_hello(true),
-            GetExtensionLayer::new(async move |st: SecureTransport| {
+            GetInputExtensionLayer::new(async move |st: SecureTransport| {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
