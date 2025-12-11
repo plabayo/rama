@@ -144,7 +144,8 @@ impl fmt::Debug for Stream {
             .h2_field_some("next_open", &self.next_open)
             .h2_field_if("is_pending_open", self.is_pending_open)
             .h2_field_if("is_pending_push", self.is_pending_push)
-            .field("extensions", &self.extensions)
+            // DO NOT expose extensions as-is to debug, depending on what's there it can blow up logs
+            // .field("extensions", &self.extensions)
             .h2_field_some("next_pending_accept", &self.next_pending_accept)
             .h2_field_if("is_pending_accept", self.is_pending_accept)
             .field("recv_flow", &self.recv_flow)
