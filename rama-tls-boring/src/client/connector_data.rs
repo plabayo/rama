@@ -75,7 +75,7 @@ impl TlsConnectorData {
 /// This builder is very powerful and is capable of stacking other builders. Using it
 /// this way gives each layer the option to modify what is needed in an efficient way.
 pub struct TlsConnectorDataBuilder {
-    base_builders: Vec<Arc<TlsConnectorDataBuilder>>,
+    base_builders: Vec<Arc<Self>>,
     server_verify_mode: Option<ServerVerifyMode>,
     keylog_intent: Option<KeyLogIntent>,
     cipher_list: Option<Vec<u16>>,

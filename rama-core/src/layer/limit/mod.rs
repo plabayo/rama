@@ -153,11 +153,11 @@ mod tests {
         let (result_1, result_2) = zip(future_1, future_2).await;
 
         // check that one input succeeded and the other failed
-        if result_1.is_err() {
-            assert_eq!(result_2.unwrap(), "Hello");
-        } else {
-            assert_eq!(result_1.unwrap(), "Hello");
+        if let Ok(value_1) = result_1 {
+            assert_eq!(value_1, "Hello");
             assert!(result_2.is_err());
+        } else {
+            assert_eq!(result_2.unwrap(), "Hello");
         }
     }
 

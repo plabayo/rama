@@ -1540,15 +1540,15 @@ impl_peq! {
 impl PartialOrd for ArcStr {
     #[inline]
     #[allow(clippy::non_canonical_partial_ord_impl)]
-    fn partial_cmp(&self, s: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.as_str().cmp(s.as_str()))
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for ArcStr {
     #[inline]
-    fn cmp(&self, s: &Self) -> std::cmp::Ordering {
-        self.as_str().cmp(s.as_str())
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
     }
 }
 

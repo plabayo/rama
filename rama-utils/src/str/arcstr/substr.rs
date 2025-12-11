@@ -563,7 +563,7 @@ impl PartialOrd for Substr {
     #[inline]
     #[allow(clippy::non_canonical_partial_ord_impl)]
     fn partial_cmp(&self, s: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.as_str().cmp(s.as_str()))
+        Some(self.cmp(s))
     }
 }
 
