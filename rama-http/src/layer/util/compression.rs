@@ -7,6 +7,7 @@ use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 use rama_core::futures::ready;
 use rama_core::stream::io::StreamReader;
+use std::io::ErrorKind;
 use std::{
     io,
     pin::Pin,
@@ -129,7 +130,16 @@ where
                         // an underlying body error
                         unreachable!()
                     } else if *read_some_data {
-                        return Poll::Ready(Some(Err(err.into())));
+                        if err.kind() == ErrorKind::UnexpectedEof
+                            && M::get_pin_mut(this.read.as_mut())
+                                .get_pin_mut()
+                                .inner
+                                .yielded_all_data
+                        {
+                            *this.read_all_data = true;
+                        } else {
+                            return Poll::Ready(Some(Err(err.into())));
+                        }
                     }
                 }
             }

@@ -41,7 +41,8 @@ use rama::{
         Body, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
-            compress_adapter::CompressAdaptLayer,
+            compression::CompressionLayer,
+            decompression::DecompressionLayer,
             har::{
                 self,
                 layer::HARExportLayer,
@@ -267,7 +268,7 @@ fn new_http_mitm_proxy(
         UserAgentEmulateLayer::new(state.ua_db.clone())
             .with_try_auto_detect_user_agent(true)
             .with_is_optional(true),
-        CompressAdaptLayer::default(),
+        CompressionLayer::new(),
         AddRequiredRequestHeadersLayer::new(),
         EmulateTlsProfileLayer::new(),
     )
@@ -313,6 +314,8 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     let client = (
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
+        MapResponseBodyLayer::new(Body::new),
+        DecompressionLayer::new(),
         state.har_layer.clone(),
     )
         .into_layer(client);
