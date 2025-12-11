@@ -40,7 +40,8 @@ use rama::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
-            compress_adapter::CompressAdaptLayer,
+            compression::CompressionLayer,
+            decompression::DecompressionLayer,
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -206,7 +207,7 @@ fn new_http_mitm_proxy() -> impl Service<Request, Output = Response, Error = Inf
         ConsumeErrLayer::default(),
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
-        CompressAdaptLayer::default(),
+        CompressionLayer::new(),
         AddRequiredRequestHeadersLayer::new(),
     )
         .into_layer(service_fn(http_mitm_proxy))
@@ -232,6 +233,12 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_tls_support_using_rustls(Some(tls_config))
         .with_default_http_connector()
         .build_client();
+
+    let client = (
+        MapResponseBodyLayer::new(Body::new),
+        DecompressionLayer::new(),
+    )
+        .into_layer(client);
 
     match client.serve(req).await {
         Ok(resp) => Ok(resp),
