@@ -246,7 +246,9 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
         .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
-    https_service.serve(upgraded).await.expect("infallible");
+    if let Err(err) = https_service.serve(upgraded).await {
+        tracing::error!("https service failed with an error: {err}");
+    }
 
     Ok(())
 }
