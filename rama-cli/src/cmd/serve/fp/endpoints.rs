@@ -67,8 +67,8 @@ pub(super) async fn get_consent() -> impl IntoResponse {
                 </p>
                     You can also make use of the echo service for developers at:
                     <ul>
-                        <li><a href="http://echo.ramaproxy.org:80">http://echo.ramaproxy.org</a>: echo service, plain-text</li>
-                        <li><a href="https://echo.ramaproxy.org:443">https://echo.ramaproxy.org</a>: echo service, TLS</li>
+                        <li><a href="http://echo.ramaproxy.org:80">http://echo.ramaproxy.org</a>: echo service, plain-text (incl. WS support)</li>
+                        <li><a href="https://echo.ramaproxy.org:443">https://echo.ramaproxy.org</a>: echo service, TLS (incl. WSS support)</li>
                     </ul>
                 </p>
                 </p>
@@ -78,10 +78,17 @@ pub(super) async fn get_consent() -> impl IntoResponse {
                         <li><a href="https://ipv6.ramaproxy.org">https://ipv6.ramaproxy.org</a>: return your pubic IPv6 address</li>
                     </ul>
                 </p>
+                <p>
+                    We also have a small HTTP(S) test service:
+                    <ul>
+                        <li><a href="http://http-test.ramaproxy.org:80">http://http-test.ramaproxy.org</a>: http test service, plain-text</li>
+                        <li><a href="https://http-test.ramaproxy.org:443">https://http-test.ramaproxy.org</a>: https test service, TLS</li>
+                    </ul>
+                </p>
                 <p>You can learn move about rama at in
                     <a href="https://ramaproxy.org/book">the rama book</a>.
                     And the source code for this service is available at
-                    <a href="https://github.com/plabayo/rama/tree/main/rama-fp">https://github.com/plabayo/rama/tree/main/rama-fp</a>.
+                    <a href="https://github.com/plabayo/rama">https://github.com/plabayo/rama</a>.
                 </p>
             </div>
             <div class="small">

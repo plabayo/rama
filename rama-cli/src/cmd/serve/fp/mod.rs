@@ -99,7 +99,7 @@ pub struct CliCommandFingerprint {
     http_version: HttpVersion,
 
     #[arg(long, short = 's')]
-    /// run echo service in secure mode (enable TLS)
+    /// run service in secure mode (enable TLS)
     secure: bool,
 }
 
