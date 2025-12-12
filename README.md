@@ -149,6 +149,31 @@ If your organisation relies on rama or plans to, we offer:
 
 > 📩 Contact us at [hello@plabayo.tech](mailto:hello@plabayo.tech) to discuss your needs.
 
+### Partnership Models
+
+We offer sustainable service contracts designed to fit different organizational needs:
+
+| | The Insurance | The Partner (Recommended) | Fractional Team |
+| :--- | :---: | :---: | :---: |
+| **Cost** | **€2,500 / mo** | **€5,000 / mo** | **€10,000 / mo** |
+| **Support** | Email/GitHub (24h) | Includes *Insurance* + Discord | Corperate IM |
+| **Maintenance** | Keep Rama up to date | Includes *Insurance* + Pro-active improvements | Includes *The Partner* |
+| **Strategy** | — | Bi-weekly Architecture Calls (30 min) | Join Sprint Planning |
+| **Development** | — | Opportunity Scanning | **1 Day / Week** Focus (Rama) |
+| **Deadlines** | — | Best Effort | Priority Handling |
+| **Hourly Discount** | — | ✅ Included | ✅ Included |
+
+> *10% discount available for annual commitments (no refunds).*
+
+### Retainer Benefits (Hourly Rates)
+
+Partners (Tier 2 and above) unlock discounted rates for specialized work beyond the retainer scope:
+
+* **Rama Priority Work:** **€112.50/hr** (Standard: €150) — *25% Discount*
+    * *Scope: Feature development or bug fixes within Rama core.*
+* **Private Integration:** **€180.00/hr** (Standard: €200) — *10% Discount*
+    * *Scope: Private meetings, mentoring, code reviews, and custom integration.*
+
 ## 🧪 | Experimental
 
 🦙 rama (ラマ) is to be considered experimental software for the foreseeable future.
