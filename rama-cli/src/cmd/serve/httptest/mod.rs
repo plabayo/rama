@@ -91,7 +91,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
         .with_get(
             "/response-compression",
             endpoint::response_compression::service(),
-        );
+        )
+        .with_get("/response-stream", endpoint::response_stream::service());
 
     let http_service = middlewares.into_layer(router);
 

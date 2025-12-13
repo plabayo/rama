@@ -130,7 +130,7 @@ pub(in crate::cmd::serve::httptest) fn service()
                         response payload which is compressed (only when requested)</a>.
                     </li>
                     <li>
-                        <a href="/response-stream">Response Payload Stream</a> (with compression support):
+                        <a href="/response-stream">Response Payload Stream</a>:
                         <ul>
                             <li>For <code>HTTP 0.9</code> and <code>HTTP 1.0</code>: until <code>EOF</code>;</li>
                             <li>For <code>HTTP 1.1</code>: chunked encoding;</li>
