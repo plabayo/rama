@@ -80,7 +80,7 @@ async fn main() {
     graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
 
-        let router = Arc::new(Router::new().match_route(
+        let router = Arc::new(Router::new().with_match_route(
             "/test",
             HttpMatcher::method_get().or_method_post(),
             handlers::test,

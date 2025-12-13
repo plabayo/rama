@@ -1,10 +1,10 @@
 use super::IntoResponse;
-use super::extract::{FromRequest, FromRequestContextRefPair};
+use super::extract::{FromPartsStateRefPair, FromRequest};
 use crate::{Request, Response};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
 // Generic T = (Function, Input, Output)
-// Input = ((FromRequestContextRefPair), (FromRequest))
+// Input = ((FromPartsStateRefPair), (FromRequest))
 
 /// [`rama_core::Service`] implemented for functions taking extractors.
 pub trait EndpointServiceFn<T, State>:
@@ -40,7 +40,7 @@ macro_rules! impl_endpoint_service_fn_tuple {
                 R: Future<Output = O> + Send + 'static,
                 O: IntoResponse + Send + Sync + 'static,
                 State: Send + Sync + 'static,
-                $($ty: FromRequestContextRefPair<State>),+,
+                $($ty: FromPartsStateRefPair<State>),+,
         {
         }
     };
@@ -58,7 +58,7 @@ macro_rules! impl_endpoint_service_fn_tuple_with_from_request {
                 O: IntoResponse + Send + Sync + 'static,
                 I: FromRequest,
                 State: Send + Sync + 'static,
-                $($ty: FromRequestContextRefPair<State>),+,
+                $($ty: FromPartsStateRefPair<State>),+,
         {
         }
     };
@@ -115,12 +115,12 @@ mod private {
                     R: Future<Output = O> + Send + 'static,
                     O: IntoResponse + Send + Sync + 'static,
                     State: Send + Sync,
-                    $($ty: FromRequestContextRefPair<State>),+,
+                    $($ty: FromPartsStateRefPair<State>),+,
             {
 
                 async fn call(&self, req: Request, state: &State) -> Response {
                         let (parts, _body) = req.into_parts();
-                        $(let $ty = match $ty::from_request_context_ref_pair(&parts, &state).await {
+                        $(let $ty = match $ty::from_parts_state_ref_pair(&parts, &state).await {
                             Ok(v) => v,
                             Err(r) => return r.into_response(),
                         });+;
@@ -142,12 +142,12 @@ mod private {
                     O: IntoResponse + Send + Sync + 'static,
                     I: FromRequest,
                     State: Send + Sync,
-                    $($ty: FromRequestContextRefPair<State>),+,
+                    $($ty: FromPartsStateRefPair<State>),+,
             {
 
                 async fn call(&self, req: Request, state: &State) -> Response {
                         let (parts, body) = req.into_parts();
-                        $(let $ty = match $ty::from_request_context_ref_pair(&parts, &state).await {
+                        $(let $ty = match $ty::from_parts_state_ref_pair(&parts, &state).await {
                             Ok(v) => v,
                             Err(r) => return r.into_response(),
                         });+;

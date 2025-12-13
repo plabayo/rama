@@ -12,6 +12,7 @@ use rama::{
             catch_panic::CatchPanicLayer, required_header::AddRequiredResponseHeadersLayer,
             set_header::SetResponseHeaderLayer, trace::TraceLayer,
         },
+        matcher::HttpMatcher,
         server::HttpServer,
         service::web::{Router, response::IntoResponse},
     },
@@ -30,7 +31,7 @@ use rama::{
 use clap::Args;
 use std::{convert::Infallible, time::Duration};
 
-use crate::utils::tls::try_new_server_config;
+use crate::utils::{http::HttpVersion, tls::try_new_server_config};
 
 mod endpoint;
 
@@ -46,6 +47,10 @@ pub struct CliCommandHttpTest {
     ///
     /// (0 = no limit)
     concurrent: usize,
+
+    /// http version to serve FP Service from
+    #[arg(long, default_value = "auto")]
+    http_version: HttpVersion,
 
     #[arg(short = 't', long, default_value_t = 60.)]
     /// the timeout in seconds for each connection
@@ -72,7 +77,21 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
         ConsumeErrLayer::trace(tracing::Level::WARN),
     );
 
-    let router = Router::new().with_get("/", endpoint::index::service());
+    let router = Router::new()
+        .with_get("/", endpoint::index::service())
+        .with_match_route(
+            "/method",
+            HttpMatcher::custom(true),
+            endpoint::method::handler,
+        )
+        .with_sub_service(
+            "/request-compression",
+            endpoint::request_compression::service(),
+        )
+        .with_get(
+            "/response-compression",
+            endpoint::response_compression::service(),
+        );
 
     let http_service = middlewares.into_layer(router);
 
@@ -90,12 +109,20 @@ where
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {
-            try_new_server_config(Some(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-                ApplicationProtocol::HTTP_10,
-                ApplicationProtocol::HTTP_09,
-            ]))
+            try_new_server_config(Some(match cfg.http_version {
+                HttpVersion::Auto => vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11,
+                    ApplicationProtocol::HTTP_10,
+                    ApplicationProtocol::HTTP_09,
+                ],
+                HttpVersion::H1 => vec![
+                    ApplicationProtocol::HTTP_11,
+                    ApplicationProtocol::HTTP_10,
+                    ApplicationProtocol::HTTP_09,
+                ],
+                HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+            }))
         })
         .transpose()?;
 
@@ -134,19 +161,50 @@ where
         tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
     );
 
-    graceful.into_spawn_task_fn(async move |guard| {
-        tracing::info!(
-            network.local.address = %bind_address.ip(),
-            network.local.port = %bind_address.port(),
-            "HTTP Test Service (auto) listening: bind interface = {}", cfg.bind,
-        );
-        tcp_listener
-            .serve_graceful(
-                guard.clone(),
-                tcp_service_builder
-                    .into_layer(HttpServer::auto(Executor::graceful(guard)).service(http_service)),
-            )
-            .await;
+    graceful.into_spawn_task_fn(async move |guard| match cfg.http_version {
+        HttpVersion::Auto => {
+            tracing::info!(
+                network.local.address = %bind_address.ip(),
+                network.local.port = %bind_address.port(),
+                "HTTP Test Service (auto) listening: bind interface = {}", cfg.bind,
+            );
+            tcp_listener
+                .serve_graceful(
+                    guard.clone(),
+                    tcp_service_builder.into_layer(
+                        HttpServer::auto(Executor::graceful(guard)).service(http_service),
+                    ),
+                )
+                .await;
+        }
+        HttpVersion::H1 => {
+            tracing::info!(
+                network.local.address = %bind_address.ip(),
+                network.local.port = %bind_address.port(),
+                "HTTP Test Service (<= HTTP/1.1) listening: bind interface = {}", cfg.bind,
+            );
+            tcp_listener
+                .serve_graceful(
+                    guard,
+                    tcp_service_builder.into_layer(HttpServer::http1().service(http_service)),
+                )
+                .await;
+        }
+        HttpVersion::H2 => {
+            tracing::info!(
+                network.local.address = %bind_address.ip(),
+                network.local.port = %bind_address.port(),
+                "HTTP Test Service (h2) listening: bind interface = {}", cfg.bind,
+            );
+            tcp_listener
+                .serve_graceful(
+                    guard.clone(),
+                    tcp_service_builder.into_layer(
+                        HttpServer::h2(Executor::graceful(guard)).service(http_service),
+                    ),
+                )
+                .await;
+        }
     });
 
     Ok(())

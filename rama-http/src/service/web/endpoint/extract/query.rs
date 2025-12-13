@@ -1,6 +1,6 @@
 //! Module in function of the [`Query`] extractor.
 
-use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
+use super::{FromPartsStateRefPair, OptionalFromPartsStateRefPair};
 use crate::request::Parts;
 use crate::utils::macros::define_http_rejection;
 use serde::de::DeserializeOwned;
@@ -33,14 +33,14 @@ where
     }
 }
 
-impl<T, State> FromRequestContextRefPair<State> for Query<T>
+impl<T, State> FromPartsStateRefPair<State> for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync,
 {
     type Rejection = FailedToDeserializeQueryString;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
@@ -49,14 +49,14 @@ where
     }
 }
 
-impl<T, State> OptionalFromRequestContextRefPair<State> for Query<T>
+impl<T, State> OptionalFromPartsStateRefPair<State> for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync,
 {
     type Rejection = FailedToDeserializeQueryString;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Option<Self>, Self::Rejection> {

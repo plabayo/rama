@@ -11,7 +11,7 @@ use rama_core::error::BoxError;
 use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
-use rama_http_headers::{ContentDisposition, ContentType};
+use rama_http_headers::{ContentDisposition, ContentLength, ContentType, HeaderMapExt};
 use rama_http_types::InfiniteReader;
 use rama_http_types::mime;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
@@ -133,44 +133,40 @@ impl IntoResponse for Box<str> {
 
 impl IntoResponse for Cow<'static, str> {
     fn into_response(self) -> Response {
+        let len = self.len();
         let mut res = Body::from(self).into_response();
-        res.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
-        );
+        res.headers_mut().typed_insert(ContentType::text_utf8());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
         res
     }
 }
 
 impl IntoResponse for ArcStr {
     fn into_response(self) -> Response {
+        let len = self.len();
         let mut res = Body::from(self).into_response();
-        res.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
-        );
+        res.headers_mut().typed_insert(ContentType::text_utf8());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
         res
     }
 }
 
 impl IntoResponse for &ArcStr {
     fn into_response(self) -> Response {
+        let len = self.len();
         let mut res = Body::from(self).into_response();
-        res.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
-        );
+        res.headers_mut().typed_insert(ContentType::text_utf8());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
         res
     }
 }
 
 impl IntoResponse for Bytes {
     fn into_response(self) -> Response {
+        let len = self.len();
         let mut res = Body::from(self).into_response();
-        res.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(mime::APPLICATION_OCTET_STREAM.as_ref()),
-        );
+        res.headers_mut().typed_insert(ContentType::octet_stream());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
         res
     }
 }
@@ -291,11 +287,10 @@ impl IntoResponse for Box<[u8]> {
 
 impl IntoResponse for Cow<'static, [u8]> {
     fn into_response(self) -> Response {
+        let len = self.len();
         let mut res = Body::from(self).into_response();
-        res.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(mime::APPLICATION_OCTET_STREAM.as_ref()),
-        );
+        res.headers_mut().typed_insert(ContentType::octet_stream());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
         res
     }
 }

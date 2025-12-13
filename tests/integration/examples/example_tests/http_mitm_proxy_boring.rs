@@ -29,7 +29,7 @@ async fn test_http_mitm_proxy() {
             .listen(
                 "127.0.0.1:63003",
                 Router::new()
-                    .match_route(
+                    .with_match_route(
                         "/echo",
                         HttpMatcher::custom(WebSocketMatcher::new()),
                         ConsumeErrLayer::trace(Level::DEBUG)
@@ -63,7 +63,7 @@ async fn test_http_mitm_proxy() {
     let tcp_service = TlsAcceptorLayer::new(data).into_layer(
         http_tp.service(
             Router::new()
-                .match_route(
+                .with_match_route(
                     "/echo",
                     HttpMatcher::custom(WebSocketMatcher::new()),
                     ConsumeErrLayer::trace(Level::DEBUG).into_layer(
