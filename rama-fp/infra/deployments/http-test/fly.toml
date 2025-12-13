@@ -26,7 +26,6 @@ primary_region = 'fra'
 
   [[services.ports]]
     port = 80
-    handlers = ['proxy_proto']
 
 [[services]]
   protocol = 'tcp'
@@ -38,7 +37,6 @@ primary_region = 'fra'
 
   [[services.ports]]
     port = 443
-    handlers = ['proxy_proto']
 
 [[vm]]
   memory = '256mb'

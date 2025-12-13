@@ -138,6 +138,10 @@ pub(in crate::cmd::serve::httptest) fn service()
                         </ul>
                     </li>
                     <li>
+                        <a href="/response-stream-compression">Response Payload Stream With Compression</a>:
+                        Version of the Response Stream test with compression supported.
+                    </li>
+                    <li>
                         <a href="/sse">Server-Side Events</a> (SSE) version of the Response Stream test.
                     </li>
                 </ul>

@@ -54,6 +54,8 @@ async fn run_http_tests(base_uri: &'static str) {
         run_http_test_endpoint_request_compression(client.clone(), base_uri, http_version).await;
         run_http_test_endpoint_response_compression(client.clone(), base_uri, http_version).await;
         run_http_test_endpoint_response_stream(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_response_stream_compression(client.clone(), base_uri, http_version)
+            .await;
         run_http_test_endpoint_sse(client.clone(), base_uri, http_version).await;
     }
 }
@@ -185,6 +187,48 @@ async fn run_http_test_endpoint_response_stream(
     assert!(payload.contains("<title>Chunked transfer encoding test</title>"));
     assert!(payload.contains("This is a chunked response after 100 ms"));
     assert!(payload.contains("all chunks are sent to a client.</h5></body></html>"));
+}
+
+async fn run_http_test_endpoint_response_stream_compression(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &'static str,
+    http_version: Version,
+) {
+    let client = DecompressionLayer::new().into_layer(client);
+
+    for maybe_accept_encoding in [
+        None,
+        Some(AcceptEncoding::new_deflate()),
+        Some(AcceptEncoding::new_deflate().with_br(true)),
+        Some(AcceptEncoding::new_gzip()),
+        Some(AcceptEncoding::new_zstd()),
+        Some(AcceptEncoding::new_zstd().with_gzip(true)),
+        Some(AcceptEncoding::new_br()),
+        Some(AcceptEncoding::default()),
+    ] {
+        let req = client
+            .get(format!("{base_uri}/response-stream-compression"))
+            .version(http_version);
+
+        let req = if let Some(accept_encoding) =
+            maybe_accept_encoding.and_then(|ae| ae.maybe_to_header_value())
+        {
+            req.header(ACCEPT_ENCODING, accept_encoding)
+        } else {
+            req
+        };
+
+        let resp = req.send().await.unwrap();
+
+        assert_eq!(StatusCode::OK, resp.status());
+
+        assert!(!resp.headers().contains_key("content-length"));
+
+        let payload = resp.try_into_string().await.unwrap();
+        assert!(payload.contains("<title>Chunked transfer encoding test</title>"));
+        assert!(payload.contains("This is a chunked response after 100 ms"));
+        assert!(payload.contains("all chunks are sent to a client.</h5></body></html>"));
+    }
 }
 
 async fn run_http_test_endpoint_sse(
