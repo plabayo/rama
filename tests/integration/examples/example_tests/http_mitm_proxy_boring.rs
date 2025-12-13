@@ -1,12 +1,26 @@
+use std::{convert::Infallible, time::Duration};
+
 use super::utils;
+
 use rama::{
     Layer,
+    bytes::Bytes,
     extensions::Extensions,
+    futures::{StreamExt as _, async_stream::stream_fn},
     http::{
-        BodyExtractExt, Request,
+        Body, BodyExtractExt, Request, StatusCode, Version,
+        client::EasyHttpWebClient,
+        client::proxy::layer::SetProxyAuthHttpHeaderLayer,
+        headers::ContentType,
+        layer::compression::{CompressionLayer, predicate::Always},
+        layer::retry::{ManagedPolicy, RetryLayer},
         matcher::HttpMatcher,
         server::HttpServer,
-        service::web::{Router, response::Json},
+        service::client::HttpClientExt as _,
+        service::web::{
+            Router,
+            response::{Headers, IntoResponse as _, Json},
+        },
         ws::handshake::server::{WebSocketAcceptor, WebSocketMatcher},
     },
     layer::ConsumeErrLayer,
@@ -15,6 +29,7 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing::Level,
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 
 use serde_json::{Value, json};
@@ -41,6 +56,60 @@ async fn test_http_mitm_proxy() {
                             "path": req.uri().path(),
                         }))
                     }),
+            )
+            .await
+            .unwrap();
+    });
+
+    tokio::spawn(async {
+        HttpServer::http1()
+            .listen(
+                "127.0.0.1:63013",
+                (
+                    ConsumeErrLayer::default(),
+                    CompressionLayer::new().with_compress_predicate(Always::new()),
+                ).into_layer(Router::new()
+                    .with_get("/response-stream", async || {
+                        Ok::<_, Infallible>(
+                            (
+                                Headers::single(ContentType::html_utf8()),
+                                Body::from_stream(
+                                    stream_fn(move |mut yielder| async move {
+                                        yielder
+                                            .yield_item(Bytes::from_static(
+                                                b"<!DOCTYPE html>
+                <html lang=en>
+                <head>
+                <meta charset='utf-8'>
+                <title>Chunked transfer encoding test</title>
+                </head>
+                <body><h1>Chunked transfer encoding test</h1>",
+                                            ))
+                                            .await;
+
+                                        tokio::time::sleep(Duration::from_millis(100)).await;
+
+                                        yielder
+                                            .yield_item(Bytes::from_static(
+                                                b"<h5>This is a chunked response after 100 ms.</h5>",
+                                            ))
+                                            .await;
+
+                                        tokio::time::sleep(Duration::from_secs(1)).await;
+
+                                        yielder
+                                            .yield_item(Bytes::from_static(
+                                                b"<h5>This is a chunked response after 1 second.
+                The server should not close the stream before all chunks are sent to a client.</h5></body></html>",
+                                            ))
+                                            .await;
+                                    })
+                                    .map(Ok::<_, Infallible>),
+                                ),
+                            )
+                                .into_response(),
+                        )
+                    })),
             )
             .await
             .unwrap();
@@ -108,6 +177,40 @@ async fn test_http_mitm_proxy() {
 
     let mut extensions = Extensions::new();
     extensions.insert(proxy_address.clone());
+
+    // test transfer chunked encoding over MITM Proxy
+    for http_version in [Version::HTTP_10, Version::HTTP_11] {
+        let resp = (
+            SetProxyAuthHttpHeaderLayer::default(),
+            RetryLayer::new(
+                ManagedPolicy::default().with_backoff(
+                    ExponentialBackoff::new(
+                        Duration::from_millis(100),
+                        Duration::from_secs(60),
+                        0.01,
+                        HasherRng::default,
+                    )
+                    .unwrap(),
+                ),
+            ),
+        )
+            .into_layer(EasyHttpWebClient::default())
+            .get("http://127.0.0.1:63013/response-stream")
+            .version(http_version)
+            .extension(proxy_address.clone())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(StatusCode::OK, resp.status());
+
+        assert!(!resp.headers().contains_key("content-length"));
+
+        let payload = resp.try_into_string().await.unwrap();
+        assert!(payload.contains("<title>Chunked transfer encoding test</title>"));
+        assert!(payload.contains("This is a chunked response after 100 ms"));
+        assert!(payload.contains("all chunks are sent to a client.</h5></body></html>"));
+    }
 
     // test ws proxy flow
     let mut ws = runner
