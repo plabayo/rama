@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 use rama_core::conversion::FromRef;
 use rama_http_types::request::Parts;
 
-use crate::service::web::extract::FromRequestContextRefPair;
+use crate::service::web::extract::FromPartsStateRefPair;
 
 #[derive(Debug, Default, Clone, Copy)]
 /// Extractor for static State provided by the caller of [`IntoEndpointServiceWithState`]
@@ -13,14 +13,14 @@ use crate::service::web::extract::FromRequestContextRefPair;
 /// [`IntoEndpointServiceWithState`]: crate::service::web::IntoEndpointServiceWithState
 pub struct State<S>(pub S);
 
-impl<OuterState, InnerState> FromRequestContextRefPair<OuterState> for State<InnerState>
+impl<OuterState, InnerState> FromPartsStateRefPair<OuterState> for State<InnerState>
 where
     OuterState: Send + Sync,
     InnerState: FromRef<OuterState> + Send + Sync + 'static,
 {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         _parts: &Parts,
         state: &OuterState,
     ) -> Result<Self, Self::Rejection> {

@@ -1,18 +1,18 @@
 use crate::service::web::endpoint::IntoResponse;
 use crate::{Request, request::Parts};
 
-use super::{FromRequest, FromRequestContextRefPair};
+use super::{FromPartsStateRefPair, FromRequest};
 
-/// Customize the behavior of `Option<Self>` as a [`FromRequestContextRefPair`]
+/// Customize the behavior of `Option<Self>` as a [`FromPartsStateRefPair`]
 /// extractor.
-pub trait OptionalFromRequestContextRefPair<State>: Sized + Send + Sync + 'static {
+pub trait OptionalFromPartsStateRefPair<State>: Sized + Send + Sync + 'static {
     /// If the extractor fails, it will use this "rejection" type.
     ///
     /// A rejection is a kind of error that can be converted into a response.
     type Rejection: IntoResponse;
 
     /// Perform the extraction.
-    fn from_request_context_ref_pair(
+    fn from_parts_state_ref_pair(
         parts: &Parts,
         state: &State,
     ) -> impl Future<Output = Result<Option<Self>, Self::Rejection>> + Send;
@@ -31,17 +31,17 @@ pub trait OptionalFromRequest: Sized + Send + Sync + 'static {
     ) -> impl Future<Output = Result<Option<Self>, Self::Rejection>> + Send;
 }
 
-impl<T, State> FromRequestContextRefPair<State> for Option<T>
+impl<T, State> FromPartsStateRefPair<State> for Option<T>
 where
-    T: OptionalFromRequestContextRefPair<State>,
+    T: OptionalFromPartsStateRefPair<State>,
 {
     type Rejection = T::Rejection;
 
-    fn from_request_context_ref_pair(
+    fn from_parts_state_ref_pair(
         parts: &Parts,
         state: &State,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        T::from_request_context_ref_pair(parts, state)
+        T::from_parts_state_ref_pair(parts, state)
     }
 }
 

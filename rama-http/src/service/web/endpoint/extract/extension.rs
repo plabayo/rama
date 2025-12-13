@@ -1,6 +1,6 @@
-use super::FromRequestContextRefPair;
+use super::FromPartsStateRefPair;
 use crate::request::Parts;
-use crate::service::web::extract::OptionalFromRequestContextRefPair;
+use crate::service::web::extract::OptionalFromPartsStateRefPair;
 use crate::utils::macros::define_http_rejection;
 use rama_utils::macros::impl_deref;
 use std::convert::Infallible;
@@ -18,14 +18,14 @@ define_http_rejection! {
     pub struct MissingExtension;
 }
 
-impl<State, T> FromRequestContextRefPair<State> for Extension<T>
+impl<State, T> FromPartsStateRefPair<State> for Extension<T>
 where
     State: Send + Sync,
     T: Send + Sync + Clone + 'static,
 {
     type Rejection = MissingExtension;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
@@ -35,14 +35,14 @@ where
         }
     }
 }
-impl<State, T> OptionalFromRequestContextRefPair<State> for Extension<T>
+impl<State, T> OptionalFromPartsStateRefPair<State> for Extension<T>
 where
     State: Send + Sync,
     T: Send + Sync + Clone + 'static,
 {
     type Rejection = Infallible;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Option<Self>, Self::Rejection> {

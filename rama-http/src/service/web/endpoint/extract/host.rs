@@ -1,6 +1,6 @@
 //! Module in function of the [`Host`] extractor.
 
-use super::FromRequestContextRefPair;
+use super::FromPartsStateRefPair;
 use crate::utils::macros::define_http_rejection;
 use rama_http_types::request::Parts;
 use rama_net::address;
@@ -21,13 +21,13 @@ define_http_rejection! {
     pub struct MissingHost;
 }
 
-impl<State> FromRequestContextRefPair<State> for Host
+impl<State> FromPartsStateRefPair<State> for Host
 where
     State: Send + Sync,
 {
     type Rejection = MissingHost;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {

@@ -1,6 +1,6 @@
 //! Module in function of the [`Authority`] extractor.
 
-use super::FromRequestContextRefPair;
+use super::FromPartsStateRefPair;
 use crate::utils::macros::define_http_rejection;
 use rama_http_types::request::Parts;
 use rama_net::address;
@@ -21,13 +21,13 @@ define_http_rejection! {
     pub struct MissingAuthority;
 }
 
-impl<State> FromRequestContextRefPair<State> for Authority
+impl<State> FromPartsStateRefPair<State> for Authority
 where
     State: Send + Sync,
 {
     type Rejection = MissingAuthority;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {

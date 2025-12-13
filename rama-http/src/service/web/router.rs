@@ -80,7 +80,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_get();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a GET route to the router.
@@ -103,7 +103,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_post();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a POST route to the router.
@@ -124,7 +124,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_put();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a PUT route to the router.
@@ -145,7 +145,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_delete();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a DELETE route to the router.
@@ -166,7 +166,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_patch();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a PATCH route to the router.
@@ -187,7 +187,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_head();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a HEAD route to the router.
@@ -208,7 +208,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_options();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a OPTIONS route to the router.
@@ -229,7 +229,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_trace();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a TRACE route to the router.
@@ -250,7 +250,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_connect();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a CONNECT route to the router.
@@ -491,7 +491,7 @@ where
     /// add a route to the router with it's matcher and service.
     #[inline(always)]
     #[must_use]
-    pub fn match_route<I, T>(
+    pub fn with_match_route<I, T>(
         mut self,
         path: impl AsRef<str>,
         matcher: HttpMatcher<Body>,

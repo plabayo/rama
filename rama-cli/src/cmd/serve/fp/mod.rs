@@ -212,7 +212,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             "/api/xml/number/{number}",
             endpoints::post_api_xml_http_request_number,
         )
-        .match_route(
+        .with_match_route(
             "/form",
             HttpMatcher::method_get().or_method_post().and_path("/form"),
             endpoints::form,

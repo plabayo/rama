@@ -48,6 +48,27 @@ where
     }
 }
 
+/// Predicate to _always_ compress.
+#[derive(Debug, Clone, Default, Copy)]
+#[non_exhaustive]
+pub struct Always;
+
+impl Always {
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Predicate for Always {
+    fn should_compress<B>(&self, _response: &rama_http_types::Response<B>) -> bool
+    where
+        B: StreamingBody,
+    {
+        true
+    }
+}
+
 impl<T> Predicate for Option<T>
 where
     T: Predicate,

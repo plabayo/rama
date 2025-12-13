@@ -422,6 +422,7 @@ bytes = { workspace = true }
 derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
+flate2 = { workspace = true }
 futures-channel = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
