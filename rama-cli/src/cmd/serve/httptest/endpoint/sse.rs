@@ -109,23 +109,10 @@ fn html_web_page() -> Response {
         es.onopen = () => { statusEl.textContent = "Connected"; };
         es.onerror = () => { es.close(); statusEl.textContent = "Disconnected"; };
 
-        // If your server sends plain "data: buy milk" lines
         es.onmessage = (ev) => {
-        if (!ev.data) return;
-        addTodo(ev.data);
+            if (!ev.data) return;
+            addTodo(ev.data);
         };
-
-        // Optional: if your server uses named events like "event: todo"
-        es.addEventListener("todo", (ev) => {
-        if (!ev.data) return;
-        addTodo(ev.data);
-        });
-
-        // Optional: if your server sends JSON like {"text":"buy milk"}
-        // es.onmessage = (ev) => {
-        //   try { addTodo(JSON.parse(ev.data).text ?? ev.data); }
-        //   catch { addTodo(ev.data); }
-        // };
     </script>
     </body>
 </html>

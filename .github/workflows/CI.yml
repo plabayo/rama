@@ -244,7 +244,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
-        run: cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
+        run: cargo test --all-features --workspace -- --ignored
 
   test-ignored-release:
     needs: [check, check-msrv, check-all-features]
@@ -259,7 +259,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
-        run: cargo test --features=cli,http-full,proxy-full,rustls --release --workspace -- --ignored
+        run: cargo test --all-features --release --workspace -- --ignored
 
   test-ignored-macos:
     needs: [check, check-msrv, check-all-features]
@@ -274,7 +274,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
-        run: cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
+        run: cargo test --all-features --workspace -- --ignored
 
   # NOTE: port conflicts on windows runners...
   # ... once we can test without static ports we can try to do this.. again
@@ -292,7 +292,7 @@ jobs:
   #       with:
   #         env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
   #     - name: Run tests
-  #       run: cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
+  #       run: cargo test --all-features --workspace -- --ignored
 
   test-docs:
     needs: [check, check-msrv, check-all-features]

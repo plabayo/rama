@@ -132,17 +132,13 @@ pub(in crate::cmd::serve::httptest) fn service()
                     <li>
                         <a href="/response-stream">Response Payload Stream</a>:
                         <ul>
-                            <li>For <code>HTTP 0.9</code> and <code>HTTP 1.0</code>: until <code>EOF</code>;</li>
+                            <li>For <code>HTTP 1.0</code>: until <code>EOF</code>;</li>
                             <li>For <code>HTTP 1.1</code>: chunked encoding;</li>
                             <li>For <code>HTTP 2</code>: h2 data frames.</li>
                         </ul>
                     </li>
                     <li>
-                        <a href="/sse">Server-Side Events</a> (SSE) version of the Response Stream test:
-                        <ul>
-                            <li>For <code>HTTP 0.9</code> and <code>HTTP 1.0</code>: 400 bad request;</li>
-                            <li>For <code>HTTP 1.1</code> and <code>HTTP 2</code>: SSE response payload;</li>
-                        </ul>
+                        <a href="/sse">Server-Side Events</a> (SSE) version of the Response Stream test.
                     </li>
                 </ul>
                 </div>

@@ -11,6 +11,46 @@ pub struct AcceptEncoding {
 
 impl AcceptEncoding {
     #[must_use]
+    pub fn new_gzip() -> Self {
+        Self {
+            gzip: true,
+            deflate: false,
+            br: false,
+            zstd: false,
+        }
+    }
+
+    #[must_use]
+    pub fn new_deflate() -> Self {
+        Self {
+            gzip: false,
+            deflate: true,
+            br: false,
+            zstd: false,
+        }
+    }
+
+    #[must_use]
+    pub fn new_br() -> Self {
+        Self {
+            gzip: false,
+            deflate: false,
+            br: true,
+            zstd: false,
+        }
+    }
+
+    #[must_use]
+    pub fn new_zstd() -> Self {
+        Self {
+            gzip: false,
+            deflate: false,
+            br: false,
+            zstd: true,
+        }
+    }
+
+    #[must_use]
     pub fn maybe_to_header_value(self) -> Option<HeaderValue> {
         let accept = match (self.gzip(), self.deflate(), self.br(), self.zstd()) {
             (true, true, true, false) => "gzip,deflate,br",

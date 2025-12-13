@@ -71,10 +71,10 @@ test-spec-h2 *ARGS:
 test-spec: test-spec-h2
 
 test-ignored:
-	cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
+	cargo test --all-features --workspace -- --ignored
 
 test-ignored-release:
-	cargo test --features=cli,http-full,proxy-full,rustls --release --workspace -- --ignored
+	cargo test --all-features --release --workspace -- --ignored
 
 test-loom:
 	RUSTFLAGS="--cfg loom -Dwarnings" cargo test --all-features -p rama-utils
