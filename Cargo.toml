@@ -241,7 +241,7 @@ walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
 wildcard = "0.3"
-x509-parser = "0.18"
+x509-parser = { version = "0.18", default-features = false, features = ["aws-lc-rs", "verify", "verify-aws"] }
 zstd = "0.13"
 
 [workspace.lints.rust]
