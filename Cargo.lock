@@ -2884,6 +2884,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "webpki-roots",
+ "x509-parser",
 ]
 
 [[package]]

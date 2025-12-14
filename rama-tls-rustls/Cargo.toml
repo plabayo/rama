@@ -34,6 +34,7 @@ rustls-pki-types = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 
