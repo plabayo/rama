@@ -494,6 +494,12 @@ path = "benches/http_core_server.rs"
 required-features = ["full"]
 harness = false
 
+[[bench]]
+name = "e2e_h1_client_server"
+path = "benches/e2e_h1_client_server.rs"
+required-features = ["full"]
+harness = false
+
 [[example]]
 name = "acme_http_challenge"
 required-features = ["http-full", "boring", "acme"]
