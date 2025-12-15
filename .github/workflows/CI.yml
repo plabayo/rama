@@ -231,6 +231,49 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --workspace
 
+  test-windows-msrv-arm:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: windows-11-arm
+    steps:
+      - uses: ilammy/setup-nasm@v1
+
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
+        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
+        # https://github.com/cloudflare/boring/issues/414
+        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
+      - name: Pin some dependencies, temporary patch for cmake breakage
+        run: |
+          cargo update --package cmake --precise 0.1.54
+      - name: Run tests
+        run: cargo test --all-features --workspace
+
+  test-windows-arm:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: windows-11-arm
+    steps:
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
+        # https://github.com/cloudflare/boring/issues/414
+        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
+      - name: Pin some dependencies, temporary patch for cmake breakage
+        run: |
+          cargo update --package cmake --precise 0.1.54
+      - name: Run tests
+        run: cargo test --all-features --workspace
+
   test-ignored:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
