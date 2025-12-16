@@ -1710,13 +1710,13 @@ dependencies = [
 
 [[package]]
 name = "libredox"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "416f7e718bdb06000964960ffa43b4335ad4012ae8b99060261aa4a8088d5ccb"
+checksum = "df15f6eac291ed1cf25865b1ee60399f57e7c227e7f51bdbd4c5270396a9ed50"
 dependencies = [
  "bitflags",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.6.0",
 ]
 
 [[package]]
@@ -2115,7 +2115,7 @@ checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.5.18",
  "smallvec",
  "windows-link 0.2.1",
 ]
@@ -2429,9 +2429,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.5.7"
+version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab5365ba7f347e5479671a61946f2f05b2bf27a0fc1e4aae4b2bc6aa7fc68d6f"
+checksum = "bfc442485d9ae149fe9ca85b03dc0e799c223c40b117a40ca52dfc09fb8284f2"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -2442,9 +2442,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.5.7"
+version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a32a9e230faf2d66cf036b3e577eb465cfe72bbcf59ef58991aa30f9d89e799"
+checksum = "8c33d7b8ca2157d78f0d93d2d508e744427554b38d13e85c3a1698bdbcef5b8e"
 dependencies = [
  "bindgen",
  "cmake",
@@ -2454,9 +2454,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.5.7"
+version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3194b3de50bd6166e82d74c6de37a053e48b31ae90f2afe33649cd9e1149c772"
+checksum = "212b4d9ba66d623f575851fdeeb51ccdd6fa432d9b16bdddc062dffd2f6081d7"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -3087,6 +3087,15 @@ name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
+name = "redox_syscall"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec96166dafa0886eb81fe1c0a388bece180fbef2135f97c1e2cf8302e74b43b5"
 dependencies = [
  "bitflags",
 ]
