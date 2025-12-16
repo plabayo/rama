@@ -1,29 +1,20 @@
 use rama::{
-    Layer,
-    Service,
-    telemetry::tracing::{
-        self,
-        level_filters::LevelFilter,
-        subscriber::{
-            EnvFilter,
-            fmt,
-            layer::SubscriberExt,
-            util::SubscriberInitExt
-        },
-    },
+    Layer, Service,
     http::{
+        Body, Request,
+        client::EasyHttpWebClient,
         layer::{
-            trace::TraceLayer,
-            compression::CompressionLayer,
-            decompression::DecompressionLayer,
+            compression::CompressionLayer, decompression::DecompressionLayer, trace::TraceLayer,
         },
         server::HttpServer,
-        client::EasyHttpWebClient,
-        Request,
-        Body,
         service::web::WebService,
     },
     net::address::SocketAddress,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use tokio_test::block_on;
@@ -47,10 +38,7 @@ fn h1_client_server_small_payload(b: divan::Bencher) {
     setup_tracing();
     tokio::spawn(run_server());
 
-    let client = (
-        TraceLayer::new_for_http(),
-        DecompressionLayer::new(),
-    )
+    let client = (TraceLayer::new_for_http(), DecompressionLayer::new())
         .into_layer(EasyHttpWebClient::default());
 
     b.bench_local(|| block_on(get_small_payload(client.clone())));
@@ -68,14 +56,8 @@ fn setup_tracing() {
 }
 
 async fn run_server() {
-    let http_service = (
-        CompressionLayer::new(),
-        TraceLayer::new_for_http(),
-    )
-        .into_layer(
-            WebService::default()
-                .with_get("/small-payload", "Super small payload")
-        );
+    let http_service = (CompressionLayer::new(), TraceLayer::new_for_http())
+        .into_layer(WebService::default().with_get("/small-payload", "Super small payload"));
 
     HttpServer::http1()
         .listen(ADDRESS, http_service)
@@ -90,7 +72,5 @@ async fn get_small_payload(client: impl Service<Request>) {
         .body(Body::empty())
         .unwrap();
 
-    let _ = client
-        .serve(req)
-        .await;
+    let _ = client.serve(req).await;
 }
