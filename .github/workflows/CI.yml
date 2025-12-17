@@ -155,6 +155,9 @@ jobs:
             rust: stable
             custom_env:
               IPHONEOS_DEPLOYMENT_TARGET: 17.5
+    needs:
+      - precheck-rust
+      - precheck-docs
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: -D warnings
