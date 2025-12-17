@@ -123,6 +123,7 @@ jobs:
           - aarch64-ios-sim
           - x86_64-ios
         include:
+          - custom_env: {}
           - thing: arm-android
             target: armv7-linux-androideabi
             rust: stable
@@ -173,13 +174,36 @@ jobs:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.rust }}"
           key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
       - run: rustup target add ${{ matrix.target }}
-      - name: Set Android Linker path
+      - name: Setup Android NDK
         if: endsWith(matrix.thing, '-android')
-        run: echo "CARGO_TARGET_$(echo ${{ matrix.target }} | tr \\-a-z _A-Z)_LINKER=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/$(echo ${{ matrix.target }} | sed s/armv7/armv7a/)21-clang++" >> "$GITHUB_ENV"
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+      - name: Configure Android toolchain env
+        if: endsWith(matrix.thing, '-android')
+        shell: bash
+        run: |
+          ANDROID_API=21
+          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "${TOOLCHAIN}" >> "$GITHUB_PATH"
+
+          TRIPLE="${{ matrix.target }}"
+          # NDK uses armv7a for the 32 bit ARM clang wrapper name
+          NDK_TRIPLE="$(echo "${TRIPLE}" | sed 's/^armv7/armv7a/')"
+
+          # Cargo env var name for the target
+          TARGET_ENV="$(echo "${TRIPLE}" | tr '[:lower:]-' '[:upper:]_')"
+
+          echo "CARGO_TARGET_${TARGET_ENV}_LINKER=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
+          echo "CC_${TARGET_ENV}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "CXX_${TARGET_ENV}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
+          echo "AR_${TARGET_ENV}=${TOOLCHAIN}/llvm-ar" >> "$GITHUB_ENV"
       - name: check
+        env: ${{ matrix.custom_env }}
         run: |
           cargo check --workspace --target ${{ matrix.target }} --all-features
       - name: Build tests
+        env: ${{ matrix.custom_env }}
         # We `build` because we want the linker to verify we are cross-compiling correctly for check-only targets.
         run: |
           cargo build --target ${{ matrix.target }} --tests ${{ matrix.extra_test_args }}
