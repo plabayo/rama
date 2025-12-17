@@ -7,7 +7,7 @@ app = 'rama-http-test'
 primary_region = 'fra'
 
 [build]
-  image = 'glendc/rama:latest'
+  image = 'glendc/rama:edge'
 
 [env]
   RUST_LOG = 'debug'

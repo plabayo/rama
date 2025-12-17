@@ -11,7 +11,7 @@ app_secure = "serve echo --bind 0.0.0.0:8443 -c 2048 -t 300 -f haproxy --ws --mo
 app_insecure = "serve echo --bind 0.0.0.0:8080 -c 2048 -t 300 -f haproxy --ws --mode http"
 
 [build]
-image = 'glendc/rama:latest'
+image = 'glendc/rama:edge'
 
 [env]
   RUST_LOG = 'debug'

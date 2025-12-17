@@ -24,14 +24,8 @@ jobs:
           - beta
         os:
           - ubuntu-latest
-          - macos-26
-          - macos-15-intel
-          - macos-15
-          - macos-14-large
-          - macos-14
-          - windows-2025
-          - windows-2022
-          - windows-11-arm
+          - macos-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: -D warnings
@@ -46,6 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}
         # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
         # https://github.com/cloudflare/boring/issues/414
         # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
@@ -62,12 +57,6 @@ jobs:
       - name: rustfmt
         run: |
           cargo fmt --all --check
-        # Extra Rust Checks... Only run once (not os dependent)
-      - name: cargo sort (dependencies)
-        if: ${{ matrix.os == env.DEFAULT_RUNNER_OS }} && ${{ matrix.toolchain == env.RUST_TOOLCHAIN }}
-        run: |
-          cargo install cargo-sort 2>/dev/null || true
-          cargo sort --workspace --grouped --check
 
   precheck-docs:
     runs-on: ubuntu-latest
@@ -110,6 +99,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
         # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
         # https://github.com/cloudflare/boring/issues/414
@@ -140,6 +130,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}
         # Extra: Loom Tests
       - name: Run Loom tests (rama-utils)
         run: |
@@ -155,6 +146,11 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           rust-version: ${{env.RUST_TOOLCHAIN}}
+        # Extra: sort dependencies (Cargo)
+      - name: cargo sort (dependencies)
+        run: |
+          cargo install cargo-sort 2>/dev/null || true
+          cargo sort --workspace --grouped --check
 
   test-rust-e2e:
     strategy:
@@ -186,6 +182,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
         # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
         # https://github.com/cloudflare/boring/issues/414
@@ -198,7 +195,7 @@ jobs:
         run: cargo test --all-features --workspace -- --ignored
         # Extra e2e tests... Only run once (low chance that it is matrix dependent)
       - name: Run tests in release mode (--ignored)
-        if: ${{ matrix.os == env.DEFAULT_RUNNER_OS }} && ${{ matrix.toolchain == env.RUST_TOOLCHAIN }}
+        if: ${{ matrix.os == env.DEFAULT_RUNNER_OS && matrix.toolchain == env.RUST_TOOLCHAIN }}
         run: cargo test --all-features --release --workspace -- --ignored
 
   test-ws-autobahn-server:
@@ -216,6 +213,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
@@ -239,6 +237,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
@@ -263,9 +262,6 @@ jobs:
       - name: fuzz — ua_parse
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
-      - name: fuzz — http_header_x_robots_tag
-        run: |
-          cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=30
       - name: fuzz — http_header_x_robots_tag
         run: |
           cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=30
@@ -324,7 +320,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           push: true
-          tags: glendc/rama:latest
+          tags: glendc/rama:edge
           file: rama-cli/infra/Dockerfile
 
   deploy-rama-fp-fly:
