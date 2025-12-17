@@ -210,7 +210,7 @@ jobs:
         env: ${{ matrix.custom_env }}
         # We `build` because we want the linker to verify we are cross-compiling correctly for check-only targets.
         run: |
-          cargo build --target ${{ matrix.target }} --tests ${{ matrix.extra_test_args }}
+          cargo build --target ${{ matrix.target }} --tests ${{ matrix.extra_test_args }}} --all-features
 
   test-rust-extra:
     runs-on: ubuntu-latest
