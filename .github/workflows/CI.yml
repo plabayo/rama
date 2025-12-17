@@ -146,12 +146,6 @@ jobs:
             os: macos-latest
             custom_env:
               IPHONEOS_DEPLOYMENT_TARGET: 17.5
-          - thing: aarch64-ios-sim
-            target: aarch64-apple-ios-sim
-            rust: stable
-            os: macos-latest
-            custom_env:
-              IPHONEOS_DEPLOYMENT_TARGET: 17.5
           - thing: x86_64-ios
             target: x86_64-apple-ios
             os: macos-latest
