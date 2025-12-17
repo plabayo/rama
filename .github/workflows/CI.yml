@@ -70,18 +70,12 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - 1.91.0 # MSRV
           - stable
-          - beta
         os:
           - ubuntu-latest
-          - macos-26
           - macos-15-intel
           - macos-15
-          - macos-14-large
-          - macos-14
           - windows-2025
-          - windows-2022
           - windows-11-arm
     runs-on: ${{ matrix.os }}
     needs:
@@ -114,6 +108,76 @@ jobs:
         run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)
         run: cargo test --all-features --examples --workspace
+
+  precheck-rust-tier2:
+    strategy:
+      matrix:
+        thing:
+          - arm-android
+          - arm64-android
+          - i686-android
+          - x86_64-android
+          - aarch64-ios
+          - aarch64-ios-sim
+          - x86_64-ios
+        include:
+          - thing: arm-android
+            target: armv7-linux-androideabi
+            rust: stable
+            os: ubuntu-latest
+          - thing: arm64-android
+            target: aarch64-linux-android
+            rust: stable
+            os: ubuntu-latest
+          - thing: i686-android
+            target: i686-linux-android
+            rust: stable
+            os: ubuntu-latest
+          - thing: x86_64-android
+            target: x86_64-linux-android
+            rust: stable
+            os: ubuntu-latest
+          - thing: aarch64-ios
+            target: aarch64-apple-ios
+            rust: stable
+            os: macos-latest
+            custom_env:
+              IPHONEOS_DEPLOYMENT_TARGET: 17.5
+          - thing: aarch64-ios-sim
+            target: aarch64-apple-ios-sim
+            rust: stable
+            os: macos-latest
+            custom_env:
+              IPHONEOS_DEPLOYMENT_TARGET: 17.5
+          - thing: x86_64-ios
+            target: x86_64-apple-ios
+            os: macos-latest
+            rust: stable
+            custom_env:
+              IPHONEOS_DEPLOYMENT_TARGET: 17.5
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.rust }}"
+          key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
+      - run: rustup target add ${{ matrix.target }}
+      - name: Set Android Linker path
+        if: endsWith(matrix.thing, '-android')
+        run: echo "CARGO_TARGET_$(echo ${{ matrix.target }} | tr \\-a-z _A-Z)_LINKER=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/$(echo ${{ matrix.target }} | sed s/armv7/armv7a/)21-clang++" >> "$GITHUB_ENV"
+      - name: check
+        run: |
+          cargo check --workspace --target ${{ matrix.target }} --all-features
+      - name: Build tests
+        # We `build` because we want the linker to verify we are cross-compiling correctly for check-only targets.
+        run: |
+          cargo build --target ${{ matrix.target }} --tests ${{ matrix.extra_test_args }}
 
   test-rust-extra:
     runs-on: ubuntu-latest
@@ -156,16 +220,10 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - 1.91.0 # MSRV
           - stable
-          - beta
         os:
           - ubuntu-latest
           - macos-latest
-          - macos-15-intel
-          # Windows can do weird regarding port conflicts... fix at some point
-          # - windows-2025
-          # - windows-11-arm
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
@@ -202,7 +260,7 @@ jobs:
           cargo build --all-features --release --bins --examples
           cargo test --all-features --release --workspace -- --ignored
 
-  test-ws-autobahn-server:
+  test-ws-autobahn:
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -225,26 +283,6 @@ jobs:
         shell: bash
         working-directory: "./rama-ws"
         run: ./autobahn/server.sh
-
-  test-ws-autobahn-client:
-    runs-on: ubuntu-latest
-    needs:
-      - precheck-rust
-      - precheck-docs
-    timeout-minutes: 90
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run autobahn ws client test-suite
         shell: bash
         working-directory: "./rama-ws"
@@ -304,11 +342,11 @@ jobs:
   deploy-rama-cli-docker:
     runs-on: ubuntu-latest
     needs:
+      - precheck-rust-tier2
       - test-rust-base
       - test-rust-extra
       - test-rust-e2e
-      - test-ws-autobahn-server
-      - test-ws-autobahn-client
+      - test-ws-autobahn
       - fuzz-rust
       - test-spec-h2
       - semver-checks
