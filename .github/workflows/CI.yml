@@ -188,16 +188,20 @@ jobs:
           echo "${TOOLCHAIN}" >> "$GITHUB_PATH"
 
           TRIPLE="${{ matrix.target }}"
-          # NDK uses armv7a for the 32 bit ARM clang wrapper name
+
+          # What Cargo expects for the linker env var name
+          TARGET_UPPER="$(echo "${TRIPLE}" | tr '[:lower:]-' '[:upper:]_')"
+
+          # What cc-rs expects for CC_*/CXX_* env var names
+          TARGET_LOWER_UNDERSCORES="$(echo "${TRIPLE}" | tr '-' '_' | tr '[:upper:]' '[:lower:]')"
+
+          # What the NDK clang wrapper is called
           NDK_TRIPLE="$(echo "${TRIPLE}" | sed 's/^armv7/armv7a/')"
 
-          # Cargo env var name for the target
-          TARGET_ENV="$(echo "${TRIPLE}" | tr '[:lower:]-' '[:upper:]_')"
-
-          echo "CARGO_TARGET_${TARGET_ENV}_LINKER=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
-          echo "CC_${TARGET_ENV}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang" >> "$GITHUB_ENV"
-          echo "CXX_${TARGET_ENV}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
-          echo "AR_${TARGET_ENV}=${TOOLCHAIN}/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
+          echo "CC_${TARGET_LOWER_UNDERSCORES}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "CXX_${TARGET_LOWER_UNDERSCORES}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
+          echo "AR_${TARGET_LOWER_UNDERSCORES}=${TOOLCHAIN}/llvm-ar" >> "$GITHUB_ENV"
       - name: check
         env: ${{ matrix.custom_env }}
         run: |
