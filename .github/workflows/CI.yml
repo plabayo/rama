@@ -6,6 +6,7 @@ env:
   RUST_TOOLCHAIN_NIGHTLY: nightly
   RUST_TOOLCHAIN_MSRV: 1.91.0
   RUST_TOOLCHAIN_BETA: beta
+  DEFAULT_RUNNER_OS: ubuntu-latest
 
 on:
   push:
@@ -14,19 +15,44 @@ on:
   pull_request: {}
 
 jobs:
-  check-msrv:
-    runs-on: ubuntu-latest
+  precheck-rust:
+    strategy:
+      matrix:
+        toolchain:
+          - ${{env.RUST_TOOLCHAIN_MSRV}}
+          - ${{env.RUST_TOOLCHAIN}}
+          - ${{env.RUST_TOOLCHAIN_BETA}}
+        os:
+          - ubuntu-latest
+          - macos-26
+          - macos-15-intel
+          - macos-15
+          - macos-14-large
+          - macos-14
+          - windows-2025
+          - windows-2022
+          - windows-11-arm
+    runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v5
+      - uses: ilammy/setup-nasm@v1
+        if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
+          toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
+        # https://github.com/cloudflare/boring/issues/414
+        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
+      - name: Pin some dependencies, temporary patch for cmake breakage
+        if: startsWith(matrix.os, 'windows')
+        run: |
+          cargo update --package cmake --precise 0.1.54
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
@@ -36,366 +62,150 @@ jobs:
       - name: rustfmt
         run: |
           cargo fmt --all --check
+        # Extra Rust Checks... Only run once (not os dependent)
+      - name: cargo sort (dependencies)
+        if: ${{ matrix.os == env.DEFAULT_RUNNER_OS }} && ${{ matrix.toolchain == env.RUST_TOOLCHAIN }}
+        run: |
+          cargo install cargo-sort 2>/dev/null || true
+          cargo sort --workspace --grouped --check
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        if: ${{ matrix.os == env.DEFAULT_RUNNER_OS }} && ${{ matrix.toolchain == env.RUST_TOOLCHAIN }}
+        with:
+          rust-version: ${{ matrix.toolchain }}
 
-  check:
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
+  precheck-docs:
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: check
-        run: |
-          cargo check --workspace --all-targets --all-features
-      - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
-      - name: rustfmt
-        run: |
-          cargo fmt --all --check
       - name: extra-checks
         run: |
           ./scripts/extra-checks.sh
 
-  check-all-features:
-    runs-on: ubuntu-latest
+  test-rust-base:
+    strategy:
+      matrix:
+        toolchain:
+          - ${{env.RUST_TOOLCHAIN_MSRV}}
+          - ${{env.RUST_TOOLCHAIN}}
+          - ${{env.RUST_TOOLCHAIN_BETA}}
+        os:
+          - ubuntu-latest
+          - macos-26
+          - macos-15-intel
+          - macos-15
+          - macos-14-large
+          - macos-14
+          - windows-2025
+          - windows-2022
+          - windows-11-arm
+    runs-on: ${{ matrix.os }}
+    needs:
+      - precheck-rust
+      - precheck-docs
     env:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v5
+      - uses: ilammy/setup-nasm@v1
+        if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
+          toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: check
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
+        # https://github.com/cloudflare/boring/issues/414
+        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
+      - name: Pin some dependencies, temporary patch for cmake breakage
+        if: startsWith(matrix.os, 'windows')
         run: |
-          cargo check --workspace --all-targets --all-features
-      - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
-      - name: rustfmt
-        run: |
-          cargo fmt --all --check
+          cargo update --package cmake --precise 0.1.54
+      - name: Run tests (cargo test)
+        run: cargo test --all-features --workspace
+      - name: Run doc tests (cargo test)
+        run: cargo test --doc --all-features --workspace
+      - name: Run example tests (cargo test)
+        run: cargo test --all-features --examples --workspace
 
-  test-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
+  test-rust-extra:
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+        # Extra: Loom Tests
+      - name: Run Loom tests (rama-utils)
+        run: |
+          RUSTFLAGS="--cfg loom -Dwarnings" \
+            cargo test --all-features -p rama-utils
+        # Extra: Cargo Hack
+      - name: install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: cargo hack check
+        run: cargo hack check --each-feature --no-dev-deps --workspace
+
+  test-rust-e2e:
+    strategy:
+      matrix:
+        toolchain:
+          - ${{env.RUST_TOOLCHAIN_MSRV}}
+          - ${{env.RUST_TOOLCHAIN}}
+          - ${{env.RUST_TOOLCHAIN_BETA}}
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - macos-15-intel
+          # Windows can do weird regarding port conflicts... fix at some point
+          # - windows-2025
+          # - windows-11-arm
+    runs-on: ${{ matrix.os }}
+    needs:
+      - precheck-rust
+      - precheck-docs
     env:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-beta:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-loom:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: --cfg loom -Dwarnings
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run tests
-        run: cargo test --all-features -p rama-utils
-
-  test-all-features:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-macos-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-macos:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-windows-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-latest
-    steps:
       - uses: ilammy/setup-nasm@v1
-
-      - uses: actions/checkout@v5
+        if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
         # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
         # https://github.com/cloudflare/boring/issues/414
         # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
       - name: Pin some dependencies, temporary patch for cmake breakage
+        if: startsWith(matrix.os, 'windows')
         run: |
           cargo update --package cmake --precise 0.1.54
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-windows:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-latest
-    steps:
-      - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        run: |
-          cargo update --package cmake --precise 0.1.54
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-windows-msrv-arm:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-11-arm
-    steps:
-      - uses: ilammy/setup-nasm@v1
-
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        run: |
-          cargo update --package cmake --precise 0.1.54
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-windows-arm:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-11-arm
-    steps:
-      - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        run: |
-          cargo update --package cmake --precise 0.1.54
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-ignored:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run tests
+      - name: Run tests (--ignored)
         run: cargo test --all-features --workspace -- --ignored
-
-  test-ignored-release:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run tests
+        # Extra e2e tests... Only run once (low chance that it is matrix dependent)
+      - name: Run tests in release mode (--ignored)
+        if: ${{ matrix.os == env.DEFAULT_RUNNER_OS }} && ${{ matrix.toolchain == env.RUST_TOOLCHAIN }}
         run: cargo test --all-features --release --workspace -- --ignored
 
-  test-ignored-macos:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: macos-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run tests
-        run: cargo test --all-features --workspace -- --ignored
-
-  # NOTE: port conflicts on windows runners...
-  # ... once we can test without static ports we can try to do this.. again
-  # test-ignored-windows:
-  #   needs: [check, check-msrv, check-all-features]
-  #   runs-on: windows-latest
-  #   timeout-minutes: 120
-  #   steps:
-  #     - uses: ilammy/setup-nasm@v1
-  #     - uses: actions/checkout@v5
-  #     - uses: dtolnay/rust-toolchain@master
-  #       with:
-  #         toolchain: ${{env.RUST_TOOLCHAIN}}
-  #     - uses: Swatinem/rust-cache@v2
-  #       with:
-  #         env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-  #     - name: Run tests
-  #       run: cargo test --all-features --workspace -- --ignored
-
-  test-docs:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run doc tests
-        run: cargo test --doc --all-features --workspace
-
-  test-examples-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Run doc tests
-        run: cargo test --all-features --examples --workspace
-
-  test-examples:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run doc tests
-        run: cargo test --all-features --examples --workspace
-
-  test-examples-macos:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run doc tests
-        run: cargo test --all-features --examples --workspace
-
   test-ws-autobahn-server:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
+    needs:
+      - precheck-rust
+      - precheck-docs
     timeout-minutes: 90
     env:
       RUSTFLAGS: -D warnings
@@ -415,8 +225,10 @@ jobs:
         run: ./autobahn/server.sh
 
   test-ws-autobahn-client:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
+    needs:
+      - precheck-rust
+      - precheck-docs
     timeout-minutes: 90
     env:
       RUSTFLAGS: -D warnings
@@ -435,50 +247,11 @@ jobs:
         working-directory: "./rama-ws"
         run: ./autobahn/client.sh
 
-  cargo-hack:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - name: install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
-      - name: cargo hack check
-        run: cargo hack check --each-feature --no-dev-deps --workspace
-
-  dependencies-are-sorted:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Install cargo-sort
-        run: |
-          cargo install cargo-sort 2>/dev/null || true
-      - name: Check dependency tables
-        working-directory: .
-        run: |
-          cargo sort --workspace --grouped --check
-
-  cargo-deny:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          rust-version: ${{env.RUST_TOOLCHAIN_MSRV}}
-
-  cargo-fuzz-ua:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
+  fuzz-rust:
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
+    needs:
+      - precheck-rust
+      - precheck-docs
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
@@ -487,45 +260,26 @@ jobs:
       - name: Install cargo-fuzz
         run: |
           cargo install cargo-fuzz 2>/dev/null || true
-      - name: cargo fuzz check
+      - name: fuzz — ua_parse
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
-
-  cargo-fuzz-http-header:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
-      - name: Install cargo-fuzz
-        run: |
-          cargo install cargo-fuzz 2>/dev/null || true
-      - name: cargo fuzz check
+      - name: fuzz — http_header_x_robots_tag
         run: |
           cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=30
-
-  cargo-fuzz-h2:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
-      - name: Install cargo-fuzz
+      - name: fuzz — http_header_x_robots_tag
         run: |
-          cargo install cargo-fuzz 2>/dev/null || true
-      - name: cargo fuzz check
+          cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=30
+      - name: fuzz — h2
         run: |
           cargo +nightly fuzz run h2_client -- -max_total_time=30
           cargo +nightly fuzz run h2_e2e -- -max_total_time=30
           cargo +nightly fuzz run h2_hpack -- -max_total_time=30
 
   test-spec-h2:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
+    needs:
+      - precheck-rust
+      - precheck-docs
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -535,40 +289,29 @@ jobs:
         run: |
           bash rama-http-core/ci/h2spec.sh -F
 
-  # action is not being updated atm
-  # TODO: enable once it works again, for now not that useful anyway
-  # semver-checks:
-  #   needs: [check, check-msrv, check-all-features]
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v5
-  #     - name: Check semver
-  #       uses: obi1kenobi/cargo-semver-checks-action@v2
-  #       with:
-  #         rust-toolchain: ${{env.RUST_TOOLCHAIN}}
+  semver-checks:
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          rust-toolchain: ${{env.RUST_TOOLCHAIN}}
 
   deploy-rama-cli-docker:
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
     needs:
-      - test
-      - test-all-features
-      - test-examples
-      - test-msrv
-      - test-beta
-      - test-examples-msrv
-      - test-ignored
-      - test-ignored-release
-      - test-docs
-      - test-ws-autobahn-client
+      - test-rust-base
+      - test-rust-extra
+      - test-rust-e2e
       - test-ws-autobahn-server
-      - cargo-hack
-      - cargo-deny
+      - test-ws-autobahn-client
+      - fuzz-rust
       - test-spec-h2
-      - cargo-fuzz-ua
-      - cargo-fuzz-h2
-      - dependencies-are-sorted
-      # - semver-checks
+      - semver-checks
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Login to Docker Hub
@@ -585,7 +328,7 @@ jobs:
           file: rama-cli/infra/Dockerfile
 
   deploy-rama-fp-fly:
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@v5
@@ -597,7 +340,7 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-fp-h1-fly:
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@v5
@@ -609,7 +352,7 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-ip-ipv4-fly:
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@v5
@@ -621,7 +364,7 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-ip-ipv6-fly:
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@v5
@@ -633,7 +376,7 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-echo-fly:
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@v5
@@ -645,7 +388,7 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
   deploy-rama-http-test-fly:
-    runs-on: ubuntu-latest
+    runs-on: ${{env.DEFAULT_RUNNER_OS}}
     needs: deploy-rama-cli-docker
     steps:
       - uses: actions/checkout@v5
