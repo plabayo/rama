@@ -192,11 +192,15 @@ jobs:
         run: |
           cargo update --package cmake --precise 0.1.54
       - name: Run tests (--ignored)
-        run: cargo test --all-features --workspace -- --ignored
+        run: |
+          cargo build --all-features --bins --examples
+          cargo test --all-features --workspace -- --ignored
         # Extra e2e tests... Only run once (low chance that it is matrix dependent)
       - name: Run tests in release mode (--ignored)
         if: ${{ matrix.os == env.DEFAULT_RUNNER_OS && matrix.toolchain == env.RUST_TOOLCHAIN }}
-        run: cargo test --all-features --release --workspace -- --ignored
+        run: |
+          cargo build --all-features --release --bins --examples
+          cargo test --all-features --release --workspace -- --ignored
 
   test-ws-autobahn-server:
     runs-on: ubuntu-latest
