@@ -68,11 +68,6 @@ jobs:
         run: |
           cargo install cargo-sort 2>/dev/null || true
           cargo sort --workspace --grouped --check
-      - name: cargo deny
-        uses: EmbarkStudios/cargo-deny-action@v2
-        if: ${{ matrix.os == env.DEFAULT_RUNNER_OS }} && ${{ matrix.toolchain == env.RUST_TOOLCHAIN }}
-        with:
-          rust-version: ${{ matrix.toolchain }}
 
   precheck-docs:
     runs-on: ubuntu-latest
@@ -155,6 +150,11 @@ jobs:
         uses: taiki-e/install-action@cargo-hack
       - name: cargo hack check
         run: cargo hack check --each-feature --no-dev-deps --workspace
+        # Extra: Cargo Deny
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: ${{env.RUST_TOOLCHAIN}}
 
   test-rust-e2e:
     strategy:
