@@ -6,7 +6,7 @@ app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 -f haproxy --http-versi
 app_insecure = "serve fp --bind 0.0.0.0:8080 -c 2048 -t 16 -f haproxy --http-version h1"
 
 [build]
-image = "glendc/rama:latest"
+image = "glendc/rama:edge"
 
 [env]
   RUST_LOG = 'debug'

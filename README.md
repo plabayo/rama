@@ -466,12 +466,26 @@ Most organisations running rama in production do so on a variety of Linux system
 
 | platform | tested | test platform |
 |----------|--------|---------------|
-| MacOS    | ✅     | MacOS 15 Apple Silicon: developer machine + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
-| Linux    | ✅     | AMD x64 developer machine with Ubuntu 25 + [GitHub Action (Ubuntu 24.04)](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
-| Windows  | ✅     | Windows 11 AMD x64 developer machine + [GitHub Action (Windows latest (x64))](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
+| MacOS    | ✅     | developer machine (arm64) + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and intel) |
+| Linux    | ✅     | AMD x64 developer machine with Ubuntu 25 + [GitHub Action (Ubuntu 24.04)](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and amd64) |
+| Windows  | ✅     | Windows 11 AMD x64 developer machine + [GitHub Action (Windows latest (x64))](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and amd64) |
 
-Android and iOS should work for the most part, but are currently not tested holistically.
-`rama-boring` and friends are already tested in CI on these mobile platforms. rama itself not yet.
+### Tier 2 Platforms
+
+Tier 2 platforms run `cargo check` and also `cargo build` tests.
+These platforms do however not run tests, let alone integration tests.
+
+Some users of rama do run actual Rama production code on these platforms.
+
+Targets checked in CI:
+
+- `armv7-linux-androideabi`
+- `aarch64-linux-android`
+- `i686-linux-android`
+- `x86_64-linux-android`
+- `aarch64-apple-ios`
+- `aarch64-apple-ios-sim`
+- `x86_64-apple-ios`
 
 ### Other Platforms
 

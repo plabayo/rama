@@ -56,5 +56,5 @@ Once this is all done you should be able to run `just qa`.
 When all these pass you can be pretty certain that all tests in the GitHub CI step
 will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV and three platforms in total:
 
-- Tier 1 platforms: MacOS and Linux
-- Tier 2 platforms: Windows
+- Tier 1 platforms: MacOS, Linux and Windows
+- Tier 2 platforms: Android and Linux

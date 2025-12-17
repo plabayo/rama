@@ -316,5 +316,5 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           push: true
-          tags: glendc/rama:${{ inputs.tag || github.ref_name }}
+          tags: glendc/rama:latest,glendc/rama:${{ inputs.tag || github.ref_name }}
           file: rama-cli/infra/Dockerfile
