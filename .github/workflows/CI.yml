@@ -122,23 +122,26 @@ jobs:
           - aarch64-ios-sim
           - x86_64-ios
         include:
-          - custom_env: {}
           - thing: arm-android
             target: armv7-linux-androideabi
             rust: stable
             os: ubuntu-latest
+            custom_env: {}
           - thing: arm64-android
             target: aarch64-linux-android
             rust: stable
             os: ubuntu-latest
+            custom_env: {}
           - thing: i686-android
             target: i686-linux-android
             rust: stable
             os: ubuntu-latest
+            custom_env: {}
           - thing: x86_64-android
             target: x86_64-linux-android
             rust: stable
             os: ubuntu-latest
+            custom_env: {}
           - thing: aarch64-ios
             target: aarch64-apple-ios
             rust: stable
