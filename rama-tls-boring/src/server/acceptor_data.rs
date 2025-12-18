@@ -695,11 +695,11 @@ fn self_signed_server_auth_gen_ca(
     ca_cert_builder
         .set_not_before(&not_before)
         .context("x509 cert builder: set not before to today")?;
-    let not_after = Asn1Time::days_from_now(90)
-        .context("x509 cert builder: create ASN1Time for 90 days in future")?;
+    let not_after = Asn1Time::days_from_now(365 * 20)
+        .context("x509 cert builder: create ASN1Time for 20 years in future")?;
     ca_cert_builder
         .set_not_after(&not_after)
-        .context("x509 cert builder: set not after to 90 days in future")?;
+        .context("x509 cert builder: set not after to 20 years in future")?;
 
     ca_cert_builder
         .append_extension(
