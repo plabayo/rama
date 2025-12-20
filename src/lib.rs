@@ -134,12 +134,6 @@
 //! - <https://ramaproxy.org/docs/rama/http/service/web/extract/datastar/index.html>
 //! - <https://ramaproxy.org/docs/rama/http/service/web/response/struct.DatastarScript.html>
 //!
-//! ### Shuttle integration
-//!
-//! rama is supported by [Shuttle](https://www.shuttle.dev) via the `shuttle-rama` crate.
-//! You can deploy rama based services to Shuttle as described at
-//! <https://ramaproxy.org/book/deploy/shuttle.html>.
-//!
 //! ---
 //!
 //! ## Web clients
