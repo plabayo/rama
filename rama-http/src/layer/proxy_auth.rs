@@ -92,10 +92,11 @@ where
 
     fn layer(&self, inner: S) -> Self::Service {
         ProxyAuthService::new(self.proxy_auth.clone(), inner)
+            .with_allow_anonymous(self.allow_anonymous)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        ProxyAuthService::new(self.proxy_auth, inner)
+        ProxyAuthService::new(self.proxy_auth, inner).with_allow_anonymous(self.allow_anonymous)
     }
 }
 
