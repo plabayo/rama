@@ -886,7 +886,7 @@ impl<T> NonEmptyVec<T> {
         self.minimum_by(|i, j| f(i).cmp(&f(j)))
     }
 
-    /// Sorts the [`NonEmptyVec`]].
+    /// Sorts the [`NonEmptyVec`].
     ///
     /// The implementation uses [`slice::sort`](slice::sort) for the tail and then checks where the
     /// head belongs. If the head is already the smallest element, this should be as fast as sorting a
@@ -908,9 +908,99 @@ impl<T> NonEmptyVec<T> {
         T: Ord,
     {
         self.tail.sort();
-        let index = match self.tail.binary_search(&self.head) {
-            Ok(index) | Err(index) => index,
-        };
+        let index = self.tail.partition_point(|x| x < &self.head);
+        if index != 0 {
+            let new_head = self.tail.remove(0);
+            let head = mem::replace(&mut self.head, new_head);
+            self.tail.insert(index - 1, head);
+        }
+    }
+
+    /// Sorts the [`NonEmptyVec`] with a comparator function.
+    ///
+    /// The implementation uses [`slice::sort_by`](slice::sort_by) for the tail and then checks where
+    /// the head belongs. If the head is already the smallest element, this should be as fast as sorting
+    /// a slice. However, if the head needs to be inserted, then it incurs extra cost for removing the
+    /// new head from the tail and adding the old head at the correct index.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama_utils::collections::non_empty_vec;
+    ///
+    /// let mut non_empty = non_empty_vec![-5, 4, 1, -3, 2];
+    ///
+    /// non_empty.sort_by(|a, b| a.cmp(b));
+    /// assert!(non_empty == non_empty_vec![-5, -3, 1, 2, 4]);
+    /// ```
+    pub fn sort_by<F>(&mut self, mut compare: F)
+    where
+        F: FnMut(&T, &T) -> Ordering,
+    {
+        self.tail.sort_by(&mut compare);
+
+        let index = self
+            .tail
+            .partition_point(|x| compare(x, &self.head) == Ordering::Less);
+        if index != 0 {
+            let new_head = self.tail.remove(0);
+            let head = mem::replace(&mut self.head, new_head);
+            self.tail.insert(index - 1, head);
+        }
+    }
+
+    /// Sorts the [`NonEmptyVec`] with a key extraction function.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama_utils::collections::non_empty_vec;
+    ///
+    /// let mut non_empty = non_empty_vec!["bbb", "a", "cccc"];
+    ///
+    /// non_empty.sort_by_key(|s| s.len());
+    /// assert!(non_empty == non_empty_vec!["a", "bbb", "cccc"]);
+    /// ```
+    pub fn sort_by_key<K, F>(&mut self, mut f: F)
+    where
+        F: FnMut(&T) -> K,
+        K: Ord,
+    {
+        self.tail.sort_by_key(&mut f);
+
+        let head_key = f(&self.head);
+        let index = self.tail.partition_point(|x| f(x) < head_key);
+        if index != 0 {
+            let new_head = self.tail.remove(0);
+            let head = mem::replace(&mut self.head, new_head);
+            self.tail.insert(index - 1, head);
+        }
+    }
+
+    /// Sorts the [`NonEmptyVec`] with a key extraction function, caching the keys.
+    ///
+    /// The implementation uses [`slice::sort_by_cached_key`](slice::sort_by_cached_key)
+    /// for the tail and then determines where the head belongs using the cached head key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama_utils::collections::non_empty_vec;
+    ///
+    /// let mut non_empty = non_empty_vec!["bbb", "a", "cccc"];
+    ///
+    /// non_empty.sort_by_cached_key(|s| s.len());
+    /// assert!(non_empty == non_empty_vec!["a", "bbb", "cccc"]);
+    /// ```
+    pub fn sort_by_cached_key<K, F>(&mut self, mut f: F)
+    where
+        F: FnMut(&T) -> K,
+        K: Ord,
+    {
+        self.tail.sort_by_cached_key(&mut f);
+
+        let head_key = f(&self.head);
+        let index = self.tail.partition_point(|x| f(x) < head_key);
 
         if index != 0 {
             let new_head = self.tail.remove(0);

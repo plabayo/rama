@@ -3,4 +3,4 @@
 //! An example is the [`QValue`] used in function of several headers such as 'accept-encoding'.
 
 mod quality_value;
-pub use quality_value::{Quality, QualityValue};
+pub use quality_value::{Quality, QualityValue, sort_quality_values_non_empty_vec};
