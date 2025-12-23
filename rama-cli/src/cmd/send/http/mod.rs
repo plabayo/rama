@@ -1,6 +1,7 @@
 use rama::{
     Service,
     error::{BoxError, ErrorContext as _, OpaqueError},
+    utils::collections::NonEmptySmallVec,
 };
 
 use std::time::Duration;
@@ -45,7 +46,7 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
             cfg.subprotocol
                 .clone()
                 .map(|p| {
-                    p.try_into()
+                    NonEmptySmallVec::from_slice(&p)
                         .context("create non-empty-vec of sub protocols")
                 })
                 .transpose()?,

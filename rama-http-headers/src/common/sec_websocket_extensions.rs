@@ -15,7 +15,7 @@ derive_non_empty_flat_csv_header! {
     ///
     /// Read more about it in the [`Extension`] docs.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SecWebSocketExtensions(pub NonEmptyVec<Extension>);
+    pub struct SecWebSocketExtensions(pub NonEmptySmallVec<3, Extension>);
 }
 
 impl SecWebSocketExtensions {

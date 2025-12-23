@@ -65,6 +65,15 @@ pub use crate::__opaque_body as opaque_body;
 
 #[doc(hidden)]
 #[macro_export]
+macro_rules! __count {
+    () => (0usize);
+    ( $x:tt $($xs:tt)* ) => (1usize + $crate::macros::count!($($xs)*));
+}
+#[doc(inline)]
+pub use crate::__count as count;
+
+#[doc(hidden)]
+#[macro_export]
 macro_rules! __all_the_tuples_minus_one_no_last_special_case {
     ($name:ident) => {
         $name!(T1);

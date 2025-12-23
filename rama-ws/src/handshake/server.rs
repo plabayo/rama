@@ -27,7 +27,7 @@ use rama_http::{
     service::web::response::{self, Headers, IntoResponse},
 };
 use rama_utils::{
-    collections::non_empty_vec,
+    collections::non_empty_smallvec,
     str::{NonEmptyStr, non_empty_str},
 };
 
@@ -351,7 +351,7 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Define the WebSocket rama echo protocols.
         pub fn echo_protocols(mut self) -> Self {
-            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_vec![
+            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_smallvec![
                 ECHO_SERVICE_SUB_PROTOCOL_DEFAULT,
                     ECHO_SERVICE_SUB_PROTOCOL_UPPER,
                     ECHO_SERVICE_SUB_PROTOCOL_LOWER,
@@ -439,7 +439,7 @@ impl WebSocketAcceptor {
     pub fn into_echo_service(mut self) -> WebSocketAcceptorService<WebSocketEchoService> {
         if self.protocols.is_none() {
             self.protocols_flex = true;
-            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_vec![
+            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_smallvec![
                 ECHO_SERVICE_SUB_PROTOCOL_DEFAULT,
                 ECHO_SERVICE_SUB_PROTOCOL_UPPER,
                 ECHO_SERVICE_SUB_PROTOCOL_LOWER,
@@ -924,7 +924,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
 mod tests {
     use headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
     use rama_http::Body;
-    use rama_utils::{collections::non_empty_vec, str::non_empty_str};
+    use rama_utils::str::non_empty_str;
 
     use super::*;
 
@@ -1391,7 +1391,7 @@ mod tests {
     #[tokio::test]
     async fn test_websocket_accept_required_protocols() {
         let acceptor = WebSocketAcceptor::default().with_protocols(headers::SecWebSocketProtocol(
-            non_empty_vec![
+            non_empty_smallvec![
                 non_empty_str!("foo"),
                 non_empty_str!("a"),
                 non_empty_str!("b")

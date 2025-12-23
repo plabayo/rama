@@ -41,7 +41,7 @@ use rama::{
     telemetry::tracing,
     tls::boring::server::TlsAcceptorLayer,
     ua::layer::classifier::UserAgentClassifierLayer,
-    utils::{backoff::ExponentialBackoff, collections::non_empty_vec, str::non_empty_str},
+    utils::{backoff::ExponentialBackoff, collections::non_empty_smallvec, str::non_empty_str},
 };
 
 use clap::Args;
@@ -146,7 +146,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
 
     let ws_service = ConsumeErrLayer::default().into_layer(
         WebSocketAcceptor::new()
-            .with_protocols(SecWebSocketProtocol(non_empty_vec![
+            .with_protocols(SecWebSocketProtocol(non_empty_smallvec![
                 non_empty_str!("a"),
                 non_empty_str!("b"),
             ]))

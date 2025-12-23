@@ -205,7 +205,7 @@ serde_test = "1"
 sha1 = "0.10"
 sha2 = "0.10"
 slab = "0.4"
-smallvec = { version = "1.15", features = ["const_generics", "const_new"] }
+smallvec = { version = "1.15" }
 smol_str = "0.3"
 socket2 = "0.6"
 spmc = "0.3"

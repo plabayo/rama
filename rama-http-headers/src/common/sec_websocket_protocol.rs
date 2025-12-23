@@ -7,7 +7,7 @@ derive_non_empty_flat_csv_header! {
     /// Sub protocols are advertised by the client,
     /// and the server has to match it if defined.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SecWebSocketProtocol(pub NonEmptyVec<NonEmptyStr>);
+    pub struct SecWebSocketProtocol(pub NonEmptySmallVec<3, NonEmptyStr>);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

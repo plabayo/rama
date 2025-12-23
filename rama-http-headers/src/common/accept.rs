@@ -1,4 +1,4 @@
-use crate::specifier::{QualityValue, sort_quality_values_non_empty_vec};
+use crate::specifier::{QualityValue, sort_quality_values_non_empty_smallvec};
 use rama_http_types::mime::{self, Mime};
 
 derive_non_empty_flat_csv_header! {
@@ -59,14 +59,14 @@ derive_non_empty_flat_csv_header! {
     ///
     /// ```
     /// use std::iter::FromIterator;
-    /// use rama_utils::collections::non_empty_vec;
+    /// use rama_utils::collections::non_empty_smallvec;
     /// use rama_http_headers::{Accept, specifier::QualityValue, HeaderMapExt};
     /// use rama_http_types::mime;
     ///
     /// let mut headers = rama_http_types::HeaderMap::new();
     ///
     /// headers.typed_insert(
-    ///     Accept(non_empty_vec![
+    ///     Accept(non_empty_smallvec![
     ///         QualityValue::from(mime::TEXT_HTML),
     ///         QualityValue::from("application/xhtml+xml".parse::<mime::Mime>().unwrap()),
     ///         QualityValue::new(
@@ -82,7 +82,7 @@ derive_non_empty_flat_csv_header! {
     /// );
     /// ```
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct Accept(pub NonEmptyVec<QualityValue<Mime>>);
+    pub struct Accept(pub NonEmptySmallVec<7, QualityValue<Mime>>);
 }
 
 impl Accept {
@@ -123,7 +123,7 @@ impl Accept {
     /// Sort (stable) the inner quality values by quality.
     #[inline(always)]
     pub fn sort_quality_values(&mut self) {
-        sort_quality_values_non_empty_vec(&mut self.0);
+        sort_quality_values_non_empty_smallvec(&mut self.0);
     }
 }
 
@@ -137,7 +137,7 @@ mod tests {
         HeaderValue,
         mime::{TEXT_HTML, TEXT_PLAIN, TEXT_PLAIN_UTF_8},
     };
-    use rama_utils::collections::non_empty_vec;
+    use rama_utils::collections::non_empty_smallvec;
 
     macro_rules! test_header {
         ($name: ident, $input: expr, $expected: expr) => {
@@ -162,7 +162,7 @@ mod tests {
     test_header!(
         test1,
         vec![b"audio/*; q=0.2, audio/basic"],
-        Some(Accept(non_empty_vec![
+        Some(Accept(non_empty_smallvec![
             QualityValue::new("audio/*".parse().unwrap(), Quality::from(200)),
             QualityValue::new("audio/basic".parse().unwrap(), Default::default()),
         ]))
@@ -170,7 +170,7 @@ mod tests {
     test_header!(
         test2,
         vec![b"text/plain; q=0.5, text/html, text/x-dvi; q=0.8, text/x-c"],
-        Some(Accept(non_empty_vec![
+        Some(Accept(non_empty_smallvec![
             QualityValue::new(TEXT_PLAIN, Quality::from(500)),
             QualityValue::new(TEXT_HTML, Default::default()),
             QualityValue::new("text/x-dvi".parse().unwrap(), Quality::from(800)),
@@ -181,7 +181,7 @@ mod tests {
     test_header!(
         test3,
         vec![b"text/plain; charset=utf-8"],
-        Some(Accept(non_empty_vec![QualityValue::new(
+        Some(Accept(non_empty_smallvec![QualityValue::new(
             TEXT_PLAIN_UTF_8,
             Default::default()
         )]))
@@ -189,7 +189,7 @@ mod tests {
     test_header!(
         test4,
         vec![b"text/plain; charset=utf-8; q=0.5"],
-        Some(Accept(non_empty_vec![QualityValue::new(
+        Some(Accept(non_empty_smallvec![QualityValue::new(
             TEXT_PLAIN_UTF_8,
             Quality::from(500)
         ),]))

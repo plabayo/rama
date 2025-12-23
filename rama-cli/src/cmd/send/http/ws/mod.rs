@@ -7,7 +7,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     graceful::{self, Shutdown},
     http::{Request, Response},
-    utils::{collections::NonEmptyVec, str::NonEmptyStr},
+    utils::{collections::NonEmptySmallVec, str::NonEmptyStr},
 };
 use tokio::sync::oneshot;
 
@@ -17,7 +17,7 @@ mod tui;
 pub(super) async fn run<C>(
     req: Request,
     client: C,
-    protocols: Option<NonEmptyVec<NonEmptyStr>>,
+    protocols: Option<NonEmptySmallVec<3, NonEmptyStr>>,
 ) -> Result<(), BoxError>
 where
     C: Service<Request, Output = Response, Error = BoxError>,

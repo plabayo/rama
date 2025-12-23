@@ -5,6 +5,7 @@ use std::default::Default;
 use std::fmt;
 use std::str;
 
+use rama_utils::collections::NonEmptySmallVec;
 use rama_utils::collections::NonEmptyVec;
 
 use crate::Error;
@@ -124,6 +125,12 @@ pub struct QualityValue<T> {
     pub value: T,
     /// The quality (client or server preference) for the value.
     pub quality: Quality,
+}
+
+pub fn sort_quality_values_non_empty_smallvec<const N: usize, T>(
+    values: &mut NonEmptySmallVec<N, QualityValue<T>>,
+) {
+    values.sort_by_cached_key(|qv| u16::MAX - qv.quality.as_u16());
 }
 
 pub fn sort_quality_values_non_empty_vec<T>(values: &mut NonEmptyVec<QualityValue<T>>) {

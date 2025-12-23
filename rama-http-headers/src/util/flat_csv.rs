@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_http_types::HeaderValue;
-use rama_utils::collections::NonEmptyVec;
+use rama_utils::collections::{NonEmptySmallVec, NonEmptyVec};
 
 /// Header value which is either any `*` or
 /// the given values separated by the defined separator.
@@ -138,6 +138,83 @@ where
         v.push(sep_byte);
         v.push(b' ');
         v.extend(value.as_ref());
+    }
+
+    HeaderValue::try_from(v).context("turn encoded bytes into HeaderValue")
+}
+
+pub(crate) fn try_decode_flat_csv_header_values_as_non_empty_smallvec<'a, const N: usize, T>(
+    values: impl IntoIterator<Item = &'a HeaderValue>,
+    sep: FlatCsvSeparator,
+) -> Result<NonEmptySmallVec<N, T>, OpaqueError>
+where
+    T: FromStr<Err: Into<BoxError>>,
+{
+    let mut in_quotes = false;
+    let sep_char = sep.as_char();
+    let mut iter = values
+        .into_iter()
+        .flat_map(|v| {
+            let s = v
+                .to_str()
+                .context("header value is not a valid utf-8 str")?;
+            Ok::<_, OpaqueError>(s.split(move |c| {
+                #[allow(clippy::collapsible_else_if)]
+                if in_quotes {
+                    if c == '"' {
+                        in_quotes = false;
+                    }
+                    false // dont split
+                } else {
+                    if c == sep_char {
+                        true // split
+                    } else {
+                        if c == '"' {
+                            in_quotes = true;
+                        }
+                        false // dont split
+                    }
+                }
+            }))
+        })
+        .flatten()
+        .map(|s| s.trim().parse::<T>());
+
+    let mut vec = NonEmptySmallVec::new(
+        iter.next()
+            .context("header value is an empty (CSV?)")?
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("parse header value CSV colum from str")?,
+    );
+    for result in iter {
+        vec.push(
+            result
+                .map_err(|err| OpaqueError::from_boxed(err.into()))
+                .context("parse header value CSV colum from str")?,
+        );
+    }
+    Ok(vec)
+}
+
+pub(crate) fn try_encode_non_empty_smallvec_as_flat_csv_header_value<const N: usize, T>(
+    values: &NonEmptySmallVec<N, T>,
+    sep: FlatCsvSeparator,
+) -> Result<HeaderValue, OpaqueError>
+where
+    T: Display,
+{
+    use std::io::Write as _;
+
+    let mut v = Vec::new();
+
+    let sep_byte = sep.as_byte();
+
+    let _ = write!(&mut v, "{}", values.head);
+
+    for value in values.tail.iter() {
+        v.push(sep_byte);
+        v.push(b' ');
+        let _ = write!(&mut v, "{value}");
     }
 
     HeaderValue::try_from(v).context("turn encoded bytes into HeaderValue")

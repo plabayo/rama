@@ -24,6 +24,7 @@ pin-project-lite = { workspace = true }
 rama-macros = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+smallvec = { workspace = true, features = ["write", "serde", "const_generics", "const_new"] }
 smol_str = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }
 wildcard = { workspace = true }

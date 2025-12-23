@@ -1,54 +1,7 @@
-//! A Non-empty growable vector.
-//!
-//! > Fork of <https://github.com/cloudhead/non_empty_vec>.
-//! >
-//! > License and version information can be found at
-//! > <https://github.com/plabayo/rama/tree/main/docs/thirdparty/fork>.
-//!
-//! Non-emptiness can be a powerful guarantee. If your main use of `Vec` is as
-//! an `Iterator`, then you may not need to distinguish on emptiness. But there
-//! are indeed times when the `Vec` you receive as as function argument needs to
-//! be non-empty or your function can't proceed. Similarly, there are times when
-//! the `Vec` you return to a calling user needs to promise it actually contains
-//! something.
-//!
-//! With `NonEmptyVec`, you're freed from the boilerplate of constantly needing to
-//! check `is_empty()` or pattern matching before proceeding, or erroring if you
-//! can't. So overall, code, type signatures, and logic become cleaner.
-//!
-//! Consider that unlike `Vec`, [`NonEmptyVec::first`] and [`NonEmptyVec::last`] don't
-//! return in `Option`, they always succeed.
-//!
-//! # Examples
-//!
-//! The simplest way to construct a [`NonEmptyVec`] is via the [`non_empty_vec`] macro:
-//!
-//! ```
-//! use rama_utils::collections::{NonEmptyVec, non_empty_vec};
-//!
-//! let l: NonEmptyVec<u32> = non_empty_vec![1, 2, 3];
-//! assert_eq!(l.head, 1);
-//! ```
-//!
-//! Unlike the familiar `vec!` macro, `non_empty_vec!` requires at least one element:
-//!
-//! ```
-//! use rama_utils::collections::non_empty_vec;
-//!
-//! let l = non_empty_vec![1];
-//!
-//! // Doesn't compile!
-//! // let l = non_empty_vec![];
-//! ```
-//!
-//! Like `Vec`, you can also construct a [`NonEmptyVec`] the old fashioned way with
-//! [`NonEmptyVec::new`] or [`NonEmptyVec::with_capacity`].
-//!
-//! # Caveats
-//!
-//! Since `NonEmptyVec` must have a least one element, it is not possible to
-//! implement the [`FromIterator`] trait for it. We can't know, in general, if
-//! any given [`Iterator`] actually contains something.
+// > Fork of <https://github.com/cloudhead/non_empty_vec>.
+// >
+// > License and version information can be found at
+// > <https://github.com/plabayo/rama/tree/main/docs/thirdparty/fork>.
 
 use serde::{
     Deserialize, Serialize,
@@ -95,7 +48,52 @@ macro_rules! __non_empty_vec {
     };
 }
 
-/// Non-empty vector.
+/// A Non-empty growable vector.
+///
+/// Non-emptiness can be a powerful guarantee. If your main use of `Vec` is as
+/// an `Iterator`, then you may not need to distinguish on emptiness. But there
+/// are indeed times when the `Vec` you receive as as function argument needs to
+/// be non-empty or your function can't proceed. Similarly, there are times when
+/// the `Vec` you return to a calling user needs to promise it actually contains
+/// something.
+///
+/// With `NonEmptyVec`, you're freed from the boilerplate of constantly needing to
+/// check `is_empty()` or pattern matching before proceeding, or erroring if you
+/// can't. So overall, code, type signatures, and logic become cleaner.
+///
+/// Consider that unlike `Vec`, [`NonEmptyVec::first`] and [`NonEmptyVec::last`] don't
+/// return in `Option`, they always succeed.
+///
+/// # Examples
+///
+/// The simplest way to construct a [`NonEmptyVec`] is via the [`non_empty_vec`] macro:
+///
+/// ```
+/// use rama_utils::collections::{NonEmptyVec, non_empty_vec};
+///
+/// let l: NonEmptyVec<u32> = non_empty_vec![1, 2, 3];
+/// assert_eq!(l.head, 1);
+/// ```
+///
+/// Unlike the familiar `vec!` macro, `non_empty_vec!` requires at least one element:
+///
+/// ```
+/// use rama_utils::collections::non_empty_vec;
+///
+/// let l = non_empty_vec![1];
+///
+/// // Doesn't compile!
+/// // let l = non_empty_vec![];
+/// ```
+///
+/// Like `Vec`, you can also construct a [`NonEmptyVec`] the old fashioned way with
+/// [`NonEmptyVec::new`] or [`NonEmptyVec::with_capacity`].
+///
+/// # Caveats
+///
+/// Since `NonEmptyVec` must have a least one element, it is not possible to
+/// implement the [`FromIterator`] trait for it. We can't know, in general, if
+/// any given [`Iterator`] actually contains something.
 #[derive(Deserialize)]
 #[serde(try_from = "Vec<T>")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
