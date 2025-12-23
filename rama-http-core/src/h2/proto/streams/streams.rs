@@ -200,7 +200,23 @@ where
                         // NOTE: if ever issues, we might need to do something locally with settings as well
                         return Poll::Ready(Ok((!settings.flags.is_ack()).then_some(settings)));
                     }
-                    frame::EarlyFrame::WindowUpdate(window_update) => window_update.into(),
+                    // NOTE: this can cause issues in case regular logic would also send a windows update soon afterwards
+                    frame::EarlyFrame::WindowUpdate(window_update) => {
+                        tracing::trace!(
+                            "replay: increment h2 window update size w/ {}",
+                            window_update.size_increment
+                        );
+                        if let Err(reason) = me.actions.recv.set_target_connection_window(
+                            window_update.size_increment,
+                            &mut me.actions.task,
+                        ) {
+                            tracing::debug!(
+                                "h2 streams: failed to replay window update (set_target_connection_window): reason = {reason}; go away"
+                            );
+                            return Poll::Ready(Err(Error::library_go_away(reason)));
+                        }
+                        return Poll::Ready(Ok(None));
+                    }
                 };
                 Poll::Ready(match dst.buffer(frame) {
                     Ok(_) => Ok(None),
