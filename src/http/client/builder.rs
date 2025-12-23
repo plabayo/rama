@@ -379,6 +379,33 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         }
     }
 
+    #[cfg(feature = "boring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
+    /// Same as [`Self::with_tls_support_using_boringssl`] but also
+    /// setting the default `TargetHttpVersion` in case no ALPN is negotiated.
+    ///
+    /// This is a fairly important detail for proxy purposes given otherwise
+    /// you might come in situations where the ingress traffic is negotiated to `h2`,
+    /// but the egress traffic has no negotiation which would without a default
+    /// http version remain on h2... In such a case you can get failed
+    /// requests if the egress server does not handle multiple http versions.
+    pub fn with_tls_support_using_boringssl_and_default_http_version(
+        self,
+        config: Option<std::sync::Arc<boring_client::TlsConnectorDataBuilder>>,
+        default_http_version: rama_http::Version,
+    ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<boring_client::TlsConnector<T>>, TlsStage>
+    {
+        let connector =
+            boring_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector =
+            RequestVersionAdapter::new(connector).with_default_version(default_http_version);
+
+        EasyHttpConnectorBuilder {
+            connector,
+            _phantom: PhantomData,
+        }
+    }
+
     #[cfg(feature = "rustls")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
     /// Support https connections by using ruslts for tls
@@ -394,6 +421,33 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         let connector =
             rustls_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
         let connector = RequestVersionAdapter::new(connector);
+
+        EasyHttpConnectorBuilder {
+            connector,
+            _phantom: PhantomData,
+        }
+    }
+
+    #[cfg(feature = "rustls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
+    /// Same as [`Self::with_tls_support_using_rustls`] but also
+    /// setting the default `TargetHttpVersion` in case no ALPN is negotiated.
+    ///
+    /// This is a fairly important detail for proxy purposes given otherwise
+    /// you might come in situations where the ingress traffic is negotiated to `h2`,
+    /// but the egress traffic has no negotiation which would without a default
+    /// http version remain on h2... In such a case you can get failed
+    /// requests if the egress server does not handle multiple http versions.
+    pub fn with_tls_support_using_rustls_and_default_http_version(
+        self,
+        config: Option<rustls_client::TlsConnectorData>,
+        default_http_version: rama_http::Version,
+    ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<rustls_client::TlsConnector<T>>, TlsStage>
+    {
+        let connector =
+            rustls_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector =
+            RequestVersionAdapter::new(connector).with_default_version(default_http_version);
 
         EasyHttpConnectorBuilder {
             connector,

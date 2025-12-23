@@ -24,10 +24,11 @@ use rama::{
         ws::handshake::server::{WebSocketAcceptor, WebSocketMatcher},
     },
     layer::ConsumeErrLayer,
-    net::{address::ProxyAddress, tls::server::SelfSignedData},
+    net::{address::ProxyAddress, tls::ApplicationProtocol, tls::server::SelfSignedData},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::Level,
+    tls::boring::client::TlsConnectorDataBuilder,
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
@@ -155,6 +156,29 @@ async fn test_http_mitm_proxy() {
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)
+            .await;
+    });
+
+    let data_http1_no_alpn = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
+        organisation_name: Some("Example h1 Server Acceptor".to_owned()),
+        ..Default::default()
+    })
+    .expect("self signed acceptor data")
+    .try_with_env_key_logger()
+    .expect("with env key logger")
+    .build();
+
+    let http_1_over_tls_server = HttpServer::http1();
+    let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn)
+        .into_layer(http_1_over_tls_server.service(Router::new().with_get("/ping", "pong")));
+
+    tokio::spawn(async {
+        TcpListener::bind("127.0.0.1:63008")
+            .await
+            .unwrap_or_else(|e| {
+                panic!("bind TCP Listener: secure web service (for h1 traffic): {e}")
+            })
+            .serve(http_1_over_tls_server_tcp)
             .await;
     });
 
@@ -302,4 +326,34 @@ async fn test_http_mitm_proxy() {
             .expect("echo ws message to be a text message")
             .as_str()
     );
+
+    // test https request proxy flow for the different http versions
+    for desired_app_protocol in [
+        None,
+        Some(ApplicationProtocol::HTTP_10),
+        Some(ApplicationProtocol::HTTP_11),
+        Some(ApplicationProtocol::HTTP_2),
+    ] {
+        let builder = runner
+            .get("https://127.0.0.1:63008/ping")
+            .extension(proxy_address.clone());
+
+        let builder = if let Some(app_protocol) = desired_app_protocol {
+            let tls_config = TlsConnectorDataBuilder::new()
+                .try_with_rama_alpn_protos(&[app_protocol])
+                .unwrap();
+            builder.extension(tls_config)
+        } else {
+            builder
+        };
+
+        let pong = builder
+            .send()
+            .await
+            .unwrap()
+            .try_into_string()
+            .await
+            .unwrap();
+        assert_eq!("pong", pong);
+    }
 }

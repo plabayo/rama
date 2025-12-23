@@ -37,7 +37,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{
-        Body, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
         layer::{
             compression::CompressionLayer,
@@ -230,7 +230,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_default_transport_connector()
         .with_tls_proxy_support_using_rustls()
         .with_proxy_support()
-        .with_tls_support_using_rustls(Some(tls_config))
+        .with_tls_support_using_rustls_and_default_http_version(Some(tls_config), Version::HTTP_11)
         .with_default_http_connector()
         .build_client();
 

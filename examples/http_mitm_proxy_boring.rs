@@ -58,7 +58,7 @@ use rama::{
     extensions::{ExtensionsMut, ExtensionsRef},
     futures::SinkExt,
     http::{
-        Body, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         headers::{
@@ -303,7 +303,10 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
-        .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
+        .with_tls_support_using_boringssl_and_default_http_version(
+            Some(Arc::new(base_tls_config)),
+            Version::HTTP_11,
+        )
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector()
         .build_client()
