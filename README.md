@@ -32,7 +32,7 @@
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
-🦙 rama™ (ラマ) is a modular service framework for the 🦀 Rust language.
+🦙 rama® (ラマ) is a modular service framework for the 🦀 Rust language.
 
 It gives you programmable control over how packets move through your stack, so you can build:
 
