@@ -20,7 +20,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry", "dep:opentelemetry-http"]
-compression = ["dep:async-compression", "dep:rawzip", "dep:flate2"]
+compression = [
+    "dep:async-compression",
+    "dep:compression-codecs",
+    "dep:compression-core",
+    "dep:rawzip",
+    "dep:flate2",
+]
 tls = ["rama-net/tls"]
 
 [dependencies]
@@ -35,6 +41,13 @@ async-compression = { workspace = true, features = [
 base64 = { workspace = true }
 bitflags = { workspace = true }
 chrono = { workspace = true }
+compression-codecs = { workspace = true, features = [
+    "brotli",
+    "deflate",
+    "gzip",
+    "zstd",
+], optional = true }
+compression-core = { workspace = true, optional = true }
 const_format = { workspace = true }
 csv = { workspace = true }
 flate2 = { workspace = true, optional = true }

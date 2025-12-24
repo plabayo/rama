@@ -2582,6 +2582,8 @@ dependencies = [
  "bitflags",
  "brotli",
  "chrono",
+ "compression-codecs",
+ "compression-core",
  "const_format",
  "csv",
  "flate2",
