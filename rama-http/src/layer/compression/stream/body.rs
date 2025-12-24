@@ -3,7 +3,7 @@ use crate::layer::compression::pin_project_cfg::pin_project_cfg;
 use crate::layer::util::compression::CompressionLevel;
 
 use compression_codecs::{
-    BrotliEncoder, DeflateEncoder, EncodeV2, GzipEncoder, ZstdEncoder,
+    BrotliEncoder, EncodeV2, GzipEncoder, ZlibEncoder, ZstdEncoder,
     brotli::params::EncoderParams as BrotliEncoderParams,
 };
 use compression_core::util;
@@ -50,7 +50,7 @@ where
 
 enum Encoder {
     Gzip(GzipEncoder),
-    Deflate(DeflateEncoder),
+    Deflate(ZlibEncoder),
     Brotli(Box<BrotliEncoder>),
     Zstd(ZstdEncoder),
 }
@@ -299,7 +299,7 @@ where
     pub(super) fn deflate(inner: B, level: CompressionLevel, always_flush: bool) -> Self {
         Self::compressed(
             inner,
-            Encoder::Deflate(DeflateEncoder::new(level.into_compression_core().into())),
+            Encoder::Deflate(ZlibEncoder::new(level.into_compression_core().into())),
             always_flush,
         )
     }
