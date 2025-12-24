@@ -155,7 +155,6 @@ impl CompressData {
                 CompressState::Done => return Poll::Ready(None),
 
                 CompressState::Trailers => {
-                    // Emit buffered trailers
                     if let Some(trailers) = self.pending_trailers.take() {
                         self.state = CompressState::Done;
                         return Poll::Ready(Some(Ok(Frame::trailers(trailers))));
@@ -166,10 +165,7 @@ impl CompressData {
                 }
 
                 CompressState::Finishing => {
-                    // 1. Reserve capacity in our reusable BytesMut
                     self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
-
-                    // 2. Prepare the WriteBuffer pointing to spare capacity
                     let mut output = util::WriteBuffer::new_uninitialized(
                         self.output_buffer.spare_capacity_mut(),
                     );
@@ -177,17 +173,14 @@ impl CompressData {
                     match self.encoder.finish(&mut output) {
                         Ok(done) => {
                             let written = output.written_len();
-
-                            // 3. Commit the written bytes
+                            // Commit the bytes written to spare capacity
                             unsafe {
                                 self.output_buffer
                                     .set_len(self.output_buffer.len() + written);
                             }
 
                             if written > 0 {
-                                // Yield the data we have
                                 let data = self.output_buffer.split().freeze();
-
                                 if done {
                                     self.state = if self.pending_trailers.is_some() {
                                         CompressState::Trailers
@@ -197,13 +190,15 @@ impl CompressData {
                                 }
                                 return Poll::Ready(Some(Ok(Frame::data(data))));
                             } else if done {
-                                // No data written, but encoder is finished
                                 self.state = if self.pending_trailers.is_some() {
                                     CompressState::Trailers
                                 } else {
                                     CompressState::Done
                                 };
-                                // Move to Trailers/Done state immediately
+                            } else {
+                                // If not done and nothing written, we must yield to avoid busy-looping
+                                // though finish() usually finishes or writes.
+                                return Poll::Pending;
                             }
                         }
                         Err(e) => return Poll::Ready(Some(Err(io::Error::other(e)))),
@@ -223,10 +218,11 @@ impl CompressData {
                             match frame.into_data() {
                                 Ok(mut data) => {
                                     let input_bytes = data.copy_to_bytes(data.remaining());
-                                    // Use our optimized chunker
                                     match self.compress_chunk(&input_bytes) {
                                         Ok(Some(frame)) => return Poll::Ready(Some(Ok(frame))),
-                                        Ok(None) => (), // CRITICAL: Loop back to poll more data!
+                                        // Encoder buffered the data but didn't emit a block yet.
+                                        // We MUST continue to poll the inner body for more data.
+                                        Ok(None) => (),
                                         Err(e) => return Poll::Ready(Some(Err(e))),
                                     }
                                 }
@@ -248,38 +244,24 @@ impl CompressData {
     fn compress_chunk(&mut self, input: &[u8]) -> io::Result<Option<Frame<Bytes>>> {
         let mut input_buf = util::PartialBuffer::new(input);
 
-        // Ensure we have room to write
-        self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
-
         loop {
-            // Get a mutable slice of the UNWRITTEN part of the buffer
+            self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
             let mut output =
                 util::WriteBuffer::new_uninitialized(self.output_buffer.spare_capacity_mut());
 
             self.encoder.encode(&mut input_buf, &mut output)?;
 
             let written = output.written_len();
-            // SAFETY: We just wrote 'written' bytes into the spare capacity
             unsafe {
                 self.output_buffer
                     .set_len(self.output_buffer.len() + written);
             }
 
-            // If we've consumed all input, stop encoding
-            if input_buf.written_len() >= input.len() {
+            if input_buf.written_len() >= input.len() || written == 0 {
                 break;
             }
-
-            // Safety check to prevent infinite loop if encoder is stuck
-            if written == 0 {
-                break;
-            }
-
-            // If the buffer is getting too full, reserve more
-            self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
         }
 
-        // If 'always_flush' is true (for SSE), we MUST flush now
         if self.always_flush {
             self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
             let mut output =
@@ -295,8 +277,6 @@ impl CompressData {
         if self.output_buffer.is_empty() {
             Ok(None)
         } else {
-            // ZERO-COPY: split() takes all current bytes and leaves
-            // the buffer empty but keeps the capacity for the next chunk.
             Ok(Some(Frame::data(self.output_buffer.split().freeze())))
         }
     }
