@@ -175,7 +175,7 @@ impl Error {
     ///   half while waiting for your response. If you need to support this,
     ///   consider enabling [`half_close`].
     ///
-    /// [`half_close`]: crate::server::conn::http1::Builder::half_close()
+    /// [`half_close`]: crate::server::conn::http1::Builder::with_half_close()
     #[inline(always)]
     #[must_use]
     pub fn is_incomplete_message(&self) -> bool {
