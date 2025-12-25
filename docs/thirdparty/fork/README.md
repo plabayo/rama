@@ -24,28 +24,28 @@ as a distant relative.
     - Original: <https://github.com/hyperium/hyper-util/blob/66afc93debef02548c86e8454e6bc01cf4fca280/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
-- headers: <https://github.com/hyperium/headers/tree/c91416787b689b6ad838d4579556e10fac474d14>
+- headers: <https://github.com/hyperium/headers/tree/de0b1a1e97d20f3667a346c4d5b5973d92ab58f9>
   - License:
-    - Original: <https://github.com/hyperium/headers/blob/c91416787b689b6ad838d4579556e10fac474d14/LICENSE>
+    - Original: <https://github.com/hyperium/headers/blob/de0b1a1e97d20f3667a346c4d5b5973d92ab58f9/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
 
 ### tower-rs
 
-- <https://github.com/tower-rs/tower/tree/21e01e977e97a7025ff4beb00b2acd79eadf7285>
+- <https://github.com/tower-rs/tower/tree/1992ebd196467deffe193d5a073db655492ce168>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
   - License:
-    - Original: <https://github.com/tower-rs/tower/blob/21e01e977e97a7025ff4beb00b2acd79eadf7285/LICENSE>
+    - Original: <https://github.com/tower-rs/tower/blob/1992ebd196467deffe193d5a073db655492ce168/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/1fe4c091df13eb9dd7c58786615f08abe0d73bc6>
+- <https://github.com/tower-rs/tower-http/tree/1a55dd83ab9e2268453018877a74ce2171f4701a>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/1fe4c091df13eb9dd7c58786615f08abe0d73bc6/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/1a55dd83ab9e2268453018877a74ce2171f4701a/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
