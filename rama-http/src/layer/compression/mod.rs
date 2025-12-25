@@ -1,5 +1,8 @@
 //! Middleware that compresses response bodies.
 //!
+//! If you require streaming compression (e.g. for SSE etc),
+//! you most likely want to use the compression middleware from [`stream`] instead.
+//!
 //! # Example
 //!
 //! Example showing how to respond with the compressed contents of a file.
@@ -74,6 +77,7 @@
 //!
 
 pub mod predicate;
+pub mod stream;
 
 pub(crate) mod body;
 mod layer;

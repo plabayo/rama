@@ -6,8 +6,7 @@ use rama::{
         Body, Request, Response,
         headers::ContentType,
         layer::{
-            compression::{CompressionLayer, predicate},
-            map_response_body::MapResponseBodyLayer,
+            compression::stream::StreamCompressionLayer, map_response_body::MapResponseBodyLayer,
         },
         service::web::response::{Headers, IntoResponse},
     },
@@ -22,7 +21,7 @@ pub(in crate::cmd::serve::httptest) fn service()
     (
         ConsumeErrLayer::trace(Level::DEBUG),
         MapResponseBodyLayer::new(Body::new),
-        CompressionLayer::new().with_compress_predicate(predicate::Always::new()),
+        StreamCompressionLayer::new(),
     )
         .into_layer(service_fn(async || {
             Ok::<_, Infallible>(

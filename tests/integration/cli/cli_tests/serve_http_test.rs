@@ -224,7 +224,10 @@ async fn run_http_test_endpoint_response_stream_compression(
 
         assert!(!resp.headers().contains_key("content-length"));
 
-        let payload = resp.try_into_string().await.unwrap();
+        let payload = resp.try_into_string().await.unwrap_or_else(|err| {
+            panic!("decompression faile for {maybe_accept_encoding:?}: {err}")
+        });
+
         assert!(payload.contains("<title>Chunked transfer encoding test</title>"));
         assert!(payload.contains("This is a chunked response after 100 ms"));
         assert!(payload.contains("all chunks are sent to a client.</h5></body></html>"));

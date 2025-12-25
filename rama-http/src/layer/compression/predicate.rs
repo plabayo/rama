@@ -167,6 +167,33 @@ impl Predicate for DefaultPredicate {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DefaultStreamPredicate(And<SizeAbove, NotForContentType>);
+
+impl DefaultStreamPredicate {
+    /// Create a new `DefaultStreamPredicate`.
+    #[must_use]
+    pub fn new() -> Self {
+        let inner = SizeAbove::new(SizeAbove::DEFAULT_MIN_SIZE).and(NotForContentType::IMAGES);
+        Self(inner)
+    }
+}
+
+impl Default for DefaultStreamPredicate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Predicate for DefaultStreamPredicate {
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    where
+        B: StreamingBody,
+    {
+        self.0.should_compress(response)
+    }
+}
+
 /// [`Predicate`] that will only allow compression of responses above a certain size.
 #[derive(Clone, Copy, Debug)]
 pub struct SizeAbove(u16);

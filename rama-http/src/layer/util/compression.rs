@@ -50,7 +50,7 @@ pin_project! {
 }
 
 impl<M: DecorateAsyncRead> WrapBody<M> {
-    const INTERNAL_BUF_CAPACITY: usize = 4096;
+    const INTERNAL_BUF_CAPACITY: usize = 8096;
 }
 
 impl<M: DecorateAsyncRead> WrapBody<M> {
@@ -350,6 +350,7 @@ pub enum CompressionLevel {
 }
 
 use async_compression::Level as AsyncCompressionLevel;
+use compression_core::Level as CompressionCoreLevel;
 
 impl CompressionLevel {
     #[allow(dead_code)]
@@ -360,6 +361,20 @@ impl CompressionLevel {
             Self::Default => AsyncCompressionLevel::Default,
             Self::Precise(quality) => {
                 AsyncCompressionLevel::Precise(quality.try_into().unwrap_or(i32::MAX))
+            }
+        }
+    }
+}
+
+impl CompressionLevel {
+    #[allow(dead_code)]
+    pub(crate) fn into_compression_core(self) -> CompressionCoreLevel {
+        match self {
+            Self::Fastest => CompressionCoreLevel::Fastest,
+            Self::Best => CompressionCoreLevel::Best,
+            Self::Default => CompressionCoreLevel::Default,
+            Self::Precise(quality) => {
+                CompressionCoreLevel::Precise(quality.try_into().unwrap_or(i32::MAX))
             }
         }
     }
