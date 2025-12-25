@@ -1673,6 +1673,22 @@ impl ResponseFuture {
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
+
+    /// Polls for informational responses (1xx status codes).
+    ///
+    /// This method should be called before polling the main response future
+    /// to check for any informational responses that have been received.
+    ///
+    /// Returns `Poll::Ready(Some(response))` if an informational response is available,
+    /// `Poll::Ready(None)` if no more informational responses are expected,
+    /// or `Poll::Pending` if no informational response is currently available.
+    pub fn poll_informational(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Response<()>, crate::h2::Error>>> {
+        self.inner.poll_informational(cx).map_err(Into::into)
+    }
+
     /// Returns a stream of PushPromises
     ///
     /// # Panics

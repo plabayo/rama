@@ -3,6 +3,7 @@ mod codec_read;
 mod codec_write;
 mod flow_control;
 mod hammer;
+mod informational_response;
 mod ping_pong;
 mod prioritization;
 mod push_promise;

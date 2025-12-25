@@ -22,7 +22,6 @@ use crate::common::date;
 use crate::headers;
 use crate::proto::Dispatched;
 use crate::proto::h2::ping::Recorder;
-use crate::proto::h2::{H2Upgraded, UpgradedSendStream};
 use crate::service::HttpService;
 
 // Our defaults are chosen for the "majority" case, which usually are not
@@ -293,6 +292,7 @@ where
                         connect_parts,
                         respond,
                         self.date_header,
+                        exec.clone(),
                     );
 
                     exec.spawn_task(fut.instrument(serve_span));
@@ -354,6 +354,7 @@ pin_project! {
         #[pin]
         state: H2StreamState<F, B>,
         date_header: bool,
+        exec: Executor,
     }
 }
 
@@ -396,11 +397,13 @@ where
         connect_parts: Option<ConnectParts>,
         respond: SendResponse<SendBuf<B::Data>>,
         date_header: bool,
+        exec: Executor,
     ) -> Self {
         Self {
             reply: respond,
             state: H2StreamState::Service { fut, connect_parts },
             date_header,
+            exec,
         }
     }
 }
@@ -424,8 +427,8 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     E: Into<BoxError>,
 {
-    fn poll2(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
-        let mut me = self.project();
+    fn poll2(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
+        let mut me = self.as_mut().project();
         loop {
             let next = match me.state.as_mut().project() {
                 H2StreamStateProj::Service {
@@ -483,16 +486,16 @@ where
                         }
                         let extensions = res.extensions().clone();
                         let send_stream = reply!(me, res, false);
-                        connect_parts.pending.fulfill(Upgraded::new(
-                            H2Upgraded {
-                                ping: connect_parts.ping,
-                                recv_stream: connect_parts.recv_stream,
-                                send_stream: unsafe { UpgradedSendStream::new(send_stream) },
-                                buf: Bytes::new(),
-                                extensions,
-                            },
-                            Bytes::new(),
-                        ));
+                        let (h2_up, up_task) = super::upgrade::pair(
+                            send_stream,
+                            connect_parts.recv_stream,
+                            connect_parts.ping,
+                            extensions,
+                        );
+                        connect_parts
+                            .pending
+                            .fulfill(Upgraded::new(h2_up, Bytes::new()));
+                        self.exec.spawn_task(up_task);
                         return Poll::Ready(Ok(()));
                     }
 

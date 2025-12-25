@@ -9,7 +9,6 @@ use rama_core::{
 use std::{
     fmt,
     io::{self, Read, Write},
-    mem,
 };
 
 #[cfg(feature = "compression")]
@@ -408,6 +407,11 @@ impl<Stream> WebSocket<Stream> {
             socket: stream,
             context: WebSocketContext::from_partially_read(part, role, config),
         }
+    }
+
+    /// Consumes the `WebSocket` and returns the underlying stream.
+    pub(crate) fn into_inner(self) -> Stream {
+        self.socket
     }
 
     /// Returns a shared reference to the inner stream.
@@ -814,12 +818,16 @@ impl WebSocketContext {
         let should_flush = if let Some(msg) = self.additional_send.take() {
             trace!("Sending pong/close");
             match self.buffer_frame(stream, msg) {
-                Err(ProtocolError::WriteBufferFull(Message::Frame(msg))) => {
+                Err(ProtocolError::WriteBufferFull(msg)) => {
                     // if an system message would exceed the buffer put it back in
                     // `additional_send` for retry. Otherwise returning this error
                     // may not make sense to the user, e.g. calling `flush`.
-                    self.set_additional(msg);
-                    false
+                    if let Message::Frame(msg) = msg {
+                        self.set_additional(msg);
+                        false
+                    } else {
+                        unreachable!();
+                    }
                 }
                 Err(err) => return Err(err),
                 Ok(_) => true,
@@ -871,262 +879,17 @@ impl WebSocketContext {
     /// Try to decode one message frame. May return None.
     fn read_message_frame(
         &mut self,
-        stream: &mut (impl Read + Write),
+        stream: &mut impl Read,
     ) -> Result<Option<Message>, ProtocolError> {
-        if let Some(frame) = self.frame.read_frame(
+        let Some(frame) = self.frame.read_frame(
             stream,
             self.config.max_frame_size,
             matches!(self.role, Role::Server),
             self.config.accept_unmasked_frames,
-        )? {
-            if !self.state.can_read() {
-                return Err(ProtocolError::ReceivedAfterClosing);
-            }
-
-            #[cfg(feature = "compression")]
-            // to ensure that this is valid in later branches,
-            // as this is not always true despite an extension active that supports it
-            let mut rsv1_set = false;
-
-            // MUST be 0 unless an extension is negotiated that defines meanings
-            // for non-zero values.  If a nonzero value is received and none of
-            // the negotiated extensions defines the meaning of such a nonzero
-            // value, the receiving endpoint MUST _Fail the WebSocket
-            // Connection_.
-            {
-                let hdr = frame.header();
-                if hdr.rsv1 {
-                    #[cfg(feature = "compression")]
-                    {
-                        rsv1_set = true;
-                        if self.per_message_deflate_state.is_none() {
-                            tracing::debug!(
-                                "rsv1 bit is set but PMD state is none: no use case for it"
-                            );
-                            return Err(ProtocolError::NonZeroReservedBits);
-                        }
-                    }
-                    #[cfg(not(feature = "compression"))]
-                    {
-                        tracing::debug!("rsv1 bit is set but compression feature no enabled");
-                        return Err(ProtocolError::NonZeroReservedBits);
-                    }
-                } else if hdr.rsv2 || hdr.rsv3 {
-                    tracing::debug!("rsv2 or rsv3 bit set: not expected ever");
-                    return Err(ProtocolError::NonZeroReservedBits);
-                }
-            }
-
-            if self.role == Role::Client && frame.is_masked() {
-                // A client MUST close a connection if it detects a masked frame. (RFC 6455)
-                return Err(ProtocolError::MaskedFrameFromServer);
-            }
-
-            match frame.header().opcode {
-                OpCode::Control(ctl) => {
-                    #[cfg(feature = "compression")]
-                    if rsv1_set {
-                        tracing::debug!("rsv1 bit set in control frame: not expected");
-                        return Err(ProtocolError::NonZeroReservedBits);
-                    }
-
-                    match ctl {
-                        // All control frames MUST have a payload length of 125 bytes or less
-                        // and MUST NOT be fragmented. (RFC 6455)
-                        _ if !frame.header().is_final => Err(ProtocolError::FragmentedControlFrame),
-                        _ if frame.payload().len() > 125 => Err(ProtocolError::ControlFrameTooBig),
-                        OpCodeControl::Close => {
-                            Ok(self.do_close(frame.into_close()?).map(Message::Close))
-                        }
-                        OpCodeControl::Reserved(i) => {
-                            Err(ProtocolError::UnknownControlFrameType(i))
-                        }
-                        OpCodeControl::Ping => {
-                            let data = frame.into_payload();
-                            // No ping processing after we sent a close frame.
-                            if self.state.is_active() {
-                                self.set_additional(Frame::pong(data.clone()));
-                            }
-                            Ok(Some(Message::Ping(data)))
-                        }
-                        OpCodeControl::Pong => Ok(Some(Message::Pong(frame.into_payload()))),
-                    }
-                }
-
-                OpCode::Data(data) => {
-                    let fin = frame.header().is_final;
-
-                    match data {
-                        OpCodeData::Continue => {
-                            #[cfg(feature = "compression")]
-                            if rsv1_set {
-                                tracing::debug!("rsv1 bit set in CONTINUE frame: not expected");
-                                return Err(ProtocolError::NonZeroReservedBits);
-                            }
-
-                            if let Some(ref mut msg) = self.incomplete {
-                                msg.extend(frame.into_payload(), self.config.max_message_size)?;
-                                if fin {
-                                    #[allow(
-                                        clippy::expect_used,
-                                        reason = "we can only reaach here if complete is Some"
-                                    )]
-                                    let incomplete_msg =
-                                        self.incomplete.take().expect("incomplete to be there");
-                                    return Ok(Some(incomplete_msg.complete()?));
-                                }
-                            } else {
-                                #[cfg(feature = "compression")]
-                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
-                                {
-                                    if fin {
-                                        let (compressed_data, msg_type) =
-                                            deflate_state.decompress_incomplete_msg.fin_buffer(
-                                                frame.into_payload(),
-                                                self.config.max_message_size,
-                                            )?;
-                                        return match deflate_state
-                                            .decoder
-                                            .decode(compressed_data.as_ref())
-                                        {
-                                            Ok(raw_data) => match msg_type {
-                                                IncompleteMessageType::Text => Ok(Some(
-                                                    Message::Text(Utf8Bytes::try_from(raw_data)?),
-                                                )),
-                                                IncompleteMessageType::Binary => {
-                                                    Ok(Some(Message::Binary(raw_data.into())))
-                                                }
-                                            },
-                                            Err(err) => Err(ProtocolError::DeflateError(err)),
-                                        };
-                                    } else {
-                                        deflate_state.decompress_incomplete_msg.extend(
-                                            frame.into_payload(),
-                                            self.config.max_message_size,
-                                        )?;
-                                    }
-                                } else {
-                                    return Err(ProtocolError::UnexpectedContinueFrame);
-                                }
-
-                                #[cfg(not(feature = "compression"))]
-                                return Err(ProtocolError::UnexpectedContinueFrame);
-                            }
-
-                            Ok(None)
-                        }
-
-                        c if self.incomplete.is_some() => Err(ProtocolError::ExpectedFragment(c)),
-                        OpCodeData::Text if fin => {
-                            check_max_size(frame.payload().len(), self.config.max_message_size)?;
-                            #[cfg(feature = "compression")]
-                            if rsv1_set {
-                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
-                                {
-                                    let compressed_data = frame.into_payload();
-                                    let raw_data = deflate_state
-                                        .decoder
-                                        .decode(&compressed_data)
-                                        .map_err(ProtocolError::DeflateError)?;
-                                    Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
-                                } else {
-                                    tracing::debug!(
-                                        "rsv1 bit set in text frame but deflate state is none"
-                                    );
-                                    Err(ProtocolError::NonZeroReservedBits)
-                                }
-                            } else {
-                                Ok(Some(Message::Text(frame.into_text()?)))
-                            }
-                            #[cfg(not(feature = "compression"))]
-                            Ok(Some(Message::Text(frame.into_text()?)))
-                        }
-
-                        OpCodeData::Binary if fin => {
-                            check_max_size(frame.payload().len(), self.config.max_message_size)?;
-                            #[cfg(feature = "compression")]
-                            if rsv1_set {
-                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
-                                {
-                                    let compressed_data = frame.into_payload();
-                                    let raw_data = deflate_state
-                                        .decoder
-                                        .decode(&compressed_data)
-                                        .map_err(ProtocolError::DeflateError)?;
-                                    Ok(Some(Message::Binary(raw_data.into())))
-                                } else {
-                                    tracing::debug!(
-                                        "rsv1 bit set in binary frame but deflate state is none"
-                                    );
-                                    Err(ProtocolError::NonZeroReservedBits)
-                                }
-                            } else {
-                                Ok(Some(Message::Binary(frame.into_payload())))
-                            }
-                            #[cfg(not(feature = "compression"))]
-                            Ok(Some(Message::Binary(frame.into_payload())))
-                        }
-
-                        OpCodeData::Text | OpCodeData::Binary => {
-                            #[cfg(feature = "compression")]
-                            if rsv1_set {
-                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
-                                {
-                                    deflate_state.decompress_incomplete_msg.reset(match data {
-                                        OpCodeData::Text => IncompleteMessageType::Text,
-                                        OpCodeData::Binary => IncompleteMessageType::Binary,
-                                        OpCodeData::Continue | OpCodeData::Reserved(_) => {
-                                            unreachable!(
-                                                "Bug: compressed message is not text nor binary"
-                                            )
-                                        }
-                                    });
-                                    deflate_state.decompress_incomplete_msg.extend(
-                                        frame.into_payload(),
-                                        self.config.max_message_size,
-                                    )?;
-                                    Ok(None)
-                                } else {
-                                    tracing::debug!(
-                                        "rsv1 bit set in non-fin bin/text frame but deflate state is none"
-                                    );
-                                    Err(ProtocolError::NonZeroReservedBits)
-                                }
-                            } else {
-                                let message_type = match data {
-                                    OpCodeData::Text => IncompleteMessageType::Text,
-                                    OpCodeData::Binary => IncompleteMessageType::Binary,
-                                    OpCodeData::Continue | OpCodeData::Reserved(_) => {
-                                        unreachable!("Bug: message is not text nor binary")
-                                    }
-                                };
-                                let mut incomplete = IncompleteMessage::new(message_type);
-                                incomplete
-                                    .extend(frame.into_payload(), self.config.max_message_size)?;
-                                self.incomplete = Some(incomplete);
-                                Ok(None)
-                            }
-                            #[cfg(not(feature = "compression"))]
-                            {
-                                let message_type = match data {
-                                    OpCodeData::Text => IncompleteMessageType::Text,
-                                    OpCodeData::Binary => IncompleteMessageType::Binary,
-                                    _ => unreachable!("Bug: message is not text nor binary"),
-                                };
-                                let mut incomplete = IncompleteMessage::new(message_type);
-                                incomplete
-                                    .extend(frame.into_payload(), self.config.max_message_size)?;
-                                self.incomplete = Some(incomplete);
-                                Ok(None)
-                            }
-                        }
-                        OpCodeData::Reserved(i) => Err(ProtocolError::UnknownDataFrameType(i)),
-                    }
-                }
-            } // match opcode
-        } else {
+        )?
+        else {
             // Connection closed by peer
-            match mem::replace(&mut self.state, WebSocketState::Terminated) {
+            return match std::mem::replace(&mut self.state, WebSocketState::Terminated) {
                 WebSocketState::ClosedByPeer | WebSocketState::CloseAcknowledged => {
                     Err(ProtocolError::Io(io::Error::new(
                         io::ErrorKind::ConnectionAborted,
@@ -1136,8 +899,228 @@ impl WebSocketContext {
                 WebSocketState::Active
                 | WebSocketState::ClosedByUs
                 | WebSocketState::Terminated => Err(ProtocolError::ResetWithoutClosingHandshake),
+            };
+        };
+
+        if !self.state.can_read() {
+            return Err(ProtocolError::ReceivedAfterClosing);
+        }
+
+        #[cfg(feature = "compression")]
+        // to ensure that this is valid in later branches,
+        // as this is not always true despite an extension active that supports it
+        let mut rsv1_set = false;
+
+        // MUST be 0 unless an extension is negotiated that defines meanings
+        // for non-zero values.  If a nonzero value is received and none of
+        // the negotiated extensions defines the meaning of such a nonzero
+        // value, the receiving endpoint MUST _Fail the WebSocket
+        // Connection_.
+        {
+            let hdr = frame.header();
+            if hdr.rsv1 {
+                #[cfg(feature = "compression")]
+                {
+                    rsv1_set = true;
+                    if self.per_message_deflate_state.is_none() {
+                        tracing::debug!(
+                            "rsv1 bit is set but PMD state is none: no use case for it"
+                        );
+                        return Err(ProtocolError::NonZeroReservedBits);
+                    }
+                }
+                #[cfg(not(feature = "compression"))]
+                {
+                    tracing::debug!("rsv1 bit is set but compression feature no enabled");
+                    return Err(ProtocolError::NonZeroReservedBits);
+                }
+            } else if hdr.rsv2 || hdr.rsv3 {
+                tracing::debug!("rsv2 or rsv3 bit set: not expected ever");
+                return Err(ProtocolError::NonZeroReservedBits);
             }
         }
+
+        if self.role == Role::Client && frame.is_masked() {
+            // A client MUST close a connection if it detects a masked frame. (RFC 6455)
+            return Err(ProtocolError::MaskedFrameFromServer);
+        }
+
+        match frame.header().opcode {
+            OpCode::Control(ctl) => {
+                #[cfg(feature = "compression")]
+                if rsv1_set {
+                    tracing::debug!("rsv1 bit set in control frame: not expected");
+                    return Err(ProtocolError::NonZeroReservedBits);
+                }
+
+                match ctl {
+                    // All control frames MUST have a payload length of 125 bytes or less
+                    // and MUST NOT be fragmented. (RFC 6455)
+                    _ if !frame.header().is_final => Err(ProtocolError::FragmentedControlFrame),
+                    _ if frame.payload().len() > 125 => Err(ProtocolError::ControlFrameTooBig),
+                    OpCodeControl::Close => {
+                        Ok(self.do_close(frame.into_close()?).map(Message::Close))
+                    }
+                    OpCodeControl::Reserved(i) => Err(ProtocolError::UnknownControlFrameType(i)),
+                    OpCodeControl::Ping => {
+                        let data = frame.into_payload();
+                        // No ping processing after we sent a close frame.
+                        if self.state.is_active() {
+                            self.set_additional(Frame::pong(data.clone()));
+                        }
+                        Ok(Some(Message::Ping(data)))
+                    }
+                    OpCodeControl::Pong => Ok(Some(Message::Pong(frame.into_payload()))),
+                }
+            }
+
+            OpCode::Data(data) => {
+                let fin = frame.header().is_final;
+
+                #[cfg(feature = "compression")]
+                if matches!(data, OpCodeData::Continue) && rsv1_set {
+                    tracing::debug!("rsv1 bit set in CONTINUE frame: not expected");
+                    return Err(ProtocolError::NonZeroReservedBits);
+                }
+
+                let payload = match (data, self.incomplete.as_mut()) {
+                    (OpCodeData::Continue, None) => {
+                        #[cfg(feature = "compression")]
+                        if let Some(deflate_state) = self.per_message_deflate_state.as_mut() {
+                            if fin {
+                                let (compressed_data, msg_type) =
+                                    deflate_state.decompress_incomplete_msg.fin_buffer(
+                                        frame.into_payload(),
+                                        self.config.max_message_size,
+                                    )?;
+                                return match deflate_state.decoder.decode(compressed_data.as_ref())
+                                {
+                                    Ok(raw_data) => match msg_type {
+                                        IncompleteMessageType::Text => {
+                                            Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
+                                        }
+                                        IncompleteMessageType::Binary => {
+                                            Ok(Some(Message::Binary(raw_data.into())))
+                                        }
+                                    },
+                                    Err(err) => Err(ProtocolError::DeflateError(err)),
+                                };
+                            }
+
+                            deflate_state
+                                .decompress_incomplete_msg
+                                .extend(frame.into_payload(), self.config.max_message_size)?;
+                            Ok(None)
+                        } else {
+                            return Err(ProtocolError::UnexpectedContinueFrame);
+                        }
+
+                        #[cfg(not(feature = "compression"))]
+                        return Err(ProtocolError::UnexpectedContinueFrame);
+                    }
+                    (OpCodeData::Continue, Some(incomplete)) => {
+                        incomplete.extend(frame.into_payload(), self.config.max_message_size)?;
+                        Ok(None)
+                    }
+                    (_, Some(_)) => Err(ProtocolError::ExpectedFragment(data)),
+                    (OpCodeData::Text, _) => {
+                        Ok(Some((frame.into_payload(), IncompleteMessageType::Text)))
+                    }
+                    (OpCodeData::Binary, _) => {
+                        Ok(Some((frame.into_payload(), IncompleteMessageType::Binary)))
+                    }
+                    (OpCodeData::Reserved(i), _) => Err(ProtocolError::UnknownDataFrameType(i)),
+                }?;
+
+                match (payload, fin) {
+                    (None, true) =>
+                    {
+                        #[allow(
+                            clippy::expect_used,
+                            reason = "we can only reach here if incomplete is Some"
+                        )]
+                        Ok(Some(
+                            self.incomplete
+                                .take()
+                                .expect("incomplete to be there")
+                                .complete()?,
+                        ))
+                    }
+                    (None, false) => Ok(None),
+                    (Some((payload, t)), true) => {
+                        check_max_size(payload.len(), self.config.max_message_size)?;
+
+                        #[cfg(feature = "compression")]
+                        if rsv1_set {
+                            if let Some(deflate_state) = self.per_message_deflate_state.as_mut() {
+                                let compressed_data = payload;
+                                let raw_data = deflate_state
+                                    .decoder
+                                    .decode(&compressed_data)
+                                    .map_err(ProtocolError::DeflateError)?;
+                                match t {
+                                    IncompleteMessageType::Text => {
+                                        Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
+                                    }
+                                    IncompleteMessageType::Binary => {
+                                        Ok(Some(Message::Binary(raw_data.into())))
+                                    }
+                                }
+                            } else {
+                                tracing::debug!(
+                                    "rsv1 bit set in text frame but deflate state is none"
+                                );
+                                Err(ProtocolError::NonZeroReservedBits)
+                            }
+                        } else {
+                            match t {
+                                IncompleteMessageType::Text => {
+                                    Ok(Some(Message::Text(payload.try_into()?)))
+                                }
+                                IncompleteMessageType::Binary => Ok(Some(Message::Binary(payload))),
+                            }
+                        }
+
+                        #[cfg(not(feature = "compression"))]
+                        match t {
+                            IncompleteMessageType::Text => {
+                                Ok(Some(Message::Text(payload.try_into()?)))
+                            }
+                            IncompleteMessageType::Binary => Ok(Some(Message::Binary(payload))),
+                        }
+                    }
+                    (Some((payload, t)), false) => {
+                        #[cfg(feature = "compression")]
+                        if rsv1_set {
+                            if let Some(deflate_state) = self.per_message_deflate_state.as_mut() {
+                                deflate_state.decompress_incomplete_msg.reset(t);
+                                deflate_state
+                                    .decompress_incomplete_msg
+                                    .extend(payload, self.config.max_message_size)?;
+                                Ok(None)
+                            } else {
+                                tracing::debug!(
+                                    "rsv1 bit set in non-fin bin/text frame but deflate state is none"
+                                );
+                                Err(ProtocolError::NonZeroReservedBits)
+                            }
+                        } else {
+                            let mut incomplete = IncompleteMessage::new(t);
+                            incomplete.extend(payload, self.config.max_message_size)?;
+                            self.incomplete = Some(incomplete);
+                            Ok(None)
+                        }
+                        #[cfg(not(feature = "compression"))]
+                        {
+                            let mut incomplete = IncompleteMessage::new(t);
+                            incomplete.extend(payload, self.config.max_message_size)?;
+                            self.incomplete = Some(incomplete);
+                            Ok(None)
+                        }
+                    }
+                }
+            }
+        } // match opcode
     }
 
     /// Received a close frame. Tells if we need to return a close frame to the user.

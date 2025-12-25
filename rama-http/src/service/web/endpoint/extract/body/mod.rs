@@ -17,6 +17,10 @@ mod json;
 #[doc(inline)]
 pub use json::*;
 
+mod json_lines;
+#[doc(inline)]
+pub use json_lines::*;
+
 mod csv;
 #[doc(inline)]
 pub use csv::*;

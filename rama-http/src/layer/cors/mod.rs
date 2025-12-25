@@ -310,7 +310,7 @@ impl CorsLayer {
     generate_set_and_with! {
         /// Set the value(s) of the [`Vary`][mdn] header.
         ///
-        /// You only need to set this is you want to remove some of these defaults,
+        /// You only need to set this if you want to remove some of these defaults,
         /// or if you use a closure for one of the other headers and want to add a
         /// vary header accordingly.
         ///

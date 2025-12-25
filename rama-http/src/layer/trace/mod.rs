@@ -76,7 +76,7 @@
 //!                 .with_level(Level::INFO)
 //!                 .with_latency_unit(LatencyUnit::Micros)
 //!         ),
-//!         // on so on for `on_eos`, `on_body_chunk`, and `on_failure`
+//!         // and so on for `on_eos`, `on_body_chunk`, and `on_failure`
 //! ).into_layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
