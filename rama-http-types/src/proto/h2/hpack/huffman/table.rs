@@ -264,7 +264,7 @@ pub(super) static ENCODE_TABLE: [(usize, u64); 257] = [
 
 // (next-state, byte, flags)
 #[allow(clippy::large_const_arrays)]
-pub(super) static DECODE_TABLE: [[(usize, u8, u8); 16]; 256] = [
+pub(super) static DECODE_TABLE: [[(u8, u8, u8); 16]; 256] = [
     // 0
     [
         (4, 0, 0x00),

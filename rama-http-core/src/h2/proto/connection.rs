@@ -146,6 +146,10 @@ where
         // Transfer ownership of extensions to Streams as at this point our connection is esthablished
         // and we only need these extensions as parents for our inner Stream's
         let streams = Streams::try_new(streams_config(&config), codec.extensions().clone())?;
+        let span = tracing::debug_root_span!(
+            "Connection",
+            peer = %P::NAME,
+        );
         Ok(Self {
             codec,
             inner: ConnectionInner {
@@ -155,7 +159,7 @@ where
                 ping_pong: PingPong::new(),
                 settings: Settings::new(config.settings),
                 streams,
-                span: tracing::debug_span!("Connection", peer = %P::NAME),
+                span,
                 _phantom: PhantomData,
             },
         })
