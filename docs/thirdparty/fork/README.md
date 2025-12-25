@@ -76,21 +76,15 @@ but still directly in function of Rama.
 
 ## Relative Forks
 
-- <https://github.com/tokio-rs/axum/tree/ff031867df7126abe288f13a62c51849c9e544af>
+- <https://github.com/tokio-rs/axum/tree/061666a1116d853f9ca838fb2d0c668614a9f535>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code
   - License:
-    - Originals:
-      - <https://github.com/tokio-rs/axum/blob/ff031867df7126abe288f13a62c51849c9e544af/axum-core/LICENSE>
-      - <https://github.com/tokio-rs/axum/blob/ff031867df7126abe288f13a62c51849c9e544af/axum-extra/LICENSE>
-      - <https://github.com/tokio-rs/axum/blob/ff031867df7126abe288f13a62c51849c9e544af/axum/LICENSE>
+    - Original: <https://github.com/tokio-rs/axum/blob/061666a1116d853f9ca838fb2d0c668614a9f535/LICENSE>
     - Type: MIT
-    - Copies:
-      - [./licenses/axum-core](./licenses/axum-core)
-      - [./licenses/axum-extra](./licenses/axum-extra)
-      - [./licenses/axum](./licenses/axum)
+    - Copy: [./licenses/axum](./licenses/axum)
 - <https://github.com/dtolnay/paste/tree/6a302522990cbfd9de4e0c61d91854622f7b2999>
   - it was no longer maintained, so we're taking it over for ourselves
   - License:
