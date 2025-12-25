@@ -410,6 +410,11 @@ impl<Stream> WebSocket<Stream> {
         }
     }
 
+    /// Returns the underlying socket.
+    pub(crate) fn into_inner(self) -> Stream {
+        self.socket
+    }
+
     /// Returns a shared reference to the inner stream.
     pub fn get_ref(&self) -> &Stream {
         &self.socket
