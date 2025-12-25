@@ -103,10 +103,10 @@ but still directly in function of Rama.
     - Original: <https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/rust-utf8](./licenses/rust-utf8)
-- <https://github.com/snapview/tungstenite-rs/tree/3ffeb33e29824deae10d86f7edff2ed4de22e91b>
+- <https://github.com/snapview/tungstenite-rs/tree/2d4abe8dba23b283c1a3d2f4f4937c2f9a8d91e7>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tungstenite-rs/blob/3ffeb33e29824deae10d86f7edff2ed4de22e91b/LICENSE-MIT>
+    - Original: <https://github.com/snapview/tungstenite-rs/blob/2d4abe8dba23b283c1a3d2f4f4937c2f9a8d91e7/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
 - <https://github.com/snapview/tokio-tungstenite/tree/35d110c24c9d030d1608ec964d70c789dfb27452>
