@@ -42,8 +42,8 @@ def main():
                             if col_name == "updated_at":
                                 if row[i]:
                                     updated_at = row[i].strftime("%Y-%m-%d %H:%M:%S")
-                                    one_week_ago_ms = (time.time() - 7 * 24 * 60 * 60) * 1000
-                                    if row[i].timestamp() * 1000 > one_week_ago_ms:
+                                    thirty_days_ago_ms = (time.time() - 30 * 24 * 60 * 60) * 1000
+                                    if row[i].timestamp() * 1000 > thirty_days_ago_ms:
                                         profile[col_name] = updated_at
                                     else:
                                         print(f"skip profile #{i}: updated_at to far in the past: {updated_at}")
