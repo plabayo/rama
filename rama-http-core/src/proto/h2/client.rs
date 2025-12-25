@@ -29,7 +29,7 @@ use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::ping::{Ponger, Recorder};
-use super::{H2Upgraded, PipeToSendStream, SendBuf, ping};
+use super::{PipeToSendStream, SendBuf, ping};
 use crate::body::Incoming as IncomingBody;
 use crate::client::dispatch::{Callback, SendWhen, TrySendError};
 use crate::h2::SendStream;
@@ -37,7 +37,6 @@ use crate::h2::client::ResponseFuture;
 use crate::h2::client::{Builder, Connection, SendRequest};
 use crate::headers;
 use crate::proto::Dispatched;
-use crate::proto::h2::UpgradedSendStream;
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
 
@@ -635,6 +634,7 @@ where
                     fut: f.fut,
                     ping: Some(ping),
                     send_stream: Some(send_stream),
+                    exec: self.executor.clone(),
                 },
                 call_back: Some(f.cb),
             },
@@ -660,6 +660,7 @@ pin_project! {
         ping: Option<Recorder>,
         #[pin]
         send_stream: Option<Option<SendStream<SendBuf<<B as StreamingBody>::Data>>>>,
+        exec: Executor,
     }
 }
 
@@ -669,8 +670,8 @@ where
 {
     type Output = Result<Response<crate::body::Incoming>, (crate::Error, Option<Request<B>>)>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.project();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.as_mut().project();
 
         let result = ready!(this.fut.poll(cx));
 
@@ -706,14 +707,15 @@ where
                     let mut res = Response::from_parts(parts, IncomingBody::empty());
 
                     let (pending, on_upgrade) = upgrade::pending();
-                    let io = H2Upgraded {
-                        ping,
-                        send_stream: unsafe { UpgradedSendStream::new(send_stream) },
+
+                    let (h2_up, up_task) = super::upgrade::pair(
+                        send_stream,
                         recv_stream,
-                        buf: Bytes::new(),
-                        extensions: res.extensions().clone(),
-                    };
-                    let upgraded = Upgraded::new(io, Bytes::new());
+                        ping,
+                        res.extensions().clone(),
+                    );
+                    self.exec.spawn_task(up_task);
+                    let upgraded = Upgraded::new(h2_up, Bytes::new());
 
                     pending.fulfill(upgraded);
                     res.extensions_mut().insert(on_upgrade);
