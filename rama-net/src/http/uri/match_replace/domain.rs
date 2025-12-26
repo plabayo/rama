@@ -6,7 +6,7 @@ use rama_core::{
 };
 use rama_http_types::{Uri, uri::Authority};
 use rama_utils::macros::generate_set_and_with;
-use smol_str::format_smolstr;
+use rama_utils::str::smol_str::format_smolstr;
 use std::borrow::Cow;
 
 #[derive(Debug, Clone)]

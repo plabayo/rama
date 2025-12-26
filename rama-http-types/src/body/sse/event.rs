@@ -1,7 +1,7 @@
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use rama_error::OpaqueError;
 use rama_utils::macros::generate_set_and_with;
-use smol_str::SmolStr;
+use rama_utils::str::smol_str::SmolStr;
 use std::{fmt, time::Duration};
 
 use super::{EventDataWrite, JsonEventData};

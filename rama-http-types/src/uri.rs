@@ -1,7 +1,5 @@
 use rama_error::{ErrorContext as _, OpaqueError};
-use rama_utils::str::starts_with_ignore_ascii_case;
-
-use smol_str::format_smolstr;
+use rama_utils::str::{smol_str::format_smolstr, starts_with_ignore_ascii_case};
 
 pub use crate::dep::hyperium::http::uri::*;
 

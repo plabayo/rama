@@ -1,7 +1,8 @@
-use super::Host;
 use rama_core::error::{ErrorContext, OpaqueError};
-use smol_str::SmolStr;
+use rama_utils::str::smol_str::{SmolStr, format_smolstr};
 use std::{cmp::Ordering, fmt, iter::repeat};
+
+use super::Host;
 
 /// A domain.
 ///
@@ -148,7 +149,7 @@ impl Domain {
     /// Try to create a subdomain from the current [`Domain`] with the given
     /// subdomain prefixed to it
     pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, OpaqueError> {
-        let sub = smol_str::format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
+        let sub = format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
         if !is_valid_name(sub.as_bytes()) {
             return Err(OpaqueError::from_display("invalid subdomain"));
         }
@@ -161,7 +162,7 @@ impl Domain {
     ///
     /// This can fail, e.g. because the domain becomes too long.
     pub fn try_as_wildcard(&self) -> Result<Self, OpaqueError> {
-        let sub = smol_str::format_smolstr!("*.{}", self.0);
+        let sub = format_smolstr!("*.{}", self.0);
         if !is_valid_name(sub.as_bytes()) {
             return Err(OpaqueError::from_display("invalid subdomain"));
         }

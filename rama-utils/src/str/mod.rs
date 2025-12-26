@@ -7,6 +7,8 @@ pub use non_empty::{EmptyStrErr, NonEmptyStr};
 #[doc(inline)]
 pub use crate::__non_empty_str as non_empty_str;
 
+pub use ::smol_str;
+
 mod search;
 #[doc(inline)]
 pub use search::{

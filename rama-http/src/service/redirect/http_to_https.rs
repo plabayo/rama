@@ -6,7 +6,7 @@ use crate::{
 };
 use rama_core::{Service, telemetry::tracing};
 use rama_net::http::uri::{UriMatchError, UriMatchReplace, match_replace::UriMatchReplaceNever};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, str::smol_str::format_smolstr};
 use std::convert::Infallible;
 
 /// Service that redirects all HTTP requests to HTTPS
@@ -142,17 +142,15 @@ where
 
         match (authority.port_u16(), self.overwrite_port) {
             // use port to overwrite
-            (_, Some(port)) => {
-                match smol_str::format_smolstr!("{}:{port}", authority.host()).parse() {
-                    Ok(new_authority) => *authority = new_authority,
-                    Err(err) => {
-                        tracing::debug!(
-                            "failed to overwrite authority using custom port: {err} (bug??)"
-                        );
-                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-                    }
+            (_, Some(port)) => match format_smolstr!("{}:{port}", authority.host()).parse() {
+                Ok(new_authority) => *authority = new_authority,
+                Err(err) => {
+                    tracing::debug!(
+                        "failed to overwrite authority using custom port: {err} (bug??)"
+                    );
+                    return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
                 }
-            }
+            },
             // drop port
             (Some(_), _) => {
                 *authority = match authority.host().parse() {

@@ -1,6 +1,5 @@
 use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
-use smol_str::StrExt;
 use std::{convert::Infallible, path::Path, sync::Arc};
 
 use crate::{
@@ -21,7 +20,10 @@ use rama_core::{
 use rama_http_types::{
     Body, OriginalRouterUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
 };
-use rama_utils::include_dir;
+use rama_utils::{
+    include_dir,
+    str::smol_str::{StrExt as _, format_smolstr},
+};
 
 /// A basic router that can be used to route requests to different services based on the request path.
 ///
@@ -522,7 +524,7 @@ where
             .boxed();
 
         let path = path.as_ref().trim().trim_matches('/');
-        let path = smol_str::format_smolstr!("/{path}").to_lowercase_smolstr();
+        let path = format_smolstr!("/{path}").to_lowercase_smolstr();
 
         if let Ok(matched) = self.routes.at_mut(&path) {
             matched.value.push((matcher, service));
@@ -639,7 +641,7 @@ where
 
                     let mut ext = Extensions::new();
                     if matcher.matches_path(Some(&mut ext), fragments_path) {
-                        let full_prefix = smol_str::format_smolstr!("{prefix}/{fragments_path}",);
+                        let full_prefix = format_smolstr!("{prefix}/{fragments_path}",);
                         let modified_uri = match try_to_strip_path_prefix_from_uri(
                             &parts.uri,
                             &full_prefix,

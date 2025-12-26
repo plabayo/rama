@@ -6,7 +6,7 @@ use rama_core::bytes::Bytes;
 use rama_core::futures::Stream;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
 use rama_utils::macros::generate_set_and_with;
-use smol_str::SmolStr;
+use rama_utils::str::smol_str::SmolStr;
 use std::{
     pin::Pin,
     task::{Context, Poll, ready},
