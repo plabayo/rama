@@ -233,18 +233,20 @@ impl TcpListener {
         self.inner.ttl()
     }
 
-    /// Converts this `TcpListener` into a `std::net::TcpListener`.
+    /// Converts this [`TcpListener`] into a [`std::net::TcpListener`].
     ///
     /// The returned listener will be in blocking mode. To convert it back
     /// to non-blocking for use with Rama, use [`TryFrom<std::net::TcpListener>`].
     ///
     /// This is useful for zero-downtime restarts where listener file descriptors
-    /// need to be passed between processes via SCM_RIGHTS.
+    /// need to be passed between processes via `SCM_RIGHTS`.
     pub fn into_std(self) -> io::Result<std::net::TcpListener> {
-        self.inner.into_std()
+        let std_listener = self.inner.into_std()?;
+        std_listener.set_nonblocking(false)?;
+        Ok(std_listener)
     }
 
-    /// Consumes this `TcpListener` and returns the inner `tokio::net::TcpListener`.
+    /// Consumes this [`TcpListener`] and returns the inner [`tokio::net::TcpListener`].
     pub fn into_inner(self) -> TokioTcpListener {
         self.inner
     }
@@ -417,7 +419,7 @@ async fn handle_accept_err(err: io::Error) {
 #[cfg(unix)]
 mod unix_fd {
     use super::TcpListener;
-    use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, IntoRawFd, RawFd};
+    use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
 
     impl AsRawFd for TcpListener {
         fn as_raw_fd(&self) -> RawFd {
@@ -428,16 +430,6 @@ mod unix_fd {
     impl AsFd for TcpListener {
         fn as_fd(&self) -> BorrowedFd<'_> {
             self.inner.as_fd()
-        }
-    }
-
-    impl IntoRawFd for TcpListener {
-        fn into_raw_fd(self) -> RawFd {
-            // Convert to std first, then get raw fd
-            self.inner
-                .into_std()
-                .expect("into_std for IntoRawFd")
-                .into_raw_fd()
         }
     }
 }
