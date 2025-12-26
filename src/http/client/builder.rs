@@ -4,7 +4,10 @@ use crate::{
     dns::DnsResolver,
     error::{BoxError, OpaqueError},
     extensions::ExtensionsMut,
-    http::{Request, StreamingBody, client::proxy::layer::HttpProxyConnector},
+    http::{
+        Request, StreamingBody, client::proxy::layer::HttpProxyConnector,
+        layer::version_adapter::RequestVersionAdapter,
+    },
     net::client::{
         EstablishedClientConnection,
         pool::{
@@ -21,9 +24,6 @@ use crate::tls::boring::client as boring_client;
 
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
-
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::http::layer::version_adapter::RequestVersionAdapter;
 
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
@@ -495,7 +495,9 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
 }
 
 type DefaultConnectionPoolBuilder<T, C> = EasyHttpConnectorBuilder<
-    PooledConnector<T, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+    RequestVersionAdapter<
+        PooledConnector<T, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+    >,
     PoolStage,
 >;
 
@@ -511,11 +513,16 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// If you need a different pool or custom way to group connection you can
     /// use [`EasyHttpConnectorBuilder::with_custom_connection_pool()`] to provide
     /// you own.
+    ///
+    /// This also applies a [`RequestVersionAdapter`] layer to make sure that request versions
+    /// are adapted when pooled connections are used, which you almost always need, but in case
+    /// that is unwanted, you can use [`Self::with_custom_connection_pool`] instead.
     pub fn try_with_connection_pool<C>(
         self,
         config: HttpPooledConnectorConfig,
     ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
         let connector = config.build_connector(self.connector)?;
+        let connector = RequestVersionAdapter::new(connector);
 
         Ok(EasyHttpConnectorBuilder {
             connector,
@@ -534,6 +541,10 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// Configure this client to use the provided [`Pool`] and [`ReqToConnId`]
     ///
     /// Use `wait_for_pool_timeout` to limit how long we wait for the pool to give us a connection
+    ///
+    /// Warning: this does not apply a [`RequestVersionAdapter`] layer to make sure that request versions
+    /// are adapted when pooled connections are used, which you almost always. This should be manually added
+    /// by using [`Self::with_custom_connector`] after configuring this pool and providing a [`RequestVersionAdapter`] there.
     ///
     /// [`Pool`]: rama_net::client::pool::Pool
     /// [`ReqToConnId`]: rama_net::client::pool::ReqToConnID

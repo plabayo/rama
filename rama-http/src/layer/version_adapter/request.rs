@@ -2,6 +2,7 @@ use rama_core::Layer;
 use rama_core::Service;
 use rama_core::bytes::BytesMut;
 use rama_core::extensions::ChainableExtensions;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_error::BoxError;
 use rama_error::ErrorContext;
@@ -56,7 +57,7 @@ where
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection {
-            conn,
+            mut conn,
             input: mut req,
         } = self.inner.connect(req).await.map_err(Into::into)?;
 
@@ -81,6 +82,10 @@ where
                     req.version(),
                 );
                 adapt_request_version(&mut req, version)?;
+
+                // Since this default is now the actual target, also store this on the connection so other components
+                // can see this. This is needed in case this adapter is used twice e.g. with connection pooling
+                conn.extensions_mut().insert(TargetHttpVersion(version));
             }
             (None, None) => {
                 tracing::trace!(
