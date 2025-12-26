@@ -40,7 +40,7 @@ rama-tcp = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_family = "unix")'.dependencies]
 rama-unix = { workspace = true }
 
 [dev-dependencies]

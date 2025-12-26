@@ -240,6 +240,7 @@ impl TcpListener {
     ///
     /// This is useful for zero-downtime restarts where listener file descriptors
     /// need to be passed between processes via `SCM_RIGHTS`.
+    #[inline(always)]
     pub fn into_std(self) -> io::Result<std::net::TcpListener> {
         let std_listener = self.inner.into_std()?;
         std_listener.set_nonblocking(false)?;
@@ -247,6 +248,7 @@ impl TcpListener {
     }
 
     /// Consumes this [`TcpListener`] and returns the inner [`tokio::net::TcpListener`].
+    #[inline(always)]
     pub fn into_inner(self) -> TokioTcpListener {
         self.inner
     }
@@ -416,20 +418,42 @@ async fn handle_accept_err(err: io::Error) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 mod unix_fd {
     use super::TcpListener;
     use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
 
     impl AsRawFd for TcpListener {
+        #[inline(always)]
         fn as_raw_fd(&self) -> RawFd {
             self.inner.as_raw_fd()
         }
     }
 
     impl AsFd for TcpListener {
+        #[inline(always)]
         fn as_fd(&self) -> BorrowedFd<'_> {
             self.inner.as_fd()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_socket {
+    use super::TcpListener;
+    use std::os::windows::io::{AsRawSocket, AsSocket, BorrowedSocket, RawSocket};
+
+    impl AsRawSocket for TcpListener {
+        #[inline(always)]
+        fn as_raw_socket(&self) -> RawSocket {
+            self.inner.as_raw_socket()
+        }
+    }
+
+    impl AsSocket for TcpListener {
+        #[inline(always)]
+        fn as_socket(&self) -> BorrowedSocket<'_> {
+            self.inner.as_socket()
         }
     }
 }

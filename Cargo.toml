@@ -413,7 +413,7 @@ serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_family = "unix")'.dependencies]
 rama-unix = { workspace = true }
 
 [build-dependencies]
