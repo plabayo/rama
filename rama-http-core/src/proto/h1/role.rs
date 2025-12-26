@@ -11,7 +11,7 @@ use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
-use smallvec::{SmallVec, smallvec, smallvec_inline};
+use rama_utils::collections::smallvec::{SmallVec, smallvec, smallvec_inline};
 
 use crate::body::DecodedLength;
 use crate::common::date;

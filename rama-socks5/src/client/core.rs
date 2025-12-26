@@ -2,6 +2,7 @@ use rama_core::error::BoxError;
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_net::address::{Host, HostWithPort, SocketAddress};
+use rama_utils::collections::smallvec::smallvec;
 use std::fmt;
 
 use crate::{
@@ -409,7 +410,7 @@ impl Client {
         &self,
         stream: &mut S,
     ) -> Result<SocksMethod, HandshakeError> {
-        let header = Header::new(smallvec::smallvec![SocksMethod::NoAuthenticationRequired]);
+        let header = Header::new(smallvec![SocksMethod::NoAuthenticationRequired]);
         header.write_to(stream).await.map_err(|err| {
             HandshakeError::io(err).with_context("write client headers: no auth required")
         })?;

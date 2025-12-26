@@ -72,7 +72,6 @@ rawzip = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
-smallvec = { workspace = true, features = ["write"] }
 smol_str = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 uuid = { workspace = true, features = ["v4"] }

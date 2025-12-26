@@ -2,8 +2,8 @@
 
 use crate::{Request, Uri};
 use rama_core::{extensions::Extensions, telemetry::tracing};
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::thirdparty::{regex::Regex, wildcard::Wildcard};
-use smallvec::SmallVec;
 use std::io::Write as _;
 
 #[derive(Debug, Clone)]

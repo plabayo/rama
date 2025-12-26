@@ -4,9 +4,9 @@ use crate::service::web::response::IntoResponse;
 use crate::{Request, StatusCode};
 use ahash::{HashMap, HashMapExt as _};
 use rama_core::extensions::Extensions;
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::str::arcstr::ArcStr;
 use rama_utils::str::starts_with_ignore_ascii_case;
-use smallvec::SmallVec;
 use smol_str::StrExt as _;
 
 mod de;
