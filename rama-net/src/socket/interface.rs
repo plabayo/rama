@@ -51,7 +51,7 @@ use super::SocketOptions;
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 mod device {
     use super::*;
-    use smol_str::SmolStr;
+    use rama_utils::str::smol_str::SmolStr;
 
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
     /// Name of a (network) interface device name, e.g. `eth0`.
