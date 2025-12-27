@@ -73,6 +73,8 @@ mod https_web_service_with_hsts;
 mod mtls_tunnel_and_service;
 #[cfg(all(feature = "tls", feature = "socks5", feature = "http-full",))]
 mod proxy_connectivity_check;
+#[cfg(all(feature = "http-full", target_family = "unix"))]
+mod tcp_listener_fd_passing;
 #[cfg(feature = "tcp")]
 mod tcp_listener_hello;
 #[cfg(feature = "tcp")]

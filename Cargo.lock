@@ -2396,6 +2396,7 @@ dependencies = [
  "indexmap",
  "itertools 0.14.0",
  "itoa",
+ "libc",
  "opentelemetry-otlp",
  "parking_lot",
  "pin-project-lite",
