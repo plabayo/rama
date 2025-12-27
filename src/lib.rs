@@ -189,6 +189,7 @@
 //! - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 //! - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 //! - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers
+//! - [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
 //! - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 //! - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 //! - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
@@ -308,6 +309,10 @@ pub use ::rama_dns as dns;
 #[cfg_attr(docsrs, doc(cfg(feature = "net")))]
 #[doc(inline)]
 pub use ::rama_net as net;
+
+#[cfg(feature = "grpc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "grpc")))]
+pub use ::rama_grpc as grpc;
 
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]

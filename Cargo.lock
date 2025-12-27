@@ -2402,6 +2402,7 @@ dependencies = [
  "rama-core",
  "rama-crypto",
  "rama-dns",
+ "rama-grpc",
  "rama-haproxy",
  "rama-http",
  "rama-http-backend",
@@ -2562,6 +2563,16 @@ dependencies = [
  "rama",
  "rama-http-core",
  "tokio",
+]
+
+[[package]]
+name = "rama-grpc"
+version = "0.3.0-alpha.4"
+dependencies = [
+ "rama-core",
+ "rama-net",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

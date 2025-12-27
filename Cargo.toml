@@ -27,6 +27,7 @@ members = [
     "rama-crypto",
     "rama-dns",
     "rama-error",
+    "rama-grpc",
     "rama-haproxy",
     "rama-http",
     "rama-http-backend",
@@ -165,6 +166,7 @@ rama-core = { version = "0.3.0-alpha.4", path = "./rama-core" }
 rama-crypto = { version = "0.3.0-alpha.4", path = "./rama-crypto" }
 rama-dns = { version = "0.3.0-alpha.4", path = "./rama-dns" }
 rama-error = { version = "0.3.0-alpha.4", path = "./rama-error" }
+rama-grpc = { version = "0.3.0-alpha.4", path = "./rama-grpc" }
 rama-haproxy = { version = "0.3.0-alpha.4", path = "./rama-haproxy" }
 rama-http = { version = "0.3.0-alpha.4", path = "./rama-http" }
 rama-http-backend = { version = "0.3.0-alpha.4", path = "./rama-http-backend" }
@@ -304,6 +306,7 @@ full = [
     "cli",
     "tcp",
     "udp",
+    "grpc",
     "http-full",
     "proxy-full",
     "tower",
@@ -344,6 +347,7 @@ tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
 acme = ["crypto", "dep:rama-tls-acme"]
+grpc = ["dep:rama-grpc"]
 http = [
     "dep:rama-http",
     "ua",
@@ -391,6 +395,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
+rama-grpc = { workspace = true, optional = true }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
