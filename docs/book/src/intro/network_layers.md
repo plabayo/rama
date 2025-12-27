@@ -44,6 +44,8 @@ Here are some examples that demonstrate working with transport layer services:
 
 - [/examples/tcp_listener_layers.rs](https://github.com/plabayo/rama/tree/main/examples/tcp_listener_layers.rs):
   an example showing how to create a TCP listener with multiple layers of middleware;
+- [/examples/tcp_listener_fd_passing.rs](https://github.com/plabayo/rama/tree/main/examples/tcp_listener_fd_passing.rs):
+  demonstrates real FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only);
 - [/examples/tcp_listener_hello.rs](https://github.com/plabayo/rama/tree/main/examples/tcp_listener_hello.rs):
   a minimal example demonstrating a TCP listener that responds with a hello message;
 - [/examples/tcp_nd_json.rs](https://github.com/plabayo/rama/tree/main/examples/tcp_nd_json.rs):
