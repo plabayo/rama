@@ -1616,9 +1616,9 @@ dependencies = [
 
 [[package]]
 name = "itoa"
-version = "1.0.16"
+version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ee5b5339afb4c41626dde77b7a611bd4f2c202b897852b4bcf5d03eddc61010"
+checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "jiff"
@@ -1714,13 +1714,13 @@ dependencies = [
 
 [[package]]
 name = "libredox"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df15f6eac291ed1cf25865b1ee60399f57e7c227e7f51bdbd4c5270396a9ed50"
+checksum = "3d0b95e02c851351f877147b7deea7b1afb1df71b63aa5f8270716e0c5720616"
 dependencies = [
  "bitflags",
  "libc",
- "redox_syscall 0.6.0",
+ "redox_syscall 0.7.0",
 ]
 
 [[package]]
@@ -1803,9 +1803,9 @@ dependencies = [
 
 [[package]]
 name = "matchit"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ea5f97102eb9e54ab99fb70bb175589073f554bdadfb74d9bd656482ea73e2a"
+checksum = "b3eede3bdf92f3b4f9dc04072a9ce5ab557d5ec9038773bf9ffcd5588b3cc05b"
 
 [[package]]
 name = "md-5"
@@ -2208,9 +2208,9 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "portable-atomic"
-version = "1.12.0"
+version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f59e70c4aef1e55797c2e8fd94a4f2a973fc972cfde0e0b05f683667b0cd39dd"
+checksum = "f89776e4d69bb58bc6993e99ffa1d11f228b839984854c7daeb5d37f87cbe950"
 
 [[package]]
 name = "portable-atomic-util"
@@ -2298,9 +2298,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.103"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ee95bc4ef87b8d5ba32e8b7714ccc834865276eab0aed5c9958d00ec45f49e8"
+checksum = "9695f8df41bb4f3d222c95a67532365f569318332d03d5f3f67f37b20e6ebdf0"
 dependencies = [
  "unicode-ident",
 ]
@@ -2392,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "rama"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "base64",
@@ -2407,6 +2407,7 @@ dependencies = [
  "indexmap",
  "itertools 0.14.0",
  "itoa",
+ "libc",
  "opentelemetry-otlp",
  "parking_lot",
  "pin-project-lite",
@@ -2480,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "rama-cli"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "base64",
  "bb8",
@@ -2503,7 +2504,7 @@ dependencies = [
 
 [[package]]
 name = "rama-core"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "asynk-strim",
@@ -2532,7 +2533,7 @@ dependencies = [
 
 [[package]]
 name = "rama-crypto"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "aws-lc-rs",
  "base64",
@@ -2549,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "rama-dns"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "hickory-resolver",
@@ -2564,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "rama-error"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 
 [[package]]
 name = "rama-fuzz"
@@ -2579,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "rama-grpc"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "base64",
  "flate2",
@@ -2599,7 +2600,7 @@ dependencies = [
 
 [[package]]
 name = "rama-haproxy"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -2610,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "async-compression",
@@ -2656,9 +2657,8 @@ dependencies = [
 
 [[package]]
 name = "rama-http-backend"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
- "const_format",
  "h2",
  "pin-project-lite",
  "rama-core",
@@ -2676,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-core"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "atomic-waker",
@@ -2708,7 +2708,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-headers"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "base64",
@@ -2731,7 +2731,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-types"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "bytes",
@@ -2762,7 +2762,7 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "paste-test-suite",
  "proc-macro-crate",
@@ -2775,7 +2775,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "const_format",
@@ -2806,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "rama-proxy"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "arc-swap",
  "base64",
@@ -2827,7 +2827,7 @@ dependencies = [
 
 [[package]]
 name = "rama-socks5"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "byteorder",
  "rama-core",
@@ -2843,7 +2843,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tcp"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "pin-project-lite",
@@ -2858,7 +2858,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-acme"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "base64",
  "parking_lot",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-boring"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "brotli",
@@ -2899,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-rustls"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "pin-project-lite",
  "rama-core",
@@ -2918,7 +2918,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tower"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "rama-core",
  "tokio",
@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ua"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "itertools 0.14.0",
@@ -2945,7 +2945,7 @@ dependencies = [
 
 [[package]]
 name = "rama-udp"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -2955,7 +2955,7 @@ dependencies = [
 
 [[package]]
 name = "rama-unix"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "pin-project-lite",
  "rama-core",
@@ -2965,7 +2965,7 @@ dependencies = [
 
 [[package]]
 name = "rama-utils"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "const_format",
@@ -2988,7 +2988,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ws"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "flate2",
  "pin-project-lite",
@@ -3123,9 +3123,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec96166dafa0886eb81fe1c0a388bece180fbef2135f97c1e2cf8302e74b43b5"
+checksum = "49f3fe0889e69e2ae9e41f4d6c4c0181701d00e4697b356fb1f74173a5e0ee27"
 dependencies = [
  "bitflags",
 ]
@@ -3291,9 +3291,9 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "ryu"
-version = "1.0.21"
+version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62049b2877bf12821e8f9ad256ee38fdc31db7387ec2d3b3f403024de2034aea"
+checksum = "a50f4cf475b65d88e057964e0e9bb1f0aa9bbb2036dc65c64596b42932536984"
 
 [[package]]
 name = "same-file"
@@ -3399,9 +3399,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.147"
+version = "1.0.148"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6af14725505314343e673e9ecb7cd7e8a36aa9791eb936235a3567cc31447ae4"
+checksum = "3084b546a1dd6289475996f182a22aba973866ea8e8b02c51d9f46b1336a22da"
 dependencies = [
  "itoa",
  "memchr",
@@ -4988,9 +4988,9 @@ dependencies = [
 
 [[package]]
 name = "zmij"
-version = "0.1.9"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0095ecd462946aa3927d9297b63ef82fb9a5316d7a37d134eeb36e58228615a"
+checksum = "e6d6085d62852e35540689d1f97ad663e3971fc19cf5eceab364d62c646ea167"
 
 [[package]]
 name = "zstd"

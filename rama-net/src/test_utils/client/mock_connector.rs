@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt, net::Ipv4Addr};
+use std::{convert::Infallible, net::Ipv4Addr};
 
 use rama_core::{
     Service,
@@ -9,19 +9,12 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 
 use crate::{client::EstablishedClientConnection, stream::Socket};
 
+#[derive(Debug, Clone)]
 /// Mock connector can be used in tests to simulate connectors so we can test client and servers
 /// without opening actuall connections
 pub struct MockConnectorService<S> {
     create_server: S,
     max_buffer_size: usize,
-}
-
-impl<S: fmt::Debug> fmt::Debug for MockConnectorService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MockConnectorService")
-            .field("create_server", &self.create_server)
-            .finish()
-    }
 }
 
 impl<S> MockConnectorService<S> {
