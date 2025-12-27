@@ -18,15 +18,29 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = []
+default = ["transport", "compression"]
+transport = [
+    "dep:rama-http-core",
+]
+compression = ["dep:flate2", "dep:zstd"]
 
 [dependencies]
+base64 = { workspace = true }
+pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
-rama-net = { workspace = true }
+rama-utils = { workspace = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-http-types = { workspace = true }
+rama-http-core = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "net"] }
-tokio-util = { workspace = true, features = ["net"] }
+flate2 = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+sync_wrapper = { workspace = true }
 
 [dev-dependencies]
+static_assertions = { workspace = true }
+quickcheck = { workspace = true }
+quickcheck_macros = { workspace = true }
 
 [lints]
 workspace = true

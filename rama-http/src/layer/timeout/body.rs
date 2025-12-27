@@ -2,7 +2,6 @@ use crate::body::{Frame, StreamingBody};
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use std::{
-    future::Future,
     pin::Pin,
     task::{Context, Poll, ready},
     time::Duration,

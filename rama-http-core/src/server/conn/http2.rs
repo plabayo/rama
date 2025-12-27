@@ -16,7 +16,7 @@ use crate::proto;
 use crate::service::HttpService;
 
 pin_project! {
-    /// A [`Future`](core::future::Future) representing an HTTP/2 connection, bound to a
+    /// A [`Future`] representing an HTTP/2 connection, bound to a
     /// [`Service`](crate::service::Service), returned from
     /// [`Builder::serve_connection`](struct.Builder.html#method.serve_connection).
     ///

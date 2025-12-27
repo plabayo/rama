@@ -26,7 +26,7 @@ type Http1Dispatcher<T, B, S> = proto::h1::Dispatcher<
 >;
 
 pin_project_lite::pin_project! {
-    /// A [`Future`](core::future::Future) representing an HTTP/1 connection, bound to a
+    /// A [`Future`] representing an HTTP/1 connection, bound to a
     /// [`Service`](crate::service::Service), returned from
     /// [`Builder::serve_connection`](struct.Builder.html#method.serve_connection).
     ///

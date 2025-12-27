@@ -40,9 +40,9 @@ mod tests {
 
     use super::JsonLines;
     use http::StatusCode;
+    use rama_core::stream::StreamExt as _;
     use serde::{Deserialize, Serialize};
     use std::error::Error;
-    use tokio_stream::StreamExt as _;
 
     #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
     struct User {

@@ -237,7 +237,7 @@ where
 }
 
 pin_project! {
-    /// A [`Future`](core::future::Future) representing an HTTP/1 connection, returned from
+    /// A [`Future`] representing an HTTP/1 connection, returned from
     /// [`Builder::serve_connection`](struct.Builder.html#method.serve_connection).
     ///
     /// To drive HTTP on this connection this future **must be polled**, typically with
