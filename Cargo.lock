@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "rama"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "base64",
@@ -2469,7 +2469,7 @@ dependencies = [
 
 [[package]]
 name = "rama-cli"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "base64",
  "bb8",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "rama-core"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "asynk-strim",
@@ -2520,7 +2520,7 @@ dependencies = [
 
 [[package]]
 name = "rama-crypto"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "aws-lc-rs",
  "base64",
@@ -2537,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "rama-dns"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "hickory-resolver",
@@ -2552,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "rama-error"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 
 [[package]]
 name = "rama-fuzz"
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "rama-haproxy"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -2578,7 +2578,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "async-compression",
@@ -2626,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-backend"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "h2",
  "pin-project-lite",
@@ -2645,7 +2645,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-core"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "atomic-waker",
@@ -2677,7 +2677,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-headers"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "base64",
@@ -2700,7 +2700,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-types"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "bytes",
@@ -2731,7 +2731,7 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "paste-test-suite",
  "proc-macro-crate",
@@ -2744,7 +2744,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "const_format",
@@ -2774,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "rama-proxy"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "arc-swap",
  "base64",
@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "rama-socks5"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "byteorder",
  "rama-core",
@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tcp"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "pin-project-lite",
@@ -2826,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-acme"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "base64",
  "parking_lot",
@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-boring"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "brotli",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-rustls"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "pin-project-lite",
  "rama-core",
@@ -2886,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tower"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "rama-core",
  "tokio",
@@ -2896,7 +2896,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ua"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "itertools 0.14.0",
@@ -2913,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "rama-udp"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -2923,7 +2923,7 @@ dependencies = [
 
 [[package]]
 name = "rama-unix"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "pin-project-lite",
  "rama-core",
@@ -2933,7 +2933,7 @@ dependencies = [
 
 [[package]]
 name = "rama-utils"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "const_format",
@@ -2956,7 +2956,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ws"
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 dependencies = [
  "flate2",
  "pin-project-lite",

@@ -14,6 +14,6 @@ Dependencies:
 Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/plabayo/rama/releases/download/rama-0.3.0-alpha.4/rama.x86_64-pc-windows-msvc.zip
-  InstallerSha256: DA9FF0D9F2A95D2F48244799712A32A1BDC93946C21B2BF389373AF4325A229C
+  InstallerSha256: 506CB09E8CE44F2EF78F4D3136A551403976324E8AD07A811AAD9DCA609B56AA
 ManifestType: installer
 ManifestVersion: 1.10.0
