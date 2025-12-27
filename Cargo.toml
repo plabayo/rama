@@ -430,6 +430,7 @@ h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }
+libc = "0.2"
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -648,6 +649,10 @@ required-features = ["http-full", "boring"]
 [[example]]
 name = "tls_sni_router"
 required-features = ["http-full", "boring"]
+
+[[example]]
+name = "tcp_listener_fd_passing"
+required-features = ["http-full"]
 
 [[example]]
 name = "tcp_listener_hello"
