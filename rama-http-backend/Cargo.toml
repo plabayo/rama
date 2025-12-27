@@ -27,7 +27,6 @@ default = []
 tls = ["rama-net/tls"]
 
 [dependencies]
-const_format = { workspace = true }
 h2 = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
