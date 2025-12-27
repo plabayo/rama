@@ -31,6 +31,12 @@ Once we released rama `0.3` we plan to start doing a regular release train of si
 The idea is to release whatever is in main, which will be a patch- or major release depending if we have
 breaking changes or not.
 
+### Community
+
+Thank you to the contributors of this release: Glen De Cauwsemaecker [glen@plabayo.tech], Abdelkader Boudih [terminale@gmail.com], Nicolas Trippar [ntrippar@gmail.com], M-Kusumgar [98405247+M-Kusumgar@users.noreply.github.com], Brecht Stamper [stamper.brecht@gmail.com], Ali Tariq [raja.ali945@gmail.com], Camille Louédoc-Eyriès [clouedoc@icloud.com], sim-hash [84858164+sim-hash@users.noreply.github.com], Irfan - ئىرفان [irfanabliz914@gmail.com], Yukun Wang [airycanon@airycanon.me], hafihaf123 [misobuchta@gmail.com], Aydan Pirani [aydanpirani@gmail.com], Kenny Lau [72945813+lauk20@users.noreply.github.com], and MeerKatDev [lcampobasso@gmail.com]. We also want to extend our thanks to all the individuals in the wider ecosystem and the maintainers of the third-party crates that make this work possible.
+
+Huge shoutout to Brecht Stamper [stamper.brecht@gmail.com] for stepping up to help maintain rama and driving major changes this release. His work was instrumental in the service and state API redesign, ACME support, TLS improvements, and Pooled Connections, among many other contributions.
+
 ### Major Architectural Refactor
 
 #### Removal of Context
