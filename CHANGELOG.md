@@ -43,7 +43,7 @@ In a fundamental shift for the 0.3 milestone, the centralized `Context` type has
 * **State Migration**: State management has moved from `Context` to `Extensions`. New utilities like `AddInputExtensionLayer`, `AddOutputExtensionLayer` and `IntoEndpointServiceWithState`
 have been introduced to handle state injection (#685, #720).
 
-During this process we playeda t some point with the concept of **Parent Extensions** (#715).
+During this process we played at some point with the concept of **Parent Extensions** (#715).
 We have however simplified, the concept even further and at this point it is
 a list of extensions which can be forked.
 
@@ -60,7 +60,7 @@ the `Service` trait now uses the type parameters:
 
 This aligns much better with `Rama`'s future but even for its present.
 For example service and layers also operate on the transport and tls layers,
-where the parameter types `Request` and `Response` make noe sense.
+where the parameter types `Request` and `Response` make no sense.
 
 ### Added
 
@@ -91,7 +91,7 @@ where the parameter types `Request` and `Response` make noe sense.
 ### Changed
 
 * **API Naming Conventions**:
-    * Applied consistent `try_` prefix for fallible setters and constructors (e.g., `try_port`, `try_host`).
+    * Applied consistent prefixes where it helps in meaning (no need to apply these everywhere, but where it otherwise is not clear it probably is advised: `try_` (fallible), `maybe_` (optional), `set_` (`&mut self`) and `with_` (`self`). These can also be combined for example for a fallible setter: `try_set`. For Setters we also have a macro to easily define these which we also started to use and apply more (`generate_set_and_with`);
     * Renamed `AddExtension` to `AddInputExtension` and introduced `AddOutputExtension` for clearer lifecycle management (#759, #761).
 * **Internal Improvements**:
     * **Performance**: Replaced standard `HashMap`/`HashSet` with faster `ahash` versions (#709).
