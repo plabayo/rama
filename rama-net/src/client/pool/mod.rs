@@ -1,4 +1,5 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
+use crate::client::ConnectionHealthCheck;
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
@@ -147,6 +148,23 @@ impl<C: ExtensionsMut, ID> ExtensionsMut for LeasedConnection<C, ID> {
     }
 }
 
+impl<C: ConnectionHealthCheck + Send, ID: Send> ConnectionHealthCheck for LeasedConnection<C, ID> {
+    async fn health_check(mut self) -> Result<Self, OpaqueError> {
+        // TODO safety
+        self.pooled_conn_taken = true;
+        let inner = unsafe { ManuallyDrop::take(&mut self.pooled_conn) };
+
+        match inner.health_check().await {
+            Ok(inner) => {
+                self.pooled_conn = ManuallyDrop::new(inner);
+                self.pooled_conn_taken = false;
+                Ok(self)
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
+
 /// A connection which is stored in a pool.
 ///
 /// A ID is used to determine which connections can be used for a request.
@@ -156,6 +174,18 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
+}
+
+impl<C: ConnectionHealthCheck + Send, ID: Send> ConnectionHealthCheck for PooledConnection<C, ID> {
+    async fn health_check(mut self) -> Result<Self, OpaqueError> {
+        match self.conn.health_check().await {
+            Ok(conn) => {
+                self.conn = conn;
+                Ok(self)
+            }
+            Err(err) => Err(err),
+        }
+    }
 }
 
 #[deprecated = "use LruDropPool instead"]
@@ -716,6 +746,7 @@ where
     Input: Send + ExtensionsRef + 'static,
     P: Pool<S::Connection, R::ID>,
     R: ReqToConnID<Input>,
+    P::Connection: ConnectionHealthCheck,
 {
     type Output = EstablishedClientConnection<P::Connection, Input>;
     type Error = BoxError;
@@ -723,51 +754,69 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let conn_id = self.req_to_conn_id.id(&input)?;
 
-        // Try to get connection from pool, if no connection is found, we will have to create a new
-        // one using the returned create permit
-        let create_permit = {
-            let pool = if let Some(pool) = input.extensions().get::<P>() {
-                trace!("pooled connector: using pool from ctx");
-                pool
-            } else {
-                trace!("pooled connector: using pool from connector");
-                &self.pool
-            };
+        // TODO how do we configure max attempts, and do we even configure this?
+        // TODO should this happen here or or should pool storage do this periodically/pro-active?
+        for _i in 0..3 {
+            // Try to get connection from pool, if no connection is found, we will have to create a new
+            // one using the returned create permit
+            let create_permit = {
+                let pool = if let Some(pool) = input.extensions().get::<P>() {
+                    trace!("pooled connector: using pool from ctx");
+                    pool
+                } else {
+                    trace!("pooled connector: using pool from connector");
+                    &self.pool
+                };
 
-            let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-                timeout(duration, pool.get_conn(&conn_id))
+                let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
+                    timeout(duration, pool.get_conn(&conn_id))
                     .await
                     .map_err(|err|{
                         trace!("pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
                         OpaqueError::from_std(err)
                     })?
-            } else {
-                pool.get_conn(&conn_id).await
+                } else {
+                    pool.get_conn(&conn_id).await
+                };
+
+                match pool_result? {
+                    ConnectionResult::Connection(conn) => {
+                        trace!(
+                            "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running healtch check now)"
+                        );
+                        // TODO timeout on this or global timeout vs only wait_for_pool_timeout?
+                        match conn.health_check().await {
+                            Ok(conn) => {
+                                trace!("pooled connector: connection is detected as health");
+                                return Ok(EstablishedClientConnection { conn, input });
+                            }
+                            Err(err) => {
+                                trace!(?err, "pooled connector: connection was not health");
+                                continue;
+                            }
+                        };
+                    }
+                    ConnectionResult::CreatePermit(permit) => {
+                        trace!(
+                            "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
+                        );
+                        permit
+                    }
+                }
             };
 
-            match pool_result? {
-                ConnectionResult::Connection(c) => {
-                    trace!(
-                        "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool, returning"
-                    );
-                    return Ok(EstablishedClientConnection { conn: c, input });
-                }
-                ConnectionResult::CreatePermit(permit) => {
-                    trace!(
-                        "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
-                    );
-                    permit
-                }
-            }
-        };
+            let EstablishedClientConnection { input, conn } =
+                self.inner.connect(input).await.map_err(Into::into)?;
 
-        let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.map_err(Into::into)?;
+            // TODO here we create a new connection, but do we also want to health check this for consistency,
+            // or do we expect the inner connector to have already done this...?
+            trace!("pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}");
+            let pool = input.extensions().get::<P>().unwrap_or(&self.pool);
+            let conn = pool.create(conn_id, conn, create_permit).await;
+            return Ok(EstablishedClientConnection { input, conn });
+        }
 
-        trace!("pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}");
-        let pool = input.extensions().get::<P>().unwrap_or(&self.pool);
-        let conn = pool.create(conn_id, conn, create_permit).await;
-        Ok(EstablishedClientConnection { input, conn })
+        Err(OpaqueError::from_display("failed to get a connection after 3 attempts").into_boxed())
     }
 }
 
@@ -861,6 +910,12 @@ mod tests {
     impl ExtensionsMut for Conn {
         fn extensions_mut(&mut self) -> &mut Extensions {
             &mut self.extensions
+        }
+    }
+
+    impl ConnectionHealthCheck for Conn {
+        async fn health_check(self) -> Result<Self, OpaqueError> {
+            Ok(self)
         }
     }
 
@@ -1043,6 +1098,12 @@ mod tests {
     impl ExtensionsMut for InnerService {
         fn extensions_mut(&mut self) -> &mut Extensions {
             &mut self.extensions
+        }
+    }
+
+    impl ConnectionHealthCheck for InnerService {
+        async fn health_check(self) -> Result<Self, OpaqueError> {
+            Ok(self)
         }
     }
 

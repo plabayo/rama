@@ -11,7 +11,7 @@ use rama_http_types::{
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
     uri::PathAndQuery,
 };
-use rama_net::{address::ProxyAddress, http::RequestContext};
+use rama_net::{address::ProxyAddress, client::ConnectionHealthCheck, http::RequestContext};
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -34,6 +34,13 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
 pub struct HttpClientService<Body> {
     pub(super) sender: SendRequest<Body>,
     pub(super) extensions: Extensions,
+}
+
+impl<Body: Send> ConnectionHealthCheck for HttpClientService<Body> {
+    async fn health_check(self) -> Result<Self, OpaqueError> {
+        // TODO use state in connection to do actual health check
+        Ok(self)
+    }
 }
 
 impl<Body> Service<Request<Body>> for HttpClientService<Body>
