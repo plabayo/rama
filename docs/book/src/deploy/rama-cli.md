@@ -14,7 +14,7 @@ rama --help
 
 ## Install
 
-The easiest way to install `rama` is by using `cargo`:
+### Cargo
 
 ```sh
 cargo install rama-cli@0.3.0-alpha.4
@@ -29,6 +29,10 @@ using [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall):
 cargo binstall rama-cli@0.3.0-alpha.4
 ```
 
+### Pre-Built Binaries
+
+#### MacOS
+
 On 🍎 MacOS you can also install the `rama` binary using [HomeBrew](https://brew.sh/):
 
 ```
@@ -40,6 +44,19 @@ brew install plabayo/rama/rama
 
 In case you run on a platform for which we do not have (correct) package manager support yet,
 you can also download the archive with the ease of running a script.
+
+#### Windows
+
+On windows you can install and update the rama CLI tool using `winget`:
+
+```
+winget install Plabayo.Rama.Preview
+```
+
+See the `winget` docs on how to uninstall, update and do anything else
+that this tool offers you.
+
+#### Unix
 
 Using this approach you can install it using `curl`
 
@@ -61,7 +78,7 @@ The `rama` "cli" is also available as a docker image:
 
 ```
 docker pull glendc/rama:latest
-docker run --rm glendc/rama:latest http example.com
+docker run --rm glendc/rama:latest example.com
 ```
 
 ## Code Signing
