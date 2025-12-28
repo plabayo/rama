@@ -1,4 +1,5 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
+use crate::address::SocketAddress;
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
@@ -9,7 +10,6 @@ use rama_utils::macros::generate_set_and_with;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::mem::ManuallyDrop;
-use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
@@ -518,11 +518,11 @@ where
     ID: Send + Sync + 'static,
     C: Socket,
 {
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+    fn local_addr(&self) -> std::io::Result<SocketAddress> {
         self.as_ref().local_addr()
     }
 
-    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+    fn peer_addr(&self) -> std::io::Result<SocketAddress> {
         self.as_ref().peer_addr()
     }
 }

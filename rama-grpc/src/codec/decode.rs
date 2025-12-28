@@ -13,7 +13,7 @@ use rama_core::{
     futures::Stream,
     telemetry::tracing::{debug, trace},
 };
-use rama_http_types::{Body, HeaderMap, StatusCode, StreamingBody};
+use rama_http_types::{Body, HeaderMap, StatusCode, StreamingBody, body::util::BodyExt as _};
 
 use super::compression::{CompressionEncoding, CompressionSettings, decompress};
 use super::{BufferSettings, DEFAULT_MAX_RECV_MESSAGE_SIZE, DecodeBuf, Decoder, HEADER_SIZE};
@@ -69,8 +69,7 @@ impl<T> Streaming<T> {
         max_message_size: Option<usize>,
     ) -> Self
     where
-        B: StreamingBody + Send + 'static,
-        B::Error: Into<BoxError>,
+        B: StreamingBody<Error: Into<BoxError>> + Send + Sync + 'static,
         D: Decoder<Item = T, Error = Status> + Send + 'static,
     {
         Self::new(
@@ -85,8 +84,7 @@ impl<T> Streaming<T> {
     /// Create empty response. For creating responses that have no content (headers + trailers only)
     pub fn new_empty<B, D>(decoder: D, body: B) -> Self
     where
-        B: StreamingBody + Send + 'static,
-        B::Error: Into<BoxError>,
+        B: StreamingBody<Error: Into<BoxError>> + Send + Sync + 'static,
         D: Decoder<Item = T, Error = Status> + Send + 'static,
     {
         Self::new(decoder, body, Direction::EmptyResponse, None, None)
@@ -101,8 +99,7 @@ impl<T> Streaming<T> {
         max_message_size: Option<usize>,
     ) -> Self
     where
-        B: StreamingBody + Send + 'static,
-        B::Error: Into<BoxError>,
+        B: StreamingBody<Error: Into<BoxError>> + Send + Sync + 'static,
         D: Decoder<Item = T, Error = Status> + Send + 'static,
     {
         Self::new(
@@ -122,8 +119,7 @@ impl<T> Streaming<T> {
         max_message_size: Option<usize>,
     ) -> Self
     where
-        B: StreamingBody + Send + 'static,
-        B::Error: Into<BoxError>,
+        B: StreamingBody<Error: Into<BoxError>> + Send + Sync + 'static,
         D: Decoder<Item = T, Error = Status> + Send + 'static,
     {
         let buffer_size = decoder.buffer_settings().buffer_size;
@@ -153,7 +149,7 @@ impl StreamingInner {
         &mut self,
         buffer_settings: BufferSettings,
     ) -> Result<Option<DecodeBuf<'_>>, Status> {
-        if let State::ReadHeader = self.state {
+        if matches!(self.state, State::ReadHeader) {
             if self.buf.remaining() < HEADER_SIZE {
                 return Ok(None);
             }
@@ -252,7 +248,11 @@ impl StreamingInner {
     fn poll_frame(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<()>, Status>> {
         let frame = match ready!(Pin::new(self.body.get_mut()).poll_frame(cx)) {
             Some(Ok(frame)) => frame,
-            Some(Err(status)) => {
+            Some(Err(err)) => {
+                // TODO: confirm if this is sufficient or if we do really want our own
+                // Body impl for grpc
+                let status = Status::from_error(err.into_boxed());
+
                 if self.direction == Direction::Request && status.code() == Code::Cancelled {
                     return Poll::Ready(Ok(None));
                 }
@@ -272,30 +272,34 @@ impl StreamingInner {
             }
         };
 
-        Poll::Ready(if frame.is_data() {
-            self.buf.put(frame.into_data().unwrap());
-            Ok(Some(()))
-        } else if frame.is_trailers() {
-            if let Some(trailers) = &mut self.trailers {
-                trailers.extend(frame.into_trailers().unwrap());
-            } else {
-                self.trailers = Some(frame.into_trailers().unwrap());
+        Poll::Ready(match frame.into_data() {
+            Ok(data) => {
+                self.buf.put(data);
+                Ok(Some(()))
             }
-
-            Ok(None)
-        } else {
-            panic!("unexpected frame: {frame:?}");
+            Err(frame) => match frame.into_trailers() {
+                Ok(frame_trailers) => {
+                    if let Some(trailers) = &mut self.trailers {
+                        trailers.extend(frame_trailers);
+                    }
+                    Ok(None)
+                }
+                Err(frame) => {
+                    trace!("unexpected frame: {frame:?}");
+                    Err(Status::internal("decode: unexpected frame"))
+                }
+            },
         })
     }
 
     fn response(&mut self) -> Result<(), Status> {
-        if let Direction::Response(status) = self.direction {
-            if let Err(Some(e)) = crate::status::infer_grpc_status(self.trailers.as_ref(), status) {
-                // If the trailers contain a grpc-status, then we should return that as the error
-                // and otherwise stop the stream (by taking the error state)
-                self.trailers.take();
-                return Err(e);
-            }
+        if let Direction::Response(status) = self.direction
+            && let Err(Some(e)) = crate::status::infer_grpc_status(self.trailers.as_ref(), status)
+        {
+            // If the trailers contain a grpc-status, then we should return that as the error
+            // and otherwise stop the stream (by taking the error state)
+            self.trailers.take();
+            return Err(e);
         }
         Ok(())
     }

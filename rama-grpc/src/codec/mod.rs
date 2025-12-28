@@ -71,6 +71,7 @@ pub struct BufferSettings {
 
 impl BufferSettings {
     /// Create a new `BufferSettings`
+    #[must_use]
     pub fn new(buffer_size: usize, yield_threshold: usize) -> Self {
         Self {
             buffer_size,
@@ -102,16 +103,16 @@ const DEFAULT_MAX_RECV_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 const DEFAULT_MAX_SEND_MESSAGE_SIZE: usize = usize::MAX;
 
 /// Trait that knows how to encode and decode gRPC messages.
-pub trait Codec {
+pub trait Codec: Send + Sync + 'static {
     /// The encodable message.
-    type Encode: Send + 'static;
+    type Encode: Send + Sync + 'static;
     /// The decodable message.
-    type Decode: Send + 'static;
+    type Decode: Send + Sync + 'static;
 
     /// The encoder that can encode a message.
-    type Encoder: Encoder<Item = Self::Encode, Error = Status> + Send + 'static;
+    type Encoder: Encoder<Item = Self::Encode, Error = Status> + Send + Sync + 'static;
     /// The decoder that can decode a message.
-    type Decoder: Decoder<Item = Self::Decode, Error = Status> + Send + 'static;
+    type Decoder: Decoder<Item = Self::Decode, Error = Status> + Send + Sync + 'static;
 
     /// Fetch the encoder.
     fn encoder(&mut self) -> Self::Encoder;

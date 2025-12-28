@@ -14,6 +14,7 @@ struct ErrorImpl {
     source: Option<Source>,
 }
 
+#[allow(unused)] // TODO: delete allow
 #[derive(Debug)]
 pub(crate) enum Kind {
     Transport,
@@ -26,6 +27,7 @@ pub(crate) enum Kind {
     // InvalidTlsConfigForUds,
 }
 
+#[allow(unused)] // TODO: delete allow
 impl Error {
     pub(crate) fn new(kind: Kind) -> Self {
         Self {
@@ -39,17 +41,17 @@ impl Error {
     }
 
     pub(crate) fn from_source(source: impl Into<BoxError>) -> Self {
-        Error::new(Kind::Transport).with(source)
+        Self::new(Kind::Transport).with(source)
     }
 
     #[cfg(feature = "transport")]
     pub(crate) fn new_invalid_uri() -> Self {
-        Error::new(Kind::InvalidUri)
+        Self::new(Kind::InvalidUri)
     }
 
     #[cfg(feature = "transport")]
     pub(crate) fn new_invalid_user_agent() -> Self {
-        Error::new(Kind::InvalidUserAgent)
+        Self::new(Kind::InvalidUserAgent)
     }
 
     fn description(&self) -> &str {

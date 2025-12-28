@@ -120,7 +120,7 @@ where
                         )
                     })
                     .ok(),
-                addr,
+                addr.into(),
             ));
             conn.extensions_mut().insert(socket_info);
 
@@ -142,7 +142,7 @@ where
                         )
                     })
                     .ok(),
-                addr,
+                addr.into(),
             ));
             conn.extensions_mut().insert(socket_info);
 
@@ -181,7 +181,7 @@ where
                     )
                 })
                 .ok(),
-            addr,
+            addr.into(),
         ));
         conn.extensions_mut().insert(socket_info);
 

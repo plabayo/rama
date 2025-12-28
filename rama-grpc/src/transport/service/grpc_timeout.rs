@@ -4,13 +4,13 @@ use rama_http_types::{HeaderMap, HeaderValue, Request};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
-pub(crate) struct GrpcTimeout<S> {
+pub struct GrpcTimeout<S> {
     inner: S,
     server_timeout: Option<Duration>,
 }
 
 impl<S> GrpcTimeout<S> {
-    pub(crate) fn new(inner: S, server_timeout: Option<Duration>) -> Self {
+    pub fn new(inner: S, server_timeout: Option<Duration>) -> Self {
         Self {
             inner,
             server_timeout,
@@ -22,6 +22,7 @@ impl<S, ReqBody> Service<Request<ReqBody>> for GrpcTimeout<S>
 where
     S: Service<Request<ReqBody>>,
     S::Error: Into<BoxError>,
+    ReqBody: Send + 'static,
 {
     type Output = S::Output;
     type Error = BoxError;
@@ -35,8 +36,7 @@ where
         // Use the shorter of the two durations, if either are set
         let timeout_duration = match (client_timeout, self.server_timeout) {
             (None, None) => None,
-            (Some(dur), None) => Some(dur),
-            (None, Some(dur)) => Some(dur),
+            (Some(dur), None) | (None, Some(dur)) => Some(dur),
             (Some(header), Some(server)) => {
                 let shorter_duration = std::cmp::min(header, server);
                 Some(shorter_duration)
@@ -46,7 +46,7 @@ where
         match timeout_duration {
             Some(duration) => tokio::time::timeout(duration, self.inner.serve(req))
                 .await
-                .map_err(|_| Err(TimeoutExpired(()).into()))?
+                .map_err(|_| TimeoutExpired(()))?
                 .map_err(Into::into),
             None => self.inner.serve(req).await.map_err(Into::into),
         }

@@ -1,4 +1,4 @@
-use std::{convert::Infallible, net::Ipv4Addr};
+use std::convert::Infallible;
 
 use rama_core::{
     Service,
@@ -7,7 +7,7 @@ use rama_core::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 
-use crate::{client::EstablishedClientConnection, stream::Socket};
+use crate::{address::SocketAddress, client::EstablishedClientConnection, stream::Socket};
 
 #[derive(Debug, Clone)]
 /// Mock connector can be used in tests to simulate connectors so we can test client and servers
@@ -140,17 +140,11 @@ impl AsyncWrite for MockSocket {
 }
 
 impl Socket for MockSocket {
-    fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
-        Ok(std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-            Ipv4Addr::LOCALHOST,
-            0,
-        )))
+    fn local_addr(&self) -> std::io::Result<SocketAddress> {
+        Ok(SocketAddress::local_ipv4(0))
     }
 
-    fn peer_addr(&self) -> std::io::Result<std::net::SocketAddr> {
-        Ok(std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-            Ipv4Addr::LOCALHOST,
-            0,
-        )))
+    fn peer_addr(&self) -> std::io::Result<SocketAddress> {
+        Ok(SocketAddress::local_ipv4(0))
     }
 }

@@ -25,7 +25,6 @@ opentelemetry = ["rama-core/opentelemetry"]
 
 [dependencies]
 ahash = { workspace = true }
-percent-encoding = { workspace = true }
 const_format = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 hex = { workspace = true, optional = true }
@@ -34,6 +33,7 @@ itertools = { workspace = true }
 md5 = { workspace = true, optional = true }
 nom = { workspace = true }
 parking_lot = { workspace = true }
+percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 psl = { workspace = true }
 radix_trie = { workspace = true }

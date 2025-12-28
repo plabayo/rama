@@ -315,9 +315,7 @@ impl TcpListener {
             let service = service.clone();
 
             let local_addr = socket.local_addr().ok();
-            let trace_local_addr = local_addr
-                .map(Into::into)
-                .unwrap_or_else(|| SocketAddress::default_ipv4(0));
+            let trace_local_addr = local_addr.unwrap_or_else(|| SocketAddress::default_ipv4(0));
 
             let span = trace_root_span!(
                 "tcp::serve",
@@ -329,7 +327,7 @@ impl TcpListener {
                 network.protocol.name = "tcp",
             );
 
-            let socket_info = SocketInfo::new(local_addr, peer_addr);
+            let socket_info = SocketInfo::new(local_addr, peer_addr.into());
             socket.extensions_mut().insert(socket_info);
             socket.extensions_mut().insert(Executor::new());
 
@@ -368,7 +366,6 @@ impl TcpListener {
 
                             let local_addr = socket.local_addr().ok();
                             let trace_local_addr = local_addr
-                                .map(Into::into)
                                 .unwrap_or_else(|| SocketAddress::default_ipv4(0));
 
                             let span = trace_root_span!(
@@ -381,7 +378,7 @@ impl TcpListener {
                                 network.protocol.name = "tcp",
                             );
 
-                            socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr));
+                            socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr.into()));
                             socket.extensions_mut().insert(Executor::graceful(guard.clone()));
 
                             guard.spawn_task(async move {

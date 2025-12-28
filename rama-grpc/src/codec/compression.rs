@@ -1,6 +1,9 @@
 use std::{borrow::Cow, fmt};
 
-use rama_core::bytes::{Buf, BufMut, BytesMut};
+use rama_core::{
+    bytes::{Buf, BufMut, BytesMut},
+    error::{ErrorContext as _, OpaqueError},
+};
 
 #[cfg(feature = "compression")]
 use ::{
@@ -34,7 +37,7 @@ impl EnabledCompressionEncodings {
                     *e = Some(encoding);
                     return;
                 }
-                _ => continue,
+                _ => (),
             }
         }
     }
@@ -48,7 +51,9 @@ impl EnabledCompressionEncodings {
             .take()
     }
 
-    pub(crate) fn into_accept_encoding_header_value(self) -> Option<rama_http_types::HeaderValue> {
+    pub(crate) fn try_into_accept_encoding_header_value(
+        self,
+    ) -> Result<Option<rama_http_types::HeaderValue>, OpaqueError> {
         let mut value = BytesMut::new();
         for encoding in self.inner.into_iter().flatten() {
             value.put_slice(encoding.as_str().as_bytes());
@@ -56,19 +61,24 @@ impl EnabledCompressionEncodings {
         }
 
         if value.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         value.put_slice(b"identity");
-        Some(rama_http_types::HeaderValue::from_maybe_shared(value).unwrap())
+        Ok(Some(
+            rama_http_types::HeaderValue::from_maybe_shared(value)
+                .context("create header value from encoding values")?,
+        ))
     }
 
     /// Check if a [`CompressionEncoding`] is enabled.
+    #[must_use]
     pub fn is_enabled(&self, encoding: CompressionEncoding) -> bool {
         self.inner.contains(&Some(encoding))
     }
 
     /// Check if any [`CompressionEncoding`]s are enabled.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.iter().all(|e| e.is_none())
     }
@@ -94,11 +104,7 @@ pub enum CompressionEncoding {
 }
 
 impl CompressionEncoding {
-    pub(crate) const ENCODINGS: &'static [CompressionEncoding] = &[
-        CompressionEncoding::Gzip,
-        CompressionEncoding::Deflate,
-        CompressionEncoding::Zstd,
-    ];
+    pub(crate) const ENCODINGS: &'static [Self] = &[Self::Gzip, Self::Deflate, Self::Zstd];
 
     /// Based on the `grpc-accept-encoding` header, pick an encoding to use.
     #[cfg(feature = "compression")]
@@ -114,9 +120,9 @@ impl CompressionEncoding {
         let header_value_str = header_value.to_str().ok()?;
 
         split_by_comma(header_value_str).find_map(|value| match value {
-            "gzip" => Some(CompressionEncoding::Gzip),
-            "deflate" => Some(CompressionEncoding::Deflate),
-            "zstd" => Some(CompressionEncoding::Zstd),
+            "gzip" => Some(Self::Gzip),
+            "deflate" => Some(Self::Deflate),
+            "zstd" => Some(Self::Zstd),
             _ => None,
         })
     }
@@ -141,15 +147,9 @@ impl CompressionEncoding {
         };
 
         match header_value.as_bytes() {
-            b"gzip" if enabled_encodings.is_enabled(CompressionEncoding::Gzip) => {
-                Ok(Some(CompressionEncoding::Gzip))
-            }
-            b"deflate" if enabled_encodings.is_enabled(CompressionEncoding::Deflate) => {
-                Ok(Some(CompressionEncoding::Deflate))
-            }
-            b"zstd" if enabled_encodings.is_enabled(CompressionEncoding::Zstd) => {
-                Ok(Some(CompressionEncoding::Zstd))
-            }
+            b"gzip" if enabled_encodings.is_enabled(Self::Gzip) => Ok(Some(Self::Gzip)),
+            b"deflate" if enabled_encodings.is_enabled(Self::Deflate) => Ok(Some(Self::Deflate)),
+            b"zstd" if enabled_encodings.is_enabled(Self::Zstd) => Ok(Some(Self::Zstd)),
             b"identity" => Ok(None),
             other => {
                 let other = match std::str::from_utf8(other) {
@@ -162,7 +162,8 @@ impl CompressionEncoding {
                 ));
 
                 let header_value = enabled_encodings
-                    .into_accept_encoding_header_value()
+                    .try_into_accept_encoding_header_value()
+                    .map_err(|err| Status::from_error(err.into_boxed()))?
                     .map(MetadataValue::unchecked_from_header_value)
                     .unwrap_or_else(|| MetadataValue::from_static("identity"));
                 status
@@ -206,9 +207,9 @@ impl CompressionEncoding {
 
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            CompressionEncoding::Gzip => "gzip",
-            CompressionEncoding::Deflate => "deflate",
-            CompressionEncoding::Zstd => "zstd",
+            Self::Gzip => "gzip",
+            Self::Deflate => "deflate",
+            Self::Zstd => "zstd",
         }
     }
 
@@ -339,7 +340,12 @@ mod tests {
     fn convert_none_into_header_value() {
         let encodings = EnabledCompressionEncodings::default();
 
-        assert!(encodings.into_accept_encoding_header_value().is_none());
+        assert!(
+            encodings
+                .try_into_accept_encoding_header_value()
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -351,13 +357,25 @@ mod tests {
             inner: [Some(CompressionEncoding::Gzip), None, None],
         };
 
-        assert_eq!(encodings.into_accept_encoding_header_value().unwrap(), GZIP);
+        assert_eq!(
+            encodings
+                .try_into_accept_encoding_header_value()
+                .unwrap()
+                .unwrap(),
+            GZIP
+        );
 
         let encodings = EnabledCompressionEncodings {
             inner: [None, None, Some(CompressionEncoding::Gzip)],
         };
 
-        assert_eq!(encodings.into_accept_encoding_header_value().unwrap(), GZIP);
+        assert_eq!(
+            encodings
+                .try_into_accept_encoding_header_value()
+                .unwrap()
+                .unwrap(),
+            GZIP
+        );
     }
 
     #[test]
@@ -369,13 +387,25 @@ mod tests {
             inner: [Some(CompressionEncoding::Zstd), None, None],
         };
 
-        assert_eq!(encodings.into_accept_encoding_header_value().unwrap(), ZSTD);
+        assert_eq!(
+            encodings
+                .try_into_accept_encoding_header_value()
+                .unwrap()
+                .unwrap(),
+            ZSTD
+        );
 
         let encodings = EnabledCompressionEncodings {
             inner: [None, None, Some(CompressionEncoding::Zstd)],
         };
 
-        assert_eq!(encodings.into_accept_encoding_header_value().unwrap(), ZSTD);
+        assert_eq!(
+            encodings
+                .try_into_accept_encoding_header_value()
+                .unwrap()
+                .unwrap(),
+            ZSTD
+        );
     }
 
     #[test]
@@ -390,7 +420,10 @@ mod tests {
         };
 
         assert_eq!(
-            encodings.into_accept_encoding_header_value().unwrap(),
+            encodings
+                .try_into_accept_encoding_header_value()
+                .unwrap()
+                .unwrap(),
             HeaderValue::from_static("gzip,deflate,zstd,identity"),
         );
 
@@ -403,7 +436,10 @@ mod tests {
         };
 
         assert_eq!(
-            encodings.into_accept_encoding_header_value().unwrap(),
+            encodings
+                .try_into_accept_encoding_header_value()
+                .unwrap()
+                .unwrap(),
             HeaderValue::from_static("zstd,deflate,gzip,identity"),
         );
     }

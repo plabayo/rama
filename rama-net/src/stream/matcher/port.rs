@@ -49,7 +49,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for PortMatcher {
     fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         req.extensions()
             .get::<SocketInfo>()
-            .map(|info| info.peer_addr().port() == self.port)
+            .map(|info| info.peer_addr().port == self.port)
             .unwrap_or(self.optional)
     }
 }
@@ -61,16 +61,17 @@ where
     fn matches(&self, _ext: Option<&mut Extensions>, stream: &Socket) -> bool {
         stream
             .peer_addr()
-            .map(|addr| addr.port() == self.port)
+            .map(|addr| addr.port == self.port)
             .unwrap_or(self.optional)
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::address::SocketAddress;
+
     use super::*;
     use rama_core::matcher::Matcher;
-    use std::net::SocketAddr;
 
     #[cfg(feature = "http")]
     #[test]
@@ -113,19 +114,19 @@ mod test {
         let matcher = PortMatcher::new(8080);
 
         struct FakeSocket {
-            local_addr: Option<SocketAddr>,
-            peer_addr: Option<SocketAddr>,
+            local_addr: Option<SocketAddress>,
+            peer_addr: Option<SocketAddress>,
         }
 
         impl crate::stream::Socket for FakeSocket {
-            fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            fn local_addr(&self) -> std::io::Result<SocketAddress> {
                 match &self.local_addr {
                     Some(addr) => Ok(*addr),
                     None => Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)),
                 }
             }
 
-            fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+            fn peer_addr(&self) -> std::io::Result<SocketAddress> {
                 match &self.peer_addr {
                     Some(addr) => Ok(*addr),
                     None => Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)),

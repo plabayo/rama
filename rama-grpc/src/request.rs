@@ -1,23 +1,13 @@
 use crate::metadata::{MetadataMap, MetadataValue};
-#[cfg(feature = "transport")]
-use crate::transport::server::TcpConnectInfo;
-// TODO[TLS]
-// #[cfg(all(feature = "transport", feature = "_tls-any"))]
-// use crate::transport::server::TlsConnectInfo;
-#[cfg(feature = "transport")]
-use rama_net::address::SocketAddress;
-use rama_utils::str::smol_str::{SmolStr, format_smolstr};
-// TODO[TLS]
-// #[cfg(all(feature = "transport", feature = "_tls-any"))]
-// use std::sync::Arc;
-use std::time::Duration;
-// TOOD[TLS]
-// #[cfg(all(feature = "server", feature = "_tls-any"))]
-// use tokio_rustls::rustls::pki_types::CertificateDer;
 use rama_core::{
+    error::{ErrorContext as _, OpaqueError},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     futures::Stream,
 };
+#[cfg(feature = "transport")]
+use rama_net::address::SocketAddress;
+use rama_utils::str::smol_str::{SmolStr, format_smolstr};
+use std::time::Duration;
 
 /// A gRPC request and metadata from an RPC call.
 #[derive(Debug)]
@@ -117,7 +107,7 @@ impl<T> Request<T> {
     /// });
     /// ```
     pub fn new(message: T) -> Self {
-        Request {
+        Self {
             metadata: MetadataMap::new(),
             message,
             extensions: Extensions::new(),
@@ -164,7 +154,7 @@ impl<T> Request<T> {
     }
 
     pub(crate) fn from_http_parts(parts: rama_http_types::request::Parts, message: T) -> Self {
-        Request {
+        Self {
             metadata: MetadataMap::from_headers(parts.headers),
             message,
             extensions: parts.extensions,
@@ -174,7 +164,7 @@ impl<T> Request<T> {
     /// Convert an HTTP request to a gRPC request
     pub fn from_http(http: rama_http_types::Request<T>) -> Self {
         let (parts, message) = http.into_parts();
-        Request::from_http_parts(parts, message)
+        Self::from_http_parts(parts, message)
     }
 
     pub(crate) fn into_http(
@@ -219,10 +209,7 @@ impl<T> Request<T> {
     /// This currently only works on the server side.
     #[cfg(feature = "transport")]
     pub fn local_addr(&self) -> Option<SocketAddress> {
-        let addr = self
-            .extensions()
-            .get::<TcpConnectInfo>()
-            .and_then(|i| i.local_addr());
+        use rama_net::stream::SocketInfo;
 
         // TOOD[TLS]
         // #[cfg(feature = "_tls-any")]
@@ -232,7 +219,9 @@ impl<T> Request<T> {
         //         .and_then(|i| i.get_ref().local_addr())
         // });
 
-        addr
+        self.extensions()
+            .get::<SocketInfo>()
+            .and_then(|i| i.local_addr())
     }
 
     /// Get the remote address of this connection.
@@ -242,35 +231,9 @@ impl<T> Request<T> {
     /// This currently only works on the server side.
     #[cfg(feature = "transport")]
     pub fn remote_addr(&self) -> Option<SocketAddress> {
-        let addr = self
-            .extensions()
-            .get::<TcpConnectInfo>()
-            .and_then(|i| i.remote_addr());
-
-        // TODO[TLS]
-        // #[cfg(feature = "_tls-any")]
-        // let addr = addr.or_else(|| {
-        //     self.extensions()
-        //         .get::<TlsConnectInfo<TcpConnectInfo>>()
-        //         .and_then(|i| i.get_ref().remote_addr())
-        // });
-
-        addr
+        use rama_net::stream::SocketInfo;
+        self.extensions().get::<SocketInfo>().map(|i| i.peer_addr())
     }
-
-    // TODO[TLS]
-    // /// Get the peer certificates of the connected client.
-    // ///
-    // /// This is used to fetch the certificates from the TLS session
-    // /// and is mostly used for mTLS. This currently only returns
-    // /// `Some` on the server side of the `transport` server with
-    // /// TLS enabled connections.
-    // #[cfg(all(feature = "server", feature = "_tls-any"))]
-    // pub fn peer_certs(&self) -> Option<Arc<Vec<CertificateDer<'static>>>> {
-    //     self.extensions()
-    //         .get::<TlsConnectInfo<TcpConnectInfo>>()
-    //         .and_then(|i| i.peer_certs())
-    // }
 
     /// Set the max duration the request is allowed to take.
     ///
@@ -279,30 +242,15 @@ impl<T> Request<T> {
     /// The duration will be formatted according to [the spec] and use the most precise unit
     /// possible.
     ///
-    /// Example:
-    ///
-    /// ```rust
-    /// use std::time::Duration;
-    /// use rama_grpc::Request;
-    ///
-    /// let mut request = Request::new(());
-    ///
-    /// request.set_timeout(Duration::from_secs(30));
-    ///
-    /// let value = request.metadata().get("grpc-timeout").unwrap();
-    ///
-    /// assert_eq!(
-    ///     value,
-    ///     // equivalent to 30 seconds
-    ///     "30000000u"
-    /// );
-    /// ```
-    ///
     /// [the spec]: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md
-    pub fn set_timeout(&mut self, deadline: Duration) {
-        let value: MetadataValue<_> = duration_to_grpc_timeout(deadline).parse().unwrap();
+    pub fn try_set_timeout(&mut self, deadline: Duration) -> Result<(), OpaqueError> {
+        let value: MetadataValue<_> = duration_to_grpc_timeout(deadline)
+            .context("format duration as grpc timeout")?
+            .parse()
+            .context("parse grpc timeout as ValueEncoding")?;
         self.metadata_mut()
             .insert(crate::metadata::GRPC_TIMEOUT_HEADER, value);
+        Ok(())
     }
 }
 
@@ -325,7 +273,7 @@ impl<T> IntoRequest<T> for T {
 }
 
 impl<T> IntoRequest<T> for Request<T> {
-    fn into_request(self) -> Request<T> {
+    fn into_request(self) -> Self {
         self
     }
 }
@@ -360,12 +308,12 @@ mod sealed {
     pub trait Sealed {}
 }
 
-fn duration_to_grpc_timeout(duration: Duration) -> SmolStr {
+fn duration_to_grpc_timeout(duration: Duration) -> Option<SmolStr> {
     fn try_format<T: Into<u128>>(
         duration: Duration,
         unit: char,
         convert: impl FnOnce(Duration) -> T,
-    ) -> Option<String> {
+    ) -> Option<SmolStr> {
         // The gRPC spec specifies that the timeout most be at most 8 digits. So this is the largest a
         // value can be before we need to use a bigger unit.
         let max_size: u128 = 99_999_999; // exactly 8 digits
@@ -390,12 +338,12 @@ fn duration_to_grpc_timeout(duration: Duration) -> SmolStr {
                 minutes / 60
             })
         })
-        // duration has to be more than 11_415 years for this to happen
-        .expect("duration is unrealistically large")
 }
 
 /// When converting a `rama_grpc::Request` into a `http::Request` should reserved
 /// headers be removed?
+#[allow(unused)] // TODO: delete allow
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum SanitizeHeaders {
     Yes,
     No,
@@ -448,21 +396,21 @@ mod tests {
     #[test]
     fn duration_to_grpc_timeout_less_than_second() {
         let timeout = Duration::from_millis(500);
-        let value = duration_to_grpc_timeout(timeout);
+        let value = duration_to_grpc_timeout(timeout).unwrap();
         assert_eq!(value, format!("{}u", timeout.as_micros()));
     }
 
     #[test]
     fn duration_to_grpc_timeout_more_than_second() {
         let timeout = Duration::from_secs(30);
-        let value = duration_to_grpc_timeout(timeout);
+        let value = duration_to_grpc_timeout(timeout).unwrap();
         assert_eq!(value, format!("{}u", timeout.as_micros()));
     }
 
     #[test]
     fn duration_to_grpc_timeout_a_very_long_time() {
         let one_hour = Duration::from_secs(60 * 60);
-        let value = duration_to_grpc_timeout(one_hour);
+        let value = duration_to_grpc_timeout(one_hour).unwrap();
         assert_eq!(value, format!("{}m", one_hour.as_millis()));
     }
 }

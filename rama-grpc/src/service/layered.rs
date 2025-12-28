@@ -18,6 +18,8 @@ impl<S, T: NamedService> NamedService for Layered<S, T> {
 impl<Req, S, T> Service<Req> for Layered<S, T>
 where
     S: Service<Req>,
+    Req: Send + 'static,
+    T: Send + Sync + 'static,
 {
     type Output = S::Output;
     type Error = S::Error;

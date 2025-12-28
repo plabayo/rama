@@ -23,6 +23,7 @@ pub struct RecoverErrorLayer;
 
 impl RecoverErrorLayer {
     /// Create a new `RecoverErrorLayer`.
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -52,9 +53,9 @@ impl<S> RecoverError<S> {
 
 impl<S, Req, ResBody> Service<Req> for RecoverError<S>
 where
-    S: Service<Req, Output = Response<ResBody>>,
-    S::Error: Into<BoxError>,
-    ResBody: Send + 'static,
+    S: Service<Req, Output = Response<ResBody>, Error: Into<BoxError>>,
+    Req: Send + 'static,
+    ResBody: Send + Sync + 'static,
 {
     type Output = Response<ResponseBody<ResBody>>;
     type Error = BoxError;
@@ -67,7 +68,7 @@ where
             }
             Err(err) => match Status::try_from_error(err.into()) {
                 Ok(status) => {
-                    let (parts, ()) = status.into_http::<()>().into_parts();
+                    let (parts, ()) = status.try_into_http::<()>()?.into_parts();
                     let res = Response::from_parts(parts, ResponseBody::empty());
                     Ok(res)
                 }

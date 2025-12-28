@@ -11,28 +11,6 @@ use super::value::MetadataValue;
 use std::marker::PhantomData;
 
 /// A set of gRPC custom metadata entries.
-///
-/// # Examples
-///
-/// Basic usage
-///
-/// ```
-/// # use rama_grpc::metadata::*;
-/// let mut map = MetadataMap::new();
-///
-/// map.insert("x-host", "example.com".parse().unwrap());
-/// map.insert("x-number", "123".parse().unwrap());
-/// map.insert_bin("trace-proto-bin", MetadataValue::from_bytes(b"[binary data]"));
-///
-/// assert!(map.contains_key("x-host"));
-/// assert!(!map.contains_key("x-location"));
-///
-/// assert_eq!(map.get("x-host").unwrap(), "example.com");
-///
-/// map.remove("x-host");
-///
-/// assert!(!map.contains_key("x-host"));
-/// ```
 #[derive(Clone, Debug, Default)]
 pub struct MetadataMap {
     headers: rama_http_types::HeaderMap,
@@ -226,38 +204,19 @@ impl MetadataMap {
     ///
     /// The map will be created without any capacity. This function will not
     /// allocate.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let map = MetadataMap::new();
-    ///
-    /// assert!(map.is_empty());
-    /// assert_eq!(0, map.capacity());
-    /// ```
+    #[must_use]
     pub fn new() -> Self {
-        MetadataMap::with_capacity(0)
+        Self::with_capacity(0)
     }
 
     /// Convert an HTTP HeaderMap to a MetadataMap
+    #[must_use]
     pub fn from_headers(headers: rama_http_types::HeaderMap) -> Self {
-        MetadataMap { headers }
+        Self { headers }
     }
 
     /// Convert a MetadataMap into a HTTP HeaderMap
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("x-host", "example.com".parse().unwrap());
-    ///
-    /// let http_map = map.into_headers();
-    ///
-    /// assert_eq!(http_map.get("x-host").unwrap(), "example.com");
-    /// ```
+    #[must_use]
     pub fn into_headers(self) -> rama_http_types::HeaderMap {
         self.headers
     }
@@ -277,18 +236,9 @@ impl MetadataMap {
     /// allocations before `capacity` metadata entries are stored in the map.
     ///
     /// More capacity than requested may be allocated.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let map: MetadataMap = MetadataMap::with_capacity(10);
-    ///
-    /// assert!(map.is_empty());
-    /// assert!(map.capacity() >= 10);
-    /// ```
-    pub fn with_capacity(capacity: usize) -> MetadataMap {
-        MetadataMap {
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
             headers: rama_http_types::HeaderMap::with_capacity(capacity),
         }
     }
@@ -299,24 +249,7 @@ impl MetadataMap {
     /// This number represents the total number of **values** stored in the map.
     /// This number can be greater than or equal to the number of **keys**
     /// stored given that a single key may have more than one associated value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// assert_eq!(0, map.len());
-    ///
-    /// map.insert("x-host-ip", "127.0.0.1".parse().unwrap());
-    /// map.insert_bin("x-host-name-bin", MetadataValue::from_bytes(b"localhost"));
-    ///
-    /// assert_eq!(2, map.len());
-    ///
-    /// map.append("x-host-ip", "text/html".parse().unwrap());
-    ///
-    /// assert_eq!(3, map.len());
-    /// ```
+    #[must_use]
     pub fn len(&self) -> usize {
         self.headers.len()
     }
@@ -325,60 +258,19 @@ impl MetadataMap {
     ///
     /// This number will be less than or equal to `len()` as each key may have
     /// more than one associated value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// assert_eq!(0, map.keys_len());
-    ///
-    /// map.insert("x-host-ip", "127.0.0.1".parse().unwrap());
-    /// map.insert_bin("x-host-name-bin", MetadataValue::from_bytes(b"localhost"));
-    ///
-    /// assert_eq!(2, map.keys_len());
-    ///
-    /// map.append("x-host-ip", "text/html".parse().unwrap());
-    ///
-    /// assert_eq!(2, map.keys_len());
-    /// ```
+    #[must_use]
     pub fn keys_len(&self) -> usize {
         self.headers.keys_len()
     }
 
     /// Returns true if the map contains no elements.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// assert!(map.is_empty());
-    ///
-    /// map.insert("x-host", "hello.world".parse().unwrap());
-    ///
-    /// assert!(!map.is_empty());
-    /// ```
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.headers.is_empty()
     }
 
     /// Clears the map, removing all key-value pairs. Keeps the allocated memory
     /// for reuse.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("x-host", "hello.world".parse().unwrap());
-    ///
-    /// map.clear();
-    /// assert!(map.is_empty());
-    /// assert!(map.capacity() > 0);
-    /// ```
     pub fn clear(&mut self) {
         self.headers.clear();
     }
@@ -388,18 +280,7 @@ impl MetadataMap {
     ///
     /// This number is an approximation as certain usage patterns could cause
     /// additional allocations before the returned capacity is filled.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// assert_eq!(0, map.capacity());
-    ///
-    /// map.insert("x-host", "hello.world".parse().unwrap());
-    /// assert_eq!(6, map.capacity());
-    /// ```
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.headers.capacity()
     }
@@ -416,15 +297,6 @@ impl MetadataMap {
     /// # Panics
     ///
     /// Panics if the new allocation size overflows `usize`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.reserve(10);
-    /// # map.insert("x-host", "bar".parse().unwrap());
-    /// ```
     pub fn reserve(&mut self, additional: usize) {
         self.headers.reserve(additional);
     }
@@ -436,34 +308,6 @@ impl MetadataMap {
     /// If there are multiple values associated with the key, then the first one
     /// is returned. Use `get_all` to get all values associated with a given
     /// key. Returns `None` if there are no values associated with the key.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// assert!(map.get("x-host").is_none());
-    ///
-    /// map.insert("x-host", "hello".parse().unwrap());
-    /// assert_eq!(map.get("x-host").unwrap(), &"hello");
-    /// assert_eq!(map.get("x-host").unwrap(), &"hello");
-    ///
-    /// map.append("x-host", "world".parse().unwrap());
-    /// assert_eq!(map.get("x-host").unwrap(), &"hello");
-    ///
-    /// // Attempting to read a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append_bin("host-bin", MetadataValue::from_bytes(b"world"));
-    /// assert!(map.get("host-bin").is_none());
-    /// assert!(map.get("host-bin".to_string()).is_none());
-    /// assert!(map.get(&("host-bin".to_string())).is_none());
-    ///
-    /// // Attempting to read an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(map.get("host{}bin").is_none());
-    /// assert!(map.get("host{}bin".to_string()).is_none());
-    /// assert!(map.get(&("host{}bin".to_string())).is_none());
-    /// ```
     pub fn get<K>(&self, key: K) -> Option<&MetadataValue<Ascii>>
     where
         K: AsMetadataKey<Ascii>,
@@ -472,34 +316,6 @@ impl MetadataMap {
     }
 
     /// Like get, but for Binary keys (for example "trace-proto-bin").
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// assert!(map.get_bin("trace-proto-bin").is_none());
-    ///
-    /// map.insert_bin("trace-proto-bin", MetadataValue::from_bytes(b"hello"));
-    /// assert_eq!(map.get_bin("trace-proto-bin").unwrap(), &"hello");
-    /// assert_eq!(map.get_bin("trace-proto-bin").unwrap(), &"hello");
-    ///
-    /// map.append_bin("trace-proto-bin", MetadataValue::from_bytes(b"world"));
-    /// assert_eq!(map.get_bin("trace-proto-bin").unwrap(), &"hello");
-    ///
-    /// // Attempting to read a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append("host", "world".parse().unwrap());
-    /// assert!(map.get_bin("host").is_none());
-    /// assert!(map.get_bin("host".to_string()).is_none());
-    /// assert!(map.get_bin(&("host".to_string())).is_none());
-    ///
-    /// // Attempting to read an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(map.get_bin("host{}-bin").is_none());
-    /// assert!(map.get_bin("host{}-bin".to_string()).is_none());
-    /// assert!(map.get_bin(&("host{}-bin".to_string())).is_none());
-    /// ```
     pub fn get_bin<K>(&self, key: K) -> Option<&MetadataValue<Binary>>
     where
         K: AsMetadataKey<Binary>,
@@ -514,30 +330,6 @@ impl MetadataMap {
     /// If there are multiple values associated with the key, then the first one
     /// is returned. Use `entry` to get all values associated with a given
     /// key. Returns `None` if there are no values associated with the key.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::default();
-    /// map.insert("x-host", "hello".parse().unwrap());
-    /// map.get_mut("x-host").unwrap().set_sensitive(true);
-    ///
-    /// assert!(map.get("x-host").unwrap().is_sensitive());
-    ///
-    /// // Attempting to read a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append_bin("host-bin", MetadataValue::from_bytes(b"world"));
-    /// assert!(map.get_mut("host-bin").is_none());
-    /// assert!(map.get_mut("host-bin".to_string()).is_none());
-    /// assert!(map.get_mut(&("host-bin".to_string())).is_none());
-    ///
-    /// // Attempting to read an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(map.get_mut("host{}").is_none());
-    /// assert!(map.get_mut("host{}".to_string()).is_none());
-    /// assert!(map.get_mut(&("host{}".to_string())).is_none());
-    /// ```
     pub fn get_mut<K>(&mut self, key: K) -> Option<&mut MetadataValue<Ascii>>
     where
         K: AsMetadataKey<Ascii>,
@@ -546,30 +338,6 @@ impl MetadataMap {
     }
 
     /// Like get_mut, but for Binary keys (for example "trace-proto-bin").
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::default();
-    /// map.insert_bin("trace-proto-bin", MetadataValue::from_bytes(b"hello"));
-    /// map.get_bin_mut("trace-proto-bin").unwrap().set_sensitive(true);
-    ///
-    /// assert!(map.get_bin("trace-proto-bin").unwrap().is_sensitive());
-    ///
-    /// // Attempting to read a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append("host", "world".parse().unwrap());
-    /// assert!(map.get_bin_mut("host").is_none());
-    /// assert!(map.get_bin_mut("host".to_string()).is_none());
-    /// assert!(map.get_bin_mut(&("host".to_string())).is_none());
-    ///
-    /// // Attempting to read an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(map.get_bin_mut("host{}-bin").is_none());
-    /// assert!(map.get_bin_mut("host{}-bin".to_string()).is_none());
-    /// assert!(map.get_bin_mut(&("host{}-bin".to_string())).is_none());
-    /// ```
     pub fn get_bin_mut<K>(&mut self, key: K) -> Option<&mut MetadataValue<Binary>>
     where
         K: AsMetadataKey<Binary>,
@@ -586,38 +354,6 @@ impl MetadataMap {
     /// Returns `None` if there are no values associated with the key.
     ///
     /// [`GetAll`]: struct.GetAll.html
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// map.insert("x-host", "hello".parse().unwrap());
-    /// map.append("x-host", "goodbye".parse().unwrap());
-    ///
-    /// {
-    ///     let view = map.get_all("x-host");
-    ///
-    ///     let mut iter = view.iter();
-    ///     assert_eq!(&"hello", iter.next().unwrap());
-    ///     assert_eq!(&"goodbye", iter.next().unwrap());
-    ///     assert!(iter.next().is_none());
-    /// }
-    ///
-    /// // Attempting to read a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append_bin("host-bin", MetadataValue::from_bytes(b"world"));
-    /// assert!(map.get_all("host-bin").iter().next().is_none());
-    /// assert!(map.get_all("host-bin".to_string()).iter().next().is_none());
-    /// assert!(map.get_all(&("host-bin".to_string())).iter().next().is_none());
-    ///
-    /// // Attempting to read an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(map.get_all("host{}").iter().next().is_none());
-    /// assert!(map.get_all("host{}".to_string()).iter().next().is_none());
-    /// assert!(map.get_all(&("host{}".to_string())).iter().next().is_none());
-    /// ```
     pub fn get_all<K>(&self, key: K) -> GetAll<'_, Ascii>
     where
         K: AsMetadataKey<Ascii>,
@@ -629,38 +365,6 @@ impl MetadataMap {
     }
 
     /// Like get_all, but for Binary keys (for example "trace-proto-bin").
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// map.insert_bin("trace-proto-bin", MetadataValue::from_bytes(b"hello"));
-    /// map.append_bin("trace-proto-bin", MetadataValue::from_bytes(b"goodbye"));
-    ///
-    /// {
-    ///     let view = map.get_all_bin("trace-proto-bin");
-    ///
-    ///     let mut iter = view.iter();
-    ///     assert_eq!(&"hello", iter.next().unwrap());
-    ///     assert_eq!(&"goodbye", iter.next().unwrap());
-    ///     assert!(iter.next().is_none());
-    /// }
-    ///
-    /// // Attempting to read a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append("host", "world".parse().unwrap());
-    /// assert!(map.get_all_bin("host").iter().next().is_none());
-    /// assert!(map.get_all_bin("host".to_string()).iter().next().is_none());
-    /// assert!(map.get_all_bin(&("host".to_string())).iter().next().is_none());
-    ///
-    /// // Attempting to read an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(map.get_all_bin("host{}-bin").iter().next().is_none());
-    /// assert!(map.get_all_bin("host{}-bin".to_string()).iter().next().is_none());
-    /// assert!(map.get_all_bin(&("host{}-bin".to_string())).iter().next().is_none());
-    /// ```
     pub fn get_all_bin<K>(&self, key: K) -> GetAll<'_, Binary>
     where
         K: AsMetadataKey<Binary>,
@@ -673,25 +377,8 @@ impl MetadataMap {
 
     /// Returns true if the map contains a value for the specified key. This
     /// method works for both ascii and binary entries.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// assert!(!map.contains_key("x-host"));
-    ///
-    /// map.append_bin("host-bin", MetadataValue::from_bytes(b"world"));
-    /// map.insert("x-host", "world".parse().unwrap());
-    ///
-    /// // contains_key works for both Binary and Ascii keys:
-    /// assert!(map.contains_key("x-host"));
-    /// assert!(map.contains_key("host-bin"));
-    ///
-    /// // contains_key returns false for invalid keys:
-    /// assert!(!map.contains_key("x{}host"));
-    /// ```
-    pub fn contains_key<K>(&self, key: K) -> bool
+    #[inline(always)]
+    pub fn contains_key<K>(&self, key: &K) -> bool
     where
         K: AsEncodingAgnosticMetadataKey,
     {
@@ -703,26 +390,7 @@ impl MetadataMap {
     /// The iteration order is arbitrary, but consistent across platforms for
     /// the same crate version. Each key will be yielded once per associated
     /// value. So, if a key has 3 associated values, it will be yielded 3 times.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// map.insert("x-word", "hello".parse().unwrap());
-    /// map.append("x-word", "goodbye".parse().unwrap());
-    /// map.insert("x-number", "123".parse().unwrap());
-    ///
-    /// for key_and_value in map.iter() {
-    ///     match key_and_value {
-    ///         KeyAndValueRef::Ascii(ref key, ref value) =>
-    ///             println!("Ascii: {:?}: {:?}", key, value),
-    ///         KeyAndValueRef::Binary(ref key, ref value) =>
-    ///             println!("Binary: {:?}: {:?}", key, value),
-    ///     }
-    /// }
-    /// ```
+    #[must_use]
     pub fn iter(&self) -> Iter<'_> {
         Iter {
             inner: self.headers.iter(),
@@ -734,26 +402,6 @@ impl MetadataMap {
     /// The iterator order is arbitrary, but consistent across platforms for the
     /// same crate version. Each key will be yielded once per associated value,
     /// so if a key has 3 associated values, it will be yielded 3 times.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// map.insert("x-word", "hello".parse().unwrap());
-    /// map.append("x-word", "goodbye".parse().unwrap());
-    /// map.insert("x-number", "123".parse().unwrap());
-    ///
-    /// for key_and_value in map.iter_mut() {
-    ///     match key_and_value {
-    ///         KeyAndMutValueRef::Ascii(key, mut value) =>
-    ///             value.set_sensitive(true),
-    ///         KeyAndMutValueRef::Binary(key, mut value) =>
-    ///             value.set_sensitive(false),
-    ///     }
-    /// }
-    /// ```
     pub fn iter_mut(&mut self) -> IterMut<'_> {
         IterMut {
             inner: self.headers.iter_mut(),
@@ -765,27 +413,7 @@ impl MetadataMap {
     /// The iteration order is arbitrary, but consistent across platforms for
     /// the same crate version. Each key will be yielded only once even if it
     /// has multiple associated values.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// map.insert("x-word", "hello".parse().unwrap());
-    /// map.append("x-word", "goodbye".parse().unwrap());
-    /// map.insert_bin("x-number-bin", MetadataValue::from_bytes(b"123"));
-    ///
-    /// for key in map.keys() {
-    ///     match key {
-    ///         KeyRef::Ascii(ref key) =>
-    ///             println!("Ascii key: {:?}", key),
-    ///         KeyRef::Binary(ref key) =>
-    ///             println!("Binary key: {:?}", key),
-    ///     }
-    ///     println!("{:?}", key);
-    /// }
-    /// ```
+    #[must_use]
     pub fn keys(&self) -> Keys<'_> {
         Keys {
             inner: self.headers.keys(),
@@ -796,27 +424,7 @@ impl MetadataMap {
     ///
     /// The iteration order is arbitrary, but consistent across platforms for
     /// the same crate version.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// map.insert("x-word", "hello".parse().unwrap());
-    /// map.append("x-word", "goodbye".parse().unwrap());
-    /// map.insert_bin("x-number-bin", MetadataValue::from_bytes(b"123"));
-    ///
-    /// for value in map.values() {
-    ///     match value {
-    ///         ValueRef::Ascii(ref value) =>
-    ///             println!("Ascii value: {:?}", value),
-    ///         ValueRef::Binary(ref value) =>
-    ///             println!("Binary value: {:?}", value),
-    ///     }
-    ///     println!("{:?}", value);
-    /// }
-    /// ```
+    #[must_use]
     pub fn values(&self) -> Values<'_> {
         Values {
             inner: self.headers.iter(),
@@ -827,26 +435,6 @@ impl MetadataMap {
     ///
     /// The iteration order is arbitrary, but consistent across platforms for
     /// the same crate version.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::default();
-    ///
-    /// map.insert("x-word", "hello".parse().unwrap());
-    /// map.append("x-word", "goodbye".parse().unwrap());
-    /// map.insert("x-number", "123".parse().unwrap());
-    ///
-    /// for value in map.values_mut() {
-    ///     match value {
-    ///         ValueRefMut::Ascii(mut value) =>
-    ///             value.set_sensitive(true),
-    ///         ValueRefMut::Binary(mut value) =>
-    ///             value.set_sensitive(false),
-    ///     }
-    /// }
-    /// ```
     pub fn values_mut(&mut self) -> ValuesMut<'_> {
         ValuesMut {
             inner: self.headers.iter_mut(),
@@ -855,44 +443,6 @@ impl MetadataMap {
 
     /// Gets the given ascii key's corresponding entry in the map for in-place
     /// manipulation. For binary keys, use `entry_bin`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::default();
-    ///
-    /// let headers = &[
-    ///     "content-length",
-    ///     "x-hello",
-    ///     "Content-Length",
-    ///     "x-world",
-    /// ];
-    ///
-    /// for &header in headers {
-    ///     let counter = map.entry(header).unwrap().or_insert("".parse().unwrap());
-    ///     *counter = format!("{}{}", counter.to_str().unwrap(), "1").parse().unwrap();
-    /// }
-    ///
-    /// assert_eq!(map.get("content-length").unwrap(), "11");
-    /// assert_eq!(map.get("x-hello").unwrap(), "1");
-    ///
-    /// // Gracefully handles parting invalid key strings
-    /// assert!(!map.entry("a{}b").is_ok());
-    ///
-    /// // Attempting to read a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append_bin("host-bin", MetadataValue::from_bytes(b"world"));
-    /// assert!(!map.entry("host-bin").is_ok());
-    /// assert!(!map.entry("host-bin".to_string()).is_ok());
-    /// assert!(!map.entry(&("host-bin".to_string())).is_ok());
-    ///
-    /// // Attempting to read an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(!map.entry("host{}").is_ok());
-    /// assert!(!map.entry("host{}".to_string()).is_ok());
-    /// assert!(!map.entry(&("host{}".to_string())).is_ok());
-    /// ```
     pub fn entry<K>(&mut self, key: K) -> Result<Entry<'_, Ascii>, InvalidMetadataKey>
     where
         K: AsMetadataKey<Ascii>,
@@ -902,42 +452,6 @@ impl MetadataMap {
 
     /// Gets the given Binary key's corresponding entry in the map for in-place
     /// manipulation.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// # use std::str;
-    /// let mut map = MetadataMap::default();
-    ///
-    /// let headers = &[
-    ///     "content-length-bin",
-    ///     "x-hello-bin",
-    ///     "Content-Length-bin",
-    ///     "x-world-bin",
-    /// ];
-    ///
-    /// for &header in headers {
-    ///     let counter = map.entry_bin(header).unwrap().or_insert(MetadataValue::from_bytes(b""));
-    ///     *counter = MetadataValue::from_bytes(format!("{}{}", str::from_utf8(counter.to_bytes().unwrap().as_ref()).unwrap(), "1").as_bytes());
-    /// }
-    ///
-    /// assert_eq!(map.get_bin("content-length-bin").unwrap(), "11");
-    /// assert_eq!(map.get_bin("x-hello-bin").unwrap(), "1");
-    ///
-    /// // Attempting to read a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append("host", "world".parse().unwrap());
-    /// assert!(!map.entry_bin("host").is_ok());
-    /// assert!(!map.entry_bin("host".to_string()).is_ok());
-    /// assert!(!map.entry_bin(&("host".to_string())).is_ok());
-    ///
-    /// // Attempting to read an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(!map.entry_bin("host{}-bin").is_ok());
-    /// assert!(!map.entry_bin("host{}-bin".to_string()).is_ok());
-    /// assert!(!map.entry_bin(&("host{}-bin".to_string())).is_ok());
-    /// ```
     pub fn entry_bin<K>(&mut self, key: K) -> Result<Entry<'_, Binary>, InvalidMetadataKey>
     where
         K: AsMetadataKey<Binary>,
@@ -985,32 +499,6 @@ impl MetadataMap {
     ///
     /// The key is not updated, though; this matters for types that can be `==`
     /// without being identical.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// assert!(map.insert("x-host", "world".parse().unwrap()).is_none());
-    /// assert!(!map.is_empty());
-    ///
-    /// let mut prev = map.insert("x-host", "earth".parse().unwrap()).unwrap();
-    /// assert_eq!("world", prev);
-    /// ```
-    ///
-    /// ```should_panic
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// // Trying to insert a key that is not valid panics.
-    /// map.insert("x{}host", "world".parse().unwrap());
-    /// ```
-    ///
-    /// ```should_panic
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// // Trying to insert a key that is binary panics (use insert_bin).
-    /// map.insert("x-host-bin", "world".parse().unwrap());
-    /// ```
     pub fn insert<K>(&mut self, key: K, val: MetadataValue<Ascii>) -> Option<MetadataValue<Ascii>>
     where
         K: IntoMetadataKey<Ascii>,
@@ -1022,32 +510,6 @@ impl MetadataMap {
     ///
     /// This method panics when the given key is a string and it cannot be
     /// converted to a `MetadataKey<Binary>`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// assert!(map.insert_bin("trace-proto-bin", MetadataValue::from_bytes(b"world")).is_none());
-    /// assert!(!map.is_empty());
-    ///
-    /// let mut prev = map.insert_bin("trace-proto-bin", MetadataValue::from_bytes(b"earth")).unwrap();
-    /// assert_eq!("world", prev);
-    /// ```
-    ///
-    /// ```should_panic
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::default();
-    /// // Attempting to add a binary metadata entry with an invalid name
-    /// map.insert_bin("trace-proto", MetadataValue::from_bytes(b"hello")); // This line panics!
-    /// ```
-    ///
-    /// ```should_panic
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// // Trying to insert a key that is not valid panics.
-    /// map.insert_bin("x{}host-bin", MetadataValue::from_bytes(b"world")); // This line panics!
-    /// ```
     pub fn insert_bin<K>(
         &mut self,
         key: K,
@@ -1072,36 +534,6 @@ impl MetadataMap {
     /// of the list of values currently associated with the key. The key is not
     /// updated, though; this matters for types that can be `==` without being
     /// identical.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// assert!(map.insert("x-host", "world".parse().unwrap()).is_none());
-    /// assert!(!map.is_empty());
-    ///
-    /// map.append("x-host", "earth".parse().unwrap());
-    ///
-    /// let values = map.get_all("x-host");
-    /// let mut i = values.iter();
-    /// assert_eq!("world", *i.next().unwrap());
-    /// assert_eq!("earth", *i.next().unwrap());
-    /// ```
-    ///
-    /// ```should_panic
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// // Trying to append a key that is not valid panics.
-    /// map.append("x{}host", "world".parse().unwrap()); // This line panics!
-    /// ```
-    ///
-    /// ```should_panic
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// // Trying to append a key that is binary panics (use append_bin).
-    /// map.append("x-host-bin", "world".parse().unwrap()); // This line panics!
-    /// ```
     pub fn append<K>(&mut self, key: K, value: MetadataValue<Ascii>) -> bool
     where
         K: IntoMetadataKey<Ascii>,
@@ -1113,36 +545,6 @@ impl MetadataMap {
     ///
     /// This method panics when the given key is a string and it cannot be
     /// converted to a `MetadataKey<Binary>`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// assert!(map.insert_bin("trace-proto-bin", MetadataValue::from_bytes(b"world")).is_none());
-    /// assert!(!map.is_empty());
-    ///
-    /// map.append_bin("trace-proto-bin", MetadataValue::from_bytes(b"earth"));
-    ///
-    /// let values = map.get_all_bin("trace-proto-bin");
-    /// let mut i = values.iter();
-    /// assert_eq!("world", *i.next().unwrap());
-    /// assert_eq!("earth", *i.next().unwrap());
-    /// ```
-    ///
-    /// ```should_panic
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// // Trying to append a key that is not valid panics.
-    /// map.append_bin("x{}host-bin", MetadataValue::from_bytes(b"world")); // This line panics!
-    /// ```
-    ///
-    /// ```should_panic
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// // Trying to append a key that is ascii panics (use append).
-    /// map.append_bin("x-host", MetadataValue::from_bytes(b"world")); // This line panics!
-    /// ```
     pub fn append_bin<K>(&mut self, key: K, value: MetadataValue<Binary>) -> bool
     where
         K: IntoMetadataKey<Binary>,
@@ -1157,32 +559,6 @@ impl MetadataMap {
     /// multiple values associated with the key, then the first one is returned.
     /// See `remove_entry_mult` on `OccupiedEntry` for an API that yields all
     /// values.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("x-host", "hello.world".parse().unwrap());
-    ///
-    /// let prev = map.remove("x-host").unwrap();
-    /// assert_eq!("hello.world", prev);
-    ///
-    /// assert!(map.remove("x-host").is_none());
-    ///
-    /// // Attempting to remove a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append_bin("host-bin", MetadataValue::from_bytes(b"world"));
-    /// assert!(map.remove("host-bin").is_none());
-    /// assert!(map.remove("host-bin".to_string()).is_none());
-    /// assert!(map.remove(&("host-bin".to_string())).is_none());
-    ///
-    /// // Attempting to remove an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(map.remove("host{}").is_none());
-    /// assert!(map.remove("host{}".to_string()).is_none());
-    /// assert!(map.remove(&("host{}".to_string())).is_none());
-    /// ```
     pub fn remove<K>(&mut self, key: K) -> Option<MetadataValue<Ascii>>
     where
         K: AsMetadataKey<Ascii>,
@@ -1191,32 +567,6 @@ impl MetadataMap {
     }
 
     /// Like remove, but for Binary keys (for example "trace-proto-bin").
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert_bin("trace-proto-bin", MetadataValue::from_bytes(b"hello.world"));
-    ///
-    /// let prev = map.remove_bin("trace-proto-bin").unwrap();
-    /// assert_eq!("hello.world", prev);
-    ///
-    /// assert!(map.remove_bin("trace-proto-bin").is_none());
-    ///
-    /// // Attempting to remove a key of the wrong type fails by not
-    /// // finding anything.
-    /// map.append("host", "world".parse().unwrap());
-    /// assert!(map.remove_bin("host").is_none());
-    /// assert!(map.remove_bin("host".to_string()).is_none());
-    /// assert!(map.remove_bin(&("host".to_string())).is_none());
-    ///
-    /// // Attempting to remove an invalid key string fails by not
-    /// // finding anything.
-    /// assert!(map.remove_bin("host{}-bin").is_none());
-    /// assert!(map.remove_bin("host{}-bin".to_string()).is_none());
-    /// assert!(map.remove_bin(&("host{}-bin".to_string())).is_none());
-    /// ```
     pub fn remove_bin<K>(&mut self, key: K) -> Option<MetadataValue<Binary>>
     where
         K: AsMetadataKey<Binary>,
@@ -1224,7 +574,7 @@ impl MetadataMap {
         key.remove(self)
     }
 
-    pub(crate) fn merge(&mut self, other: MetadataMap) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.headers.extend(other.headers);
     }
 }
@@ -1434,32 +784,8 @@ impl<'a, VE: ValueEncoding> Entry<'a, VE> {
     /// Ensures a value is in the entry by inserting the default if empty.
     ///
     /// Returns a mutable reference to the **first** value in the entry.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map: MetadataMap = MetadataMap::default();
-    ///
-    /// let keys = &[
-    ///     "content-length",
-    ///     "x-hello",
-    ///     "Content-Length",
-    ///     "x-world",
-    /// ];
-    ///
-    /// for &key in keys {
-    ///     let counter = map.entry(key)
-    ///         .expect("valid key names")
-    ///         .or_insert("".parse().unwrap());
-    ///     *counter = format!("{}{}", counter.to_str().unwrap(), "1").parse().unwrap();
-    /// }
-    ///
-    /// assert_eq!(map.get("content-length").unwrap(), "11");
-    /// assert_eq!(map.get("x-hello").unwrap(), "1");
-    /// ```
     pub fn or_insert(self, default: MetadataValue<VE>) -> &'a mut MetadataValue<VE> {
-        use self::Entry::*;
+        use self::Entry::{Occupied, Vacant};
 
         match self {
             Occupied(e) => e.into_mut(),
@@ -1472,40 +798,11 @@ impl<'a, VE: ValueEncoding> Entry<'a, VE> {
     ///
     /// The default function is not called if the entry exists in the map.
     /// Returns a mutable reference to the **first** value in the entry.
-    ///
-    /// # Examples
-    ///
-    /// Basic usage.
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// let res = map.entry("x-hello").unwrap()
-    ///     .or_insert_with(|| "world".parse().unwrap());
-    ///
-    /// assert_eq!(res, "world");
-    /// ```
-    ///
-    /// The default function is not called if the entry exists in the map.
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("host", "world".parse().unwrap());
-    ///
-    /// let res = map.entry("host")
-    ///     .expect("host is a valid string")
-    ///     .or_insert_with(|| unreachable!());
-    ///
-    ///
-    /// assert_eq!(res, "world");
-    /// ```
     pub fn or_insert_with<F: FnOnce() -> MetadataValue<VE>>(
         self,
         default: F,
     ) -> &'a mut MetadataValue<VE> {
-        use self::Entry::*;
+        use self::Entry::{Occupied, Vacant};
 
         match self {
             Occupied(e) => e.into_mut(),
@@ -1514,17 +811,8 @@ impl<'a, VE: ValueEncoding> Entry<'a, VE> {
     }
 
     /// Returns a reference to the entry's key
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// assert_eq!(map.entry("x-hello").unwrap().key(), "x-hello");
-    /// ```
     pub fn key(&self) -> &MetadataKey<VE> {
-        use self::Entry::*;
+        use self::Entry::{Occupied, Vacant};
 
         MetadataKey::unchecked_from_header_name_ref(match *self {
             Vacant(ref e) => e.inner.key(),
@@ -1537,31 +825,11 @@ impl<'a, VE: ValueEncoding> Entry<'a, VE> {
 
 impl<'a, VE: ValueEncoding> VacantEntry<'a, VE> {
     /// Returns a reference to the entry's key
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// assert_eq!(map.entry("x-hello").unwrap().key(), "x-hello");
-    /// ```
     pub fn key(&self) -> &MetadataKey<VE> {
         MetadataKey::unchecked_from_header_name_ref(self.inner.key())
     }
 
     /// Take ownership of the key
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// if let Entry::Vacant(v) = map.entry("x-hello").unwrap() {
-    ///     assert_eq!(v.into_key().as_str(), "x-hello");
-    /// }
-    /// ```
     pub fn into_key(self) -> MetadataKey<VE> {
         MetadataKey::unchecked_from_header_name(self.inner.into_key())
     }
@@ -1570,19 +838,6 @@ impl<'a, VE: ValueEncoding> VacantEntry<'a, VE> {
     ///
     /// The value will be associated with this entry's key. A mutable reference
     /// to the inserted value will be returned.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// if let Entry::Vacant(v) = map.entry("x-hello").unwrap() {
-    ///     v.insert("world".parse().unwrap());
-    /// }
-    ///
-    /// assert_eq!(map.get("x-hello").unwrap(), "world");
-    /// ```
     pub fn insert(self, value: MetadataValue<VE>) -> &'a mut MetadataValue<VE> {
         MetadataValue::unchecked_from_mut_header_value_ref(self.inner.insert(value.inner))
     }
@@ -1591,20 +846,6 @@ impl<'a, VE: ValueEncoding> VacantEntry<'a, VE> {
     ///
     /// The value will be associated with this entry's key. The new
     /// `OccupiedEntry` is returned, allowing for further manipulation.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    ///
-    /// if let Entry::Vacant(v) = map.entry("x-hello").unwrap() {
-    ///     let mut e = v.insert_entry("world".parse().unwrap());
-    ///     e.insert("world2".parse().unwrap());
-    /// }
-    ///
-    /// assert_eq!(map.get("x-hello").unwrap(), "world2");
-    /// ```
     pub fn insert_entry(self, value: MetadataValue<VE>) -> OccupiedEntry<'a, Ascii> {
         OccupiedEntry {
             inner: self.inner.insert_entry(value.inner),
@@ -1617,18 +858,7 @@ impl<'a, VE: ValueEncoding> VacantEntry<'a, VE> {
 
 impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     /// Returns a reference to the entry's key.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("host", "world".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(e) = map.entry("host").unwrap() {
-    ///     assert_eq!("host", e.key());
-    /// }
-    /// ```
+    #[must_use]
     pub fn key(&self) -> &MetadataKey<VE> {
         MetadataKey::unchecked_from_header_name_ref(self.inner.key())
     }
@@ -1640,22 +870,7 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     /// # Panics
     ///
     /// `get` panics if there are no values associated with the entry.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("host", "hello.world".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(mut e) = map.entry("host").unwrap() {
-    ///     assert_eq!(e.get(), &"hello.world");
-    ///
-    ///     e.append("hello.earth".parse().unwrap());
-    ///
-    ///     assert_eq!(e.get(), &"hello.world");
-    /// }
-    /// ```
+    #[must_use]
     pub fn get(&self) -> &MetadataValue<VE> {
         MetadataValue::unchecked_from_header_value_ref(self.inner.get())
     }
@@ -1667,20 +882,6 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     /// # Panics
     ///
     /// `get_mut` panics if there are no values associated with the entry.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::default();
-    /// map.insert("host", "hello.world".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(mut e) = map.entry("host").unwrap() {
-    ///     e.get_mut().set_sensitive(true);
-    ///     assert_eq!(e.get(), &"hello.world");
-    ///     assert!(e.get().is_sensitive());
-    /// }
-    /// ```
     pub fn get_mut(&mut self) -> &mut MetadataValue<VE> {
         MetadataValue::unchecked_from_mut_header_value_ref(self.inner.get_mut())
     }
@@ -1693,21 +894,7 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     /// # Panics
     ///
     /// `into_mut` panics if there are no values associated with the entry.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::default();
-    /// map.insert("host", "hello.world".parse().unwrap());
-    /// map.append("host", "hello.earth".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(e) = map.entry("host").unwrap() {
-    ///     e.into_mut().set_sensitive(true);
-    /// }
-    ///
-    /// assert!(map.get("host").unwrap().is_sensitive());
-    /// ```
+    #[must_use]
     pub fn into_mut(self) -> &'a mut MetadataValue<VE> {
         MetadataValue::unchecked_from_mut_header_value_ref(self.inner.into_mut())
     }
@@ -1716,21 +903,6 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     ///
     /// All previous values associated with the entry are removed and the first
     /// one is returned. See `insert_mult` for an API that returns all values.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("host", "hello.world".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(mut e) = map.entry("host").unwrap() {
-    ///     let mut prev = e.insert("earth".parse().unwrap());
-    ///     assert_eq!("hello.world", prev);
-    /// }
-    ///
-    /// assert_eq!("earth", map.get("host").unwrap());
-    /// ```
     pub fn insert(&mut self, value: MetadataValue<VE>) -> MetadataValue<VE> {
         let header_value = self.inner.insert(value.inner);
         MetadataValue::unchecked_from_header_value(header_value)
@@ -1740,24 +912,6 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     ///
     /// This function does the same as `insert` except it returns an iterator
     /// that yields all values previously associated with the key.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("host", "world".parse().unwrap());
-    /// map.append("host", "world2".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(mut e) = map.entry("host").unwrap() {
-    ///     let mut prev = e.insert_mult("earth".parse().unwrap());
-    ///     assert_eq!("world", prev.next().unwrap());
-    ///     assert_eq!("world2", prev.next().unwrap());
-    ///     assert!(prev.next().is_none());
-    /// }
-    ///
-    /// assert_eq!("earth", map.get("host").unwrap());
-    /// ```
     pub fn insert_mult(&mut self, value: MetadataValue<VE>) -> ValueDrain<'_, VE> {
         ValueDrain {
             inner: self.inner.insert_mult(value.inner),
@@ -1769,23 +923,6 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     ///
     /// The new value is appended to the end of the entry's value list. All
     /// previous values associated with the entry are retained.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("host", "world".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(mut e) = map.entry("host").unwrap() {
-    ///     e.append("earth".parse().unwrap());
-    /// }
-    ///
-    /// let values = map.get_all("host");
-    /// let mut i = values.iter();
-    /// assert_eq!("world", *i.next().unwrap());
-    /// assert_eq!("earth", *i.next().unwrap());
-    /// ```
     pub fn append(&mut self, value: MetadataValue<VE>) {
         self.inner.append(value.inner)
     }
@@ -1794,21 +931,7 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     ///
     /// All values associated with the entry are removed and the first one is
     /// returned. See `remove_entry_mult` for an API that returns all values.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("host", "world".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(e) = map.entry("host").unwrap() {
-    ///     let mut prev = e.remove();
-    ///     assert_eq!("world", prev);
-    /// }
-    ///
-    /// assert!(!map.contains_key("host"));
-    /// ```
+    #[must_use]
     pub fn remove(self) -> MetadataValue<VE> {
         let value = self.inner.remove();
         MetadataValue::unchecked_from_header_value(value)
@@ -1819,22 +942,7 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     /// The key and all values associated with the entry are removed and the
     /// first one is returned. See `remove_entry_mult` for an API that returns
     /// all values.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("host", "world".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(e) = map.entry("host").unwrap() {
-    ///     let (key, mut prev) = e.remove_entry();
-    ///     assert_eq!("host", key.as_str());
-    ///     assert_eq!("world", prev);
-    /// }
-    ///
-    /// assert!(!map.contains_key("host"));
-    /// ```
+    #[must_use]
     pub fn remove_entry(self) -> (MetadataKey<VE>, MetadataValue<VE>) {
         let (name, value) = self.inner.remove_entry();
         (
@@ -1847,6 +955,7 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     ///
     /// The key and all values associated with the entry are removed and
     /// returned.
+    #[must_use]
     pub fn remove_entry_mult(self) -> (MetadataKey<VE>, ValueDrain<'a, VE>) {
         let (name, value_drain) = self.inner.remove_entry_mult();
         (
@@ -1861,22 +970,7 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     /// Returns an iterator visiting all values associated with the entry.
     ///
     /// Values are iterated in insertion order.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("host", "world".parse().unwrap());
-    /// map.append("host", "earth".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(e) = map.entry("host").unwrap() {
-    ///     let mut iter = e.iter();
-    ///     assert_eq!(&"world", iter.next().unwrap());
-    ///     assert_eq!(&"earth", iter.next().unwrap());
-    ///     assert!(iter.next().is_none());
-    /// }
-    /// ```
+    #[must_use]
     pub fn iter(&self) -> ValueIter<'_, VE> {
         ValueIter {
             inner: Some(self.inner.iter()),
@@ -1888,26 +982,6 @@ impl<'a, VE: ValueEncoding> OccupiedEntry<'a, VE> {
     /// entry.
     ///
     /// Values are iterated in insertion order.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::default();
-    /// map.insert("host", "world".parse().unwrap());
-    /// map.append("host", "earth".parse().unwrap());
-    ///
-    /// if let Entry::Occupied(mut e) = map.entry("host").unwrap() {
-    ///     for e in e.iter_mut() {
-    ///         e.set_sensitive(true);
-    ///     }
-    /// }
-    ///
-    /// let mut values = map.get_all("host");
-    /// let mut i = values.iter();
-    /// assert!(i.next().unwrap().is_sensitive());
-    /// assert!(i.next().unwrap().is_sensitive());
-    /// ```
     pub fn iter_mut(&mut self) -> ValueIterMut<'_, VE> {
         ValueIterMut {
             inner: self.inner.iter_mut(),
@@ -1955,21 +1029,7 @@ impl<'a, VE: ValueEncoding> GetAll<'a, VE> {
     /// Returns an iterator visiting all values associated with the entry.
     ///
     /// Values are iterated in insertion order.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use rama_grpc::metadata::*;
-    /// let mut map = MetadataMap::new();
-    /// map.insert("x-host", "hello.world".parse().unwrap());
-    /// map.append("x-host", "hello.earth".parse().unwrap());
-    ///
-    /// let values = map.get_all("x-host");
-    /// let mut iter = values.iter();
-    /// assert_eq!(&"hello.world", iter.next().unwrap());
-    /// assert_eq!(&"hello.earth", iter.next().unwrap());
-    /// assert!(iter.next().is_none());
-    /// ```
+    #[must_use]
     pub fn iter(&self) -> ValueIter<'a, VE> {
         ValueIter {
             inner: self.inner.as_ref().map(|inner| inner.iter()),
@@ -2538,8 +1598,14 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.append_bin("x-word-bin", MetadataValue::from_bytes(b"goodbye"));
-        map.insert_bin("x-number-bin", MetadataValue::from_bytes(b"123"));
+        map.append_bin(
+            "x-word-bin",
+            MetadataValue::try_from_bytes(b"goodbye").unwrap(),
+        );
+        map.insert_bin(
+            "x-number-bin",
+            MetadataValue::try_from_bytes(b"123").unwrap(),
+        );
 
         let mut found_x_word = false;
         for key_and_value in map.iter() {
@@ -2559,7 +1625,10 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.append_bin("x-word-bin", MetadataValue::from_bytes(b"goodbye"));
+        map.append_bin(
+            "x-word-bin",
+            MetadataValue::try_from_bytes(b"goodbye").unwrap(),
+        );
 
         let mut found_x_word_bin = false;
         for key_and_value in map.iter() {
@@ -2579,8 +1648,14 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.append_bin("x-word-bin", MetadataValue::from_bytes(b"goodbye"));
-        map.insert_bin("x-number-bin", MetadataValue::from_bytes(b"123"));
+        map.append_bin(
+            "x-word-bin",
+            MetadataValue::try_from_bytes(b"goodbye").unwrap(),
+        );
+        map.insert_bin(
+            "x-number-bin",
+            MetadataValue::try_from_bytes(b"123").unwrap(),
+        );
 
         let mut found_x_word = false;
         for key_and_value in map.iter_mut() {
@@ -2600,7 +1675,10 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.append_bin("x-word-bin", MetadataValue::from_bytes(b"goodbye"));
+        map.append_bin(
+            "x-word-bin",
+            MetadataValue::try_from_bytes(b"goodbye").unwrap(),
+        );
 
         let mut found_x_word_bin = false;
         for key_and_value in map.iter_mut() {
@@ -2620,8 +1698,14 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.append_bin("x-word-bin", MetadataValue::from_bytes(b"goodbye"));
-        map.insert_bin("x-number-bin", MetadataValue::from_bytes(b"123"));
+        map.append_bin(
+            "x-word-bin",
+            MetadataValue::try_from_bytes(b"goodbye").unwrap(),
+        );
+        map.insert_bin(
+            "x-number-bin",
+            MetadataValue::try_from_bytes(b"123").unwrap(),
+        );
 
         let mut found_x_word = false;
         for key in map.keys() {
@@ -2641,7 +1725,10 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.insert_bin("x-number-bin", MetadataValue::from_bytes(b"123"));
+        map.insert_bin(
+            "x-number-bin",
+            MetadataValue::try_from_bytes(b"123").unwrap(),
+        );
 
         let mut found_x_number_bin = false;
         for key in map.keys() {
@@ -2661,8 +1748,14 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.append_bin("x-word-bin", MetadataValue::from_bytes(b"goodbye"));
-        map.insert_bin("x-number-bin", MetadataValue::from_bytes(b"123"));
+        map.append_bin(
+            "x-word-bin",
+            MetadataValue::try_from_bytes(b"goodbye").unwrap(),
+        );
+        map.insert_bin(
+            "x-number-bin",
+            MetadataValue::try_from_bytes(b"123").unwrap(),
+        );
 
         let mut found_x_word = false;
         for value in map.values() {
@@ -2682,7 +1775,10 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.append_bin("x-word-bin", MetadataValue::from_bytes(b"goodbye"));
+        map.append_bin(
+            "x-word-bin",
+            MetadataValue::try_from_bytes(b"goodbye").unwrap(),
+        );
 
         let mut found_x_word_bin = false;
         for value_ref in map.values() {
@@ -2699,8 +1795,14 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.append_bin("x-word-bin", MetadataValue::from_bytes(b"goodbye"));
-        map.insert_bin("x-number-bin", MetadataValue::from_bytes(b"123"));
+        map.append_bin(
+            "x-word-bin",
+            MetadataValue::try_from_bytes(b"goodbye").unwrap(),
+        );
+        map.insert_bin(
+            "x-number-bin",
+            MetadataValue::try_from_bytes(b"123").unwrap(),
+        );
 
         let mut found_x_word = false;
         for value_ref in map.values_mut() {
@@ -2717,7 +1819,10 @@ mod tests {
         let mut map = MetadataMap::new();
 
         map.insert("x-word", "hello".parse().unwrap());
-        map.append_bin("x-word-bin", MetadataValue::from_bytes(b"goodbye"));
+        map.append_bin(
+            "x-word-bin",
+            MetadataValue::try_from_bytes(b"goodbye").unwrap(),
+        );
 
         let mut found_x_word_bin = false;
         for value in map.values_mut() {

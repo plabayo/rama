@@ -1,10 +1,13 @@
 use std::{borrow::Cow, error::Error, fmt, sync::Arc};
 
 use base64::Engine as _;
+use rama_core::telemetry::tracing;
+use rama_utils::str::arcstr::ArcStr;
 
 use ::{
     rama_core::{
         bytes::Bytes,
+        extensions::ExtensionsMut as _,
         telemetry::tracing::{debug, trace, warn},
     },
     rama_http_types::{
@@ -50,7 +53,7 @@ struct StatusInner {
     /// The gRPC status code, found in the `grpc-status` header.
     code: Code,
     /// A relevant error message, found in the `grpc-message` header.
-    message: String,
+    message: ArcStr,
     /// Binary opaque details, found in the `grpc-status-details-bin` header.
     details: Bytes,
     /// Custom metadata, found in the user-defined headers.
@@ -139,29 +142,30 @@ impl Code {
     /// If you only need description in `println`, `format`, `log` and other
     /// formatting contexts, you may want to use `Display` impl for `Code`
     /// instead.
+    #[must_use]
     pub fn description(&self) -> &'static str {
         match self {
-            Code::Ok => "The operation completed successfully",
-            Code::Cancelled => "The operation was cancelled",
-            Code::Unknown => "Unknown error",
-            Code::InvalidArgument => "Client specified an invalid argument",
-            Code::DeadlineExceeded => "Deadline expired before operation could complete",
-            Code::NotFound => "Some requested entity was not found",
-            Code::AlreadyExists => "Some entity that we attempted to create already exists",
-            Code::PermissionDenied => {
+            Self::Ok => "The operation completed successfully",
+            Self::Cancelled => "The operation was cancelled",
+            Self::Unknown => "Unknown error",
+            Self::InvalidArgument => "Client specified an invalid argument",
+            Self::DeadlineExceeded => "Deadline expired before operation could complete",
+            Self::NotFound => "Some requested entity was not found",
+            Self::AlreadyExists => "Some entity that we attempted to create already exists",
+            Self::PermissionDenied => {
                 "The caller does not have permission to execute the specified operation"
             }
-            Code::ResourceExhausted => "Some resource has been exhausted",
-            Code::FailedPrecondition => {
+            Self::ResourceExhausted => "Some resource has been exhausted",
+            Self::FailedPrecondition => {
                 "The system is not in a state required for the operation's execution"
             }
-            Code::Aborted => "The operation was aborted",
-            Code::OutOfRange => "Operation was attempted past the valid range",
-            Code::Unimplemented => "Operation is not implemented or not supported",
-            Code::Internal => "Internal error",
-            Code::Unavailable => "The service is currently unavailable",
-            Code::DataLoss => "Unrecoverable data loss or corruption",
-            Code::Unauthenticated => "The request does not have valid authentication credentials",
+            Self::Aborted => "The operation was aborted",
+            Self::OutOfRange => "Operation was attempted past the valid range",
+            Self::Unimplemented => "Operation is not implemented or not supported",
+            Self::Internal => "Internal error",
+            Self::Unavailable => "The service is currently unavailable",
+            Self::DataLoss => "Unrecoverable data loss or corruption",
+            Self::Unauthenticated => "The request does not have valid authentication credentials",
         }
     }
 }
@@ -176,7 +180,7 @@ impl std::fmt::Display for Code {
 
 impl Status {
     /// Create a new `Status` with the associated code and message.
-    pub fn new(code: Code, message: impl Into<String>) -> Status {
+    pub fn new(code: Code, message: impl Into<ArcStr>) -> Self {
         StatusInner {
             code,
             message: message.into(),
@@ -188,29 +192,29 @@ impl Status {
     }
 
     /// The operation completed successfully.
-    pub fn ok(message: impl Into<String>) -> Status {
-        Status::new(Code::Ok, message)
+    pub fn ok(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::Ok, message)
     }
 
     /// The operation was cancelled (typically by the caller).
-    pub fn cancelled(message: impl Into<String>) -> Status {
-        Status::new(Code::Cancelled, message)
+    pub fn cancelled(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::Cancelled, message)
     }
 
     /// Unknown error. An example of where this error may be returned is if a
     /// `Status` value received from another address space belongs to an error-space
     /// that is not known in this address space. Also errors raised by APIs that
     /// do not return enough error information may be converted to this error.
-    pub fn unknown(message: impl Into<String>) -> Status {
-        Status::new(Code::Unknown, message)
+    pub fn unknown(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::Unknown, message)
     }
 
     /// Client specified an invalid argument. Note that this differs from
     /// `FailedPrecondition`. `InvalidArgument` indicates arguments that are
     /// problematic regardless of the state of the system (e.g., a malformed file
     /// name).
-    pub fn invalid_argument(message: impl Into<String>) -> Status {
-        Status::new(Code::InvalidArgument, message)
+    pub fn invalid_argument(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::InvalidArgument, message)
     }
 
     /// Deadline expired before operation could complete. For operations that
@@ -218,19 +222,19 @@ impl Status {
     /// operation has completed successfully. For example, a successful response
     /// from a server could have been delayed long enough for the deadline to
     /// expire.
-    pub fn deadline_exceeded(message: impl Into<String>) -> Status {
-        Status::new(Code::DeadlineExceeded, message)
+    pub fn deadline_exceeded(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::DeadlineExceeded, message)
     }
 
     /// Some requested entity (e.g., file or directory) was not found.
-    pub fn not_found(message: impl Into<String>) -> Status {
-        Status::new(Code::NotFound, message)
+    pub fn not_found(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::NotFound, message)
     }
 
     /// Some entity that we attempted to create (e.g., file or directory) already
     /// exists.
-    pub fn already_exists(message: impl Into<String>) -> Status {
-        Status::new(Code::AlreadyExists, message)
+    pub fn already_exists(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::AlreadyExists, message)
     }
 
     /// The caller does not have permission to execute the specified operation.
@@ -238,14 +242,14 @@ impl Status {
     /// some resource (use `ResourceExhausted` instead for those errors).
     /// `PermissionDenied` must not be used if the caller cannot be identified
     /// (use `Unauthenticated` instead for those errors).
-    pub fn permission_denied(message: impl Into<String>) -> Status {
-        Status::new(Code::PermissionDenied, message)
+    pub fn permission_denied(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::PermissionDenied, message)
     }
 
     /// Some resource has been exhausted, perhaps a per-user quota, or perhaps
     /// the entire file system is out of space.
-    pub fn resource_exhausted(message: impl Into<String>) -> Status {
-        Status::new(Code::ResourceExhausted, message)
+    pub fn resource_exhausted(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::ResourceExhausted, message)
     }
 
     /// Operation was rejected because the system is not in a state required for
@@ -262,8 +266,8 @@ impl Status {
     ///     because the directory is non-empty, `FailedPrecondition` should be
     ///     returned since the client should not retry unless they have first
     ///     fixed up the directory by deleting files from it.
-    pub fn failed_precondition(message: impl Into<String>) -> Status {
-        Status::new(Code::FailedPrecondition, message)
+    pub fn failed_precondition(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::FailedPrecondition, message)
     }
 
     /// The operation was aborted, typically due to a concurrency issue like
@@ -271,8 +275,8 @@ impl Status {
     ///
     /// See litmus test above for deciding between `FailedPrecondition`,
     /// `Aborted`, and `Unavailable`.
-    pub fn aborted(message: impl Into<String>) -> Status {
-        Status::new(Code::Aborted, message)
+    pub fn aborted(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::Aborted, message)
     }
 
     /// Operation was attempted past the valid range. E.g., seeking or reading
@@ -288,19 +292,19 @@ impl Status {
     /// `OutOfRange`. We recommend using `OutOfRange` (the more specific error)
     /// when it applies so that callers who are iterating through a space can
     /// easily look for an `OutOfRange` error to detect when they are done.
-    pub fn out_of_range(message: impl Into<String>) -> Status {
-        Status::new(Code::OutOfRange, message)
+    pub fn out_of_range(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::OutOfRange, message)
     }
 
     /// Operation is not implemented or not supported/enabled in this service.
-    pub fn unimplemented(message: impl Into<String>) -> Status {
-        Status::new(Code::Unimplemented, message)
+    pub fn unimplemented(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::Unimplemented, message)
     }
 
     /// Internal errors. Means some invariants expected by underlying system has
     /// been broken. If you see one of these errors, something is very broken.
-    pub fn internal(message: impl Into<String>) -> Status {
-        Status::new(Code::Internal, message)
+    pub fn internal(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::Internal, message)
     }
 
     /// The service is currently unavailable.  This is a most likely a transient
@@ -308,24 +312,24 @@ impl Status {
     ///
     /// See litmus test above for deciding between `FailedPrecondition`,
     /// `Aborted`, and `Unavailable`.
-    pub fn unavailable(message: impl Into<String>) -> Status {
-        Status::new(Code::Unavailable, message)
+    pub fn unavailable(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::Unavailable, message)
     }
 
     /// Unrecoverable data loss or corruption.
-    pub fn data_loss(message: impl Into<String>) -> Status {
-        Status::new(Code::DataLoss, message)
+    pub fn data_loss(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::DataLoss, message)
     }
 
     /// The request does not have valid authentication credentials for the
     /// operation.
-    pub fn unauthenticated(message: impl Into<String>) -> Status {
-        Status::new(Code::Unauthenticated, message)
+    pub fn unauthenticated(message: impl Into<ArcStr>) -> Self {
+        Self::new(Code::Unauthenticated, message)
     }
 
     pub(crate) fn from_error_generic(
         err: impl Into<Box<dyn Error + Send + Sync + 'static>>,
-    ) -> Status {
+    ) -> Self {
         Self::from_error(err.into())
     }
 
@@ -333,9 +337,10 @@ impl Status {
     ///
     /// Inspects the error source chain for recognizable errors, including statuses, HTTP2, and
     /// hyper, and attempts to maps them to a `Status`, or else returns an Unknown `Status`.
-    pub fn from_error(err: Box<dyn Error + Send + Sync + 'static>) -> Status {
-        Status::try_from_error(err).unwrap_or_else(|err| {
-            let mut status = Status::new(Code::Unknown, err.to_string());
+    #[must_use]
+    pub fn from_error(err: Box<dyn Error + Send + Sync + 'static>) -> Self {
+        Self::try_from_error(err).unwrap_or_else(|err| {
+            let mut status = Self::new(Code::Unknown, err.to_string());
             status.0.source = Some(err.into());
             status
         })
@@ -350,8 +355,8 @@ impl Status {
     /// status codes.
     pub fn try_from_error(
         err: Box<dyn Error + Send + Sync + 'static>,
-    ) -> Result<Status, Box<dyn Error + Send + Sync + 'static>> {
-        let err = match err.downcast::<Status>() {
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+        let err = match err.downcast::<Self>() {
             Ok(status) => {
                 return Ok(*status);
             }
@@ -361,7 +366,7 @@ impl Status {
         #[cfg(feature = "transport")]
         let err = match err.downcast::<rama_http_core::h2::Error>() {
             Ok(h2) => {
-                return Ok(Status::from_h2_error(h2));
+                return Ok(Self::from_h2_error(h2));
             }
             Err(err) => err,
         };
@@ -380,7 +385,7 @@ impl Status {
 
     // FIXME: bubble this into `transport` and expose generic http2 reasons.
     #[cfg(feature = "transport")]
-    fn from_h2_error(err: Box<rama_http_core::h2::Error>) -> Status {
+    fn from_h2_error(err: Box<rama_http_core::h2::Error>) -> Self {
         let code = Self::code_from_h2(&err);
 
         let mut status = Self::new(code, format!("h2 protocol error: {err}"));
@@ -392,13 +397,15 @@ impl Status {
     fn code_from_h2(err: &rama_http_core::h2::Error) -> Code {
         // See https://github.com/grpc/grpc/blob/3977c30/doc/PROTOCOL-HTTP2.md#errors
         match err.reason() {
-            Some(rama_http_core::h2::Reason::NO_ERROR)
-            | Some(rama_http_core::h2::Reason::PROTOCOL_ERROR)
-            | Some(rama_http_core::h2::Reason::INTERNAL_ERROR)
-            | Some(rama_http_core::h2::Reason::FLOW_CONTROL_ERROR)
-            | Some(rama_http_core::h2::Reason::SETTINGS_TIMEOUT)
-            | Some(rama_http_core::h2::Reason::COMPRESSION_ERROR)
-            | Some(rama_http_core::h2::Reason::CONNECT_ERROR) => Code::Internal,
+            Some(
+                rama_http_core::h2::Reason::NO_ERROR
+                | rama_http_core::h2::Reason::PROTOCOL_ERROR
+                | rama_http_core::h2::Reason::INTERNAL_ERROR
+                | rama_http_core::h2::Reason::FLOW_CONTROL_ERROR
+                | rama_http_core::h2::Reason::SETTINGS_TIMEOUT
+                | rama_http_core::h2::Reason::COMPRESSION_ERROR
+                | rama_http_core::h2::Reason::CONNECT_ERROR,
+            ) => Code::Internal,
             Some(rama_http_core::h2::Reason::REFUSED_STREAM) => Code::Unavailable,
             Some(rama_http_core::h2::Reason::CANCEL) => Code::Cancelled,
             Some(rama_http_core::h2::Reason::ENHANCE_YOUR_CALM) => Code::ResourceExhausted,
@@ -426,7 +433,7 @@ impl Status {
     /// Returns Some if there's a way to handle the error, or None if the information from this
     /// hyper error, but perhaps not its source, should be ignored.
     #[cfg(feature = "transport")]
-    fn from_http_error(err: &rama_http_core::Error) -> Option<Status> {
+    fn from_http_error(err: &rama_http_core::Error) -> Option<Self> {
         // is_timeout results from hyper's keep-alive logic
         // (https://docs.rs/hyper/0.14.11/src/hyper/error.rs.html#192-194).  Per the grpc spec
         // > An expired client initiated PING will cause all calls to be closed with an UNAVAILABLE
@@ -434,18 +441,18 @@ impl Status {
         // > environment, implementations are free to adjust PING frequency based on network and
         // > application requirements, which is why it's mapped to unavailable here.
         if err.is_timeout() {
-            return Some(Status::unavailable(err.to_string()));
+            return Some(Self::unavailable(err.to_string()));
         }
 
         if err.is_canceled() {
-            return Some(Status::cancelled(err.to_string()));
+            return Some(Self::cancelled(err.to_string()));
         }
 
         if let Some(h2_err) = err
             .source()
             .and_then(|e| e.downcast_ref::<rama_http_core::h2::Error>())
         {
-            let code = Status::code_from_h2(h2_err);
+            let code = Self::code_from_h2(h2_err);
             let status = Self::new(code, format!("h2 protocol error: {err}"));
 
             return Some(status);
@@ -454,30 +461,33 @@ impl Status {
         None
     }
 
-    pub(crate) fn map_error<E>(err: E) -> Status
+    pub(crate) fn map_error<E>(err: E) -> Self
     where
         E: Into<Box<dyn Error + Send + Sync>>,
     {
         let err: Box<dyn Error + Send + Sync> = err.into();
-        Status::from_error(err)
+        Self::from_error(err)
     }
 
     /// Extract a `Status` from a hyper `HeaderMap`.
-    pub fn from_header_map(header_map: &HeaderMap) -> Option<Status> {
+    pub fn from_header_map(header_map: &HeaderMap) -> Option<Self> {
         let code = Code::from_bytes(header_map.get(Self::GRPC_STATUS)?.as_ref());
 
         let error_message = match header_map.get(Self::GRPC_MESSAGE) {
             Some(header) => percent_decode(header.as_bytes())
                 .decode_utf8()
-                .map(|cow| cow.to_string()),
-            None => Ok(String::new()),
+                .map(|cow| cow.into()),
+            None => Ok(ArcStr::new()),
         };
 
         let details = match header_map.get(Self::GRPC_STATUS_DETAILS) {
-            Some(header) => crate::util::base64::STANDARD
-                .decode(header.as_bytes())
-                .expect("Invalid status header, expected base64 encoded value")
-                .into(),
+            Some(header) => match crate::util::base64::STANDARD.decode(header.as_bytes()) {
+                Ok(v) => v.into(),
+                Err(err) => {
+                    tracing::debug!("failed to b64 decode grpc status details: {err}");
+                    Bytes::new()
+                }
+            },
             None => Bytes::new(),
         };
 
@@ -492,8 +502,9 @@ impl Status {
         let (code, message) = match error_message {
             Ok(message) => (code, message),
             Err(e) => {
-                let error_message = format!("Error deserializing status message header: {e}");
-                warn!(error_message);
+                let error_message =
+                    format!("Error deserializing status message header: {e}").into();
+                warn!("{error_message}");
                 (Code::Unknown, error_message)
             }
         };
@@ -511,21 +522,25 @@ impl Status {
     }
 
     /// Get the gRPC `Code` of this `Status`.
+    #[must_use]
     pub fn code(&self) -> Code {
         self.0.code
     }
 
     /// Get the text error message of this `Status`.
+    #[must_use]
     pub fn message(&self) -> &str {
         &self.0.message
     }
 
     /// Get the opaque error details of this `Status`.
+    #[must_use]
     pub fn details(&self) -> &[u8] {
         &self.0.details
     }
 
     /// Get a reference to the custom metadata.
+    #[must_use]
     pub fn metadata(&self) -> &MetadataMap {
         &self.0.metadata
     }
@@ -571,22 +586,22 @@ impl Status {
     }
 
     /// Create a new `Status` with the associated code, message, and binary details field.
-    pub fn with_details(code: Code, message: impl Into<String>, details: Bytes) -> Status {
+    pub fn with_details(code: Code, message: impl Into<ArcStr>, details: Bytes) -> Self {
         Self::with_details_and_metadata(code, message, details, MetadataMap::new())
     }
 
     /// Create a new `Status` with the associated code, message, and custom metadata
-    pub fn with_metadata(code: Code, message: impl Into<String>, metadata: MetadataMap) -> Status {
+    pub fn with_metadata(code: Code, message: impl Into<ArcStr>, metadata: MetadataMap) -> Self {
         Self::with_details_and_metadata(code, message, Bytes::new(), metadata)
     }
 
     /// Create a new `Status` with the associated code, message, binary details field and custom metadata
     pub fn with_details_and_metadata(
         code: Code,
-        message: impl Into<String>,
+        message: impl Into<ArcStr>,
         details: Bytes,
         metadata: MetadataMap,
-    ) -> Status {
+    ) -> Self {
         StatusInner {
             code,
             message: message.into(),
@@ -598,20 +613,20 @@ impl Status {
     }
 
     /// Add a source error to this status.
-    pub fn set_source(&mut self, source: Arc<dyn Error + Send + Sync + 'static>) -> &mut Status {
+    pub fn set_source(&mut self, source: Arc<dyn Error + Send + Sync + 'static>) -> &mut Self {
         self.0.source = Some(source);
         self
     }
 
     /// Build an `http::Response` from the given `Status`.
-    pub fn into_http<B: Default>(self) -> rama_http_types::Response<B> {
+    pub fn try_into_http<B: Default>(self) -> Result<rama_http_types::Response<B>, Self> {
         let mut response = rama_http_types::Response::new(B::default());
         response
             .headers_mut()
             .insert(rama_http_types::header::CONTENT_TYPE, GRPC_CONTENT_TYPE);
-        self.add_header(response.headers_mut()).unwrap();
+        self.add_header(response.headers_mut())?;
         response.extensions_mut().insert(self);
-        response
+        Ok(response)
     }
 
     #[doc(hidden)]
@@ -703,7 +718,7 @@ fn invalid_header_value_byte<Error: fmt::Display>(err: Error) -> Status {
     debug!("Invalid header: {}", err);
     Status::new(
         Code::Internal,
-        "Couldn't serialize non-text grpc status header".to_string(),
+        "Couldn't serialize non-text grpc status header".to_owned(),
     )
 }
 
@@ -711,7 +726,7 @@ fn invalid_header_value_byte<Error: fmt::Display>(err: Error) -> Status {
 impl From<rama_http_core::h2::Error> for Status {
     #[inline(always)]
     fn from(err: rama_http_core::h2::Error) -> Self {
-        Status::from_h2_error(Box::new(err))
+        Self::from_h2_error(Box::new(err))
     }
 }
 
@@ -746,7 +761,7 @@ impl From<std::io::Error> for Status {
             ErrorKind::UnexpectedEof => Code::OutOfRange,
             _ => Code::Unknown,
         };
-        Status::new(code, err.to_string())
+        Self::new(code, err.to_string())
     }
 }
 
@@ -779,13 +794,13 @@ pub(crate) fn infer_grpc_status(
     trailers: Option<&HeaderMap>,
     status_code: rama_http_types::StatusCode,
 ) -> Result<(), Option<Status>> {
-    if let Some(trailers) = trailers {
-        if let Some(status) = Status::from_header_map(trailers) {
-            if status.code() == Code::Ok {
-                return Ok(());
-            } else {
-                return Err(status.into());
-            }
+    if let Some(trailers) = trailers
+        && let Some(status) = Status::from_header_map(trailers)
+    {
+        if status.code() == Code::Ok {
+            return Ok(());
+        } else {
+            return Err(status.into());
         }
     }
     trace!("trailers missing grpc-status");
@@ -823,100 +838,103 @@ impl Code {
     /// Get the `Code` that represents the integer, if known.
     ///
     /// If not known, returns `Code::Unknown` (surprise!).
-    pub const fn from_i32(i: i32) -> Code {
+    #[must_use]
+    #[allow(clippy::match_same_arms)]
+    pub const fn from_i32(i: i32) -> Self {
         match i {
-            0 => Code::Ok,
-            1 => Code::Cancelled,
-            2 => Code::Unknown,
-            3 => Code::InvalidArgument,
-            4 => Code::DeadlineExceeded,
-            5 => Code::NotFound,
-            6 => Code::AlreadyExists,
-            7 => Code::PermissionDenied,
-            8 => Code::ResourceExhausted,
-            9 => Code::FailedPrecondition,
-            10 => Code::Aborted,
-            11 => Code::OutOfRange,
-            12 => Code::Unimplemented,
-            13 => Code::Internal,
-            14 => Code::Unavailable,
-            15 => Code::DataLoss,
-            16 => Code::Unauthenticated,
+            0 => Self::Ok,
+            1 => Self::Cancelled,
+            2 => Self::Unknown,
+            3 => Self::InvalidArgument,
+            4 => Self::DeadlineExceeded,
+            5 => Self::NotFound,
+            6 => Self::AlreadyExists,
+            7 => Self::PermissionDenied,
+            8 => Self::ResourceExhausted,
+            9 => Self::FailedPrecondition,
+            10 => Self::Aborted,
+            11 => Self::OutOfRange,
+            12 => Self::Unimplemented,
+            13 => Self::Internal,
+            14 => Self::Unavailable,
+            15 => Self::DataLoss,
+            16 => Self::Unauthenticated,
 
-            _ => Code::Unknown,
+            _ => Self::Unknown,
         }
     }
 
     /// Convert the string representation of a `Code` (as stored, for example, in the `grpc-status`
     /// header in a response) into a `Code`. Returns `Code::Unknown` if the code string is not a
     /// valid gRPC status code.
-    pub fn from_bytes(bytes: &[u8]) -> Code {
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
         match bytes.len() {
             1 => match bytes[0] {
-                b'0' => Code::Ok,
-                b'1' => Code::Cancelled,
-                b'2' => Code::Unknown,
-                b'3' => Code::InvalidArgument,
-                b'4' => Code::DeadlineExceeded,
-                b'5' => Code::NotFound,
-                b'6' => Code::AlreadyExists,
-                b'7' => Code::PermissionDenied,
-                b'8' => Code::ResourceExhausted,
-                b'9' => Code::FailedPrecondition,
-                _ => Code::parse_err(),
+                b'0' => Self::Ok,
+                b'1' => Self::Cancelled,
+                b'2' => Self::Unknown,
+                b'3' => Self::InvalidArgument,
+                b'4' => Self::DeadlineExceeded,
+                b'5' => Self::NotFound,
+                b'6' => Self::AlreadyExists,
+                b'7' => Self::PermissionDenied,
+                b'8' => Self::ResourceExhausted,
+                b'9' => Self::FailedPrecondition,
+                _ => Self::parse_err(),
             },
             2 => match (bytes[0], bytes[1]) {
-                (b'1', b'0') => Code::Aborted,
-                (b'1', b'1') => Code::OutOfRange,
-                (b'1', b'2') => Code::Unimplemented,
-                (b'1', b'3') => Code::Internal,
-                (b'1', b'4') => Code::Unavailable,
-                (b'1', b'5') => Code::DataLoss,
-                (b'1', b'6') => Code::Unauthenticated,
-                _ => Code::parse_err(),
+                (b'1', b'0') => Self::Aborted,
+                (b'1', b'1') => Self::OutOfRange,
+                (b'1', b'2') => Self::Unimplemented,
+                (b'1', b'3') => Self::Internal,
+                (b'1', b'4') => Self::Unavailable,
+                (b'1', b'5') => Self::DataLoss,
+                (b'1', b'6') => Self::Unauthenticated,
+                _ => Self::parse_err(),
             },
-            _ => Code::parse_err(),
+            _ => Self::parse_err(),
         }
     }
 
     fn to_header_value(self) -> HeaderValue {
         match self {
-            Code::Ok => HeaderValue::from_static("0"),
-            Code::Cancelled => HeaderValue::from_static("1"),
-            Code::Unknown => HeaderValue::from_static("2"),
-            Code::InvalidArgument => HeaderValue::from_static("3"),
-            Code::DeadlineExceeded => HeaderValue::from_static("4"),
-            Code::NotFound => HeaderValue::from_static("5"),
-            Code::AlreadyExists => HeaderValue::from_static("6"),
-            Code::PermissionDenied => HeaderValue::from_static("7"),
-            Code::ResourceExhausted => HeaderValue::from_static("8"),
-            Code::FailedPrecondition => HeaderValue::from_static("9"),
-            Code::Aborted => HeaderValue::from_static("10"),
-            Code::OutOfRange => HeaderValue::from_static("11"),
-            Code::Unimplemented => HeaderValue::from_static("12"),
-            Code::Internal => HeaderValue::from_static("13"),
-            Code::Unavailable => HeaderValue::from_static("14"),
-            Code::DataLoss => HeaderValue::from_static("15"),
-            Code::Unauthenticated => HeaderValue::from_static("16"),
+            Self::Ok => HeaderValue::from_static("0"),
+            Self::Cancelled => HeaderValue::from_static("1"),
+            Self::Unknown => HeaderValue::from_static("2"),
+            Self::InvalidArgument => HeaderValue::from_static("3"),
+            Self::DeadlineExceeded => HeaderValue::from_static("4"),
+            Self::NotFound => HeaderValue::from_static("5"),
+            Self::AlreadyExists => HeaderValue::from_static("6"),
+            Self::PermissionDenied => HeaderValue::from_static("7"),
+            Self::ResourceExhausted => HeaderValue::from_static("8"),
+            Self::FailedPrecondition => HeaderValue::from_static("9"),
+            Self::Aborted => HeaderValue::from_static("10"),
+            Self::OutOfRange => HeaderValue::from_static("11"),
+            Self::Unimplemented => HeaderValue::from_static("12"),
+            Self::Internal => HeaderValue::from_static("13"),
+            Self::Unavailable => HeaderValue::from_static("14"),
+            Self::DataLoss => HeaderValue::from_static("15"),
+            Self::Unauthenticated => HeaderValue::from_static("16"),
         }
     }
 
-    fn parse_err() -> Code {
+    fn parse_err() -> Self {
         trace!("error parsing grpc-status");
-        Code::Unknown
+        Self::Unknown
     }
 }
 
 impl From<i32> for Code {
     fn from(i: i32) -> Self {
-        Code::from_i32(i)
+        Self::from_i32(i)
     }
 }
 
 impl From<Code> for i32 {
     #[inline]
-    fn from(code: Code) -> i32 {
-        code as i32
+    fn from(code: Code) -> Self {
+        code as Self
     }
 }
 
@@ -956,7 +974,7 @@ mod tests {
         let found = Status::from_error(orig);
 
         assert_eq!(found.code(), Code::Unknown);
-        assert_eq!(found.message(), "peek-a-boo".to_string());
+        assert_eq!(found.message(), "peek-a-boo");
     }
 
     #[test]
@@ -980,7 +998,7 @@ mod tests {
 
         let source = found
             .source()
-            .and_then(|err| err.downcast_ref::<rama_http_core::Error>())
+            .and_then(|err| err.downcast_ref::<rama_http_core::h2::Error>())
             .unwrap();
         assert_eq!(source.reason(), Some(rama_http_core::h2::Reason::CANCEL));
     }

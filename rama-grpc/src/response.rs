@@ -24,7 +24,7 @@ impl<T> Response<T> {
     /// });
     /// ```
     pub fn new(message: T) -> Self {
-        Response {
+        Self {
             metadata: MetadataMap::new(),
             message,
             extensions: Extensions::new(),
@@ -72,7 +72,7 @@ impl<T> Response<T> {
 
     pub(crate) fn from_http(res: rama_http_types::Response<T>) -> Self {
         let (head, message) = res.into_parts();
-        Response {
+        Self {
             metadata: MetadataMap::from_headers(head.headers),
             message,
             extensions: head.extensions,
@@ -131,7 +131,7 @@ impl<T> ExtensionsMut for Response<T> {
 
 impl<T> From<T> for Response<T> {
     fn from(inner: T) -> Self {
-        Response::new(inner)
+        Self::new(inner)
     }
 }
 

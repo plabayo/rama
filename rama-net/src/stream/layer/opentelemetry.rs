@@ -184,7 +184,7 @@ impl<S, F> NetworkMetricsService<S, F> {
             let peer_addr = socket_info.peer_addr();
             attributes.push(KeyValue::new(
                 NETWORK_TYPE,
-                match peer_addr.ip() {
+                match peer_addr.ip_addr {
                     IpAddr::V4(_) => "ipv4",
                     IpAddr::V6(_) => "ipv6",
                 },

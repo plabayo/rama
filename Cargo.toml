@@ -167,8 +167,8 @@ rama-core = { version = "0.3.0-rc1", path = "./rama-core" }
 rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto" }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns" }
 rama-error = { version = "0.3.0-rc1", path = "./rama-error" }
-rama-haproxy = { version = "0.3.0-rc1", path = "./rama-haproxy" }
 rama-grpc = { version = "0.3.0-rc1", path = "./rama-grpc" }
+rama-haproxy = { version = "0.3.0-rc1", path = "./rama-haproxy" }
 rama-http = { version = "0.3.0-rc1", path = "./rama-http" }
 rama-http-backend = { version = "0.3.0-rc1", path = "./rama-http-backend" }
 rama-http-core = { version = "0.3.0-rc1", path = "./rama-http-core" }
@@ -210,11 +210,11 @@ serde_test = "1"
 sha1 = "0.10"
 sha2 = "0.10"
 slab = "0.4"
-static_assertions = "1"
 smallvec = { version = "1.15" }
 smol_str = "0.3"
 socket2 = "0.6"
 spmc = "0.3"
+static_assertions = "1"
 syn = "2.0"
 sync_wrapper = "1.0"
 tempfile = "3.23"
