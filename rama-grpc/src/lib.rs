@@ -102,6 +102,9 @@ pub use request::{IntoRequest, IntoStreamingRequest, Request};
 pub use response::Response;
 pub use status::{Code, ConnectError, Status, TimeoutExpired};
 
+#[cfg(feature = "prost")]
+pub mod prost;
+
 pub mod codegen;
 
 /// `Result` is a type that represents either success ([`Ok`]) or failure ([`Err`]).

@@ -18,7 +18,8 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["transport", "compression"]
+default = ["prost", "transport", "compression"]
+prost = ["dep:prost"]
 transport = ["dep:rama-http-core"]
 compression = ["dep:flate2", "dep:zstd"]
 
@@ -26,6 +27,7 @@ compression = ["dep:flate2", "dep:zstd"]
 base64 = { workspace = true }
 flate2 = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
+prost = { workspace = true, optional = true }
 rama-core = { workspace = true }
 rama-http-core = { workspace = true, optional = true }
 rama-http-types = { workspace = true }
