@@ -78,6 +78,7 @@
 #![doc(issue_tracker_base_url = "https://github.com/hyperium/tonic/issues/")]
 #![doc(test(no_crate_inject, attr(deny(rust_2018_idioms))))]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![allow(clippy::disallowed_types)] // for interfacing with protobuf it is easier to allow things like std HashMap
 
 pub mod client;
 pub mod codec;
@@ -102,8 +103,8 @@ pub use request::{IntoRequest, IntoStreamingRequest, Request};
 pub use response::Response;
 pub use status::{Code, ConnectError, Status, TimeoutExpired};
 
-#[cfg(feature = "prost")]
-pub mod prost;
+#[cfg(feature = "protobuf")]
+pub mod protobuf;
 
 pub mod codegen;
 

@@ -2603,6 +2603,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-types"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9b4db3d6da204ed77bb26ba83b6122a73aeb2e87e25fbf7ad2e84c4ccbf8f72"
+dependencies = [
+ "prost",
+]
+
+[[package]]
 name = "psl"
 version = "2.1.174"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2860,6 +2869,7 @@ dependencies = [
  "flate2",
  "pin-project-lite",
  "prost",
+ "prost-types",
  "quickcheck",
  "quickcheck_macros",
  "rama-core",

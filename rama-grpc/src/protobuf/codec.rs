@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use prost::Message;
+use crate::protobuf::prost::Message;
 
 use crate::Status;
 use crate::codec::{BufferSettings, Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
