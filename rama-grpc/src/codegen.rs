@@ -1,4 +1,4 @@
-//! Codegen exports used by `tonic-build`.
+//! Codegen exports used by `rama-grpc-build`.
 
 pub use rama_core::Service;
 pub use std::pin::Pin;

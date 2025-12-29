@@ -26,9 +26,9 @@ pub use self::compression::SingleMessageCompressionOverride;
 const DEFAULT_CODEC_BUFFER_SIZE: usize = 8 * 1024;
 const DEFAULT_YIELD_THRESHOLD: usize = 32 * 1024;
 
-/// Settings for how tonic allocates and grows buffers.
+/// Settings for how rama-grpc allocates and grows buffers.
 ///
-/// Tonic eagerly allocates the buffer_size per RPC, and grows
+/// rama-grpc eagerly allocates the buffer_size per RPC, and grows
 /// the buffer by buffer_size increments to handle larger messages.
 /// Buffer size defaults to 8KiB.
 ///
@@ -45,7 +45,7 @@ const DEFAULT_YIELD_THRESHOLD: usize = 32 * 1024;
 ///
 /// If you use a smaller buffer size you will waste less memory, but
 /// you will allocate more frequently. If one way or the other matters
-/// more to you, you may wish to customize your tonic Codec (see
+/// more to you, you may wish to customize your rama-grpc Codec (see
 /// codec_buffers example).
 ///
 /// Yield threshold is an optimization for streaming rpcs. Sometimes
@@ -58,7 +58,7 @@ const DEFAULT_YIELD_THRESHOLD: usize = 32 * 1024;
 /// if you're considering large numbers here.
 /// If your server streaming rpc does not reach the yield threshold
 /// before it reaches Poll::Pending (meaning, it's waiting for more
-/// data from wherever you're streaming from) then Tonic will just send
+/// data from wherever you're streaming from) then rama-grpc will just send
 /// along a smaller batch. Yield threshold is an upper-bound, it will
 /// not affect the responsiveness of your streaming rpc (for reasonable
 /// sizes of yield threshold).
@@ -133,7 +133,7 @@ pub trait Encoder {
     /// Encodes a message into the provided buffer.
     fn encode(&mut self, item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error>;
 
-    /// Controls how tonic creates and expands encode buffers.
+    /// Controls how rama-grpc creates and expands encode buffers.
     fn buffer_settings(&self) -> BufferSettings {
         BufferSettings::default()
     }
@@ -154,7 +154,7 @@ pub trait Decoder {
     /// for you.
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error>;
 
-    /// Controls how tonic creates and expands decode buffers.
+    /// Controls how rama-grpc creates and expands decode buffers.
     fn buffer_settings(&self) -> BufferSettings {
         BufferSettings::default()
     }

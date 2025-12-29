@@ -1,7 +1,7 @@
 //! Generic client implementation.
 //!
 //! This module contains the low level components to build a gRPC client. It
-//! provides a codec agnostic gRPC client dispatcher and a decorated tower
+//! provides a codec agnostic gRPC client dispatcher and a decorated `rama`
 //! service trait.
 //!
 //! This client is generally used by some code generation tool to provide stubs

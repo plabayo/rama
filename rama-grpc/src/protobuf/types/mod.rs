@@ -12,7 +12,7 @@
 //! The [`StatusExt`] trait adds associated functions to [`crate::Status`] that
 //! can be used on the server side to create a status with error details, which
 //! can then be returned to gRPC clients. Moreover, the trait also adds methods
-//! to [`tonic::Status`] that can be used by a tonic client to extract error
+//! to [`crate::Status`] that can be used by a rama-grpc client to extract error
 //! details, and handle them with ease.
 //!
 //! # Working with different error message types
@@ -39,7 +39,6 @@
 //! [`crate::Status`].
 //!
 //! [gRPC Richer Error Model]: https://www.grpc.io/docs/guides/error/
-//! [examples]: https://github.com/hyperium/tonic/tree/master/examples
 //! [error_details.proto]: https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto
 
 mod generated {

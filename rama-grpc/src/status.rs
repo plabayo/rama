@@ -335,8 +335,8 @@ impl Status {
 
     /// Create a `Status` from various types of `Error`.
     ///
-    /// Inspects the error source chain for recognizable errors, including statuses, HTTP2, and
-    /// hyper, and attempts to maps them to a `Status`, or else returns an Unknown `Status`.
+    /// Inspects the error source chain for recognizable errors, including statuses and
+    /// `rama-http-core`, and attempts to maps them to a `Status`, or else returns an Unknown `Status`.
     #[must_use]
     pub fn from_error(err: Box<dyn Error + Send + Sync + 'static>) -> Self {
         Self::try_from_error(err).unwrap_or_else(|err| {
@@ -431,7 +431,7 @@ impl Status {
     /// These expose a number of different parameters about the http stream's error.
     ///
     /// Returns Some if there's a way to handle the error, or None if the information from this
-    /// hyper error, but perhaps not its source, should be ignored.
+    /// rama-http-core error, but perhaps not its source, should be ignored.
     #[cfg(feature = "transport")]
     fn from_http_error(err: &rama_http_core::Error) -> Option<Self> {
         // is_timeout results from hyper's keep-alive logic
@@ -469,7 +469,7 @@ impl Status {
         Self::from_error(err)
     }
 
-    /// Extract a `Status` from a hyper `HeaderMap`.
+    /// Extract a [`Status`] from a [`rama_http_types::HeaderMap`].
     pub fn from_header_map(header_map: &HeaderMap) -> Option<Self> {
         let code = Code::from_bytes(header_map.get(Self::GRPC_STATUS)?.as_ref());
 

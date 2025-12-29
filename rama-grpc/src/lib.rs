@@ -3,8 +3,8 @@
 //! This Rust implementation of [gRPC], a high performance, open source, general
 //! RPC framework that puts mobile and HTTP/2 first.
 //!
-//! `rama-grpc` is a fork of [`tonic`], adapted for use within the rama ecosystem,
-//! being `tonic` derived it is a gRPC over HTTP/2 implementation focused on **high
+//! `rama-grpc` is a fork of [`rama-grpc`], adapted for use within the rama ecosystem,
+//! being `rama-grpc` derived it is a gRPC over HTTP/2 implementation focused on **high
 //! performance**, **interoperability**, and **flexibility**. This library was
 //! created to have first class support of async/await and to act as a core building
 //! block for production systems written in Rust.
@@ -72,12 +72,6 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 #![recursion_limit = "256"]
-#![doc(
-    html_logo_url = "https://raw.githubusercontent.com/tokio-rs/website/master/public/img/icons/tonic.svg"
-)]
-#![doc(issue_tracker_base_url = "https://github.com/hyperium/tonic/issues/")]
-#![doc(test(no_crate_inject, attr(deny(rust_2018_idioms))))]
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![allow(clippy::disallowed_types)] // for interfacing with protobuf it is easier to allow things like std HashMap
 
 pub mod client;
