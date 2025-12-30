@@ -12,12 +12,11 @@ use crate::user::UserId;
 /// Layer which can be used to add parser capabilities to any service
 /// stack which injects a [`UserId`] into the input.
 ///
-/// For example the http proxy of rama comes already with label parser
-/// capabilities included but other proxy stacks such as rama-socks5 not.
+/// For most use-cases you do not need this layer at all.
+/// Http and socks5 support by rama already can handle parsers out of the box:
 ///
-/// However for stacks which makes use of built-in authorizers
-/// this can only work if the authorize can handle labels
-/// without parsing them (e.g. because any username is allowed).
+/// - for the http proxy you can do it directly within the proxy acceptor layer;
+/// - for the socks5 proxy you would do the parsing as part of your authorizer implementation.
 ///
 /// If this is not the case you will have to add username label capabilities
 /// to your authorizer. Sadly not all authorizer traits allow
