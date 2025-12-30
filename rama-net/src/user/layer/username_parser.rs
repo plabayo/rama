@@ -29,6 +29,7 @@ pub struct UsernameLabelParserLayer<P> {
 
 impl<P> UsernameLabelParserLayer<P> {
     #[inline(always)]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             _parser: PhantomData,
