@@ -83,6 +83,8 @@ pub mod service;
 #[cfg(feature = "transport")]
 pub mod transport;
 
+pub mod web;
+
 mod extensions;
 mod macros;
 mod request;

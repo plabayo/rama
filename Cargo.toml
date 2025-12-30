@@ -321,6 +321,7 @@ compression = [
     "rama-http?/compression",
     "rama-tls-boring?/compression",
     "rama-ws?/compression",
+    "rama-grpc?/compression",
 ]
 crypto = ["dep:rama-crypto"]
 tls = [
@@ -371,6 +372,7 @@ http-full = [
     "ua-embed-profiles",
     "compression",
     "dep:tokio",
+    "rama-grpc?/transport",
 ]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
