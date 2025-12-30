@@ -58,7 +58,6 @@ iri-string = { workspace = true }
 matchit = { workspace = true }
 opentelemetry-http = { workspace = true, optional = true }
 parking_lot = { workspace = true }
-percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 radix_trie = { workspace = true }
 rama-core = { workspace = true }
