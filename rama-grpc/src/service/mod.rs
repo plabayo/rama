@@ -7,3 +7,6 @@ pub use self::layered::{LayerExt, Layered};
 
 pub mod recover_error;
 pub use self::recover_error::{RecoverError, RecoverErrorLayer};
+
+#[cfg(feature = "protobuf")]
+pub mod health;
