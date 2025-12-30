@@ -23,8 +23,18 @@ use crate::user::UserId;
 /// to your authorizer. Sadly not all authorizer traits allow
 /// adding extensions. This is probably a shortcoming which should be fixed at some point.
 /// Feel free to feature request this.
+#[derive(Default)]
 pub struct UsernameLabelParserLayer<P> {
     _parser: PhantomData<fn() -> P>,
+}
+
+impl<P> UsernameLabelParserLayer<P> {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self {
+            _parser: PhantomData,
+        }
+    }
 }
 
 impl<P> fmt::Debug for UsernameLabelParserLayer<P> {
