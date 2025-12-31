@@ -523,8 +523,6 @@ enum FindTrailers {
 mod tests {
     #![allow(clippy::needless_pass_by_value)]
 
-    use crate::Code;
-
     use super::*;
 
     #[test]
@@ -634,15 +632,6 @@ mod tests {
         let out = find_trailers(&buf[..]).unwrap();
 
         assert_eq!(out, FindTrailers::IncompleteBuf);
-    }
-
-    #[test]
-    #[ignore]
-    fn find_trailers_buffered_incomplete_buf_bug() {
-        let buf = std::fs::read("tests/incomplete-buf-bug.bin").unwrap();
-        let out = find_trailers(&buf[..]).unwrap_err();
-
-        assert_eq!(out.code(), Code::Internal);
     }
 
     #[test]
