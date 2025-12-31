@@ -2873,6 +2873,7 @@ dependencies = [
  "quickcheck",
  "quickcheck_macros",
  "rama-core",
+ "rama-http",
  "rama-http-core",
  "rama-http-types",
  "rama-net",

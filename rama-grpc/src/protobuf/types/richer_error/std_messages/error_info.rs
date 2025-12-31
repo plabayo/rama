@@ -46,7 +46,7 @@ impl ErrorInfo {
 
     /// Returns `true` if [`ErrorInfo`] fields are empty, and `false` if they
     /// are not.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.reason.is_empty() && self.domain.is_empty() && self.metadata.is_empty()
     }

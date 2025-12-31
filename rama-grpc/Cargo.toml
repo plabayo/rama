@@ -30,6 +30,7 @@ pin-project-lite = { workspace = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 rama-core = { workspace = true }
+rama-http = { workspace = true }
 rama-http-core = { workspace = true, optional = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
