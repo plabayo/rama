@@ -559,32 +559,6 @@ without any additional terms or conditions.
 [mit-license]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [apache-license]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
 
-### Ethical principles of hacking
-
-Our ethics, its limits and the motivation framed within can be summed up as follows:
-
-- Access to computers - and anything which might teach you something about
-  the way the world really works - should be unlimited and total.
-  Always yield to the Hands-On Imperative!
-
-- All information should be free.
-
-- Mistrust authority - promote decentralization.
-
-- Hackers should be judged by their acting,
-  not bogus criteria such as degrees, age, race, or position.
-
-- You can create art and beauty on a computer.
-
-- Computers can change your life for the better.
-
-- Don't litter other people's data.
-
-- Make public data available, protect private data.
-
-Inspired by [Steven Levy's book "Hackers: Heroes of the Computer Revolution"](https://en.wikipedia.org/wiki/Hackers:_Heroes_of_the_Computer_Revolution),
-and contributions by [the Chaos Computer Club (CCC)](https://www.ccc.de/en/home).
-
 ### Acknowledgements
 
 Special thanks goes to all involved in developing, maintaining and supporting [the Rust programming language](https://www.rust-lang.org/), the [Tokio ecosystem](https://tokio.rs/) and [all other crates](./Cargo.toml) that we depend upon. This also includes [Hyper and its ecosystem](https://github.com/hyperium) as without those projects rama would not be. The core http module of rama is a specialised fork of `hyper` and use the underlying `h2` and `h3` crates as dependencies.
