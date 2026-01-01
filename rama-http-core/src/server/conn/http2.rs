@@ -1,19 +1,21 @@
 //! HTTP/2 Server Connections
 
+use std::convert::Infallible;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use pin_project_lite::pin_project;
+use rama_core::Service;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::rt::Executor;
+use rama_http::{Request, Response};
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::body::Incoming as IncomingBody;
 use crate::proto;
-use crate::service::HttpService;
 
 pin_project! {
     /// A [`Future`] representing an HTTP/2 connection, bound to a
@@ -25,7 +27,7 @@ pin_project! {
     #[must_use = "futures do nothing unless polled"]
     pub struct Connection<T, S>
     where
-        S: HttpService<IncomingBody>,
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
     {
         conn: proto::h2::Server<T, S>,
     }
@@ -45,7 +47,7 @@ pub struct Builder {
 
 impl<I, S> fmt::Debug for Connection<I, S>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Connection").finish()
@@ -54,7 +56,7 @@ where
 
 impl<I, S> Connection<I, S>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
@@ -74,7 +76,7 @@ where
 
 impl<I, S> Future for Connection<I, S>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = crate::Result<()>;
@@ -274,7 +276,7 @@ impl Builder {
     /// driven on the connection.
     pub fn serve_connection<S, I>(&self, io: I, service: S) -> Connection<I, S>
     where
-        S: HttpService<IncomingBody>,
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         let proto = proto::h2::Server::new(io, service, &self.h2_builder, self.exec.clone());

@@ -20,7 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = ["protobuf", "transport", "compression"]
 protobuf = ["dep:prost", "dep:prost-types"]
-transport = ["dep:rama-http-core"]
+transport = ["dep:rama-http-core", "dep:rama-tcp"]
 compression = ["dep:flate2", "dep:zstd"]
 
 [dependencies]
@@ -30,6 +30,7 @@ pin-project-lite = { workspace = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 rama-core = { workspace = true }
+rama-tcp = { workspace = true, optional = true }
 rama-http = { workspace = true }
 rama-http-core = { workspace = true, optional = true }
 rama-http-types = { workspace = true }

@@ -2877,6 +2877,7 @@ dependencies = [
  "rama-http-core",
  "rama-http-types",
  "rama-net",
+ "rama-tcp",
  "rama-utils",
  "static_assertions",
  "sync_wrapper",
