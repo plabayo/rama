@@ -28,6 +28,9 @@ use crate::tls::rustls::client as rustls_client;
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
 
+#[cfg(feature = "grpc")]
+use crate::http::grpc::transport::channel::GrpcConnector;
+
 /// Builder that is designed to easily create a connoector for [`super::EasyHttpWebClient`] from most basic use cases
 #[derive(Default)]
 pub struct EasyHttpConnectorBuilder<C = (), S = ()> {
@@ -486,6 +489,21 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
         L: Layer<T>,
     {
         let connector = connector_layer.into_layer(self.connector);
+
+        EasyHttpConnectorBuilder {
+            connector,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "grpc")]
+impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
+    /// Add grpc support to this connector
+    pub fn with_default_grpc_connector<Body>(
+        self,
+    ) -> EasyHttpConnectorBuilder<GrpcConnector<T, Body>, HttpStage> {
+        let connector = GrpcConnector::new(self.connector);
 
         EasyHttpConnectorBuilder {
             connector,

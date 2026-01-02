@@ -76,6 +76,8 @@ where
     }
 }
 
+// TODO: adapt to actual Grpc usage
+
 #[derive(Clone, Debug)]
 struct GrpcConnectionSerice<S>(S);
 

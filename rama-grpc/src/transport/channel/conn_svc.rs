@@ -45,6 +45,8 @@ impl<S, Body> GrpcConnector<S, Body> {
     define_inner_service_accessors!();
 }
 
+// TODO: adapt to actual Grpc usage
+
 impl<S, BodyIn, BodyConnection> Service<Request<BodyIn>> for GrpcConnector<S, BodyConnection>
 where
     S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin>,

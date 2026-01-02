@@ -310,10 +310,6 @@ pub use ::rama_dns as dns;
 #[doc(inline)]
 pub use ::rama_net as net;
 
-#[cfg(feature = "grpc")]
-#[cfg_attr(docsrs, doc(cfg(feature = "grpc")))]
-pub use ::rama_grpc as grpc;
-
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub mod http;
