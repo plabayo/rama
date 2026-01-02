@@ -5,19 +5,20 @@ use rama_core::{
     futures::Stream,
     stream::{self, StreamExt},
 };
-use rama_http_types::{
+use rama_http::{
     Body, StreamingBody,
-    header::{CONTENT_TYPE, HeaderValue, TE},
+    header::CONTENT_TYPE,
+    headers::{HeaderMapExt, Te},
     uri::{PathAndQuery, Uri},
 };
 
-use crate::codec::EncodeBody;
-use crate::codec::{CompressionEncoding, EnabledCompressionEncodings};
-use crate::metadata::GRPC_CONTENT_TYPE;
 use crate::{
     Code, Request, Response, Status,
     client::GrpcService,
-    codec::{Codec, Decoder, Streaming},
+    codec::{
+        Codec, CompressionEncoding, Decoder, EnabledCompressionEncodings, EncodeBody, Streaming,
+    },
+    metadata::GRPC_CONTENT_TYPE,
     request::SanitizeHeaders,
 };
 
@@ -303,14 +304,15 @@ impl GrpcConfig {
         );
 
         // Add the gRPC related HTTP headers
-        request
-            .headers_mut()
-            .insert(TE, HeaderValue::from_static("trailers"));
+        request.headers_mut().typed_insert(Te::trailers());
 
         // Set the content type
         request
             .headers_mut()
             .insert(CONTENT_TYPE, GRPC_CONTENT_TYPE);
+        // TODO: replace with typed header (below) once
+        // grpc mime creation is just a static value as well...
+        // request.headers_mut().typed_insert(ContentType::grpc());
 
         #[cfg(feature = "compression")]
         if let Some(encoding) = self.send_compression_encodings {

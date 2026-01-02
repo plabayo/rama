@@ -74,14 +74,13 @@
 #![recursion_limit = "256"]
 #![allow(clippy::disallowed_types)] // for interfacing with protobuf it is easier to allow things like std HashMap
 
+// TODO: support https://connectrpc.com/
+
 pub mod client;
 pub mod codec;
 pub mod metadata;
 pub mod server;
 pub mod service;
-
-#[cfg(feature = "transport")]
-pub mod transport;
 
 pub mod web;
 

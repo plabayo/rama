@@ -4,8 +4,6 @@ use rama_core::{
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     futures::Stream,
 };
-#[cfg(feature = "transport")]
-use rama_net::address::SocketAddress;
 use rama_utils::str::smol_str::{SmolStr, format_smolstr};
 use std::time::Duration;
 
@@ -200,39 +198,6 @@ impl<T> Request<T> {
             message,
             extensions: self.extensions,
         }
-    }
-
-    /// Get the local address of this connection.
-    ///
-    /// This will return `None` if the `IO` type used
-    /// does not implement `Connected` or when using a unix domain socket.
-    /// This currently only works on the server side.
-    #[cfg(feature = "transport")]
-    pub fn local_addr(&self) -> Option<SocketAddress> {
-        use rama_net::stream::SocketInfo;
-
-        // TOOD[TLS]
-        // #[cfg(feature = "_tls-any")]
-        // let addr = addr.or_else(|| {
-        //     self.extensions()
-        //         .get::<TlsConnectInfo<TcpConnectInfo>>()
-        //         .and_then(|i| i.get_ref().local_addr())
-        // });
-
-        self.extensions()
-            .get::<SocketInfo>()
-            .and_then(|i| i.local_addr())
-    }
-
-    /// Get the remote address of this connection.
-    ///
-    /// This will return `None` if the `IO` type used
-    /// does not implement `Connected` or when using a unix domain socket.
-    /// This currently only works on the server side.
-    #[cfg(feature = "transport")]
-    pub fn remote_addr(&self) -> Option<SocketAddress> {
-        use rama_net::stream::SocketInfo;
-        self.extensions().get::<SocketInfo>().map(|i| i.peer_addr())
     }
 
     /// Set the max duration the request is allowed to take.
