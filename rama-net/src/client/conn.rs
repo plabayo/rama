@@ -1,9 +1,4 @@
-use rama_core::{
-    Service,
-    error::{BoxError, OpaqueError},
-    extensions::ExtensionsMut,
-    service::BoxService,
-};
+use rama_core::{Service, error::BoxError, extensions::ExtensionsMut, service::BoxService};
 use std::fmt;
 
 #[derive(Clone)]
@@ -97,17 +92,4 @@ where
             conn: svc.boxed(),
         })
     }
-}
-
-/// Trait which can be implemented by connections which support a health check.
-///
-/// For basic http this just checks if the underlying IO is still open, but
-/// advanced use cases this can also be used to run actual async health checks
-/// such as doing a fake database query.
-pub trait ConnectionHealthCheck: Sized {
-    /// Check if this connection is still healthy
-    ///
-    /// In case the connection is unhealthy, ownership will be taken by this
-    /// method and an error will be returned which contains more info.
-    fn health_check(self) -> impl Future<Output = Result<Self, OpaqueError>> + Send;
 }

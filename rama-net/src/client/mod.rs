@@ -2,9 +2,7 @@
 
 mod conn;
 #[doc(inline)]
-pub use conn::{
-    BoxedConnectorService, ConnectionHealthCheck, ConnectorService, EstablishedClientConnection,
-};
+pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};
 
 pub mod pool;
 

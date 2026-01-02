@@ -1,9 +1,10 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
-use crate::client::ConnectionHealthCheck;
+use crate::health::HealthCheck;
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::futures::stream::{StreamExt, TryStreamExt};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
@@ -55,6 +56,13 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
         conn: C,
         create_permit: Self::CreatePermit,
     ) -> impl Future<Output = Self::Connection> + Send;
+
+    #[expect(unused)]
+    /// User of this pool can use this to explicitly ask to drop a connection from the pool
+    ///
+    /// This might be needed to since some pool types auto return connections to the pool
+    /// when they are dropped, this drops them completely
+    fn drop_connection(conn: Self::Connection) {}
 }
 
 /// Result returned by a successful call to [`Pool::get_conn`]
@@ -148,23 +156,6 @@ impl<C: ExtensionsMut, ID> ExtensionsMut for LeasedConnection<C, ID> {
     }
 }
 
-impl<C: ConnectionHealthCheck + Send, ID: Send> ConnectionHealthCheck for LeasedConnection<C, ID> {
-    async fn health_check(mut self) -> Result<Self, OpaqueError> {
-        // TODO safety
-        self.pooled_conn_taken = true;
-        let inner = unsafe { ManuallyDrop::take(&mut self.pooled_conn) };
-
-        match inner.health_check().await {
-            Ok(inner) => {
-                self.pooled_conn = ManuallyDrop::new(inner);
-                self.pooled_conn_taken = false;
-                Ok(self)
-            }
-            Err(err) => Err(err),
-        }
-    }
-}
-
 /// A connection which is stored in a pool.
 ///
 /// A ID is used to determine which connections can be used for a request.
@@ -174,18 +165,6 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
-}
-
-impl<C: ConnectionHealthCheck + Send, ID: Send> ConnectionHealthCheck for PooledConnection<C, ID> {
-    async fn health_check(mut self) -> Result<Self, OpaqueError> {
-        match self.conn.health_check().await {
-            Ok(conn) => {
-                self.conn = conn;
-                Ok(self)
-            }
-            Err(err) => Err(err),
-        }
-    }
 }
 
 #[deprecated = "use LruDropPool instead"]
@@ -448,6 +427,11 @@ where
             }),
             pooled_conn_taken: false,
         }
+    }
+
+    fn drop_connection(conn: Self::Connection) {
+        // This will convert it to the inner conn type, and disable to auto return logic
+        conn.into_connection();
     }
 }
 
@@ -746,7 +730,6 @@ where
     Input: Send + ExtensionsRef + 'static,
     P: Pool<S::Connection, R::ID>,
     R: ReqToConnID<Input>,
-    P::Connection: ConnectionHealthCheck,
 {
     type Output = EstablishedClientConnection<P::Connection, Input>;
     type Error = BoxError;
@@ -782,19 +765,30 @@ where
                 match pool_result? {
                     ConnectionResult::Connection(conn) => {
                         trace!(
-                            "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running healtch check now)"
+                            "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running health checks now)"
                         );
-                        // TODO timeout on this or global timeout vs only wait_for_pool_timeout?
-                        match conn.health_check().await {
-                            Ok(conn) => {
-                                trace!("pooled connector: connection is detected as health");
-                                return Ok(EstablishedClientConnection { conn, input });
-                            }
+
+                        // TODO do we run all of them (or batched) in parallel
+                        let health_result = conn
+                            .extensions()
+                            .stream_iter::<HealthCheck>()
+                            .map(Ok)
+                            .try_for_each(|check| check.run_health_check())
+                            .await;
+
+                        match health_result {
+                            Ok(_) => trace!("pooled connector: health check succeeded"),
                             Err(err) => {
-                                trace!(?err, "pooled connector: connection was not health");
-                                continue;
+                                trace!(
+                                    "pooled connector: health check failed, dropping connection: {err:?}"
+                                );
+                                P::drop_connection(conn);
+                                break;
                             }
-                        };
+                        }
+
+                        // TODO timeout on this or global timeout vs only wait_for_pool_timeout?
+                        return Ok(EstablishedClientConnection { conn, input });
                     }
                     ConnectionResult::CreatePermit(permit) => {
                         trace!(
@@ -910,12 +904,6 @@ mod tests {
     impl ExtensionsMut for Conn {
         fn extensions_mut(&mut self) -> &mut Extensions {
             &mut self.extensions
-        }
-    }
-
-    impl ConnectionHealthCheck for Conn {
-        async fn health_check(self) -> Result<Self, OpaqueError> {
-            Ok(self)
         }
     }
 
@@ -1077,7 +1065,11 @@ mod tests {
         type Error = Infallible;
 
         async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-            let conn = InnerService::default();
+            let mut conn = InnerService::default();
+
+            let health_check = HealthCheck::new_atomic_is_broken(conn.should_error.clone());
+            conn.extensions_mut().insert(health_check);
+
             self.created_connection.fetch_add(1, Ordering::Relaxed);
             Ok(EstablishedClientConnection { input, conn })
         }
@@ -1085,7 +1077,7 @@ mod tests {
 
     #[derive(Default, Debug)]
     struct InnerService {
-        should_error: AtomicBool,
+        should_error: Arc<AtomicBool>,
         extensions: Extensions,
     }
 
@@ -1098,12 +1090,6 @@ mod tests {
     impl ExtensionsMut for InnerService {
         fn extensions_mut(&mut self) -> &mut Extensions {
             &mut self.extensions
-        }
-    }
-
-    impl ConnectionHealthCheck for InnerService {
-        async fn health_check(self) -> Result<Self, OpaqueError> {
-            Ok(self)
         }
     }
 
@@ -1154,6 +1140,51 @@ mod tests {
         // this connection is not broken so it should return to the pool
         drop(conn);
 
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(false).await;
+        assert_ok!(result);
+
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn test_healt_check_detects_broken_connections() {
+        let pool = LruDropPool::try_new(1, 1).unwrap();
+        let svc = PooledConnector::new(TestConnector::default(), pool, StringInputLengthID {});
+
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+
+        let should_error = conn.conn.should_error.clone();
+
+        let result = conn.conn.serve(false).await;
+        assert_ok!(result);
+
+        // This dropped connection should return to the pool, since it's not broken yet
+        drop(conn);
+
+        // Break connection -> eg go-away / tcp connection dropped by remote...
+        should_error.store(true, Ordering::Relaxed);
+
+        // We should get a new working connection here since healtch has detect that the stored on was broken
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(false).await;
+        assert_ok!(result);
+
+        // This connection is not broken so it should return to the pool
+        drop(conn);
+
+        // This should reuse the not broken connection (health check doesn't flag this as broken by mistake)
         let conn = svc
             .connect(ServiceInput::new(String::from("")))
             .await

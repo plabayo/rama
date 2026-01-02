@@ -31,6 +31,8 @@ use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use futures::stream;
+
 /// A type map of protocol extensions.
 ///
 /// `Extensions` can be used by `Request` and `Response` to store
@@ -117,6 +119,13 @@ impl Extensions {
             .iter()
             .filter(move |item| item.0 == type_id)
             .map(|ext| (*ext.1).as_any().downcast_ref().unwrap())
+    }
+
+    /// Stream iterator over all the inserted items of type T
+    ///
+    /// Note: items are ordered from oldest to newest
+    pub fn stream_iter<T: Send + Sync + 'static>(&self) -> stream::Iter<impl Iterator<Item = &T>> {
+        stream::iter(self.iter())
     }
 }
 
