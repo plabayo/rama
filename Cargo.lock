@@ -2497,6 +2497,7 @@ dependencies = [
  "asynk-strim",
  "bytes",
  "futures",
+ "itertools 0.14.0",
  "opentelemetry",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",

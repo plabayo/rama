@@ -31,6 +31,7 @@ ahash = { workspace = true }
 asynk-strim = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+itertools = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
