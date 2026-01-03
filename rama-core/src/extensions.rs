@@ -55,13 +55,15 @@ impl Extensions {
     }
 
     /// Insert a type into this [`Extensions]` store.
-    pub fn insert<T>(&mut self, val: T) -> &mut Self
+    pub fn insert<T>(&mut self, val: T) -> &T
     where
         T: Clone + Send + Sync + std::fmt::Debug + 'static,
     {
         let extension = Extension(TypeId::of::<T>(), Box::new(val));
         self.extensions.push(extension);
-        self
+
+        let ext = &self.extensions[self.extensions.len() - 1];
+        (*ext.1).as_any().downcast_ref().unwrap()
     }
 
     /// Extend this [`Extensions`] store with the [`Extension`]s from the provided store
@@ -89,6 +91,35 @@ impl Extensions {
             .rev()
             .find(|item| item.0 == type_id)
             .and_then(|ext| (*ext.1).as_any().downcast_ref())
+    }
+
+    /// Get a shared reference to the most recently insert item of type T, or insert in case no item was found
+    ///
+    /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
+    /// if you need the oldest item T use [`Self::first`]
+    pub fn get_or_insert<'a, T, F>(&'a mut self, create_fn: F) -> &'a T
+    where
+        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+        F: FnOnce() -> T,
+    {
+        let type_id = TypeId::of::<T>();
+
+        let stored = self
+            .extensions
+            .iter()
+            .rev()
+            .find(|item| item.0 == type_id)
+            .and_then(|ext| (*ext.1).as_any().downcast_ref());
+
+        if let Some(found) = stored {
+            // SAFETY: We are returning a reference tied to 'a.
+            // We have a valid reference to 'found' from 'self', and we are
+            // returning immediately, so no mutable borrow of 'self' occurs
+            // in this code path. This is needed until polonius (next gen typechecker) is live
+            return unsafe { &*(found as *const T) };
+        }
+
+        self.insert(create_fn())
     }
 
     /// Get a shared reference to the oldest inserted item of type T

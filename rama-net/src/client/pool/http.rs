@@ -1,6 +1,6 @@
 use super::{LruDropPool, PooledConnector, ReqToConnID};
 use crate::{Protocol, address::HostWithOptPort, client::pool::OpaqueError, http::RequestContext};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_http_types::Request;
 use std::time::Duration;
 
@@ -71,7 +71,7 @@ impl Default for HttpPooledConnectorConfig {
 }
 
 impl HttpPooledConnectorConfig {
-    pub fn build_connector<C, S>(
+    pub fn build_connector<C: ExtensionsMut, S>(
         self,
         inner: S,
     ) -> Result<

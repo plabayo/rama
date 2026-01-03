@@ -13,11 +13,22 @@ use rama_core::{Service, error::OpaqueError, service::BoxService};
 /// is actually still healthy before using or storing it.
 pub struct HealthCheck(HealthCheckInner);
 
+// TODO instead of hacky interior mutability we should reform extensions so we can just this enum
+// without any atomics
+
 #[derive(Clone, Debug)]
 enum HealthCheckInner {
     IsHealty(Arc<AtomicBool>),
     IsBroken(Arc<AtomicBool>),
     Service(BoxService<IsHealthy, (), OpaqueError>),
+}
+
+#[repr(u8)]
+#[derive(Debug, PartialEq, Clone, Copy, Eq)]
+pub enum HealthStatus {
+    Unknown = 0,
+    Broken = 1,
+    Healthy = 2,
 }
 
 #[derive(Clone, Debug, Default)]

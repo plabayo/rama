@@ -1,10 +1,9 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
-use crate::health::HealthCheck;
+use crate::conn::{ConnectionHealth, ConnectionHealthStatus};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
-use rama_core::futures::stream::{StreamExt, TryStreamExt};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
@@ -13,7 +12,6 @@ use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use std::{future::Future, net::SocketAddr};
@@ -56,13 +54,6 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
         conn: C,
         create_permit: Self::CreatePermit,
     ) -> impl Future<Output = Self::Connection> + Send;
-
-    #[expect(unused)]
-    /// User of this pool can use this to explicitly ask to drop a connection from the pool
-    ///
-    /// This might be needed to since some pool types auto return connections to the pool
-    /// when they are dropped, this drops them completely
-    fn drop_connection(conn: Self::Connection) {}
 }
 
 /// Result returned by a successful call to [`Pool::get_conn`]
@@ -118,15 +109,14 @@ where
 /// take ownership of the connection `C` with [`LeasedConnection::into_connection()`].
 /// [`LeasedConnection`]s are considered active pool connections until dropped or
 /// ownership is taken of the internal connection.
-pub struct LeasedConnection<C, ID> {
+pub struct LeasedConnection<C: ExtensionsMut, ID> {
     pooled_conn: ManuallyDrop<PooledConnection<C, ID>>,
     pooled_conn_taken: bool,
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
-    failed: AtomicBool,
 }
 
-impl<C, ID> LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> LeasedConnection<C, ID> {
     pub fn into_connection(mut self) -> C {
         // SAFETY: value is only dropped in `Self::Drop`
         // and value is only taken here if we move out of leased drop
@@ -137,22 +127,17 @@ impl<C, ID> LeasedConnection<C, ID> {
         self.pooled_conn_taken = true;
         unsafe { ManuallyDrop::take(&mut self.pooled_conn) }.conn
     }
-
-    pub fn mark_as_failed(&self) {
-        self.failed
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
 }
 
-impl<C: ExtensionsRef, ID> ExtensionsRef for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> ExtensionsRef for LeasedConnection<C, ID> {
     fn extensions(&self) -> &Extensions {
-        self.pooled_conn.conn.extensions()
+        self.pooled_conn.extensions()
     }
 }
 
 impl<C: ExtensionsMut, ID> ExtensionsMut for LeasedConnection<C, ID> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        self.pooled_conn.conn.extensions_mut()
+        self.pooled_conn.extensions_mut()
     }
 }
 
@@ -165,6 +150,18 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
+}
+
+impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
+    fn extensions(&self) -> &Extensions {
+        self.conn.extensions()
+    }
+}
+
+impl<C: ExtensionsMut, ID> ExtensionsMut for PooledConnection<C, ID> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.conn.extensions_mut()
+    }
 }
 
 #[deprecated = "use LruDropPool instead"]
@@ -188,22 +185,6 @@ pub enum ReuseStrategy {
     #[default]
     FiFo,
     RoundRobin,
-}
-
-impl ReuseStrategy {
-    fn get_conn<C, ID: PartialEq>(
-        self,
-        storage: &mut VecDeque<PooledConnection<C, ID>>,
-        id: &ID,
-    ) -> Option<(usize, PooledConnection<C, ID>)> {
-        let idx = match self {
-            Self::FiFo => storage.iter().position(|stored| &stored.id == id)?,
-            Self::RoundRobin => storage.iter().rposition(|stored| &stored.id == id)?,
-        };
-
-        let pooled_conn = storage.remove(idx)?;
-        Some((idx, pooled_conn))
-    }
 }
 
 struct ConnReturner<C, ID> {
@@ -358,7 +339,32 @@ where
             }
         }
 
-        if let Some((idx, pooled_conn)) = self.reuse_strategy.get_conn(&mut storage, id) {
+        let mut get_conn = || loop {
+            let idx = match self.reuse_strategy {
+                ReuseStrategy::FiFo => storage.iter().position(|stored| &stored.id == id)?,
+                ReuseStrategy::RoundRobin => storage.iter().rposition(|stored| &stored.id == id)?,
+            };
+
+            let pooled_conn = storage.remove(idx)?;
+
+            // This will make sure we skip and drop broken connections
+            if let Some(health) = pooled_conn.extensions().get::<ConnectionHealth>()
+                && health.status() == ConnectionHealthStatus::Broken
+            {
+                continue;
+            }
+
+            return Some((idx, pooled_conn));
+        };
+
+        // TODO since we are dropping connections does it still make sense to report idx in metrics?
+
+        if let Some((idx, pooled_conn)) = get_conn() {
+            println!(
+                "go connection {:?}",
+                pooled_conn.extensions().get::<ConnectionHealth>()
+            );
+
             trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
 
             #[cfg(feature = "opentelemetry")]
@@ -375,7 +381,6 @@ where
                 pooled_conn: ManuallyDrop::new(pooled_conn),
                 pooled_conn_taken: false,
                 returner: self.returner.clone(),
-                failed: AtomicBool::new(false),
             }));
         }
 
@@ -418,7 +423,6 @@ where
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
-            failed: AtomicBool::new(false),
             pooled_conn: ManuallyDrop::new(PooledConnection {
                 id,
                 conn,
@@ -427,11 +431,6 @@ where
             }),
             pooled_conn_taken: false,
         }
-    }
-
-    fn drop_connection(conn: Self::Connection) {
-        // This will convert it to the inner conn type, and disable to auto return logic
-        conn.into_connection();
     }
 }
 
@@ -460,7 +459,7 @@ impl<C: Debug, ID: Debug> Debug for PooledConnection<C, ID> {
 
 impl<C, ID> Debug for LeasedConnection<C, ID>
 where
-    C: Debug,
+    C: Debug + ExtensionsMut,
     ID: Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -471,7 +470,7 @@ where
     }
 }
 
-impl<C, ID> Deref for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> Deref for LeasedConnection<C, ID> {
     type Target = C;
 
     fn deref(&self) -> &Self::Target {
@@ -479,28 +478,30 @@ impl<C, ID> Deref for LeasedConnection<C, ID> {
     }
 }
 
-impl<C, ID> DerefMut for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> DerefMut for LeasedConnection<C, ID> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.pooled_conn.conn
     }
 }
 
-impl<C, ID> AsRef<C> for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> AsRef<C> for LeasedConnection<C, ID> {
     fn as_ref(&self) -> &C {
         self
     }
 }
 
-impl<C, ID> AsMut<C> for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> AsMut<C> for LeasedConnection<C, ID> {
     fn as_mut(&mut self) -> &mut C {
         self
     }
 }
 
-impl<C, ID> Drop for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if !self.pooled_conn_taken {
-            if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(health) = self.extensions().get::<ConnectionHealth>()
+                && health.status() == ConnectionHealthStatus::Broken
+            {
                 trace!("LRU connection pool: dropping pooled connection that was marked as failed");
 
                 // SAFETY: pooled_conn_taken is false,
@@ -530,7 +531,7 @@ impl<C, ID> Drop for LeasedConnection<C, ID> {
 impl<C, ID> Socket for LeasedConnection<C, ID>
 where
     ID: Send + Sync + 'static,
-    C: Socket,
+    C: Socket + ExtensionsMut,
 {
     fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.as_ref().local_addr()
@@ -544,7 +545,7 @@ where
 #[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncWrite for LeasedConnection<C, ID>
 where
-    C: AsyncWrite + Unpin,
+    C: AsyncWrite + Unpin + ExtensionsMut,
     ID: Unpin,
 {
     fn poll_write(
@@ -585,7 +586,7 @@ where
 #[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncRead for LeasedConnection<C, ID>
 where
-    C: AsyncRead + Unpin,
+    C: AsyncRead + Unpin + ExtensionsMut,
     ID: Unpin,
 {
     fn poll_read(
@@ -600,7 +601,7 @@ where
 impl<Input, C, ID> Service<Input> for LeasedConnection<C, ID>
 where
     ID: Send + Sync + Debug + 'static,
-    C: Service<Input>,
+    C: Service<Input> + ExtensionsMut,
     Input: Send + 'static,
 {
     type Output = C::Output;
@@ -608,12 +609,17 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let result = self.as_ref().serve(input).await;
+
         if result.is_err() {
             let id = &self.pooled_conn.id;
             trace!(
                 "LRU connection pool: detected error result, marking connection w/ id {id:?} as failed"
             );
-            self.mark_as_failed();
+
+            // This is set when we create this connection, so we could use expect/unwrap here?
+            if let Some(health) = self.extensions().get::<ConnectionHealth>() {
+                health.set_status(ConnectionHealthStatus::Broken);
+            }
         }
         result
     }
@@ -737,80 +743,54 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let conn_id = self.req_to_conn_id.id(&input)?;
 
-        // TODO how do we configure max attempts, and do we even configure this?
-        // TODO should this happen here or or should pool storage do this periodically/pro-active?
-        for _i in 0..3 {
-            // Try to get connection from pool, if no connection is found, we will have to create a new
-            // one using the returned create permit
-            let create_permit = {
-                let pool = if let Some(pool) = input.extensions().get::<P>() {
-                    trace!("pooled connector: using pool from ctx");
-                    pool
-                } else {
-                    trace!("pooled connector: using pool from connector");
-                    &self.pool
-                };
+        // Try to get connection from pool, if no connection is found, we will have to create a new
+        // one using the returned create permit
 
-                let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-                    timeout(duration, pool.get_conn(&conn_id))
+        let pool = if let Some(pool) = input.extensions().get::<P>() {
+            trace!("pooled connector: using pool from ctx");
+            pool
+        } else {
+            trace!("pooled connector: using pool from connector");
+            &self.pool
+        };
+
+        let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
+            timeout(duration, pool.get_conn(&conn_id))
                     .await
                     .map_err(|err|{
                         trace!("pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
                         OpaqueError::from_std(err)
                     })?
-                } else {
-                    pool.get_conn(&conn_id).await
-                };
+        } else {
+            pool.get_conn(&conn_id).await
+        };
 
-                match pool_result? {
-                    ConnectionResult::Connection(conn) => {
-                        trace!(
-                            "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running health checks now)"
-                        );
+        match pool_result? {
+            ConnectionResult::Connection(conn) => {
+                trace!(
+                    "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running health checks now)"
+                );
 
-                        // TODO do we run all of them (or batched) in parallel
-                        let health_result = conn
-                            .extensions()
-                            .stream_iter::<HealthCheck>()
-                            .map(Ok)
-                            .try_for_each(|check| check.run_health_check())
-                            .await;
+                // TODO timeout on this or global timeout vs only wait_for_pool_timeout?
+                Ok(EstablishedClientConnection { conn, input })
+            }
+            ConnectionResult::CreatePermit(permit) => {
+                trace!(
+                    "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
+                );
+                let EstablishedClientConnection { input, conn } =
+                    self.inner.connect(input).await.map_err(Into::into)?;
 
-                        match health_result {
-                            Ok(_) => trace!("pooled connector: health check succeeded"),
-                            Err(err) => {
-                                trace!(
-                                    "pooled connector: health check failed, dropping connection: {err:?}"
-                                );
-                                P::drop_connection(conn);
-                                break;
-                            }
-                        }
-
-                        // TODO timeout on this or global timeout vs only wait_for_pool_timeout?
-                        return Ok(EstablishedClientConnection { conn, input });
-                    }
-                    ConnectionResult::CreatePermit(permit) => {
-                        trace!(
-                            "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
-                        );
-                        permit
-                    }
-                }
-            };
-
-            let EstablishedClientConnection { input, conn } =
-                self.inner.connect(input).await.map_err(Into::into)?;
-
-            // TODO here we create a new connection, but do we also want to health check this for consistency,
-            // or do we expect the inner connector to have already done this...?
-            trace!("pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}");
-            let pool = input.extensions().get::<P>().unwrap_or(&self.pool);
-            let conn = pool.create(conn_id, conn, create_permit).await;
-            return Ok(EstablishedClientConnection { input, conn });
+                // TODO here we create a new connection, but do we also want to health check this for consistency,
+                // or do we expect the inner connector to have already done this...?
+                trace!(
+                    "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
+                );
+                let pool = input.extensions().get::<P>().unwrap_or(&self.pool);
+                let conn = pool.create(conn_id, conn, permit).await;
+                Ok(EstablishedClientConnection { input, conn })
+            }
         }
-
-        Err(OpaqueError::from_display("failed to get a connection after 3 attempts").into_boxed())
     }
 }
 
@@ -862,6 +842,7 @@ mod tests {
     use rama_core::ServiceInput;
     use rama_core::extensions::ExtensionsMut;
     use rama_core::{Service, extensions::Extensions};
+    use std::sync::atomic::AtomicBool;
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
@@ -1067,8 +1048,7 @@ mod tests {
         async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
             let mut conn = InnerService::default();
 
-            let health_check = HealthCheck::new_atomic_is_broken(conn.should_error.clone());
-            conn.extensions_mut().insert(health_check);
+            conn.extensions_mut().insert(ConnectionHealth::default());
 
             self.created_connection.fetch_add(1, Ordering::Relaxed);
             Ok(EstablishedClientConnection { input, conn })
@@ -1100,6 +1080,10 @@ mod tests {
         async fn serve(&self, should_error: bool) -> Result<Self::Output, Self::Error> {
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
             if should_error {
+                self.extensions
+                    .get::<ConnectionHealth>()
+                    .unwrap()
+                    .set_status(ConnectionHealthStatus::Broken);
                 self.should_error.store(true, Ordering::Relaxed);
             }
 
@@ -1152,7 +1136,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_healt_check_detects_broken_connections() {
+    async fn test_pool_drops_broken_connections_in_get_conn() {
         let pool = LruDropPool::try_new(1, 1).unwrap();
         let svc = PooledConnector::new(TestConnector::default(), pool, StringInputLengthID {});
 
@@ -1161,16 +1145,20 @@ mod tests {
             .await
             .unwrap();
 
-        let should_error = conn.conn.should_error.clone();
-
         let result = conn.conn.serve(false).await;
         assert_ok!(result);
 
         // This dropped connection should return to the pool, since it's not broken yet
+        let conn_extensions = conn.conn.extensions().clone();
         drop(conn);
 
         // Break connection -> eg go-away / tcp connection dropped by remote...
-        should_error.store(true, Ordering::Relaxed);
+        // Normally the connection would edit this in extensions but since we dont have ownership here
+        // we just clone the extensions and edit it like this
+        conn_extensions
+            .get::<ConnectionHealth>()
+            .unwrap()
+            .set_status(ConnectionHealthStatus::Broken);
 
         // We should get a new working connection here since healtch has detect that the stored on was broken
         let conn = svc

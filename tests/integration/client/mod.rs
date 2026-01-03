@@ -13,6 +13,7 @@ use rama::{
     service::service_fn,
     tls::boring::{client::TlsConnectorDataBuilder, server::TlsAcceptorLayer},
 };
+use rama_http::{HeaderValue, header};
 
 use std::convert::Infallible;
 
@@ -30,6 +31,58 @@ async fn h2_with_connection_pooling() {
         let tls_server_config = ServerConfig {
             application_layer_protocol_negotiation: Some(vec![
                 ApplicationProtocol::HTTP_2,
+                ApplicationProtocol::HTTP_11,
+            ]),
+            ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
+                organisation_name: Some("Example Server Acceptor".to_owned()),
+                ..Default::default()
+            }))
+        };
+        tls_server_config
+            .try_into()
+            .expect("create tls server config")
+    };
+    let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
+    let direct_connection = MockConnectorService::new(move || server.clone());
+
+    let tls_config = TlsConnectorDataBuilder::new_http_auto()
+        .with_server_verify_mode(rama_net::tls::client::ServerVerifyMode::Disable)
+        .into_shared_builder();
+
+    let client = EasyHttpWebClient::connector_builder()
+        .with_custom_transport_connector(direct_connection)
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl(Some(tls_config))
+        .with_default_http_connector()
+        .try_with_default_connection_pool()
+        .unwrap()
+        .build_client();
+
+    let create_req = || {
+        Request::builder()
+            .uri("https://localhost/test")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let _resp = client.serve(create_req()).await.unwrap();
+    let _resp = client.serve(create_req()).await.unwrap();
+}
+
+#[tokio::test]
+async fn h1_with_connection_pooling_detects_closed_connections() {
+    let http_server = HttpServer::http1().service(service_fn(async |_req: Request| {
+        let mut resp = Response::new(Body::empty());
+        resp.headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+        Ok::<_, Infallible>(resp)
+    }));
+
+    let tls_service_data = {
+        let tls_server_config = ServerConfig {
+            application_layer_protocol_negotiation: Some(vec![
+                // ApplicationProtocol::HTTP_2,
                 ApplicationProtocol::HTTP_11,
             ]),
             ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
