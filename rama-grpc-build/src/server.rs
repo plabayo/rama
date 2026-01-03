@@ -58,7 +58,7 @@ pub(crate) fn generate_internal<T: Service>(
     let configure_compression_methods = quote! {
         #root_crate_name::codegen::generate_set_and_with! {
             /// Enable decompressing requests with the given encoding.
-            pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            pub fn accept_compressed(mut self, encoding: #root_crate_name::codec::CompressionEncoding) -> Self {
                 self.accept_compression_encodings.enable(encoding);
                 self
             }
@@ -66,7 +66,7 @@ pub(crate) fn generate_internal<T: Service>(
 
         #root_crate_name::codegen::generate_set_and_with! {
             /// Compress responses with the given encoding, if the client supports it.
-            pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            pub fn send_compressed(mut self, encoding: #root_crate_name::codec::CompressionEncoding) -> Self {
                 self.send_compression_encodings.enable(encoding);
                 self
             }
@@ -108,27 +108,25 @@ pub(crate) fn generate_internal<T: Service>(
                 clippy::let_unit_value,
             )]
 
-            pub use #root_crate_name::codegen::EnabledCompressionEncodings;
-
             #generated_trait
 
             #service_doc
             #(#struct_attributes)*
             #[derive(Debug)]
             pub struct #server_service<T> {
-                inner: Arc<T>,
-                accept_compression_encodings: EnabledCompressionEncodings,
-                send_compression_encodings: EnabledCompressionEncodings,
+                inner: std::sync::Arc<T>,
+                accept_compression_encodings: #root_crate_name::codec::EnabledCompressionEncodings,
+                send_compression_encodings: #root_crate_name::codec::EnabledCompressionEncodings,
                 max_decoding_message_size: Option<usize>,
                 max_encoding_message_size: Option<usize>,
             }
 
             impl<T> #server_service<T> {
                 pub fn new(inner: T) -> Self {
-                    Self::from_arc(Arc::new(inner))
+                    Self::from_arc(std::sync::Arc::new(inner))
                 }
 
-                pub fn from_arc(inner: Arc<T>) -> Self {
+                pub fn from_arc(inner: std::sync::Arc<T>) -> Self {
                     Self {
                         inner,
                         accept_compression_encodings: Default::default(),
@@ -157,7 +155,7 @@ pub(crate) fn generate_internal<T: Service>(
                     match req.uri().path() {
                         #methods
 
-                        _ => Box::pin(async move {
+                        _ => {
                             let mut response = #root_crate_name::codegen::http::Response::new(
                                 #root_crate_name::codegen::http::Body::default()
                             );
@@ -171,7 +169,7 @@ pub(crate) fn generate_internal<T: Service>(
                                 #root_crate_name::metadata::GRPC_CONTENT_TYPE,
                             );
                             Ok(response)
-                        }),
+                        },
                     }
                 }
             }
@@ -403,7 +401,7 @@ fn generate_unary<T: Method>(
 
     quote! {
         #[allow(non_camel_case_types)]
-        struct #service_ident<T: #server_trait >(pub Arc<T>);
+        struct #service_ident<T: #server_trait >(pub std::sync::Arc<T>);
 
         impl<T: #server_trait> #root_crate_name::server::UnaryService<#request> for #service_ident<T> {
             type Response = #response;
@@ -414,9 +412,6 @@ fn generate_unary<T: Method>(
                 <T as #server_trait>::#method_ident(self.0.as_ref(), request).await
             }
         }
-
-        // TODO: remove Arc, do not think we really need it ...
-        // we should probably be able to do it based on reference...
 
         let accept_compression_encodings = self.accept_compression_encodings;
         let send_compression_encodings = self.send_compression_encodings;
@@ -457,7 +452,7 @@ fn generate_server_streaming<T: Method>(
 
     quote! {
         #[allow(non_camel_case_types)]
-        struct #service_ident<T: #server_trait >(pub Arc<T>);
+        struct #service_ident<T: #server_trait >(pub std::sync::Arc<T>);
 
         impl<T: #server_trait> #root_crate_name::server::ServerStreamingService<#request> for #service_ident<T> {
             type Response = #response;
@@ -503,7 +498,7 @@ fn generate_client_streaming<T: Method>(
 
     quote! {
         #[allow(non_camel_case_types)]
-        struct #service_ident<T: #server_trait >(pub Arc<T>);
+        struct #service_ident<T: #server_trait >(pub std::sync::Arc<T>);
 
         impl<T: #server_trait> #root_crate_name::server::ClientStreamingService<#request> for #service_ident<T>
         {
@@ -554,7 +549,7 @@ fn generate_streaming<T: Method>(
 
     quote! {
         #[allow(non_camel_case_types)]
-        struct #service_ident<T: #server_trait>(pub Arc<T>);
+        struct #service_ident<T: #server_trait>(pub std::sync::Arc<T>);
 
         impl<T: #server_trait> #root_crate_name::server::StreamingService<#request> for #service_ident<T>
         {

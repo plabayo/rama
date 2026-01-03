@@ -53,8 +53,6 @@ pub(crate) fn generate_internal<T: Service>(
                 clippy::let_unit_value,
             )]
 
-            pub use #root_crate_name::codegen::CompressionEncoding;
-
             #service_doc
             #(#struct_attributes)*
             #[derive(Debug, Clone)]
@@ -88,14 +86,14 @@ pub(crate) fn generate_internal<T: Service>(
                 /// This requires the server to support it otherwise it might respond with an
                 /// error.
                 #[must_use]
-                pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+                pub fn send_compressed(mut self, encoding: #root_crate_name::codec::CompressionEncoding) -> Self {
                     self.inner = self.inner.send_compressed(encoding);
                     self
                 }
 
                 /// Enable decompressing responses.
                 #[must_use]
-                pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+                pub fn accept_compressed(mut self, encoding: #root_crate_name::codec::CompressionEncoding) -> Self {
                     self.inner = self.inner.accept_compressed(encoding);
                     self
                 }
@@ -209,7 +207,7 @@ fn generate_unary<T: Service>(
            let codec = #codec_name::default();
            let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
            let mut req = request.into_request();
-           req.extensions_mut().insert(GrpcMethod::new(#service_name, #method_name));
+           req.extensions_mut().insert(#root_crate_name::extensions::GrpcMethod::new(#service_name, #method_name));
            self.inner.unary(req, path, codec).await
         }
     }
@@ -241,7 +239,7 @@ fn generate_server_streaming<T: Service>(
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(#service_name, #method_name));
+            req.extensions_mut().insert(#root_crate_name::extensions::GrpcMethod::new(#service_name, #method_name));
             self.inner.server_streaming(req, path, codec).await
         }
     }
@@ -273,7 +271,7 @@ fn generate_client_streaming<T: Service>(
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
             let mut req = request.into_streaming_request();
-            req.extensions_mut().insert(GrpcMethod::new(#service_name, #method_name));
+            req.extensions_mut().insert(#root_crate_name::extensions::GrpcMethod::new(#service_name, #method_name));
             self.inner.client_streaming(req, path, codec).await
         }
     }
@@ -305,7 +303,7 @@ fn generate_streaming<T: Service>(
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
             let mut req = request.into_streaming_request();
-            req.extensions_mut().insert(GrpcMethod::new(#service_name,#method_name));
+            req.extensions_mut().insert(#root_crate_name::extensions::GrpcMethod::new(#service_name,#method_name));
             self.inner.streaming(req, path, codec).await
         }
     }

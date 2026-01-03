@@ -21,7 +21,7 @@ pub struct CodeGenBuilder {
 
 impl CodeGenBuilder {
     /// Create a new code gen builder with default options.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }

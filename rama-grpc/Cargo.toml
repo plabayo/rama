@@ -30,12 +30,12 @@ pin-project-lite = { workspace = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 rama-core = { workspace = true }
+rama-grpc-build = { workspace = true }
 rama-http = { workspace = true }
 rama-http-core = { workspace = true, optional = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
-rama-grpc-build = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
 zstd = { workspace = true, optional = true }

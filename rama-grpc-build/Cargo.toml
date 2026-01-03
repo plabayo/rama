@@ -23,12 +23,12 @@ protobuf = ["dep:prost-build", "dep:prost-types"]
 
 [dependencies]
 prettyplease = { workspace = true }
-rama-utils = { workspace = true }
 proc-macro-crate = { workspace = true }
+proc-macro2 = { workspace = true }
 prost-build = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
-proc-macro2 = { workspace = true }
 quote = { workspace = true }
+rama-utils = { workspace = true }
 syn = { workspace = true }
 
 [dev-dependencies]
