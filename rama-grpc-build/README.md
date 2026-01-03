@@ -12,10 +12,10 @@
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 
-[crates-badge]: https://img.shields.io/crates/v/rama-grpc.svg
-[crates-url]: https://crates.io/crates/rama-grpc
-[docs-badge]: https://img.shields.io/docsrs/rama-grpc/latest
-[docs-url]: https://docs.rs/rama-grpc/latest/rama_grpc/index.html
+[crates-badge]: https://img.shields.io/crates/v/rama-grpc-build.svg
+[crates-url]: https://crates.io/crates/rama-grpc-build
+[docs-badge]: https://img.shields.io/docsrs/rama-grpc-build/latest
+[docs-url]: https://docs.rs/rama-grpc-build/latest/rama_grpc_build/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
@@ -37,9 +37,9 @@
 🦙 rama® (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
-## rama-grpc
+## rama-grpc-build
 
-Grpc support for rama.
+Build crate as part of Grpc support for rama.
 
 Crate used by the end-user `rama` crate.
 

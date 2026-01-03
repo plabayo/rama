@@ -28,6 +28,7 @@ members = [
     "rama-dns",
     "rama-error",
     "rama-grpc",
+    "rama-grpc-build",
     "rama-haproxy",
     "rama-http",
     "rama-http-backend",
@@ -156,7 +157,9 @@ percent-encoding = "2.3"
 pin-project-lite = "0.2"
 proc-macro-crate = "3.4"
 proc-macro2 = "1.0"
+prettyplease = "0.2"
 prost = "0.14"
+prost-build = "0.14"
 prost-types = "0.14"
 psl = "2"
 quickcheck = "1.0"
@@ -170,6 +173,7 @@ rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto" }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns" }
 rama-error = { version = "0.3.0-rc1", path = "./rama-error" }
 rama-grpc = { version = "0.3.0-rc1", path = "./rama-grpc" }
+rama-grpc-build = { version = "0.3.0-rc1", path = "./rama-grpc-build" }
 rama-haproxy = { version = "0.3.0-rc1", path = "./rama-haproxy" }
 rama-http = { version = "0.3.0-rc1", path = "./rama-http" }
 rama-http-backend = { version = "0.3.0-rc1", path = "./rama-http-backend" }

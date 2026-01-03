@@ -77,43 +77,45 @@ impl<T> Grpc<T> {
         }
     }
 
-    /// Compress requests with the provided encoding.
-    ///
-    /// Requires the server to accept the specified encoding, otherwise it might return an error.
-    #[must_use]
-    pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-        self.config.send_compression_encodings = Some(encoding);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Compress requests with the provided encoding.
+        ///
+        /// Requires the server to accept the specified encoding, otherwise it might return an error.
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.config.send_compression_encodings = Some(encoding);
+            self
+        }
     }
 
-    /// Enable accepting compressed responses.
-    ///
-    /// Requires the server to also support sending compressed responses.
-    #[must_use]
-    pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-        self.config.accept_compression_encodings.enable(encoding);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable accepting compressed responses.
+        ///
+        /// Requires the server to also support sending compressed responses.
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.config.accept_compression_encodings.enable(encoding);
+            self
+        }
     }
 
-    /// Limits the maximum size of a decoded message.
-    #[must_use]
-    pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-        self.config.max_decoding_message_size = Some(limit);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Limits the maximum size of a decoded message.
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.config.max_decoding_message_size = Some(limit);
+            self
+        }
     }
 
-    // TODO: use setter macro from rama
-
-    /// Limits the maximum size of an encoded message.
-    #[must_use]
-    pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-        self.config.max_encoding_message_size = Some(limit);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Limits the maximum size of an encoded message.
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.config.max_encoding_message_size = Some(limit);
+            self
+        }
     }
 
     /// Send a single unary gRPC request.
     pub async fn unary<M1, M2, C>(
-        &mut self,
+        &self,
         request: Request<M1>,
         path: PathAndQuery,
         codec: C,
@@ -131,7 +133,7 @@ impl<T> Grpc<T> {
 
     /// Send a client side streaming gRPC request.
     pub async fn client_streaming<S, M1, M2, C>(
-        &mut self,
+        &self,
         request: Request<S>,
         path: PathAndQuery,
         codec: C,
@@ -167,7 +169,7 @@ impl<T> Grpc<T> {
 
     /// Send a server side streaming gRPC request.
     pub async fn server_streaming<M1, M2, C>(
-        &mut self,
+        &self,
         request: Request<M1>,
         path: PathAndQuery,
         codec: C,
@@ -185,7 +187,7 @@ impl<T> Grpc<T> {
 
     /// Send a bi-directional streaming gRPC request.
     pub async fn streaming<S, M1, M2, C>(
-        &mut self,
+        &self,
         request: Request<S>,
         path: PathAndQuery,
         mut codec: C,

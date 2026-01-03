@@ -185,9 +185,9 @@ impl CompressionEncoding {
             return Ok(None);
         };
 
-        let other = match std::str::from_utf8(header_values.as_bytes()) {
+        let other = match std::str::from_utf8(header_value.as_bytes()) {
             Ok(s) => Cow::Borrowed(s),
-            Err(_) => Cow::Owned(format!("{other:?}")),
+            Err(_) => Cow::Owned(format!("{header_value:?}")),
         };
 
         let mut status = Status::unimplemented(format!(
@@ -195,7 +195,8 @@ impl CompressionEncoding {
         ));
 
         let header_value = enabled_encodings
-            .into_accept_encoding_header_value()
+            .try_into_accept_encoding_header_value()
+            .map_err(|err| Status::from_error(err.into_boxed()))?
             .map(MetadataValue::unchecked_from_header_value)
             .unwrap_or_else(|| MetadataValue::from_static("identity"));
         status
@@ -225,6 +226,7 @@ impl fmt::Display for CompressionEncoding {
     }
 }
 
+#[cfg(feature = "compression")]
 fn split_by_comma(s: &str) -> impl Iterator<Item = &str> {
     s.split(',').map(|s| s.trim())
 }
