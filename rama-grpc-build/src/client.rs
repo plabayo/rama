@@ -48,9 +48,10 @@ pub(crate) fn generate_internal<T: Service>(
                 unused_variables,
                 dead_code,
                 missing_docs,
-                clippy::wildcard_imports,
-                // will trigger if compression is disabled
-                clippy::let_unit_value,
+                clippy::all,
+                clippy::pedantic,
+                clippy::restriction,
+                clippy::nursery,
             )]
 
             #service_doc

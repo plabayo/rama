@@ -103,9 +103,10 @@ pub(crate) fn generate_internal<T: Service>(
                 unused_variables,
                 dead_code,
                 missing_docs,
-                clippy::wildcard_imports,
-                // will trigger if compression is disabled
-                clippy::let_unit_value,
+                clippy::all,
+                clippy::pedantic,
+                clippy::restriction,
+                clippy::nursery,
             )]
 
             #generated_trait
@@ -472,7 +473,7 @@ fn generate_server_streaming<T: Method>(
             #response_stream;
 
             async fn serve(&self, request: #root_crate_name::Request<#request>)
-                -> std::result::result<#root_crate_name::Response<Self::ResponseStream>, #root_crate_name::Status> {
+                -> std::result::Result<#root_crate_name::Response<Self::ResponseStream>, #root_crate_name::Status> {
                 <T as #server_trait>::#method_ident(self.0.as_ref(), request).await
             }
         }
@@ -487,8 +488,8 @@ fn generate_server_streaming<T: Method>(
         let codec = #codec_name::default();
 
         let mut grpc = #root_crate_name::server::Grpc::new(codec)
-            .apply_compression_config(accept_compression_encodings, send_compression_encodings)
-            .apply_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
+            .with_compression_config(accept_compression_encodings, send_compression_encodings)
+            .with_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
 
         Ok(grpc.server_streaming(method, req).await.unwrap_or_else(
             #root_crate_name::server::error::unexpected_error_into_http_response
@@ -533,8 +534,8 @@ fn generate_client_streaming<T: Method>(
         let codec = #codec_name::default();
 
         let mut grpc = #root_crate_name::server::Grpc::new(codec)
-            .apply_compression_config(accept_compression_encodings, send_compression_encodings)
-            .apply_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
+            .with_compression_config(accept_compression_encodings, send_compression_encodings)
+            .with_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
 
         Ok(grpc.client_streaming(method, req).await.unwrap_or_else(
             #root_crate_name::server::error::unexpected_error_into_http_response
@@ -586,8 +587,8 @@ fn generate_streaming<T: Method>(
         let codec = #codec_name::default();
 
         let mut grpc = #root_crate_name::server::Grpc::new(codec)
-            .apply_compression_config(accept_compression_encodings, send_compression_encodings)
-            .apply_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
+            .with_compression_config(accept_compression_encodings, send_compression_encodings)
+            .with_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
 
         Ok(grpc.streaming(method, req).await.unwrap_or_else(
             #root_crate_name::server::error::unexpected_error_into_http_response

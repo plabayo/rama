@@ -28,6 +28,18 @@ path = "src/helloworld/client.rs"
 name = "helloworld-server"
 path = "src/helloworld/server.rs"
 
+[[bin]]
+name = "gcp-pubsub-client"
+path = "src/gcp/pubsub_client.rs"
+
+[[bin]]
+name = "compression-server"
+path = "src/compression/server.rs"
+
+[[bin]]
+name = "compression-client"
+path = "src/compression/client.rs"
+
 [features]
 
 [dependencies]
