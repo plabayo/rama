@@ -611,7 +611,6 @@ where
                 "LRU connection pool: detected error result, marking connection w/ id {id:?} as failed"
             );
 
-            // This is set when we create this connection, so we could use expect/unwrap here?
             if let Some(health) = self.extensions().get::<ConnectionHealth>() {
                 health.set_status(ConnectionHealthStatus::Broken);
             }
@@ -766,7 +765,6 @@ where
                     "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running health checks now)"
                 );
 
-                // TODO timeout on this or global timeout vs only wait_for_pool_timeout?
                 Ok(EstablishedClientConnection { conn, input })
             }
             ConnectionResult::CreatePermit(permit) => {
@@ -776,8 +774,6 @@ where
                 let EstablishedClientConnection { input, conn } =
                     self.inner.connect(input).await.map_err(Into::into)?;
 
-                // TODO here we create a new connection, but do we also want to health check this for consistency,
-                // or do we expect the inner connector to have already done this...?
                 trace!(
                     "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
                 );
@@ -1155,7 +1151,7 @@ mod tests {
             .unwrap()
             .set_status(ConnectionHealthStatus::Broken);
 
-        // We should get a new working connection here since healtch has detect that the stored on was broken
+        // We should get a new working connection here since health check has detect that the stored one was broken
         let conn = svc
             .connect(ServiceInput::new(String::from("")))
             .await
@@ -1167,7 +1163,7 @@ mod tests {
         // This connection is not broken so it should return to the pool
         drop(conn);
 
-        // This should reuse the not broken connection (health check doesn't flag this as broken by mistake)
+        // And we should be able to reuse it
         let conn = svc
             .connect(ServiceInput::new(String::from("")))
             .await
