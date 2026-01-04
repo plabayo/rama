@@ -35,6 +35,8 @@ jobs:
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
       - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -90,6 +92,8 @@ jobs:
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
       - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -262,6 +266,8 @@ jobs:
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
       - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -300,6 +306,8 @@ jobs:
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
       - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
