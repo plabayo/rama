@@ -172,7 +172,7 @@ impl DnsResolver for HickoryDns {
     type Error = OpaqueError;
 
     async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
-        let name = fqdn_from_domain(domain)?;
+        let name = name_from_domain(domain)?;
 
         let mut results = vec![];
         for txt in self
@@ -190,7 +190,7 @@ impl DnsResolver for HickoryDns {
     }
 
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
-        let name = fqdn_from_domain(domain)?;
+        let name = name_from_domain(domain)?;
         Ok(self
             .0
             .ipv4_lookup(name)
@@ -202,7 +202,7 @@ impl DnsResolver for HickoryDns {
     }
 
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
-        let name = fqdn_from_domain(domain)?;
+        let name = name_from_domain(domain)?;
         Ok(self
             .0
             .ipv6_lookup(name)
@@ -214,7 +214,7 @@ impl DnsResolver for HickoryDns {
     }
 }
 
-fn fqdn_from_domain(domain: Domain) -> Result<Name, OpaqueError> {
+fn name_from_domain(domain: Domain) -> Result<Name, OpaqueError> {
     let is_fqdn = domain.is_fqdn();
     let mut name = Name::from_utf8(domain).context("try to consume a Domain as a Dns Name")?;
     name.set_fqdn(is_fqdn);
