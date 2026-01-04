@@ -854,13 +854,13 @@ impl Inner {
 
         let last_stream_id = frame.last_stream_id();
 
-        actions.send.recv_go_away(last_stream_id)?;
-
-        let err = Error::remote_go_away(frame.debug_data().clone(), frame.reason());
-
         if let Some(health) = self.extensions.get::<ConnectionHealth>() {
             health.set_status(ConnectionHealthStatus::Broken)
         }
+
+        actions.send.recv_go_away(last_stream_id)?;
+
+        let err = Error::remote_go_away(frame.debug_data().clone(), frame.reason());
 
         self.store.for_each(|stream| {
             if stream.id > last_stream_id {

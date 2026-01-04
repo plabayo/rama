@@ -411,6 +411,7 @@ serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
+tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
 
 [target.'cfg(target_family = "unix")'.dependencies]

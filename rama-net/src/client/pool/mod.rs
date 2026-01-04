@@ -360,11 +360,6 @@ where
         // TODO since we are dropping connections does it still make sense to report idx in metrics?
 
         if let Some((idx, pooled_conn)) = get_conn() {
-            println!(
-                "go connection {:?}",
-                pooled_conn.extensions().get::<ConnectionHealth>()
-            );
-
             trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
 
             #[cfg(feature = "opentelemetry")]

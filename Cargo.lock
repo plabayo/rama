@@ -2426,6 +2426,7 @@ dependencies = [
  "spmc",
  "tokio",
  "tokio-test",
+ "tokio-util",
  "tracing-subscriber",
  "turmoil",
 ]
