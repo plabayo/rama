@@ -31,7 +31,7 @@ use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::stream;
+use crate::futures::stream;
 
 /// A type map of protocol extensions.
 ///

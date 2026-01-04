@@ -1,7 +1,10 @@
 use rama::{
     Layer, Service,
     graceful::Shutdown,
-    http::{Body, Request, Response, client::EasyHttpWebClient, header::HOST, server::HttpServer},
+    http::{
+        Body, HeaderValue, Request, Response, Version, client::EasyHttpWebClient, header,
+        header::HOST, server::HttpServer,
+    },
     layer::AddInputExtensionLayer,
     net::{
         test_utils::client::MockConnectorService,
@@ -14,7 +17,6 @@ use rama::{
     service::service_fn,
     tls::boring::{client::TlsConnectorDataBuilder, server::TlsAcceptorLayer},
 };
-use rama_http::{HeaderValue, Version, header};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
