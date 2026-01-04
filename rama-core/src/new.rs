@@ -1,61 +1,54 @@
 use core::panic;
 use itertools::Itertools;
 use parking_lot::RwLock;
+use std::fmt::Debug;
+use std::ptr;
 use std::time::Instant;
 use std::{
     any::{Any, TypeId},
     sync::Arc,
 };
-// Which stores do we have
-// connection
-// stream
-// request
-// egress
-// ingress
-
-// Request: NoRetry DoThis        Use Connection                              BlaRequest
-// Connection:             Create                Negotiated tls IsHealth=True
-
-// Request 2: Dothis         Use connection                                    Bla Request
 
 #[derive(Debug, Clone)]
-/// combined view on all extensions that apply at a specific place
-struct Extensions {
+/// Combined view of all extensions that apply at a specific place
+pub struct Extensions {
     stores: Vec<ExtensionStore>,
 }
 
+impl Default for Extensions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Extensions {
-    fn new(store: ExtensionStore) -> Self {
+    pub fn new() -> Self {
+        let store = ExtensionStore::new("todo".to_owned());
         Self {
             stores: vec![store.clone()],
         }
     }
 
-    fn add_new_store(&mut self, store: ExtensionStore) {
+    pub fn add_new_store(&mut self, store: ExtensionStore) {
         self.stores.push(store.clone());
+    }
+
+    pub fn insert<T: ExtensionType>(&self, val: T) {
+        self.main_store().insert(val);
     }
 
     fn main_store(&self) -> &ExtensionStore {
         &self.stores[0]
     }
 
-    /// Insert a type into this [`Extensions]` store.
-    fn insert<T>(&self, val: T)
-    where
-        T: Clone + Send + Sync + std::fmt::Debug + 'static,
-    {
-        self.main_store().insert(val);
-    }
-
     // TODO implement this efficienlty for our use case (this is possible with our structure)
-    fn unified_view(&self) -> Vec<(Instant, String, StoredExtensions)> {
+    fn unified_view(&self) -> Vec<(Instant, String, StoredExtension)> {
         let mut all_extensions = Vec::new();
 
         for store in &self.stores {
             all_extensions.extend(
                 store
                     .storage
-                    .read()
                     .iter()
                     .map(|item| (item.0, store.name.clone(), item.1.clone())),
             );
@@ -67,35 +60,31 @@ impl Extensions {
         all_extensions
     }
 
-    fn get<T: Send + Clone + Sync + 'static>(&self) -> Option<T> {
-        let type_id = TypeId::of::<T>();
-        self.unified_view()
-            .iter()
-            .rev()
-            .find(|item| item.2.0 == type_id)
-            .and_then(|ext| (*ext.2.1).as_any().downcast_ref())
-            .cloned()
+    pub fn get<T: ExtensionType>(&self) -> Option<&T> {
+        println!("get {:?}", TypeId::of::<T>());
+        self.get_inner::<T>()
+            .and_then(|ext| ext.downcast_ref::<T>())
     }
 
-    fn get_smart<T: Send + Clone + Sync + 'static>(&self) -> Option<T> {
+    pub fn get_clone<T: ExtensionType>(&self) -> Option<Arc<T>> {
+        println!("get {:?}", TypeId::of::<T>());
+        self.get_inner::<T>()
+            .and_then(|ext| ext.cloned_downcast::<T>())
+    }
+
+    fn get_inner<T: ExtensionType>(&self) -> Option<&StoredExtension> {
         let type_id = TypeId::of::<T>();
 
-        // 1. Acquire all read locks simultaneously
-        let guards: Vec<_> = self
-            .stores
-            .iter()
-            .map(|s| (s.storage.read(), &s.name))
-            .collect();
+        let mut latest: Option<(Instant, &StoredExtension)> = None;
 
-        // 2. Search backwards across all stores
-        // Since each store is append-only (sorted by time),
-        // the latest T must be near the end of one of these vecs.
-
-        let mut latest: Option<(Instant, &StoredExtensions)> = None;
-
-        for (storage, _) in &guards {
-            // Look from the back of this specific store
-            if let Some(found) = storage.iter().rev().find(|item| item.1.0 == type_id) {
+        // TODO improve early stop if instant < found
+        println!("searching {type_id:?}");
+        for store in &self.stores {
+            println!("checking store {store:?}");
+            if let Some(found) = store.storage.iter().rev().find(|item| {
+                println!("checking item {:?}: {}", item.1, item.1.type_id == type_id);
+                item.1.type_id == type_id
+            }) {
                 match latest {
                     None => latest = Some((found.0, &found.1)),
                     Some((current_instant, _)) if found.0 > current_instant => {
@@ -106,38 +95,57 @@ impl Extensions {
             }
         }
 
-        // 3. Downcast the winner
-        println!("latest {latest:?}");
-        latest.and_then(|(_, ext)| (*ext.1).as_any().downcast_ref().cloned())
+        println!("latest: {latest:?}");
+        latest.map(|item| item.1)
     }
 
-    fn iter_type<'a, T: Clone + 'static>(&'a self) -> impl Iterator<Item = (Instant, T)> + 'a {
+    pub fn contains<T: ExtensionType>(&self) -> bool {
         let type_id = TypeId::of::<T>();
 
-        let mut guards: Vec<_> = self.stores.iter().map(|s| s.storage.read()).collect();
+        for store in &self.stores {
+            if store
+                .storage
+                .iter()
+                .rev()
+                .any(|item| item.1.type_id == type_id)
+            {
+                return true;
+            }
+        }
 
-        let mut cursors = vec![0; guards.len()];
+        false
+    }
+
+    pub fn iter<'a, T: ExtensionType>(&'a self) -> impl Iterator<Item = (Instant, Arc<T>)> + 'a {
+        let type_id = TypeId::of::<T>();
+
+        let mut cursors = vec![0; self.stores.len()];
 
         std::iter::from_fn(move || {
             let mut best_store = None;
             let mut earliest_time = None;
 
-            for (i, guard) in guards.iter().enumerate() {
-                while cursors[i] < guard.len() && guard[cursors[i]].1.0 != type_id {
+            for (i, store) in self.stores.iter().enumerate() {
+                let storage = &store.storage;
+                while cursors[i] < storage.len() && storage[cursors[i]].1.type_id != type_id {
                     cursors[i] += 1;
                 }
 
-                if let Some(item) = guard.get(cursors[i]) {
-                    if earliest_time.is_none() || item.0 < earliest_time.unwrap() {
-                        earliest_time = Some(item.0);
-                        best_store = Some(i);
-                    }
+                if cursors[i] == storage.len() {
+                    continue;
+                }
+
+                let item = &storage[cursors[i]];
+
+                if earliest_time.is_none() || item.0 < earliest_time.unwrap() {
+                    earliest_time = Some(item.0);
+                    best_store = Some(i);
                 }
             }
 
             if let Some(i) = best_store {
-                let item = &guards[i][cursors[i]];
-                let val = (*item.1.1).as_any().downcast_ref::<T>().cloned();
+                let item = &self.stores[i].storage[cursors[i]];
+                let val = item.1.cloned_downcast::<T>();
                 cursors[i] += 1;
 
                 return Some((item.0, val?));
@@ -146,68 +154,80 @@ impl Extensions {
             None
         })
     }
+
+    pub fn extend(&mut self, extensions: Self) {
+        let store = extensions.stores.into_iter().next().unwrap();
+        self.main_store().extend(store);
+    }
 }
 
 #[derive(Debug, Clone)]
 /// Single extensions store, this is readonly and appendonly, we use &self for everything
-struct ExtensionStore {
+pub struct ExtensionStore {
     // again no string later, but for proto type this works
     name: String,
     // we have external crate options here, or we can implement some of these algorithms
     // for now we just do it as simple as possible. But with our setup we can do this much
     // more efficient
-    storage: Arc<RwLock<Vec<(Instant, StoredExtensions)>>>,
+    storage: Arc<ExtensionVec>,
 }
 
 impl ExtensionStore {
-    fn new(name: String) -> Self {
+    pub fn new(name: String) -> Self {
         Self {
             name,
             storage: Default::default(),
         }
     }
 
-    /// Insert a type into this [`Extensions]` store.
-    fn insert<T>(&self, val: T)
-    where
-        T: Clone + Send + Sync + std::fmt::Debug + 'static,
-    {
-        let extension = StoredExtensions(TypeId::of::<T>(), Box::new(val));
-        self.storage.write().push((Instant::now(), extension));
+    /// Insert a new value in this [`ExtensionStore`]
+    pub fn insert<T: ExtensionType>(&self, value: T) {
+        let extension = StoredExtension::new(value);
+        self.storage.push_raw((Instant::now(), extension));
     }
 
-    fn deep_copy(&self) -> Self {
-        Self {
-            name: "self.name".to_owned(),
-            storage: Arc::new(RwLock::new(self.storage.read().clone())),
+    /// Extend this [`Extensions`] store with the [`Extension`]s from the provided store
+    pub fn extend(&self, extensions: Self) {
+        // TODO we need to make sure this insert is orded...
+        // Or de we just use timestamp now?
+        for item in extensions.storage.iter().cloned() {
+            self.storage.push_raw(item);
         }
     }
 }
 
 #[derive(Clone, Debug)]
-/// TODO we should be able to store this more efficiently, so so much room for nice stuff
-struct StoredExtensions(TypeId, Box<dyn ExtensionType>);
-
-trait ExtensionType: Any + Send + Sync + std::fmt::Debug {
-    fn clone_box(&self) -> Box<dyn ExtensionType>;
-    fn as_any(&self) -> &dyn Any;
+/// A [`StoredExtension`] is a type erased item which can be stored in an [`ExtensionStore`]
+pub struct StoredExtension {
+    type_id: TypeId,
+    value: Arc<dyn ExtensionType>,
 }
 
-impl<T: Clone + Send + Sync + std::fmt::Debug + 'static> ExtensionType for T {
-    fn clone_box(&self) -> Box<dyn ExtensionType> {
-        Box::new(self.clone())
+impl StoredExtension {
+    /// Create a new [`StoredExtension`]
+    fn new<T: ExtensionType>(value: T) -> Self {
+        println!("inserting {:?}: {:?}", value, TypeId::of::<T>());
+        Self {
+            type_id: TypeId::of::<T>(),
+            value: Arc::new(value),
+        }
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn cloned_downcast<T: ExtensionType>(&self) -> Option<Arc<T>> {
+        let any = self.value.clone() as Arc<dyn Any + Send + Sync>;
+        any.clone().downcast::<T>().ok()
+    }
+
+    fn downcast_ref<T: ExtensionType>(&self) -> Option<&T> {
+        println!("value: {:?}", &self.value);
+        let any = &self.value as &dyn Any;
+        (*any).downcast_ref::<T>()
     }
 }
 
-impl Clone for Box<dyn ExtensionType> {
-    fn clone(&self) -> Self {
-        (**self).clone_box()
-    }
-}
+pub trait ExtensionType: Any + Send + Sync + std::fmt::Debug + 'static {}
+
+impl<T: Send + Sync + std::fmt::Debug + 'static> ExtensionType for T {}
 
 mod tests {
     use super::*;
@@ -233,7 +253,7 @@ mod tests {
     #[test]
     fn setup() {
         let req_store = ExtensionStore::new("request".to_owned());
-        let mut request = Extensions::new(req_store);
+        let mut request = Extensions::new();
 
         request.insert(NoRetry);
         request.insert(TargetHttpVersion);
@@ -244,7 +264,7 @@ mod tests {
         // 2. we create the extensions for our connector
         // 3. we add request extensions to this, and vice versa
         let conn_store = ExtensionStore::new("connection".to_owned());
-        let connection = Extensions::new(conn_store);
+        let connection = Extensions::new();
 
         // We add connector extensions also to our request
         request.add_new_store(connection.main_store().clone());
@@ -270,7 +290,7 @@ mod tests {
         // This should only see intial request extensions and the connection extensions
         println!("connection extensions: {:#?}", connection.unified_view());
 
-        println!("is healthy {:?}", request.get_smart::<IsHealth>());
+        println!("is healthy {:?}", request.get::<IsHealth>());
 
         // Now our connection's internal state machine detect it is broken
         // and inserts this in extensions, our request should also be able to see this
@@ -279,53 +299,241 @@ mod tests {
 
         // println!("request extensions: {:#?}", request.unified_view());
 
-        println!("is healthy {:?}", request.get_smart::<IsHealth>());
+        println!("is healthy {:?}", request.get_clone::<IsHealth>());
 
-        let history: Vec<_> = request.iter_type::<IsHealth>().collect();
-        println!("health history {history:#?}");
+        let history: Vec<_> = request.iter::<IsHealth>().collect();
+        // println!("health history {history:#?}");
+    }
+
+    #[test]
+    fn basic() {
+        let mut request = Extensions::new();
+        request.insert(IsHealth(true));
+        println!("is healthy {:?}", request.get_clone::<IsHealth>());
     }
 }
 
-mod bla {
-    use std::{any::TypeId, sync::Arc};
+use std::alloc::{Layout, alloc, dealloc};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-    use parking_lot::RwLock;
+type Element = (Instant, StoredExtension);
 
-    use crate::new::StoredExtensions;
+#[derive(Debug)]
+pub struct ExtensionVec {
+    count: AtomicUsize,
+    reserved: AtomicUsize,
 
-    struct SingleStore(Arc<RwLock<Vec<StoredExtensions>>>);
+    // 64 bins for broad architecture support
+    data: [AtomicPtr<Element>; 64],
+}
 
-    struct Storage {
-        this: SingleStore,
-        others: Vec<SingleStore>,
+impl ExtensionVec {
+    pub fn new() -> Self {
+        const EMPTY: AtomicPtr<Element> = AtomicPtr::new(ptr::null_mut());
+        Self {
+            count: AtomicUsize::new(0),
+            reserved: AtomicUsize::new(0),
+            data: [EMPTY; 64],
+        }
     }
 
-    #[derive(Clone, Debug)]
-    struct Merger;
+    // /// Appends a new extension with the current timestamp.
+    // pub fn push<T: ExtensionType>(&self, val: T) -> usize {
+    //     let extension = StoredExtension {
+    //         type_id: TypeId::of::<T>(),
+    //         value: Arc::new(val),
+    //     };
+    //     self.push_raw((Instant::now(), extension))
+    // }
 
-    impl Storage {
-        /// Insert a type into this [`Extensions]` store.
-        fn insert<T>(&self, val: T)
-        where
-            T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    fn push_raw(&self, element: Element) -> usize {
+        let idx = self.reserved.fetch_add(1, Ordering::Relaxed);
+        let (array_idx, offset) = indices(idx);
+
+        let mut bucket_ptr = self.data[array_idx as usize].load(Ordering::Acquire);
+
+        if bucket_ptr.is_null() {
+            if offset == 0 {
+                let layout = Layout::array::<Element>(bin_size(array_idx)).unwrap();
+                let new_ptr = unsafe { alloc(layout) } as *mut Element;
+
+                if let Err(found) = self.data[array_idx as usize].compare_exchange(
+                    ptr::null_mut(),
+                    new_ptr,
+                    Ordering::Release,
+                    Ordering::Acquire,
+                ) {
+                    unsafe { dealloc(new_ptr as *mut u8, layout) };
+                    bucket_ptr = found;
+                } else {
+                    bucket_ptr = new_ptr;
+                }
+            } else {
+                let mut failures = 0;
+                while bucket_ptr.is_null() {
+                    spin_wait(&mut failures);
+                    bucket_ptr = self.data[array_idx as usize].load(Ordering::Acquire);
+                }
+            }
+        }
+
+        unsafe {
+            bucket_ptr.add(offset).write(element);
+        }
+
+        let mut failures = 0;
+        while self
+            .count
+            .compare_exchange(idx, idx + 1, Ordering::Release, Ordering::Relaxed)
+            .is_err()
         {
-            // TODO instead of boxing do we arc???
-
-            let extension = StoredExtensions(TypeId::of::<T>(), Box::new(val));
-            self.this.0.write().push(extension.clone());
-            for other in &self.others {
-                other.0.write().push(extension.clone());
-            }
+            spin_wait(&mut failures);
         }
 
-        fn register_other(&mut self, other: SingleStore) {
-            {
-                let mut writer = other.0.write();
-                writer.push(StoredExtensions(TypeId::of::<Merger>(), Box::new(Merger)));
-                let reader = self.this.0.read();
-                writer.extend(reader.iter().cloned());
-            }
-            self.others.push(other);
+        idx
+    }
+
+    pub fn get(&self, idx: usize) -> Option<&Element> {
+        if idx >= self.len() {
+            return None;
         }
+        let (array, offset) = indices(idx);
+        let bucket = self.data[array as usize].load(Ordering::Acquire);
+        unsafe { Some(&*bucket.add(offset)) }
+    }
+
+    pub fn len(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+}
+
+// --- Utilities ---
+
+const fn indices(i: usize) -> (u32, usize) {
+    let i = i + 8;
+    let bin = (usize::BITS - 1) - i.leading_zeros();
+    let bin = bin - 3;
+    let offset = i - bin_size(bin);
+    (bin, offset)
+}
+
+const fn bin_size(array: u32) -> usize {
+    8 << array
+}
+
+fn spin_wait(failures: &mut usize) {
+    *failures += 1;
+    if *failures <= 10 {
+        std::hint::spin_loop();
+    } else {
+        std::thread::yield_now();
+    }
+}
+
+impl Drop for ExtensionVec {
+    fn drop(&mut self) {
+        let length = self.len();
+        for i in 0..length {
+            let (array, offset) = indices(i);
+            let bucket = unsafe { *self.data[array as usize].as_ptr() };
+            unsafe {
+                ptr::drop_in_place(bucket.add(offset));
+            }
+        }
+        for array in 0..64 {
+            let bucket = *self.data[array].get_mut();
+            if !bucket.is_null() {
+                let layout = Layout::array::<Element>(bin_size(array as u32)).unwrap();
+                unsafe { dealloc(bucket as *mut u8, layout) };
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+impl Default for ExtensionVec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+use std::ops::Index;
+
+impl Index<usize> for ExtensionVec {
+    type Output = Element;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        // Bounds check + Acquire ordering to ensure data visibility
+        assert!(idx < self.len(), "Index out of bounds");
+
+        let (array, offset) = indices(idx);
+        // Safety: The len() check above uses Acquire ordering, which synchronizes
+        // with the Release store in push_raw. This guarantees the pointer is non-null.
+        let bucket = self.data[array as usize].load(Ordering::Relaxed);
+        unsafe { &*bucket.add(offset) }
+    }
+}
+
+impl ExtensionVec {
+    /// Returns an iterator over the elements currently in the vector.
+    /// The iterator snapshots the length at creation time.
+    pub fn iter(&self) -> Iter<'_> {
+        Iter {
+            vec: self,
+            start: 0,
+            end: self.len(),
+        }
+    }
+}
+
+/// A double-ended iterator for ExtensionVec
+pub struct Iter<'a> {
+    vec: &'a ExtensionVec,
+    start: usize,
+    end: usize,
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = &'a Element;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.start < self.end {
+            let pos = self.start;
+            self.start += 1;
+            // Safety: We are within the snapshot bounds captured at creation
+            Some(unsafe { self.vec.get_unchecked(pos) })
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.end - self.start;
+        (len, Some(len))
+    }
+}
+
+impl<'a> DoubleEndedIterator for Iter<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.start < self.end {
+            self.end -= 1;
+            let pos = self.end;
+            Some(unsafe { self.vec.get_unchecked(pos) })
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> ExactSizeIterator for Iter<'a> {}
+
+impl ExtensionVec {
+    /// Internal helper for fast access without re-checking bounds or ordering.
+    /// Used by the iterator which already validated indices against a snapshot len.
+    unsafe fn get_unchecked(&self, idx: usize) -> &Element {
+        let (array, offset) = indices(idx);
+        let bucket = self.data[array as usize].load(Ordering::Relaxed);
+        &*bucket.add(offset)
     }
 }

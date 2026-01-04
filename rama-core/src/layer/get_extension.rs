@@ -1,7 +1,7 @@
 //! Middleware that gets called with a clone of the value of to given type
 //! if it is available in the current input/output extensions.
 
-use crate::{Layer, Service, extensions::ExtensionsRef};
+use crate::{Layer, Service, extensions::ExtensionsRef, new::ExtensionType};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, marker::PhantomData};
 
@@ -127,7 +127,7 @@ impl<Input, S, T, Fut, F> Service<Input> for GetInputExtension<S, T, Fut, F>
 where
     Input: Send + ExtensionsRef + 'static,
     S: Service<Input>,
-    T: Clone + Send + Sync + 'static,
+    T: ExtensionType + Clone,
     F: Fn(T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
@@ -136,7 +136,7 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         if let Some(value) = input.extensions().get::<T>() {
-            let value = value.clone();
+            let value = (*value).clone();
             (self.callback)(value).await;
         }
         self.inner.serve(input).await
@@ -265,7 +265,7 @@ impl<Input, S, T, Fut, F> Service<Input> for GetOutputExtension<S, T, Fut, F>
 where
     Input: Send + 'static,
     S: Service<Input, Output: Send + ExtensionsRef + 'static>,
-    T: Clone + Send + Sync + 'static,
+    T: ExtensionType + Clone,
     F: Fn(T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
@@ -275,7 +275,7 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let res = self.inner.serve(input).await?;
         if let Some(value) = res.extensions().get::<T>() {
-            let value = value.clone();
+            let value = (*value).clone();
             (self.callback)(value).await;
         }
         Ok(res)
@@ -309,7 +309,7 @@ mod tests {
             }
         })
         .into_layer(service_fn(async |req: ServiceInput<Arc<AtomicI32>>| {
-            let State(n) = req.extensions().get().cloned().unwrap();
+            let State(n) = *req.extensions().get().unwrap();
             assert_eq!(42, n);
 
             let value = req.input.load(atomic::Ordering::Acquire);
@@ -352,7 +352,7 @@ mod tests {
         }));
 
         let res = svc.serve(ServiceInput::new(value.clone())).await.unwrap();
-        let State(n) = res.extensions.get().cloned().unwrap();
+        let State(n) = *res.extensions.get().unwrap();
         assert_eq!(42, n);
 
         let value = value.load(atomic::Ordering::Acquire);

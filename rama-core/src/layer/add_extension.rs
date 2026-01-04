@@ -151,7 +151,7 @@ mod tests {
     async fn basic_input() {
         let svc = AddInputExtensionLayer::new(Counter(42)).into_layer(service_fn(
             async |req: ServiceInput<()>| {
-                let Counter(n) = req.extensions().get().copied().unwrap();
+                let Counter(n) = *req.extensions().get().unwrap();
                 assert_eq!(42, n);
                 Ok::<_, Infallible>(ServiceInput::new(()))
             },
@@ -171,7 +171,7 @@ mod tests {
         ));
 
         let res = svc.serve(ServiceInput::new(())).await.unwrap();
-        let Counter(n) = res.extensions().get().copied().unwrap();
+        let Counter(n) = *res.extensions().get().unwrap();
         assert_eq!(42, n);
     }
 }

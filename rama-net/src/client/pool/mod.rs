@@ -714,7 +714,7 @@ impl<Input, S, P, R> Service<Input> for PooledConnector<S, P, R>
 where
     S: ConnectorService<Input>,
     Input: Send + ExtensionsRef + 'static,
-    P: Pool<S::Connection, R::ID>,
+    P: Pool<S::Connection, R::ID> + std::fmt::Debug,
     R: ReqToConnID<Input>,
 {
     type Output = EstablishedClientConnection<P::Connection, Input>;
