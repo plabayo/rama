@@ -34,13 +34,18 @@ pub struct ConnectionHealth {
 }
 
 impl ConnectionHealth {
+    #[must_use]
+    /// Get the [`ConnectionHealthStatus`]
     pub fn status(&self) -> ConnectionHealthStatus {
         let val = self.status.load(Ordering::Relaxed);
-        unsafe { std::mem::transmute(val) }
+        // SAFETY: ConnectionHealthStatus is stored with repr u8
+        unsafe { std::mem::transmute::<u8, ConnectionHealthStatus>(val) }
     }
 
+    /// Set status to provided [`ConnectionHealthStatus`]
     pub fn set_status(&self, status: ConnectionHealthStatus) {
-        let val = unsafe { std::mem::transmute(status) };
+        // SAFETY: ConnectionHealthStatus is stored with repr u8
+        let val = unsafe { std::mem::transmute::<ConnectionHealthStatus, u8>(status) };
         self.status.store(val, Ordering::Relaxed);
     }
 }

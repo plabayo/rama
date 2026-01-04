@@ -63,7 +63,11 @@ impl Extensions {
         self.extensions.push(extension);
 
         let ext = &self.extensions[self.extensions.len() - 1];
-        (*ext.1).as_any().downcast_ref().unwrap()
+        #[allow(clippy::expect_used, reason = "see expect msg")]
+        (*ext.1)
+            .as_any()
+            .downcast_ref()
+            .expect("we just inserted this")
     }
 
     /// Extend this [`Extensions`] store with the [`Extension`]s from the provided store
@@ -97,7 +101,7 @@ impl Extensions {
     ///
     /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
     /// if you need the oldest item T use [`Self::first`]
-    pub fn get_or_insert<'a, T, F>(&'a mut self, create_fn: F) -> &'a T
+    pub fn get_or_insert<T, F>(&mut self, create_fn: F) -> &T
     where
         T: Clone + Send + Sync + std::fmt::Debug + 'static,
         F: FnOnce() -> T,
