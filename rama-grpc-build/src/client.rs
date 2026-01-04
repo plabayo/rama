@@ -81,39 +81,43 @@ pub(crate) fn generate_internal<T: Service>(
                     Self { inner }
                 }
 
-                /// Compress requests with the given encoding.
-                ///
-                /// This requires the server to support it otherwise it might respond with an
-                /// error.
-                #[must_use]
-                pub fn send_compressed(mut self, encoding: #root_crate_name::codec::CompressionEncoding) -> Self {
-                    self.inner = self.inner.send_compressed(encoding);
-                    self
+                #root_crate_name::codegen::generate_set_and_with! {
+                    /// Compress requests with the given encoding.
+                    ///
+                    /// This requires the server to support it otherwise it might respond with an
+                    /// error.
+                    pub fn send_compressed(mut self, encoding: #root_crate_name::codec::CompressionEncoding) -> Self {
+                        self.inner.set_send_compressed(encoding);
+                        self
+                    }
                 }
 
-                /// Enable decompressing responses.
-                #[must_use]
-                pub fn accept_compressed(mut self, encoding: #root_crate_name::codec::CompressionEncoding) -> Self {
-                    self.inner = self.inner.accept_compressed(encoding);
-                    self
+                #root_crate_name::codegen::generate_set_and_with! {
+                    /// Enable decompressing responses.
+                    pub fn accept_compressed(mut self, encoding: #root_crate_name::codec::CompressionEncoding) -> Self {
+                        self.inner.set_accept_compressed(encoding);
+                        self
+                    }
                 }
 
-                /// Limits the maximum size of a decoded message.
-                ///
-                /// Default: `4MB`
-                #[must_use]
-                pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-                    self.inner = self.inner.max_decoding_message_size(limit);
-                    self
+                #root_crate_name::codegen::generate_set_and_with! {
+                    /// Limits the maximum size of a decoded message.
+                    ///
+                    /// Default: `4MB`
+                    pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+                        self.inner.set_max_decoding_message_size(limit);
+                        self
+                    }
                 }
 
-                /// Limits the maximum size of an encoded message.
-                ///
-                /// Default: `usize::MAX`
-                #[must_use]
-                pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-                    self.inner = self.inner.max_encoding_message_size(limit);
-                    self
+                #root_crate_name::codegen::generate_set_and_with! {
+                    /// Limits the maximum size of an encoded message.
+                    ///
+                    /// Default: `usize::MAX`
+                    pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+                        self.inner.set_max_encoding_message_size(limit);
+                        self
+                    }
                 }
 
                 #methods
@@ -198,17 +202,16 @@ fn generate_unary<T: Service>(
 
     quote! {
         pub async fn #ident(
-            &mut self,
+            &self,
             request: impl #root_crate_name::IntoRequest<#request>,
         ) -> std::result::Result<#root_crate_name::Response<#response>, #root_crate_name::Status> {
-           self.inner.ready().await.map_err(|e| {
-               #root_crate_name::Status::unknown(format!("Service was not ready: {}", e.into()))
-           })?;
-           let codec = #codec_name::default();
-           let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
-           let mut req = request.into_request();
-           req.extensions_mut().insert(#root_crate_name::extensions::GrpcMethod::new(#service_name, #method_name));
-           self.inner.unary(req, path, codec).await
+            use #root_crate_name::codegen::ExtensionsMut as _;
+
+            let codec = #codec_name::default();
+            let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
+            let mut req = request.into_request();
+            req.extensions_mut().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
+            self.inner.unary(req, path, codec).await
         }
     }
 }
@@ -230,16 +233,15 @@ fn generate_server_streaming<T: Service>(
 
     quote! {
         pub async fn #ident(
-            &mut self,
+            &self,
             request: impl #root_crate_name::IntoRequest<#request>,
         ) -> std::result::Result<#root_crate_name::Response<#root_crate_name::codec::Streaming<#response>>, #root_crate_name::Status> {
-            self.inner.ready().await.map_err(|e| {
-                #root_crate_name::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            use #root_crate_name::codegen::ExtensionsMut as _;
+
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
             let mut req = request.into_request();
-            req.extensions_mut().insert(#root_crate_name::extensions::GrpcMethod::new(#service_name, #method_name));
+            req.extensions_mut().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
             self.inner.server_streaming(req, path, codec).await
         }
     }
@@ -262,16 +264,15 @@ fn generate_client_streaming<T: Service>(
 
     quote! {
         pub async fn #ident(
-            &mut self,
+            &self,
             request: impl #root_crate_name::IntoStreamingRequest<Message = #request>
         ) -> std::result::Result<#root_crate_name::Response<#response>, #root_crate_name::Status> {
-            self.inner.ready().await.map_err(|e| {
-                #root_crate_name::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            use #root_crate_name::codegen::ExtensionsMut as _;
+
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
             let mut req = request.into_streaming_request();
-            req.extensions_mut().insert(#root_crate_name::extensions::GrpcMethod::new(#service_name, #method_name));
+            req.extensions_mut().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
             self.inner.client_streaming(req, path, codec).await
         }
     }
@@ -294,16 +295,15 @@ fn generate_streaming<T: Service>(
 
     quote! {
         pub async fn #ident(
-            &mut self,
+            &self,
             request: impl #root_crate_name::IntoStreamingRequest<Message = #request>
         ) -> std::result::Result<#root_crate_name::Response<#root_crate_name::codec::Streaming<#response>>, #root_crate_name::Status> {
-            self.inner.ready().await.map_err(|e| {
-                #root_crate_name::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            use #root_crate_name::codegen::ExtensionsMut as _;
+
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
             let mut req = request.into_streaming_request();
-            req.extensions_mut().insert(#root_crate_name::extensions::GrpcMethod::new(#service_name,#method_name));
+            req.extensions_mut().insert(#root_crate_name::GrpcMethod::new(#service_name,#method_name));
             self.inner.streaming(req, path, codec).await
         }
     }

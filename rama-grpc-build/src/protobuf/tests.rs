@@ -23,6 +23,7 @@ fn create_test_method(input_type: String, output_type: String) -> RamaGrpcProtoB
             options: prost_types::MethodOptions::default(),
         },
         codec_path: "rama_grpc::protobuf::ProstCodec".to_owned(),
+        root_crate: "rama_grpc".parse().unwrap(),
     }
 }
 
@@ -31,17 +32,23 @@ fn test_request_response_name_google_types_not_compiled() {
     // Test Google well-known types when compile_well_known_types is false
     let test_cases = vec![
         (".google.protobuf.Empty", quote!(())),
-        (".google.protobuf.Any", quote!(::prost_types::Any)),
         (
-            ".google.protobuf.StringValue",
-            quote!(::prost::alloc::string::String),
+            ".google.protobuf.Any",
+            quote!(rama_grpc::protobuf::types::Any),
         ),
+        (".google.protobuf.StringValue", quote!(std::string::String)),
         (
             ".google.protobuf.Timestamp",
-            quote!(::prost_types::Timestamp),
+            quote!(rama_grpc::protobuf::types::Timestamp),
         ),
-        (".google.protobuf.Duration", quote!(::prost_types::Duration)),
-        (".google.protobuf.Value", quote!(::prost_types::Value)),
+        (
+            ".google.protobuf.Duration",
+            quote!(rama_grpc::protobuf::types::Duration),
+        ),
+        (
+            ".google.protobuf.Value",
+            quote!(rama_grpc::protobuf::types::Value),
+        ),
     ];
 
     for (type_name, expected) in test_cases {
@@ -232,7 +239,10 @@ fn test_request_response_name_mixed_types() {
     let (request, response) = method.request_response_name("super", false);
 
     assert_eq!(request.to_string(), ":: external :: Request");
-    assert_eq!(response.to_string(), ":: prost_types :: Any");
+    assert_eq!(
+        response.to_string(),
+        "rama_grpc :: protobuf :: types :: Any"
+    );
 }
 
 #[test]

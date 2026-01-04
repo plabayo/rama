@@ -28,10 +28,8 @@ pub use prost_types::FileDescriptorSet;
 /// Use [`compile_protos`] instead if you don't need to tweak anything.
 #[must_use]
 pub fn configure() -> RamaGrpcProtoBuilder {
-    let codec_path = format!(
-        "{}::protobuf::ProstCodec",
-        crate::root_crate::root_crate_name_ts()
-    );
+    let root_crate = crate::root_crate::root_crate_name_ts();
+    let codec_path = format!("{root_crate}::protobuf::ProstCodec");
     RamaGrpcProtoBuilder {
         build_client: true,
         build_server: true,
@@ -56,6 +54,7 @@ pub fn configure() -> RamaGrpcProtoBuilder {
         emit_rerun_if_changed: std::env::var_os("CARGO").is_some(),
         disable_comments: HashSet::default(),
         codec_path,
+        root_crate,
         skip_debug: HashSet::default(),
     }
 }
@@ -90,7 +89,7 @@ struct RamaGrpcBuildService {
 }
 
 impl RamaGrpcBuildService {
-    fn new(prost_service: Service, codec_path: &str) -> Self {
+    fn new(prost_service: Service, codec_path: &str, root_crate: &TokenStream) -> Self {
         Self {
             // The rama_grpc_build::Service trait specifies that methods are borrowed, so they have to reified up front.
             methods: prost_service
@@ -99,6 +98,7 @@ impl RamaGrpcBuildService {
                 .map(|prost_method| RamaGrpcProtoBuildMethod {
                     prost_method: prost_method.clone(),
                     codec_path: codec_path.to_owned(),
+                    root_crate: root_crate.clone(),
                 })
                 .collect(),
             prost_service,
@@ -110,6 +110,7 @@ impl RamaGrpcBuildService {
 struct RamaGrpcProtoBuildMethod {
     prost_method: Method,
     codec_path: String,
+    root_crate: TokenStream,
 }
 
 impl crate::Service for RamaGrpcBuildService {
@@ -167,11 +168,13 @@ impl crate::Method for RamaGrpcProtoBuildMethod {
     ) -> (TokenStream, TokenStream) {
         let request = if is_google_type(&self.prost_method.input_type) && !compile_well_known_types
         {
+            let root_crate = &self.root_crate;
+
             // For well-known types, map to absolute paths that will work with super::
             match self.prost_method.input_type.as_str() {
                 ".google.protobuf.Empty" => quote!(()),
-                ".google.protobuf.Any" => quote!(::prost_types::Any),
-                ".google.protobuf.StringValue" => quote!(::prost::alloc::string::String),
+                ".google.protobuf.Any" => quote!(#root_crate::protobuf::types::Any),
+                ".google.protobuf.StringValue" => quote!(std::string::String),
                 _ => {
                     // For other google types, assume they're in prost_types
                     let type_name = self
@@ -179,9 +182,11 @@ impl crate::Method for RamaGrpcProtoBuildMethod {
                         .input_type
                         .trim_start_matches(".google.protobuf.")
                         .to_owned();
-                    syn::parse_str::<syn::Path>(&format!("::prost_types::{type_name}"))
-                        .unwrap()
-                        .to_token_stream()
+                    syn::parse_str::<syn::Path>(&format!(
+                        "{root_crate}::protobuf::types::{type_name}"
+                    ))
+                    .unwrap()
+                    .to_token_stream()
                 }
             }
         } else if NON_PATH_TYPE_ALLOWLIST
@@ -209,11 +214,13 @@ impl crate::Method for RamaGrpcProtoBuildMethod {
 
         let response =
             if is_google_type(&self.prost_method.output_type) && !compile_well_known_types {
+                let root_crate = &self.root_crate;
+
                 // For well-known types, map to absolute paths that will work with super::
                 match self.prost_method.output_type.as_str() {
                     ".google.protobuf.Empty" => quote!(()),
-                    ".google.protobuf.Any" => quote!(::prost_types::Any),
-                    ".google.protobuf.StringValue" => quote!(::prost::alloc::string::String),
+                    ".google.protobuf.Any" => quote!(#root_crate::protobuf::types::Any),
+                    ".google.protobuf.StringValue" => quote!(std::string::String),
                     _ => {
                         // For other google types, assume they're in prost_types
                         let type_name = self
@@ -221,9 +228,11 @@ impl crate::Method for RamaGrpcProtoBuildMethod {
                             .output_type
                             .trim_start_matches(".google.protobuf.")
                             .to_owned();
-                        syn::parse_str::<syn::Path>(&format!("::prost_types::{type_name}"))
-                            .unwrap()
-                            .to_token_stream()
+                        syn::parse_str::<syn::Path>(&format!(
+                            "{root_crate}::protobuf::types::{type_name}"
+                        ))
+                        .unwrap()
+                        .to_token_stream()
                     }
                 }
             } else if NON_PATH_TYPE_ALLOWLIST
@@ -281,6 +290,7 @@ struct ServiceGenerator {
     proto_path: String,
     compile_well_known_types: bool,
     codec_path: String,
+    root_crate: TokenStream,
     disable_comments: HashSet<String>,
 }
 
@@ -295,6 +305,7 @@ impl ServiceGenerator {
         proto_path: String,
         compile_well_known_types: bool,
         codec_path: String,
+        root_crate: TokenStream,
         disable_comments: HashSet<String>,
     ) -> Self {
         Self {
@@ -305,6 +316,7 @@ impl ServiceGenerator {
             proto_path,
             compile_well_known_types,
             codec_path,
+            root_crate,
             disable_comments,
         }
     }
@@ -312,7 +324,8 @@ impl ServiceGenerator {
 
 impl prost_build::ServiceGenerator for ServiceGenerator {
     fn generate(&mut self, service: Service, buf: &mut String) {
-        let rama_grpc_service = RamaGrpcBuildService::new(service, self.codec_path.as_str());
+        let rama_grpc_service =
+            RamaGrpcBuildService::new(service, self.codec_path.as_str(), &self.root_crate);
 
         let mut builder = CodeGenBuilder::new();
         builder
@@ -365,6 +378,7 @@ pub struct RamaGrpcProtoBuilder {
     emit_rerun_if_changed: bool,
     disable_comments: HashSet<String>,
     codec_path: String,
+    root_crate: TokenStream,
     skip_debug: HashSet<String>,
 }
 
@@ -698,22 +712,11 @@ impl RamaGrpcProtoBuilder {
     where
         P: AsRef<Path>,
     {
-        self.compile_with_config(Config::new(), protos, includes)
-    }
+        let mut config = Config::new();
 
-    /// Compile the .proto files and execute code generation with a custom `prost_build::Config`.
-    ///
-    /// Note: When using a custom config, any disable_comments settings on the Builder will be ignored
-    /// to preserve the disable_comments already configured on the provided Config.
-    pub fn compile_with_config<P>(
-        self,
-        mut config: Config,
-        protos: &[P],
-        includes: &[P],
-    ) -> io::Result<()>
-    where
-        P: AsRef<Path>,
-    {
+        config.prost_path(format!("{}::protobuf::prost", self.root_crate));
+        config.prost_types_path(format!("{}::protobuf::prost::types", self.root_crate));
+
         let out_dir = if let Some(out_dir) = self.out_dir.as_ref() {
             out_dir.clone()
         } else {
@@ -791,6 +794,7 @@ impl RamaGrpcProtoBuilder {
                 self.proto_path,
                 self.compile_well_known_types,
                 self.codec_path.clone(),
+                self.root_crate.clone(),
                 self.disable_comments,
             );
 
@@ -890,6 +894,7 @@ impl RamaGrpcProtoBuilder {
                 self.proto_path,
                 self.compile_well_known_types,
                 self.codec_path.clone(),
+                self.root_crate.clone(),
                 self.disable_comments,
             );
 
@@ -913,6 +918,7 @@ impl RamaGrpcProtoBuilder {
             self.proto_path,
             self.compile_well_known_types,
             self.codec_path.clone(),
+            self.root_crate.clone(),
             self.disable_comments,
         ))
     }

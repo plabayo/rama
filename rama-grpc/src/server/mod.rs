@@ -8,6 +8,8 @@
 //! will implement the proper gRPC service. Thusly, they are a bit hard to use
 //! by hand.
 
+pub mod error;
+
 mod grpc;
 mod service;
 

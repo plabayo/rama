@@ -29,6 +29,7 @@ members = [
     "rama-error",
     "rama-grpc",
     "rama-grpc-build",
+    "examples/grpc",
     "rama-haproxy",
     "rama-http",
     "rama-http-backend",
@@ -158,14 +159,15 @@ pin-project-lite = "0.2"
 prettyplease = "0.2"
 proc-macro-crate = "3.4"
 proc-macro2 = "1.0"
-prost = "0.14"
-prost-build = "0.14"
-prost-types = "0.14"
+prost = { git = "https://github.com/plabayo/rust-protobuf.git", branch = "patch/custom-prost-path" }
+prost-build = { git = "https://github.com/plabayo/rust-protobuf.git", branch = "patch/custom-prost-path" }
+prost-types = { git = "https://github.com/plabayo/rust-protobuf.git", branch = "patch/custom-prost-path" }
 psl = "2"
 quickcheck = "1.0"
 quickcheck_macros = "1.1"
 quote = "1.0"
 radix_trie = "0.3"
+rama = { version = "0.3.0-rc1", path = "." }
 rama-boring = "^0.5.7"
 rama-boring-tokio = "^0.5.7"
 rama-core = { version = "0.3.0-rc1", path = "./rama-core" }
@@ -316,6 +318,7 @@ full = [
     "udp",
     "grpc",
     "http-full",
+    "grpc-full",
     "proxy-full",
     "tower",
     "opentelemetry",
@@ -356,7 +359,11 @@ tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
 acme = ["crypto", "dep:rama-tls-acme"]
-grpc = ["dep:rama-grpc"]
+grpc = ["http", "dep:rama-grpc"]
+grpc-full = [
+    "grpc",
+    "http-full",
+]
 http = [
     "dep:rama-http",
     "ua",

@@ -19,6 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["protobuf"]
+full = ["protobuf", "transport", "compression"]
 protobuf = ["dep:prost", "dep:prost-types", "rama-grpc-build/protobuf"]
 transport = ["dep:rama-http-core"]
 compression = ["dep:flate2", "dep:zstd"]

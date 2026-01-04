@@ -10,7 +10,7 @@ pub(super) fn root_crate_name_ts() -> proc_macro2::TokenStream {
             FoundCrate::Itself => Ident::new("rama", Span::call_site()),
             FoundCrate::Name(name) => Ident::new(&name, Span::call_site()),
         };
-        return quote!(::#ident::grpc);
+        return quote!(::#ident::http::grpc);
     }
 
     // Fall back to the rama-grpc crate directly

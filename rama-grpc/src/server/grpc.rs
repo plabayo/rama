@@ -55,77 +55,77 @@ where
         }
     }
 
-    /// Enable accepting compressed requests.
-    ///
-    /// If a request with an unsupported encoding is received the server will respond with
-    /// [`Code::UnUnimplemented`](crate::Code).
-    #[must_use]
-    pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-        self.accept_compression_encodings.enable(encoding);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable accepting compressed requests.
+        ///
+        /// If a request with an unsupported encoding is received the server will respond with
+        /// [`Code::UnUnimplemented`](crate::Code).
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
     }
 
-    /// Enable sending compressed responses.
-    ///
-    /// Requires the client to also support receiving compressed responses.
-    #[must_use]
-    pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-        self.send_compression_encodings.enable(encoding);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable sending compressed responses.
+        ///
+        /// Requires the client to also support receiving compressed responses.
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
     }
 
-    /// Limits the maximum size of a decoded message.
-    #[must_use]
-    pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-        self.max_decoding_message_size = Some(limit);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Limits the maximum size of a decoded message.
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
     }
 
-    // TODO: replace these all with setter macro rama
-
-    /// Limits the maximum size of a encoded message.
-    #[must_use]
-    pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-        self.max_encoding_message_size = Some(limit);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Limits the maximum size of a encoded message.
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
     }
 
-    // TODO: why is doc(hidden)??
-    #[doc(hidden)]
-    #[must_use]
-    pub fn apply_compression_config(
-        mut self,
-        accept_encodings: EnabledCompressionEncodings,
-        send_encodings: EnabledCompressionEncodings,
-    ) -> Self {
-        for &encoding in CompressionEncoding::ENCODINGS {
-            if accept_encodings.is_enabled(encoding) {
-                self = self.accept_compressed(encoding);
+    rama_utils::macros::generate_set_and_with! {
+        pub fn compression_config(
+            mut self,
+            accept_encodings: EnabledCompressionEncodings,
+            send_encodings: EnabledCompressionEncodings,
+        ) -> Self {
+            for &encoding in CompressionEncoding::ENCODINGS {
+                if accept_encodings.is_enabled(encoding) {
+                    self.set_accept_compressed(encoding);
+                }
+                if send_encodings.is_enabled(encoding) {
+                    self.set_send_compressed(encoding);
+                }
             }
-            if send_encodings.is_enabled(encoding) {
-                self = self.send_compressed(encoding);
-            }
-        }
 
-        self
+            self
+        }
     }
 
-    // TODO: why is doc(hidden)??
-    #[doc(hidden)]
-    #[must_use]
-    pub fn apply_max_message_size_config(
-        mut self,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
-    ) -> Self {
-        if let Some(limit) = max_decoding_message_size {
-            self = self.max_decoding_message_size(limit);
-        }
-        if let Some(limit) = max_encoding_message_size {
-            self = self.max_encoding_message_size(limit);
-        }
+    rama_utils::macros::generate_set_and_with! {
+        pub fn max_message_size_config(
+            mut self,
+            max_decoding_message_size: Option<usize>,
+            max_encoding_message_size: Option<usize>,
+        ) -> Self {
+            if let Some(limit) = max_decoding_message_size {
+                self.set_max_decoding_message_size(limit);
+            }
+            if let Some(limit) = max_encoding_message_size {
+                self.set_max_encoding_message_size(limit);
+            }
 
-        self
+            self
+        }
     }
 
     /// Handle a single unary gRPC request.

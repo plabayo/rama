@@ -144,14 +144,15 @@ pub(crate) fn generate_internal<T: Service>(
             impl<T, B> #root_crate_name::codegen::Service<#root_crate_name::codegen::http::Request<B>> for #server_service<T>
                 where
                     T: #server_trait,
-                    B: Body + Send + 'static,
-                    B::Error: Into<#root_crate_name::codegen::BoxError> + Send + 'static,
+                    B: #root_crate_name::codegen::http::StreamingBody<
+                        Error: Into<#root_crate_name::codegen::BoxError> + Send + 'static
+                    > + Send + Sync + 'static,
             {
-                type Response = #root_crate_name::codegen::http::Response;
+                type Output = #root_crate_name::codegen::http::Response;
                 type Error = std::convert::Infallible;
 
                 async fn serve(&self, req: #root_crate_name::codegen::http::Request<B>)
-                    -> std::result::Result<Self::Response, Self::Error> {
+                    -> std::result::Result<Self::Output, Self::Error> {
                     match req.uri().path() {
                         #methods
 
@@ -219,7 +220,6 @@ fn generate_trait<T: Service>(
     quote! {
         #trait_doc
         #(#trait_attributes)*
-        #[async_trait]
         pub trait #server_trait : Send + Sync + 'static {
             #methods
         }
@@ -253,15 +253,19 @@ fn generate_trait_methods<T: Service>(
             (false, false) => {
                 quote! {
                     #method_doc
-                    async fn #name(&self, request: #root_crate_name::Request<#req_message>)
-                        -> std::result::Result<#root_crate_name::Response<#res_message>, #root_crate_name::Status>;
+                    fn #name(&self, request: #root_crate_name::Request<#req_message>)
+                        -> impl Future<
+                            Output = std::result::Result<#root_crate_name::Response<#res_message>, #root_crate_name::Status>,
+                        > + Send + '_;
                 }
             }
             (true, false) => {
                 quote! {
                     #method_doc
-                    async fn #name(&self, request: #root_crate_name::Request<#root_crate_name::Streaming<#req_message>>)
-                        -> std::result::Result<#root_crate_name::Response<#res_message>, #root_crate_name::Status>;
+                    fn #name(&self, request: #root_crate_name::Request<#root_crate_name::Streaming<#req_message>>)
+                        -> impl Future<
+                            Output = std::result::Result<#root_crate_name::Response<#res_message>, #root_crate_name::Status>,
+                        > + Send + '_;
                 }
             }
             (false, true) => {
@@ -273,11 +277,15 @@ fn generate_trait_methods<T: Service>(
 
                 quote! {
                     #stream_doc
-                    type #stream: #root_crate_name::codegen::Stream<Item = std::result::Result<#res_message, #root_crate_name::Status>> + Send + 'static;
+                    type #stream: #root_crate_name::codegen::Stream<
+                        Item = std::result::Result<#res_message, #root_crate_name::Status>
+                        > + Send + Sync + 'static;
 
                     #method_doc
-                    async fn #name(&self, request: #root_crate_name::Request<#req_message>)
-                        -> std::result::Result<#root_crate_name::Response<Self::#stream>, #root_crate_name::Status>;
+                    fn #name(&self, request: #root_crate_name::Request<#req_message>)
+                        -> impl Future<
+                            Output = std::result::Result<#root_crate_name::Response<Self::#stream>, #root_crate_name::Status>,
+                        > + Send + '_;
                 }
             }
             (true, true) => {
@@ -289,11 +297,15 @@ fn generate_trait_methods<T: Service>(
 
                 quote! {
                     #stream_doc
-                    type #stream: #root_crate_name::codegen::Stream<Item = std::result::Result<#res_message, #root_crate_name::Status>> + Send + 'static;
+                    type #stream: #root_crate_name::codegen::Stream<
+                        Item = std::result::Result<#res_message, #root_crate_name::Status>
+                    > + Send + Sync + 'static;
 
                     #method_doc
-                    async fn #name(&self, request: #root_crate_name::Request<#root_crate_name::Streaming<#req_message>>)
-                        -> std::result::Result<#root_crate_name::Response<Self::#stream>, #root_crate_name::Status>;
+                    fn #name(&self, request: #root_crate_name::Request<#root_crate_name::Streaming<#req_message>>)
+                        -> impl Future<
+                            Output = std::result::Result<#root_crate_name::Response<Self::#stream>, #root_crate_name::Status>,
+                        > + Send + '_;
                 }
             }
         };
@@ -407,7 +419,7 @@ fn generate_unary<T: Method>(
             type Response = #response;
 
             async fn serve(&self, request: #root_crate_name::Request<#request>)
-                -> std::result::Result<Self::Response, #root_crate_name::Status>
+                -> std::result::Result<#root_crate_name::Response<Self::Response>, #root_crate_name::Status>
             {
                 <T as #server_trait>::#method_ident(self.0.as_ref(), request).await
             }
@@ -422,12 +434,13 @@ fn generate_unary<T: Method>(
         let method = #service_ident(inner);
         let codec = #codec_name::default();
 
-        let grpc = #root_crate_name::server::Grpc::new(codec)
-            .apply_compression_config(accept_compression_encodings, send_compression_encodings)
-            .apply_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
+        let mut grpc = #root_crate_name::server::Grpc::new(codec)
+            .with_compression_config(accept_compression_encodings, send_compression_encodings)
+            .with_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
 
-        let res = grpc.unary(method, req).await;
-        Ok(res)
+        Ok(grpc.unary(method, req).await.unwrap_or_else(
+            #root_crate_name::server::error::unexpected_error_into_http_response
+        ))
     }
 }
 
@@ -473,13 +486,13 @@ fn generate_server_streaming<T: Method>(
         let method = #service_ident(inner);
         let codec = #codec_name::default();
 
-        let grpc = #root_crate_name::server::Grpc::new(codec)
+        let mut grpc = #root_crate_name::server::Grpc::new(codec)
             .apply_compression_config(accept_compression_encodings, send_compression_encodings)
             .apply_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
 
-        let res = grpc.server_streaming(method, req).await;
-
-        Ok(res)
+        Ok(grpc.server_streaming(method, req).await.unwrap_or_else(
+            #root_crate_name::server::error::unexpected_error_into_http_response
+        ))
     }
 }
 
@@ -519,12 +532,13 @@ fn generate_client_streaming<T: Method>(
         let method = #service_ident(inner);
         let codec = #codec_name::default();
 
-        let grpc = #root_crate_name::server::Grpc::new(codec)
+        let mut grpc = #root_crate_name::server::Grpc::new(codec)
             .apply_compression_config(accept_compression_encodings, send_compression_encodings)
             .apply_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
 
-        let res = grpc.client_streaming(method, req).await;
-        Ok(res)
+        Ok(grpc.client_streaming(method, req).await.unwrap_or_else(
+            #root_crate_name::server::error::unexpected_error_into_http_response
+        ))
     }
 }
 
@@ -571,11 +585,12 @@ fn generate_streaming<T: Method>(
         let method = #service_ident(inner);
         let codec = #codec_name::default();
 
-        let grpc = #root_crate_name::server::Grpc::new(codec)
+        let mut grpc = #root_crate_name::server::Grpc::new(codec)
             .apply_compression_config(accept_compression_encodings, send_compression_encodings)
             .apply_max_message_size_config(max_decoding_message_size, max_encoding_message_size);
 
-        let res = grpc.streaming(method, req).await;
-        Ok(res)
+        Ok(grpc.streaming(method, req).await.unwrap_or_else(
+            #root_crate_name::server::error::unexpected_error_into_http_response
+        ))
     }
 }
