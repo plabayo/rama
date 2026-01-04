@@ -241,7 +241,8 @@ impl DnsResolver for HickoryDns {
 }
 
 fn fqdn_from_domain(domain: Domain) -> Result<Name, OpaqueError> {
+    let is_fqdn = domain.is_fqdn();
     let mut name = Name::from_utf8(domain).context("try to consume a Domain as a Dns Name")?;
-    name.set_fqdn(true);
+    name.set_fqdn(is_fqdn);
     Ok(name)
 }
