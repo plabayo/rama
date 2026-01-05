@@ -357,8 +357,6 @@ where
             return Some((idx, pooled_conn));
         };
 
-        // TODO since we are dropping connections does it still make sense to report idx in metrics?
-
         if let Some((idx, pooled_conn)) = get_conn() {
             trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
 
@@ -366,9 +364,6 @@ where
             if let Some((metrics, metric_attrs)) = &metrics {
                 metrics.total_connections.add(1, metric_attrs);
                 metrics.reused_connections.add(1, metric_attrs);
-                metrics
-                    .reused_connection_pos
-                    .record(idx as u64, metric_attrs);
             }
 
             return Ok(ConnectionResult::Connection(LeasedConnection {
