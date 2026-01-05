@@ -20,7 +20,6 @@ pub struct PoolMetrics {
     pub(super) created_connections: Counter<u64>,
     pub(super) reused_connections: Counter<u64>,
     pub(super) evicted_connections: Counter<u64>,
-    pub(super) reused_connection_pos: Histogram<u64>,
     pub(super) active_connection_delay_nanoseconds: Histogram<f64>,
     // _available_active_connections: ObservableGauge<u64>,
     // _available_total_connections: ObservableGauge<u64>,
@@ -28,7 +27,6 @@ pub struct PoolMetrics {
 
 #[derive(Debug)]
 pub struct PoolMetricsOpts {
-    reused_connection_pos_bounds: Vec<f64>,
     active_connection_delay_nanoseconds_bounds: Vec<f64>,
 }
 
@@ -36,7 +34,6 @@ const CONNPOOL_CONNECTIONS: &str = "connpool.connections";
 const CONNPOOL_CREATED_CONNECTIONS: &str = "connpool.created_connections";
 const CONNPOOL_REUSED_CONNECTIONS: &str = "connpool.reused_connections";
 const CONNPOOL_EVICTED_CONNECTIONS: &str = "connpool.evicted_connections";
-const CONNPOOL_REUSED_CONNECTION_POS: &str = "connpool.reused_connection_pos";
 const CONNPOOL_ACTIVE_CONNECTION_DELAY: &str = "connpool.active_connection_delay";
 
 fn prefix_metric<'a>(prefix: Option<&str>, name: &'a str) -> Cow<'a, str> {
@@ -101,11 +98,6 @@ impl PoolMetrics {
                 .u64_counter(prefix_metric(prefix, CONNPOOL_EVICTED_CONNECTIONS))
                 .with_description("Connection pool evicted connections")
                 .build(),
-            reused_connection_pos: meter
-                .u64_histogram(prefix_metric(prefix, CONNPOOL_REUSED_CONNECTION_POS))
-                .with_description("Connection pool reused connection position in pool")
-                .with_boundaries(metric_opts.reused_connection_pos_bounds)
-                .build(),
             // TODO: migrate to exponentional histogram once fully supported in otel (probably once version 1 is release)
             // https://github.com/open-telemetry/opentelemetry-rust/issues/2111
             active_connection_delay_nanoseconds: meter
@@ -129,9 +121,6 @@ impl PoolMetrics {
 impl Default for PoolMetricsOpts {
     fn default() -> Self {
         Self {
-            reused_connection_pos_bounds: vec![
-                0_f64, 1_f64, 2_f64, 4_f64, 8_f64, 16_f64, 32_f64, 64_f64, 128_f64, 256_f64,
-            ],
             active_connection_delay_nanoseconds_bounds: vec![
                 0_f64,
                 5_f64,
@@ -152,24 +141,6 @@ impl PoolMetricsOpts {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    generate_set_and_with! {
-        /// Manually specify bounds for the `reused_connection_pos` metric.
-        pub fn reused_connection_pos_bounds(mut self, bounds: Vec<f64>) -> Self {
-            self.reused_connection_pos_bounds = bounds;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Calculate exponentially-spaced bounds for the `reused_connection_pos` metric.
-        pub fn reused_connection_pos_parametrized_bounds(mut self, max: f64, nbounds: usize) -> Self {
-            self.reused_connection_pos_bounds = (0..nbounds)
-                .map(|i| max.powf(i as f64 / (nbounds - 1) as f64).round())
-                .collect();
-            self
-        }
     }
 
     generate_set_and_with! {

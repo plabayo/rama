@@ -2701,6 +2701,7 @@ dependencies = [
  "spmc",
  "tokio",
  "tokio-test",
+ "tokio-util",
  "tracing-subscriber",
  "turmoil",
 ]
@@ -2936,6 +2937,7 @@ dependencies = [
  "rama-error",
  "rama-http",
  "rama-http-types",
+ "rama-net",
  "rama-utils",
  "rand 0.9.2",
  "serde_json",

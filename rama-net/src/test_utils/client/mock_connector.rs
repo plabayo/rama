@@ -4,6 +4,7 @@ use rama_core::{
     Service,
     error::BoxError,
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    rt::Executor,
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 
@@ -15,6 +16,7 @@ use crate::{client::EstablishedClientConnection, stream::Socket};
 pub struct MockConnectorService<S> {
     create_server: S,
     max_buffer_size: usize,
+    executor: Option<Executor>,
 }
 
 impl<S> MockConnectorService<S> {
@@ -22,6 +24,7 @@ impl<S> MockConnectorService<S> {
         Self {
             create_server,
             max_buffer_size: 1024,
+            executor: None,
         }
     }
 
@@ -29,6 +32,14 @@ impl<S> MockConnectorService<S> {
         /// Set `max_buffer_size` that will be used when creating DuplexStream
         pub fn max_buffer_size(mut self, size: usize) -> Self {
             self.max_buffer_size = size;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set `Executor` that will be stored on MockSocket Extensions
+        pub fn executor(mut self, executor: Option<Executor>) -> Self {
+            self.executor = executor;
             self
         }
     }
@@ -45,8 +56,13 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let (client, server) = duplex(self.max_buffer_size);
-        let client_socket = MockSocket::new(client);
-        let server_socket = MockSocket::new(server);
+        let mut client_socket = MockSocket::new(client);
+        let mut server_socket = MockSocket::new(server);
+
+        if let Some(executor) = &self.executor {
+            client_socket.extensions_mut().insert(executor.clone());
+            server_socket.extensions_mut().insert(executor.clone());
+        }
 
         let server = (self.create_server)();
 
