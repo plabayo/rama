@@ -2980,8 +2980,11 @@ dependencies = [
 name = "rama-grpc-examples"
 version = "0.3.0-rc1"
 dependencies = [
+ "pin-project-lite",
  "rama",
+ "static_assertions",
  "tokio",
+ "trybuild",
 ]
 
 [[package]]

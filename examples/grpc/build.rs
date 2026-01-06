@@ -1,6 +1,11 @@
 use std::{env, path::PathBuf};
 
 fn main() {
+    build_examples();
+    build_tests();
+}
+
+fn build_examples() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     rama::http::grpc::build::protobuf::configure()
@@ -15,6 +20,65 @@ fn main() {
         .compile_protos(
             &["proto/googleapis/google/pubsub/v1/pubsub.proto"],
             &["proto/googleapis"],
+        )
+        .unwrap();
+}
+
+fn build_tests() {
+    build_tests_compile();
+    build_tests_compression();
+    build_tests_deprecated_methods();
+    build_tests_disable_comments();
+}
+
+fn build_tests_compile() {
+    rama::http::grpc::build::protobuf::compile_protos("proto/tests/compile/result.proto").unwrap();
+    rama::http::grpc::build::protobuf::compile_protos("proto/tests/compile/service.proto").unwrap();
+    rama::http::grpc::build::protobuf::compile_protos("proto/tests/compile/stream.proto").unwrap();
+    rama::http::grpc::build::protobuf::compile_protos("proto/tests/compile/same_name.proto")
+        .unwrap();
+    rama::http::grpc::build::protobuf::compile_protos(
+        "proto/tests/compile/ambiguous_methods.proto",
+    )
+    .unwrap();
+    rama::http::grpc::build::protobuf::compile_protos("proto/tests/compile/includer.proto")
+        .unwrap();
+    rama::http::grpc::build::protobuf::configure()
+        .with_extern_path(".root_crate_path.Animal", "crate::Animal")
+        .compile_protos(&["proto/tests/compile/root_crate_path.proto"], &["."])
+        .unwrap();
+    rama::http::grpc::build::protobuf::configure()
+        .with_skip_debug(["skip_debug.Test"])
+        .with_skip_debug(["skip_debug.Output"])
+        .with_build_client(true)
+        .with_build_server(true)
+        .compile_protos(&["proto/tests/compile/skip_debug.proto"], &["proto"])
+        .unwrap();
+}
+
+fn build_tests_compression() {
+    rama::http::grpc::build::protobuf::compile_protos(
+        "proto/tests/compression/compression_test.proto",
+    )
+    .unwrap();
+}
+
+fn build_tests_deprecated_methods() {
+    rama::http::grpc::build::protobuf::compile_protos(
+        "proto/tests/deprecated_methods/deprecated_test.proto",
+    )
+    .unwrap();
+}
+
+fn build_tests_disable_comments() {
+    rama::http::grpc::build::protobuf::configure()
+        .with_disable_comments(["disable_comments.Service1"])
+        .with_disable_comments(["disable_comments.Service1.Rpc1"])
+        .with_build_client(true)
+        .with_build_server(true)
+        .compile_protos(
+            &["proto/tests/disable_comments/disable_comments.proto"],
+            &["proto/tests/disable_comments/disable_comments"],
         )
         .unwrap();
 }

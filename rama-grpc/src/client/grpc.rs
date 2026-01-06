@@ -53,18 +53,12 @@ struct GrpcConfig {
 }
 
 impl<T> Grpc<T> {
-    /// Creates a new gRPC client with the provided [`GrpcService`].
-    #[must_use]
-    pub fn new(inner: T) -> Self {
-        Self::with_origin(inner, Uri::default())
-    }
-
     /// Creates a new gRPC client with the provided [`GrpcService`] and `Uri`.
     ///
     /// The provided Uri will use only the scheme and authority parts as the
     /// path_and_query portion will be set for each method.
     #[must_use]
-    pub fn with_origin(inner: T, origin: Uri) -> Self {
+    pub fn new(inner: T, origin: Uri) -> Self {
         Self {
             inner,
             config: GrpcConfig {

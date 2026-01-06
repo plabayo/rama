@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [workspace]
 members = [
     ".",
+    "examples/grpc",
     "fuzz",
     "rama-cli",
     "rama-core",
@@ -29,7 +30,6 @@ members = [
     "rama-error",
     "rama-grpc",
     "rama-grpc-build",
-    "examples/grpc",
     "rama-haproxy",
     "rama-http",
     "rama-http-backend",
@@ -359,10 +359,7 @@ udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
 acme = ["crypto", "dep:rama-tls-acme"]
 grpc = ["http", "dep:rama-grpc"]
-grpc-full = [
-    "grpc",
-    "http-full",
-]
+grpc-full = ["grpc", "http-full"]
 http = [
     "dep:rama-http",
     "ua",

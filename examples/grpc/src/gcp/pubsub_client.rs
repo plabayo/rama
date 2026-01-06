@@ -31,7 +31,7 @@ async fn main() -> Result<(), BoxError> {
         Ok(req)
     */
 
-    let service = PublisherClient::with_origin(
+    let service = PublisherClient::new(
         http_client,
         Uri::from_static("https://pubsub.googleapis.com"),
     );

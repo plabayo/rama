@@ -10,7 +10,7 @@ async fn main() -> Result<(), BoxError> {
     let http_client = EasyHttpWebClient::default();
 
     // TOOD: do something about origin and Uri
-    let client = GreeterClient::with_origin(http_client, Uri::from_static("http://[::1]:50051"));
+    let client = GreeterClient::new(http_client, Uri::from_static("http://[::1]:50051"));
 
     let request = grpc::Request::new(HelloRequest {
         name: "Rama".into(),

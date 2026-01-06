@@ -12,7 +12,7 @@ use rama_grpc_examples::hello_world::{HelloRequest, greeter_client::GreeterClien
 async fn main() -> Result<(), BoxError> {
     let http_client = EasyHttpWebClient::default();
 
-    let client = GreeterClient::with_origin(http_client, Uri::from_static("http://[::1]:50051"))
+    let client = GreeterClient::new(http_client, Uri::from_static("http://[::1]:50051"))
         .with_send_compressed(CompressionEncoding::Gzip)
         .with_accept_compressed(CompressionEncoding::Gzip);
 

@@ -45,3 +45,6 @@ pub mod gcp {
 pub mod echo {
     rama::http::grpc::include_proto!("grpc.examples.echo");
 }
+
+#[cfg(test)]
+pub mod tests;

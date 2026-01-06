@@ -46,10 +46,13 @@ path = "src/compression/client.rs"
 rama = { workspace = true, features = ["grpc-full"] }
 tokio = { workspace = true, features = ["full"] }
 
-[dev-dependencies]
-
 [build-dependencies]
 rama = { workspace = true, features = ["grpc"] }
+
+[dev-dependencies]
+pin-project-lite = { workspace = true }
+static_assertions = { workspace = true }
+trybuild = { workspace = true }
 
 [lints]
 workspace = true

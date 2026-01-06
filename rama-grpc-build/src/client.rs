@@ -72,13 +72,8 @@ pub(crate) fn generate_internal<T: Service>(
                     > + Send  + Sync + 'static,
                 >,
             {
-                pub fn new(inner: T) -> Self {
-                    let inner = #root_crate_name::client::Grpc::new(inner);
-                    Self { inner }
-                }
-
-                pub fn with_origin(inner: T, origin: #root_crate_name::codegen::http::Uri) -> Self {
-                    let inner = #root_crate_name::client::Grpc::with_origin(inner, origin);
+                pub fn new(inner: T, origin: #root_crate_name::codegen::http::Uri) -> Self {
+                    let inner = #root_crate_name::client::Grpc::new(inner, origin);
                     Self { inner }
                 }
 
