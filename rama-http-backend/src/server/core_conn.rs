@@ -86,7 +86,6 @@ mod private {
     pub trait Sealed {
         fn http_core_serve_connection<IO, S, Response>(
             &self,
-
             io: IO,
             service: S,
         ) -> impl Future<Output = HttpServeResult> + Send + '_

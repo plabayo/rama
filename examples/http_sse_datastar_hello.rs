@@ -69,6 +69,9 @@ use rama::{
     utils::str::non_empty_str,
 };
 
+#[cfg(debug_assertions)]
+use rama::http::service::web::response::DatastarSourceMap;
+
 use std::{
     convert::Infallible,
     sync::{
@@ -116,7 +119,9 @@ async fn main() {
             .with_get("/assets/datastar.js", DatastarScript::default());
 
         #[cfg(debug_assertions)]
-        let app = app.with_get("/hotreload", handlers::hotreload);
+        let app = app
+            .with_get("/assets/datastar.js.map", DatastarSourceMap::default())
+            .with_get("/hotreload", handlers::hotreload);
 
         let router = Arc::new(app);
         let graceful_router = GracefulRouter { router, controller };
