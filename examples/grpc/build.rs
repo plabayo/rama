@@ -29,6 +29,8 @@ fn build_tests() {
     build_tests_compression();
     build_tests_deprecated_methods();
     build_tests_disable_comments();
+    build_tests_wellknown();
+    build_tests_wellknown_compiled();
 }
 
 fn build_tests_compile() {
@@ -79,6 +81,25 @@ fn build_tests_disable_comments() {
         .compile_protos(
             &["proto/tests/disable_comments/disable_comments.proto"],
             &["proto/tests/disable_comments/disable_comments"],
+        )
+        .unwrap();
+}
+
+fn build_tests_wellknown() {
+    rama::http::grpc::build::protobuf::compile_protos("proto/tests/wellknown/wellknown.proto")
+        .unwrap();
+}
+
+fn build_tests_wellknown_compiled() {
+    rama::http::grpc::build::protobuf::configure()
+        .with_extern_path(".google.protobuf.Empty", "()")
+        .with_compile_well_known_types(true)
+        .compile_protos(
+            &[
+                "proto/tests/wellknown_compiled/google.proto",
+                "proto/tests/wellknown_compiled/wellknown_compiled.proto",
+            ],
+            &["proto"],
         )
         .unwrap();
 }
