@@ -8,7 +8,7 @@ use rama::{
         body::util::BodyExt as _,
         client::EasyHttpWebClient,
         grpc::{protobuf::prost::Message as _, web::GrpcWebLayer},
-        header,
+        header::{self, RAMA_ID_HEADER_VALUE, USER_AGENT},
         server::HttpServer,
     },
     net::address::SocketAddress,
@@ -123,6 +123,7 @@ fn build_request(base_uri: &str, content_type: &str, accept: &str) -> Request<Bo
         .method(Method::POST)
         .header(CONTENT_TYPE, format!("application/{content_type}"))
         .header(ORIGIN, "http://example.com")
+        .header(USER_AGENT, RAMA_ID_HEADER_VALUE.clone())
         .header(ACCEPT, format!("application/{accept}"))
         .uri(request_uri)
         .body(Body::from(bytes))

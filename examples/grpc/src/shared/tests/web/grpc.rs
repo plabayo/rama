@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use rama::{
     Layer as _, Service,
-    error::OpaqueError,
+    error::BoxError,
     futures::{join, try_join},
     http::{
         self,
         client::EasyHttpWebClient,
         grpc::{Code, Response, Status, Streaming, web::GrpcWebLayer},
+        layer::required_header::AddRequiredRequestHeadersLayer,
         server::HttpServer,
     },
     net::address::SocketAddress,
@@ -151,7 +152,7 @@ async fn grpc_web(accept_h1: bool) -> (impl Future<Output = ()>, String) {
     (fut, url)
 }
 
-type WebClient = BoxService<http::Request, http::Response, OpaqueError>;
+type WebClient = BoxService<http::Request, http::Response, BoxError>;
 
 type Client = test_client::TestClient<WebClient>;
 
@@ -165,19 +166,27 @@ async fn spawn() -> (Client, Client, Client, Client) {
 
     (
         test_client::TestClient::new(
-            Service::boxed(EasyHttpWebClient::default()),
+            Service::boxed(
+                AddRequiredRequestHeadersLayer::new().into_layer(EasyHttpWebClient::default()),
+            ),
             u1.parse().unwrap(),
         ),
         test_client::TestClient::new(
-            Service::boxed(EasyHttpWebClient::default()),
+            Service::boxed(
+                AddRequiredRequestHeadersLayer::new().into_layer(EasyHttpWebClient::default()),
+            ),
             u2.parse().unwrap(),
         ),
         test_client::TestClient::new(
-            Service::boxed(EasyHttpWebClient::default()),
+            Service::boxed(
+                AddRequiredRequestHeadersLayer::new().into_layer(EasyHttpWebClient::default()),
+            ),
             u3.parse().unwrap(),
         ),
         test_client::TestClient::new(
-            Service::boxed(EasyHttpWebClient::default()),
+            Service::boxed(
+                AddRequiredRequestHeadersLayer::new().into_layer(EasyHttpWebClient::default()),
+            ),
             u4.parse().unwrap(),
         ),
     )
