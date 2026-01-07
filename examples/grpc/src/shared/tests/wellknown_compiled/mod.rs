@@ -1,7 +1,7 @@
 pub mod r#gen {
     pub mod google {
         pub mod protobuf {
-            #![allow(clippy::doc_overindented_list_items)]
+            #![allow(clippy::pedantic, clippy::restriction, clippy::style, clippy::nursery)]
             rama::http::grpc::include_proto!("google.protobuf");
         }
     }

@@ -31,6 +31,7 @@ fn build_tests() {
     build_tests_disable_comments();
     build_tests_wellknown();
     build_tests_wellknown_compiled();
+    build_tests_web();
 }
 
 fn build_tests_compile() {
@@ -102,4 +103,16 @@ fn build_tests_wellknown_compiled() {
             &["proto"],
         )
         .unwrap();
+}
+
+fn build_tests_web() {
+    let protos = &["proto/tests/web/web.proto"];
+
+    rama::http::grpc::build::protobuf::configure()
+        .compile_protos(protos, &["proto/tests/web"])
+        .unwrap();
+
+    protos
+        .iter()
+        .for_each(|file| println!("cargo:rerun-if-changed={file}"));
 }

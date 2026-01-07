@@ -270,6 +270,11 @@ fn generate_trait_methods<T: Service>(
                 }
             }
             (false, true) => {
+                // TOOD: in a future Rust version (edition 2027???)
+                // we might be able to get away here without
+                // having to specify a stream type here. That would require however
+                // that we can point to a type of a impl return type of a trait...
+
                 let stream = quote::format_ident!("{}Stream", method.identifier());
                 let stream_doc = generate_doc_comment(format!(
                     " Server streaming response type for the {} method.",
@@ -290,6 +295,11 @@ fn generate_trait_methods<T: Service>(
                 }
             }
             (true, true) => {
+                // TOOD: in a future Rust version (edition 2027???)
+                // we might be able to get away here without
+                // having to specify a stream type here. That would require however
+                // that we can point to a type of a impl return type of a trait...
+
                 let stream = quote::format_ident!("{}Stream", method.identifier());
                 let stream_doc = generate_doc_comment(format!(
                     " Server streaming response type for the {} method.",

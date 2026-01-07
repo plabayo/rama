@@ -22,6 +22,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 members = [
     ".",
     "examples/grpc",
+    "examples/grpc/tests/extern_path/my_application",
+    "examples/grpc/tests/extern_path/uuid",
     "fuzz",
     "rama-cli",
     "rama-core",
@@ -304,6 +306,9 @@ trivially_copy_pass_by_ref = "warn"
 use_self = "warn"
 uninlined_format_args = "warn"
 fallible_impl_from = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
 
 [features]
 default = []

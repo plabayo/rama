@@ -2079,6 +2079,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "my_application"
+version = "0.3.0-rc1"
+dependencies = [
+ "rama",
+ "uuid1",
+]
+
+[[package]]
 name = "nibble_vec"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2981,10 +2989,12 @@ dependencies = [
 name = "rama-grpc-examples"
 version = "0.3.0-rc1"
 dependencies = [
+ "base64",
  "pin-project-lite",
  "rama",
  "static_assertions",
  "tokio",
+ "tracing-test",
  "trybuild",
 ]
 
@@ -4859,6 +4869,13 @@ dependencies = [
  "getrandom 0.3.4",
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "uuid1"
+version = "0.3.0-rc1"
+dependencies = [
+ "rama",
 ]
 
 [[package]]
