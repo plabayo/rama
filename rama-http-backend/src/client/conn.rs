@@ -121,6 +121,27 @@ where
                         let v = frames.as_slice().to_vec();
                         builder.set_early_frames(v);
                     }
+                    if let Some(sz) = params.init_stream_window_size {
+                        builder.set_initial_stream_window_size(sz);
+                    }
+                    if let Some(sz) = params.init_connection_window_size {
+                        builder.set_initial_connection_window_size(sz);
+                    }
+                    if let Some(d) = params.keep_alive_interval {
+                        builder.set_keep_alive_interval(d);
+                    }
+                    if let Some(d) = params.keep_alive_timeout {
+                        builder.set_keep_alive_timeout(d);
+                    }
+                    if let Some(keep_alive) = params.keep_alive_while_idle {
+                        builder.set_keep_alive_while_idle(keep_alive);
+                    }
+                    if let Some(sz) = params.max_header_list_size {
+                        builder.set_max_header_list_size(sz);
+                    }
+                    if let Some(adaptive_window) = params.adaptive_window {
+                        builder.set_adaptive_window(adaptive_window);
+                    }
                 } else if let Some(pseudo_order) =
                     req.extensions().get::<PseudoHeaderOrder>().cloned()
                 {

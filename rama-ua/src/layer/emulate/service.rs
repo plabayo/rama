@@ -336,6 +336,7 @@ fn emulate_http_connect_settings<Body>(req: &mut Request<Body>, profile: &HttpPr
                 req.extensions_mut().insert(H2ClientContextParams {
                     headers_pseudo_order: pseudo_headers,
                     early_frames,
+                    ..Default::default()
                 });
             }
         }

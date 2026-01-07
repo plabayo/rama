@@ -32,6 +32,7 @@ fn build_tests() {
     build_tests_wellknown();
     build_tests_wellknown_compiled();
     build_tests_web();
+    build_tests_integration();
 }
 
 fn build_tests_compile() {
@@ -115,4 +116,11 @@ fn build_tests_web() {
     protos
         .iter()
         .for_each(|file| println!("cargo:rerun-if-changed={file}"));
+}
+
+fn build_tests_integration() {
+    rama::http::grpc::build::protobuf::compile_protos("proto/tests/integration/test.proto")
+        .unwrap();
+    rama::http::grpc::build::protobuf::compile_protos("proto/tests/integration/stream.proto")
+        .unwrap();
 }

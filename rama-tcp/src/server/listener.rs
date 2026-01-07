@@ -233,6 +233,14 @@ impl TcpListener {
         self.inner.ttl()
     }
 
+    /// Sets the value for the `IP_TTL` option on this socket.
+    ///
+    /// This value sets the time-to-live field that is used in every packet sent
+    /// from this socket.
+    pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
+        self.inner.set_ttl(ttl)
+    }
+
     /// Converts this [`TcpListener`] into a [`std::net::TcpListener`].
     ///
     /// The returned listener will be in blocking mode. To convert it back
