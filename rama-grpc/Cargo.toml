@@ -30,6 +30,7 @@ flate2 = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
+radix_trie = { workspace = true }
 rama-core = { workspace = true }
 rama-grpc-build = { workspace = true }
 rama-http = { workspace = true }
@@ -40,15 +41,14 @@ rama-utils = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
 zstd = { workspace = true, optional = true }
-radix_trie = { workspace = true }
+
+[build-dependencies]
+rama-grpc-build = { workspace = true }
 
 [dev-dependencies]
 quickcheck = { workspace = true }
 quickcheck_macros = { workspace = true }
 static_assertions = { workspace = true }
-
-[build-dependencies]
-rama-grpc-build = { workspace = true }
 
 [lints]
 workspace = true

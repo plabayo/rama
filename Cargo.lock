@@ -2627,7 +2627,7 @@ version = "0.14.2"
 source = "git+https://github.com/plabayo/rust-protobuf.git?branch=patch%2Fcustom-prost-path#136408d65ecbfdc4077ee8851fae2be3d20842ac"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -2635,7 +2635,7 @@ dependencies = [
  "prost 0.14.2",
  "prost-types",
  "regex",
- "syn 2.0.111",
+ "syn 2.0.114",
  "tempfile",
 ]
 
@@ -2658,10 +2658,10 @@ version = "0.14.2"
 source = "git+https://github.com/plabayo/rust-protobuf.git?branch=patch%2Fcustom-prost-path#136408d65ecbfdc4077ee8851fae2be3d20842ac"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
- "syn 2.0.111",
+ "syn 2.0.114",
 ]
 
 [[package]]
@@ -2706,7 +2706,7 @@ checksum = "f71ee38b42f8459a88d3362be6f9b841ad2d5421844f61eb1c59c11bff3ac14a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.111",
+ "syn 2.0.114",
 ]
 
 [[package]]
@@ -2960,7 +2960,7 @@ dependencies = [
  "quote",
  "rama-grpc",
  "rama-utils",
- "syn 2.0.111",
+ "syn 2.0.114",
 ]
 
 [[package]]
