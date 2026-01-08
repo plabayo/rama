@@ -3,7 +3,7 @@
 //! This Rust implementation of [gRPC], a high performance, open source, general
 //! RPC framework that puts mobile and HTTP/2 first.
 //!
-//! `rama-grpc` is a fork of [`rama-grpc`], adapted for use within the rama ecosystem,
+//! `rama-grpc` is a fork of [`tonic`](https://github.com/hyperium/tonic), adapted for use within the rama ecosystem,
 //! being `rama-grpc` derived it is a gRPC over HTTP/2 implementation focused on **high
 //! performance**, **interoperability**, and **flexibility**. This library was
 //! created to have first class support of async/await and to act as a core building
@@ -29,12 +29,8 @@
 //!
 //! ## Transport
 //!
-//! The [`transport`] module contains a fully featured HTTP/2.0 [`Channel`] (gRPC terminology)
-//! and [`Server`]. These implementations are built on top of [`tokio`], and rama.
-//! It also provides many of the features that the core gRPC libraries provide such as load balancing,
-//! tls, timeouts, and many more. This implementation can also be used as a reference implementation
-//! to build even more feature rich clients and servers. This module also provides the ability to
-//! enable TLS using one of the `rama-tls-boring`, `rama-tls-rustls` or your own implementation.
+//! There are no transport layers in rama-grpc.
+//! Use rama's http/tls/unix/udp capabilities for that.
 //!
 //! # Code generated client/server configuration
 //!

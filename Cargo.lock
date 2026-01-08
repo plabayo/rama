@@ -2957,6 +2957,7 @@ dependencies = [
  "prost-types",
  "quickcheck",
  "quickcheck_macros",
+ "radix_trie",
  "rama-core",
  "rama-grpc-build",
  "rama-http",
@@ -4445,6 +4446,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

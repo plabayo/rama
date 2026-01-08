@@ -71,6 +71,10 @@ impl<T> Grpc<T> {
         }
     }
 
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Compress requests with the provided encoding.
         ///

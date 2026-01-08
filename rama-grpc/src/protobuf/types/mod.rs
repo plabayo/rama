@@ -28,7 +28,7 @@
 //! wrapped with the [`ErrorDetail`] enum. This approach can provide more
 //! control over the vector of standard error messages that will be generated or
 //! that was received, if necessary. To see how to adopt this approach, please
-//! check the [`StatusExt::with_error_details_vec`] and
+//! check the [`StatusExt::try_with_error_details_vec`] and
 //! [`StatusExt::get_error_details_vec`] docs.
 //!
 //! Besides that, multiple examples with alternative error details extraction

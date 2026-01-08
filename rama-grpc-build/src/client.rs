@@ -77,6 +77,14 @@ pub(crate) fn generate_internal<T: Service>(
                     Self { inner }
                 }
 
+                pub fn into_inner(self) -> #root_crate_name::client::Grpc<T> {
+                    self.inner
+                }
+
+                pub fn into_transport(self) -> T {
+                    self.inner.into_inner()
+                }
+
                 #root_crate_name::codegen::generate_set_and_with! {
                     /// Compress requests with the given encoding.
                     ///

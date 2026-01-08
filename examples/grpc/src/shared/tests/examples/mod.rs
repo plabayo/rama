@@ -1,4 +1,3 @@
-mod helloworld;
 use std::{
     convert::Infallible,
     sync::{Arc, Mutex},
@@ -11,6 +10,9 @@ use rama::{
     net::client::EstablishedClientConnection,
     service::{BoxService, service_fn},
 };
+
+mod health;
+mod helloworld;
 
 pub(super) type WebClient = BoxService<http::Request, http::Response, OpaqueError>;
 

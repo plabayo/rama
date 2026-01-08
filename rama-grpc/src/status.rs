@@ -1077,11 +1077,9 @@ mod tests {
 
 /// Error returned if a request didn't complete within the configured timeout.
 ///
-/// Timeouts can be configured either with [`Endpoint::timeout`], [`Server::timeout`], or by
-/// setting the [`grpc-timeout` metadata value][spec].
+/// Timeouts can be supported via [`GrpcTimeout`](crate::service::GrpcTimeout)
+/// and make use of the [`grpc-timeout` metadata value][spec].
 ///
-/// [`Endpoint::timeout`]: crate::transport::server::Server::timeout
-/// [`Server::timeout`]: crate::transport::channel::Endpoint::timeout
 /// [spec]: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md
 #[derive(Debug)]
 pub struct TimeoutExpired(pub ());

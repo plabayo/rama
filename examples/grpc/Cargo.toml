@@ -40,6 +40,10 @@ path = "src/compression/server.rs"
 name = "compression-client"
 path = "src/compression/client.rs"
 
+[[bin]]
+name = "health-server"
+path = "src/health/server.rs"
+
 [features]
 
 [dependencies]

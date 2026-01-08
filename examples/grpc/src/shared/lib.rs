@@ -2,6 +2,10 @@
 
 #![allow(clippy::disallowed_types)] // for interfacing with protobuf it is easier to allow things like std HashMap
 
+use std::time::Duration;
+
+use rama::http::grpc::service::health::server::HealthReporter;
+
 pub mod hello_world {
     rama::http::grpc::include_proto!("helloworld");
 
@@ -33,6 +37,26 @@ pub mod hello_world {
             };
             Ok(Response::new(reply))
         }
+    }
+}
+
+/// This function (somewhat improbably) flips the status of a service every second, in order
+/// that the effect of `tonic_health::HealthReporter::watch` can be easily observed.
+pub async fn twiddle_hello_world_service_status(reporter: HealthReporter) {
+    let mut iter = 0u64;
+    loop {
+        iter += 1;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        if iter.is_multiple_of(2) {
+            reporter
+                .set_serving::<self::hello_world::greeter_server::GreeterServer<self::hello_world::RamaGreeter>>()
+                .await;
+        } else {
+            reporter
+                .set_not_serving::<self::hello_world::greeter_server::GreeterServer<self::hello_world::RamaGreeter>>()
+                .await;
+        };
     }
 }
 

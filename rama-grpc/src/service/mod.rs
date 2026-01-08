@@ -13,3 +13,6 @@ pub use self::grpc_timeout::{GrpcTimeout, GrpcTimeoutLayer};
 
 #[cfg(feature = "protobuf")]
 pub mod health;
+
+mod router;
+pub use router::GrpcRouter;

@@ -4,10 +4,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use rama_core::stream;
 use tokio::sync::{RwLock, watch};
 
 use rama_core::futures::Stream;
 
+use crate::service::health::pb::{HealthListRequest, HealthListResponse};
 use crate::{Request, Response, Status, server::NamedService};
 
 use super::ServingStatus;
@@ -22,7 +24,7 @@ use super::pb::{HealthCheckRequest, HealthCheckResponse};
 /// A `HealthServer` is a Tonic gRPC server for the `grpc.health.v1.Health`,
 /// which can be added to a Tonic runtime using `add_service` on the runtime
 /// builder.
-pub fn health_reporter() -> (HealthReporter, HealthServer<impl Health>) {
+pub fn health_reporter() -> (HealthReporter, HealthServer<HealthService>) {
     let reporter = HealthReporter::new();
     let service = HealthService::new(reporter.statuses.clone());
     let server = HealthServer::new(service);
@@ -44,11 +46,11 @@ impl HealthReporter {
     /// Create a new HealthReporter with an initial service (named ""), corresponding to overall server health
     pub fn new() -> Self {
         // According to the gRPC Health Check specification, the empty service "" corresponds to the overall server health
-        let server_status = ("".to_string(), watch::channel(ServingStatus::Serving));
+        let server_status = ("".to_owned(), watch::channel(ServingStatus::Serving));
 
         let statuses = Arc::new(RwLock::new(HashMap::from([server_status])));
 
-        HealthReporter { statuses }
+        Self { statuses }
     }
 
     /// Sets the status of the service implemented by `S` to `Serving`. This notifies any watchers
@@ -87,10 +89,11 @@ impl HealthReporter {
                 // receiver should always be present, only being dropped when clearing the
                 // service status. Consequently, `tx.send` should not fail, making use
                 // of `expect` here safe.
+                #[allow(clippy::expect_used)]
                 tx.send(status).expect("channel should not be closed");
             }
             None => {
-                writer.insert(service_name.to_string(), watch::channel(status));
+                writer.insert(service_name.to_owned(), watch::channel(status));
             }
         };
     }
@@ -115,8 +118,10 @@ pub struct HealthService {
 }
 
 impl HealthService {
+    #[inline(always)]
+    /// Create a new [`HealthService`].
     fn new(services: Arc<RwLock<HashMap<String, StatusPair>>>) -> Self {
-        HealthService { statuses: services }
+        Self { statuses: services }
     }
 
     /// Create a HealthService, carrying across the statuses from an existing HealthReporter
@@ -130,7 +135,6 @@ impl HealthService {
     }
 }
 
-#[tonic::async_trait]
 impl Health for HealthService {
     async fn check(
         &self,
@@ -142,6 +146,22 @@ impl Health for HealthService {
         };
 
         Ok(Response::new(HealthCheckResponse::new(status)))
+    }
+
+    async fn list(
+        &self,
+        _request: Request<HealthListRequest>,
+    ) -> Result<Response<HealthListResponse>, Status> {
+        let reader = self.statuses.read().await;
+
+        let mut statuses = HashMap::with_capacity(reader.len());
+        for (service_name, data) in reader.iter() {
+            statuses.insert(
+                service_name.clone(),
+                HealthCheckResponse::new(*data.1.borrow()),
+            );
+        }
+        Ok(Response::new(HealthListResponse { statuses }))
     }
 
     type WatchStream = WatchStream;
@@ -162,12 +182,12 @@ impl Health for HealthService {
 
 /// A watch stream for the health service.
 pub struct WatchStream {
-    inner: tokio_stream::wrappers::WatchStream<ServingStatus>,
+    inner: stream::wrappers::WatchStream<ServingStatus>,
 }
 
 impl WatchStream {
     fn new(status_rx: watch::Receiver<ServingStatus>) -> Self {
-        let inner = tokio_stream::wrappers::WatchStream::new(status_rx);
+        let inner = stream::wrappers::WatchStream::new(status_rx);
         Self { inner }
     }
 }
@@ -193,23 +213,28 @@ impl fmt::Debug for WatchStream {
 
 impl HealthCheckResponse {
     fn new(status: ServingStatus) -> Self {
-        let status = crate::pb::health_check_response::ServingStatus::from(status) as i32;
+        let status = super::pb::health_check_response::ServingStatus::from(status) as i32;
         Self { status }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::ServingStatus;
-    use crate::pb::HealthCheckRequest;
-    use crate::pb::health_server::Health;
-    use crate::server::{HealthReporter, HealthService};
+    use rama_core::stream::StreamExt as _;
     use tokio::sync::watch;
-    use tokio_stream::StreamExt;
-    use tonic::{Code, Request, Status};
+
+    use crate::{
+        Code, Request, Status,
+        service::health::{
+            ServingStatus,
+            pb::{self, HealthCheckRequest, health_server::Health as _},
+        },
+    };
+
+    use super::{HealthReporter, HealthService};
 
     fn assert_serving_status(wire: i32, expected: ServingStatus) {
-        let expected = crate::pb::health_check_response::ServingStatus::from(expected) as i32;
+        let expected = pb::health_check_response::ServingStatus::from(expected) as i32;
         assert_eq!(wire, expected);
     }
 
@@ -225,7 +250,7 @@ mod tests {
         {
             let mut statuses = health_reporter.statuses.write().await;
             statuses.insert(
-                "TestService".to_string(),
+                "TestService".to_owned(),
                 watch::channel(ServingStatus::Unknown),
             );
         }
@@ -241,7 +266,7 @@ mod tests {
         // Overall server health
         let resp = service
             .check(Request::new(HealthCheckRequest {
-                service: "".to_string(),
+                service: "".to_owned(),
             }))
             .await;
         assert!(resp.is_ok());
@@ -251,7 +276,7 @@ mod tests {
         // Unregistered service
         let resp = service
             .check(Request::new(HealthCheckRequest {
-                service: "Unregistered".to_string(),
+                service: "Unregistered".to_owned(),
             }))
             .await;
         assert!(resp.is_err());
@@ -260,7 +285,7 @@ mod tests {
         // Registered service - initial state
         let resp = service
             .check(Request::new(HealthCheckRequest {
-                service: "TestService".to_string(),
+                service: "TestService".to_owned(),
             }))
             .await;
         assert!(resp.is_ok());
@@ -273,7 +298,7 @@ mod tests {
             .await;
         let resp = service
             .check(Request::new(HealthCheckRequest {
-                service: "TestService".to_string(),
+                service: "TestService".to_owned(),
             }))
             .await;
         assert!(resp.is_ok());
@@ -288,7 +313,7 @@ mod tests {
         // Overall server health
         let resp = service
             .watch(Request::new(HealthCheckRequest {
-                service: "".to_string(),
+                service: "".to_owned(),
             }))
             .await;
         assert!(resp.is_ok());
@@ -303,7 +328,7 @@ mod tests {
         // Unregistered service
         let resp = service
             .watch(Request::new(HealthCheckRequest {
-                service: "Unregistered".to_string(),
+                service: "Unregistered".to_owned(),
             }))
             .await;
         assert!(resp.is_err());
@@ -312,7 +337,7 @@ mod tests {
         // Registered service
         let resp = service
             .watch(Request::new(HealthCheckRequest {
-                service: "TestService".to_string(),
+                service: "TestService".to_owned(),
             }))
             .await;
         assert!(resp.is_ok());
