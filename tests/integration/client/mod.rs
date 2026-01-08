@@ -126,7 +126,7 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
         let token = CancellationToken::new();
         let shutdown = Shutdown::new(token.clone().cancelled_owned());
 
-        let executor: Executor = Executor::graceful(shutdown.guard());
+        let executor = Executor::graceful(shutdown.guard());
         let http_server =
             HttpServer::auto(executor.clone()).service(service_fn(move |_req: Request| {
                 // Trigger graceful shutdown after single response
