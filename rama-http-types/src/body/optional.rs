@@ -23,6 +23,13 @@ impl<B> Default for OptionalBody<B> {
     }
 }
 
+impl<B> From<B> for OptionalBody<B> {
+    #[inline(always)]
+    fn from(value: B) -> Self {
+        Self::some(value)
+    }
+}
+
 impl<B> OptionalBody<B> {
     #[inline(always)]
     /// Create an [`OptionalBody`] using the given inner [`StreamingBody`].
