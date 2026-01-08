@@ -12,8 +12,6 @@
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream};
 use quote::TokenStreamExt;
 
-// todo: integrate also tonic-prost-build
-
 pub mod manual;
 
 #[cfg(feature = "protobuf")]

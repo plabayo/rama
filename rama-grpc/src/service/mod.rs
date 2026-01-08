@@ -16,3 +16,5 @@ pub mod health;
 
 mod router;
 pub use router::GrpcRouter;
+
+pub mod interceptor;

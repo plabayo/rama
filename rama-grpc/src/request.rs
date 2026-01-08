@@ -312,7 +312,6 @@ fn duration_to_grpc_timeout(duration: Duration) -> Option<SmolStr> {
 
 /// When converting a `rama_grpc::Request` into a `http::Request` should reserved
 /// headers be removed?
-#[allow(unused)] // TODO: delete allow
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SanitizeHeaders {
     Yes,

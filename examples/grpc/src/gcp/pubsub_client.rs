@@ -3,8 +3,9 @@ use rama::{
     http::{
         Uri,
         client::EasyHttpWebClient,
-        grpc::{Request, metadata::MetadataValue},
+        grpc::{Request, metadata::MetadataValue, service::interceptor::InterceptedService},
     },
+    service::service_fn,
 };
 use rama_grpc_examples::gcp::pubsub::{ListTopicsRequest, publisher_client::PublisherClient};
 
@@ -19,17 +20,18 @@ async fn main() -> Result<(), BoxError> {
         .ok_or_else(|| "Expected a project name as the first argument.".to_owned())?;
 
     let bearer_token = format!("Bearer {token}");
-    let _header_value: MetadataValue<_> = bearer_token.parse()?;
+    let header_value: MetadataValue<_> = bearer_token.parse()?;
 
-    let http_client = EasyHttpWebClient::default();
-
-    // TODO: add layer to easily support something like
-    /*
-    *
-    *  req.metadata_mut()
-        .insert("authorization", header_value.clone());
-        Ok(req)
-    */
+    let http_client = InterceptedService::new(
+        EasyHttpWebClient::default(),
+        service_fn(move |mut req: Request<()>| {
+            let header_value = header_value.clone();
+            async move {
+                req.metadata_mut().insert("authorization", header_value);
+                Ok(req)
+            }
+        }),
+    );
 
     let service = PublisherClient::new(
         http_client,
