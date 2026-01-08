@@ -21,6 +21,7 @@ mod http2_keep_alive;
 mod http2_max_header_list_size;
 mod max_message_size;
 mod streams;
+mod timeout;
 
 pub(super) type WebClient = BoxService<http::Request, http::Response, OpaqueError>;
 

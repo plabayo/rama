@@ -5,8 +5,11 @@ pub(crate) mod layered;
 #[doc(inline)]
 pub use self::layered::{LayerExt, Layered};
 
-pub mod recover_error;
+mod recover_error;
 pub use self::recover_error::{RecoverError, RecoverErrorLayer};
+
+mod grpc_timeout;
+pub use self::grpc_timeout::{GrpcTimeout, GrpcTimeoutLayer};
 
 #[cfg(feature = "protobuf")]
 pub mod health;

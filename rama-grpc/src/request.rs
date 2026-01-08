@@ -341,7 +341,8 @@ mod tests {
             rama_http_types::Version::HTTP_2,
             SanitizeHeaders::Yes,
         );
-        assert!(http_request.headers().is_empty());
+        assert_eq!(1, http_request.headers().len());
+        assert!(http_request.headers().contains_key(USER_AGENT));
     }
 
     #[test]
