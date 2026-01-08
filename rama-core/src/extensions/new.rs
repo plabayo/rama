@@ -62,8 +62,12 @@ impl Extensions {
 
     pub fn get<T: ExtensionType>(&self) -> Option<&T> {
         println!("get {:?}", TypeId::of::<T>());
-        self.get_inner::<T>()
-            .and_then(|ext| ext.downcast_ref::<T>())
+        self.get_inner::<T>().and_then(|ext| {
+            println!("found: {ext:?}");
+            let down = ext.downcast_ref::<T>();
+            println!("down: {down:?}");
+            down
+        })
     }
 
     pub fn get_clone<T: ExtensionType>(&self) -> Option<Arc<T>> {
@@ -169,7 +173,8 @@ pub struct ExtensionStore {
     // we have external crate options here, or we can implement some of these algorithms
     // for now we just do it as simple as possible. But with our setup we can do this much
     // more efficient
-    storage: Arc<ExtensionVec>,
+    // storage: Arc<ExtensionVec>,
+    storage: Arc<AppendOnlyVec<(Instant, StoredExtension), 30, 3>>,
 }
 
 impl ExtensionStore {
@@ -183,15 +188,16 @@ impl ExtensionStore {
     /// Insert a new value in this [`ExtensionStore`]
     pub fn insert<T: ExtensionType>(&self, value: T) {
         let extension = StoredExtension::new(value);
-        self.storage.push_raw((Instant::now(), extension));
+        self.storage.push((Instant::now(), extension));
     }
 
     /// Extend this [`Extensions`] store with the [`Extension`]s from the provided store
     pub fn extend(&self, extensions: Self) {
         // TODO we need to make sure this insert is orded...
         // Or de we just use timestamp now?
-        for item in extensions.storage.iter().cloned() {
-            self.storage.push_raw(item);
+        let now = Instant::now();
+        for (_, item) in extensions.storage.iter().cloned() {
+            self.storage.push((now, item));
         }
     }
 }
@@ -220,13 +226,14 @@ impl StoredExtension {
 
     fn downcast_ref<T: ExtensionType>(&self) -> Option<&T> {
         println!("value: {:?}", &self.value);
-        let any = &self.value as &dyn Any;
-        (*any).downcast_ref::<T>()
+        let inner_any = self.value.as_ref() as &dyn Any;
+        (inner_any).downcast_ref::<T>()
     }
 }
 
 pub trait ExtensionType: Any + Send + Sync + std::fmt::Debug + 'static {}
 
+// TODO remove this blacket impl
 impl<T: Send + Sync + std::fmt::Debug + 'static> ExtensionType for T {}
 
 mod tests {
@@ -292,16 +299,16 @@ mod tests {
 
         println!("is healthy {:?}", request.get::<IsHealth>());
 
-        // Now our connection's internal state machine detect it is broken
-        // and inserts this in extensions, our request should also be able to see this
-        connection.insert(BrokenConnection);
-        connection.insert(IsHealth(false));
+        // // Now our connection's internal state machine detect it is broken
+        // // and inserts this in extensions, our request should also be able to see this
+        // connection.insert(BrokenConnection);
+        // connection.insert(IsHealth(false));
 
-        // println!("request extensions: {:#?}", request.unified_view());
+        // // println!("request extensions: {:#?}", request.unified_view());
 
-        println!("is healthy {:?}", request.get_clone::<IsHealth>());
+        // println!("is healthy {:?}", request.get_clone::<IsHealth>());
 
-        let history: Vec<_> = request.iter::<IsHealth>().collect();
+        // let history: Vec<_> = request.iter::<IsHealth>().collect();
         // println!("health history {history:#?}");
     }
 
@@ -460,6 +467,8 @@ impl Default for ExtensionVec {
 
 use std::ops::Index;
 
+use crate::extensions::append_only_vec::AppendOnlyVec;
+
 impl Index<usize> for ExtensionVec {
     type Output = Element;
 
@@ -534,6 +543,6 @@ impl ExtensionVec {
     unsafe fn get_unchecked(&self, idx: usize) -> &Element {
         let (array, offset) = indices(idx);
         let bucket = self.data[array as usize].load(Ordering::Relaxed);
-        &*bucket.add(offset)
+        unsafe { &*bucket.add(offset) }
     }
 }

@@ -27,12 +27,14 @@
 //! assert_eq!(ext.get::<i32>(), Some(&5i32));
 //! ```
 
-use std::any::{Any, TypeId};
+use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
 
-pub use super::new::Extensions;
+pub mod append_only_vec;
 
+pub mod new;
+pub use new::Extensions;
 // /// A type map of protocol extensions.
 // ///
 // /// `Extensions` can be used by `Request` and `Response` to store
@@ -253,27 +255,27 @@ macro_rules! impl_extensions_either {
 
 crate::combinators::impl_either!(impl_extensions_either);
 
-// pub trait ChainableExtensions {
-//     fn contains<T: Send + Sync + 'static>(&self) -> bool;
-//     fn get<T: Send + Sync + 'static>(&self) -> Option<&T>;
-// }
+pub trait ChainableExtensions {
+    fn contains<T: new::ExtensionType>(&self) -> bool;
+    fn get<T: new::ExtensionType>(&self) -> Option<&T>;
+}
 
-// impl<S, T> ChainableExtensions for (S, T)
-// where
-//     S: ExtensionsRef,
-//     T: ExtensionsRef,
-// {
-//     fn contains<I: Send + Sync + 'static>(&self) -> bool {
-//         self.0.extensions().contains::<I>() || self.1.extensions().contains::<I>()
-//     }
+impl<S, T> ChainableExtensions for (S, T)
+where
+    S: ExtensionsRef,
+    T: ExtensionsRef,
+{
+    fn contains<I: new::ExtensionType>(&self) -> bool {
+        self.0.extensions().contains::<I>() || self.1.extensions().contains::<I>()
+    }
 
-//     fn get<I: Send + Sync + 'static>(&self) -> Option<&I> {
-//         self.0
-//             .extensions()
-//             .get::<I>()
-//             .or_else(|| self.1.extensions().get::<I>())
-//     }
-// }
+    fn get<I: new::ExtensionType>(&self) -> Option<&I> {
+        self.0
+            .extensions()
+            .get::<I>()
+            .or_else(|| self.1.extensions().get::<I>())
+    }
+}
 
 // impl<S, T, U> ChainableExtensions for (S, T, U)
 // where

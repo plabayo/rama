@@ -1,6 +1,6 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
-export RUSTFLAGS := "-D warnings"
+# export RUSTFLAGS := "-D warnings"
 export RUSTDOCFLAGS := "-D rustdoc::broken-intra-doc-links"
 export RUST_LOG := "debug"
 

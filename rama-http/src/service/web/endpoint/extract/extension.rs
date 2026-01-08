@@ -2,6 +2,7 @@ use super::FromPartsStateRefPair;
 use crate::request::Parts;
 use crate::service::web::extract::OptionalFromPartsStateRefPair;
 use crate::utils::macros::define_http_rejection;
+use rama_core::new::ExtensionType;
 use rama_utils::macros::impl_deref;
 use std::convert::Infallible;
 
@@ -21,7 +22,7 @@ define_http_rejection! {
 impl<State, T> FromPartsStateRefPair<State> for Extension<T>
 where
     State: Send + Sync,
-    T: Send + Sync + Clone + 'static,
+    T: ExtensionType + Clone,
 {
     type Rejection = MissingExtension;
 
@@ -38,7 +39,7 @@ where
 impl<State, T> OptionalFromPartsStateRefPair<State> for Extension<T>
 where
     State: Send + Sync,
-    T: Send + Sync + Clone + 'static,
+    T: ExtensionType + Clone,
 {
     type Rejection = Infallible;
 
