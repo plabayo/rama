@@ -369,6 +369,9 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
@@ -408,6 +411,9 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
