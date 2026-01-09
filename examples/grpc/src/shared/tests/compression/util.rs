@@ -1,8 +1,7 @@
 use std::{
-    convert::Infallible,
     pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{self, AtomicUsize},
     },
     task::{Context, Poll, ready},
@@ -11,9 +10,9 @@ use std::{
 use pin_project_lite::pin_project;
 
 use rama::{
-    Service as _, ServiceInput,
+    Service,
     bytes::{Buf, Bytes},
-    error::OpaqueError,
+    error::{BoxError, OpaqueError},
     http::{
         self, Body, StreamingBody,
         body::{Frame, SizeHint, util::BodyExt as _},
@@ -21,8 +20,8 @@ use rama::{
         grpc::{Status, codec::CompressionEncoding},
         layer::map_request_body::MapRequestBodyLayer,
     },
-    net::client::EstablishedClientConnection,
-    service::{BoxService, service_fn},
+    net::test_utils::client::{MockConnectorService, MockSocket},
+    service::BoxService,
 };
 
 macro_rules! parametrized_tests {
@@ -141,18 +140,13 @@ pub(super) fn measure_request_body_size_layer(
 
 pub(super) type WebClient = BoxService<http::Request, http::Response, OpaqueError>;
 
-pub(super) fn mock_io_client(client: tokio::io::DuplexStream) -> WebClient {
-    let client_opt = Arc::new(Mutex::new(Some(client)));
+pub(super) fn mock_io_client<F, Server>(make_server: F) -> WebClient
+where
+    F: Fn() -> Server + Send + Sync + 'static,
+    Server: Service<MockSocket, Error: Into<BoxError>>,
+{
     EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(service_fn(move |input: http::Request| {
-            let client = client_opt.lock().unwrap().take().unwrap();
-            async move {
-                Ok::<_, Infallible>(EstablishedClientConnection {
-                    input,
-                    conn: ServiceInput::new(client),
-                })
-            }
-        }))
+        .with_custom_transport_connector(MockConnectorService::new(make_server))
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()

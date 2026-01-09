@@ -1,5 +1,4 @@
 use rama::{
-    ServiceInput,
     http::{
         Uri,
         grpc::{Code, codec::CompressionEncoding},
@@ -11,21 +10,14 @@ use rama::{
 #[tokio::test]
 #[tracing_test::traced_test]
 async fn hello_world_client_server_flow() {
-    let (client, server) = tokio::io::duplex(256);
-
     let svc = crate::hello_world::greeter_server::GreeterServer::new(
         crate::hello_world::RamaGreeter::default(),
     );
 
-    tokio::spawn(async move {
-        HttpServer::auto(Default::default())
-            .serve(ServiceInput::new(server), svc)
-            .await
-            .unwrap();
-    });
+    let server = HttpServer::auto(Default::default()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(client),
+        super::mock_io_client(move || server.clone()),
         Uri::from_static("http://[::1]:50051"),
     );
 
@@ -43,23 +35,16 @@ async fn hello_world_client_server_flow() {
 #[tokio::test]
 #[tracing_test::traced_test]
 async fn hello_world_client_server_flow_with_compression_mismatch() {
-    let (client, server) = tokio::io::duplex(256);
-
     let svc = crate::hello_world::greeter_server::GreeterServer::new(
         crate::hello_world::RamaGreeter::default(),
     )
     .with_accept_compressed(CompressionEncoding::Deflate)
     .with_send_compressed(CompressionEncoding::Gzip);
 
-    tokio::spawn(async move {
-        HttpServer::auto(Default::default())
-            .serve(ServiceInput::new(server), svc)
-            .await
-            .unwrap();
-    });
+    let server = HttpServer::auto(Default::default()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(client),
+        super::mock_io_client(move || server.clone()),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(CompressionEncoding::Deflate)
@@ -79,23 +64,16 @@ async fn hello_world_client_server_flow_with_compression_mismatch() {
 #[tokio::test]
 #[tracing_test::traced_test]
 async fn hello_world_client_server_flow_with_compression_mix() {
-    let (client, server) = tokio::io::duplex(256);
-
     let svc = crate::hello_world::greeter_server::GreeterServer::new(
         crate::hello_world::RamaGreeter::default(),
     )
     .with_accept_compressed(CompressionEncoding::Deflate)
     .with_send_compressed(CompressionEncoding::Gzip);
 
-    tokio::spawn(async move {
-        HttpServer::auto(Default::default())
-            .serve(ServiceInput::new(server), svc)
-            .await
-            .unwrap();
-    });
+    let server = HttpServer::auto(Default::default()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(client),
+        super::mock_io_client(move || server.clone()),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(CompressionEncoding::Gzip)
@@ -131,23 +109,16 @@ async fn hello_world_client_server_flow_with_compression_zstd() {
 }
 
 async fn hello_world_client_server_flow_with_compression(encoding: CompressionEncoding) {
-    let (client, server) = tokio::io::duplex(256);
-
     let svc = crate::hello_world::greeter_server::GreeterServer::new(
         crate::hello_world::RamaGreeter::default(),
     )
     .with_accept_compressed(encoding)
     .with_send_compressed(encoding);
 
-    tokio::spawn(async move {
-        HttpServer::auto(Default::default())
-            .serve(ServiceInput::new(server), svc)
-            .await
-            .unwrap();
-    });
+    let server = HttpServer::auto(Default::default()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(client),
+        super::mock_io_client(move || server.clone()),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_accept_compressed(encoding)

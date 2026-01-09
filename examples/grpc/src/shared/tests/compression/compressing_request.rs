@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use rama::{
-    Layer as _, ServiceInput,
+    Layer as _,
     http::{
         self, StreamingBody, Uri,
         grpc::{Code, codec::CompressionEncoding},
@@ -26,8 +26,6 @@ util::parametrized_tests! {
 }
 
 async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
-    let (client, server) = tokio::io::duplex(UNCOMPRESSED_MIN_BODY_SIZE * 10);
-
     let svc = test_server::TestServer::new(Svc::default()).with_accept_compressed(encoding);
 
     let request_bytes_counter = Arc::new(AtomicUsize::new(0));
@@ -55,7 +53,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         }
     }
 
-    tokio::spawn({
+    let server = {
         let request_bytes_counter = request_bytes_counter.clone();
         let grpc_svc = (
             MapInputLayer::new(move |req| AssertRightEncoding::new(encoding).call(req)),
@@ -63,16 +61,11 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         )
             .into_layer(svc);
 
-        async move {
-            HttpServer::auto(Default::default())
-                .serve(ServiceInput::new(server), grpc_svc)
-                .await
-                .unwrap();
-        }
-    });
+        HttpServer::auto(Default::default()).service(grpc_svc)
+    };
 
     let client = test_client::TestClient::new(
-        mock_io_client(client),
+        mock_io_client(move || server.clone()),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_send_compressed(encoding);
@@ -97,8 +90,6 @@ util::parametrized_tests! {
 }
 
 async fn client_enabled_server_enabled_multi_encoding(encoding: CompressionEncoding) {
-    let (client, server) = tokio::io::duplex(UNCOMPRESSED_MIN_BODY_SIZE * 10);
-
     let svc = test_server::TestServer::new(Svc::default())
         .with_accept_compressed(CompressionEncoding::Gzip)
         .with_accept_compressed(CompressionEncoding::Zstd)
@@ -114,7 +105,7 @@ async fn client_enabled_server_enabled_multi_encoding(encoding: CompressionEncod
         req
     }
 
-    tokio::spawn({
+    let server = {
         let request_bytes_counter = request_bytes_counter.clone();
         let grpc_svc = (
             MapInputLayer::new(assert_right_encoding),
@@ -122,16 +113,11 @@ async fn client_enabled_server_enabled_multi_encoding(encoding: CompressionEncod
         )
             .into_layer(svc);
 
-        async move {
-            HttpServer::h2(Default::default())
-                .serve(ServiceInput::new(server), grpc_svc)
-                .await
-                .unwrap();
-        }
-    });
+        HttpServer::h2(Default::default()).service(grpc_svc)
+    };
 
     let client = test_client::TestClient::new(
-        mock_io_client(client),
+        mock_io_client(move || server.clone()),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_send_compressed(encoding);
@@ -156,19 +142,12 @@ util::parametrized_tests! {
 }
 
 async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
-    let (client, server) = tokio::io::duplex(UNCOMPRESSED_MIN_BODY_SIZE * 10);
-
     let svc = test_server::TestServer::new(Svc::default());
 
-    tokio::spawn(async move {
-        HttpServer::auto(Default::default())
-            .serve(ServiceInput::new(server), svc)
-            .await
-            .unwrap();
-    });
+    let server = HttpServer::auto(Default::default()).service(svc);
 
     let client = test_client::TestClient::new(
-        mock_io_client(client),
+        mock_io_client(move || server.clone()),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_send_compressed(encoding);

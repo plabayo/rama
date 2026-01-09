@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use rama::{
-    ServiceInput,
     http::{
         Uri,
         grpc::{
@@ -35,8 +34,6 @@ use crate::{
 #[tracing_test::traced_test]
 #[ignore]
 async fn health_server_via_router() {
-    let (client, server) = tokio::io::duplex(256);
-
     let greeter = RamaGreeter::default();
 
     let (health_reporter, health_service) = health_reporter();
@@ -50,17 +47,12 @@ async fn health_server_via_router() {
         .with_service(GreeterServer::new(greeter))
         .with_service(health_service);
 
-    tokio::spawn(async move {
-        HttpServer::auto(Default::default())
-            .serve(ServiceInput::new(server), grpc_svc)
-            .await
-            .unwrap();
-    });
+    let server = HttpServer::auto(Default::default()).service(grpc_svc);
 
     // hello world capabilities
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
-        super::mock_io_client(client),
+        super::mock_io_client(move || server.clone()),
         Uri::from_static("http://[::1]:50051"),
     );
 

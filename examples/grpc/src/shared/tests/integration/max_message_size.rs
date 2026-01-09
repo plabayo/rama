@@ -1,7 +1,6 @@
 use std::pin::Pin;
 
 use rama::{
-    ServiceInput,
     futures::Stream,
     http::{
         Uri,
@@ -99,8 +98,6 @@ fn max_message_send_size() {
 async fn response_stream_limit() {
     let client_blob = vec![0; 1];
 
-    let (client, server) = tokio::io::duplex(1024);
-
     struct Svc;
 
     impl test1_server::Test1 for Svc {
@@ -126,15 +123,10 @@ async fn response_stream_limit() {
 
     let svc = test1_server::Test1Server::new(Svc);
 
-    tokio::spawn(async move {
-        HttpServer::h2(Default::default())
-            .serve(ServiceInput::new(server), svc)
-            .await
-            .unwrap();
-    });
+    let server = HttpServer::h2(Default::default()).service(svc);
 
     let client = test1_client::Test1Client::new(
-        super::mock_io_client(client),
+        super::mock_io_client(move || server.clone()),
         Uri::from_static("http://[::]:50051"),
     )
     .with_max_decoding_message_size(6877902 + 5);
@@ -234,8 +226,6 @@ async fn max_message_run(case: &TestCase) -> Result<(), Status> {
     let client_blob = vec![0; case.client_blob_size];
     let server_blob = vec![0; case.server_blob_size];
 
-    let (client, server) = tokio::io::duplex(1024);
-
     struct Svc(Vec<u8>);
 
     impl test1_server::Test1 for Svc {
@@ -266,15 +256,10 @@ async fn max_message_run(case: &TestCase) -> Result<(), Status> {
         svc.set_max_encoding_message_size(size);
     }
 
-    tokio::spawn(async move {
-        HttpServer::h2(Default::default())
-            .serve(ServiceInput::new(server), svc)
-            .await
-            .unwrap();
-    });
+    let server = HttpServer::h2(Default::default()).service(svc);
 
     let mut client = test1_client::Test1Client::new(
-        super::mock_io_client(client),
+        super::mock_io_client(move || server.clone()),
         Uri::from_static("http://[::]:50051"),
     );
 

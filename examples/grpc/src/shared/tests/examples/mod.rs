@@ -1,14 +1,9 @@
-use std::{
-    convert::Infallible,
-    sync::{Arc, Mutex},
-};
-
 use rama::{
-    Service as _, ServiceInput,
-    error::OpaqueError,
+    Service,
+    error::{BoxError, OpaqueError},
     http::{self, Body, client::EasyHttpWebClient},
-    net::client::EstablishedClientConnection,
-    service::{BoxService, service_fn},
+    net::test_utils::client::{MockConnectorService, MockSocket},
+    service::BoxService,
 };
 
 mod health;
@@ -20,18 +15,13 @@ pub(super) type WebClient = BoxService<http::Request, http::Response, OpaqueErro
 // for testing or generic one-time stuff. Be it perhaps with an actual error
 // returned incase of duplicate consumptions.
 
-fn mock_io_client(client: tokio::io::DuplexStream) -> WebClient {
-    let client_opt = Arc::new(Mutex::new(Some(client)));
+pub(super) fn mock_io_client<F, Server>(make_server: F) -> WebClient
+where
+    F: Fn() -> Server + Send + Sync + 'static,
+    Server: Service<MockSocket, Error: Into<BoxError>>,
+{
     EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(service_fn(move |input: http::Request| {
-            let client = client_opt.lock().unwrap().take().unwrap();
-            async move {
-                Ok::<_, Infallible>(EstablishedClientConnection {
-                    input,
-                    conn: ServiceInput::new(client),
-                })
-            }
-        }))
+        .with_custom_transport_connector(MockConnectorService::new(make_server))
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()

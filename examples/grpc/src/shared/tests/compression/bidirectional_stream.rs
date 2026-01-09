@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use rama::{
-    Layer, ServiceInput,
+    Layer,
     http::{
         self, StreamingBody, Uri,
         grpc::{Request, Streaming, codec::CompressionEncoding},
@@ -28,8 +28,6 @@ util::parametrized_tests! {
 }
 
 async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
-    let (client, server) = tokio::io::duplex(UNCOMPRESSED_MIN_BODY_SIZE * 10);
-
     let svc = test_server::TestServer::new(Svc::default())
         .with_accept_compressed(encoding)
         .with_send_compressed(encoding);
@@ -60,7 +58,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         }
     }
 
-    tokio::spawn({
+    let server = {
         let request_bytes_counter = request_bytes_counter.clone();
         let response_bytes_counter = response_bytes_counter.clone();
 
@@ -74,16 +72,11 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         )
             .into_layer(svc);
 
-        async move {
-            HttpServer::h2(Default::default())
-                .serve(ServiceInput::new(server), grpc_svc)
-                .await
-                .unwrap();
-        }
-    });
+        HttpServer::h2(Default::default()).service(grpc_svc)
+    };
 
     let client = test_client::TestClient::new(
-        mock_io_client(client),
+        mock_io_client(move || server.clone()),
         Uri::from_static("http://[::1]:50051"),
     )
     .with_send_compressed(encoding)
