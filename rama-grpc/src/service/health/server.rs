@@ -21,9 +21,10 @@ use super::pb::{HealthCheckRequest, HealthCheckResponse};
 ///
 /// A `HealthReporter` is used to update the state of gRPC services.
 ///
-/// A `HealthServer` is a Tonic gRPC server for the `grpc.health.v1.Health`,
-/// which can be added to a Tonic runtime using `add_service` on the runtime
-/// builder.
+/// A `HealthServer` is a Rama gRPC server for the `grpc.health.v1.Health`,
+/// which can be added to a [`GrpcRouter`] using its `with_service` method.
+///
+/// [`GrpcRouter`]: crate::service::GrpcRouter
 pub fn health_reporter() -> (HealthReporter, HealthServer<HealthService>) {
     let reporter = HealthReporter::new();
     let service = HealthService::new(reporter.statuses.clone());

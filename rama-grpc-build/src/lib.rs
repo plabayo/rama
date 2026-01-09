@@ -25,7 +25,7 @@ mod server;
 mod root_crate;
 
 mod code_gen;
-pub use code_gen::CodeGenBuilder;
+pub(crate) use code_gen::CodeGenBuilder;
 
 /// Service generation trait.
 ///

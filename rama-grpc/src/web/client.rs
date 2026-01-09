@@ -1,6 +1,7 @@
-use rama_core::{Layer, Service, extensions::ExtensionsMut, telemetry::tracing};
+use rama_core::error::{BoxError, OpaqueError};
+use rama_core::{Layer, Service};
 use rama_http::HeaderValue;
-use rama_http_types::conn::TargetHttpVersion;
+use rama_http::layer::version_adapter::adapt_request_version;
 use rama_http_types::{Request, Response, Version, header::CONTENT_TYPE};
 
 use super::GrpcWebCall;
@@ -45,30 +46,26 @@ impl<S> GrpcWebClientService<S> {
 
 impl<S, B1, B2> Service<Request<B1>> for GrpcWebClientService<S>
 where
-    S: Service<Request<GrpcWebCall<B1>>, Output = Response<B2>>,
+    S: Service<Request<GrpcWebCall<B1>>, Output = Response<B2>, Error: Into<BoxError>>,
     B1: Send + 'static,
     B2: Send + 'static,
 {
     type Output = Response<GrpcWebCall<B2>>;
-    type Error = S::Error;
+    type Error = OpaqueError;
 
     async fn serve(&self, mut req: Request<B1>) -> Result<Self::Output, Self::Error> {
-        if req.version() != Version::HTTP_11 {
-            tracing::debug!(
-                "coercing request' and target version to HTTP1.1 (was: {:?})",
-                req.version()
-            );
-            req.extensions_mut()
-                .insert(TargetHttpVersion(Version::HTTP_11));
-            *req.version_mut() = Version::HTTP_11;
-        }
+        adapt_request_version(&mut req, Version::HTTP_11)?;
 
         req.headers_mut()
             .insert(CONTENT_TYPE, HeaderValue::from_static(GRPC_WEB));
 
         let req = req.map(GrpcWebCall::client_request);
 
-        let resp = self.inner.serve(req).await?;
+        let resp = self
+            .inner
+            .serve(req)
+            .await
+            .map_err(|err| OpaqueError::from_boxed(err.into()))?;
         Ok(resp.map(GrpcWebCall::client_response))
     }
 }

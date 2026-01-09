@@ -326,8 +326,8 @@ impl ServiceGenerator {
     fn generate(&mut self, service: &Service) {
         if self.builder.build_server {
             let server = CodeGenBuilder::new()
-                .emit_package(true)
-                .compile_well_known_types(false)
+                .with_emit_package(true)
+                .with_compile_well_known_types(false)
                 .generate_server(service, "");
 
             self.servers.extend(server);
@@ -335,8 +335,8 @@ impl ServiceGenerator {
 
         if self.builder.build_client {
             let client = CodeGenBuilder::new()
-                .emit_package(true)
-                .compile_well_known_types(false)
+                .with_emit_package(true)
+                .with_compile_well_known_types(false)
                 .generate_client(service, "");
 
             self.clients.extend(client);

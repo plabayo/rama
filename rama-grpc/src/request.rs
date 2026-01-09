@@ -286,10 +286,10 @@ fn duration_to_grpc_timeout(duration: Duration) -> Option<SmolStr> {
     ) -> Option<SmolStr> {
         // The gRPC spec specifies that the timeout most be at most 8 digits. So this is the largest a
         // value can be before we need to use a bigger unit.
-        let max_size: u128 = 99_999_999; // exactly 8 digits
+        const MAX_SIZE: u128 = 99_999_999; // exactly 8 digits
 
         let value = convert(duration).into();
-        if value > max_size {
+        if value > MAX_SIZE {
             None
         } else {
             Some(format_smolstr!("{value}{unit}"))

@@ -294,55 +294,26 @@ struct ServiceGenerator {
     disable_comments: HashSet<String>,
 }
 
-impl ServiceGenerator {
-    /// Create a new ServiceGenerator
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        build_client: bool,
-        build_server: bool,
-        client_attributes: Attributes,
-        server_attributes: Attributes,
-        proto_path: String,
-        compile_well_known_types: bool,
-        codec_path: String,
-        root_crate: TokenStream,
-        disable_comments: HashSet<String>,
-    ) -> Self {
-        Self {
-            build_client,
-            build_server,
-            client_attributes,
-            server_attributes,
-            proto_path,
-            compile_well_known_types,
-            codec_path,
-            root_crate,
-            disable_comments,
-        }
-    }
-}
-
 impl prost_build::ServiceGenerator for ServiceGenerator {
     fn generate(&mut self, service: Service, buf: &mut String) {
         let rama_grpc_service =
             RamaGrpcBuildService::new(service, self.codec_path.as_str(), &self.root_crate);
 
-        let mut builder = CodeGenBuilder::new();
-        builder
-            .emit_package(true)
-            .compile_well_known_types(self.compile_well_known_types)
-            .disable_comments(self.disable_comments.clone());
+        let mut builder = CodeGenBuilder::new()
+            .with_emit_package(true)
+            .with_compile_well_known_types(self.compile_well_known_types)
+            .with_disable_comments(self.disable_comments.clone());
 
         let mut tokens = TokenStream::new();
 
         if self.build_client {
-            builder.attributes(self.client_attributes.clone());
+            builder.set_attributes(self.client_attributes.clone());
             let client_code = builder.generate_client(&rama_grpc_service, &self.proto_path);
             tokens.extend(client_code);
         }
 
         if self.build_server {
-            builder.attributes(self.server_attributes.clone());
+            builder.set_attributes(self.server_attributes.clone());
             let server_code = builder.generate_server(&rama_grpc_service, &self.proto_path);
             tokens.extend(server_code);
         }
@@ -786,17 +757,17 @@ impl RamaGrpcProtoBuilder {
         }
 
         if self.build_client || self.build_server {
-            let service_generator = ServiceGenerator::new(
-                self.build_client,
-                self.build_server,
-                self.client_attributes,
-                self.server_attributes,
-                self.proto_path,
-                self.compile_well_known_types,
-                self.codec_path.clone(),
-                self.root_crate.clone(),
-                self.disable_comments,
-            );
+            let service_generator = ServiceGenerator {
+                build_client: self.build_client,
+                build_server: self.build_server,
+                client_attributes: self.client_attributes,
+                server_attributes: self.server_attributes,
+                proto_path: self.proto_path,
+                compile_well_known_types: self.compile_well_known_types,
+                codec_path: self.codec_path,
+                root_crate: self.root_crate,
+                disable_comments: self.disable_comments,
+            };
 
             config.service_generator(Box::new(service_generator));
         };
@@ -886,17 +857,17 @@ impl RamaGrpcProtoBuilder {
         }
 
         if self.build_client || self.build_server {
-            let service_generator = ServiceGenerator::new(
-                self.build_client,
-                self.build_server,
-                self.client_attributes,
-                self.server_attributes,
-                self.proto_path,
-                self.compile_well_known_types,
-                self.codec_path.clone(),
-                self.root_crate.clone(),
-                self.disable_comments,
-            );
+            let service_generator = ServiceGenerator {
+                build_client: self.build_client,
+                build_server: self.build_server,
+                client_attributes: self.client_attributes,
+                server_attributes: self.server_attributes,
+                proto_path: self.proto_path,
+                compile_well_known_types: self.compile_well_known_types,
+                codec_path: self.codec_path,
+                root_crate: self.root_crate,
+                disable_comments: self.disable_comments,
+            };
 
             config.service_generator(Box::new(service_generator));
         };
@@ -910,16 +881,16 @@ impl RamaGrpcProtoBuilder {
     /// `Config::service_generator`.
     #[must_use]
     pub fn service_generator(self) -> Box<dyn prost_build::ServiceGenerator> {
-        Box::new(ServiceGenerator::new(
-            self.build_client,
-            self.build_server,
-            self.client_attributes,
-            self.server_attributes,
-            self.proto_path,
-            self.compile_well_known_types,
-            self.codec_path.clone(),
-            self.root_crate.clone(),
-            self.disable_comments,
-        ))
+        Box::new(ServiceGenerator {
+            build_client: self.build_client,
+            build_server: self.build_server,
+            client_attributes: self.client_attributes,
+            server_attributes: self.server_attributes,
+            proto_path: self.proto_path,
+            compile_well_known_types: self.compile_well_known_types,
+            codec_path: self.codec_path,
+            root_crate: self.root_crate,
+            disable_comments: self.disable_comments,
+        })
     }
 }

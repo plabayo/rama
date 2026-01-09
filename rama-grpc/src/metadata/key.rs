@@ -65,6 +65,8 @@ impl<VE: ValueEncoding> MetadataKey<VE> {
     #[must_use]
     pub fn from_static(src: &'static str) -> Self {
         let name = HeaderName::from_static(src);
+
+        #[cfg(debug_assertions)]
         if !VE::is_valid_key(name.as_str()) {
             panic!("invalid metadata key")
         }
