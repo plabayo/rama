@@ -247,7 +247,7 @@ where
             _ => None,
         };
 
-        let http_service = self.build_http();
+        let http_service = self.build_http(Some(executor.clone()));
 
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config;
@@ -305,6 +305,7 @@ where
     /// build an http service ready to echo http traffic back
     pub fn build_http(
         &self,
+        exec: Option<Executor>,
     ) -> impl Service<Request, Output: IntoResponse, Error = Infallible> + use<H> {
         let http_forwarded_layer = match &self.forward {
             None | Some(ForwardKind::HaProxy) => None,
@@ -356,6 +357,7 @@ where
                     ConsumeErrLayer::trace(tracing::Level::DEBUG)
                         .into_layer(WebSocketEchoService::default()),
                 )
+                .maybe_with_executor(exec)
             }),
         )
             .into_layer(self.http_service_builder.layer(EchoService {

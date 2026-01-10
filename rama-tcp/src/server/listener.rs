@@ -3,7 +3,6 @@ use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::graceful::ShutdownGuard;
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
 use rama_net::socket::Interface;
@@ -331,7 +330,6 @@ impl TcpListener {
 
             let socket_info = SocketInfo::new(local_addr, peer_addr);
             socket.extensions_mut().insert(socket_info);
-            socket.extensions_mut().insert(Executor::new());
 
             tokio::spawn(
                 async move {
@@ -382,7 +380,6 @@ impl TcpListener {
                             );
 
                             socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr));
-                            socket.extensions_mut().insert(Executor::graceful(guard.clone()));
 
                             guard.spawn_task(async move {
                                 let _ = service.serve(socket).await;

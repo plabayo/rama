@@ -2,6 +2,7 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
+    rt::Executor,
     telemetry::tracing,
 };
 use rama_dns::{DnsResolver, GlobalDnsResolver};
@@ -22,6 +23,7 @@ use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStream
 pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
     dns: Dns,
     connector_factory: ConnectorFactory,
+    exec: Option<Executor>,
 }
 
 impl<Dns, Connector> TcpConnector<Dns, Connector> {}
@@ -36,6 +38,7 @@ impl TcpConnector {
         Self {
             dns: GlobalDnsResolver::new(),
             connector_factory: (),
+            exec: None,
         }
     }
 }
@@ -49,6 +52,17 @@ impl<Dns, ConnectorFactory> TcpConnector<Dns, ConnectorFactory> {
         TcpConnector {
             dns,
             connector_factory: self.connector_factory,
+            exec: self.exec,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Executor`] to be used for spawning child tasks.
+        ///
+        /// By default [`tokio::spawn`] is used if no executor is set.
+        pub fn executor(mut self, exec: Option<Executor>) -> Self {
+            self.exec = exec;
+            self
         }
     }
 }
@@ -63,6 +77,7 @@ where {
         TcpConnector {
             dns: self.dns,
             connector_factory: TcpStreamConnectorCloneFactory(connector),
+            exec: self.exec,
         }
     }
 
@@ -72,6 +87,7 @@ where {
         TcpConnector {
             dns: self.dns,
             connector_factory: factory,
+            exec: self.exec,
         }
     }
 }
@@ -108,6 +124,7 @@ where
                 proxy.address.clone(),
                 self.dns.clone(),
                 connector,
+                self.exec.clone(),
             )
             .await
             .context("tcp connector: conncept to proxy")?;
@@ -129,10 +146,15 @@ where
 
         if let Some(ConnectorTarget(target)) = input.extensions().get::<ConnectorTarget>().cloned()
         {
-            let (mut conn, addr) =
-                crate::client::tcp_connect(input.extensions(), target, self.dns.clone(), connector)
-                    .await
-                    .context("tcp connector: conncept to connector target (overwrite?)")?;
+            let (mut conn, addr) = crate::client::tcp_connect(
+                input.extensions(),
+                target,
+                self.dns.clone(),
+                connector,
+                self.exec.clone(),
+            )
+            .await
+            .context("tcp connector: conncept to connector target (overwrite?)")?;
 
             let socket_info= ClientSocketInfo(SocketInfo::new(
                 conn.local_addr()
@@ -168,10 +190,15 @@ where
         let authority = transport_ctx
             .host_with_port()
             .context("get host:port from transport ctx")?;
-        let (mut conn, addr) =
-            crate::client::tcp_connect(input.extensions(), authority, self.dns.clone(), connector)
-                .await
-                .context("tcp connector: connect to server")?;
+        let (mut conn, addr) = crate::client::tcp_connect(
+            input.extensions(),
+            authority,
+            self.dns.clone(),
+            connector,
+            self.exec.clone(),
+        )
+        .await
+        .context("tcp connector: connect to server")?;
 
         let socket_info = ClientSocketInfo(SocketInfo::new(
             conn.local_addr()

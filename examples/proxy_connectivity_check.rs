@@ -157,7 +157,8 @@ async fn main() {
     )
         .into_layer(service_fn(http_plain_proxy));
 
-    let http_service = HttpServer::auto(Executor::graceful(graceful.guard())).service(
+    let exec = Executor::graceful(graceful.guard());
+    let http_service = HttpServer::auto(exec.clone()).service(
         (
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
@@ -166,12 +167,12 @@ async fn main() {
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
                 ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
-            ),
+            )
+            .with_executor(exec.clone()),
         )
             .into_layer(proxy_service.clone()),
     );
 
-    let exec = Executor::graceful(graceful.guard());
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec).service(proxy_service))
         .with_fallback(Forwarder::ctx());
     let socks5_acceptor = Socks5Acceptor::new()

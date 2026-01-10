@@ -77,6 +77,7 @@ use std::{convert::Infallible, time::Duration};
 #[derive(Debug, Clone)]
 struct State {
     mitm_tls_service_data: TlsAcceptorData,
+    exec: Executor,
 }
 
 #[tokio::main]
@@ -93,21 +94,22 @@ async fn main() -> Result<(), BoxError> {
     let mitm_tls_service_data =
         try_new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
 
-    let state = State {
-        mitm_tls_service_data,
-    };
-
     let graceful = rama::graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(async |guard| {
+    let exec = Executor::graceful(graceful.guard());
+    let state = State {
+        mitm_tls_service_data,
+        exec: exec.clone(),
+    };
+
+    graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build()
             .bind("127.0.0.1:62019")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62019");
 
-        let exec = Executor::graceful(guard.clone());
         let http_mitm_service = new_http_mitm_proxy();
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -118,7 +120,8 @@ async fn main() -> Result<(), BoxError> {
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
-                ),
+                )
+                .with_executor(exec),
             )
                 .into_layer(http_mitm_service),
         );
@@ -177,23 +180,14 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
     let http_service = new_http_mitm_proxy();
 
-    let executor = upgraded
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let state = upgraded.extensions().get::<State>().unwrap();
+
+    let executor = state.exec.clone();
     let http_transport_service = HttpServer::auto(executor).service(http_service);
 
-    let https_service = TlsAcceptorLayer::new(
-        upgraded
-            .extensions()
-            .get::<State>()
-            .unwrap()
-            .mitm_tls_service_data
-            .clone(),
-    )
-    .with_store_client_hello(true)
-    .into_layer(http_transport_service);
+    let https_service = TlsAcceptorLayer::new(state.mitm_tls_service_data.clone())
+        .with_store_client_hello(true)
+        .into_layer(http_transport_service);
 
     https_service.serve(upgraded).await.expect("infallible");
 

@@ -1,5 +1,6 @@
 use super::utils;
 use rama::{extensions::Extensions, tcp::client::default_tcp_connect, telemetry::tracing};
+use rama_net::address::HostWithPort;
 use tokio::io::AsyncReadExt as _;
 
 #[cfg(feature = "boring")]
@@ -68,7 +69,7 @@ async fn test_tcp_ip() {
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(&extensions, ([127, 0, 0, 1], 63119).into()).await {
+        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(63119), None).await {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;

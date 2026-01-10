@@ -17,6 +17,7 @@ use std::{convert::Infallible, fmt, sync::Arc};
 pub struct UpgradeService<S, O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
     inner: S,
+    exec: Option<Executor>,
 }
 
 /// UpgradeHandler is a helper struct used internally to create an upgrade service.
@@ -46,8 +47,12 @@ impl<O> UpgradeHandler<O> {
 
 impl<S, O> UpgradeService<S, O> {
     /// Create a new [`UpgradeService`].
-    pub const fn new(handlers: Vec<Arc<UpgradeHandler<O>>>, inner: S) -> Self {
-        Self { handlers, inner }
+    pub fn new(handlers: Vec<Arc<UpgradeHandler<O>>>, inner: S, exec: Option<Executor>) -> Self {
+        Self {
+            handlers,
+            inner,
+            exec,
+        }
     }
 
     define_inner_service_accessors!();
@@ -61,6 +66,7 @@ where
         f.debug_struct("UpgradeService")
             .field("handlers", &self.handlers)
             .field("inner", &self.inner)
+            .field("exec", &self.exec)
             .finish()
     }
 }
@@ -73,6 +79,7 @@ where
         Self {
             handlers: self.handlers.clone(),
             inner: self.inner.clone(),
+            exec: self.exec.clone(),
         }
     }
 }
@@ -93,11 +100,8 @@ where
                 continue;
             }
             req.extensions_mut().extend(ext);
-            let exec = req
-                .extensions()
-                .get::<Executor>()
-                .cloned()
-                .unwrap_or_default();
+
+            let exec = self.exec.clone().unwrap_or_default();
 
             return match handler.responder.serve(req).await {
                 Ok((resp, req)) => {
@@ -115,7 +119,7 @@ where
                         network.protocol.version = version_as_protocol_version(req.version()),
                     );
 
-                    exec.spawn_task(
+                    exec.into_spawn_task(
                         async move {
                             match rama_http::io::upgrade::handle_upgrade(&req).await {
                                 Ok(mut upgraded) => {

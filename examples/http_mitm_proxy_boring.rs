@@ -128,6 +128,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 struct State {
     mitm_tls_service_data: TlsAcceptorData,
     ua_db: Arc<UserAgentDatabase>,
+    exec: Executor,
 }
 
 #[tokio::main]
@@ -144,23 +145,23 @@ async fn main() -> Result<(), BoxError> {
     let mitm_tls_service_data =
         try_new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
 
+    let graceful = rama::graceful::Shutdown::default();
+
+    let exec = Executor::graceful(graceful.guard());
     let state = State {
         mitm_tls_service_data,
         ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
+        exec: exec.clone(),
     };
 
-    let graceful = rama::graceful::Shutdown::default();
-
-    graceful.spawn_task_fn(async |guard| {
+    graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build()
             .bind("127.0.0.1:62017")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62017");
 
-        let exec = Executor::graceful(guard.clone());
-
         let http_mitm_service = new_http_mitm_proxy(&state);
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -171,7 +172,8 @@ async fn main() -> Result<(), BoxError> {
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
-                ),
+                )
+                .with_executor(exec),
             )
                 .into_layer(http_mitm_service),
         );
@@ -231,11 +233,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
-    let executor = upgraded
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let executor = state.exec.clone();
 
     let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().set_enable_connect_protocol();
@@ -290,11 +288,8 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
-    let executor = req
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let state = req.extensions().get::<State>().unwrap();
+    let executor = state.exec.clone();
 
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
@@ -375,11 +370,10 @@ where
     let parts_copy = parts.clone();
 
     let req = Request::from_parts(parts, body);
-    let guard = req
-        .extensions()
-        .get::<Executor>()
-        .and_then(|exec| exec.guard())
-        .cloned();
+
+    let state = req.extensions().get::<State>().unwrap();
+    let guard = state.exec.guard().cloned();
+
     let cancel = async move {
         match guard {
             Some(guard) => guard.downgrade().into_cancelled().await,

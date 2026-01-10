@@ -159,7 +159,7 @@ async fn main() {
                         MethodMatcher::CONNECT,
                         service_fn(http_connect_accept),
                         ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
-                    ),
+                    ).with_executor(Executor::graceful(guard.clone())),
                     RemoveResponseHeaderLayer::hop_by_hop(),
                     RemoveRequestHeaderLayer::hop_by_hop(),
                 )

@@ -27,7 +27,7 @@ pub async fn run(cfg: CliCommandTcp) -> Result<(), BoxError> {
         "connecting to server",
     );
 
-    let (_, addr) = default_tcp_connect(&Extensions::default(), cfg.authority)
+    let (_, addr) = default_tcp_connect(&Extensions::default(), cfg.authority, None)
         .await
         .context("tcp connect")?;
 

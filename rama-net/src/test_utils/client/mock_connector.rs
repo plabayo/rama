@@ -37,7 +37,7 @@ impl<S> MockConnectorService<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set `Executor` that will be stored on MockSocket Extensions
+        /// Set `Executor` used for child tasks.
         pub fn executor(mut self, executor: Option<Executor>) -> Self {
             self.executor = executor;
             self
@@ -56,21 +56,19 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let (client, server) = duplex(self.max_buffer_size);
-        let mut client_socket = MockSocket::new(client);
-        let mut server_socket = MockSocket::new(server);
-
-        if let Some(executor) = &self.executor {
-            client_socket.extensions_mut().insert(executor.clone());
-            server_socket.extensions_mut().insert(executor.clone());
-        }
+        let client_socket = MockSocket::new(client);
+        let server_socket = MockSocket::new(server);
 
         let server = (self.create_server)();
 
-        tokio::spawn(async move {
-            if let Err(err) = server.serve(server_socket).await {
-                panic!("created mock server failed: {}", err.into())
-            }
-        });
+        self.executor
+            .clone()
+            .unwrap_or_default()
+            .into_spawn_task(async move {
+                if let Err(err) = server.serve(server_socket).await {
+                    panic!("created mock server failed: {}", err.into())
+                }
+            });
 
         Ok(EstablishedClientConnection {
             input,

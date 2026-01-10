@@ -31,7 +31,13 @@ async fn test_tcp_nd_json() {
     let mut try_count = 0;
     let stream = loop {
         tokio::time::sleep(Duration::from_secs(try_count * 2)).await;
-        match default_tcp_connect(&Extensions::default(), HostWithPort::local_ipv4(62042)).await {
+        match default_tcp_connect(
+            &Extensions::default(),
+            HostWithPort::local_ipv4(62042),
+            None,
+        )
+        .await
+        {
             Ok((stream, _)) => break stream,
             Err(err) => tracing::error!(
                 "#{}: failed to connect to example listener: {err}",

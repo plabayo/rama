@@ -105,6 +105,7 @@ struct State {
     ua_db: Arc<UserAgentDatabase>,
     har_layer: HARExportLayer<FileRecorder, Arc<AtomicBool>>,
     har_toggle_ctl: mpsc::Sender<()>,
+    exec: Executor,
 }
 
 #[tokio::main]
@@ -132,6 +133,7 @@ async fn main() -> Result<(), BoxError> {
         ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
         har_layer,
         har_toggle_ctl,
+        exec: Executor::graceful(graceful.guard()),
     };
 
     graceful.spawn_task_fn(async |guard| {
@@ -143,7 +145,7 @@ async fn main() -> Result<(), BoxError> {
         let exec = Executor::graceful(guard.clone());
 
         let http_mitm_service = new_http_mitm_proxy(&state);
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -178,7 +180,7 @@ async fn main() -> Result<(), BoxError> {
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
-                ),
+                ).with_executor(exec),
             )
                 .into_layer(http_mitm_service),
         );
@@ -238,11 +240,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
-    let executor = upgraded
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let executor = state.exec.clone();
 
     let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().set_enable_connect_protocol();

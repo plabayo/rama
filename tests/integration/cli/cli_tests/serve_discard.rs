@@ -2,6 +2,7 @@ use rama::{
     extensions::Extensions, net::address::SocketAddress, tcp::client::default_tcp_connect,
     telemetry::tracing, udp::bind_udp,
 };
+use rama_net::address::HostWithPort;
 
 #[cfg(feature = "boring")]
 use ::{
@@ -27,7 +28,7 @@ async fn test_tcp_discard() {
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(&extensions, ([127, 0, 0, 1], 63114).into()).await {
+        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(63114), None).await {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;

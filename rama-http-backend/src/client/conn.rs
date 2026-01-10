@@ -32,6 +32,7 @@ use std::marker::PhantomData;
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S, Body> {
     inner: S,
+    exec: Option<Executor>,
     // Body type this connector will be able to send, this is not
     // necessarily the same one that was used in the request that
     // created this connection
@@ -40,10 +41,21 @@ pub struct HttpConnector<S, Body> {
 
 impl<S, Body> HttpConnector<S, Body> {
     /// Create a new [`HttpConnector`].
-    pub const fn new(inner: S) -> Self {
+    pub fn new(inner: S) -> Self {
         Self {
             inner,
+            exec: None,
             _phantom: PhantomData,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Executor`] to be used for spawning child tasks.
+        ///
+        /// By default [`tokio::spawn`] is used if no executor is set.
+        pub fn executor(mut self, exec: Option<Executor>) -> Self {
+            self.exec = exec;
+            self
         }
     }
 
@@ -91,18 +103,13 @@ where
 
         let io = Box::pin(conn);
 
-        let executor = req
-            .extensions()
-            .get::<Executor>()
-            .cloned()
-            .unwrap_or_default();
+        let exex = self.exec.clone().unwrap_or_default();
 
         match req.version() {
             Version::HTTP_2 => {
                 tracing::trace!(url.full = %req.uri(), "create h2 client executor");
 
-                let mut builder =
-                    rama_http_core::client::conn::http2::Builder::new(executor.clone());
+                let mut builder = rama_http_core::client::conn::http2::Builder::new(exex.clone());
 
                 if req.extensions().get::<Protocol>().is_some() {
                     // e.g. used for h2 bootstrap support for WebSocket
@@ -144,7 +151,7 @@ where
                     server.service.name = %server_address,
                 );
 
-                executor.spawn_task(
+                exex.into_spawn_task(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {err:?}");
@@ -187,7 +194,7 @@ where
                     server.service.name = %server_address,
                 );
 
-                executor.spawn_task(
+                exex.into_spawn_task(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {err:?}");
@@ -217,6 +224,7 @@ where
 #[derive(Clone, Debug)]
 /// A [`Layer`] that produces an [`HttpConnector`].
 pub struct HttpConnectorLayer<Body> {
+    exec: Option<Executor>,
     _phantom: PhantomData<Body>,
 }
 
@@ -225,7 +233,18 @@ impl<Body> HttpConnectorLayer<Body> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            exec: None,
             _phantom: PhantomData,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Executor`] to be used for spawning child tasks.
+        ///
+        /// By default [`tokio::spawn`] is used if no executor is set.
+        pub fn executor(mut self, exec: Option<Executor>) -> Self {
+            self.exec = exec;
+            self
         }
     }
 }
@@ -242,6 +261,15 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
+            exec: self.exec.clone(),
+            _phantom: PhantomData,
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HttpConnector {
+            inner,
+            exec: self.exec,
             _phantom: PhantomData,
         }
     }

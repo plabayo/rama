@@ -1,5 +1,5 @@
 use super::{UpgradeService, Upgraded, service::UpgradeHandler};
-use rama_core::{Layer, Service, matcher::Matcher};
+use rama_core::{Layer, Service, matcher::Matcher, rt::Executor};
 use rama_http_types::Request;
 use std::{convert::Infallible, fmt, sync::Arc};
 
@@ -10,6 +10,7 @@ use std::{convert::Infallible, fmt, sync::Arc};
 /// [`UpgradeService`]: crate::server::layer::upgrade::UpgradeService
 pub struct UpgradeLayer<O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
+    exec: Option<Executor>,
 }
 
 impl<O> UpgradeLayer<O> {
@@ -22,6 +23,7 @@ impl<O> UpgradeLayer<O> {
     {
         Self {
             handlers: vec![Arc::new(UpgradeHandler::new(matcher, responder, handler))],
+            exec: None,
         }
     }
 
@@ -37,6 +39,16 @@ impl<O> UpgradeLayer<O> {
             .push(Arc::new(UpgradeHandler::new(matcher, responder, handler)));
         self
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Executor`] to be used for spawning child tasks.
+        ///
+        /// By default [`tokio::spawn`] is used if no executor is set.
+        pub fn executor(mut self, exec: Option<Executor>) -> Self {
+            self.exec = exec;
+            self
+        }
+    }
 }
 
 impl<O> fmt::Debug for UpgradeLayer<O> {
@@ -51,6 +63,7 @@ impl<O> Clone for UpgradeLayer<O> {
     fn clone(&self) -> Self {
         Self {
             handlers: self.handlers.clone(),
+            exec: self.exec.clone(),
         }
     }
 }
@@ -59,10 +72,10 @@ impl<S, O> Layer<S> for UpgradeLayer<O> {
     type Service = UpgradeService<S, O>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        UpgradeService::new(self.handlers.clone(), inner)
+        UpgradeService::new(self.handlers.clone(), inner, self.exec.clone())
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        UpgradeService::new(self.handlers, inner)
+        UpgradeService::new(self.handlers, inner, self.exec)
     }
 }

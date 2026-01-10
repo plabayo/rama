@@ -130,7 +130,8 @@ async fn main() {
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
-                ),
+                )
+                .with_executor(exec),
             )
                 .into_layer(service_fn(http_plain_proxy)),
         );
