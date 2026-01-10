@@ -2,7 +2,7 @@
 //! purely in Rust without the need of `proto` files. It also enables you to set a custom `Codec`
 //! if you want to use a custom serialization format other than `protobuf`.
 
-use crate::code_gen::CodeGenBuilder;
+use crate::CodeGenBuilder;
 
 use proc_macro2::TokenStream;
 use quote::ToTokens;
