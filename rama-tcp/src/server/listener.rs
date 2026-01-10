@@ -227,7 +227,7 @@ impl TcpListener {
     ///
     /// For more information about this option, see [`set_ttl`].
     ///
-    /// [`set_ttl`]: TcpListenerBuilder::ttl
+    /// [`set_ttl`]: TcpListenerBuilder::set_ttl
     pub fn ttl(&self) -> io::Result<u32> {
         self.inner.ttl()
     }

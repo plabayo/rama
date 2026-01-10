@@ -29,7 +29,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// +-----+----------+----------|
 /// ```
 ///
-/// Reference: https://datatracker.ietf.org/doc/html/rfc1928
+/// Reference: <https://datatracker.ietf.org/doc/html/rfc1928>
 pub struct Header {
     pub version: ProtocolVersion,
     pub methods: SmallVec<[SocksMethod; 2]>,

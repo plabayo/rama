@@ -87,6 +87,8 @@ impl<S, P> StreamCompression<S, P> {
     ///
     /// The default predicate is [`DefaultPredicate`]. See its documentation for more
     /// details on which responses it wont compress.
+    ///
+    /// [`DefaultPredicate`]: crate::layer::compression::DefaultPredicate
     #[must_use]
     pub fn with_compress_predicate<C>(self, predicate: C) -> StreamCompression<S, C>
     where

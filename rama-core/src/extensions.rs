@@ -70,7 +70,7 @@ impl Extensions {
             .expect("we just inserted this")
     }
 
-    /// Extend this [`Extensions`] store with the [`Extension`]s from the provided store
+    /// Extend this [`Extensions`] store with the [`Extensions`] from the provided store
     pub fn extend(&mut self, extensions: Self) -> &mut Self {
         self.extensions.extend(extensions.extensions);
         self

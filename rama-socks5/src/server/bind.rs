@@ -97,7 +97,7 @@ impl<A, S> Binder<A, S> {
 }
 
 impl<A, S> Binder<A, S> {
-    /// Overwrite the [`Binder`]'s [`AcceptorFactory`],
+    /// Overwrite the [`Binder`]'s factory [`Service`],
     /// used to open a listener, return the address and
     /// wait for an incoming connection which it will return.
     pub fn with_acceptor<T>(self, acceptor: T) -> Binder<T, S> {
@@ -159,7 +159,7 @@ impl<A, S> Binder<A, S> {
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-/// Default [`AcceptorFactory`] used by [`DefaultBinder`].
+/// Default factory [`Service`] used by [`DefaultBinder`].
 pub struct DefaultAcceptorFactory;
 
 impl Service<Interface> for DefaultAcceptorFactory {
@@ -172,7 +172,7 @@ impl Service<Interface> for DefaultAcceptorFactory {
     }
 }
 
-/// [`Acceptor`] created by an [`AcceptorFactory`] in function of a [`Binder`].
+/// [`Acceptor`] created by an factory [`Service`] in function of a bind [`Service`].
 pub trait Acceptor: Send + Sync + 'static {
     /// The [`Stream`] returned by this [`Acceptor`].
     type Stream: Stream;

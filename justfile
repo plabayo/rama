@@ -43,13 +43,13 @@ extra-checks:
     {{justfile_directory()}}/scripts/extra-checks.sh
 
 doc:
-    cargo doc --all-features --no-deps
+    cargo doc --all-features --no-deps --workspace
 
 doc-crate CRATE:
     cargo doc --all-features --no-deps -p {{CRATE}}
 
 doc-open:
-   cargo doc --all-features --no-deps --open
+   cargo doc --all-features --no-deps --workspace --open
 
 hack:
     @cargo install cargo-hack

@@ -38,7 +38,9 @@ impl DefaultForwarder {
         }
     }
 
-    /// Create a new dynamic forwarder, which will fetch the target from the [`Context`]
+    /// Create a new dynamic forwarder, which will fetch the target from the [`Extensions`]
+    ///
+    /// [`Extensions`]: rama_core::extensions::Extensions
     #[must_use]
     pub fn ctx(exec: Executor) -> Self {
         Self {

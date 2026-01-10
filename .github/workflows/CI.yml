@@ -61,6 +61,9 @@ jobs:
       - name: rustfmt
         run: |
           cargo fmt --all --check
+      - name: doc
+        run: |
+          cargo doc --all-features --no-deps --workspace
 
   precheck-docs:
     runs-on: ubuntu-latest

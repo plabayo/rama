@@ -135,8 +135,6 @@ impl<S> RequestBodyTimeout<S> {
     }
 
     /// Returns a new [`Layer`] that wraps services with a [`RequestBodyTimeoutLayer`] middleware.
-    ///
-    /// [`Layer`]: tower_layer::Layer
     #[must_use]
     pub fn layer(timeout: Duration) -> RequestBodyTimeoutLayer {
         RequestBodyTimeoutLayer::new(timeout)
@@ -214,8 +212,6 @@ impl<S> ResponseBodyTimeout<S> {
     }
 
     /// Returns a new [`Layer`] that wraps services with a [`ResponseBodyTimeoutLayer`] middleware.
-    ///
-    /// [`Layer`]: tower_layer::Layer
     #[must_use]
     pub fn layer(timeout: Duration) -> ResponseBodyTimeoutLayer {
         ResponseBodyTimeoutLayer::new(timeout)

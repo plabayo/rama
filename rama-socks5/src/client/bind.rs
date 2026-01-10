@@ -17,11 +17,12 @@ use crate::proto::{ReplyKind, server};
 /// the server has established a connection with the socks5 server.
 ///
 /// [`Binder`] is provided by using the [`Client::handshake_bind`] method,
-/// and contains the [`bind_address`] to be given to the server so it knows
-/// where to connect to.
+/// and contains the [`requested_bind_address`] to be given to the server so it knows
+/// where to connect to. The one selected in the end will be [`selected_bind_address`]
 ///
 /// [`Client::handshake_bind`]: crate::Socks5Client::handshake_bind
-/// [`bind_address`]: Binder::bind_address
+/// [`requested_bind_address`]: Binder::requested_bind_address
+/// [`selected_bind_address`]: Binder::selected_bind_address
 pub struct Binder<S> {
     stream: S,
     requested_bind_address: Option<SocketAddress>,

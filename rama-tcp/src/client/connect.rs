@@ -28,7 +28,7 @@ use tokio::sync::{
 use crate::TcpStream;
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
-/// to actually establish the [`TcpStream`.]
+/// to actually establish the [`TcpStream`]
 pub trait TcpStreamConnector: Clone + Send + Sync + 'static {
     /// Type of error that can occurr when establishing the connection failed.
     type Error;

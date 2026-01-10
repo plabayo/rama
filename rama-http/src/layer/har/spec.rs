@@ -660,7 +660,7 @@ pub struct PostParam {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// This object describes details about response content
 ///
-/// (embedded in <response> object).
+/// (embedded in `<response>` object).
 ///
 /// Before setting the text field,
 /// the HTTP response is decoded (decompressed & unchunked),

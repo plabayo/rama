@@ -28,9 +28,7 @@ use super::UnixSocketAddress;
 /// calling [`split`] on the `UnixDatagramFramed` returned by this method, which will break
 /// them into separate objects, allowing them to interact more easily.
 ///
-/// [`Stream`]: futures_core::Stream
-/// [`Sink`]: futures_sink::Sink
-/// [`split`]: https://docs.rs/futures/latest/futures/stream/trait.StreamExt.html#method.split
+/// [`split`]: rama_core::futures::StreamExt::split
 #[must_use = "sinks do nothing unless polled"]
 #[derive(Debug)]
 pub struct UnixDatagramFramed<C, T = UnixDatagram> {

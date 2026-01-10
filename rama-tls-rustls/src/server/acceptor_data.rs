@@ -102,7 +102,8 @@ where
 
 /// [`TlsAcceptorDataBuilder`] can be used to construct [`rustls::ServerConfig`] for most common use cases in Rama.
 ///
-/// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ServerConfig`]
+/// If this doesn't work for your use case, no problem,
+/// You can also use a [`rustls::ServerConfig`].
 pub struct TlsAcceptorDataBuilder {
     server_config: rustls::ServerConfig,
 }

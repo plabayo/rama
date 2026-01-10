@@ -29,7 +29,7 @@ use std::marker::PhantomData;
 /// - [`SetForwardedHeaderLayer::x_forwarded_host`]: the canonical [`X-Forwarded-Host`][`XForwardedHost`] header (non-standard);
 /// - [`SetForwardedHeaderLayer::x_forwarded_proto`]: the canonical [`X-Forwarded-Proto`][`XForwardedProto`] header (non-standard).
 ///
-/// The "by" property is set to `rama` by default. Use [`SetForwardedHeaderLayer::forward_by`] to overwrite this,
+/// The "by" property is set to `rama` by default. Use [`SetForwardedHeaderLayer::set_forward_by`] to overwrite this,
 /// typically with the actual [`IPv4`]/[`IPv6`] address of your proxy.
 ///
 /// [`IPv4`]: std::net::Ipv4Addr
@@ -43,15 +43,16 @@ use std::marker::PhantomData;
 /// but you can use the [`SetForwardedHeaderLayer::new`] constructor and pass the header type as a type parameter,
 /// alone or in a tuple with other headers.
 ///
-/// [`X-Real-Ip`]: crate::headers::XRealIp
-/// [`X-Client-Ip`]: crate::headers::XClientIp
-/// [`Client-Ip`]: crate::headers::ClientIp
-/// [`CF-Connecting-Ip`]: crate::headers::CFConnectingIp
-/// [`True-Client-Ip`]: crate::headers::TrueClientIp
+/// [`X-Real-Ip`]: crate::headers::forwarded::XRealIp
+/// [`X-Client-Ip`]: crate::headers::forwarded::XClientIp
+/// [`Client-Ip`]: crate::headers::forwarded::ClientIp
+/// [`CF-Connecting-Ip`]: crate::headers::forwarded::CFConnectingIp
+/// [`True-Client-Ip`]: crate::headers::forwarded::TrueClientIp
 ///
 /// ## Example
 ///
-/// This example shows how you could expose the real Client IP using the [`X-Real-IP`][`crate::headers::XRealIp`] header.
+/// This example shows how you could expose the real Client IP using
+/// the [`X-Real-IP`][`crate::headers::forwarded::XRealIp`] header.
 ///
 /// ```rust
 /// use rama_net::stream::SocketInfo;
@@ -158,7 +159,7 @@ impl SetForwardedHeaderLayer<Via> {
 
 impl SetForwardedHeaderLayer<XForwardedFor> {
     #[inline]
-    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`] header.
+    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`][XForwardedFor] header.
     #[must_use]
     pub fn x_forwarded_for() -> Self {
         Self::new()
@@ -167,7 +168,7 @@ impl SetForwardedHeaderLayer<XForwardedFor> {
 
 impl SetForwardedHeaderLayer<XForwardedHost> {
     #[inline]
-    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`] header.
+    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`][XForwardedHost] header.
     #[must_use]
     pub fn x_forwarded_host() -> Self {
         Self::new()
@@ -176,7 +177,7 @@ impl SetForwardedHeaderLayer<XForwardedHost> {
 
 impl SetForwardedHeaderLayer<XForwardedProto> {
     #[inline]
-    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`] header.
+    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`][XForwardedProto] header.
     #[must_use]
     pub fn x_forwarded_proto() -> Self {
         Self::new()
@@ -277,7 +278,7 @@ impl<S> SetForwardedHeaderService<S, Via> {
 
 impl<S> SetForwardedHeaderService<S, XForwardedFor> {
     #[inline]
-    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-For`] header.
+    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-For`][XForwardedFor] header.
     pub fn x_forwarded_for(inner: S) -> Self {
         Self::new(inner)
     }
@@ -285,7 +286,7 @@ impl<S> SetForwardedHeaderService<S, XForwardedFor> {
 
 impl<S> SetForwardedHeaderService<S, XForwardedHost> {
     #[inline]
-    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-Host`] header.
+    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-Host`][XForwardedHost] header.
     pub fn x_forwarded_host(inner: S) -> Self {
         Self::new(inner)
     }
@@ -293,7 +294,7 @@ impl<S> SetForwardedHeaderService<S, XForwardedHost> {
 
 impl<S> SetForwardedHeaderService<S, XForwardedProto> {
     #[inline]
-    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-Proto`] header.
+    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-Proto`][XForwardedProto] header.
     pub fn x_forwarded_proto(inner: S) -> Self {
         Self::new(inner)
     }

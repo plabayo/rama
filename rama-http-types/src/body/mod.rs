@@ -183,7 +183,7 @@ impl Body {
         EventStream::new(self.into_data_stream())
     }
 
-    /// Convert the body into a [`JsonStream`].
+    /// Convert the body into a [`JsonReadStream`][json::JsonReadStream].
     ///
     /// Stream of json objects, each object separated by a newline (`\n`).
     #[must_use]
@@ -192,7 +192,7 @@ impl Body {
         json::JsonReadStream::new(stream)
     }
 
-    /// Convert the body into a [`JsonStream`].
+    /// Convert the body into a [`JsonReadStream`][json::JsonReadStream].
     ///
     /// Stream of json objects, each object separated by a newline (`\n`).
     #[must_use]

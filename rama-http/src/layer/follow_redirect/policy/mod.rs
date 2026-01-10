@@ -70,7 +70,7 @@ pub trait Policy<B, E>: Send + Sync + 'static {
     ///
     /// If the request body cannot be cloned, return `None`.
     ///
-    /// This is not invoked when [`B::size_hint`][http_body::Body::size_hint] returns zero,
+    /// This is not invoked when [`B::size_hint`][crate::StreamingBody::size_hint] returns zero,
     /// in which case `B::default()` will be used to create a new request body.
     ///
     /// The default implementation returns `None`.

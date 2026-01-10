@@ -10,14 +10,14 @@
 //!
 //! You are responsible for any other pre-requisites to establish an upgrade,
 //! such as sending the appropriate headers, methods, and status codes. You can
-//! then use [`on`][] to grab a `Future` which will resolve to the upgraded
+//! then use [`handle_upgrade`] to grab a `Future` which will resolve to the upgraded
 //! connection object, or an error if the upgrade fails.
 //!
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
 //!
 //! # Client
 //!
-//! Sending an HTTP upgrade from the [`client`](super::client) involves setting
+//! Sending an HTTP upgrade from the client involves setting
 //! either the appropriate method, if wanting to `CONNECT`, or headers such as
 //! `Upgrade` and `Connection`, on the `http::Request`. Once receiving the
 //! `http::Response` back, you must check for the specific information that the
@@ -56,7 +56,7 @@ use rama_core::telemetry::tracing::trace;
 ///
 /// This type holds a trait object internally of the original IO that
 /// was used to speak HTTP before the upgrade. It can be used directly
-/// as a [`Read`] or [`Write`] for convenience.
+/// as a [`AsyncRead`] or [`AsyncWrite`] for convenience.
 ///
 /// Alternatively, if the exact type is known, this can be deconstructed
 /// into its parts.

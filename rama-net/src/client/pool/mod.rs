@@ -24,7 +24,7 @@ pub mod http;
 #[cfg(feature = "opentelemetry")]
 pub mod metrics;
 
-/// [`PoolStorage`] implements the storage part of a connection pool. This storage
+/// [`Pool`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
 /// remove one, this results in the storage deciding which mode we use for connection
 /// reuse and dropping (eg FIFO for reuse and LRU for dropping conn when pool is full)

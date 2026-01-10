@@ -14,7 +14,7 @@
 //!
 //! # Emulation
 //!
-//! Check out the [emulate] module for user-agent emulation
+//! Check out the [layer::emulate] module for user-agent emulation
 //! or learn more about it at
 //! <https://ramaproxy.org/book/intro/user_agent.html#user-agent-emulation>.
 //!

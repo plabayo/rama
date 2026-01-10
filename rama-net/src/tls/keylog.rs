@@ -123,7 +123,7 @@ static GLOBAL_KEY_LOG_FILE_MAPPING: OnceLock<RwLock<HashMap<PathBuf, KeyLogFileH
 #[derive(Debug, Clone)]
 /// Handle to a (tls) keylog file.
 ///
-/// See [`new_key_log_file_handle`] for more info,
+/// See [`try_new_key_log_file_handle`] for more info,
 /// as that is the one creating it.
 pub struct KeyLogFileHandle {
     path: PathBuf,

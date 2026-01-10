@@ -38,6 +38,7 @@ trybuild = { workspace = true }
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = "0.7"
+tokio = { workspace = true, features = ["time", "macros", "sync"] }
 
 [lints]
 workspace = true

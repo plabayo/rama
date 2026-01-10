@@ -31,6 +31,8 @@ use super::{NoTlsRejectError, TlsPeekStream};
 ///
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`SniRouter::with_fallback`] to configure the fallback service.
+///
+/// [`TlsPeekRouter`]: super::TlsPeekRouter
 #[derive(Debug, Clone)]
 pub struct SniRouter<S, F = RejectService<(), NoTlsRejectError>> {
     service: S,

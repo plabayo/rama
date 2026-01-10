@@ -67,7 +67,7 @@ impl HickoryDns {
     /// statement](https://developers.google.com/speed/public-dns/privacy) for important information
     /// about what they track, many ISP's track similar information in DNS.
     ///
-    /// To use the system configuration see: [`Self::new_system`].
+    /// To use the system configuration see: [`Self::try_new_system`].
     pub fn new_google() -> Self {
         tracing::trace!("create HickoryDns resolver using default google config");
         Self::builder()
@@ -82,7 +82,7 @@ impl HickoryDns {
     ///
     /// Please see: <https://www.cloudflare.com/dns/>
     ///
-    /// To use the system configuration see: [`Self::new_system`].
+    /// To use the system configuration see: [`Self::try_new_system`].
     pub fn new_cloudflare() -> Self {
         tracing::trace!("create HickoryDns resolver using default cloudflare config");
         Self::builder()
@@ -98,7 +98,7 @@ impl HickoryDns {
     ///
     /// Please see: <https://www.quad9.net/faq/>
     ///
-    /// To use the system configuration see: [`Self::new_system`].
+    /// To use the system configuration see: [`Self::try_new_system`].
     pub fn new_quad9() -> Self {
         tracing::trace!("create HickoryDns resolver using default quad9 config");
         Self::builder().with_config(ResolverConfig::quad9()).build()
@@ -127,7 +127,7 @@ impl From<TokioResolver> for HickoryDns {
 }
 
 #[derive(Debug, Clone, Default)]
-/// A [`Builder`] to [`build`][`Self::build`] a [`HickoryDns`] instance.
+/// Used to [`build`][`Self::build`] a [`HickoryDns`] instance.
 pub struct HickoryDnsBuilder {
     config: Option<self::resolver::config::ResolverConfig>,
     options: Option<self::resolver::config::ResolverOpts>,

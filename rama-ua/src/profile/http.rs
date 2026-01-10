@@ -15,7 +15,7 @@ use std::sync::Arc;
 ///
 /// This is used to identify in the [`HttpHeadersProfile`]
 /// the initial location of custom headers, which is also
-/// by the [`UserAgentEmulateRequestModifier`] used to place
+/// by the [`UserAgentEmulateService`] used to place
 /// any original request headers that were not present in the
 /// [`HttpHeadersProfile`] (also called base headers).
 ///
@@ -24,7 +24,7 @@ use std::sync::Arc;
 /// put as the final headers in the request header map.
 ///
 /// [`HttpHeadersProfile`]: crate::profile::HttpHeadersProfile
-/// [`UserAgentEmulateHttpRequestModifier`]: crate::emulate::UserAgentEmulateHttpRequestModifier
+/// [`UserAgentEmulateService`]: crate::layer::emulate::UserAgentEmulateService
 pub static CUSTOM_HEADER_MARKER: HeaderName =
     HeaderName::from_static("x-rama-custom-header-marker");
 
@@ -216,14 +216,16 @@ pub struct HttpHeadersProfile {
     ///
     /// [`fetch`]: https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API
     pub fetch: Option<Http1HeaderMap>,
-    /// The headers to be used for XMLHttpRequest requests.
+    /// The headers to be used for [`XMLHttpRequest`] requests.
     ///
-    /// An [`XMLHttpRequest`](https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest)
+    /// An [`XMLHttpRequest`]
     /// is a request made by a script to retrieve a resource from a server.
     ///
-    /// In case the user-agent does not support the [`XMLHttpRequest`][`XMLHttpRequest`] API,
+    /// In case the user-agent does not support the [`XMLHttpRequest`] API,
     /// then it is recommended to try to use the `fetch` headers,
     /// and as a final fallback use the `navigate` headers.
+    ///
+    /// [`XMLHttpRequest`]: https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest
     pub xhr: Option<Http1HeaderMap>,
     /// The headers to be used for form submissions.
     ///
@@ -275,6 +277,8 @@ pub struct Http2Settings {
     /// The pseudo headers to be used for the HTTP/2 profile.
     ///
     /// See [`PseudoHeader`] for more details.
+    ///
+    /// [`PseudoHeader`]: rama_http::proto::h2::PseudoHeader
     pub http_pseudo_headers: Option<PseudoHeaderOrder>,
 
     /// Frames to be sent at the start of a stream.

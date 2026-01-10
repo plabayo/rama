@@ -51,11 +51,10 @@ use crate::{UserAgent, UserAgentOverwrites};
 
 /// A [`Service`] that classifies the [`UserAgent`] of incoming [`Request`]s.
 ///
-/// The [`Extensions`] of the [`Context`] is updated with the [`UserAgent`]
+/// The [`Extensions`] is updated with the [`UserAgent`]
 /// if the [`Request`] contains a valid [`UserAgent`] header.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
-/// [`Context`]: rama_core::Context
 #[derive(Debug, Clone, Default)]
 pub struct UserAgentClassifier<S> {
     inner: S,

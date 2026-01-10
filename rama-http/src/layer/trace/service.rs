@@ -173,7 +173,7 @@ impl<S, M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
     /// `NewMakeSpan` is expected to implement [`MakeSpan`].
     ///
     /// [`MakeSpan`]: super::MakeSpan
-    /// [`Span`]: tracing::Span
+    /// [`Span`]: rama_core::telemetry::tracing::Span
     pub fn make_span_with<NewMakeSpan>(
         self,
         new_make_span: NewMakeSpan,

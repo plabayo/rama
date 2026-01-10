@@ -270,7 +270,7 @@ impl Builder {
         }
     }
 
-    /// Bind a connection together with a [`Service`](crate::service::Service).
+    /// Bind a connection together with a [`Service`].
     ///
     /// This returns a Future that must be polled in order for HTTP to be
     /// driven on the connection.

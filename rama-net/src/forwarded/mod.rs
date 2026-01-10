@@ -34,14 +34,14 @@ use crate::address::SocketAddress;
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Forwarding information stored as a chain.
 ///
-/// This extension (which can be stored and modified via the [`Context`])
+/// This extension (which can be stored and modified via the [`Extensions`])
 /// allows to keep track of the forward information. E.g. what was the original
 /// host used by the user, by which proxy it was forwarded, what was the intended
 /// protocol (e.g. https), etc...
 ///
 /// RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 ///
-/// [`Context`]: rama_core::Context
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct Forwarded {
     first: ForwardedElement,
     others: Vec<ForwardedElement>,

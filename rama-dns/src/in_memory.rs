@@ -15,7 +15,7 @@ use std::{
 /// dns overwrites to a service Context.
 ///
 /// This is supported by the official `rama`
-/// consumers such as [`TcpConnector`].
+/// consumers such as `TcpConnector`.
 pub struct DnsOverwrite(DnsOverwriteKind);
 
 #[derive(Debug, Clone)]
