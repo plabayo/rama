@@ -101,7 +101,7 @@ async fn coin_page(State(state): State<Arc<AppState>>, ext: Extensions) -> Html<
         .get::<SocketInfo>()
         .unwrap()
         .peer_addr()
-        .ip()
+        .ip_addr
         .is_loopback()
     {
         r#"<a href="/home">🏠</a>"#

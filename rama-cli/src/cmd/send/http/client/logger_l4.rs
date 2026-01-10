@@ -26,7 +26,7 @@ where
         let ec = self.0.connect(input).await?;
         if ec.input.extensions().contains::<VerboseLogs>() {
             match ec.conn.peer_addr() {
-                Ok(addr) => match addr.ip() {
+                Ok(addr) => match addr.ip_addr {
                     IpAddr::V4(addr) => {
                         eprintln!("* Connection established to peer with IPv4: {addr}")
                     }

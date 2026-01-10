@@ -50,7 +50,12 @@ Before you can do this you do require the following to be installed:
 
 * `Rust`, version 1.91 or beyond: <https://www.rust-lang.org/tools/install>
 * `just` (to run _just_ (config) files): <https://just.systems/man/en/packages.html>
-* `cargo hack`: <https://github.com/taiki-e/cargo-hack?tab=readme-ov-file#installation>
+
+What you will also need to have installed is:
+
+- `cmake`
+- `clang` (`llvm`)
+- `protobuf-compiler` (for `rama`'s gRPC support)
 
 Once this is all done you should be able to run `just qa`.
 When all these pass you can be pretty certain that all tests in the GitHub CI step

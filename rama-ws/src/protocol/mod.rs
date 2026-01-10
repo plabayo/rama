@@ -464,7 +464,7 @@ impl<Stream: Read + Write> WebSocket<Stream> {
     /// the close message with an optional close frame.
     ///
     /// You should continue calling [`read`](Self::read), [`write`](Self::write) or
-    /// [`flush`](Self::flush) to drive the reply to the close frame until [`Error::ConnectionClosed`]
+    /// [`flush`](Self::flush) to drive the reply to the close frame until [`ProtocolError::Io`] (close)
     /// is returned. Once that happens it is safe to drop the underlying connection.
     pub fn read(&mut self) -> Result<Message, ProtocolError> {
         self.context.read(&mut self.socket)
@@ -486,7 +486,7 @@ impl<Stream: Read + Write> WebSocket<Stream> {
     /// or [`flush`](Self::flush).
     ///
     /// If the write buffer would exceed the configured [`WebSocketConfig::max_write_buffer_size`]
-    /// [`Err(WriteBufferFull(msg_frame))`](Error::WriteBufferFull) is returned.
+    /// [`Err(WriteBufferFull(msg_frame))`](ProtocolError::WriteBufferFull) is returned.
     ///
     /// This call will generally not flush. However, if there are queued automatic messages
     /// they will be written and eagerly flushed.
@@ -502,15 +502,15 @@ impl<Stream: Read + Write> WebSocket<Stream> {
     /// ping will not be sent as it will be replaced by your custom pong message.
     ///
     /// # Errors
-    /// - If the WebSocket's write buffer is full, [`Error::WriteBufferFull`] will be returned
+    /// - If the WebSocket's write buffer is full, [`ProtocolError::WriteBufferFull`] will be returned
     ///   along with the equivalent passed message frame.
-    /// - If the connection is closed and should be dropped, this will return [`Error::ConnectionClosed`].
-    /// - If you try again after [`Error::ConnectionClosed`] was returned either from here or from
-    ///   [`read`](Self::read), [`Error::AlreadyClosed`] will be returned. This indicates a program
+    /// - If the connection is closed and should be dropped, this will return [`ProtocolError::Io`] (close).
+    /// - If you try again after [`ProtocolError::Io`] (close) was returned either from here or from
+    ///   [`read`](Self::read), [`ProtocolError::Io`] with reason will be returned. This indicates a program
     ///   error on your part.
-    /// - [`Error::Io`] is returned if the underlying connection returns an error
+    /// - [`ProtocolError::Io`] is returned if the underlying connection returns an error
     ///   (consider these fatal except for WouldBlock).
-    /// - [`Error::Capacity`] if your message size is bigger than the configured max message size.
+    /// - [`ProtocolError::Io`] if your message size is bigger than the configured max message size.
     pub fn write(&mut self, message: Message) -> Result<(), ProtocolError> {
         self.context.write(&mut self.socket, message)
     }
@@ -537,12 +537,12 @@ impl<Stream: Read + Write> WebSocket<Stream> {
     ///
     /// When the close handshake is finished (we have both sent and received
     /// a close message), [`read`](Self::read) or [`flush`](Self::flush) will return
-    /// [Error::ConnectionClosed] if this endpoint is the server.
+    /// [`ProtocolError::Io`] (close) if this endpoint is the server.
     ///
-    /// If this endpoint is a client, [Error::ConnectionClosed] will only be
+    /// If this endpoint is a client, [`ProtocolError::Io`] (close) will only be
     /// returned after the server has closed the underlying connection.
     ///
-    /// It is thus safe to drop the underlying connection as soon as [Error::ConnectionClosed]
+    /// It is thus safe to drop the underlying connection as soon as [`ProtocolError::Io`] (close)
     /// is returned from [`read`](Self::read) or [`flush`](Self::flush).
     pub fn close(&mut self, code: Option<CloseFrame>) -> Result<(), ProtocolError> {
         self.context.close(&mut self.socket, code)
@@ -710,7 +710,7 @@ impl WebSocketContext {
     /// or [`flush`](Self::flush).
     ///
     /// If the write buffer would exceed the configured [`WebSocketConfig::max_write_buffer_size`]
-    /// [`Err(WriteBufferFull(msg_frame))`](Error::WriteBufferFull) is returned.
+    /// [`Err(WriteBufferFull(msg_frame))`](ProtocolError::WriteBufferFull) is returned.
     pub fn write<Stream>(
         &mut self,
         stream: &mut Stream,

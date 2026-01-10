@@ -37,6 +37,9 @@ pub mod sse;
 mod infinite;
 pub use infinite::InfiniteReader;
 
+mod optional;
+pub use optional::OptionalBody;
+
 // Implementations copied over from http-body but addapted to work with our Requests/Response types
 
 impl<B: StreamingBody> StreamingBody for crate::Request<B> {

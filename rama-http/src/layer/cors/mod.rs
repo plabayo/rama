@@ -12,7 +12,7 @@ use rama_http_headers::{
     AccessControlAllowHeaders, AccessControlAllowMethods, AccessControlExposeHeaders,
     AccessControlMaxAge, HeaderMapExt, Vary, util::Seconds,
 };
-use rama_http_types::request::Parts as RequestParts;
+use rama_http_types::{body::OptionalBody, request::Parts as RequestParts};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{mem, sync::Arc};
 
@@ -583,9 +583,9 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Cors<S>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
-    ResBody: Default + Send + 'static,
+    ResBody: Send + 'static,
 {
-    type Output = S::Output;
+    type Output = Response<OptionalBody<ResBody>>;
     type Error = S::Error;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
@@ -636,9 +636,9 @@ where
                 // extend will overwrite previous headers of remaining names
                 response_headers.extend(headers.drain());
 
-                response
+                response.map(OptionalBody::some)
             } else {
-                let mut response = Response::new(ResBody::default());
+                let mut response = Response::new(OptionalBody::none());
                 mem::swap(response.headers_mut(), &mut headers);
 
                 response
@@ -662,7 +662,7 @@ where
             // extend will overwrite previous headers of remaining names
             response_headers.extend(headers.drain());
 
-            Ok(response)
+            Ok(response.map(OptionalBody::some))
         }
     }
 }

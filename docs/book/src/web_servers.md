@@ -40,10 +40,6 @@ Common examples include:
 - **Control**: Rama gives you more direct access to the network stack and transport layers
 - **Integration**: Rama makes it easier to combine web services with proxy functionality
 
-The choice between them often comes down to your priorities:
-- Choose Axum if you want a framework optimized for traditional web development with excellent developer experience
-- Choose Rama if you need more control, want to integrate with proxy services, or have specific requirements that benefit from direct access to the network stack
-
 ## Datastar
 
 > Datastar helps you build reactive web applications with the simplicity of server-side rendering and the power of a full-stack SPA framework.

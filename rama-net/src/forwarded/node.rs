@@ -1,5 +1,5 @@
 use super::{ObfNode, ObfPort};
-use crate::address::{Domain, Host, HostWithOptPort, HostWithPort};
+use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{
     fmt,
@@ -225,6 +225,24 @@ impl From<&SocketAddr> for NodeId {
         Self {
             name: NodeName::Ip(addr.ip()),
             port: Some(NodePort::Num(addr.port())),
+        }
+    }
+}
+
+impl From<SocketAddress> for NodeId {
+    fn from(addr: SocketAddress) -> Self {
+        Self {
+            name: NodeName::Ip(addr.ip_addr),
+            port: Some(NodePort::Num(addr.port)),
+        }
+    }
+}
+
+impl From<&SocketAddress> for NodeId {
+    fn from(addr: &SocketAddress) -> Self {
+        Self {
+            name: NodeName::Ip(addr.ip_addr),
+            port: Some(NodePort::Num(addr.port)),
         }
     }
 }

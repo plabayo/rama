@@ -1,0 +1,54 @@
+[package]
+name = "rama-grpc"
+description = "Grpc support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "grpc", "network", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["protobuf"]
+full = ["protobuf", "transport", "compression"]
+protobuf = ["dep:prost", "dep:prost-types", "rama-grpc-build/protobuf"]
+transport = ["dep:rama-http-core"]
+compression = ["dep:flate2", "dep:zstd"]
+
+[dependencies]
+base64 = { workspace = true }
+flate2 = { workspace = true, optional = true }
+pin-project-lite = { workspace = true }
+prost = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
+radix_trie = { workspace = true }
+rama-core = { workspace = true }
+rama-grpc-build = { workspace = true }
+rama-http = { workspace = true }
+rama-http-core = { workspace = true, optional = true }
+rama-http-types = { workspace = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-utils = { workspace = true }
+sync_wrapper = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net"] }
+zstd = { workspace = true, optional = true }
+
+[build-dependencies]
+rama-grpc-build = { workspace = true }
+
+[dev-dependencies]
+quickcheck = { workspace = true }
+quickcheck_macros = { workspace = true }
+static_assertions = { workspace = true }
+
+[lints]
+workspace = true

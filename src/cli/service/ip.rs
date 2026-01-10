@@ -196,7 +196,7 @@ impl Service<Request> for HttpIpService {
             .or_else(|| {
                 req.extensions()
                     .get::<SocketInfo>()
-                    .map(|s| s.peer_addr().ip())
+                    .map(|s| s.peer_addr().ip_addr)
             });
 
         Ok(match peer_ip {
@@ -267,7 +267,7 @@ where
                 stream
                     .extensions()
                     .get::<SocketInfo>()
-                    .map(|s| s.peer_addr().ip())
+                    .map(|s| s.peer_addr().ip_addr)
             });
         let Some(peer_ip) = peer_ip else {
             tracing::error!("missing peer information");

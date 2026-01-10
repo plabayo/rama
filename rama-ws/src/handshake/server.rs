@@ -727,7 +727,9 @@ impl<S> WebSocketAcceptorService<S> {
 ///
 /// Utility type created via [`WebSocketAcceptorService`].
 ///
-/// [`AcceptedSubProtocol`] can be found in the [`Context`], if any.
+/// [`AcceptedWebSocketProtocol`] can be found in the extensions, if any.
+///
+/// [`AcceptedWebSocketProtocol`]: headers::sec_websocket_protocol::AcceptedWebSocketProtocol
 pub struct ServerWebSocket {
     socket: AsyncWebSocket,
     request: request::Parts,
@@ -864,7 +866,7 @@ pub const ECHO_SERVICE_SUB_PROTOCOL_LOWER: NonEmptyStr = non_empty_str!("echo-lo
 pub struct WebSocketEchoService;
 
 impl WebSocketEchoService {
-    /// Create a new [`EchoWebSocketService`].
+    /// Create a new [`WebSocketEchoService`].
     #[must_use]
     pub fn new() -> Self {
         Self

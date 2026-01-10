@@ -68,7 +68,7 @@ async fn main() {
                         .or_else(|| {
                             req.extensions()
                                 .get::<SocketInfo>()
-                                .map(|info| info.peer_addr().ip())
+                                .map(|info| info.peer_addr().ip_addr)
                         })
                         .context("failed to fetch client IP")
                         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;

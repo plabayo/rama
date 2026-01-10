@@ -17,6 +17,7 @@ use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::http::uri::PathAndQuery;
 use rama::http::{Method, Request, StatusCode, StreamingBody, Uri, Version};
 use rama::net::stream::Socket;
+use rama_net::address::SocketAddress;
 
 use super::support;
 
@@ -53,7 +54,7 @@ async fn tcp_connect(addr: &SocketAddr) -> std::io::Result<TcpStream> {
 
 #[derive(Clone, Debug)]
 struct HttpInfo {
-    remote_addr: SocketAddr,
+    remote_addr: SocketAddress,
 }
 
 #[derive(Debug)]

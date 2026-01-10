@@ -221,19 +221,19 @@ where
             ext_chain
                 .get::<Forwarded>()
                 .and_then(|f| f.client_socket_addr())
-                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| *info.peer_addr()))
+                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| info.peer_addr()))
                 .ok_or_else(|| {
                     OpaqueError::from_display("PROXY client (v1): missing src socket address")
                 })?
         };
 
         let peer_addr = conn.peer_addr()?;
-        let addresses = match (src.ip(), peer_addr.ip()) {
+        let addresses = match (src.ip_addr, peer_addr.ip_addr) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                v1::Addresses::new_tcp4(src_ip, dst_ip, src.port(), peer_addr.port())
+                v1::Addresses::new_tcp4(src_ip, dst_ip, src.port, peer_addr.port)
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                v1::Addresses::new_tcp6(src_ip, dst_ip, src.port(), peer_addr.port())
+                v1::Addresses::new_tcp6(src_ip, dst_ip, src.port, peer_addr.port)
             }
             (_, _) => {
                 return Err(OpaqueError::from_display(
@@ -269,23 +269,23 @@ where
             ext_chain
                 .get::<Forwarded>()
                 .and_then(|f| f.client_socket_addr())
-                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| *info.peer_addr()))
+                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| info.peer_addr()))
                 .ok_or_else(|| {
                     OpaqueError::from_display("PROXY client (v2): missing src socket address")
                 })?
         };
 
         let peer_addr = conn.peer_addr()?;
-        let builder = match (src.ip(), peer_addr.ip()) {
+        let builder = match (src.ip_addr, peer_addr.ip_addr) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => v2::Builder::with_addresses(
                 v2::Version::Two | v2::Command::Proxy,
                 P::v2_protocol(),
-                v2::IPv4::new(src_ip, dst_ip, src.port(), peer_addr.port()),
+                v2::IPv4::new(src_ip, dst_ip, src.port, peer_addr.port),
             ),
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => v2::Builder::with_addresses(
                 v2::Version::Two | v2::Command::Proxy,
                 P::v2_protocol(),
-                v2::IPv6::new(src_ip, dst_ip, src.port(), peer_addr.port()),
+                v2::IPv6::new(src_ip, dst_ip, src.port, peer_addr.port),
             ),
             (_, _) => {
                 return Err(OpaqueError::from_display(
@@ -376,15 +376,18 @@ mod tests {
     use rama_core::{
         Layer, ServiceInput, extensions::Extensions, extensions::ExtensionsMut, service::service_fn,
     };
-    use rama_net::forwarded::{ForwardedElement, NodeId};
-    use std::{convert::Infallible, net::SocketAddr, pin::Pin};
+    use rama_net::{
+        address::SocketAddress,
+        forwarded::{ForwardedElement, NodeId},
+    };
+    use std::{convert::Infallible, pin::Pin};
     use tokio::io::{AsyncRead, AsyncWrite};
     use tokio_test::io::{Builder, Mock};
 
     struct SocketConnection {
         conn: Mock,
         extensions: Extensions,
-        socket: SocketAddr,
+        socket: SocketAddress,
     }
 
     impl ExtensionsRef for SocketConnection {
@@ -400,11 +403,11 @@ mod tests {
     }
 
     impl Socket for SocketConnection {
-        fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        fn local_addr(&self) -> std::io::Result<SocketAddress> {
             Ok(self.socket)
         }
 
-        fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        fn peer_addr(&self) -> std::io::Result<SocketAddress> {
             Ok(self.socket)
         }
     }

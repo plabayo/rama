@@ -21,12 +21,17 @@ rustdoc-args = ["--cfg", "docsrs"]
 [workspace]
 members = [
     ".",
+    "examples/grpc",
+    "examples/grpc/tests/extern_path/my_application",
+    "examples/grpc/tests/extern_path/uuid",
     "fuzz",
     "rama-cli",
     "rama-core",
     "rama-crypto",
     "rama-dns",
     "rama-error",
+    "rama-grpc",
+    "rama-grpc-build",
     "rama-haproxy",
     "rama-http",
     "rama-http-backend",
@@ -153,18 +158,26 @@ opentelemetry_sdk = { version = "0.31", default-features = false, features = [
 parking_lot = "0.12"
 percent-encoding = "2.3"
 pin-project-lite = "0.2"
+prettyplease = "0.2"
 proc-macro-crate = "3.4"
 proc-macro2 = "1.0"
+prost = { git = "https://github.com/plabayo/rust-protobuf.git", branch = "patch/custom-prost-path" }
+prost-build = { git = "https://github.com/plabayo/rust-protobuf.git", branch = "patch/custom-prost-path" }
+prost-types = { git = "https://github.com/plabayo/rust-protobuf.git", branch = "patch/custom-prost-path" }
 psl = "2"
 quickcheck = "1.0"
+quickcheck_macros = "1.1"
 quote = "1.0"
 radix_trie = "0.3"
+rama = { version = "0.3.0-rc1", path = "." }
 rama-boring = "^0.5.7"
 rama-boring-tokio = "^0.5.7"
 rama-core = { version = "0.3.0-rc1", path = "./rama-core" }
 rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto" }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns" }
 rama-error = { version = "0.3.0-rc1", path = "./rama-error" }
+rama-grpc = { version = "0.3.0-rc1", path = "./rama-grpc" }
+rama-grpc-build = { version = "0.3.0-rc1", path = "./rama-grpc-build" }
 rama-haproxy = { version = "0.3.0-rc1", path = "./rama-haproxy" }
 rama-http = { version = "0.3.0-rc1", path = "./rama-http" }
 rama-http-backend = { version = "0.3.0-rc1", path = "./rama-http-backend" }
@@ -211,6 +224,7 @@ smallvec = { version = "1.15" }
 smol_str = "0.3"
 socket2 = "0.6"
 spmc = "0.3"
+static_assertions = "1"
 syn = "2.0"
 sync_wrapper = "1.0"
 tempfile = "3.23"
@@ -277,7 +291,6 @@ linkedlist = "warn"
 macro_use_imports = "warn"
 manual_let_else = "warn"
 match_same_arms = "warn"
-must_use_candidate = "warn"
 needless_pass_by_ref_mut = "warn"
 needless_pass_by_value = "warn"
 option_option = "warn"
@@ -294,6 +307,9 @@ use_self = "warn"
 uninlined_format_args = "warn"
 fallible_impl_from = "warn"
 
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
 [features]
 default = []
 full = [
@@ -304,7 +320,9 @@ full = [
     "cli",
     "tcp",
     "udp",
+    "grpc",
     "http-full",
+    "grpc-full",
     "proxy-full",
     "tower",
     "opentelemetry",
@@ -314,6 +332,7 @@ compression = [
     "rama-http?/compression",
     "rama-tls-boring?/compression",
     "rama-ws?/compression",
+    "rama-grpc?/compression",
 ]
 crypto = ["dep:rama-crypto"]
 tls = [
@@ -344,6 +363,8 @@ tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
 acme = ["crypto", "dep:rama-tls-acme"]
+grpc = ["http", "dep:rama-grpc"]
+grpc-full = ["grpc", "http-full"]
 http = [
     "dep:rama-http",
     "ua",
@@ -363,6 +384,7 @@ http-full = [
     "ua-embed-profiles",
     "compression",
     "dep:tokio",
+    "rama-grpc?/transport",
 ]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
@@ -391,6 +413,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
+rama-grpc = { workspace = true, optional = true }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
