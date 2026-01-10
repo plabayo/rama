@@ -56,7 +56,7 @@ async fn h2_with_connection_pooling() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::default())
         .try_with_default_connection_pool()
         .unwrap()
         .build_client();
@@ -105,7 +105,7 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::default())
         .try_with_default_connection_pool()
         .unwrap()
         .build_client();
@@ -177,7 +177,7 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::default())
         .try_with_default_connection_pool()
         .unwrap()
         .build_client();

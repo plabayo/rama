@@ -12,6 +12,7 @@ use rama::{
         server::HttpServer,
     },
     layer::MapInputLayer,
+    rt::Executor,
     stream::{self, StreamExt as _},
 };
 
@@ -72,7 +73,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         )
             .into_layer(svc);
 
-        HttpServer::h2(Default::default()).service(grpc_svc)
+        HttpServer::h2(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(

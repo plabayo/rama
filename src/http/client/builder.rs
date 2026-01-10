@@ -1,3 +1,5 @@
+use rama_core::rt::Executor;
+
 use super::HttpConnector;
 use crate::{
     Layer, Service,
@@ -468,8 +470,9 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
     /// Add http support to this connector
     pub fn with_default_http_connector<Body>(
         self,
+        exec: Executor,
     ) -> EasyHttpConnectorBuilder<HttpConnector<T, Body>, HttpStage> {
-        let connector = HttpConnector::new(self.connector);
+        let connector = HttpConnector::new(self.connector, exec);
 
         EasyHttpConnectorBuilder {
             connector,

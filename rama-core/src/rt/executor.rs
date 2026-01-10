@@ -34,6 +34,18 @@ impl Executor {
         }
     }
 
+    /// Spawn a future on the current executor,
+    /// this is spawned gracefully in case a shutdown guard has been registered.
+    pub fn into_spawn_task<F>(self, future: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: Future<Output: Send + 'static> + Send + 'static,
+    {
+        match self.guard {
+            Some(guard) => guard.into_spawn_task(future),
+            None => tokio::spawn(future),
+        }
+    }
+
     /// Get a reference to the shutdown guard,
     /// if and only if the executor was created with [`Self::graceful`].
     #[must_use]

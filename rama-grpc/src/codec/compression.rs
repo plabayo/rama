@@ -17,7 +17,7 @@ use crate::{Status, metadata::MetadataValue};
 pub(crate) const ENCODING_HEADER: &str = "grpc-encoding";
 pub(crate) const ACCEPT_ENCODING_HEADER: &str = "grpc-accept-encoding";
 
-/// Struct used to configure which encodings are enabled on a server or channel.
+/// Struct used to configure which encodings are enabled on a server or client (channel).
 ///
 /// Represents an ordered list of compression encodings that are enabled.
 #[derive(Debug, Default, Clone, Copy)]

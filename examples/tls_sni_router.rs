@@ -53,7 +53,6 @@ use rama::{
         tls::server::{SelfSignedData, ServerAuth, ServerConfig, SniRequest, SniRouter},
     },
     rt::Executor,
-    service::service_fn,
     stream::Stream,
     tcp::{client::service::Forwarder, server::TcpListener},
     telemetry::tracing::{
@@ -95,7 +94,12 @@ async fn main() {
         TcpListener::bind(interface)
             .await
             .expect("bind TCP Listener for SNI router")
-            .serve_graceful(guard.clone(), SniRouter::new(service_fn(sni_router)))
+            .serve_graceful(
+                guard.clone(),
+                SniRouter::new(SniRouterSvc {
+                    exec: Executor::graceful(guard),
+                }),
+            )
             .await;
     });
 
@@ -116,40 +120,53 @@ const INTERFACE_BAR: SocketAddress = SocketAddress::local_ipv4(63805);
 const NAME_BAZ: &str = "baz";
 const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(63806);
 
-async fn sni_router<S>(SniRequest { stream, sni }: SniRequest<S>) -> Result<(), OpaqueError>
+#[derive(Debug)]
+struct SniRouterSvc {
+    exec: Executor,
+}
+
+impl<S> Service<SniRequest<S>> for SniRouterSvc
 where
     S: Stream + ExtensionsMut + Unpin,
 {
-    // NOTE: for production settings you probably want to use a tri-like structure,
-    // rama provided or bring your own
-    let fwd_interface = match sni {
-        None => INTERFACE_BAZ,
-        Some(ref sni) => {
-            if *sni == HOST_FOO {
-                INTERFACE_FOO
-            } else if *sni == HOST_BAR {
-                INTERFACE_BAR
-            } else {
-                tracing::debug!(
-                    server.address = %sni,
-                    "block connection for unknown destination",
-                );
-                return Err(OpaqueError::from_display("unknown destination"));
+    type Output = ();
+    type Error = OpaqueError;
+
+    async fn serve(
+        &self,
+        SniRequest { stream, sni }: SniRequest<S>,
+    ) -> Result<Self::Output, Self::Error> {
+        // NOTE: for production settings you probably want to use a tri-like structure,
+        // rama provided or bring your own
+        let fwd_interface = match sni {
+            None => INTERFACE_BAZ,
+            Some(ref sni) => {
+                if *sni == HOST_FOO {
+                    INTERFACE_FOO
+                } else if *sni == HOST_BAR {
+                    INTERFACE_BAR
+                } else {
+                    tracing::debug!(
+                        server.address = %sni,
+                        "block connection for unknown destination",
+                    );
+                    return Err(OpaqueError::from_display("unknown destination"));
+                }
             }
-        }
-    };
+        };
 
-    tracing::debug!(
-        server.address = %sni.as_ref().map(|s| s.as_str()).unwrap_or_default(),
-        network.local.address = %fwd_interface.ip_addr,
-        network.local.port = %fwd_interface.port,
-        "forward incoming connection",
-    );
+        tracing::debug!(
+            server.address = %sni.as_ref().map(|s| s.as_str()).unwrap_or_default(),
+            network.local.address = %fwd_interface.ip_addr,
+            network.local.port = %fwd_interface.port,
+            "forward incoming connection",
+        );
 
-    Forwarder::new(fwd_interface)
-        .serve(stream)
-        .await
-        .map_err(OpaqueError::from_boxed)
+        Forwarder::new(self.exec.clone(), fwd_interface)
+            .serve(stream)
+            .await
+            .map_err(OpaqueError::from_boxed)
+    }
 }
 
 fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: SocketAddress) {

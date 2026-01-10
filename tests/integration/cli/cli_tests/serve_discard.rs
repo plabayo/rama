@@ -1,7 +1,8 @@
 use rama::{
-    extensions::Extensions, net::address::SocketAddress, tcp::client::default_tcp_connect,
-    telemetry::tracing, udp::bind_udp,
+    extensions::Extensions, net::address::SocketAddress, rt::Executor,
+    tcp::client::default_tcp_connect, telemetry::tracing, udp::bind_udp,
 };
+use rama_net::address::HostWithPort;
 
 #[cfg(feature = "boring")]
 use ::{
@@ -27,7 +28,13 @@ async fn test_tcp_discard() {
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(&extensions, ([127, 0, 0, 1], 63114).into()).await {
+        match default_tcp_connect(
+            &extensions,
+            HostWithPort::local_ipv4(63114),
+            Executor::default(),
+        )
+        .await
+        {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;
@@ -69,9 +76,10 @@ async fn test_tls_tcp_discard() {
 
     let mut stream = None;
     for i in 0..5 {
-        let connector = TlsConnector::secure(TcpConnector::new()).with_connector_data(Arc::new(
-            TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
-        ));
+        let connector = TlsConnector::secure(TcpConnector::new(Executor::default()))
+            .with_connector_data(Arc::new(
+                TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
+            ));
         match connector
             .connect(TcpRequest::new(([127, 0, 0, 1], 63115).into()))
             .await

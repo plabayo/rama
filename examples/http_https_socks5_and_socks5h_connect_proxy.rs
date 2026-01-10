@@ -126,15 +126,16 @@ async fn main() {
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
     let exec = Executor::graceful(graceful.guard());
-    let http_service = HttpServer::auto(exec).service(
+    let http_service = HttpServer::auto(exec.clone()).service(
         (
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
             ProxyAuthLayer::new(basic!("tom", "clancy")),
             UpgradeLayer::new(
+                exec.clone(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
-                ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
+                ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
             ),
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),

@@ -32,6 +32,7 @@ use std::marker::PhantomData;
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S, Body> {
     inner: S,
+    exec: Executor,
     // Body type this connector will be able to send, this is not
     // necessarily the same one that was used in the request that
     // created this connection
@@ -40,9 +41,10 @@ pub struct HttpConnector<S, Body> {
 
 impl<S, Body> HttpConnector<S, Body> {
     /// Create a new [`HttpConnector`].
-    pub const fn new(inner: S) -> Self {
+    pub fn new(inner: S, exec: Executor) -> Self {
         Self {
             inner,
+            exec,
             _phantom: PhantomData,
         }
     }
@@ -91,18 +93,12 @@ where
 
         let io = Box::pin(conn);
 
-        let executor = req
-            .extensions()
-            .get::<Executor>()
-            .cloned()
-            .unwrap_or_default();
-
         match req.version() {
             Version::HTTP_2 => {
                 tracing::trace!(url.full = %req.uri(), "create h2 client executor");
 
                 let mut builder =
-                    rama_http_core::client::conn::http2::Builder::new(executor.clone());
+                    rama_http_core::client::conn::http2::Builder::new(self.exec.clone());
 
                 if req.extensions().get::<Protocol>().is_some() {
                     // e.g. used for h2 bootstrap support for WebSocket
@@ -165,7 +161,7 @@ where
                     server.service.name = %server_address,
                 );
 
-                executor.spawn_task(
+                self.exec.spawn_task(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {err:?}");
@@ -208,7 +204,7 @@ where
                     server.service.name = %server_address,
                 );
 
-                executor.spawn_task(
+                self.exec.spawn_task(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {err:?}");
@@ -238,14 +234,16 @@ where
 #[derive(Clone, Debug)]
 /// A [`Layer`] that produces an [`HttpConnector`].
 pub struct HttpConnectorLayer<Body> {
+    exec: Executor,
     _phantom: PhantomData<Body>,
 }
 
 impl<Body> HttpConnectorLayer<Body> {
     /// Create a new [`HttpConnectorLayer`].
     #[must_use]
-    pub const fn new() -> Self {
+    pub const fn new(exec: Executor) -> Self {
         Self {
+            exec,
             _phantom: PhantomData,
         }
     }
@@ -253,7 +251,7 @@ impl<Body> HttpConnectorLayer<Body> {
 
 impl<Body> Default for HttpConnectorLayer<Body> {
     fn default() -> Self {
-        Self::new()
+        Self::new(Executor::default())
     }
 }
 
@@ -263,6 +261,15 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
+            exec: self.exec.clone(),
+            _phantom: PhantomData,
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HttpConnector {
+            inner,
+            exec: self.exec,
             _phantom: PhantomData,
         }
     }

@@ -14,6 +14,7 @@ use rama::{
             client::{NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
+    rt::Executor,
     tcp::{
         TcpStream,
         client::{Request, service::TcpConnector},
@@ -60,7 +61,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .with_store_server_certificate_chain(true)
         .into_shared_builder();
 
-    let tcp_connector = TcpConnector::new();
+    let tcp_connector = TcpConnector::new(Executor::default());
     let loggin_service = LoggingLayer.layer(tcp_connector);
 
     let tls_connector = TlsConnectorLayer::secure()

@@ -156,9 +156,10 @@ async fn main() {
                         })
                     ),
                     UpgradeLayer::new(
+                        Executor::graceful(guard.clone()),
                         MethodMatcher::CONNECT,
                         service_fn(http_connect_accept),
-                        ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
+                        ConsumeErrLayer::default().into_layer(Forwarder::ctx(Executor::graceful(guard.clone()))),
                     ),
                     RemoveResponseHeaderLayer::hop_by_hop(),
                     RemoveRequestHeaderLayer::hop_by_hop(),

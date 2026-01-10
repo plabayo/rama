@@ -11,6 +11,7 @@ use rama::{
             },
         },
     },
+    rt::Executor,
     telemetry::tracing,
     tls::boring::core::x509::X509,
     utils::str::NATIVE_NEWLINE,
@@ -21,8 +22,9 @@ use base64::engine::general_purpose::STANDARD as ENGINE;
 
 pub fn try_new_server_config(
     alpn: Option<Vec<ApplicationProtocol>>,
+    exec: Executor,
 ) -> Result<ServerConfig, OpaqueError> {
-    match CertIssuerHttpClient::try_from_env() {
+    match CertIssuerHttpClient::try_from_env(exec) {
         Ok(issuer) => {
             return Ok(ServerConfig {
                 application_layer_protocol_negotiation: alpn,

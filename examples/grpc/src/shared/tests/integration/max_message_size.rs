@@ -7,6 +7,7 @@ use rama::{
         grpc::{Code, Request, Response, Status},
         server::HttpServer,
     },
+    rt::Executor,
     stream,
     telemetry::tracing,
 };
@@ -123,7 +124,7 @@ async fn response_stream_limit() {
 
     let svc = test1_server::Test1Server::new(Svc);
 
-    let server = HttpServer::h2(Default::default()).service(svc);
+    let server = HttpServer::h2(Executor::default()).service(svc);
 
     let client = test1_client::Test1Client::new(
         super::mock_io_client(move || server.clone()),
@@ -256,7 +257,7 @@ async fn max_message_run(case: &TestCase) -> Result<(), Status> {
         svc.set_max_encoding_message_size(size);
     }
 
-    let server = HttpServer::h2(Default::default()).service(svc);
+    let server = HttpServer::h2(Executor::default()).service(svc);
 
     let mut client = test1_client::Test1Client::new(
         super::mock_io_client(move || server.clone()),

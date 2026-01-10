@@ -38,6 +38,7 @@ use rama::{
             server::{ServerAuth, ServerAuthData, ServerConfig},
         },
     },
+    rt::Executor,
     tcp::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
@@ -136,7 +137,11 @@ pub async fn run(guard: ShutdownGuard, cfg: StunnelCommand) -> Result<(), BoxErr
 }
 
 async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(), BoxError> {
-    let server_config = load_server_config(cfg.cert.as_ref(), cfg.key.as_ref())?;
+    let server_config = load_server_config(
+        cfg.cert.as_ref(),
+        cfg.key.as_ref(),
+        Executor::graceful(graceful.clone()),
+    )?;
     let acceptor_data = TlsAcceptorData::try_from(server_config)?;
 
     let tcp_listener = TcpListener::bind(cfg.bind.clone())
@@ -157,8 +162,10 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
             forward_addr
         );
 
-        let tcp_service =
-            TlsAcceptorLayer::new(acceptor_data).into_layer(Forwarder::new(forward_addr));
+        let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(Forwarder::new(
+            Executor::graceful(guard.clone()),
+            forward_addr,
+        ));
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 
@@ -186,11 +193,12 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
             connect_authority
         );
 
-        let tcp_service = Forwarder::new(connect_authority).with_connector(
-            TlsConnectorLayer::secure()
-                .with_connector_data(tls_connector_data)
-                .into_layer(TcpConnector::new()),
-        );
+        let tcp_service = Forwarder::new(Executor::graceful(guard.clone()), connect_authority)
+            .with_connector(
+                TlsConnectorLayer::secure()
+                    .with_connector_data(tls_connector_data)
+                    .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
+            );
 
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
@@ -245,6 +253,7 @@ fn load_ca_certificate(
 fn load_server_config(
     cert_path: Option<&PathBuf>,
     key_path: Option<&PathBuf>,
+    exec: Executor,
 ) -> Result<ServerConfig, BoxError> {
     match (cert_path, key_path) {
         (Some(cert), Some(key)) => {
@@ -263,7 +272,7 @@ fn load_server_config(
                 ocsp: None,
             })))
         }
-        (None, None) => Ok(try_new_server_config(None)?),
+        (None, None) => Ok(try_new_server_config(None, exec)?),
         _ => Err("Both certificate and key must be provided together, or neither".into()),
     }
 }

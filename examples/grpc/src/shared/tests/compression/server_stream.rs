@@ -16,6 +16,7 @@ use rama::{
         layer::map_response_body::MapResponseBodyLayer,
         server::HttpServer,
     },
+    rt::Executor,
     stream::StreamExt as _,
 };
 
@@ -39,7 +40,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::h2(Default::default()).service(grpc_svc)
+        HttpServer::h2(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -94,7 +95,7 @@ async fn client_disabled_server_enabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::auto(Default::default()).service(grpc_svc)
+        HttpServer::auto(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -136,7 +137,7 @@ async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::auto(Default::default()).service(grpc_svc)
+        HttpServer::auto(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(

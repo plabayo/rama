@@ -13,10 +13,6 @@
 //!
 //! Examples can be found under examples within [the rama repository].
 //!
-//! # Getting Started
-//!
-//! Follow the instructions in the [`rama-grpc-build`] crate documentation.
-//!
 //! # Structure
 //!
 //! ## Generic implementation
@@ -51,10 +47,7 @@
 //!
 //! [gRPC]: https://grpc.io
 //! [the rama repository]: https://github.com/plabayo/rama
-//! [`rama-grpc-build`]: https://github.com/plabayo/rama/rama-grpc-build
 //! [`tokio`]: https://docs.rs/tokio
-//! [`Channel`]: transport/struct.Channel.html
-//! [`Server`]: transport/struct.Server.html
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"

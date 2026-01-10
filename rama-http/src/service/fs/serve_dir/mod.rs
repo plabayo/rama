@@ -162,7 +162,7 @@ impl<F> ServeDir<F> {
         /// to be present in the directory. Different precompressed variants can be combined.
         pub fn precompressed_br(mut self) -> Self {
             self.precompressed_variants
-                .get_or_insert(Default::default())
+                .get_or_insert_default()
                 .br = true;
             self
         }
@@ -181,7 +181,7 @@ impl<F> ServeDir<F> {
         /// to be present in the directory. Different precompressed variants can be combined.
         pub fn precompressed_deflate(mut self) -> Self {
             self.precompressed_variants
-                .get_or_insert(Default::default())
+                .get_or_insert_default()
                 .deflate = true;
             self
         }
@@ -200,7 +200,7 @@ impl<F> ServeDir<F> {
         /// to be present in the directory. Different precompressed variants can be combined.
         pub fn precompressed_zstd(mut self) -> Self {
             self.precompressed_variants
-                .get_or_insert(Default::default())
+                .get_or_insert_default()
                 .zstd = true;
             self
         }

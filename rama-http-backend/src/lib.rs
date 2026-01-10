@@ -24,20 +24,24 @@ pub mod server;
 
 #[cfg(test)]
 mod tests {
-    use super::{client::HttpConnector, server::HttpServer};
-    use rama_core::futures::future::join;
-    use rama_core::{Service, rt::Executor, service::service_fn};
-    use rama_http_types::{Body, Request, Response, Version};
-    use rama_net::test_utils::client::MockConnectorService;
     use std::{
         convert::Infallible,
         time::{Duration, Instant},
     };
+
     use tokio::time::sleep;
+
+    use rama_core::Layer as _;
+    use rama_core::futures::future::join;
+    use rama_core::{Service, rt::Executor, service::service_fn};
+    use rama_http_types::{Body, Request, Response, Version};
+    use rama_net::test_utils::client::MockConnectorService;
+
+    use super::{client::HttpConnectorLayer, server::HttpServer};
 
     #[tokio::test]
     async fn test_http11_pipelining() {
-        let connector = HttpConnector::new(MockConnectorService::new(|| {
+        let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
         }));
 
@@ -69,7 +73,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_http2_multiplex() {
-        let connector = HttpConnector::new(MockConnectorService::new(|| {
+        let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
         }));
 

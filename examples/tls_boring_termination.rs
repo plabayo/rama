@@ -37,6 +37,7 @@ use rama::{
     http::{Request, Response, server::HttpServer},
     layer::{ConsumeErrLayer, GetInputExtensionLayer},
     net::{
+        address::HostWithPort,
         forwarded::Forwarded,
         stream::SocketInfo,
         tls::{
@@ -91,10 +92,17 @@ async fn main() {
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
         )
-            .into_layer(Forwarder::new(([127, 0, 0, 1], 62801)).with_connector(
-                // ha proxy protocol used to forwarded the client original IP
-                HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
-            ));
+            .into_layer(
+                Forwarder::new(
+                    Executor::graceful(guard.clone()),
+                    HostWithPort::local_ipv4(62801),
+                )
+                .with_connector(
+                    // ha proxy protocol used to forwarded the client original IP
+                    HaProxyClientLayer::tcp()
+                        .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
+                ),
+            );
 
         TcpListener::bind("127.0.0.1:63801")
             .await

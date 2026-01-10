@@ -115,20 +115,23 @@ where
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {
-            try_new_server_config(Some(match cfg.http_version {
-                HttpVersion::Auto => vec![
-                    ApplicationProtocol::HTTP_2,
-                    ApplicationProtocol::HTTP_11,
-                    ApplicationProtocol::HTTP_10,
-                    ApplicationProtocol::HTTP_09,
-                ],
-                HttpVersion::H1 => vec![
-                    ApplicationProtocol::HTTP_11,
-                    ApplicationProtocol::HTTP_10,
-                    ApplicationProtocol::HTTP_09,
-                ],
-                HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-            }))
+            try_new_server_config(
+                Some(match cfg.http_version {
+                    HttpVersion::Auto => vec![
+                        ApplicationProtocol::HTTP_2,
+                        ApplicationProtocol::HTTP_11,
+                        ApplicationProtocol::HTTP_10,
+                        ApplicationProtocol::HTTP_09,
+                    ],
+                    HttpVersion::H1 => vec![
+                        ApplicationProtocol::HTTP_11,
+                        ApplicationProtocol::HTTP_10,
+                        ApplicationProtocol::HTTP_09,
+                    ],
+                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+                }),
+                Executor::graceful(graceful.clone()),
+            )
         })
         .transpose()?;
 

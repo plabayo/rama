@@ -13,6 +13,7 @@ use rama::{
         service::client::HttpClientExt,
     },
     net::tls::client::ServerVerifyMode,
+    rt::Executor,
     service::BoxService,
     tls::boring::client::TlsConnectorDataBuilder,
 };
@@ -45,7 +46,7 @@ async fn run_http_tests(base_uri: &'static str) {
             TlsConnectorDataBuilder::new_http_auto()
                 .with_server_verify_mode(ServerVerifyMode::Disable),
         )))
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::default())
         .build_client()
         .boxed();
 

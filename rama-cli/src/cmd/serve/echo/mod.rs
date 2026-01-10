@@ -125,15 +125,16 @@ pub async fn run(
     let maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https)
         .then(|| {
             tracing::info!("create tls server config...");
-            try_new_server_config(matches!(cfg.mode, Mode::Http | Mode::Https).then(|| {
-                match cfg.http_version {
+            try_new_server_config(
+                matches!(cfg.mode, Mode::Http | Mode::Https).then(|| match cfg.http_version {
                     HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
                     HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
                     HttpVersion::Auto => {
                         vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
                     }
-                }
-            }))
+                }),
+                Executor::graceful(graceful.clone()),
+            )
         })
         .transpose()?;
 
