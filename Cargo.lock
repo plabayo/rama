@@ -2957,6 +2957,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-test",
+ "tracing-subscriber",
  "tracing-test",
  "uuid",
  "zstd",

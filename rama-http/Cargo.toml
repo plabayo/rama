@@ -82,8 +82,12 @@ parking_lot = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
+tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
 zstd = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["tracing-subscriber"]
 
 [lints]
 workspace = true
