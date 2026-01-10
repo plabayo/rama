@@ -162,9 +162,9 @@ pin-project-lite = "0.2"
 prettyplease = "0.2"
 proc-macro-crate = "3.4"
 proc-macro2 = "1.0"
-prost = { git = "https://github.com/plabayo/rust-protobuf.git", branch = "patch/custom-prost-path" }
-prost-build = { git = "https://github.com/plabayo/rust-protobuf.git", branch = "patch/custom-prost-path" }
-prost-types = { git = "https://github.com/plabayo/rust-protobuf.git", branch = "patch/custom-prost-path" }
+prost = "=0.14.3"
+prost-build = "=0.14.3"
+prost-types = "=0.14.3"
 psl = "2"
 quickcheck = "1.0"
 quickcheck_macros = "1.1"
