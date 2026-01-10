@@ -9,6 +9,9 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 publish = false
 
+[package.metadata.cargo-machete]
+ignored = ["rama"]
+
 [dependencies]
 rama = { workspace = true, features = ["grpc"] }
 

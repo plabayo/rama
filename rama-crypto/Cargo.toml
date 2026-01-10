@@ -32,7 +32,6 @@ serde_json = { workspace = true }
 x509-parser = { workspace = true, features = ["verify-aws"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 
 [lints]

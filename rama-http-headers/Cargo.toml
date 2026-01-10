@@ -35,7 +35,6 @@ sha1 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
 tracing-test = { workspace = true }
 
 [lints]

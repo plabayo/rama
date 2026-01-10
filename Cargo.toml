@@ -18,6 +18,9 @@ resolver = "3"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[package.metadata.cargo-machete]
+ignored = ["rustversion"]
+
 [workspace]
 members = [
     ".",
@@ -101,7 +104,6 @@ const_format = "0.2"
 csv = "1.4"
 derive_more = "2.0"
 divan = "0.1"
-env_logger = "0.11"
 escargot = "0.5"
 flate2 = "1.1"
 flume = "0.12"
@@ -109,7 +111,6 @@ fnv = "1.0"
 futures = "0.3"
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
-h2 = "0.4"
 hex = "0.4"
 hickory-resolver = { version = "0.25", default-features = false, features = [
     "tokio",
@@ -445,7 +446,6 @@ rustversion = { workspace = true }
 
 [dev-dependencies]
 bytes = { workspace = true }
-derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
 flate2 = { workspace = true }

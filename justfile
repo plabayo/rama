@@ -180,7 +180,7 @@ miri:
 
 detect-unused-deps:
     @cargo install cargo-machete
-    cargo machete --skip-target-dir
+    cargo machete --skip-target-dir --with-metadata
 
 detect-biggest-fn:
     cargo bloat --package rama-cli --release -n 10

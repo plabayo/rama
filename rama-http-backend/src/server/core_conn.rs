@@ -51,7 +51,7 @@ fn map_http_core_err_to_result(err: rama_http_core::Error) -> HttpServeResult {
     }
 
     if let Some(source_err) = err.source() {
-        if let Some(h2_err) = source_err.downcast_ref::<h2::Error>() {
+        if let Some(h2_err) = source_err.downcast_ref::<rama_http_core::h2::Error>() {
             if h2_err.is_go_away() || h2_err.is_io() {
                 return Ok(());
             }

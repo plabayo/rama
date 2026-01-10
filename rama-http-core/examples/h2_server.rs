@@ -29,6 +29,7 @@
 //! ```
 
 use rama_core::ServiceInput;
+use rama_core::telemetry::tracing;
 use rama_error::BoxError;
 use rama_http_core::h2::RecvStream;
 use rama_http_core::h2::server::{self, SendResponse};
@@ -38,18 +39,17 @@ use rama_core::bytes::Bytes;
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
+#[tracing_test::traced_test]
 async fn main() -> Result<(), BoxError> {
-    let _ = env_logger::try_init();
-
     let listener = TcpListener::bind("127.0.0.1:5928").await?;
 
-    println!("listening on {:?}", listener.local_addr());
+    tracing::info!("listening on {:?}", listener.local_addr());
 
     loop {
         if let Ok((socket, _peer_addr)) = listener.accept().await {
             tokio::spawn(async move {
                 if let Err(e) = serve(socket).await {
-                    println!("  -> err={e:?}");
+                    tracing::info!("  -> err={e:?}");
                 }
             });
         }
@@ -59,18 +59,18 @@ async fn main() -> Result<(), BoxError> {
 async fn serve(socket: TcpStream) -> Result<(), BoxError> {
     let socket = ServiceInput::new(socket);
     let mut connection = server::handshake(socket).await?;
-    println!("H2 connection bound");
+    tracing::info!("H2 connection bound");
 
     while let Some(result) = connection.accept().await {
         let (request, respond) = result?;
         tokio::spawn(async move {
             if let Err(e) = handle_request(request, respond).await {
-                println!("error while handling request: {e}");
+                tracing::info!("error while handling request: {e}");
             }
         });
     }
 
-    println!("~~~~~~~~~~~ H2 connection CLOSE !!!!!! ~~~~~~~~~~~");
+    tracing::info!("~~~~~~~~~~~ H2 connection CLOSE !!!!!! ~~~~~~~~~~~");
     Ok(())
 }
 
@@ -78,18 +78,18 @@ async fn handle_request(
     mut request: Request<RecvStream>,
     mut respond: SendResponse<Bytes>,
 ) -> Result<(), BoxError> {
-    println!("GOT request: {request:?}");
+    tracing::info!("GOT request: {request:?}");
 
     let body = request.body_mut();
     while let Some(data) = body.data().await {
         let data = data?;
-        println!("<<<< recv {data:?}");
+        tracing::info!("<<<< recv {data:?}");
         let _ = body.flow_control().release_capacity(data.len());
     }
 
     let response = rama_http_types::Response::new(());
     let mut send = respond.send_response(response, false)?;
-    println!(">>>> send");
+    tracing::info!(">>>> send");
     send.send_data(Bytes::from_static(b"hello "), false)?;
     send.send_data(Bytes::from_static(b"world\n"), true)?;
 

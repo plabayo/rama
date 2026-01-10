@@ -19,7 +19,6 @@ fn main() {
 
 // #[bench]
 // fn http_connector(b: &mut test::Bencher) {
-//     let _ = pretty_env_logger::try_init();
 //     let rt = tokio::runtime::Builder::new_current_thread()
 //         .enable_all()
 //         .build()
