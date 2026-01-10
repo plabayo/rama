@@ -17,7 +17,7 @@ use std::{convert::Infallible, fmt, sync::Arc};
 pub struct UpgradeService<S, O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
     inner: S,
-    exec: Option<Executor>,
+    exec: Executor,
 }
 
 /// UpgradeHandler is a helper struct used internally to create an upgrade service.
@@ -47,7 +47,7 @@ impl<O> UpgradeHandler<O> {
 
 impl<S, O> UpgradeService<S, O> {
     /// Create a new [`UpgradeService`].
-    pub fn new(handlers: Vec<Arc<UpgradeHandler<O>>>, inner: S, exec: Option<Executor>) -> Self {
+    pub fn new(handlers: Vec<Arc<UpgradeHandler<O>>>, inner: S, exec: Executor) -> Self {
         Self {
             handlers,
             inner,
@@ -101,8 +101,6 @@ where
             }
             req.extensions_mut().extend(ext);
 
-            let exec = self.exec.clone().unwrap_or_default();
-
             return match handler.responder.serve(req).await {
                 Ok((resp, req)) => {
                     let handler = handler.handler.clone();
@@ -119,7 +117,7 @@ where
                         network.protocol.version = version_as_protocol_version(req.version()),
                     );
 
-                    exec.into_spawn_task(
+                    self.exec.spawn_task(
                         async move {
                             match rama_http::io::upgrade::handle_upgrade(&req).await {
                                 Ok(mut upgraded) => {

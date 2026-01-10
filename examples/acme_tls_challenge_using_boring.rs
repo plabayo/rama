@@ -117,12 +117,14 @@ async fn main() {
         .with_keylog_intent(rama::net::tls::KeyLogIntent::Environment)
         .into_shared_builder();
 
+    let graceful = crate::graceful::Shutdown::default();
+
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::graceful(graceful.guard()))
         .build_client()
         .boxed();
 
@@ -159,8 +161,6 @@ async fn main() {
     let auth = &mut authz[0];
 
     tracing::info!("running service at: {ADDR}");
-
-    let graceful = crate::graceful::Shutdown::default();
 
     let challenge = auth
         .challenges

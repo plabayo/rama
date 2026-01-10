@@ -12,6 +12,7 @@ use rama::{
         server::HttpServer,
     },
     layer::{MapOutputLayer, layer_fn},
+    rt::Executor,
     stream::{self, StreamExt as _},
 };
 
@@ -76,7 +77,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         )
             .into_layer(svc);
 
-        HttpServer::auto(Default::default()).service(grpc_svc)
+        HttpServer::auto(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -121,7 +122,7 @@ async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::h2(Default::default()).service(grpc_svc)
+        HttpServer::h2(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -153,7 +154,7 @@ async fn client_enabled_server_disabled_multi_encoding() {
         })
         .into_layer(svc);
 
-        HttpServer::auto(Default::default()).service(grpc_svc)
+        HttpServer::auto(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -212,7 +213,7 @@ async fn client_disabled(encoding: CompressionEncoding) {
         )
             .into_layer(svc);
 
-        HttpServer::auto(Default::default()).service(grpc_svc)
+        HttpServer::auto(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -247,7 +248,7 @@ async fn server_replying_with_unsupported_encoding(encoding: CompressionEncoding
 
     let grpc_svc = MapOutputLayer::new(add_weird_content_encoding).into_layer(svc);
 
-    let server = HttpServer::h2(Default::default()).service(grpc_svc);
+    let server = HttpServer::h2(Executor::default()).service(grpc_svc);
 
     let client = test_client::TestClient::new(
         mock_io_client(move || server.clone()),
@@ -286,7 +287,7 @@ async fn disabling_compression_on_single_response(encoding: CompressionEncoding)
         })
         .into_layer(svc);
 
-        HttpServer::auto(Default::default()).service(grpc_svc)
+        HttpServer::auto(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -334,7 +335,7 @@ async fn disabling_compression_on_response_but_keeping_compression_on_stream(
         })
         .into_layer(svc);
 
-        HttpServer::h2(Default::default()).service(grpc_svc)
+        HttpServer::h2(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -393,7 +394,7 @@ async fn disabling_compression_on_response_from_client_stream(encoding: Compress
         })
         .into_layer(svc);
 
-        HttpServer::auto(Default::default()).service(grpc_svc)
+        HttpServer::auto(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(

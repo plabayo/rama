@@ -182,7 +182,7 @@ macro_rules! impl_stream_connector_either {
 pub async fn default_tcp_connect(
     extensions: &Extensions,
     address: HostWithPort,
-    exec: Option<Executor>,
+    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
 {
@@ -195,7 +195,7 @@ pub async fn tcp_connect<Dns, Connector>(
     address: HostWithPort,
     dns: Dns,
     connector: Connector,
-    exec: Option<Executor>,
+    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     Dns: DnsResolver + Clone,
@@ -253,7 +253,7 @@ async fn tcp_connect_inner<Dns, Connector>(
     dns: Dns,
     connector: Connector,
     connect_mode: ConnectIpMode,
-    exec: Option<Executor>,
+    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     Dns: DnsResolver + Clone,
@@ -262,8 +262,6 @@ where
     let (tx, mut rx) = channel(1);
     let connected = Arc::new(AtomicBool::new(false));
     let sem = Arc::new(Semaphore::new(3));
-
-    let exec = exec.unwrap_or_default();
 
     if dns_mode.ipv4_supported() {
         exec.spawn_task(

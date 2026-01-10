@@ -21,10 +21,10 @@
 //! that goes through Tls, with the power of rama. Be empowered, be brave, go forward.
 
 use rama::{
-    Service,
+    Layer as _, Service,
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{
-        Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
+        Body, BodyExtractExt, Request, client::HttpConnectorLayer, server::HttpServer,
         service::web::Router,
     },
     net::{
@@ -38,6 +38,7 @@ use rama::{
         user::{ProxyCredential, credentials::basic},
     },
     proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
+    rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -78,8 +79,9 @@ async fn main() {
         .with_server_verify_mode(ServerVerifyMode::Disable)
         .into_shared_builder();
 
-    let client = HttpConnector::new(Socks5ProxyConnector::required(
-        TlsConnector::secure(TcpConnector::new()).with_connector_data(tls_conn_data),
+    let client = HttpConnectorLayer::default().into_layer(Socks5ProxyConnector::required(
+        TlsConnector::secure(TcpConnector::new(Executor::default()))
+            .with_connector_data(tls_conn_data),
     ));
 
     let uri = format!("http://{http_socket_addr}/ping");

@@ -24,9 +24,9 @@ use rama::{
             udp::{RelayDirection, UdpInspectAction},
         },
     },
+    rt::Executor,
     stream::codec::BytesCodec,
-    tcp::client::default_tcp_connect,
-    tcp::server::TcpListener,
+    tcp::{client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -51,9 +51,10 @@ async fn main() {
     let socks5_socket_addr = spawn_socks5_server().await;
 
     let ext = Extensions::default();
-    let (proxy_client_stream, _) = default_tcp_connect(&ext, socks5_socket_addr.into(), None)
-        .await
-        .expect("establish connection to socks5 server (from client)");
+    let (proxy_client_stream, _) =
+        default_tcp_connect(&ext, socks5_socket_addr.into(), Executor::default())
+            .await
+            .expect("establish connection to socks5 server (from client)");
 
     let socks5_client = Socks5Client::new().with_auth(basic!("john", "secret"));
 

@@ -164,17 +164,17 @@ async fn main() {
             ConsumeErrLayer::default(),
             ProxyAuthLayer::new(basic!("tom", "clancy")),
             UpgradeLayer::new(
+                exec.clone(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
-                ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
-            )
-            .with_executor(exec.clone()),
+                ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec.clone())),
+            ),
         )
             .into_layer(proxy_service.clone()),
     );
 
-    let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec).service(proxy_service))
-        .with_fallback(Forwarder::ctx());
+    let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
+        .with_fallback(Forwarder::ctx(exec));
     let socks5_acceptor = Socks5Acceptor::new()
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(LazyConnector::new(socks5_svc));

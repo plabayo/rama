@@ -5,6 +5,7 @@ use rama::{
         server::HttpServer,
     },
     net::address::SocketAddress,
+    rt::Executor,
 };
 use rama_grpc_examples::{
     hello_world::{RamaGreeter, greeter_server::GreeterServer},
@@ -26,7 +27,7 @@ async fn main() -> Result<(), BoxError> {
         .with_service(GreeterServer::new(greeter))
         .with_service(health_service);
 
-    HttpServer::auto(Default::default())
+    HttpServer::auto(Executor::default())
         .listen(SocketAddress::local_ipv6(50051), grpc_svc)
         .await?;
 

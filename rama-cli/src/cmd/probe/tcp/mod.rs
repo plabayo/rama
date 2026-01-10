@@ -4,6 +4,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::Extensions,
     net::address::HostWithPort,
+    rt::Executor,
     tcp::client::default_tcp_connect,
     telemetry::tracing,
 };
@@ -27,7 +28,7 @@ pub async fn run(cfg: CliCommandTcp) -> Result<(), BoxError> {
         "connecting to server",
     );
 
-    let (_, addr) = default_tcp_connect(&Extensions::default(), cfg.authority, None)
+    let (_, addr) = default_tcp_connect(&Extensions::default(), cfg.authority, Executor::default())
         .await
         .context("tcp connect")?;
 

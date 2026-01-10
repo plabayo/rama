@@ -3,6 +3,7 @@ use rama::{
     error::{BoxError, OpaqueError},
     http::{self, Body, client::EasyHttpWebClient},
     net::test_utils::client::{MockConnectorService, MockSocket},
+    rt::Executor,
     service::BoxService,
 };
 
@@ -29,7 +30,7 @@ where
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector::<Body>()
+        .with_default_http_connector::<Body>(Executor::default())
         .try_with_default_connection_pool()
         .unwrap()
         .build_client()

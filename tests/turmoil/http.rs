@@ -8,6 +8,7 @@ use rama::{
         layer::trace::TraceLayer, server::HttpServer, service::web::WebService,
     },
     net::address::SocketAddress,
+    rt::Executor,
     telemetry::tracing::subscriber::{
         self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
     },
@@ -60,7 +61,7 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector()
+            .with_default_http_connector(Executor::default())
             .build_client(),
     );
 

@@ -12,6 +12,7 @@ use rama::{
         server::HttpServer,
     },
     net::address::SocketAddress,
+    rt::Executor,
     service::BoxService,
     stream::{self, StreamExt as _},
     tcp::server::TcpListener,
@@ -120,11 +121,11 @@ async fn grpc(accept_h1: bool) -> (impl Future<Output = ()>, String) {
     let fut = async move {
         if accept_h1 {
             listener
-                .serve(HttpServer::auto(Default::default()).service(http_svc))
+                .serve(HttpServer::auto(Executor::default()).service(http_svc))
                 .await;
         } else {
             listener
-                .serve(HttpServer::h2(Default::default()).service(http_svc))
+                .serve(HttpServer::h2(Executor::default()).service(http_svc))
                 .await;
         }
     };
@@ -140,11 +141,11 @@ async fn grpc_web(accept_h1: bool) -> (impl Future<Output = ()>, String) {
     let fut = async move {
         if accept_h1 {
             listener
-                .serve(HttpServer::auto(Default::default()).service(http_svc))
+                .serve(HttpServer::auto(Executor::default()).service(http_svc))
                 .await;
         } else {
             listener
-                .serve(HttpServer::h2(Default::default()).service(http_svc))
+                .serve(HttpServer::h2(Executor::default()).service(http_svc))
                 .await;
         }
     };

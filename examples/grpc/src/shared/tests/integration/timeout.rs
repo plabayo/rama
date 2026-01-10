@@ -12,6 +12,7 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     net::address::SocketAddress,
+    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
 };
@@ -110,7 +111,7 @@ async fn run_service_in_background(latency: Duration, server_timeout: Duration) 
 
     tokio::spawn(async move {
         listener
-            .serve(HttpServer::h2(Default::default()).service(grpc_svc))
+            .serve(HttpServer::h2(Executor::default()).service(grpc_svc))
             .await;
     });
 

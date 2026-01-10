@@ -8,7 +8,7 @@ use rama::net::{address::HostWithPort, client::ConnectorTarget};
 use rama::tcp::server::TcpListener;
 use rama::tls::boring::server::TlsAcceptorLayer;
 use rama_net::tls::ApplicationProtocol;
-use rama_net::tls::server::{ServerAuth, ServerConfig};
+use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
 
 #[tokio::test]
 #[ignore]
@@ -81,7 +81,7 @@ async fn spawn_test_egres_server() {
             ApplicationProtocol::HTTP_2,
             ApplicationProtocol::HTTP_11,
         ]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(Default::default()))
+        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
     }
     .try_into()
     .unwrap();

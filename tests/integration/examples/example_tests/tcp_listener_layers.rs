@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{extensions::Extensions, tcp::client::default_tcp_connect};
+use rama::{extensions::Extensions, rt::Executor, tcp::client::default_tcp_connect};
 use rama_net::address::HostWithPort;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -13,7 +13,13 @@ async fn test_tcp_listener_layers() {
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(62501), None).await {
+        match default_tcp_connect(
+            &extensions,
+            HostWithPort::local_ipv4(62501),
+            Executor::default(),
+        )
+        .await
+        {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;

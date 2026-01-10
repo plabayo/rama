@@ -127,11 +127,11 @@ async fn main() {
                 // e.g. can also be used to extract upstream proxy filter
                 ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
+                    exec.clone(),
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
-                    ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
-                )
-                .with_executor(exec),
+                    ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
+                ),
             )
                 .into_layer(service_fn(http_plain_proxy)),
         );

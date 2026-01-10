@@ -117,11 +117,11 @@ async fn main() -> Result<(), BoxError> {
                 // e.g. can also be used to extract upstream proxy filters
                 ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
+                    exec,
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
-                )
-                .with_executor(exec),
+                ),
             )
                 .into_layer(http_mitm_service),
         );
@@ -220,12 +220,15 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_no_cert_verifier()
         .build();
 
+    let state = req.extensions().get::<State>().unwrap();
+    let executor = state.exec.clone();
+
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_rustls()
         .with_proxy_support()
         .with_tls_support_using_rustls_and_default_http_version(Some(tls_config), Version::HTTP_11)
-        .with_default_http_connector()
+        .with_default_http_connector(executor)
         .build_client();
 
     let client = (

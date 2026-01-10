@@ -240,14 +240,14 @@ where
     /// build a tcp service ready to echo http traffic back
     pub fn build(
         mut self,
-        executor: Executor,
+        exec: Executor,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             _ => None,
         };
 
-        let http_service = self.build_http(Some(executor.clone()));
+        let http_service = self.build_http(exec.clone());
 
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config;
@@ -278,7 +278,7 @@ where
 
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A({
-                let mut http = HttpServer::h2(executor);
+                let mut http = HttpServer::h2(exec);
                 if self.ws_support {
                     http.h2_mut().set_enable_connect_protocol();
                 }
@@ -291,7 +291,7 @@ where
                 return Err(OpaqueError::from_display("unsupported http version").into_boxed());
             }
             None => Either3::C({
-                let mut http = HttpServer::auto(executor);
+                let mut http = HttpServer::auto(exec);
                 if self.ws_support {
                     http.h2_mut().set_enable_connect_protocol();
                 }
@@ -305,7 +305,7 @@ where
     /// build an http service ready to echo http traffic back
     pub fn build_http(
         &self,
-        exec: Option<Executor>,
+        exec: Executor,
     ) -> impl Service<Request, Output: IntoResponse, Error = Infallible> + use<H> {
         let http_forwarded_layer = match &self.forward {
             None | Some(ForwardKind::HaProxy) => None,
@@ -339,6 +339,7 @@ where
             http_forwarded_layer,
             self.ws_support.then(|| {
                 UpgradeLayer::new(
+                    exec,
                     WebSocketMatcher::default(),
                     {
                         let acceptor = WebSocketAcceptor::default()
@@ -357,7 +358,6 @@ where
                     ConsumeErrLayer::trace(tracing::Level::DEBUG)
                         .into_layer(WebSocketEchoService::default()),
                 )
-                .maybe_with_executor(exec)
             }),
         )
             .into_layer(self.http_service_builder.layer(EchoService {

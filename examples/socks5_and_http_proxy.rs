@@ -82,11 +82,11 @@ async fn main() {
             ConsumeErrLayer::default(),
             ProxyAuthLayer::new(basic!("tom", "clancy")),
             UpgradeLayer::new(
+                exec.clone(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
-                ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
-            )
-            .with_executor(exec),
+                ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
+            ),
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),
         )

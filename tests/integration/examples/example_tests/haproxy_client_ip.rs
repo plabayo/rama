@@ -3,10 +3,10 @@ use std::net::IpAddr;
 use super::utils;
 
 use rama::{
-    Service,
+    Layer as _, Service,
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{
-        Body, BodyExtractExt, Request, client::HttpConnector,
+        Body, BodyExtractExt, Request, client::HttpConnectorLayer,
         layer::required_header::AddRequiredRequestHeaders,
     },
     net::{
@@ -14,6 +14,7 @@ use rama::{
         forwarded::{Forwarded, ForwardedElement},
     },
     proxy::haproxy::client::HaProxyService,
+    rt::Executor,
     tcp::client::service::TcpConnector,
 };
 
@@ -41,7 +42,8 @@ async fn test_haproxy_client_ip() {
 }
 
 async fn test_server_with_haproxy_v1() {
-    let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()).v1());
+    let client = HttpConnectorLayer::default()
+        .into_layer(HaProxyService::tcp(TcpConnector::new(Executor::default())).v1());
 
     let mut request = Request::builder()
         .uri("http://127.0.0.1:62025")
@@ -80,7 +82,8 @@ async fn test_server_with_haproxy_v1() {
 }
 
 async fn test_server_with_haproxy_v2() {
-    let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()));
+    let client = HttpConnectorLayer::default()
+        .into_layer(HaProxyService::tcp(TcpConnector::new(Executor::default())));
 
     let mut request = Request::builder()
         .uri("http://127.0.0.1:62025")

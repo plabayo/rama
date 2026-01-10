@@ -177,10 +177,11 @@ async fn main() -> Result<(), BoxError> {
                     })),
                 ),
                 UpgradeLayer::new(
+                    exec,
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
-                ).with_executor(exec),
+                ),
             )
                 .into_layer(http_mitm_service),
         );
@@ -293,6 +294,8 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
+    let state = req.extensions().get::<State>().unwrap();
+
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
     // but instead have a pre-built one as a struct local
@@ -302,11 +305,9 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector()
+        .with_default_http_connector(state.exec.clone())
         .build_client()
         .with_jit_layer(UserAgentEmulateHttpRequestModifierLayer::default());
-
-    let state = req.extensions().get::<State>().unwrap();
 
     // these are not desired for WS MITM flow, but they are for regular HTTP flow
     let client = (

@@ -10,12 +10,12 @@ use std::{convert::Infallible, fmt, sync::Arc};
 /// [`UpgradeService`]: crate::server::layer::upgrade::UpgradeService
 pub struct UpgradeLayer<O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
-    exec: Option<Executor>,
+    exec: Executor,
 }
 
 impl<O> UpgradeLayer<O> {
     /// Create a new upgrade layer.
-    pub fn new<M, R, H>(matcher: M, responder: R, handler: H) -> Self
+    pub fn new<M, R, H>(exec: Executor, matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<Request>,
         R: Service<Request, Output = (O, Request), Error = O> + Clone,
@@ -23,7 +23,7 @@ impl<O> UpgradeLayer<O> {
     {
         Self {
             handlers: vec![Arc::new(UpgradeHandler::new(matcher, responder, handler))],
-            exec: None,
+            exec,
         }
     }
 
@@ -38,16 +38,6 @@ impl<O> UpgradeLayer<O> {
         self.handlers
             .push(Arc::new(UpgradeHandler::new(matcher, responder, handler)));
         self
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the [`Executor`] to be used for spawning child tasks.
-        ///
-        /// By default [`tokio::spawn`] is used if no executor is set.
-        pub fn executor(mut self, exec: Option<Executor>) -> Self {
-            self.exec = exec;
-            self
-        }
     }
 }
 

@@ -23,7 +23,7 @@ use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStream
 pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
     dns: Dns,
     connector_factory: ConnectorFactory,
-    exec: Option<Executor>,
+    exec: Executor,
 }
 
 impl<Dns, Connector> TcpConnector<Dns, Connector> {}
@@ -34,11 +34,11 @@ impl TcpConnector {
     /// You can use middleware around the [`TcpConnector`]
     /// or add connection pools, retry logic and more.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(exec: Executor) -> Self {
         Self {
             dns: GlobalDnsResolver::new(),
             connector_factory: (),
-            exec: None,
+            exec,
         }
     }
 }
@@ -53,16 +53,6 @@ impl<Dns, ConnectorFactory> TcpConnector<Dns, ConnectorFactory> {
             dns,
             connector_factory: self.connector_factory,
             exec: self.exec,
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the [`Executor`] to be used for spawning child tasks.
-        ///
-        /// By default [`tokio::spawn`] is used if no executor is set.
-        pub fn executor(mut self, exec: Option<Executor>) -> Self {
-            self.exec = exec;
-            self
         }
     }
 }
@@ -94,7 +84,7 @@ where {
 
 impl Default for TcpConnector {
     fn default() -> Self {
-        Self::new()
+        Self::new(Executor::default())
     }
 }
 

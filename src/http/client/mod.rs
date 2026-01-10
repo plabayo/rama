@@ -11,6 +11,7 @@ use crate::{
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
+    rt::Executor,
     service::BoxService,
     telemetry::tracing,
 };
@@ -87,7 +88,7 @@ where
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
             .with_tls_support_using_boringssl(Some(tls_config))
-            .with_default_http_connector()
+            .with_default_http_connector(Executor::default())
             .build_client()
     }
 
@@ -101,7 +102,7 @@ where
             .with_tls_proxy_support_using_rustls()
             .with_proxy_support()
             .with_tls_support_using_rustls(Some(tls_config))
-            .with_default_http_connector()
+            .with_default_http_connector(Executor::default())
             .build_client()
     }
 
@@ -112,7 +113,7 @@ where
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector()
+            .with_default_http_connector(Executor::default())
             .build_client()
     }
 }

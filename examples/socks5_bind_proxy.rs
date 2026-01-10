@@ -18,6 +18,7 @@ use rama::{
     proxy::socks5::{
         Socks5Acceptor, Socks5Client, client::bind::BindOutput, server::DefaultBinder,
     },
+    rt::Executor,
     tcp::{client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -42,9 +43,10 @@ async fn main() {
     let socks5_socket_addr = spawn_socks5_server().await;
 
     let ext = Extensions::default();
-    let (proxy_client_stream, _) = default_tcp_connect(&ext, socks5_socket_addr.into(), None)
-        .await
-        .expect("establish connection to socks5 server (from client)");
+    let (proxy_client_stream, _) =
+        default_tcp_connect(&ext, socks5_socket_addr.into(), Executor::default())
+            .await
+            .expect("establish connection to socks5 server (from client)");
 
     let socks5_client = Socks5Client::new().with_auth(basic!("john", "secret"));
 
@@ -58,7 +60,7 @@ async fn main() {
     tokio::spawn(async move {
         // the server application is supposed to do this,
         // after it received the selected bind address from the client
-        let (mut stream, _) = default_tcp_connect(&ext, bind_addr.into(), None)
+        let (mut stream, _) = default_tcp_connect(&ext, bind_addr.into(), Executor::default())
             .await
             .expect("establish connection to socks5 server (from server)");
 

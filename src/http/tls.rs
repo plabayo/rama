@@ -59,7 +59,7 @@ impl CertIssuerHttpClient {
 
     #[cfg(feature = "boring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
-    pub fn try_from_env() -> Result<Self, OpaqueError> {
+    pub fn try_from_env(exec: Executor) -> Result<Self, OpaqueError> {
         use crate::{
             Layer as _,
             http::{headers::Authorization, layer::set_header::SetRequestHeaderLayer},
@@ -96,7 +96,7 @@ impl CertIssuerHttpClient {
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_boringssl(Some(Arc::new(tls_config)))
-            .with_default_http_connector()
+            .with_default_http_connector(exec)
             .build_client();
 
         let uri: Uri = uri_raw.parse().context("parse RAMA_TLS_REMOTE as URI")?;

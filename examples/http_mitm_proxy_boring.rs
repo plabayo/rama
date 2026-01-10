@@ -169,11 +169,11 @@ async fn main() -> Result<(), BoxError> {
                 // e.g. can also be used to extract upstream proxy filters
                 ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
+                    exec,
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
-                )
-                .with_executor(exec),
+                ),
             )
                 .into_layer(http_mitm_service),
         );
@@ -303,7 +303,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
             Version::HTTP_11,
         )
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector()
+        .with_default_http_connector(executor.clone())
         .build_client()
         .with_jit_layer((
             UserAgentEmulateHttpRequestModifierLayer::default(),

@@ -1,4 +1,5 @@
 use rama_core::extensions::ExtensionsMut;
+use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Service, error::BoxError, stream::Stream};
 use rama_net::address::HostWithPort;
@@ -310,7 +311,7 @@ impl<S> LazyConnector<S> {
 impl Default for LazyConnector<DefaultForwarder> {
     fn default() -> Self {
         Self {
-            service: DefaultForwarder::ctx(),
+            service: DefaultForwarder::ctx(Executor::default()),
         }
     }
 }

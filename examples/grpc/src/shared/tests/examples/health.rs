@@ -20,6 +20,7 @@ use rama::{
         server::HttpServer,
         uri::PathAndQuery,
     },
+    rt::Executor,
     stream::StreamExt,
     telemetry::tracing,
 };
@@ -47,7 +48,7 @@ async fn health_server_via_router() {
         .with_service(GreeterServer::new(greeter))
         .with_service(health_service);
 
-    let server = HttpServer::auto(Default::default()).service(grpc_svc);
+    let server = HttpServer::auto(Executor::default()).service(grpc_svc);
 
     // hello world capabilities
 

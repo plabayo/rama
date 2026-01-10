@@ -21,6 +21,7 @@ use rama::{
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
+    rt::Executor,
     tls::boring::{
         client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
         core::ssl::SslVersion,
@@ -184,7 +185,7 @@ fn new_inner_client(
         .with_tls_support_using_boringssl(Some(tls_config.into_shared_builder()))
         .with_custom_connector(layer_fn(logger_tls::TlsInfoLogger))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::default())
         .with_custom_connector(
             if let Some(timeout) = cfg.connect_timeout
                 && timeout > 0.
