@@ -37,6 +37,9 @@ jobs:
       MDBOOK_GRAPHVIZ_VERSION: 0.2.1
     steps:
       - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
