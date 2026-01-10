@@ -53,8 +53,11 @@ enum DomainAllowMode {
 
 impl CertIssuerHttpClient {
     /// Create a new [`CertIssuerHttpClient`] using the default [`EasyHttpWebClient`].
-    pub fn new(endpoint: Uri) -> Self {
-        Self::new_with_client(endpoint, EasyHttpWebClient::default().boxed())
+    pub fn new(exec: Executor, endpoint: Uri) -> Self {
+        Self::new_with_client(
+            endpoint,
+            EasyHttpWebClient::default_with_executor(exec).boxed(),
+        )
     }
 
     #[cfg(feature = "boring")]
@@ -322,8 +325,9 @@ mod tests {
 
     #[test]
     fn test_issuer_kind_norm_cn() {
-        let issuer = CertIssuerHttpClient::new(Uri::from_static("http://example.com"))
-            .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
+        let issuer =
+            CertIssuerHttpClient::new(Executor::default(), Uri::from_static("http://example.com"))
+                .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
         for (input, expected) in [
             ("example.com", None),
             ("www.foo.com", Some("*.foo.com")),

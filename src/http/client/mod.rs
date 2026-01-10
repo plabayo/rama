@@ -78,8 +78,19 @@ impl<Body> Default
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    #[cfg(feature = "boring")]
+    #[inline(always)]
     fn default() -> Self {
+        Self::default_with_executor(Executor::default())
+    }
+}
+
+impl<Body>
+    EasyHttpWebClient<Body, EstablishedClientConnection<HttpClientService<Body>, Request<Body>>, ()>
+where
+    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+{
+    #[cfg(feature = "boring")]
+    pub fn default_with_executor(exec: Executor) -> Self {
         let tls_config =
             rama_tls_boring::client::TlsConnectorDataBuilder::new_http_auto().into_shared_builder();
 
@@ -88,12 +99,12 @@ where
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
             .with_tls_support_using_boringssl(Some(tls_config))
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(exec)
             .build_client()
     }
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
-    fn default() -> Self {
+    pub fn default_with_executor(exec: Executor) -> Self {
         let tls_config = rama_tls_rustls::client::TlsConnectorData::try_new_http_auto()
             .expect("connector data with http auto");
 
@@ -102,18 +113,18 @@ where
             .with_tls_proxy_support_using_rustls()
             .with_proxy_support()
             .with_tls_support_using_rustls(Some(tls_config))
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(exec)
             .build_client()
     }
 
     #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    fn default() -> Self {
+    pub fn default_with_executor(exec: Executor) -> Self {
         EasyHttpConnectorBuilder::new()
             .with_default_transport_connector()
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(exec)
             .build_client()
     }
 }
