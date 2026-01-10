@@ -13,7 +13,7 @@ use rama_utils::str::starts_with_ignore_ascii_case;
 mod de;
 
 #[derive(Debug, Clone, Default)]
-/// parameters that are inserted in the [`Context`],
+/// parameters that are inserted in the [`Extensions`],
 /// in case the [`PathMatcher`] found a match for the given [`Request`].
 pub struct UriParams {
     params: Option<HashMap<ArcStr, ArcStr>>,

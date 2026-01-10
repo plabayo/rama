@@ -3,6 +3,7 @@ use crate::Response;
 use crate::service::web::response;
 use rama_core::Service;
 use rama_http_headers::{HeaderMapExt, Location};
+use rama_http_types::body::OptionalBody;
 use std::{convert::Infallible, fmt, marker::PhantomData};
 
 /// Service that redirects all requests to a static location.
@@ -72,9 +73,9 @@ impl<ResBody> RedirectStatic<ResBody> {
 impl<Body, ResBody> Service<Request<Body>> for RedirectStatic<ResBody>
 where
     Body: Send + 'static,
-    ResBody: Default + Send + 'static,
+    ResBody: Send + 'static,
 {
-    type Output = Response<ResBody>;
+    type Output = Response<OptionalBody<ResBody>>;
     type Error = Infallible;
 
     async fn serve(&self, _req: Request<Body>) -> Result<Self::Output, Self::Error> {

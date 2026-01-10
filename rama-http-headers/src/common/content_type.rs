@@ -176,6 +176,20 @@ impl ContentType {
         Self(mime::APPLICATION_JAVASCRIPT)
     }
 
+    /// A constructor to easily create a `Content-Type: application/grpc` header.
+    #[inline]
+    #[must_use]
+    pub fn grpc() -> Self {
+        // TOOD: we need to invest in mime, either contribute,
+        // or fork it, to support all our mime needs better...
+        // e.g. we also have similar issues for ndjson and more
+        #[allow(
+            clippy::expect_used,
+            reason = "valid mim,e in future this should be better"
+        )]
+        Self(Mime::from_str("application/grpc").expect("application/grpc to be a valid mime"))
+    }
+
     /// A constructor to easily create a `Content-Type: application/javascript; charset=utf-8` header.
     #[inline]
     #[must_use]

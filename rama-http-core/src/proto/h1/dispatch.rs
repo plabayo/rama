@@ -4,10 +4,13 @@ use std::{
     task::{Context, Poll},
 };
 
-use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{debug, error, trace};
+use rama_core::{
+    Service,
+    bytes::{Buf, Bytes},
+};
 use rama_http::StreamingBody;
 use rama_http_types::{Request, Response, StatusCode};
 use std::task::ready;
@@ -42,11 +45,9 @@ pub(crate) trait Dispatch {
     fn should_poll(&self) -> bool;
 }
 
-use crate::service::HttpService;
-
 pub(crate) struct Server<S, B>
 where
-    S: HttpService<B>,
+    S: Service<Request<B>, Output = Response, Error = Infallible>,
 {
     in_flight: Option<Pin<Box<dyn Future<Output = Result<Response, Infallible>> + Send + 'static>>>,
     pub(crate) service: S,
@@ -488,7 +489,7 @@ impl<T> Drop for OptGuard<'_, T> {
 // ===== impl Server =====
 
 impl<
-    S: HttpService<B>,
+    S: Service<Request<B>, Output = Response, Error = Infallible>,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
 > Server<S, B>
 {
@@ -507,7 +508,7 @@ impl<
 
 // Service is never pinned
 impl<
-    S: HttpService<B>,
+    S: Service<Request<B>, Output = Response, Error = Infallible>,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
 > Unpin for Server<S, B>
 {
@@ -515,7 +516,7 @@ impl<
 
 impl<S> Dispatch for Server<S, IncomingBody>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
 {
     type PollItem = MessageHead<StatusCode>;
     type PollBody = Body;
@@ -557,7 +558,10 @@ where
         *req.headers_mut() = msg.headers;
         *req.version_mut() = msg.version;
         *req.extensions_mut() = msg.extensions;
-        let fut = self.service.serve_http(req);
+        let fut = {
+            let svc = self.service.clone();
+            async move { svc.serve(req).await }
+        };
         self.in_flight = Some(Box::pin(fut));
         Ok(())
     }

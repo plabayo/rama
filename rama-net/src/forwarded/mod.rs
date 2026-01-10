@@ -3,8 +3,8 @@
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
 use rama_core::error::OpaqueError;
+use std::fmt;
 use std::net::IpAddr;
-use std::{fmt, net::SocketAddr};
 
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
@@ -28,6 +28,8 @@ pub use proto::ForwardedProtocol;
 mod version;
 #[doc(inline)]
 pub use version::ForwardedVersion;
+
+use crate::address::SocketAddress;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Forwarding information stored as a chain.
@@ -66,13 +68,13 @@ impl Forwarded {
         self.first.forwarded_host()
     }
 
-    /// Return the client [`SocketAddr`] of this [`Forwarded`] context,
+    /// Return the client [`SocketAddress`] of this [`Forwarded`] context,
     /// if both an Ip and a port are defined.
     ///
     /// You can try to fallback to [`Self::client_ip`],
     /// in case this method returns `None`.
     #[must_use]
-    pub fn client_socket_addr(&self) -> Option<SocketAddr> {
+    pub fn client_socket_addr(&self) -> Option<SocketAddress> {
         self.first
             .forwarded_for()
             .and_then(|node| match (node.ip(), node.port()) {

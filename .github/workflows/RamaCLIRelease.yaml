@@ -54,6 +54,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -109,6 +113,10 @@ jobs:
           - aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v6
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install GNU tar
         if: runner.os == 'macOS'
@@ -168,8 +176,11 @@ jobs:
           - x86_64-pc-windows-msvc
 
     steps:
-      - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v6
+      - uses: ilammy/setup-nasm@v1
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -241,8 +252,11 @@ jobs:
           - aarch64-pc-windows-msvc
 
     steps:
-      - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v6
+      - uses: ilammy/setup-nasm@v1
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}

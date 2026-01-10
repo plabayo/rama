@@ -111,7 +111,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for PrivateIpNetMatcher {
         req.extensions()
             .get::<SocketInfo>()
             .map(|info| {
-                let peer_ip = IpNet::from(info.peer_addr().ip());
+                let peer_ip = IpNet::from(info.peer_addr().ip_addr);
                 self.matchers.iter().any(|ip_net| ip_net.contains(&peer_ip))
             })
             .unwrap_or(self.optional)
@@ -126,7 +126,7 @@ where
         stream
             .peer_addr()
             .map(|addr| {
-                let peer_ip = IpNet::from(addr.ip());
+                let peer_ip = IpNet::from(addr.ip_addr);
                 self.matchers.iter().any(|ip_net| ip_net.contains(&peer_ip))
             })
             .unwrap_or(self.optional)
@@ -135,9 +135,10 @@ where
 
 #[cfg(test)]
 mod test {
+    use crate::address::SocketAddress;
+
     use super::*;
     use rama_core::matcher::Matcher;
-    use std::net::SocketAddr;
 
     #[cfg(feature = "http")]
     #[test]
@@ -194,19 +195,19 @@ mod test {
         let matcher = PrivateIpNetMatcher::new();
 
         struct FakeSocket {
-            local_addr: Option<SocketAddr>,
-            peer_addr: Option<SocketAddr>,
+            local_addr: Option<SocketAddress>,
+            peer_addr: Option<SocketAddress>,
         }
 
         impl crate::stream::Socket for FakeSocket {
-            fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            fn local_addr(&self) -> std::io::Result<SocketAddress> {
                 match &self.local_addr {
                     Some(addr) => Ok(*addr),
                     None => Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)),
                 }
             }
 
-            fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+            fn peer_addr(&self) -> std::io::Result<SocketAddress> {
                 match &self.peer_addr {
                     Some(addr) => Ok(*addr),
                     None => Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)),

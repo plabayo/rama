@@ -47,7 +47,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for IpNetMatcher {
     fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         req.extensions()
             .get::<SocketInfo>()
-            .map(|info| self.net.contains(&IpNet::from(info.peer_addr().ip())))
+            .map(|info| self.net.contains(&IpNet::from(info.peer_addr().ip_addr)))
             .unwrap_or(self.optional)
     }
 }
@@ -59,7 +59,7 @@ where
     fn matches(&self, _ext: Option<&mut Extensions>, stream: &Socket) -> bool {
         stream
             .peer_addr()
-            .map(|addr| self.net.contains(&IpNet::from(addr.ip())))
+            .map(|addr| self.net.contains(&IpNet::from(addr.ip_addr)))
             .unwrap_or(self.optional)
     }
 }
@@ -138,9 +138,10 @@ mod private {
 
 #[cfg(test)]
 mod test {
+    use crate::address::SocketAddress;
+
     use super::*;
     use rama_core::matcher::Matcher;
-    use std::net::SocketAddr;
 
     const SUBNET_IPV4: &str = "192.168.0.0/24";
     const SUBNET_IPV4_VALID_CASES: [&str; 2] = ["192.168.0.0/25", "192.168.0.1"];
@@ -150,13 +151,13 @@ mod test {
     const SUBNET_IPV6_VALID_CASES: [&str; 2] = ["fd00::/17", "fd00::1"];
     const SUBNET_IPV6_INVALID_CASES: [&str; 2] = ["fd01::/15", "fd01::"];
 
-    fn socket_addr_from_case(s: &str) -> SocketAddr {
+    fn socket_addr_from_case(s: &str) -> SocketAddress {
         if s.contains('/') {
             let ip_net: IpNet = s.parse().unwrap();
-            SocketAddr::new(ip_net.addr(), 60000)
+            SocketAddress::new(ip_net.addr(), 60000)
         } else {
             let ip_addr: std::net::IpAddr = s.parse().unwrap();
-            SocketAddr::new(ip_addr, 60000)
+            SocketAddress::new(ip_addr, 60000)
         }
     }
 
@@ -250,19 +251,19 @@ mod test {
         let matcher = IpNetMatcher::new([127, 0, 0, 1]);
 
         struct FakeSocket {
-            local_addr: Option<SocketAddr>,
-            peer_addr: Option<SocketAddr>,
+            local_addr: Option<SocketAddress>,
+            peer_addr: Option<SocketAddress>,
         }
 
         impl crate::stream::Socket for FakeSocket {
-            fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            fn local_addr(&self) -> std::io::Result<SocketAddress> {
                 match &self.local_addr {
                     Some(addr) => Ok(*addr),
                     None => Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)),
                 }
             }
 
-            fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+            fn peer_addr(&self) -> std::io::Result<SocketAddress> {
                 match &self.peer_addr {
                     Some(addr) => Ok(*addr),
                     None => Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)),

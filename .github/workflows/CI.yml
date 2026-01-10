@@ -34,6 +34,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -88,6 +91,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -158,6 +164,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
@@ -213,6 +222,9 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -259,6 +271,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -296,6 +311,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -351,6 +369,9 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
@@ -390,6 +411,9 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:

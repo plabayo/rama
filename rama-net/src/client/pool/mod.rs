@@ -1,4 +1,5 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
+use crate::address::SocketAddress;
 use crate::conn::{ConnectionHealth, ConnectionHealthStatus};
 use crate::stream::Socket;
 use parking_lot::Mutex;
@@ -14,7 +15,6 @@ use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use std::{future::Future, net::SocketAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
@@ -523,11 +523,11 @@ where
     ID: Send + Sync + 'static,
     C: Socket + ExtensionsMut,
 {
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+    fn local_addr(&self) -> std::io::Result<SocketAddress> {
         self.as_ref().local_addr()
     }
 
-    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+    fn peer_addr(&self) -> std::io::Result<SocketAddress> {
         self.as_ref().peer_addr()
     }
 }

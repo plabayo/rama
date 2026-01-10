@@ -316,7 +316,7 @@ where
         if let Some(peer_addr) = req
             .extensions()
             .get::<SocketInfo>()
-            .map(|socket| *socket.peer_addr())
+            .map(|socket| socket.peer_addr())
         {
             forwarded_element.set_forwarded_for(peer_addr);
         }

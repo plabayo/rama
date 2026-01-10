@@ -133,8 +133,8 @@ where
             && let Ok(Some(peer_addr)) = established_conn.conn.peer_addr().map(Some)
         {
             tracing::info!(
-                network.peer.address = %peer_addr.ip(),
-                network.peer.port = %peer_addr.port(),
+                network.peer.address = %peer_addr.ip_addr,
+                network.peer.port = %peer_addr.port,
                 "TCP connection established",
             );
         }
