@@ -31,7 +31,7 @@ use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
 
-pub mod append_only_vec;
+pub use rama_utils::collections::AppendOnlyVec;
 
 pub mod new;
 pub use new::Extensions;

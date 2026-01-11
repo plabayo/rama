@@ -467,7 +467,7 @@ impl Default for ExtensionVec {
 
 use std::ops::Index;
 
-use crate::extensions::append_only_vec::AppendOnlyVec;
+use rama_utils::collections::append_only_vec::AppendOnlyVec;
 
 impl Index<usize> for ExtensionVec {
     type Output = Element;

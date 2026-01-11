@@ -1,6 +1,16 @@
-use std::alloc::{Layout, alloc, dealloc};
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+#[cfg(not(all(loom, test)))]
+use std::{
+    alloc::{Layout, alloc, dealloc},
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+};
+
+#[cfg(all(loom, test))]
+use loom::{
+    alloc::{Layout, alloc, dealloc},
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+};
 
 #[derive(Debug)]
 /// Append only vec of items `T`.
@@ -41,6 +51,21 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         let idx = self.reserved.fetch_add(1, Ordering::Relaxed);
         let (array_idx, offset) = Self::indices(idx);
 
+        // Only allocate a bin if offset = 0. This means there will only ever be one thread
+        // that allocates a buffer.
+
+        // Note that create_bin_if_needed supports cooperative allocation, so in case we ever
+        // which to use that, we just need to always call create_bin_if_needed regardless of offset.
+        // Also note that we do already use the cooperative logic in case reserve() is used.
+
+        // The pros and cons of either approach are:
+        // Not cooperative: single allocation, but other threads need to use spin_wait until this allocation is finished
+        // Cooperative: potential of many allocations for the same bin (dropped after, so only short spike), who-ever is fastest wins
+
+        // One first sight cooperative seems nicer, but also note that our idx and length logic is sequential, so even
+        // if we make the allocation cooperative and not blocking, we will mostly be moving the spin_wait to that step.
+        // For our use case we also don't expect many (if any) concurrent/parallel pushes to this vec.
+
         let bucket_ptr = if offset == 0 {
             self.create_bin_if_needed(array_idx as usize)
         } else {
@@ -69,26 +94,26 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         idx
     }
 
-    pub fn reserve(&self, additional: usize) {
-        let current_reserved = self.reserved.load(Ordering::Relaxed);
-        let target_idx = current_reserved.saturating_add(additional);
-        if target_idx == 0 {
-            return;
-        }
+    // NOTE: right now we don't support reserve since it's actually quite complex to implement,
+    // and there are many different ways of doing if for a datastructure like this which has
+    // shared push() access. This is fine for our use case since this AppendOnlyVec never
+    // re-allocates. If we ever need reserve() in the future it's definetely possible to add it,
+    // but for now I prefer a simple (and hopefully bugfree) datastructure.
 
-        let (max_bin, _) = Self::indices(target_idx - 1);
-        for bin_idx in 0..=max_bin {
-            if bin_idx >= AMOUNT_OF_BINS as u32 {
-                break;
-            }
-            self.create_bin_if_needed(bin_idx as usize);
-        }
-    }
+    // Eg some questions for reserve:
+    // - Does reserve() allocate slots for the caller only, or is this best effort
+    // - Does it return a size hint of what was reserved, if so what hint
+    // - Does calling it multiple times reserve new blocks, or do we consider not used blocks also.
+    //   In case we need to support calling this multiple times we will need another Atomic to track this.
+    // - Is reserving cooperative with push(), or do we need synchronisation between the two
+
+    // pub fn reserve(&self, amount: usize) -> usize {}
 
     pub fn get(&self, idx: usize) -> Option<&T> {
         if idx >= self.len() {
             return None;
         }
+        // Safety: this is safe because we check if idx is within bounds
         unsafe { Some(self.get_unchecked(idx)) }
     }
 
@@ -112,14 +137,19 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         }
     }
 
-    /// Internal helper to ensure a bin is allocated
+    /// Returns a pointer to the bin with bin_idx. If this bin does not exist it will be created.
+    ///
+    /// Note: this functions supports cooperative allocations. Meaning it can be called
+    /// in parallel/concurrently. In that case the first one to update `self.data[bin_idx]` will win.
+    /// The slower ones will de-allocate and use that pointer instead.
     fn create_bin_if_needed(&self, bin_idx: usize) -> *mut T {
         let mut ptr = self.data[bin_idx].load(Ordering::Acquire);
         if ptr.is_null() {
+            // Make sure we support zero sized traits
             let (layout, new_ptr) = if std::mem::size_of::<T>() == 0 {
                 (None, std::ptr::NonNull::<T>::dangling().as_ptr())
             } else {
-                let layout = Layout::array::<T>(Self::bin_size(bin_idx as u32)).unwrap();
+                let layout = Layout::array::<T>(Self::bin_size(bin_idx)).unwrap();
                 (Some(layout), unsafe { alloc(layout) as *mut T })
             };
 
@@ -130,6 +160,8 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
                 Ordering::Acquire,
             ) {
                 Ok(_) => ptr = new_ptr,
+                // If another thread already updated data[bin_idx], use that bin, and de-allocate
+                // the bin we just allocated
                 Err(found) => {
                     if let Some(layout) = layout {
                         unsafe { dealloc(new_ptr as *mut u8, layout) };
@@ -144,12 +176,12 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
     /// Calculate the position in our data structure
     ///
     /// Returns (bin_index, offset_in_this_bin)
-    const fn indices(i: usize) -> (u32, usize) {
+    const fn indices(i: usize) -> (usize, usize) {
         // offset this so we are alligned for ilog2
         let i = i + Self::INITIAL_BIN_SIZE;
 
         // remove the offset so we start counting bins from 0
-        let bin = i.ilog2() - BIN_OFFSET;
+        let bin = (i.ilog2() - BIN_OFFSET) as usize;
 
         // substract bin_size to find where in this bin we should be
         let offset = i - Self::bin_size(bin);
@@ -160,10 +192,13 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
     ///
     /// We start with INITIAL_BIN_SIZE slots and then we always double the storage
     /// capacity (alwasy double = bitshift)
-    const fn bin_size(array: u32) -> usize {
-        Self::INITIAL_BIN_SIZE << array
+    const fn bin_size(idx: usize) -> usize {
+        Self::INITIAL_BIN_SIZE << idx
     }
 
+    /// Get item with idx from this vec
+    ///
+    /// Safety: this function is safe if idx < self.len()
     pub unsafe fn get_unchecked(&self, idx: usize) -> &T {
         let (array, offset) = Self::indices(idx);
         let bucket = self.data[array as usize].load(Ordering::Acquire);
@@ -172,11 +207,20 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
 }
 
 fn spin_wait(failures: &mut usize) {
-    *failures += 1;
-    if *failures <= 10 {
-        std::hint::spin_loop();
-    } else {
-        std::thread::yield_now();
+    #[cfg(not(all(test, loom)))]
+    {
+        *failures += 1;
+        if *failures <= 10 {
+            std::hint::spin_loop();
+        } else {
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(all(test, loom))]
+    {
+        let _ = failures;
+        loom::thread::yield_now();
     }
 }
 
@@ -193,16 +237,29 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Drop
     for AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
 {
     fn drop(&mut self) {
+        #[cfg(not(all(loom, test)))]
         let mut remaining = *self.count.get_mut();
+
+        #[cfg(all(test, loom))]
+        let mut remaining = self.count.with_mut(|v| *v);
+
         let is_zst = std::mem::size_of::<T>() == 0;
 
         for (i, atomic_ptr) in self.data.iter_mut().enumerate() {
+            #[cfg(not(all(loom, test)))]
             let bucket_ptr = *atomic_ptr.get_mut();
-            if bucket_ptr.is_null() || remaining == 0 {
+
+            #[cfg(all(test, loom))]
+            let bucket_ptr = atomic_ptr.with_mut(|ptr| *ptr);
+
+            // Before `reserve()` was added we also stopped if remaining == 0`. However
+            // with reserve it's possible that we already created bins that have no items
+            // in them, so make sure to also clean those up.
+            if bucket_ptr.is_null() {
                 break;
             }
 
-            let bin_cap = Self::bin_size(i as u32);
+            let bin_cap = Self::bin_size(i);
             let to_drop = std::cmp::min(remaining, bin_cap);
 
             // Drop individual elements in the bucket
@@ -308,5 +365,139 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> FromIterator<T>
             this.push(item);
         }
         this
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn we_can_add_items_and_iter_them() {
+        let vec: AppendOnlyVec<usize> = AppendOnlyVec::new();
+        vec.push(1);
+        vec.push(3);
+
+        let mut iter = vec.iter();
+        assert_eq!(iter.size_hint().0, 2);
+        assert_eq!(*iter.next().unwrap(), 1);
+        assert_eq!(*iter.next().unwrap(), 3);
+    }
+
+    #[derive(Clone, Debug)]
+    struct NoSize;
+
+    #[test]
+    fn support_zero_sized_types() {
+        let vec: AppendOnlyVec<NoSize> = AppendOnlyVec::new();
+        vec.push(NoSize);
+        vec.push(NoSize);
+    }
+}
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use std::sync::Arc;
+
+    use loom::thread;
+
+    use super::*;
+
+    fn create_builder() -> loom::model::Builder {
+        let mut builder = loom::model::Builder::new();
+        builder.max_branches = 100000;
+        builder
+    }
+
+    #[test]
+    fn basic() {
+        create_builder().check(|| {
+            let vec: Arc<AppendOnlyVec<usize>> = Arc::new(AppendOnlyVec::new());
+            vec.push(8);
+
+            let vec_cl = vec.clone();
+
+            let x = thread::spawn(move || {
+                vec_cl.push(16);
+            });
+
+            x.join().unwrap();
+            assert_eq!(vec.len(), 2);
+        });
+    }
+
+    #[test]
+    fn concurrent_push() {
+        create_builder().check(|| {
+            let vec = Arc::new(AppendOnlyVec::<usize, 2, 1>::new());
+
+            let vec_cl = vec.clone();
+            let t1 = loom::thread::spawn(move || vec_cl.push(1));
+            let vec_cl = vec.clone();
+            let t2 = loom::thread::spawn(move || vec_cl.clone().push(2));
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+            assert_eq!(vec.len(), 2);
+
+            // Ensure both values are present (order might vary)
+            let sum: usize = vec.iter().sum();
+            assert_eq!(sum, 3);
+        });
+    }
+
+    #[test]
+    fn read_while_push() {
+        create_builder().check(|| {
+            let vec = Arc::new(AppendOnlyVec::<usize, 2, 1>::new());
+            let v1 = vec.clone();
+
+            let t1 = loom::thread::spawn(move || {
+                v1.push(42);
+            });
+
+            // If len = 1 we should be able to read it, meaning len should only be updated after
+            // the data is available
+            if vec.len() == 1 {
+                assert_eq!(*vec.get(0).unwrap(), 42);
+            }
+
+            // Make sure to wait for this thread to finish so loom can cleanup everything while this
+            // closure is still active, otherwise it will panick
+            t1.join().unwrap();
+        });
+    }
+
+    // reserve() was removed because it's actually quite tricky to implement, but in case we ever
+    // add it again, this test can be used for it
+
+    // #[test]
+    // fn reserve_and_push() {
+    //     create_builder().check(|| {
+    //         let vec = Arc::new(AppendOnlyVec::<usize, 5, 1>::new());
+    //         let v1 = vec.clone();
+    //         let v2 = vec.clone();
+
+    //         // Both of these will race to allocate, but it should handle that
+    //         let t1 = loom::thread::spawn(move || v1.reserve(10));
+    //         let t2 = loom::thread::spawn(move || v2.push(100));
+
+    //         t1.join().unwrap();
+    //         t2.join().unwrap();
+    //     });
+    // }
+
+    #[derive(Clone, Debug)]
+    struct NoSize;
+
+    #[test]
+    fn zero_sized_types() {
+        create_builder().check(|| {
+            let vec = AppendOnlyVec::<NoSize, 5, 1>::new();
+
+            // Zero sized types should not cause memory leaks, or alloc errors
+            vec.push(NoSize);
+            vec.push(NoSize);
+        });
     }
 }
