@@ -78,12 +78,11 @@ impl From<NonEmptyStr> for ProxyID {
 ///
 /// ## Usage
 ///
-/// - Use `HeaderConfigLayer` (`rama-http`) to have this proxy filter be given by the http `Request` headers,
+/// - Use `HeaderConfigLayer` (`rama-http`) to have this proxy filter be given by the http request headers,
 ///   which will add the extracted and parsed [`ProxyFilter`] to the input [`Extensions`].
 /// - Or extract yourself from the username/token validated in the `ProxyAuthLayer` (`rama-http`)
 ///   to add it manually to the input [`Extensions`].
 ///
-/// [`Request`]: crate::http::Request
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct ProxyFilter {
     /// The ID of the proxy to select.
@@ -123,7 +122,7 @@ pub struct ProxyFilter {
 
 /// The trait to implement to provide a proxy database to other facilities,
 /// such as connection pools, to provide a proxy based on the given
-/// [`TransportContext`] and [`ProxyFilter`].
+/// [`ProxyContext`] and [`ProxyFilter`].
 pub trait ProxyDB: Send + Sync + 'static {
     /// The error type that can be returned by the proxy database
     ///

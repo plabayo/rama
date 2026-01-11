@@ -6,16 +6,17 @@ use std::{fmt, pin::Pin, sync::Arc};
 
 /// Adapter to use a [`tower::Layer`]-[`tower::Service`] as a [`rama::Layer`]-[`rama::Service`].
 ///
-/// The produced [`tower::Service`] will be wrapped by a [`LayerServiceAdapter`] making it
+/// The produced [`tower::Service`] will be wrapped by a [`LayerAdapterService`] making it
 /// a fully compatible [`rama::Service`] ready to be plugged into a rama stack.
 ///
 /// Note that you should use [`ServiceAdapter`] or [`SharedServiceAdapter`] for non-layer services.
 ///
 /// [`tower::Service`]: tower_service::Service
 /// [`tower::Layer`]: tower_layer::Layer
-/// [`rama::Layer`]: crate::Layer
-/// [`rama::Service`]: crate::Service
-/// [`ServiceAdapter`]: super::ServiceAdapter.
+/// [`rama::Layer`]: rama_core::Layer
+/// [`rama::Service`]: rama_core::Service
+/// [`ServiceAdapter`]: super::ServiceAdapter
+/// [`SharedServiceAdapter`]: super::SharedServiceAdapter
 pub struct LayerAdapter<L> {
     inner: L,
 }
@@ -26,7 +27,7 @@ impl<L: Send + Sync + 'static> LayerAdapter<L> {
     /// See [`LayerAdapter`] for more information.
     ///
     /// [`tower::Layer`]: tower_layer::Layer
-    /// [`rama::Layer`]: crate::Layer
+    /// [`rama::Layer`]: rama_core::Layer
     pub fn new(layer: L) -> Self {
         Self { inner: layer }
     }

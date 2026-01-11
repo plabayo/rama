@@ -2,6 +2,7 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     http::{client::EasyHttpWebClient, service::opentelemetry::OtelExporter},
     net::client::pool::http::HttpPooledConnectorConfig,
+    rt::Executor,
     telemetry::{
         opentelemetry::{
             KeyValue,
@@ -48,7 +49,7 @@ fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxErr
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(None)
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::default())
         .try_with_connection_pool(HttpPooledConnectorConfig::default())
         .context("build http exporter client service")?
         .build_client();

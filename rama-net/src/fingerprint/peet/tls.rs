@@ -4,10 +4,10 @@
 //! See license information below:
 //!
 //! > Original work from:
-//! >   https://github.com/pagpeter/TrackMe
+//! > <https://github.com/pagpeter/TrackMe>
 //! >
 //! > Licensed under GPLv3.
-//! > See https://github.com/plabayo/rama/blob/main/docs/thirdparty/licenses/pagpeter-trackme for license details.
+//! > See <https://github.com/plabayo/rama/blob/main/docs/thirdparty/licenses/pagpeter-trackme> for license details.
 
 use crate::fingerprint::ClientHelloProvider;
 use crate::tls::client::ClientHelloExtension;
@@ -287,6 +287,8 @@ impl fmt::Debug for PeetPrint {
 /// error identifying a failure in [`PeetPrint::compute`]
 pub enum PeetComputeError {
     /// missing [`ClientHello`]
+    ///
+    /// [`ClientHello`]: crate::tls::client::ClientHello
     MissingClientHello,
     /// cipher suites was empty
     EmptyCipherSuites,

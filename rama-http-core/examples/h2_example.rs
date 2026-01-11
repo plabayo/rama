@@ -19,6 +19,7 @@
 //! connection index and count of requests within that connection.
 
 use rama_core::ServiceInput;
+use rama_core::telemetry::tracing;
 use rama_error::BoxError;
 use rama_http_core::h2::client;
 use rama_http_types::{Method, Request};
@@ -32,9 +33,8 @@ use std::net::ToSocketAddrs;
 const ALPN_H2: &str = "h2";
 
 #[tokio::main]
+#[tracing_test::traced_test]
 pub async fn main() -> Result<(), BoxError> {
-    let _ = env_logger::try_init();
-
     let tls_client_config = std::sync::Arc::new({
         let root_store = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let mut c = tokio_rustls::rustls::ClientConfig::builder()
@@ -47,7 +47,7 @@ pub async fn main() -> Result<(), BoxError> {
     // Sync DNS resolution.
     let addr = "example.com:443".to_socket_addrs().unwrap().next().unwrap();
 
-    println!("ADDR: {addr:?}");
+    tracing::info!("ADDR: {addr:?}");
 
     let tcp = TcpStream::connect(&addr).await?;
     let dns_name = ServerName::try_from("example.com").unwrap();
@@ -61,30 +61,30 @@ pub async fn main() -> Result<(), BoxError> {
         assert_eq!(Some(ALPN_H2.as_bytes()), negotiated_protocol);
     }
 
-    println!("Starting client handshake");
+    tracing::info!("Starting client handshake");
     let (mut client, h2) = client::handshake(tls).await?;
 
-    println!("building request");
+    tracing::info!("building request");
     let request = Request::builder()
         .method(Method::GET)
         .uri("https://example.com/")
         .body(())
         .unwrap();
 
-    println!("sending request");
+    tracing::info!("sending request");
     let (response, other) = client.send_request(request, true).unwrap();
 
     tokio::spawn(async move {
         if let Err(e) = h2.await {
-            println!("GOT ERR={e:?}");
+            tracing::info!("GOT ERR={e:?}");
         }
     });
 
-    println!("waiting on response : {other:?}");
+    tracing::info!("waiting on response : {other:?}");
     let (_, mut body) = response.await?.into_parts();
-    println!("processing body");
+    tracing::info!("processing body");
     while let Some(chunk) = body.data().await {
-        println!("RX: {:?}", chunk?);
+        tracing::info!("RX: {:?}", chunk?);
     }
     Ok(())
 }

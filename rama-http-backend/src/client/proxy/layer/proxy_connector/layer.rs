@@ -20,9 +20,9 @@ pub struct HttpProxyConnectorLayer {
 impl HttpProxyConnectorLayer {
     /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnector`]
     /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
-    /// in the [`Context`].
+    /// in the [`Extensions`].
     ///
-    /// [`Context`]: rama_core::Context
+    /// [`Extensions`]: rama_core::extensions::Extensions
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     #[must_use]
     pub fn optional() -> Self {
@@ -35,9 +35,9 @@ impl HttpProxyConnectorLayer {
 
     /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnector`]
     /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
-    /// not available in the [`Context`].
+    /// not available in the [`Extensions`].
     ///
-    /// [`Context`]: rama_core::Context
+    /// [`Extensions`]: rama_core::extensions::Extensions
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     #[must_use]
     pub fn required() -> Self {

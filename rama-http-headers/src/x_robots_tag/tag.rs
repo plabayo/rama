@@ -314,7 +314,7 @@ macro_rules! create_robots_tag {
         /// More Information:
         ///
         /// * [List of std directives](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Robots-Tag#directives)
-        /// * SPC: https://www.ietf.org/slides/slides-aicontrolws-server-privacy-control-a-server-to-client-privacy-opt-out-preference-signal-00.pdf
+        /// * SPC: <https://www.ietf.org/slides/slides-aicontrolws-server-privacy-control-a-server-to-client-privacy-opt-out-preference-signal-00.pdf>
         /// * No-AI / No-Image-AI: no source that we aware of, if you know of any please open a PR
         ///
         /// [`X-Robots-Tag`]: super::XRobotsTag
@@ -513,9 +513,9 @@ create_robots_tag! {
     index_if_embedded: bool,
     #[as_str("max-snippet")]
     #[kind(optional)]
-    /// Use a maximum of <number> characters as a textual snippet for this search result.
+    /// Use a maximum of `<number>` characters as a textual snippet for this search result.
     ///
-    /// Ignored if no valid <number> is specified.
+    /// Ignored if no valid `<number>` is specified.
     max_snippet: u32,
     #[as_str("max-image-preview")]
     #[kind(optional)]
@@ -530,13 +530,13 @@ create_robots_tag! {
     max_image_preview: MaxImagePreviewSetting,
     #[as_str("max-video-preview")]
     #[kind(optional)]
-    /// Use a maximum of <number> seconds as a video snippet
+    /// Use a maximum of `<number>` seconds as a video snippet
     /// for videos on this page in search results.
     ///
     /// If omitted, search engines may show a video snippet in search results,
     /// and the search engine decides how long a preview may be.
     ///
-    /// Ignored if no valid <number> is specified.
+    /// Ignored if no valid `<number>` is specified.
     ///
     /// Special values are as follows:
     /// - `0`:  At most, a static image may be used, in accordance to the max-image-preview setting.

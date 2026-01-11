@@ -267,12 +267,12 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
 }
 
 impl<S: Send + Sync + 'static> rama_net::stream::Socket for UdpSocketRelay<S> {
-    fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.socket.local_addr()
+    fn local_addr(&self) -> io::Result<SocketAddress> {
+        self.socket.local_addr().map(Into::into)
     }
 
-    fn peer_addr(&self) -> io::Result<SocketAddr> {
-        self.socket.peer_addr()
+    fn peer_addr(&self) -> io::Result<SocketAddress> {
+        self.socket.peer_addr().map(Into::into)
     }
 }
 
@@ -338,11 +338,11 @@ impl<C: fmt::Debug, S: fmt::Debug> fmt::Debug for UdpFramedRelay<C, S> {
 impl<C: Send + Sync + 'static, S: Send + Sync + 'static> rama_net::stream::Socket
     for UdpFramedRelay<C, S>
 {
-    fn local_addr(&self) -> io::Result<SocketAddr> {
+    fn local_addr(&self) -> io::Result<SocketAddress> {
         self.relay_socket.local_addr()
     }
 
-    fn peer_addr(&self) -> io::Result<SocketAddr> {
+    fn peer_addr(&self) -> io::Result<SocketAddress> {
         self.relay_socket.peer_addr()
     }
 }

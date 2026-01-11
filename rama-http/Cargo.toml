@@ -17,6 +17,9 @@ allowed = []
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[package.metadata.cargo-machete]
+ignored = ["tracing-subscriber"]
+
 [features]
 default = []
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry", "dep:opentelemetry-http"]
@@ -58,7 +61,6 @@ iri-string = { workspace = true }
 matchit = { workspace = true }
 opentelemetry-http = { workspace = true, optional = true }
 parking_lot = { workspace = true }
-percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 radix_trie = { workspace = true }
 rama-core = { workspace = true }
@@ -80,12 +82,10 @@ brotli = { workspace = true }
 flate2 = { workspace = true }
 itertools = { workspace = true }
 parking_lot = { workspace = true }
-rama-tcp = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-stream = { workspace = true }
 tokio-test = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
 zstd = { workspace = true }
 

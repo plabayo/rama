@@ -9,6 +9,7 @@ use crate::{Request, Response, StatusCode};
 use rama_core::extensions::{Extension, ExtensionsMut, ExtensionsRef};
 use rama_core::{Layer, Service};
 use rama_error::{BoxError, ErrorContext as _, OpaqueError};
+use rama_http_types::body::OptionalBody;
 use rama_net::user::UserId;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -168,9 +169,9 @@ where
     S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     L: 'static,
     ReqBody: Send + 'static,
-    ResBody: Default + Send + 'static,
+    ResBody: Send + 'static,
 {
-    type Output = S::Output;
+    type Output = Response<OptionalBody<ResBody>>;
     type Error = OpaqueError;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
@@ -182,28 +183,32 @@ where
         {
             if let Some(ext) = self.proxy_auth.authorized(credentials).await {
                 req.extensions_mut().extend(ext);
-                self.inner
+                Ok(self
+                    .inner
                     .serve(req)
                     .await
-                    .map_err(|err| OpaqueError::from_boxed(err.into()))
+                    .map_err(|err| OpaqueError::from_boxed(err.into()))?
+                    .map(OptionalBody::some))
             } else {
                 Ok(Response::builder()
                     .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                     .header(PROXY_AUTHENTICATE, C::SCHEME)
-                    .body(Default::default())
+                    .body(OptionalBody::none())
                     .context("create auth-required response")?)
             }
         } else if self.allow_anonymous {
             req.extensions_mut().insert(UserId::Anonymous);
-            self.inner
+            Ok(self
+                .inner
                 .serve(req)
                 .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()))
+                .map_err(|err| OpaqueError::from_boxed(err.into()))?
+                .map(OptionalBody::some))
         } else {
             Ok(Response::builder()
                 .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                 .header(PROXY_AUTHENTICATE, C::SCHEME)
-                .body(Default::default())
+                .body(OptionalBody::none())
                 .context("create auth-required response")?)
         }
     }

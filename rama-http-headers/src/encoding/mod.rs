@@ -136,7 +136,7 @@ impl Encoding {
     }
 }
 
-/// based on https://github.com/http-rs/accept-encoding
+/// based on <https://github.com/http-rs/accept-encoding>
 pub fn parse_accept_encoding_headers<'a>(
     headers: &'a rama_http_types::HeaderMap,
     supported_encoding: impl SupportedEncodings + 'a,

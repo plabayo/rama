@@ -28,7 +28,7 @@ mod fallthrough;
 pub use fallthrough::UriMatchReplaceFallthrough;
 
 /// A trait for types that can match and optionally replace (rewrite)
-/// [`Uri`](rama_http_types::Uri) values.
+/// [`Uri`] values.
 ///
 /// # Blanket implementations
 ///

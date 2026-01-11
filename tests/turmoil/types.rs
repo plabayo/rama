@@ -42,8 +42,9 @@ where
                         "failed to receive local addr of established connection: {err:?}"
                     )
                 })
-                .ok(),
-            addr,
+                .ok()
+                .map(Into::into),
+            addr.into(),
         ));
 
         let mut conn = TcpStream::new(conn);

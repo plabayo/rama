@@ -104,12 +104,15 @@ use rama::{
     net::{
         Protocol,
         address::{Domain, HostWithPort, SocketAddress},
-        client::ConnectorTarget,
+        client::{ConnectorTarget, pool::http::HttpPooledConnectorConfig},
         http::RequestContext,
         tls::{
             ApplicationProtocol,
             client::ServerVerifyMode,
-            server::{ServerAuth, ServerConfig, SniPeekStream, SniRequest, SniRouter},
+            server::{
+                ServerAuth, ServerCertIssuerData, ServerConfig, SniPeekStream, SniRequest,
+                SniRouter,
+            },
         },
     },
     rt::Executor,
@@ -153,7 +156,7 @@ async fn main() -> Result<(), BoxError> {
                 ApplicationProtocol::HTTP_2,
                 ApplicationProtocol::HTTP_11,
             ]),
-            ..ServerConfig::new(ServerAuth::CertIssuer(Default::default()))
+            ..ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData::default()))
         };
         tls_server_config
             .try_into()
@@ -180,9 +183,9 @@ async fn main() -> Result<(), BoxError> {
             TlsConnectorDataBuilder::new_http_auto()
                 .with_server_verify_mode(ServerVerifyMode::Disable),
         )))
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::graceful(shutdown.guard()))
         // NOTE: up to you define if a pool is acceptable, and especially a global one...
-        .try_with_connection_pool(Default::default())
+        .try_with_connection_pool(HttpPooledConnectorConfig::default())
         .context("build easy web client w/ pool")?
         .build_client();
 
@@ -215,8 +218,12 @@ async fn main() -> Result<(), BoxError> {
     let https_svc = TlsAcceptorLayer::new(tls_service_data)
         .into_layer(HttpServer::auto(Executor::graceful(shutdown.guard())).service(http_svc));
 
-    let tcp_service = optional_dns_overwrite_layer_used_for_e2e_only
-        .into_layer(SniRouter::new(SniRouterService { https_svc }));
+    let tcp_service = optional_dns_overwrite_layer_used_for_e2e_only.into_layer(SniRouter::new(
+        SniRouterService {
+            https_svc,
+            exec: Executor::graceful(shutdown.guard()),
+        },
+    ));
 
     shutdown.spawn_task_fn(async |guard| {
         tcp_listener.serve_graceful(guard, tcp_service).await;
@@ -240,6 +247,7 @@ struct IngressSNI(Domain);
 #[derive(Debug)]
 struct SniRouterService<T> {
     https_svc: T,
+    exec: Executor,
 }
 
 impl<T, S> Service<SniRequest<S>> for SniRouterService<T>
@@ -281,10 +289,13 @@ where
                 .with_context(|| format!("MITM proxy https data for {sni}"))?;
         } else {
             // preserve traffic as is, no MITM even
-            Forwarder::new(HostWithPort {
-                host: sni.clone().into(),
-                port: Protocol::HTTPS_DEFAULT_PORT,
-            })
+            Forwarder::new(
+                self.exec.clone(),
+                HostWithPort {
+                    host: sni.clone().into(),
+                    port: Protocol::HTTPS_DEFAULT_PORT,
+                },
+            )
             .serve(stream)
             .await
             .map_err(OpaqueError::from_boxed)

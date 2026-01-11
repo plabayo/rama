@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::io::Cursor;
 use std::pin::Pin;
 use std::task::{Context, Poll};

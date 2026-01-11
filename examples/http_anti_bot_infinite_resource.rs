@@ -143,7 +143,7 @@ async fn infinite_resource(
     State(block_list): State<BlockList>,
     Query(parameters): Query<InfiniteResourceParameters>,
 ) -> impl IntoResponse {
-    let ip_addr = socket_info.peer_addr().ip();
+    let ip_addr = socket_info.peer_addr().ip_addr;
     let mut block_list = block_list.lock().await;
     block_list.insert(ip_addr);
     tracing::info!(
@@ -209,7 +209,7 @@ where
             .get::<SocketInfo>()
             .ok_or_else(|| OpaqueError::from_display("no socket info found").into_boxed())?
             .peer_addr()
-            .ip();
+            .ip_addr;
         let block_list = self.block_list.lock().await;
         if block_list.contains(&ip_addr) {
             return Err(OpaqueError::from_display(format!(

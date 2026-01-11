@@ -89,7 +89,7 @@ where
     ///
     /// A subsequent call should be made to [`flush`](Self::flush) to flush writes.
     ///
-    /// This function guarantees that the frame is queued unless [`Error::WriteBufferFull`]
+    /// This function guarantees that the frame is queued unless [`ProtocolError::WriteBufferFull`]
     /// is returned.
     /// In order to handle WouldBlock or Incomplete, call [`flush`](Self::flush) afterwards.
     pub fn write(&mut self, frame: Frame) -> Result<(), ProtocolError> {

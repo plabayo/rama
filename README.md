@@ -112,7 +112,7 @@ middleware, services and stacks you'll build yourself:
 | ✅ [tls](https://ramaproxy.org/docs/rama/tls/index.html) | ✅ [Rustls](https://ramaproxy.org/docs/rama/tls/rustls/index.html) ⸱ ✅ [BoringSSL](https://ramaproxy.org/docs/rama/tls/boring/index.html) ⸱ ❌ NSS <sup>(3)</sup> |
 | ✅ [dns](https://ramaproxy.org/docs/rama/dns/index.html) | ✅ [DNS Resolver](https://ramaproxy.org/docs/rama/dns/trait.DnsResolver.html) |
 | ✅ [proxy protocols](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [PROXY protocol](https://ramaproxy.org/docs/rama/proxy/haproxy/index.html) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ ✅ [socks5(h) proxy](https://github.com/plabayo/rama/blob/main/examples/socks5_connect_proxy.rs) |
-| ✅ web protocols | ✅ [SSE](https://ramaproxy.org/docs/rama/http/sse/index.html) ⸱ ✅ [WS](https://ramaproxy.org/docs/rama/http/ws/index.html) ⸱ ❌ Web Transport <sup>(1)</sup> ⸱ 🏗️ gRPC <sup>(1)</sup> |
+| ✅ web protocols | ✅ [SSE](https://ramaproxy.org/docs/rama/http/sse/index.html) ⸱ ✅ [WS](https://ramaproxy.org/docs/rama/http/ws/index.html) ⸱ ❌ Web Transport <sup>(1)</sup> ⸱ ✅ [gRPC](https://ramaproxy.org/docs/rama/http/grpc/index.html) |
 | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service](https://ramaproxy.org/docs/rama/service/trait.Service.html) ⸱ ✅ [Layer](https://ramaproxy.org/docs/rama/layer/trait.Layer.html) ⸱ ✅ [extensions](https://ramaproxy.org/docs/rama/extensions/index.html) ⸱ ✅ [dyn dispatch](https://ramaproxy.org/docs/rama/service/struct.BoxService.html) ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/layer/index.html) |
 | ✅ [telemetry](https://ramaproxy.org/docs/rama/telemetry/index.html) | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html) ⸱ ✅ [http metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html) ⸱ ✅ [transport metrics](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html) |
 | ✅ Diagnostics | ✅ [curl export](https://ramaproxy.org/docs/rama/http/convert/curl/index.html) ⸱ ✅ [HAR](https://ramaproxy.org/docs/rama/http/layer/har/index.html) |
@@ -331,6 +331,8 @@ Here is a list of all `rama` crates:
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers
+- [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
+- [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
@@ -557,32 +559,6 @@ without any additional terms or conditions.
 [contributing]: https://github.com/plabayo/rama/blob/main/CONTRIBUTING.md
 [mit-license]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [apache-license]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
-
-### Ethical principles of hacking
-
-Our ethics, its limits and the motivation framed within can be summed up as follows:
-
-- Access to computers - and anything which might teach you something about
-  the way the world really works - should be unlimited and total.
-  Always yield to the Hands-On Imperative!
-
-- All information should be free.
-
-- Mistrust authority - promote decentralization.
-
-- Hackers should be judged by their acting,
-  not bogus criteria such as degrees, age, race, or position.
-
-- You can create art and beauty on a computer.
-
-- Computers can change your life for the better.
-
-- Don't litter other people's data.
-
-- Make public data available, protect private data.
-
-Inspired by [Steven Levy's book "Hackers: Heroes of the Computer Revolution"](https://en.wikipedia.org/wiki/Hackers:_Heroes_of_the_Computer_Revolution),
-and contributions by [the Chaos Computer Club (CCC)](https://www.ccc.de/en/home).
 
 ### Acknowledgements
 

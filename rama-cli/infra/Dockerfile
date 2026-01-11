@@ -1,7 +1,7 @@
 FROM rust:1-bookworm AS builder
 
 RUN apt-get update && \
-    apt-get install --no-install-recommends -y cmake clang
+    apt-get install --no-install-recommends -y cmake clang protobuf-compiler
 
 WORKDIR /usr/src/app
 COPY . .

@@ -19,7 +19,7 @@ pub struct UnixConnector<ConnectorFactory = (), T = UnixTarget> {
 }
 
 #[derive(Debug, Clone)]
-/// Type of [`UnixConnector`] which connects to a fixed [`Path`].
+/// Type of [`UnixConnector`] which connects to a fixed [`file path`][`PathBuf`].
 pub struct UnixTarget(PathBuf);
 
 impl UnixConnector {
@@ -160,7 +160,7 @@ macro_rules! impl_stream_connector_either {
 ::rama_core::combinators::impl_either!(impl_stream_connector_either);
 
 /// Factory to create a [`UnixStreamConnector`]. This is used by the Unix
-/// stream service to create a stream within a specific [`Context`].
+/// stream service to create a [`UnixStream`].
 ///
 /// In the most simplest case you use a [`UnixStreamConnectorCloneFactory`]
 /// to use a [`Clone`]able [`UnixStreamConnectorCloneFactory`], but in more

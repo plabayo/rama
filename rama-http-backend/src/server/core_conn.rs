@@ -51,7 +51,7 @@ fn map_http_core_err_to_result(err: rama_http_core::Error) -> HttpServeResult {
     }
 
     if let Some(source_err) = err.source() {
-        if let Some(h2_err) = source_err.downcast_ref::<h2::Error>() {
+        if let Some(h2_err) = source_err.downcast_ref::<rama_http_core::h2::Error>() {
             if h2_err.is_go_away() || h2_err.is_io() {
                 return Ok(());
             }
@@ -72,7 +72,7 @@ mod private {
     use rama_core::Service;
     use rama_core::extensions::ExtensionsMut;
     use rama_core::futures::FutureExt;
-    use rama_core::rt::Executor;
+    use rama_core::graceful::ShutdownGuard;
     use rama_core::stream::Stream;
     use rama_core::telemetry::tracing;
     use rama_http::service::web::response::IntoResponse;
@@ -86,9 +86,9 @@ mod private {
     pub trait Sealed {
         fn http_core_serve_connection<IO, S, Response>(
             &self,
-
             io: IO,
             service: S,
+            guard: Option<ShutdownGuard>,
         ) -> impl Future<Output = HttpServeResult> + Send + '_
         where
             IO: Stream + ExtensionsMut,
@@ -102,18 +102,13 @@ mod private {
             &self,
             io: IO,
             service: S,
+            guard: Option<ShutdownGuard>,
         ) -> HttpServeResult
         where
             IO: Stream + ExtensionsMut,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
-            let guard = io
-                .extensions()
-                .get::<Executor>()
-                .and_then(|exec| exec.guard())
-                .cloned();
-
             let service = RamaHttpService::new(service);
 
             let stream = Box::pin(io);
@@ -149,18 +144,13 @@ mod private {
             &self,
             io: IO,
             service: S,
+            guard: Option<ShutdownGuard>,
         ) -> HttpServeResult
         where
             IO: Stream + ExtensionsMut,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
-            let guard = io
-                .extensions()
-                .get::<Executor>()
-                .and_then(|exec| exec.guard())
-                .cloned();
-
             let service = RamaHttpService::new(service);
 
             let stream = Box::pin(io);
@@ -196,18 +186,13 @@ mod private {
             &self,
             io: IO,
             service: S,
+            guard: Option<ShutdownGuard>,
         ) -> HttpServeResult
         where
             IO: Stream + ExtensionsMut,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
-            let guard = io
-                .extensions()
-                .get::<Executor>()
-                .and_then(|exec| exec.guard())
-                .cloned();
-
             let service = RamaHttpService::new(service);
             let stream = Box::pin(io);
 

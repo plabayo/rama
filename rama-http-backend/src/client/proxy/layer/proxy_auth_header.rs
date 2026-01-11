@@ -8,7 +8,9 @@ use rama_net::{address::ProxyAddress, http::RequestContext, user::ProxyCredentia
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// A [`Layer`] which will set the http auth header
-/// in case there is a [`ProxyAddress`] in the [`Context`].
+/// in case there is a [`ProxyAddress`] in the [`Extensions`].
+///
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct SetProxyAuthHttpHeaderLayer;
 
 impl SetProxyAuthHttpHeaderLayer {
@@ -28,7 +30,9 @@ impl<S> Layer<S> for SetProxyAuthHttpHeaderLayer {
 }
 
 /// A [`Service`] wwhich will set the http auth header
-/// in case there is a [`ProxyAddress`] in the [`Context`].
+/// in case there is a [`ProxyAddress`] in the [`Extensions`].
+///
+/// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone)]
 pub struct SetProxyAuthHttpHeaderService<S> {
     inner: S,

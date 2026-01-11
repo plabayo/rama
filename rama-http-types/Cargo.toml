@@ -49,7 +49,6 @@ hex = { workspace = true }
 quickcheck = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
 
 [lints]
 workspace = true

@@ -60,8 +60,8 @@ async fn main() {
                             match stream.peer_addr() {
                                 Ok(addr) => {
                                     tracing::debug!(
-                                        network.peer.address = %addr.ip(),
-                                        network.peer.port = %addr.port(),
+                                        network.peer.address = %addr.ip_addr,
+                                        network.peer.port = %addr.port,
                                         "blocked incoming connection",
                                     )
                                 }

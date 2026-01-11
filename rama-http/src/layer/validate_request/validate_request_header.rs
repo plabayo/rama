@@ -22,10 +22,7 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
     /// # Errors
     ///
     /// Errors if `header_value` is not in the form: `type/subtype`, such as `application/json`
-    pub fn try_accept_for_str(value: &str) -> Result<Self, OpaqueError>
-    where
-        ResBody: Default,
-    {
+    pub fn try_accept_for_str(value: &str) -> Result<Self, OpaqueError> {
         Ok(Self::custom(AcceptHeader::try_new(value)?))
     }
 
@@ -34,10 +31,7 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
     /// The `Accept` header is required to be `*/*`, `type/*` or `type/subtype`,
     /// as configured.
     #[must_use]
-    pub fn accept(mime: Mime) -> Self
-    where
-        ResBody: Default,
-    {
+    pub fn accept(mime: Mime) -> Self {
         Self::custom(AcceptHeader::new(mime))
     }
 }
@@ -99,10 +93,7 @@ impl<S, ResBody> ValidateRequestHeader<S, AcceptHeader<ResBody>> {
     /// # Errors
     ///
     /// Errors if `header_value` is not in the form: `type/subtype`, such as `application/json`
-    pub fn try_accept_for_str(inner: S, value: &str) -> Result<Self, OpaqueError>
-    where
-        ResBody: Default,
-    {
+    pub fn try_accept_for_str(inner: S, value: &str) -> Result<Self, OpaqueError> {
         Ok(Self::custom(inner, AcceptHeader::try_new(value)?))
     }
 
@@ -111,10 +102,7 @@ impl<S, ResBody> ValidateRequestHeader<S, AcceptHeader<ResBody>> {
     /// The `Accept` header is required to be `*/*`, `type/*` or `type/subtype`,
     /// as configured.
     #[must_use]
-    pub fn accept(inner: S, mime: Mime) -> Self
-    where
-        ResBody: Default,
-    {
+    pub fn accept(inner: S, mime: Mime) -> Self {
         Self::custom(inner, AcceptHeader::new(mime))
     }
 }
@@ -136,19 +124,21 @@ impl<S, F, A> ValidateRequestHeader<S, BoxValidateRequestFn<F, A>> {
     }
 }
 
-impl<ReqBody, ResBody, S, V> Service<Request<ReqBody>> for ValidateRequestHeader<S, V>
+impl<ReqBody, ServiceResBody, ValidateResBody, S, V> Service<Request<ReqBody>>
+    for ValidateRequestHeader<S, V>
 where
     ReqBody: Send + 'static,
-    ResBody: Send + 'static,
-    V: ValidateRequest<ReqBody, ResponseBody = ResBody>,
-    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
+    ServiceResBody: Send + 'static,
+    ValidateResBody: From<ServiceResBody> + Send + 'static,
+    V: ValidateRequest<ReqBody, ResponseBody = ValidateResBody>,
+    S: Service<Request<ReqBody>, Output = Response<ServiceResBody>>,
 {
-    type Output = Response<ResBody>;
+    type Output = Response<ValidateResBody>;
     type Error = S::Error;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         match self.validate.validate(req).await {
-            Ok(req) => self.inner.serve(req).await,
+            Ok(req) => Ok(self.inner.serve(req).await?.map(ValidateResBody::from)),
             Err(res) => Ok(res),
         }
     }

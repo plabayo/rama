@@ -260,7 +260,7 @@ where
     /// The nested service will receive a request with the path prefix removed.
     ///
     /// Warning: This sub-service has no notion of the state this webservice has. If you want
-    /// to create a nested-service that shares the same state this webservice has, use [WebService::nest] instead.
+    /// to create a nested-service that shares the same state this webservice has, use [WebService::set_nest_make_fn] instead.
     #[must_use]
     #[inline(always)]
     pub fn with_nest_service<I, T>(self, prefix: impl AsRef<str>, service: I) -> Self
@@ -275,7 +275,7 @@ where
     /// The nested service will receive a request with the path prefix removed.
     ///
     /// Warning: This sub-service has no notion of the state this webservice has. If you want
-    /// to create a nested-service that shares the same state this webservice has, use [WebService::nest] instead.
+    /// to create a nested-service that shares the same state this webservice has, use [WebService::set_nest_make_fn] instead.
     #[inline(always)]
     pub fn set_nest_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
     where

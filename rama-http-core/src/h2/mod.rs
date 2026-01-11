@@ -8,15 +8,6 @@
 //! is also decoupled from TCP or TLS details. The user must handle ALPN and
 //! HTTP/1.1 upgrades themselves.
 //!
-//! # Getting started
-//!
-//! Add the following to your `Cargo.toml` file:
-//!
-//! ```toml
-//! [dependencies]
-//! h2 = "0.4"
-//! ```
-//!
 //! # Layout
 //!
 //! The crate is split into [`client`] and [`server`] modules. Types that are

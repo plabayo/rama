@@ -2,6 +2,7 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
+    rt::Executor,
     telemetry::tracing,
 };
 use rama_dns::{DnsResolver, GlobalDnsResolver};
@@ -22,6 +23,7 @@ use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStream
 pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
     dns: Dns,
     connector_factory: ConnectorFactory,
+    exec: Executor,
 }
 
 impl<Dns, Connector> TcpConnector<Dns, Connector> {}
@@ -32,10 +34,11 @@ impl TcpConnector {
     /// You can use middleware around the [`TcpConnector`]
     /// or add connection pools, retry logic and more.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(exec: Executor) -> Self {
         Self {
             dns: GlobalDnsResolver::new(),
             connector_factory: (),
+            exec,
         }
     }
 }
@@ -49,6 +52,7 @@ impl<Dns, ConnectorFactory> TcpConnector<Dns, ConnectorFactory> {
         TcpConnector {
             dns,
             connector_factory: self.connector_factory,
+            exec: self.exec,
         }
     }
 }
@@ -63,6 +67,7 @@ where {
         TcpConnector {
             dns: self.dns,
             connector_factory: TcpStreamConnectorCloneFactory(connector),
+            exec: self.exec,
         }
     }
 
@@ -72,13 +77,14 @@ where {
         TcpConnector {
             dns: self.dns,
             connector_factory: factory,
+            exec: self.exec,
         }
     }
 }
 
 impl Default for TcpConnector {
     fn default() -> Self {
-        Self::new()
+        Self::new(Executor::default())
     }
 }
 
@@ -108,6 +114,7 @@ where
                 proxy.address.clone(),
                 self.dns.clone(),
                 connector,
+                self.exec.clone(),
             )
             .await
             .context("tcp connector: conncept to proxy")?;
@@ -120,7 +127,7 @@ where
                         )
                     })
                     .ok(),
-                addr,
+                addr.into(),
             ));
             conn.extensions_mut().insert(socket_info);
 
@@ -129,10 +136,15 @@ where
 
         if let Some(ConnectorTarget(target)) = input.extensions().get::<ConnectorTarget>().cloned()
         {
-            let (mut conn, addr) =
-                crate::client::tcp_connect(input.extensions(), target, self.dns.clone(), connector)
-                    .await
-                    .context("tcp connector: conncept to connector target (overwrite?)")?;
+            let (mut conn, addr) = crate::client::tcp_connect(
+                input.extensions(),
+                target,
+                self.dns.clone(),
+                connector,
+                self.exec.clone(),
+            )
+            .await
+            .context("tcp connector: conncept to connector target (overwrite?)")?;
 
             let socket_info= ClientSocketInfo(SocketInfo::new(
                 conn.local_addr()
@@ -142,7 +154,7 @@ where
                         )
                     })
                     .ok(),
-                addr,
+                addr.into(),
             ));
             conn.extensions_mut().insert(socket_info);
 
@@ -168,10 +180,15 @@ where
         let authority = transport_ctx
             .host_with_port()
             .context("get host:port from transport ctx")?;
-        let (mut conn, addr) =
-            crate::client::tcp_connect(input.extensions(), authority, self.dns.clone(), connector)
-                .await
-                .context("tcp connector: connect to server")?;
+        let (mut conn, addr) = crate::client::tcp_connect(
+            input.extensions(),
+            authority,
+            self.dns.clone(),
+            connector,
+            self.exec.clone(),
+        )
+        .await
+        .context("tcp connector: connect to server")?;
 
         let socket_info = ClientSocketInfo(SocketInfo::new(
             conn.local_addr()
@@ -181,7 +198,7 @@ where
                     )
                 })
                 .ok(),
-            addr,
+            addr.into(),
         ));
         conn.extensions_mut().insert(socket_info);
 

@@ -199,7 +199,7 @@
 //! ### `on_body_chunk`
 //!
 //! The `on_body_chunk` callback is called when the response body produces a new
-//! chunk, that is when [`http_body::Body::poll_frame`] returns `Poll::Ready(Some(Ok(chunk)))`.
+//! chunk, that is when [`crate::StreamingBody::poll_frame`] returns `Poll::Ready(Some(Ok(chunk)))`.
 //!
 //! `on_body_chunk` is called even if the chunk is empty.
 //!
@@ -216,7 +216,7 @@
 //!
 //! - The inner [`Service`]'s response future resolves to an error.
 //! - A response is classified as a failure.
-//! - [`http_body::Body::poll_frame`] returns an error.
+//! - [`crate::StreamingBody::poll_frame`] returns an error.
 //! - An end-of-stream is classified as a failure.
 //!
 //! # Recording fields on the span
@@ -355,7 +355,7 @@
 //! [`ClassifyResponse`]: crate::layer::classify::ClassifyResponse
 //! [record]: https://docs.rs/tracing/latest/tracing/span/struct.Span.html#method.record
 //! [`TraceLayer::make_span_with`]: crate::layer::trace::TraceLayer::make_span_with
-//! [`Span`]: tracing::Span
+//! [`Span`]: rama_core::telemetry::tracing::Span
 //! [`ServerErrorsAsFailures`]: crate::layer::classify::ServerErrorsAsFailures
 
 use rama_core::telemetry::tracing::Level;

@@ -157,23 +157,24 @@ async fn main() {
     )
         .into_layer(service_fn(http_plain_proxy));
 
-    let http_service = HttpServer::auto(Executor::graceful(graceful.guard())).service(
+    let exec = Executor::graceful(graceful.guard());
+    let http_service = HttpServer::auto(exec.clone()).service(
         (
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
             ProxyAuthLayer::new(basic!("tom", "clancy")),
             UpgradeLayer::new(
+                exec.clone(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
-                ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
+                ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec.clone())),
             ),
         )
             .into_layer(proxy_service.clone()),
     );
 
-    let exec = Executor::graceful(graceful.guard());
-    let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec).service(proxy_service))
-        .with_fallback(Forwarder::ctx());
+    let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
+        .with_fallback(Forwarder::ctx(exec));
     let socks5_acceptor = Socks5Acceptor::new()
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(LazyConnector::new(socks5_svc));
@@ -223,10 +224,10 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),
-                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port().to_string()).unwrap_or_default(),
-                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip().to_string()).unwrap_or_default(),
-                    network.peer.port = %client_socket_info.peer_addr().port(),
-                    network.peer.address = %client_socket_info.peer_addr().ip(),
+                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port.to_string()).unwrap_or_default(),
+                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip_addr.to_string()).unwrap_or_default(),
+                    network.peer.port = %client_socket_info.peer_addr().port,
+                    network.peer.address = %client_socket_info.peer_addr().ip_addr,
                     "http plain text proxy received response",
                 )
             } else {

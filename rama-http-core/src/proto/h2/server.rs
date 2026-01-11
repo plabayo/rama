@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
@@ -5,6 +6,7 @@ use std::time::Duration;
 use crate::h2::server::{Connection, Handshake, SendResponse};
 use crate::h2::{Reason, RecvStream};
 use pin_project_lite::pin_project;
+use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
@@ -22,7 +24,6 @@ use crate::common::date;
 use crate::headers;
 use crate::proto::Dispatched;
 use crate::proto::h2::ping::Recorder;
-use crate::service::HttpService;
 
 // Our defaults are chosen for the "majority" case, which usually are not
 // resource constrained, and so the spec default of 64kb can be too limiting
@@ -77,7 +78,7 @@ impl Default for Config {
 pin_project! {
     pub(crate) struct Server<T, S>
     where
-        S: HttpService<IncomingBody>,
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>
     {
         exec: Executor,
         service: S,
@@ -107,7 +108,7 @@ struct Serving<T> {
 impl<T, S> Server<T, S>
 where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
 {
     pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Self {
         let mut builder = crate::h2::server::Builder::default()
@@ -173,7 +174,7 @@ where
 impl<T, S> Future for Server<T, S>
 where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
 {
     type Output = crate::Result<Dispatched>;
 
@@ -229,7 +230,7 @@ where
         exec: &Executor,
     ) -> Poll<crate::Result<()>>
     where
-        S: HttpService<IncomingBody>,
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
     {
         loop {
             self.poll_ping(cx);
@@ -287,8 +288,13 @@ where
                         network.protocol.version = version_as_protocol_version(req.version()),
                     );
 
+                    let serve_fut = {
+                        let service = service.clone();
+                        async move { service.serve(req).await }
+                    };
+
                     let fut = H2Stream::new(
-                        service.serve_http(req),
+                        serve_fut,
                         connect_parts,
                         respond,
                         self.date_header,

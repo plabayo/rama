@@ -1,7 +1,7 @@
 use super::utils;
 use rama::{
-    Service,
-    http::{Body, BodyExtractExt, Method, Request, client::HttpConnector},
+    Layer as _, Service,
+    http::{Body, BodyExtractExt, Method, Request, client::HttpConnectorLayer},
     net::client::{ConnectorService, EstablishedClientConnection},
     unix::client::UnixConnector,
 };
@@ -21,7 +21,8 @@ async fn test_unix_socket_http() {
                 .body(Body::empty())
                 .expect("build request");
 
-            match HttpConnector::new(UnixConnector::fixed("/tmp/rama_example_unix_http.socket"))
+            match HttpConnectorLayer::default()
+                .into_layer(UnixConnector::fixed("/tmp/rama_example_unix_http.socket"))
                 .connect(request)
                 .await
             {

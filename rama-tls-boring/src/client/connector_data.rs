@@ -242,7 +242,7 @@ impl TlsConnectorDataBuilder {
             .expect("with http 2")
     }
 
-    /// Add [`ConfigBuilder`] to the end of our base builder
+    /// Add [`TlsConnectorDataBuilder`] to the end of our base builder
     ///
     /// When evaluating builders we start from this builder (the last one) and
     /// work our way back until we find a value.
@@ -251,7 +251,7 @@ impl TlsConnectorDataBuilder {
         self
     }
 
-    /// Add [`ConfigBuilder`] to the start of our base builders
+    /// Add [`TlsConnectorDataBuilder`] to the start of our base builders
     ///
     /// Builder in the start is evaluated as the last one when iterating over builders
     pub fn prepend_base_config(&mut self, config: Arc<Self>) -> &mut Self {

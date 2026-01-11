@@ -25,7 +25,7 @@
 //!
 //! [`Matcher`]: crate::matcher::Matcher
 //! [`Extensions`]: crate::extensions::Extensions
-//! [`http_listener_hello.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
+//! [`http_rate_limit.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
 
 use crate::error::BoxError;
 use std::{convert::Infallible, fmt, sync::Arc};

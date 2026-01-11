@@ -1,22 +1,23 @@
 //! HTTP/1 Server Connections
 
+use std::convert::Infallible;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use httparse::ParserConfig;
+use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::OpaqueError;
 use rama_core::extensions::ExtensionsMut;
-use rama_http::Body;
 use rama_http::io::upgrade::Upgraded;
+use rama_http::{Body, Request, Response};
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::body::Incoming as IncomingBody;
 use crate::proto;
-use crate::service::HttpService;
 
 type Http1Dispatcher<T, B, S> = proto::h1::Dispatcher<
     proto::h1::dispatch::Server<S, IncomingBody>,
@@ -26,7 +27,7 @@ type Http1Dispatcher<T, B, S> = proto::h1::Dispatcher<
 >;
 
 pin_project_lite::pin_project! {
-    /// A [`Future`](core::future::Future) representing an HTTP/1 connection, bound to a
+    /// A [`Future`] representing an HTTP/1 connection, bound to a
     /// [`Service`](crate::service::Service), returned from
     /// [`Builder::serve_connection`](struct.Builder.html#method.serve_connection).
     ///
@@ -35,7 +36,7 @@ pin_project_lite::pin_project! {
     #[must_use = "futures do nothing unless polled"]
     pub struct Connection<T, S>
     where
-        S: HttpService<IncomingBody>,
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
     {
         conn: Http1Dispatcher<T, Body, S>,
     }
@@ -104,7 +105,7 @@ pub struct Parts<T, S> {
 
 impl<I, S> fmt::Debug for Connection<I, S>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Connection").finish()
@@ -113,7 +114,7 @@ where
 
 impl<I, S> Connection<I, S>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
@@ -190,8 +191,6 @@ where
     }
 
     /// Enable this connection to support higher-level HTTP upgrades.
-    ///
-    /// See [the `upgrade` module](crate::upgrade) for more.
     pub fn with_upgrades(self) -> UpgradeableConnection<I, S>
     where
         I: Send,
@@ -202,7 +201,7 @@ where
 
 impl<I, S> Future for Connection<I, S>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = crate::Result<()>;
@@ -409,7 +408,7 @@ impl Builder {
         }
     }
 
-    /// Bind a connection together with a [`Service`](crate::service::Service).
+    /// Bind a connection together with a [`Service`].
     ///
     /// This returns a Future that must be polled in order for HTTP to be
     /// driven on the connection.
@@ -420,7 +419,7 @@ impl Builder {
     /// provided, calling `serve_connection` will panic.
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<I, S>
     where
-        S: HttpService<IncomingBody>,
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         let mut conn = proto::Conn::new(io);
@@ -463,14 +462,14 @@ impl Builder {
 #[allow(missing_debug_implementations)]
 pub struct UpgradeableConnection<T, S>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
 {
     pub(super) inner: Option<Connection<T, S>>,
 }
 
 impl<I, S> UpgradeableConnection<I, S>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
@@ -488,7 +487,7 @@ where
 
 impl<I, S> Future for UpgradeableConnection<I, S>
 where
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = crate::Result<()>;

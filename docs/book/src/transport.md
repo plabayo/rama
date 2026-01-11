@@ -79,6 +79,8 @@ and how they integrate seamlessly with the rest of the stack.
 Rama doesn’t just support networking—it *is* networking, from transport to application.
 
 - TCP:
+  - [/examples/tcp_listener_fd_passing.rs](https://github.com/plabayo/rama/blob/main/examples/tcp_listener_fd_passing.rs):
+    FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
   - [/examples/tcp_listener_hello.rs](https://github.com/plabayo/rama/blob/main/examples/tcp_listener_hello.rs):
     minimal tcp listener example
 - UDP:

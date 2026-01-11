@@ -309,8 +309,10 @@ impl Client {
     /// Establish a connection with a Socks5 server making use of the [`Command::UdpAssociate`] flow.
     ///
     /// This method returns a [`UdpSocketRelayBinder`] that can be used
-    /// to bind to an interface as to get a [`UdpSocketRelay`] ready to to send udp packets through
+    /// to bind to an interface as to get a relay [`Service`] ready to to send udp packets through
     /// socks5 proxy server to the required.
+    ///
+    /// [`Service`]: rama_core::Service
     pub async fn handshake_udp<S: Stream + Unpin>(
         &self,
         mut stream: S,

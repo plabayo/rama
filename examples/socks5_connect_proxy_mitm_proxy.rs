@@ -50,7 +50,6 @@ use rama::{
     },
     proxy::socks5::{Socks5Acceptor, server::LazyConnector},
     rt::Executor,
-    service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -81,9 +80,9 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let http_mitm_service = new_http_mitm_proxy();
-    let http_service =
-        HttpServer::auto(Executor::graceful(graceful.guard())).service(http_mitm_service);
+    let exec = Executor::graceful(graceful.guard());
+    let http_mitm_service = new_http_mitm_proxy(exec.clone());
+    let http_service = HttpServer::auto(exec).service(http_mitm_service);
     let https_service = TlsAcceptorLayer::new(mitm_tls_service_data)
         .with_store_client_hello(true)
         .into_layer(http_service.clone());
@@ -104,7 +103,9 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-fn new_http_mitm_proxy() -> impl Service<Request, Output = Response, Error = Infallible> {
+fn new_http_mitm_proxy(
+    exec: Executor,
+) -> impl Service<Request, Output = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),
@@ -114,71 +115,75 @@ fn new_http_mitm_proxy() -> impl Service<Request, Output = Response, Error = Inf
         CompressionLayer::new(),
         AddRequiredRequestHeadersLayer::new(),
     )
-        .into_layer(service_fn(http_mitm_proxy))
+        .into_layer(HttpMitmProxy { exec })
 }
 
-async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
-    // This function will receive all requests going through this proxy,
-    // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
+#[derive(Debug)]
+struct HttpMitmProxy {
+    exec: Executor,
+}
 
-    // NOTE: use a custom connector (layers) in case you wish to add custom features,
-    // such as upstream proxies or other configurations
+impl Service<Request> for HttpMitmProxy {
+    type Output = Response;
+    type Error = Infallible;
 
-    let base_tls_config = if let Some(hello) = req
-        .extensions()
-        .get::<SecureTransport>()
-        .and_then(|st| st.client_hello())
-        .cloned()
-    {
-        // TODO once we fully support building this from client hello directly remove this unwrap
-        TlsConnectorDataBuilder::try_from(hello).unwrap()
-    } else {
-        TlsConnectorDataBuilder::new_http_auto()
-    };
-    let base_tls_config = base_tls_config
-        .with_server_verify_mode(ServerVerifyMode::Disable)
-        .into_shared_builder();
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
+        // This function will receive all requests going through this proxy,
+        // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
 
-    let executor = req
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+        // NOTE: use a custom connector (layers) in case you wish to add custom features,
+        // such as upstream proxies or other configurations
 
-    let client = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
-        .with_tls_support_using_boringssl(Some(base_tls_config))
-        .with_default_http_connector()
-        .build_client()
-        .with_jit_layer(
-            // these layers are for example purposes only,
-            // best not to print requests like this in production...
-            //
-            // If you want to see the request that actually is send to the server
-            // you also usually do not want it as a layer, but instead plug the inspector
-            // directly JIT-style into your http (client) connector.
-            RequestWriterLayer::stdout_unbounded(
-                &executor,
-                Some(traffic_writer::WriterMode::Headers),
-            ),
-        );
+        let base_tls_config = if let Some(hello) = req
+            .extensions()
+            .get::<SecureTransport>()
+            .and_then(|st| st.client_hello())
+            .cloned()
+        {
+            // TODO once we fully support building this from client hello directly remove this unwrap
+            TlsConnectorDataBuilder::try_from(hello).unwrap()
+        } else {
+            TlsConnectorDataBuilder::new_http_auto()
+        };
+        let base_tls_config = base_tls_config
+            .with_server_verify_mode(ServerVerifyMode::Disable)
+            .into_shared_builder();
 
-    let client = (
-        MapResponseBodyLayer::new(Body::new),
-        DecompressionLayer::new(),
-    )
-        .into_layer(client);
+        let client = EasyHttpWebClient::connector_builder()
+            .with_default_transport_connector()
+            .with_tls_proxy_support_using_boringssl()
+            .with_proxy_support()
+            .with_tls_support_using_boringssl(Some(base_tls_config))
+            .with_default_http_connector(self.exec.clone())
+            .build_client()
+            .with_jit_layer(
+                // these layers are for example purposes only,
+                // best not to print requests like this in production...
+                //
+                // If you want to see the request that actually is send to the server
+                // you also usually do not want it as a layer, but instead plug the inspector
+                // directly JIT-style into your http (client) connector.
+                RequestWriterLayer::stdout_unbounded(
+                    &self.exec,
+                    Some(traffic_writer::WriterMode::Headers),
+                ),
+            );
 
-    match client.serve(req).await {
-        Ok(resp) => Ok(resp),
-        Err(err) => {
-            tracing::error!("error in client request: {err:?}");
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty())
-                .unwrap())
+        let client = (
+            MapResponseBodyLayer::new(Body::new),
+            DecompressionLayer::new(),
+        )
+            .into_layer(client);
+
+        match client.serve(req).await {
+            Ok(resp) => Ok(resp),
+            Err(err) => {
+                tracing::error!("error in client request: {err:?}");
+                Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())
+                    .unwrap())
+            }
         }
     }
 }

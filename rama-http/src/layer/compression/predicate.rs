@@ -1,10 +1,4 @@
 //! Predicates for disabling compression of responses.
-//!
-//! Predicates are applied with [`Compression::compress_when`] or
-//! [`CompressionLayer::compress_when`].
-//!
-//! [`Compression::compress_when`]: super::Compression::compress_when
-//! [`CompressionLayer::compress_when`]: super::CompressionLayer::compress_when
 
 use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
@@ -205,7 +199,7 @@ impl SizeAbove {
     /// `min_size_bytes`.
     ///
     /// The response will be compressed if the exact size cannot be determined through either the
-    /// `content-length` header or [`Body::size_hint`].
+    /// `content-length` header or [`StreamingBody::size_hint`].
     #[must_use]
     pub const fn new(min_size_bytes: u16) -> Self {
         Self(min_size_bytes)

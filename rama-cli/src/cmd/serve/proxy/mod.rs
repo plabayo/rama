@@ -66,13 +66,14 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
 
     graceful.into_spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
                 UpgradeLayer::new(
+                    exec.clone(),
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
-                    ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
+                    ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
                 ),
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 RemoveRequestHeaderLayer::hop_by_hop(),

@@ -14,7 +14,7 @@ use std::marker::PhantomData;
 /// Layer to write [`Forwarded`] information for this proxy,
 /// added to the end of the chain of forwarded information already known.
 ///
-/// Use [`SetForwardedHeaderLayer`] if you only need a single a header.
+/// Use [`super::SetForwardedHeaderLayer`] if you only need a single a header.
 ///
 /// This layer can set any headers as long as you have a [`ForwardHeader`] implementation
 /// for the headers you want to set. You can pass it as the type to the layer when creating
@@ -147,7 +147,7 @@ macro_rules! set_forwarded_service_for_tuple {
 
                 let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
 
-                if let Some(peer_addr) = req.extensions().get::<SocketInfo>().map(|socket| *socket.peer_addr()) {
+                if let Some(peer_addr) = req.extensions().get::<SocketInfo>().map(|socket| socket.peer_addr()) {
                     forwarded_element.set_forwarded_for(peer_addr);
                 }
 

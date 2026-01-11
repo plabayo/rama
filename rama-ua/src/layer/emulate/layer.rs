@@ -10,8 +10,8 @@ use super::UserAgentSelectFallback;
 /// This layer is used to emulate a user agent profile for a request.
 /// It makes use of a [`UserAgentProvider`] (`P`) to select a user agent profile.
 ///
-/// [`UserAgentProvider`]: crate::emulate::UserAgentProvider
-/// [`UserAgentEmulateService`]: crate::emulate::UserAgentEmulateService
+/// [`UserAgentProvider`]: crate::layer::emulate::UserAgentProvider
+/// [`UserAgentEmulateService`]: crate::layer::emulate::UserAgentEmulateService
 #[derive(Debug, Clone)]
 pub struct UserAgentEmulateLayer<P> {
     provider: P,

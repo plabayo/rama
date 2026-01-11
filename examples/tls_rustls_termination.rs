@@ -44,12 +44,14 @@ use rama::{
     extensions::ExtensionsRef,
     graceful::Shutdown,
     layer::ConsumeErrLayer,
-    net::forwarded::Forwarded,
-    net::stream::SocketInfo,
-    net::tls::server::SelfSignedData,
+    net::{
+        address::HostWithPort, forwarded::Forwarded, stream::SocketInfo,
+        tls::server::SelfSignedData,
+    },
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
+    rt::Executor,
     service::service_fn,
     stream::Stream,
     tcp::{
@@ -91,9 +93,14 @@ async fn main() {
     // create tls proxy
     shutdown.spawn_task_fn(async move |guard| {
         let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(
-            Forwarder::new(([127, 0, 0, 1], 62800)).with_connector(
+            Forwarder::new(
+                Executor::graceful(guard.clone()),
+                HostWithPort::local_ipv4(62800),
+            )
+            .with_connector(
                 // ha proxy protocol used to forwarded the client original IP
-                HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
+                HaProxyClientLayer::tcp()
+                    .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
             ),
         );
 

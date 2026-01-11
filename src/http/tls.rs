@@ -53,13 +53,16 @@ enum DomainAllowMode {
 
 impl CertIssuerHttpClient {
     /// Create a new [`CertIssuerHttpClient`] using the default [`EasyHttpWebClient`].
-    pub fn new(endpoint: Uri) -> Self {
-        Self::new_with_client(endpoint, EasyHttpWebClient::default().boxed())
+    pub fn new(exec: Executor, endpoint: Uri) -> Self {
+        Self::new_with_client(
+            endpoint,
+            EasyHttpWebClient::default_with_executor(exec).boxed(),
+        )
     }
 
     #[cfg(feature = "boring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
-    pub fn try_from_env() -> Result<Self, OpaqueError> {
+    pub fn try_from_env(exec: Executor) -> Result<Self, OpaqueError> {
         use crate::{
             Layer as _,
             http::{headers::Authorization, layer::set_header::SetRequestHeaderLayer},
@@ -96,7 +99,7 @@ impl CertIssuerHttpClient {
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_boringssl(Some(Arc::new(tls_config)))
-            .with_default_http_connector()
+            .with_default_http_connector(exec)
             .build_client();
 
         let uri: Uri = uri_raw.parse().context("parse RAMA_TLS_REMOTE as URI")?;
@@ -322,8 +325,9 @@ mod tests {
 
     #[test]
     fn test_issuer_kind_norm_cn() {
-        let issuer = CertIssuerHttpClient::new(Uri::from_static("http://example.com"))
-            .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
+        let issuer =
+            CertIssuerHttpClient::new(Executor::default(), Uri::from_static("http://example.com"))
+                .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
         for (input, expected) in [
             ("example.com", None),
             ("www.foo.com", Some("*.foo.com")),

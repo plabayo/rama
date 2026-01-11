@@ -161,7 +161,7 @@ use header::InsertHeaderMode;
 
 pub use header::{
     BoxMakeHeaderValueFactoryFn, BoxMakeHeaderValueFn, MakeHeaderValue, MakeHeaderValueDefault,
-    MakeHeaderValueFactory, TypedHeaderAsMaker,
+    MakeHeaderValueFactory, MakeHeaderValueFactoryFn, MakeHeaderValueFn, TypedHeaderAsMaker,
 };
 
 /// Layer that applies [`SetResponseHeader`] which adds a response header.
@@ -248,7 +248,7 @@ impl SetResponseHeaderLayer<Option<HeaderValue>> {
 }
 
 impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
-    /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetResponseHeaderLayer`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeaderLayer::overriding`] for more details.
     #[inline(always)]
@@ -260,7 +260,7 @@ impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetResponseHeaderLayer`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeaderLayer::appending`] for more details.
     #[inline(always)]
@@ -272,7 +272,7 @@ impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetResponseHeaderLayer`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
     #[inline(always)]
@@ -286,7 +286,7 @@ impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
 }
 
 impl<M> SetResponseHeaderLayer<M> {
-    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetResponseHeaderLayer::overriding`] for more details.
     #[inline(always)]
@@ -300,7 +300,7 @@ impl<M> SetResponseHeaderLayer<M> {
         )
     }
 
-    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetResponseHeaderLayer::appending`] for more details.
     #[inline(always)]
@@ -314,7 +314,7 @@ impl<M> SetResponseHeaderLayer<M> {
         )
     }
 
-    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetResponseHeaderLayer`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
     #[inline(always)]
@@ -470,7 +470,7 @@ impl<S, M> SetResponseHeader<S, M> {
 }
 
 impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFactoryFn<F, A>> {
-    /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetResponseHeader`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeader::overriding`] for more details.
     #[inline(always)]
@@ -483,7 +483,7 @@ impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFactoryFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetResponseHeader`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeader::appending`] for more details.
     #[inline(always)]
@@ -496,7 +496,7 @@ impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFactoryFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetResponseHeader`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeader::if_not_present`] for more details.
     #[inline(always)]
@@ -511,7 +511,7 @@ impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFactoryFn<F, A>> {
 }
 
 impl<S, M> SetResponseHeader<S, M> {
-    /// Create a new [`SetResponseHeader`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetResponseHeader`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetResponseHeader::overriding`] for more details.
     #[inline(always)]
@@ -527,7 +527,7 @@ impl<S, M> SetResponseHeader<S, M> {
         )
     }
 
-    /// Create a new [`SetResponseHeader`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetResponseHeader`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetResponseHeader::appending`] for more details.
     #[inline(always)]
@@ -543,7 +543,7 @@ impl<S, M> SetResponseHeader<S, M> {
         )
     }
 
-    /// Create a new [`SetResponseHeader`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetResponseHeader`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetResponseHeader::if_not_present`] for more details.
     #[inline(always)]

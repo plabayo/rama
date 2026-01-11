@@ -45,7 +45,7 @@ pub enum EventData<T = String> {
     /// specialized for adding js scripts. Required by datastar
     /// to be part of all datastar SDKs.
     ExecuteScript(ExecuteScript),
-    /// [`RemoveFragments`]: patches signals into the signal store
+    /// [`PatchSignals`]: patches signals into the signal store
     PatchSignals(PatchSignals<T>),
 }
 
@@ -120,7 +120,7 @@ impl<T: crate::sse::EventDataWrite> crate::sse::EventDataWrite for EventData<T> 
     }
 }
 
-/// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`RemoveSignals`].
+/// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`EventData`].
 #[derive(Debug)]
 pub struct EventDataReader<T = String> {
     reader: EventDataMultiLineReader<String>,

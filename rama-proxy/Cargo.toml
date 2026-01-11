@@ -42,7 +42,6 @@ rama-tcp = { workspace = true, features = ["http"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
-tokio-test = { workspace = true }
 
 [lints]
 workspace = true

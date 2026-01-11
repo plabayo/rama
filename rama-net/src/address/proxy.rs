@@ -17,7 +17,9 @@ pub struct ProxyAddress {
     /// [`Protocol`] used by the proxy.
     pub protocol: Option<Protocol>,
 
-    /// [`Host`] of the proxy with optional Port.
+    /// [`Host`] of the proxy with optional (u16) port.
+    ///
+    /// [`Host`]: crate::address::Host
     pub address: HostWithPort,
 
     /// [`ProxyCredential`] of the proxy.

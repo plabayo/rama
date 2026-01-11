@@ -1,7 +1,6 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
-# export RUSTFLAGS := "-D warnings"
-export RUSTDOCFLAGS := "-D rustdoc::broken-intra-doc-links"
+export RUSTFLAGS := "-D warnings"
 export RUST_LOG := "debug"
 
 fmt *ARGS:
@@ -44,16 +43,13 @@ extra-checks:
     {{justfile_directory()}}/scripts/extra-checks.sh
 
 doc:
-    RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links --cfg docsrs" \
-        cargo +nightly doc --all-features --no-deps
+    cargo doc --all-features --no-deps --workspace
 
 doc-crate CRATE:
-    RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links --cfg docsrs" \
-        cargo +nightly doc --all-features --no-deps -p {{CRATE}}
+    cargo doc --all-features --no-deps -p {{CRATE}}
 
 doc-open:
-    RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links --cfg docsrs" \
-        cargo +nightly doc --all-features --no-deps --open
+   cargo doc --all-features --no-deps --workspace --open
 
 hack:
     @cargo install cargo-hack
@@ -184,7 +180,7 @@ miri:
 
 detect-unused-deps:
     @cargo install cargo-machete
-    cargo machete --skip-target-dir
+    cargo machete --skip-target-dir --with-metadata
 
 detect-biggest-fn:
     cargo bloat --package rama-cli --release -n 10

@@ -105,6 +105,7 @@ struct State {
     ua_db: Arc<UserAgentDatabase>,
     har_layer: HARExportLayer<FileRecorder, Arc<AtomicBool>>,
     har_toggle_ctl: mpsc::Sender<()>,
+    exec: Executor,
 }
 
 #[tokio::main]
@@ -132,6 +133,7 @@ async fn main() -> Result<(), BoxError> {
         ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
         har_layer,
         har_toggle_ctl,
+        exec: Executor::graceful(graceful.guard()),
     };
 
     graceful.spawn_task_fn(async |guard| {
@@ -143,7 +145,7 @@ async fn main() -> Result<(), BoxError> {
         let exec = Executor::graceful(guard.clone());
 
         let http_mitm_service = new_http_mitm_proxy(&state);
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -175,6 +177,7 @@ async fn main() -> Result<(), BoxError> {
                     })),
                 ),
                 UpgradeLayer::new(
+                    exec,
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
@@ -238,11 +241,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
-    let executor = upgraded
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let executor = state.exec.clone();
 
     let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().set_enable_connect_protocol();
@@ -295,6 +294,8 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
+    let state = req.extensions().get::<State>().unwrap();
+
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
     // but instead have a pre-built one as a struct local
@@ -304,11 +305,9 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector()
+        .with_default_http_connector(state.exec.clone())
         .build_client()
         .with_jit_layer(UserAgentEmulateHttpRequestModifierLayer::default());
-
-    let state = req.extensions().get::<State>().unwrap();
 
     // these are not desired for WS MITM flow, but they are for regular HTTP flow
     let client = (

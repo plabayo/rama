@@ -94,7 +94,7 @@ pub mod dep {
         //!
         //! [`rustls`]: https://docs.rs/rustls
         //! [`tokio-rustls`]: https://docs.rs/tokio-rustls
-        //! [`TlsAcceptorLayer`]: crate::rustls::server::TlsAcceptorLayer
+        //! [`TlsAcceptorLayer`]: crate::server::TlsAcceptorLayer
 
         #[doc(inline)]
         pub use rustls::*;

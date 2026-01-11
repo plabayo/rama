@@ -36,3 +36,5 @@ pub mod io {
 
     pub use tokio_util::io::*;
 }
+
+pub use ::tokio_stream::*;

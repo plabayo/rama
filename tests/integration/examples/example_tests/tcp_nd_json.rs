@@ -4,6 +4,7 @@ use rama::extensions::Extensions;
 use rama::futures::StreamExt;
 use rama::graceful::Shutdown;
 use rama::net::address::HostWithPort;
+use rama::rt::Executor;
 use rama::stream::codec::FramedRead;
 use rama::stream::json::JsonDecoder;
 use rama::tcp::client::default_tcp_connect;
@@ -31,7 +32,13 @@ async fn test_tcp_nd_json() {
     let mut try_count = 0;
     let stream = loop {
         tokio::time::sleep(Duration::from_secs(try_count * 2)).await;
-        match default_tcp_connect(&Extensions::default(), HostWithPort::local_ipv4(62042)).await {
+        match default_tcp_connect(
+            &Extensions::default(),
+            HostWithPort::local_ipv4(62042),
+            Executor::default(),
+        )
+        .await
+        {
             Ok((stream, _)) => break stream,
             Err(err) => tracing::error!(
                 "#{}: failed to connect to example listener: {err}",

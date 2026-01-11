@@ -1069,8 +1069,8 @@ impl Default for Builder {
 /// In those places we need to support using [`HttpRequest`] and [`Parts`]. By using
 /// this trait we can support both types behind a single generic that implements this trait.
 ///
-/// [`ReqBody`]: crate::dep::http_body::Body
-/// [`HttpRequest`]: crate::dep::http::Request
+/// [`ReqBody`]: crate::body::StreamingBody
+/// [`HttpRequest`]: crate::Request
 pub trait HttpRequestParts: ExtensionsRef {
     fn method(&self) -> &Method;
     fn uri(&self) -> &Uri;

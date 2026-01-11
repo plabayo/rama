@@ -3,12 +3,12 @@ use crate::layer::set_status::SetStatus;
 use crate::mime::Mime;
 use crate::service::web::response::IntoResponse;
 use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
-use percent_encoding::percent_decode;
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
+use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::include_dir::Dir;
 use std::fmt;
 use std::str::FromStr;
@@ -162,7 +162,7 @@ impl<F> ServeDir<F> {
         /// to be present in the directory. Different precompressed variants can be combined.
         pub fn precompressed_br(mut self) -> Self {
             self.precompressed_variants
-                .get_or_insert(Default::default())
+                .get_or_insert_default()
                 .br = true;
             self
         }
@@ -181,7 +181,7 @@ impl<F> ServeDir<F> {
         /// to be present in the directory. Different precompressed variants can be combined.
         pub fn precompressed_deflate(mut self) -> Self {
             self.precompressed_variants
-                .get_or_insert(Default::default())
+                .get_or_insert_default()
                 .deflate = true;
             self
         }
@@ -200,7 +200,7 @@ impl<F> ServeDir<F> {
         /// to be present in the directory. Different precompressed variants can be combined.
         pub fn precompressed_zstd(mut self) -> Self {
             self.precompressed_variants
-                .get_or_insert(Default::default())
+                .get_or_insert_default()
                 .zstd = true;
             self
         }

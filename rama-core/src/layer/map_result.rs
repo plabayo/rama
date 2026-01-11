@@ -6,7 +6,7 @@ use std::fmt;
 /// to a different value, regardless of whether the future succeeds or
 /// fails.
 ///
-/// This is similar to the [`MapResponse`] and [`MapErr`] combinators,
+/// This is similar to the [`MapOutput`] and [`MapErr`] combinators,
 /// except that the *same* function is invoked when the service's future
 /// completes, whether it completes successfully or fails. This function
 /// takes the [`Result`] returned by the service's future, and returns a
@@ -25,7 +25,7 @@ use std::fmt;
 /// into a different type. It can also be used to change the `Error` type
 /// of the service.
 ///
-/// [`MapResponse`]: crate::layer::MapResponse
+/// [`MapOutput`]: crate::layer::MapOutput
 /// [`MapErr`]: crate::layer::MapErr
 #[derive(Clone)]
 pub struct MapResult<S, F> {

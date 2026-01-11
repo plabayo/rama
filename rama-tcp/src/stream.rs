@@ -1,6 +1,5 @@
 use std::{
     io,
-    net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -10,7 +9,7 @@ use rama_core::{
     extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
-use rama_net::stream::Socket;
+use rama_net::{address::SocketAddress, stream::Socket};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub use tokio::net::TcpStream as TokioTcpStream;
 
@@ -101,12 +100,12 @@ impl AsyncWrite for TcpStream {
 
 impl Socket for TcpStream {
     #[inline]
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.stream.local_addr()
+    fn local_addr(&self) -> std::io::Result<SocketAddress> {
+        self.stream.local_addr().map(Into::into)
     }
 
     #[inline]
-    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-        self.stream.peer_addr()
+    fn peer_addr(&self) -> std::io::Result<SocketAddress> {
+        self.stream.peer_addr().map(Into::into)
     }
 }

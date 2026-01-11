@@ -86,14 +86,16 @@ macro_rules! __non_empty_vec {
 /// // let l = non_empty_vec![];
 /// ```
 ///
-/// Like `Vec`, you can also construct a [`NonEmptyVec`] the old fashioned way with
-/// [`NonEmptyVec::new`] or [`NonEmptyVec::with_capacity`].
+/// Like `Vec`, you can also construct a [`NonEmptyVec`]
+/// the old fashioned way with [`NonEmptyVec::new`].
 ///
 /// # Caveats
 ///
 /// Since `NonEmptyVec` must have a least one element, it is not possible to
 /// implement the [`FromIterator`] trait for it. We can't know, in general, if
 /// any given [`Iterator`] actually contains something.
+///
+/// [`non_empty_vec`]: super::non_empty_vec
 #[derive(Deserialize)]
 #[serde(try_from = "Vec<T>")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

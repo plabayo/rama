@@ -1,0 +1,64 @@
+[package]
+name = "rama-grpc-examples"
+description = "examples for rama's grpc capabilities"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+publish = false
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+name = "rama_grpc_examples"
+path = "src/shared/lib.rs"
+
+[[bin]]
+name = "helloworld-client"
+path = "src/helloworld/client.rs"
+
+[[bin]]
+name = "helloworld-server"
+path = "src/helloworld/server.rs"
+
+[[bin]]
+name = "gcp-pubsub-client"
+path = "src/gcp/pubsub_client.rs"
+
+[[bin]]
+name = "compression-server"
+path = "src/compression/server.rs"
+
+[[bin]]
+name = "compression-client"
+path = "src/compression/client.rs"
+
+[[bin]]
+name = "health-server"
+path = "src/health/server.rs"
+
+[features]
+
+[dependencies]
+base64 = { workspace = true }
+rama = { workspace = true, features = ["grpc-full"] }
+tokio = { workspace = true, features = ["full"] }
+
+[build-dependencies]
+rama = { workspace = true, features = ["grpc"] }
+
+[dev-dependencies]
+pin-project-lite = { workspace = true }
+static_assertions = { workspace = true }
+tracing-test = { workspace = true }
+trybuild = { workspace = true }
+
+[lints.rustdoc]
+all = "allow"

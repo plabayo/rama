@@ -53,7 +53,7 @@ pub use option::{OptionalFromPartsStateRefPair, OptionalFromRequest};
 /// run in any order for handlers.
 ///
 /// If your extractor needs to consume the request body then you should implement [`FromRequest`]
-/// and not [`FromRequestParts`].
+/// and not [`FromPartsStateRefPair`].
 #[diagnostic::on_unimplemented(
     note = "Function argument is not a valid web endpoint extractor. \nSee `https://ramaproxy.org/docs/rama/http/service/web/extract/index.html` for details"
 )]
@@ -75,7 +75,7 @@ pub trait FromPartsStateRefPair<State>: Sized + Send + Sync + 'static {
 /// once for handlers.
 ///
 /// If your extractor doesn't need to consume the request body then you should implement
-/// [`FromRequestParts`] and not [`FromRequest`].
+/// [`FromPartsStateRefPair`] and not [`FromRequest`].
 #[diagnostic::on_unimplemented(
     note = "Function argument is not a valid web endpoint extractor. \nSee `https://ramaproxy.org/docs/rama/http/service/web/extract/index.html` for details"
 )]

@@ -11,7 +11,7 @@ use rama_core::telemetry::tracing;
 use rama_utils::backoff::Backoff;
 
 #[derive(Debug, Clone, Default)]
-/// An [`Extensions`] value that can be added to the [`Context`]
+/// A metadata value that can be added to the [`Extensions`]
 /// of a [`Request`] to signal that the request should not be retried.
 ///
 /// This requires the [`ManagedPolicy`] to be used.
@@ -23,9 +23,11 @@ pub struct DoNotRetry;
 /// A managed retry [`Policy`],
 /// which allows for an easier interface to configure retrying requests.
 ///
-/// [`DoNotRetry`] can be added to the [`Context`] of a [`Request`]
+/// [`DoNotRetry`] can be added to the [`Extensions`] of a [`Request`]
 /// to signal that the request should not be retried, regardless
 /// of the retry functionality defined.
+///
+/// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone)]
 pub struct ManagedPolicy<B = Undefined, C = Undefined, R = Undefined> {
     backoff: B,

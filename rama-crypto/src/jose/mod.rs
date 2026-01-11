@@ -40,6 +40,7 @@ mod jwk_utils;
 mod jws;
 
 pub use jws::{
-    DecodedJWS, DecodedJWSFlattened, DecodedSignature, EMPTY_PAYLOAD, Empty, Headers, JWS,
-    JWSBuilder, JWSCompact, JWSFlattened, NO_PAYLOAD, Signer, ToVerifySignature, Verifier,
+    ChainedJWSBuilder, DecodedJWS, DecodedJWSFlattened, DecodedSignature, EMPTY_PAYLOAD, Empty,
+    Headers, JWS, JWSBuilder, JWSCompact, JWSFlattened, NO_PAYLOAD, Signer, ToVerifySignature,
+    Verifier,
 };

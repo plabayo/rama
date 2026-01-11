@@ -10,9 +10,8 @@ use rama_utils::macros::str::eq_ignore_ascii_case;
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// A parser which parses [`DnsResolveMode`]s from username labels
-/// and adds it to the [`Context`]'s [`Extensions`].
+/// and adds it to the [`Extensions`].
 ///
-/// [`Context`]: rama_core::Context
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct DnsResolveModeUsernameParser {
     key_found: bool,

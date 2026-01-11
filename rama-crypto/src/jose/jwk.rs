@@ -142,7 +142,8 @@ impl JWK {
         })
     }
 
-    /// [`JWKThumb`] as defined in [`rfc7638`] is url safe identifier for a [`JWK`]
+    /// JSON Web Key (JWK) Thumbprint as defined
+    /// in [`rfc7638`] is url safe identifier for a [`JWK`]
     ///
     /// [`rfc7638`]: https://datatracker.ietf.org/doc/html/rfc7638
     pub fn thumb_sha256(&self) -> Result<Digest, OpaqueError> {
@@ -198,7 +199,7 @@ impl JWK {
         }
     }
 
-    /// Creates a new [`JWK`] from a given [`RSAKeyPair`]
+    /// Creates a new [`JWK`] from a given [`RsaKeyPair`]
     #[must_use]
     pub fn new_from_rsa_key_pair(rsa_key_pair: &RsaKeyPair, alg: JWA) -> Self {
         let n = rsa_key_pair.public_key().modulus();

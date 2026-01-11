@@ -34,13 +34,15 @@ pub trait MakeHeaderValueFactory<ReqBody, ResBody>: Send + Sync + 'static {
 
 /// Trait for producing header values, created by a `MakeHeaderValueFactory`.
 ///
-/// Used by [`SetRequestHeader`] and [`SetResponseHeader`].
+/// Used by [`SetResponseHeader`].
 ///
 /// This trait is implemented for closures with the correct type signature. Typically users will
 /// not have to implement this trait for their own types.
 ///
 /// It is also implemented directly for [`HeaderValue`]. When a fixed header value should be added
 /// to all responses, it can be supplied directly to the middleware.
+///
+/// [`SetResponseHeader`]: crate::layer::set_header::SetResponseHeader
 pub trait MakeHeaderValue<B>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn make_header_value(

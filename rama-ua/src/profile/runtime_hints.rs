@@ -10,9 +10,9 @@ use std::{fmt, str::FromStr};
 /// useful for systems that modify requests based on the context and request,
 /// but still wish to support preserving the original header user-agent.
 ///
-/// Used by [`UserAgentEmulateHttpRequestModifier`].
+/// Used by [`UserAgentEmulateService`].
 ///
-/// [`UserAgentEmulateHttpRequestModifier`]: crate::emulate::UserAgentEmulateHttpRequestModifier
+/// [`UserAgentEmulateService`]: crate::layer::emulate::UserAgentEmulateService
 pub struct PreserveHeaderUserAgent;
 
 impl PreserveHeaderUserAgent {
@@ -31,17 +31,18 @@ pub type RequestClientHints = Vec<ClientHint>;
 /// The initiator of the (http) Request.
 ///
 /// It is used to determine the request initiator for the to be emulated http request,
-/// and can either be attempted to be detected or manually injected into the [`Context`],
+/// and can either be attempted to be detected or manually injected into the [`Extensions`],
 /// or implicitly via a layer service to extract that info from a custom http header.
 ///
 /// It is used by [`UserAgentEmulateHttpRequestModifier`] to determine the request initiator
 /// for the to be emulated http request, and indicates the preferred headers to use from
 /// the [`HttpHeadersProfile`] to emulate the request.
 ///
-/// [`UserAgentEmulateHttpRequestModifier`]: crate::emulate::UserAgentEmulateHttpRequestModifier
+/// [`Extensions`]: rama_core::extensions::Extensions
+/// [`UserAgentEmulateHttpRequestModifier`]: crate::layer::emulate::UserAgentEmulateHttpRequestModifier
 /// [`HttpHeadersProfile`]: crate::profile::HttpHeadersProfile
 pub enum RequestInitiator {
-    /// normal navigate, expexted by all [`UserAgentProfile`] to be implemented
+    /// normal navigate, expexted by all [`super::UserAgentProfile`] to be implemented
     Navigate,
     /// form action, considered optional (e.g. native non-browser user-agents typically don't support this)
     Form,

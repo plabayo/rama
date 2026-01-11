@@ -93,7 +93,7 @@ pub struct UdpHeader {
 }
 
 impl UdpHeader {
-    /// Read the [`UdpPacket`], decoded from binary format as specified by [RFC 1928] from the reader.
+    /// Read the udp packet, decoded from binary format as specified by [RFC 1928] from the reader.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
     pub async fn read_from<R>(r: &mut R) -> Result<Self, ProtocolError>
@@ -112,7 +112,7 @@ impl UdpHeader {
         })
     }
 
-    /// Read the [`UdpPacket`], decoded from binary format as specified by [RFC 1928] from the reader.
+    /// Read the udp packet, decoded from binary format as specified by [RFC 1928] from the reader.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
     pub fn read_from_sync<R>(r: &mut R) -> Result<Self, ProtocolError>
@@ -131,7 +131,7 @@ impl UdpHeader {
         })
     }
 
-    /// Write the [`UdpPacket`] in binary format as specified by [RFC 1928] into the buffer.
+    /// Write the udp packet in binary format as specified by [RFC 1928] into the buffer.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {

@@ -29,6 +29,7 @@ pub mod mode;
 pub mod proxy;
 pub mod stream;
 pub mod test_utils;
+pub mod uri;
 pub mod user;
 
 pub(crate) mod proto;

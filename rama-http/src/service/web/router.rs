@@ -421,7 +421,7 @@ where
     /// The prefix is used to match the request path and strip it from the request URI.
     ///
     /// Warning: This sub-service has no notion of the state this router has. If you want
-    /// to create a sub-router that shares the same state this router has, use [`Router::sub`] instead.
+    /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
     #[must_use]
     #[inline]
     pub fn with_sub_service<I, T>(mut self, prefix: impl AsRef<str>, service: I) -> Self
@@ -437,7 +437,7 @@ where
     /// The prefix is used to match the request path and strip it from the request URI.
     ///
     /// Warning: This sub-service has no notion of the state this router has. If you want
-    /// to create a sub-router that shares the same state this router has, use [`Router::sub`] instead.
+    /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
     #[inline]
     pub fn set_sub_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
     where

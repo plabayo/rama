@@ -32,6 +32,8 @@ pub struct ClientConfig {
     /// key log intent
     pub key_logger: Option<KeyLogIntent>,
     /// if enabled server certificates will be stored in [`NegotiatedTlsParameters`]
+    ///
+    /// [`NegotiatedTlsParameters`]: crate::tls::client::NegotiatedTlsParameters
     pub store_server_certificate_chain: bool,
 }
 

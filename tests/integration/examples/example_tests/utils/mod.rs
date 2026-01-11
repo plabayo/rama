@@ -47,6 +47,9 @@ use rama::{net::tls::client::ServerVerifyMode, tls::boring::client as boring_cli
 #[cfg(all(feature = "http-full", feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::client as rustls_client;
 
+#[cfg(all(feature = "http-full", any(feature = "rustls", feature = "boring")))]
+use rama::rt::Executor;
+
 #[cfg(feature = "http-full")]
 pub(super) type ClientService = BoxService<Request, Response, BoxError>;
 
@@ -150,7 +153,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(Some(tls_config))
-                    .with_default_http_connector()
+                    .with_default_http_connector(Executor::default())
                     .build_client()
             };
 
@@ -175,7 +178,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_rustls(Some(tls_config))
-                    .with_default_http_connector()
+                    .with_default_http_connector(Executor::default())
                     .build()
             };
 

@@ -50,7 +50,7 @@ pub trait Policy<R, E>: Send + Sync + 'static {
     /// Check the policy if a certain request should be retried.
     ///
     /// This method is passed a reference to the original request, and either
-    /// the [`Service::Response`] or [`Service::Error`] from the inner service.
+    /// the [`Service::Output`] or [`Service::Error`] from the inner service.
     ///
     /// If the request should **not** be retried, return `None`.
     ///
@@ -78,7 +78,7 @@ pub trait Policy<R, E>: Send + Sync + 'static {
     /// information about the number of retries required or to record that a
     /// failure failed after exhausting all retries.
     ///
-    /// [`Service::Response`]: rama_core::Service::Response
+    /// [`Service::Output`]: rama_core::Service::Output
     /// [`Service::Error`]: rama_core::Service::Error
     fn retry(
         &self,

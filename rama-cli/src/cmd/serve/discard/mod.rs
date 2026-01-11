@@ -14,6 +14,7 @@ use rama::{
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
     net::{socket::Interface, stream::service::DiscardService},
+    rt::Executor,
     stream::{codec::BytesCodec, io::StreamReader},
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
@@ -82,7 +83,7 @@ impl fmt::Display for Mode {
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), BoxError> {
     let maybe_tls_cfg: Option<TlsAcceptorData> = if cfg.mode == Mode::Tls {
         tracing::info!("create tls server config...");
-        let cfg = try_new_server_config(None)?;
+        let cfg = try_new_server_config(None, Executor::graceful(graceful.clone()))?;
         Some(cfg.try_into()?)
     } else {
         None

@@ -3,15 +3,14 @@ use std::{convert::Infallible, sync::Arc};
 
 use crate::client::TcpStreamConnector;
 
-/// Contains a `Connector` created by a [`TcpStreamConnectorFactory`],
-/// together with the [`Context`] used to create it in relation to.
+/// Contains a `Connector` created by a [`TcpStreamConnectorFactory`].
 #[derive(Debug, Clone)]
 pub struct CreatedTcpStreamConnector<Connector> {
     pub connector: Connector,
 }
 
 /// Factory to create a [`TcpStreamConnector`]. This is used by the TCP
-/// stream service to create a stream within a specific [`Context`].
+/// stream service to create a [`TcpStream`].
 ///
 /// In the most simplest case you use a [`TcpStreamConnectorCloneFactory`]
 /// to use a [`Clone`]able [`TcpStreamConnectorCloneFactory`], but in more
@@ -21,12 +20,12 @@ pub struct CreatedTcpStreamConnector<Connector> {
 /// Examples why you might variants:
 ///
 /// - you might have specific needs for your sockets (e.g. bind to a specific interface)
-///   that you do not have for all your egress traffic. A crate such as [`socket2`]
+///   that you do not have for all your egress traffic. [`rama_net::socket`]
 ///   can help you with this;
 /// - it is possible that you have specific filter or firewall needs for some of your
 ///   egress traffic but not all of it.
 ///
-/// [`socket`]: https://docs.rs/socket2
+/// [`TcpStream`]: tokio::net::TcpStream
 pub trait TcpStreamConnectorFactory: Send + Sync + 'static {
     /// `TcpStreamConnector` created by this [`TcpStreamConnectorFactory`]
     type Connector: TcpStreamConnector;

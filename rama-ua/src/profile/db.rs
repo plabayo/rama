@@ -14,7 +14,7 @@ use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, profile::UserAge
 ///
 /// See [`UserAgentProvider`] for more details.
 ///
-/// [`UserAgentProvider`]: crate::emulate::UserAgentProvider
+/// [`UserAgentProvider`]: crate::layer::emulate::UserAgentProvider
 pub struct UserAgentDatabase {
     profiles: Vec<UserAgentProfile>,
 

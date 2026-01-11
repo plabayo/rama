@@ -16,8 +16,7 @@ pub trait Service<Input>: Sized + Send + Sync + 'static {
     /// The type of error returned by the service.
     type Error: Send + 'static;
 
-    /// Serve a an output or error for the given input,
-    /// using the given context.
+    /// Serve an output or an error for the given input
     fn serve(
         &self,
         input: Input,

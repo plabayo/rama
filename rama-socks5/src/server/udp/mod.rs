@@ -80,7 +80,7 @@ where
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-/// [`Default`] [`UdpBinder`] implementation.
+/// [`Default`] binder [`Service`] implementation.
 pub struct DefaultUdpBinder;
 
 impl Service<Interface> for DefaultUdpBinder {
@@ -93,7 +93,7 @@ impl Service<Interface> for DefaultUdpBinder {
     }
 }
 
-/// Default [`UdpBinder`] type.
+/// Default binder [`Service`] type.
 pub type DefaultUdpRelay = UdpRelay<DefaultTimeout<DefaultUdpBinder>, DirectUdpRelay>;
 
 /// Only "useful" public [`Socks5UdpAssociator`] implementation,
@@ -103,11 +103,11 @@ pub type DefaultUdpRelay = UdpRelay<DefaultTimeout<DefaultUdpBinder>, DirectUdpR
 /// incoming connection. Once received it will relay incoming packets
 /// to the target udp socket and relay received packets from the latter
 /// back to the socks5 server cient. Prefixing these upd packets
-/// using [`UdpHeader`].
+/// using [`UdpHeader`][crate::proto::udp::UdpHeader].
 ///
 /// You can customise the [`UdpRelay`] fully by creating it using [`UdpRelay::new`]
-/// or overwrite any of the default components using either or both of [`UdpRelay::with_binder`]
-/// and [`Binder::with_inspector`].
+/// or overwrite any of the default components using [`UdpRelay::with_binder`],
+/// [`UdpRelay::with_sync_inspector`] and [`UdpRelay::with_async_inspector`].
 #[derive(Debug, Clone)]
 pub struct UdpRelay<B, I> {
     binder: B,
@@ -141,7 +141,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         }
     }
 
-    /// Overwrite the [`Connector`]'s [`Inspector`]
+    /// Overwrite the [`UdpRelay`]'s [`SyncUdpInspector`] [`UdpInspector`]
     /// that can be used to inspect / modify a udp packet to be relayed synchronously.
     pub fn with_sync_inspector<T>(self, inspector: T) -> UdpRelay<B, SyncUdpInspector<T>> {
         UdpRelay {
@@ -157,7 +157,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         }
     }
 
-    /// Overwrite the [`Connector`]'s [`Inspector`]
+    /// Overwrite the [`UdpRelay`]'s [`AsyncUdpInspector`] [`Service`]
     /// that can be used to inspect / modify a udp packet to be relayed asynchronously.
     pub fn with_async_inspector<T>(self, inspector: T) -> UdpRelay<B, AsyncUdpInspector<T>> {
         UdpRelay {
@@ -175,7 +175,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
 }
 
 impl<B, I> UdpRelay<B, I> {
-    /// Overwrite the [`UdpRelay`]'s [`UdpBinder`],
+    /// Overwrite the [`UdpRelay`]'s bind [`SocketService],
     /// used to open a socket, return the address and
     /// wait for an incoming connection which it will return.
     pub fn with_binder<T>(self, binder: T) -> UdpRelay<T, I> {

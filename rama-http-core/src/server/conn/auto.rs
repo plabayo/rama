@@ -1,5 +1,6 @@
 //! Http1 or Http2 connection.
 
+use std::convert::Infallible;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
@@ -8,8 +9,10 @@ use std::task::{Context, Poll};
 use std::{io, time::Duration};
 
 use pin_project_lite::pin_project;
+use rama_core::Service;
 use rama_core::error::OpaqueError;
 use rama_core::extensions::ExtensionsMut;
+use rama_http::{Request, Response};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
@@ -20,7 +23,6 @@ use rama_core::rt::Executor;
 use rama_core::stream::rewind::Rewind;
 
 use crate::body::Incoming;
-use crate::service::HttpService;
 
 use super::{http1, http2};
 
@@ -100,7 +102,7 @@ impl Builder {
     /// Bind a connection together with a [`Service`].
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<'_, I, S>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         let state = match self.version {
@@ -133,7 +135,7 @@ impl Builder {
         service: S,
     ) -> UpgradeableConnection<'_, I, S>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         UpgradeableConnection {
@@ -237,7 +239,7 @@ where
 }
 
 pin_project! {
-    /// A [`Future`](core::future::Future) representing an HTTP/1 connection, returned from
+    /// A [`Future`] representing an HTTP/1 connection, returned from
     /// [`Builder::serve_connection`](struct.Builder.html#method.serve_connection).
     ///
     /// To drive HTTP on this connection this future **must be polled**, typically with
@@ -245,7 +247,7 @@ pin_project! {
     #[must_use = "futures do nothing unless polled"]
     pub struct Connection<'a, I, S>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible>,
     {
         #[pin]
         state: ConnState<'a, I, S>,
@@ -276,7 +278,7 @@ pin_project! {
     #[project = ConnStateProj]
     enum ConnState<'a, I, S>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible>,
     {
         ReadVersion {
             #[pin]
@@ -297,7 +299,7 @@ pin_project! {
 
 impl<I, S> Connection<'_, I, S>
 where
-    S: HttpService<Incoming>,
+    S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
@@ -341,7 +343,7 @@ where
 
 impl<I, S> Future for Connection<'_, I, S>
 where
-    S: HttpService<Incoming>,
+    S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = Result<(), BoxError>;
@@ -393,7 +395,7 @@ pin_project! {
     #[must_use = "futures do nothing unless polled"]
     pub struct UpgradeableConnection<'a, I, S>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible>,
     {
         #[pin]
         state: UpgradeableConnState<'a, I, S>,
@@ -406,7 +408,7 @@ pin_project! {
     #[project = UpgradeableConnStateProj]
     enum UpgradeableConnState<'a, I, S>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible>,
     {
         ReadVersion {
             #[pin]
@@ -427,7 +429,7 @@ pin_project! {
 
 impl<I, S> UpgradeableConnection<'_, I, S>
 where
-    S: HttpService<Incoming>,
+    S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
@@ -471,7 +473,7 @@ where
 
 impl<I, S> Future for UpgradeableConnection<'_, I, S>
 where
-    S: HttpService<Incoming>,
+    S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = Result<(), BoxError>;
@@ -670,7 +672,7 @@ impl Http1Builder<'_> {
     /// Bind a connection together with a [`Service`].
     pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<(), BoxError>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         self.inner.serve_connection(io, service).await
@@ -685,7 +687,7 @@ impl Http1Builder<'_> {
         service: S,
     ) -> UpgradeableConnection<'_, I, S>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
     {
         self.inner.serve_connection_with_upgrades(io, service)
@@ -860,7 +862,7 @@ impl Http2Builder<'_> {
     /// Bind a connection together with a [`Service`].
     pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<(), BoxError>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         self.inner.serve_connection(io, service).await
@@ -875,7 +877,7 @@ impl Http2Builder<'_> {
         service: S,
     ) -> UpgradeableConnection<'_, I, S>
     where
-        S: HttpService<Incoming>,
+        S: Service<Request<Incoming>, Output = Response, Error = Infallible>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
     {
         self.inner.serve_connection_with_upgrades(io, service)

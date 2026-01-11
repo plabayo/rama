@@ -2,7 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Layer, Service,
     error::{BoxError, OpaqueError},
-    extensions::ExtensionsRef,
+    extensions::{ExtensionsMut, ExtensionsRef},
     rt::Executor,
     stream::Stream,
 };
@@ -19,6 +19,7 @@ use rama_http_types::{
 };
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
+    conn::ConnectionHealth,
     http::RequestContext,
 };
 use tokio::sync::Mutex;
@@ -31,6 +32,7 @@ use std::marker::PhantomData;
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S, Body> {
     inner: S,
+    exec: Executor,
     // Body type this connector will be able to send, this is not
     // necessarily the same one that was used in the request that
     // created this connection
@@ -39,9 +41,10 @@ pub struct HttpConnector<S, Body> {
 
 impl<S, Body> HttpConnector<S, Body> {
     /// Create a new [`HttpConnector`].
-    pub const fn new(inner: S) -> Self {
+    pub fn new(inner: S, exec: Executor) -> Self {
         Self {
             inner,
+            exec,
             _phantom: PhantomData,
         }
     }
@@ -62,8 +65,16 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input: req, conn } =
-            self.inner.connect(req).await.map_err(Into::into)?;
+        let EstablishedClientConnection {
+            input: req,
+            mut conn,
+        } = self.inner.connect(req).await.map_err(Into::into)?;
+
+        // TODO this is way to tricky, this needs to be here on the io extensions
+        // Not the ones we clone, ideally the exentions should all just use the same store
+        // We can solve this by making them clonable
+        conn.extensions_mut()
+            .get_or_insert(ConnectionHealth::default);
 
         let extensions = conn.extensions().clone();
 
@@ -82,18 +93,12 @@ where
 
         let io = Box::pin(conn);
 
-        let executor = req
-            .extensions()
-            .get::<Executor>()
-            .cloned()
-            .unwrap_or_default();
-
         match req.version() {
             Version::HTTP_2 => {
                 tracing::trace!(url.full = %req.uri(), "create h2 client executor");
 
                 let mut builder =
-                    rama_http_core::client::conn::http2::Builder::new(executor.clone());
+                    rama_http_core::client::conn::http2::Builder::new(self.exec.clone());
 
                 if req.extensions().get::<Protocol>().is_some() {
                     // e.g. used for h2 bootstrap support for WebSocket
@@ -111,6 +116,27 @@ where
                     if let Some(ref frames) = params.early_frames {
                         let v = frames.as_slice().to_vec();
                         builder.set_early_frames(v);
+                    }
+                    if let Some(sz) = params.init_stream_window_size {
+                        builder.set_initial_stream_window_size(sz);
+                    }
+                    if let Some(sz) = params.init_connection_window_size {
+                        builder.set_initial_connection_window_size(sz);
+                    }
+                    if let Some(d) = params.keep_alive_interval {
+                        builder.set_keep_alive_interval(d);
+                    }
+                    if let Some(d) = params.keep_alive_timeout {
+                        builder.set_keep_alive_timeout(d);
+                    }
+                    if let Some(keep_alive) = params.keep_alive_while_idle {
+                        builder.set_keep_alive_while_idle(keep_alive);
+                    }
+                    if let Some(sz) = params.max_header_list_size {
+                        builder.set_max_header_list_size(sz);
+                    }
+                    if let Some(adaptive_window) = params.adaptive_window {
+                        builder.set_adaptive_window(adaptive_window);
                     }
                 } else if let Some(pseudo_order) =
                     req.extensions().get::<PseudoHeaderOrder>().cloned()
@@ -135,7 +161,7 @@ where
                     server.service.name = %server_address,
                 );
 
-                executor.spawn_task(
+                self.exec.spawn_task(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {err:?}");
@@ -178,7 +204,7 @@ where
                     server.service.name = %server_address,
                 );
 
-                executor.spawn_task(
+                self.exec.spawn_task(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {err:?}");
@@ -208,14 +234,16 @@ where
 #[derive(Clone, Debug)]
 /// A [`Layer`] that produces an [`HttpConnector`].
 pub struct HttpConnectorLayer<Body> {
+    exec: Executor,
     _phantom: PhantomData<Body>,
 }
 
 impl<Body> HttpConnectorLayer<Body> {
     /// Create a new [`HttpConnectorLayer`].
     #[must_use]
-    pub const fn new() -> Self {
+    pub const fn new(exec: Executor) -> Self {
         Self {
+            exec,
             _phantom: PhantomData,
         }
     }
@@ -223,7 +251,7 @@ impl<Body> HttpConnectorLayer<Body> {
 
 impl<Body> Default for HttpConnectorLayer<Body> {
     fn default() -> Self {
-        Self::new()
+        Self::new(Executor::default())
     }
 }
 
@@ -233,6 +261,15 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
+            exec: self.exec.clone(),
+            _phantom: PhantomData,
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HttpConnector {
+            inner,
+            exec: self.exec,
             _phantom: PhantomData,
         }
     }

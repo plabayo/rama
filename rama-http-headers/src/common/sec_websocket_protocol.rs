@@ -39,7 +39,7 @@ impl SecWebSocketProtocol {
         AcceptedWebSocketProtocol(self.0[0].clone())
     }
 
-    /// returns true if the given protocol is found in this [`SubProtocols`]
+    /// returns true if the given protocol is found in this [`SecWebSocketProtocol`]
     pub fn contains(&self, protocol: impl AsRef<str>) -> Option<AcceptedWebSocketProtocol> {
         let protocol = protocol.as_ref().trim();
         self.0.iter().find_map(|candidate| {
@@ -50,7 +50,7 @@ impl SecWebSocketProtocol {
         })
     }
 
-    /// returns true if any of the given protocol is found in this [`SubProtocols`]
+    /// returns true if any of the given protocol is found in this [`SecWebSocketProtocol`]
     ///
     /// Searched in order.
     pub fn contains_any(

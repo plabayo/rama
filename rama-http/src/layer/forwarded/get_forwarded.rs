@@ -19,9 +19,9 @@ use std::marker::PhantomData;
 ///
 /// - [`GetForwardedHeaderLayer::forwarded`]: The standard [`Forwarded`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239).
 /// - [`GetForwardedHeaderLayer::via`]: The canonical [`Via`] header [`RFC 7230`](https://tools.ietf.org/html/rfc7230#section-5.7.1).
-/// - [`GetForwardedHeaderLayer::x_forwarded_for`]: The canonical [`X-Forwarded-For`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.2).
-/// - [`GetForwardedHeaderLayer::x_forwarded_host`]: The canonical [`X-Forwarded-Host`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.4).
-/// - [`GetForwardedHeaderLayer::x_forwarded_proto`]: The canonical [`X-Forwarded-Proto`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.3).
+/// - [`GetForwardedHeaderLayer::x_forwarded_for`]: The canonical [`X-Forwarded-For`][XForwardedFor] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.2).
+/// - [`GetForwardedHeaderLayer::x_forwarded_host`]: The canonical [`X-Forwarded-Host`][XForwardedHost] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.4).
+/// - [`GetForwardedHeaderLayer::x_forwarded_proto`]: The canonical [`X-Forwarded-Proto`][XForwardedProto] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.3).
 ///
 /// Rama also has the following headers already implemented for you to use:
 ///
@@ -31,11 +31,11 @@ use std::marker::PhantomData;
 /// but you can use the [`GetForwardedHeaderLayer::new`] constructor and pass the header type as a type parameter,
 /// alone or in a tuple with other headers.
 ///
-/// [`X-Real-Ip`]: crate::headers::XRealIp
-/// [`X-Client-Ip`]: crate::headers::XClientIp
-/// [`Client-Ip`]: crate::headers::ClientIp
-/// [`CF-Connecting-Ip`]: crate::headers::CFConnectingIp
-/// [`True-Client-Ip`]: crate::headers::TrueClientIp
+/// [`X-Real-Ip`]: crate::headers::forwarded::XRealIp
+/// [`X-Client-Ip`]: crate::headers::forwarded::XClientIp
+/// [`Client-Ip`]: crate::headers::forwarded::ClientIp
+/// [`CF-Connecting-Ip`]: crate::headers::forwarded::CFConnectingIp
+/// [`True-Client-Ip`]: crate::headers::forwarded::TrueClientIp
 ///
 /// ## Example
 ///
@@ -130,7 +130,7 @@ impl GetForwardedHeaderLayer<Via> {
 
 impl GetForwardedHeaderLayer<XForwardedFor> {
     #[inline]
-    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`] header.
+    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`][XForwardedFor] header.
     #[must_use]
     pub fn x_forwarded_for() -> Self {
         Self::new()
@@ -139,7 +139,7 @@ impl GetForwardedHeaderLayer<XForwardedFor> {
 
 impl GetForwardedHeaderLayer<XForwardedHost> {
     #[inline]
-    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`] header.
+    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`][XForwardedHost] header.
     #[must_use]
     pub fn x_forwarded_host() -> Self {
         Self::new()
@@ -148,7 +148,7 @@ impl GetForwardedHeaderLayer<XForwardedHost> {
 
 impl GetForwardedHeaderLayer<XForwardedProto> {
     #[inline]
-    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`] header.
+    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`][XForwardedProto] header.
     #[must_use]
     pub fn x_forwarded_proto() -> Self {
         Self::new()
@@ -220,7 +220,7 @@ impl<S> GetForwardedHeaderService<S, Via> {
 
 impl<S> GetForwardedHeaderService<S, XForwardedFor> {
     #[inline]
-    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-For`] header.
+    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-For`](XForwardedFor) header.
     pub fn x_forwarded_for(inner: S) -> Self {
         Self::new(inner)
     }
@@ -228,7 +228,7 @@ impl<S> GetForwardedHeaderService<S, XForwardedFor> {
 
 impl<S> GetForwardedHeaderService<S, XForwardedHost> {
     #[inline]
-    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-Host`] header.
+    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-Host`][XForwardedHost] header.
     pub fn x_forwarded_host(inner: S) -> Self {
         Self::new(inner)
     }
@@ -236,7 +236,7 @@ impl<S> GetForwardedHeaderService<S, XForwardedHost> {
 
 impl<S> GetForwardedHeaderService<S, XForwardedProto> {
     #[inline]
-    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-Proto`] header.
+    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-Proto`][XForwardedProto] header.
     pub fn x_forwarded_proto(inner: S) -> Self {
         Self::new(inner)
     }

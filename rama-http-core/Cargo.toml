@@ -39,6 +39,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-http = { workspace = true }
 rama-http-types = { workspace = true }
+rama-net = { workspace = true }
 rama-utils = { workspace = true }
 slab = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
@@ -46,21 +47,10 @@ tokio-test = { workspace = true }
 want = { workspace = true }
 
 [dev-dependencies]
-env_logger = { workspace = true }
-
-# Fuzzing
-quickcheck = { workspace = true }
-rand = { workspace = true }
-
-# HPACK fixtures
-hex = { workspace = true }
 rama-error = { path = "../rama-error" }
-serde_json = { workspace = true }
-walkdir = { workspace = true }
-
-# Examples
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
 tokio-rustls = { workspace = true }
+tracing-test = { workspace = true }
 webpki-roots = { workspace = true }
 
 [lints]

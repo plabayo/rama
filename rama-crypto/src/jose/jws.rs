@@ -669,7 +669,7 @@ pub struct DecodedJWS {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Decode version of a [`Signature`]
+/// Decode version of a `Signature`.
 ///
 /// Data here has already been verified, so everything
 /// here is ready for usage

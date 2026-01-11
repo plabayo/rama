@@ -161,11 +161,12 @@ async fn main() {
             "start mTLS TCP Tunnel Proxy",
         );
 
-        let forwarder = Forwarder::new(SERVER_AUTHORITY).with_connector(
-            TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
-                .with_connector_data(tls_client_data)
-                .into_layer(TcpConnector::new()),
-        );
+        let forwarder = Forwarder::new(Executor::graceful(guard.clone()), SERVER_AUTHORITY)
+            .with_connector(
+                TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
+                    .with_connector_data(tls_client_data)
+                    .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
+            );
 
         // L4 Proxy Service
         TcpListener::bind(TUNNEL_AUTHORITY)

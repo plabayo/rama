@@ -90,8 +90,6 @@ impl CompressionLayer {
     }
 
     /// Replace the current compression predicate.
-    ///
-    /// See [`Compression::compress_when`] for more details.
     pub fn with_compress_predicate<C>(self, predicate: C) -> CompressionLayer<C>
     where
         C: Predicate,

@@ -800,7 +800,7 @@ where
         })
     }
 
-    /// Establish a client [`WebSocket`], consuming this [`WebSocketRequestBuilder`],
+    /// Establish a [`ClientWebSocket`], consuming this [`WebSocketRequestBuilder`],
     /// by doing the http-handshake, including validation and returning the socket if all is good.
     pub async fn handshake(
         self,
@@ -910,7 +910,7 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
 }
 
 #[derive(Debug)]
-/// Client [`WebSocket`], used as input-output stream.
+/// [`ClientWebSocket`], used as input-output stream.
 ///
 /// Utility type created via [`WebSocketRequestBuilder::handshake`].
 pub struct ClientWebSocket {

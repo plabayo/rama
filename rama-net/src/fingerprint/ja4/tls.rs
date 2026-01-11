@@ -294,6 +294,8 @@ impl TryFrom<ProtocolVersion> for TlsVersion {
 /// error identifying a failure in [`Ja4::compute`]
 pub enum Ja4ComputeError {
     /// missing [`ClientHello`]
+    ///
+    /// [`ClientHello`]: crate::tls::client::ClientHello
     MissingClientHello,
     /// cipher suites was empty
     EmptyCipherSuites,

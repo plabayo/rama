@@ -126,7 +126,9 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 /// A connector which can be used to establish a connection over a SOCKS5 Proxy.
 ///
 /// This behaviour is optional and only triggered in case there
-/// is a [`ProxyAddress`] found in the [`Context`].
+/// is a [`ProxyAddress`] found in the [`Extensions`].
+///
+/// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone)]
 pub struct Socks5ProxyConnector<S> {
     inner: S,

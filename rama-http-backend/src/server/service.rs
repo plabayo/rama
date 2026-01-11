@@ -53,8 +53,8 @@ impl HttpServer<Http1ConnBuilder> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the guard that can be used by the [`HttpServer`]
-        /// in case it is turned into an http1 listener.
+        /// Set the guard that can be used by the [`HttpServer`],
+        /// to gracefully serve a connection.
         pub fn guard(mut self, guard: Option<ShutdownGuard>) -> Self {
             self.guard = guard;
             self
@@ -119,7 +119,11 @@ where
     /// Turn this `HttpServer` into a [`Service`] that can be used to serve
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
     pub fn service<S>(self, service: S) -> HttpService<B, S> {
-        HttpService::new(self.builder, service)
+        HttpService {
+            guard: self.guard,
+            builder: Arc::new(self.builder),
+            service: Arc::new(service),
+        }
     }
 
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
@@ -130,7 +134,7 @@ where
         IO: Stream + ExtensionsMut,
     {
         self.builder
-            .http_core_serve_connection(stream, service)
+            .http_core_serve_connection(stream, service, self.guard.clone())
             .await
     }
 
@@ -144,7 +148,11 @@ where
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
         let tcp = TcpListener::bind(interface).await?;
-        let service = HttpService::new(self.builder, service);
+        let service = HttpService {
+            guard: self.guard.clone(),
+            builder: Arc::new(self.builder),
+            service: Arc::new(service),
+        };
         match self.guard {
             Some(guard) => tcp.serve_graceful(guard, service).await,
             None => tcp.serve(service).await,
@@ -164,7 +172,11 @@ where
         P: AsRef<Path>,
     {
         let socket = UnixListener::bind_path(path).await?;
-        let service = HttpService::new(self.builder, service);
+        let service = HttpService {
+            guard: self.guard.clone(),
+            builder: Arc::new(self.builder),
+            service: Arc::new(service),
+        };
         match self.guard {
             Some(guard) => socket.serve_graceful(guard, service).await,
             None => socket.serve(service).await,
@@ -175,6 +187,7 @@ where
 
 /// A [`Service`] that can be used to serve IO Byte streams (e.g. a TCP Stream) as HTTP.
 pub struct HttpService<B, S> {
+    guard: Option<ShutdownGuard>,
     builder: Arc<B>,
     service: Arc<S>,
 }
@@ -186,24 +199,17 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpService")
+            .field("guard", &self.guard)
             .field("builder", &self.builder)
             .field("service", &self.service)
             .finish()
     }
 }
 
-impl<B, S> HttpService<B, S> {
-    fn new(builder: B, service: S) -> Self {
-        Self {
-            builder: Arc::new(builder),
-            service: Arc::new(service),
-        }
-    }
-}
-
 impl<B, S> Clone for HttpService<B, S> {
     fn clone(&self) -> Self {
         Self {
+            guard: self.guard.clone(),
             builder: self.builder.clone(),
             service: self.service.clone(),
         }
@@ -225,6 +231,7 @@ where
         stream: IO,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let service = self.service.clone();
-        self.builder.http_core_serve_connection(stream, service)
+        self.builder
+            .http_core_serve_connection(stream, service, self.guard.clone())
     }
 }

@@ -31,6 +31,10 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_telemetry.rs`](./http_telemetry.rs) - Telemetry and monitoring
 - [`http_user_agent_classifier.rs`](./http_user_agent_classifier.rs) - User agent classification
 
+### gRPC
+
+See [the gRPC examples README at ./grpc/README.md](./grpc/README.md).
+
 ### Newline Delimited JSON (ndjson)
 
 - [`http_nd_json`](./http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
@@ -132,6 +136,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation
 
 ## Network and Transport
+- [`tcp_listener_fd_passing.rs`](./tcp_listener_fd_passing.rs) - FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
 - [`tcp_listener_hello.rs`](./tcp_listener_hello.rs) - Basic TCP listener example
 - [`tcp_listener_layers.rs`](./tcp_listener_layers.rs) - TCP listener with layers
 - [`tcp_nd_json.rs`](./tcp_nd_json.rs) - TCP listener serving a ndjson (Newline Delimited JSON) stream of data

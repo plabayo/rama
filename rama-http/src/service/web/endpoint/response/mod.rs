@@ -27,7 +27,7 @@ pub use script::Script;
 
 mod datastar;
 #[doc(inline)]
-pub use datastar::DatastarScript;
+pub use datastar::{DatastarScript, DatastarSourceMap};
 
 mod css;
 #[doc(inline)]
