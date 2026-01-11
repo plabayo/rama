@@ -50,27 +50,36 @@ impl Extensions {
     pub fn new(name: &'static str) -> Self {
         let store = ExtensionStore::new(name);
         Self {
-            stores: vec![store.clone()],
+            stores: vec![store],
         }
     }
 
-    pub fn add_new_store(&mut self, store: ExtensionStore) {
-        self.stores.push(store.clone());
+    #[must_use]
+    pub fn new_from_current(&self, name: &'static str) -> Self {
+        let store = ExtensionStore::new(name);
+        let mut stores = self.stores.clone();
+        stores.insert(0, store);
+        Self { stores }
     }
 
+    pub fn add_new_store(&mut self, store: ExtensionStore) {
+        self.stores.push(store);
+    }
+
+    // TODO we could make this use &mut self, so we can still signal if this should be
+    // readonly or not. But do we ever have a need of making extensions readonly? Seems
+    // that we always have an owned version of it either way...
     pub fn insert<T: Extension>(&self, val: T) {
         self.main_store().insert(val);
     }
 
-    fn main_store(&self) -> &ExtensionStore {
+    pub fn main_store(&self) -> &ExtensionStore {
         &self.stores[0]
     }
 
     pub fn get<T: Extension>(&self) -> Option<&T> {
-        self.get_inner::<T>().and_then(|stored| {
-            let down = stored.extension.downcast_ref::<T>();
-            down
-        })
+        self.get_inner::<T>()
+            .and_then(|stored| stored.extension.downcast_ref::<T>())
     }
 
     pub fn get_arc<T: Extension>(&self) -> Option<Arc<T>> {
@@ -122,11 +131,19 @@ impl Extensions {
     }
 
     pub fn iter<'a, T: Extension>(&'a self) -> impl Iterator<Item = &'a T> + 'a {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "type_id_filter guarantees that this case will succeed"
+        )]
         self.iter_inner(Self::type_id_filter::<T>)
             .map(|item| item.1.extension.downcast_ref::<T>().unwrap())
     }
 
     pub fn iter_arc<'a, T: Extension>(&'a self) -> impl Iterator<Item = Arc<T>> + 'a {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "type_id_filter guarantees that this case will succeed"
+        )]
         self.iter_inner(Self::type_id_filter::<T>)
             .map(|item| item.1.extension.cloned_downcast::<T>().unwrap())
     }
@@ -168,7 +185,7 @@ impl Extensions {
 
                 let item = &storage[cursors[i]];
 
-                if earliest_time.is_none() || item.timestamp < earliest_time.unwrap() {
+                if earliest_time.is_none_or(|t| item.timestamp < t) {
                     earliest_time = Some(item.timestamp);
                     best_store = Some(i);
                 }
@@ -192,8 +209,9 @@ impl Extensions {
     /// Warning: this will override the timestamp of the extensions to Instant::now,
     /// this is need to make sure our datastructure is always ordered by timestamp
     pub fn extend(&mut self, extensions: Self) {
-        let store = extensions.stores.into_iter().next().unwrap();
-        self.main_store().extend(store);
+        self.main_store().extend(extensions.main_store());
+        // TODO we can just use a ref here, but do we want to?
+        drop(extensions);
     }
 }
 
@@ -226,7 +244,7 @@ impl ExtensionStore {
     ///
     /// Warning: this will override the timestamp of the extensions to Instant::now,
     /// this is need to make sure our datastructure is always ordered by timestamp
-    pub fn extend(&self, extensions: Self) {
+    pub fn extend(&self, extensions: &Self) {
         let now = Instant::now();
         for stored in extensions.storage.iter() {
             self.storage.push(StoredExtension {
@@ -253,7 +271,6 @@ pub struct TypeErasedExtension {
 impl TypeErasedExtension {
     /// Create a new [`TypeErasedExtension`]
     fn new<T: Extension>(value: T) -> Self {
-        println!("inserting {:?}: {:?}", value, TypeId::of::<T>());
         Self {
             type_id: TypeId::of::<T>(),
             value: Arc::new(value),
@@ -266,7 +283,6 @@ impl TypeErasedExtension {
     }
 
     fn downcast_ref<T: Extension>(&self) -> Option<&T> {
-        println!("value: {:?}", &self.value);
         let inner_any = self.value.as_ref() as &dyn Any;
         (inner_any).downcast_ref::<T>()
     }
@@ -305,7 +321,7 @@ mod tests {
         request.insert(NoRetry);
         request.insert(TargetHttpVersion);
 
-        println!("request extensions {request:?}");
+        // println!("request extensions {request:?}");
 
         // 1. now we go to connector setup
         // 2. we create the extensions for our connector
@@ -336,19 +352,20 @@ mod tests {
         // This should only see intial request extensions and the connection extensions
         // println!("connection extensions: {:#?}", connection.unified_view());
 
-        println!("is healthy {:?}", request.get::<IsHealth>().unwrap().0);
+        // println!("is healthy {:?}", request.get::<IsHealth>().unwrap().0);
 
         // // Now our connection's internal state machine detect it is broken
         // // and inserts this in extensions, our request should also be able to see this
         connection.insert(BrokenConnection);
         connection.insert(IsHealth(false));
 
-        let timeline = request.iter_all_stored().collect::<Vec<_>>();
-        println!("request extensions: {:#?}", timeline);
+        // let timeline = request.iter_all_stored().collect::<Vec<_>>();
+        // println!("request extensions: {:#?}", timeline);
 
-        println!("is healthy {:?}", request.get_arc::<IsHealth>().unwrap().0);
+        // println!("is healthy {:?}", request.get_arc::<IsHealth>().unwrap().0);
+        assert!(!request.get_arc::<IsHealth>().unwrap().0);
 
-        // let history: Vec<_> = request.iter::<IsHealth>().collect();
+        let _history: Vec<_> = request.iter::<IsHealth>().collect();
         // println!("health history {history:#?}");
     }
 
@@ -356,7 +373,7 @@ mod tests {
     fn basic() {
         let request = Extensions::default();
         request.insert(IsHealth(true));
-        println!("is healthy {:?}", request.get_arc::<IsHealth>());
+        // println!("is healthy {:?}", request.get_arc::<IsHealth>());
     }
 }
 

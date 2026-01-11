@@ -321,10 +321,8 @@ mod sealed {
     fn handle_upgrade<T: ExtensionsRef>(
         obj: T,
     ) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-        println!("searching upgrade");
         let on_upgrade = match obj.extensions().get::<OnUpgrade>().cloned() {
             Some(on_upgrade) => {
-                println!("on on_upgrade {on_upgrade:?}");
                 trace!("upgrading this: {:?}", on_upgrade);
                 if on_upgrade.has_handled_upgrade() {
                     Err(OpaqueError::from_display(
@@ -336,8 +334,6 @@ mod sealed {
             }
             None => Err(OpaqueError::from_display("no pending update found")),
         };
-
-        println!("done searching");
 
         async {
             match on_upgrade {

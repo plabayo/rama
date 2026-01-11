@@ -196,8 +196,10 @@ where
             conn: http_connection,
         } = self.connector.serve(req).await?;
 
+        // req.extensions_mut()
+        //     .extend(http_connection.extensions().clone());
         req.extensions_mut()
-            .extend(http_connection.extensions().clone());
+            .add_new_store(http_connection.extensions().main_store().clone());
 
         let http_connection = self.jit_layers.layer(http_connection);
 

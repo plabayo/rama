@@ -203,8 +203,10 @@ impl Stream {
         id: StreamId,
         init_send_window: WindowSize,
         init_recv_window: WindowSize,
-        extensions: Extensions,
+        connection_extensions: &Extensions,
     ) -> Result<Self, Reason> {
+        let extensions = connection_extensions.new_from_current("stream");
+
         let mut send_flow = FlowControl::new();
         let mut recv_flow = FlowControl::new();
 

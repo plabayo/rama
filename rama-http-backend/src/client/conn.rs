@@ -2,7 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Layer, Service,
     error::{BoxError, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     rt::Executor,
     stream::Stream,
 };
@@ -19,7 +19,6 @@ use rama_http_types::{
 };
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
-    conn::ConnectionHealth,
     http::RequestContext,
 };
 use tokio::sync::Mutex;
@@ -65,16 +64,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection {
-            input: req,
-            mut conn,
-        } = self.inner.connect(req).await.map_err(Into::into)?;
-
-        // TODO this is way to tricky, this needs to be here on the io extensions
-        // Not the ones we clone, ideally the exentions should all just use the same store
-        // We can solve this by making them clonable
-        conn.extensions_mut()
-            .get_or_insert(ConnectionHealth::default);
+        let EstablishedClientConnection { input: req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
         let extensions = conn.extensions().clone();
 

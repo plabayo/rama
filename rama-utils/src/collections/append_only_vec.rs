@@ -37,9 +37,25 @@ pub struct AppendOnlyVec<T, const AMOUNT_OF_BINS: usize = 32, const BIN_OFFSET: 
 impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
     AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
 {
-    const INITIAL_BIN_SIZE: usize = (2 as usize).pow(BIN_OFFSET);
+    const INITIAL_BIN_SIZE: usize = (2_usize).pow(BIN_OFFSET);
 
+    /// Create a new [`AppendOnlyVec`] of `T` items
+    ///
+    /// ```compile_fail
+    /// use rama_utils::collections::AppendOnlyVec;
+    /// // This should fail because this overflow INITIAL_BIN_SIZE
+    /// let _ = AppendOnlyVec::<usize, 300, 100>::new();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use rama_utils::collections::AppendOnlyVec;
+    /// // This should fail because the total size exceeds isize::MAX
+    /// let _ = AppendOnlyVec::<u64, 60, 10>::new();
+    /// ```
     pub fn new() -> Self {
+        // This has as a side effect that it will check if array layout T is not too big
+        const { Self::assert_layout() }
+
         Self {
             count: AtomicUsize::new(0),
             reserved: AtomicUsize::new(0),
@@ -49,7 +65,7 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
 
     pub fn push(&self, element: T) -> usize {
         let idx = self.reserved.fetch_add(1, Ordering::Relaxed);
-        let (array_idx, offset) = Self::indices(idx);
+        let (bin_idx, offset) = Self::indices(idx);
 
         // Only allocate a bin if offset = 0. This means there will only ever be one thread
         // that allocates a buffer.
@@ -67,13 +83,13 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         // For our use case we also don't expect many (if any) concurrent/parallel pushes to this vec.
 
         let bucket_ptr = if offset == 0 {
-            self.create_bin_if_needed(array_idx as usize)
+            self.create_bin_if_needed(bin_idx)
         } else {
             let mut failures = 0;
-            let mut ptr = self.data[array_idx as usize].load(Ordering::Acquire);
+            let mut ptr = self.data[bin_idx].load(Ordering::Acquire);
             while ptr.is_null() {
                 spin_wait(&mut failures);
-                ptr = self.data[array_idx as usize].load(Ordering::Acquire);
+                ptr = self.data[bin_idx].load(Ordering::Acquire);
             }
             ptr
         };
@@ -117,6 +133,10 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         unsafe { Some(self.get_unchecked(idx)) }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.count.load(Ordering::Acquire) == 0
+    }
+
     pub fn len(&self) -> usize {
         self.count.load(Ordering::Acquire)
     }
@@ -149,7 +169,13 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
             let (layout, new_ptr) = if std::mem::size_of::<T>() == 0 {
                 (None, std::ptr::NonNull::<T>::dangling().as_ptr())
             } else {
-                let layout = Layout::array::<T>(Self::bin_size(bin_idx)).unwrap();
+                #[allow(
+                    clippy::expect_used,
+                    reason = "constructor has checked this on creation"
+                )]
+                let layout = Layout::array::<T>(Self::bin_size(bin_idx))
+                    .expect("layout of array T with size");
+
                 (Some(layout), unsafe { alloc(layout) as *mut T })
             };
 
@@ -198,11 +224,31 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
 
     /// Get item with idx from this vec
     ///
-    /// Safety: this function is safe if idx < self.len()
+    /// # Safety
+    /// This function is safe if idx < self.len()
     pub unsafe fn get_unchecked(&self, idx: usize) -> &T {
-        let (array, offset) = Self::indices(idx);
-        let bucket = self.data[array as usize].load(Ordering::Acquire);
+        let (bin_idx, offset) = Self::indices(idx);
+        let bucket = self.data[bin_idx].load(Ordering::Acquire);
         unsafe { &*bucket.add(offset) }
+    }
+
+    /// This function will make sure at compile time that our parameters are not
+    /// too big. This will make sure that layout<T> doesn't fail at runtime.
+    const fn assert_layout() {
+        if BIN_OFFSET >= usize::BITS {
+            panic!("BIN_OFFSET is too large for the system's pointer width");
+        }
+
+        if BIN_OFFSET as usize + AMOUNT_OF_BINS >= usize::BITS as usize {
+            panic!("The combination of BIN_OFFSET and AMOUNT_OF_BINS exceeds usize capacity");
+        }
+
+        let max_elements = Self::bin_size(AMOUNT_OF_BINS - 1);
+
+        let size_of_t = std::mem::size_of::<T>();
+        if size_of_t > 0 && max_elements > (isize::MAX as usize / size_of_t) {
+            panic!("The largest bin exceeds isize::MAX bytes; Layout creation would fail");
+        }
     }
 }
 
@@ -271,7 +317,11 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Drop
 
             // Deallocate the bucket itself is not zst
             if !is_zst {
-                let layout = Layout::array::<T>(bin_cap).unwrap();
+                #[allow(
+                    clippy::expect_used,
+                    reason = "constructor has checked this on creation"
+                )]
+                let layout = Layout::array::<T>(bin_cap).expect("Layout of array of T with cap");
                 unsafe { dealloc(bucket_ptr as *mut u8, layout) };
             }
 

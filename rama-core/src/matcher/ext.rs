@@ -51,7 +51,7 @@ where
     fn matches(&self, _ext: Option<&mut Extensions>, req: &Request) -> bool {
         req.extensions()
             .get::<T>()
-            .map(|v| self.predicate.call(&*v))
+            .map(|v| self.predicate.call(v))
             .unwrap_or_default()
     }
 }

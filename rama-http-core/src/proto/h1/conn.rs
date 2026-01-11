@@ -14,7 +14,7 @@ use rama_http::io::upgrade;
 use rama_http_types::body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
-use rama_net::conn::{ConnectionHealth, ConnectionHealthStatus};
+use rama_net::conn::ConnectionHealth;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
 
@@ -795,9 +795,8 @@ where
     }
 
     pub(crate) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(health) = self.io.extensions().get::<ConnectionHealth>() {
-            health.set_status(ConnectionHealthStatus::Broken);
-        }
+        self.io.extensions().insert(ConnectionHealth::Broken);
+
         match ready!(Pin::new(self.io.io_mut()).poll_shutdown(cx)) {
             Ok(()) => {
                 trace!("shut down IO complete");

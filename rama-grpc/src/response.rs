@@ -27,7 +27,7 @@ impl<T> Response<T> {
         Self {
             metadata: MetadataMap::new(),
             message,
-            extensions: Extensions::new(),
+            extensions: Extensions::new("response"),
         }
     }
 
