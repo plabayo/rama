@@ -1,21 +1,19 @@
-//! Grpc modules and support for Rama.
+//! # rama-grpc
 //!
-//! This Rust implementation of [gRPC], a high performance, open source, general
-//! RPC framework that puts mobile and HTTP/2 first.
+//! gRPC modules and support for Rama.
 //!
-//! `rama-grpc` is a fork of [`tonic`](https://github.com/hyperium/tonic), adapted for use within the rama ecosystem,
-//! being `rama-grpc` derived it is a gRPC over HTTP/2 implementation focused on **high
-//! performance**, **interoperability**, and **flexibility**. This library was
-//! created to have first class support of async/await and to act as a core building
-//! block for production systems written in Rust.
+//! This crate provides a Rust implementation of [gRPC], an RPC framework built
+//! on HTTP/2. `rama-grpc` is a fork of
+//! [`tonic`](https://github.com/hyperium/tonic), adapted to integrate with
+//! the Rama ecosystem.
 //!
-//! # Examples
+//! ## Examples
 //!
 //! Examples can be found under examples within [the rama repository].
 //!
-//! # Structure
+//! ## Structure
 //!
-//! ## Generic implementation
+//! ### Generic implementation
 //!
 //! The main goal of `rama-grpc` is to provide a generic gRPC implementation over HTTP/2
 //! framing. This means at the lowest level this library provides the ability to use
@@ -23,20 +21,24 @@
 //! some form of codegen should be used instead of interacting directly with the items in
 //! [`client`] and [`server`].
 //!
-//! ## Transport
+//! ### Transport
 //!
 //! There are no transport layers in rama-grpc.
 //! Use rama's http/tls/unix/udp capabilities for that.
 //!
-//! # Code generated client/server configuration
+//! ### gRPC-web
 //!
-//! ## Max Message Size
+//! You can find gRPC-web support in the [web] module.
+//!
+//! ## Code generated client/server configuration
+//!
+//! ### Max Message Size
 //!
 //! Currently, both servers and clients can be configured to set the max message encoding and
 //! decoding size. This will ensure that an incoming gRPC message will not exhaust the systems
 //! memory. By default, the decoding message limit is `4MB` and the encoding limit is `usize::MAX`.
 //!
-//! # Rama
+//! ## Rama
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
 //!
