@@ -28,7 +28,7 @@ impl TcpStream {
     pub fn new(stream: TokioTcpStream) -> Self {
         Self {
             stream,
-            extensions: Extensions::new(),
+            extensions: Extensions::default(),
         }
     }
 }

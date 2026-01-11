@@ -21,7 +21,7 @@ macro_rules! impl_or_matches {
             match ext {
                 Some(ext) => {
                     $(
-                        let mut inner_ext = Extensions::new();
+                        let mut inner_ext = Extensions::default();
                         if $ty.matches(Some(&mut inner_ext), req) {
                             ext.extend(inner_ext);
                             return true;

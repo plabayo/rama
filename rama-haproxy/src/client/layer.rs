@@ -463,7 +463,7 @@ mod tests {
             (
                 "PROXY TCP4 127.0.1.2 192.168.1.101 80 443\r\n",
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext
                 },
@@ -472,7 +472,7 @@ mod tests {
             (
                 "PROXY TCP4 127.0.1.2 192.168.1.101 80 443\r\n",
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
@@ -489,7 +489,7 @@ mod tests {
             (
                 "PROXY TCP6 1234:5678:90ab:cdef:fedc:ba09:8765:4321 4321:8765:ba09:fedc:cdef:90ab:5678:1234 443 65535\r\n",
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
@@ -503,7 +503,7 @@ mod tests {
             (
                 "PROXY TCP6 1234:5678:90ab:cdef:fedc:ba09:8765:4321 4321:8765:ba09:fedc:cdef:90ab:5678:1234 443 65535\r\n",
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443").unwrap(),
@@ -522,7 +522,7 @@ mod tests {
                             conn: SocketConnection {
                                 socket: target_addr.parse().unwrap(),
                                 conn: Builder::new().write(expected_line.as_bytes()).build(),
-                                extensions: Extensions::new(),
+                                extensions: Extensions::default(),
                             },
                         })
                     }));
@@ -537,7 +537,7 @@ mod tests {
         for (ext, target_addr) in [
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -550,7 +550,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
@@ -561,7 +561,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext
                 },
@@ -569,7 +569,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -593,7 +593,7 @@ mod tests {
                             conn: SocketConnection {
                                 socket: target_addr.parse().unwrap(),
                                 conn: Builder::new().build(),
-                                extensions: Extensions::new(),
+                                extensions: Extensions::default(),
                             },
                         })
                     }));
@@ -618,7 +618,7 @@ mod tests {
                         conn: SocketConnection {
                             socket: target_addr.parse().unwrap(),
                             conn: Builder::new().build(),
-                            extensions: Extensions::new(),
+                            extensions: Extensions::default(),
                         },
                     })
                 }));
@@ -630,12 +630,12 @@ mod tests {
     async fn test_v2_tcp4() {
         for ext in [
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::default();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
                 ext
             },
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::default();
                 ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
@@ -654,7 +654,7 @@ mod tests {
                         input,
                         conn: SocketConnection {
                             socket: "192.168.1.1:443".parse().unwrap(),
-                            extensions: Extensions::new(),
+                            extensions: Extensions::default(),
                             conn: Builder::new()
                                 .write(&[
                                     b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
@@ -677,12 +677,12 @@ mod tests {
     async fn test_v2_udp4() {
         for ext in [
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::default();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
                 ext
             },
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::default();
                 ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
@@ -701,7 +701,7 @@ mod tests {
                         input,
                         conn: SocketConnection {
                             socket: "192.168.1.1:443".parse().unwrap(),
-                            extensions: Extensions::new(),
+                            extensions: Extensions::default(),
                             conn: Builder::new()
                                 .write(&[
                                     b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
@@ -724,7 +724,7 @@ mod tests {
     async fn test_v2_tcp6() {
         for ext in [
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::default();
                 ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -734,7 +734,7 @@ mod tests {
                 ext
             },
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::default();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
                 ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                     NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
@@ -750,7 +750,7 @@ mod tests {
                             socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
                                 .parse()
                                 .unwrap(),
-                            extensions: Extensions::new(),
+                            extensions: Extensions::default(),
                             conn: Builder::new()
                                 .write(&[
                                     b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
@@ -776,7 +776,7 @@ mod tests {
     async fn test_v2_udp6() {
         for ext in [
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::default();
                 ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -786,7 +786,7 @@ mod tests {
                 ext
             },
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::default();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
                 ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                     NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
@@ -802,7 +802,7 @@ mod tests {
                             socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
                                 .parse()
                                 .unwrap(),
-                            extensions: Extensions::new(),
+                            extensions: Extensions::default(),
                             conn: Builder::new()
                                 .write(&[
                                     b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
@@ -829,7 +829,7 @@ mod tests {
         for (ext, target_addr) in [
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -842,7 +842,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
@@ -853,7 +853,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext
                 },
@@ -861,7 +861,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::default();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -883,7 +883,7 @@ mod tests {
                     input,
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
-                        extensions: Extensions::new(),
+                        extensions: Extensions::default(),
                         conn: Builder::new().build(),
                     },
                 })
@@ -900,7 +900,7 @@ mod tests {
                     input,
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
-                        extensions: Extensions::new(),
+                        extensions: Extensions::default(),
                         conn: Builder::new().build(),
                     },
                 })
@@ -925,7 +925,7 @@ mod tests {
                     input,
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
-                        extensions: Extensions::new(),
+                        extensions: Extensions::default(),
                         conn: Builder::new().build(),
                     },
                 })
@@ -939,7 +939,7 @@ mod tests {
                     input,
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
-                        extensions: Extensions::new(),
+                        extensions: Extensions::default(),
                         conn: Builder::new().build(),
                     },
                 })

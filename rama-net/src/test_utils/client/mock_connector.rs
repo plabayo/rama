@@ -74,7 +74,7 @@ impl MockSocket {
     pub fn new(stream: DuplexStream) -> Self {
         Self {
             stream,
-            extensions: Extensions::new(),
+            extensions: Extensions::default(),
         }
     }
 }

@@ -26,7 +26,7 @@ impl UnixStream {
     pub fn new(stream: TokioUnixStream) -> Self {
         Self {
             stream,
-            extensions: Extensions::new(),
+            extensions: Extensions::default(),
         }
     }
 }

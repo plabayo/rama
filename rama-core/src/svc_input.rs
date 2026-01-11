@@ -30,7 +30,7 @@ impl<T> ServiceInput<T> {
     pub fn new(input: T) -> Self {
         Self {
             input,
-            extensions: Extensions::new(),
+            extensions: Extensions::default(),
         }
     }
 }

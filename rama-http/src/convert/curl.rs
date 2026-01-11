@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_no_auth() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_ipv4_preference() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_ipv6_preference() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_with_auth_basic_only_username() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_with_auth_basic() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_with_auth_bearer() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_socks5_proxy() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .version(Version::HTTP_3)
             .uri("example.com")
             .body(())

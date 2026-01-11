@@ -34,7 +34,7 @@ use rama::{
         server::HttpServer,
         service::web::{
             IntoEndpointService,
-            extract::Extension,
+            extract::ExtensionExtractor,
             response::{Html, IntoResponse},
         },
     },
@@ -94,8 +94,8 @@ async fn main() {
             MapOutputLayer::new(IntoResponse::into_response),
         )
             .into_layer(
-                (|Extension(socket_info): Extension<SocketInfo>,
-                  Extension(tracker): Extension<BytesRWTrackerHandle>,
+                (|ExtensionExtractor(socket_info): ExtensionExtractor<SocketInfo>,
+                  ExtensionExtractor(tracker): ExtensionExtractor<BytesRWTrackerHandle>,
                   uri: Uri| {
                     std::future::ready(Html(format!(
                         r##"

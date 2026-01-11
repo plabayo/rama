@@ -97,7 +97,7 @@ where
         let extensions = input.extensions_mut();
         match extensions.get() {
             Some(UserId::Username(username)) => {
-                let mut label_extensions = Extensions::new();
+                let mut label_extensions = Extensions::default();
                 match parse_username(&mut label_extensions, P::default(), username) {
                     Ok(new_username) => {
                         tracing::debug!(

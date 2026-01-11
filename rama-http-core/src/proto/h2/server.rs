@@ -248,7 +248,7 @@ where
                     ping.record_non_data();
 
                     let is_connect = req.method() == Method::CONNECT;
-                    let (mut parts, stream) = req.into_parts();
+                    let (parts, stream) = req.into_parts();
                     let (req, connect_parts) = if !is_connect {
                         (
                             Request::from_parts(

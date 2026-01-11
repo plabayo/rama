@@ -28,7 +28,6 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
-pub use crate::extensions::new;
 pub mod extensions;
 
 pub use ::rama_error as error;

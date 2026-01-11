@@ -39,7 +39,7 @@ use rama::{
         server::HttpServer,
         service::web::{
             Router,
-            extract::{Extension, Query, State},
+            extract::{ExtensionExtractor, Query, State},
             response::{Headers, Html, IntoResponse},
         },
     },
@@ -136,7 +136,7 @@ async fn infinite_resource(
     State(_global_state): State<AppState>,
     // request will fail with status 500 in case extension is not available,
     // use Option<Extension<_>> in case you deem it an optional value
-    Extension(socket_info): Extension<SocketInfo>,
+    ExtensionExtractor(socket_info): ExtensionExtractor<SocketInfo>,
     // But for production usage we should only use the specific state this handler needs by implementing:
     // `FromRef<AppState> for BlockList`. This is considered better practise because
     // handlers only take what they need and never need to know what to GlobalState is.

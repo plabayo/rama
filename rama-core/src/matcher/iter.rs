@@ -32,7 +32,7 @@ where
                 true
             }
             Some(ext) => {
-                let mut inner_ext = Extensions::new();
+                let mut inner_ext = Extensions::default();
                 for matcher in self {
                     if !matcher.matches(Some(&mut inner_ext), input) {
                         return false;
@@ -61,7 +61,7 @@ where
             }
             Some(ext) => {
                 for matcher in it {
-                    let mut inner_ext = Extensions::new();
+                    let mut inner_ext = Extensions::default();
                     if matcher.matches(Some(&mut inner_ext), input) {
                         ext.extend(inner_ext);
                         return true;

@@ -329,7 +329,7 @@ async fn test_ua_emulation() {
                 Ok::<_, Infallible>(svc.serve(req).await.expect(description))
             }));
 
-        let mut server_extensions = Extensions::new();
+        let server_extensions = Extensions::default();
         server_extensions.insert(State {
             expected,
             description,
@@ -407,7 +407,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
 
             let expect_msg = format!("profile to work: {profile:?}");
 
-            let mut server_extensions = Extensions::new();
+            let server_extensions = Extensions::default();
             server_extensions.insert(State {
                 counter: counter.clone(),
             });

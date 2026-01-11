@@ -88,7 +88,7 @@ where
 
     async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
         for handler in &self.handlers {
-            let mut ext = Extensions::new();
+            let mut ext = Extensions::default();
             if !handler.matcher.matches(Some(&mut ext), &req) {
                 continue;
             }

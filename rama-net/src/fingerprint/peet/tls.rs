@@ -602,7 +602,7 @@ mod tests {
             },
         ];
         for test_case in test_cases {
-            let mut ext = Extensions::new();
+            let ext = Extensions::default();
             ext.insert(SecureTransport::with_client_hello(
                 parse_client_hello(&test_case.client_hello).expect(test_case.pcap),
             ));

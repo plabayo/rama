@@ -1,7 +1,10 @@
 //! Middleware that gets called with a clone of the value of to given type
 //! if it is available in the current input/output extensions.
 
-use crate::{Layer, Service, extensions::ExtensionsRef, new::ExtensionType};
+use crate::{
+    Layer, Service,
+    extensions::{Extension, ExtensionsRef},
+};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, marker::PhantomData};
 
@@ -127,7 +130,7 @@ impl<Input, S, T, Fut, F> Service<Input> for GetInputExtension<S, T, Fut, F>
 where
     Input: Send + ExtensionsRef + 'static,
     S: Service<Input>,
-    T: ExtensionType + Clone,
+    T: Extension + Clone,
     F: Fn(T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
@@ -265,7 +268,7 @@ impl<Input, S, T, Fut, F> Service<Input> for GetOutputExtension<S, T, Fut, F>
 where
     Input: Send + 'static,
     S: Service<Input, Output: Send + ExtensionsRef + 'static>,
-    T: ExtensionType + Clone,
+    T: Extension + Clone,
     F: Fn(T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {

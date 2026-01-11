@@ -29,7 +29,7 @@ pub use state::State;
 
 pub mod extension;
 #[doc(inline)]
-pub use extension::Extension;
+pub use extension::ExtensionExtractor;
 
 mod extensions;
 

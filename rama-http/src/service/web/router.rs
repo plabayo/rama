@@ -599,7 +599,7 @@ where
             req.extensions_mut().insert(params);
 
             for (matcher, service) in matched.value.iter() {
-                let mut ext = Extensions::new();
+                let mut ext = Extensions::default();
                 if matcher.matches(Some(&mut ext), &req) {
                     req.extensions_mut().extend(ext);
                     return service.serve(req).await;
@@ -639,7 +639,7 @@ where
 
                     let fragments_path = &path[..pos];
 
-                    let mut ext = Extensions::new();
+                    let mut ext = Extensions::default();
                     if matcher.matches_path(Some(&mut ext), fragments_path) {
                         let full_prefix = format_smolstr!("{prefix}/{fragments_path}",);
                         let modified_uri = match try_to_strip_path_prefix_from_uri(

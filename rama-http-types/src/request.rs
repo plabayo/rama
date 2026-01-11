@@ -152,7 +152,7 @@ pub struct Parts {
 
 impl From<HyperiumParts> for Parts {
     fn from(mut value: HyperiumParts) -> Self {
-        let mut rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
+        let rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
         rama_extensions.insert(value.extensions);
 
         Self {
@@ -978,7 +978,7 @@ impl Builder {
     where
         T: Clone + Any + Send + Sync + std::fmt::Debug + 'static,
     {
-        self.and_then(move |mut head| {
+        self.and_then(move |head| {
             head.extensions.insert(extension);
             Ok(head)
         })
@@ -1010,7 +1010,7 @@ impl Builder {
     /// ```
     /// # use rama_http_types::Request;
     /// let mut req = Request::builder().extension("My Extension");
-    /// let mut extensions = req.extensions_mut().unwrap();
+    /// let extensions = req.extensions_mut().unwrap();
     /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
     /// extensions.insert(5u32);
     /// assert_eq!(extensions.get::<u32>(), Some(&5u32));

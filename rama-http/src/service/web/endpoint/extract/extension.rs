@@ -2,15 +2,15 @@ use super::FromPartsStateRefPair;
 use crate::request::Parts;
 use crate::service::web::extract::OptionalFromPartsStateRefPair;
 use crate::utils::macros::define_http_rejection;
-use rama_core::new::ExtensionType;
+use rama_core::extensions::Extension;
 use rama_utils::macros::impl_deref;
 use std::convert::Infallible;
 
 #[derive(Debug, Clone)]
 /// Extractor that extracts an extension from the request extensions
-pub struct Extension<T>(pub T);
+pub struct ExtensionExtractor<T>(pub T);
 
-impl_deref!(Extension<T>: T);
+impl_deref!(ExtensionExtractor<T>: T);
 
 define_http_rejection! {
     #[status = INTERNAL_SERVER_ERROR]
@@ -19,10 +19,10 @@ define_http_rejection! {
     pub struct MissingExtension;
 }
 
-impl<State, T> FromPartsStateRefPair<State> for Extension<T>
+impl<State, T> FromPartsStateRefPair<State> for ExtensionExtractor<T>
 where
     State: Send + Sync,
-    T: ExtensionType + Clone,
+    T: Extension + Clone,
 {
     type Rejection = MissingExtension;
 
@@ -36,10 +36,10 @@ where
         }
     }
 }
-impl<State, T> OptionalFromPartsStateRefPair<State> for Extension<T>
+impl<State, T> OptionalFromPartsStateRefPair<State> for ExtensionExtractor<T>
 where
     State: Send + Sync,
-    T: ExtensionType + Clone,
+    T: Extension + Clone,
 {
     type Rejection = Infallible;
 
@@ -64,7 +64,9 @@ mod tests {
 
     #[tokio::test]
     async fn should_extract_extension() {
-        async fn handler(Extension(ext): Extension<TestExtension>) -> Result<Response, Infallible> {
+        async fn handler(
+            ExtensionExtractor(ext): ExtensionExtractor<TestExtension>,
+        ) -> Result<Response, Infallible> {
             assert_eq!(ext.0, "test");
             Ok(Response::new(Body::empty()))
         }
@@ -84,7 +86,7 @@ mod tests {
     #[tokio::test]
     async fn should_extract_optional_extension() {
         async fn is_missing_handler(
-            ext: Option<Extension<TestExtension>>,
+            ext: Option<ExtensionExtractor<TestExtension>>,
         ) -> Result<Response, Infallible> {
             assert!(ext.is_none());
             Ok(Response::new(Body::empty()))
@@ -97,7 +99,7 @@ mod tests {
             .unwrap();
 
         async fn is_present_handler(
-            ext: Option<Extension<TestExtension>>,
+            ext: Option<ExtensionExtractor<TestExtension>>,
         ) -> Result<Response, Infallible> {
             assert_eq!(ext.unwrap().0.0, "test");
             Ok(Response::new(Body::empty()))

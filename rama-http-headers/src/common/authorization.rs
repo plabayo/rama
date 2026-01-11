@@ -264,7 +264,7 @@ where
     L: 'static,
 {
     async fn authorized(&self, credentials: C) -> Option<Extensions> {
-        let mut ext = Extensions::new();
+        let mut ext = Extensions::default();
         if self.authorized(&mut ext, &credentials) {
             Some(ext)
         } else {
@@ -282,7 +282,7 @@ impl<T: UsernameLabelParser> AuthoritySync<Self, T> for Basic {
             return false;
         }
 
-        let mut parser_ext = Extensions::new();
+        let mut parser_ext = Extensions::default();
         let username = match parse_username(&mut parser_ext, T::default(), username) {
             Ok(t) => t,
             Err(err) => {

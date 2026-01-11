@@ -277,7 +277,7 @@ where
 
         // dispatch is ready for a message, try to read one
         match ready!(self.conn.poll_read_head(cx)) {
-            Some(Ok((mut head, body_len, wants))) => {
+            Some(Ok((head, body_len, wants))) => {
                 let body = match body_len {
                     DecodedLength::ZERO => IncomingBody::empty(),
                     other => {

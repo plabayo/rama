@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_akamai_h2_basic() {
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
 
         ext.insert(create_pseudo_header_order(FIREFOX_ORDER));
 
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_akamai_h2_with_priority() {
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
 
         ext.insert(create_pseudo_header_order(FIREFOX_ORDER));
 
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_akamai_h2_no_window_update() {
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
         ext.insert(create_pseudo_header_order(CURL_ORDER));
 
         let mut frames = Vec::new();
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn test_akamai_h2_multiple_priorities() {
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
 
         ext.insert(create_pseudo_header_order(FIREFOX_ORDER));
 
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn test_akamai_h2_chrome_like() {
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
 
         ext.insert(create_pseudo_header_order(CHROME_ORDER));
 
@@ -481,7 +481,7 @@ mod tests {
     fn test_paper_example_5_firefox_53_macos() {
         // From Blackhat EU-17 Paper, Example 5
         // User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.11; rv:53.0) Gecko/20100101 Firefox/53.0
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
 
         ext.insert(create_pseudo_header_order(FIREFOX_ORDER));
 
@@ -526,7 +526,7 @@ mod tests {
     fn test_paper_example_1_chrome_58_macos() {
         // From Blackhat EU-17 Paper, Example 1
         // User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.96 Safari/537.36
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
 
         ext.insert(create_pseudo_header_order(CHROME_ORDER));
 
@@ -565,7 +565,7 @@ mod tests {
     fn test_paper_example_3_edge_14() {
         // From Blackhat EU-17 Paper, Example 3
         // User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
 
         ext.insert(create_pseudo_header_order(CHROME_ORDER));
 
@@ -602,7 +602,7 @@ mod tests {
     fn test_paper_example_6_firefox_53_android() {
         // From Blackhat EU-17 Paper, Example 6
         // User-Agent: Mozilla/5.0 (Android 7.1.2; Mobile; rv:53.0) Gecko/53.0 Firefox/53.0
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
 
         ext.insert(create_pseudo_header_order(FIREFOX_ORDER));
 
@@ -646,7 +646,7 @@ mod tests {
     fn test_paper_example_9_nghttp2() {
         // From Blackhat EU-17 Paper, Example 9
         // User-Agent: nghttp2/1.22.0
-        let mut ext = Extensions::default();
+        let ext = Extensions::default();
 
         ext.insert(create_pseudo_header_order(CURL_ORDER));
 

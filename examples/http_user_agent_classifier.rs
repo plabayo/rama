@@ -23,7 +23,7 @@ use rama::{
         server::HttpServer,
         service::web::{
             IntoEndpointService,
-            extract::Extension,
+            extract::ExtensionExtractor,
             response::{IntoResponse, Json},
         },
     },
@@ -45,7 +45,7 @@ async fn main() {
         .unwrap();
 }
 
-async fn handle(Extension(ua): Extension<UserAgent>) -> impl IntoResponse {
+async fn handle(ExtensionExtractor(ua): ExtensionExtractor<UserAgent>) -> impl IntoResponse {
     Json(json!({
         "ua": ua.header_str(),
         "kind": ua.info().map(|info| info.kind.to_string()),

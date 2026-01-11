@@ -1,7 +1,6 @@
 use crate::{
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     matcher::{Extensions, Matcher},
-    new::ExtensionType,
 };
 
 use std::marker::PhantomData;
@@ -46,7 +45,7 @@ where
 impl<Request, P, T> Matcher<Request> for ExtensionMatcher<P, T>
 where
     Request: Send + ExtensionsRef + 'static,
-    T: ExtensionType,
+    T: Extension,
     P: private::ExtensionPredicate<T>,
 {
     fn matches(&self, _ext: Option<&mut Extensions>, req: &Request) -> bool {

@@ -51,7 +51,7 @@ mod tests {
     fn parse_compose_username_labels() {
         const COMPOSED_USERNAME: &str = "john-foo-bar-baz";
 
-        let mut ext = Extensions::new();
+        let mut ext = Extensions::default();
         let username = parse_username(
             &mut ext,
             UsernameOpaqueLabelParser::new(),

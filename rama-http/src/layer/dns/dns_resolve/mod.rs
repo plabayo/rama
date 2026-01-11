@@ -131,7 +131,7 @@ mod tests {
         let test_cases = [DnsResolveMode::eager(), DnsResolveMode::lazy()];
         for test_case in test_cases {
             let fmt_username = compose_username("john".to_owned(), test_case).unwrap();
-            let mut ext = Extensions::new();
+            let mut ext = Extensions::default();
             let username = parse_username(
                 &mut ext,
                 DnsResolveModeUsernameParser::default(),

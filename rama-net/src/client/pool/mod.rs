@@ -847,7 +847,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 items: vec![],
-                extensions: Extensions::new(),
+                extensions: Extensions::default(),
             }
         }
     }

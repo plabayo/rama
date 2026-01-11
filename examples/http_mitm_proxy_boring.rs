@@ -394,7 +394,7 @@ where
     // In a better way this should be handled behind the scenes similar to tls alpn works
     // Now that we can pass extensions all around this will probably just work, but needs
     // to be looked at individually
-    let mut extensions = Extensions::new();
+    let extensions = Extensions::default();
     extensions.insert(TargetHttpVersion(target_version));
 
     let mut handshake = match client

@@ -1841,7 +1841,7 @@ mod tests {
 
     #[test]
     fn test_decoder_response_request_extensions() {
-        let mut request_exts = Extensions::new();
+        let request_exts = Extensions::default();
 
         request_exts.insert(42u64);
 
@@ -2686,7 +2686,7 @@ mod tests {
         let mut orig_cases = OriginalHttp1Headers::default();
         orig_cases.push("X-EmptY".parse().unwrap());
 
-        let mut ext = Extensions::new();
+        let ext = Extensions::default();
         ext.insert(orig_cases);
 
         let mut dst = Vec::new();
@@ -2711,7 +2711,7 @@ mod tests {
         orig_cases.push("X-Empty".parse().unwrap());
         orig_cases.push("X-EMPTY".parse().unwrap());
 
-        let mut ext = Extensions::new();
+        let ext = Extensions::default();
         ext.insert(orig_cases);
 
         let mut dst = Vec::new();

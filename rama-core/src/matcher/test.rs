@@ -327,21 +327,21 @@ fn test_ext_insert_and_revert_op_or() {
         .or(OddMatcher.and(ConstMatcher(3)));
 
     // test #1: pass: match first part, should have extensions
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(matcher.matches(Some(&mut ext), &2));
     assert!(ext.get::<marker::Even>().is_some());
     assert!(ext.get::<marker::Const>().is_some());
     assert!(ext.get::<marker::Odd>().is_none());
 
     // test #2: pass: match 2nd part, should have extensions
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(matcher.matches(Some(&mut ext), &3));
     assert!(ext.get::<marker::Even>().is_none());
     assert!(ext.get::<marker::Const>().is_some());
     assert!(ext.get::<marker::Odd>().is_some());
 
     // test #3: pass: do not match any part
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(!matcher.matches(Some(&mut ext), &4));
     assert!(ext.get::<marker::Even>().is_none());
     assert!(ext.get::<marker::Const>().is_none());
@@ -356,21 +356,21 @@ fn test_ext_insert_and_revert_iter_or() {
     ];
 
     // test #1: pass: match first part, should have extensions
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(matcher.iter().matches_or(Some(&mut ext), &2));
     assert!(ext.get::<marker::Even>().is_some());
     assert!(ext.get::<marker::Const>().is_some());
     assert!(ext.get::<marker::Odd>().is_none());
 
     // test #2: pass: match 2nd part, should have extensions
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(matcher.iter().matches_or(Some(&mut ext), &3));
     assert!(ext.get::<marker::Even>().is_none());
     assert!(ext.get::<marker::Const>().is_some());
     assert!(ext.get::<marker::Odd>().is_some());
 
     // test #3: pass: do not match any part
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(!matcher.iter().matches_or(Some(&mut ext), &4));
     assert!(ext.get::<marker::Even>().is_none());
     assert!(ext.get::<marker::Const>().is_none());
@@ -385,21 +385,21 @@ fn test_ext_insert_and_revert_iter_and() {
     ];
 
     // test #1: pass: match both parts, with first member of 2nd part
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(matcher.iter().matches_and(Some(&mut ext), &3));
     assert!(ext.get::<marker::Even>().is_none());
     assert!(ext.get::<marker::Const>().is_some());
     assert!(ext.get::<marker::Odd>().is_some());
 
     // test #2: pass: match both parts, with second member of 2nd part
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(matcher.iter().matches_and(Some(&mut ext), &2));
     assert!(ext.get::<marker::Even>().is_some());
     assert!(ext.get::<marker::Const>().is_some());
     assert!(ext.get::<marker::Odd>().is_none());
 
     // test #3: pass: do not match any part
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(!matcher.iter().matches_and(Some(&mut ext), &1));
     assert!(ext.get::<marker::Even>().is_none());
     assert!(ext.get::<marker::Const>().is_none());
@@ -413,21 +413,21 @@ fn test_ext_insert_and_revert_op_and() {
         .and(OddMatcher.or(EvenMatcher));
 
     // test #1: pass: match both parts, with first member of 2nd part
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(matcher.matches(Some(&mut ext), &3));
     assert!(ext.get::<marker::Even>().is_none());
     assert!(ext.get::<marker::Const>().is_some());
     assert!(ext.get::<marker::Odd>().is_some());
 
     // test #2: pass: match both parts, with second member of 2nd part
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(matcher.matches(Some(&mut ext), &2));
     assert!(ext.get::<marker::Even>().is_some());
     assert!(ext.get::<marker::Const>().is_some());
     assert!(ext.get::<marker::Odd>().is_none());
 
     // test #3: pass: do not match any part
-    let mut ext = Extensions::new();
+    let mut ext = Extensions::default();
     assert!(!matcher.matches(Some(&mut ext), &1));
     assert!(ext.get::<marker::Even>().is_none());
     assert!(ext.get::<marker::Const>().is_none());

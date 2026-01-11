@@ -752,7 +752,7 @@ where
     /// to [`NegotiatedHandshakeRequest`].
     pub async fn initiate_handshake(
         self,
-        mut extensions: Extensions,
+        extensions: Extensions,
     ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
         let builder = match self.protocols.as_ref() {
             Some(protocols) => self.inner.builder.overwrite_typed_header(protocols),
