@@ -120,7 +120,7 @@ jobs:
       - name: Run doc tests (cargo test)
         run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)
-        run: cargo nextest run --all-features --examples --workspace
+        run: cargo nextest run --all-features --examples --workspace --no-tests=pass
 
   precheck-rust-tier2:
     strategy:
