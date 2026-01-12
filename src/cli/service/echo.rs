@@ -285,7 +285,7 @@ where
                 http.service(http_service)
             }),
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
-                Either3::B(HttpServer::http1().service(http_service))
+                Either3::B(HttpServer::http1(exec).service(http_service))
             }
             Some(_) => {
                 return Err(OpaqueError::from_display("unsupported http version").into_boxed());

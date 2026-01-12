@@ -1,6 +1,6 @@
 use rama_core::Service;
 use rama_core::extensions::ExtensionsMut;
-use rama_core::graceful::ShutdownGuard;
+use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use std::io;
 use std::os::fd::AsFd;
@@ -22,22 +22,23 @@ use crate::UnixSocketAddress;
 use crate::UnixSocketInfo;
 use crate::UnixStream;
 
-#[non_exhaustive]
 #[derive(Clone, Debug)]
 /// Builder for `UnixListener`.
-pub struct UnixListenerBuilder;
+pub struct UnixListenerBuilder {
+    exec: Executor,
+}
 
 impl UnixListenerBuilder {
     /// Create a new `UnixListenerBuilder`.
     #[must_use]
-    pub fn new() -> Self {
-        Self
+    pub fn new(exec: Executor) -> Self {
+        Self { exec }
     }
 }
 
 impl Default for UnixListenerBuilder {
     fn default() -> Self {
-        Self::new()
+        Self::new(Executor::default())
     }
 }
 
@@ -63,6 +64,7 @@ impl UnixListenerBuilder {
 
         Ok(UnixListener {
             inner,
+            exec: self.exec,
             _cleanup: cleanup,
         })
     }
@@ -79,6 +81,7 @@ impl UnixListenerBuilder {
         let inner = TokioUnixListener::from_std(std_listener)?;
         Ok(UnixListener {
             inner,
+            exec: self.exec,
             _cleanup: None,
         })
     }
@@ -107,6 +110,7 @@ impl UnixListenerBuilder {
 /// of that cleanup.
 pub struct UnixListener {
     inner: TokioUnixListener,
+    exec: Executor,
     _cleanup: Option<UnixSocketCleanup>,
 }
 
@@ -115,24 +119,27 @@ impl UnixListener {
     /// Create a new [`UnixListenerBuilder`] without a state,
     /// which can be used to configure a [`UnixListener`].
     #[must_use]
-    pub fn build() -> UnixListenerBuilder {
-        UnixListenerBuilder::new()
+    pub fn build(exec: Executor) -> UnixListenerBuilder {
+        UnixListenerBuilder::new(exec)
     }
 
     #[inline]
     /// Creates a new [`UnixListener`], which will be bound to the specified path.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_path(path: impl AsRef<Path>) -> Result<Self, io::Error> {
-        UnixListenerBuilder::default().bind_path(path).await
+    pub async fn bind_path(path: impl AsRef<Path>, exec: Executor) -> Result<Self, io::Error> {
+        UnixListenerBuilder::new(exec).bind_path(path).await
     }
 
     #[inline]
     /// Creates a new [`UnixListener`], which will be bound to the specified socket.
     ///
     /// The returned listener is ready for accepting connections.
-    pub fn bind_socket(socket: rama_net::socket::core::Socket) -> Result<Self, io::Error> {
-        UnixListenerBuilder::default().bind_socket(socket)
+    pub fn bind_socket(
+        socket: rama_net::socket::core::Socket,
+        exec: Executor,
+    ) -> Result<Self, io::Error> {
+        UnixListenerBuilder::new(exec).bind_socket(socket)
     }
 
     #[inline]
@@ -140,8 +147,11 @@ impl UnixListener {
     /// Creates a new TcpListener, which will be bound to the specified (interface) device name.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_socket_opts(opts: SocketOptions) -> Result<Self, rama_core::error::BoxError> {
-        UnixListenerBuilder::default().bind_socket_opts(opts).await
+    pub async fn bind_socket_opts(
+        opts: SocketOptions,
+        exec: Executor,
+    ) -> Result<Self, rama_core::error::BoxError> {
+        UnixListenerBuilder::new(exec).bind_socket_opts(opts).await
     }
 }
 
@@ -155,36 +165,36 @@ impl UnixListener {
     }
 }
 
-impl From<TokioUnixListener> for UnixListener {
-    fn from(value: TokioUnixListener) -> Self {
-        Self {
-            inner: value,
-            _cleanup: None,
-        }
-    }
-}
+// impl From<TokioUnixListener> for UnixListener {
+//     fn from(value: TokioUnixListener) -> Self {
+//         Self {
+//             inner: value,
+//             _cleanup: None,
+//         }
+//     }
+// }
 
-impl TryFrom<rama_net::socket::core::Socket> for UnixListener {
-    type Error = io::Error;
+// impl TryFrom<rama_net::socket::core::Socket> for UnixListener {
+//     type Error = io::Error;
 
-    #[inline]
-    fn try_from(socket: rama_net::socket::core::Socket) -> Result<Self, Self::Error> {
-        Self::bind_socket(socket)
-    }
-}
+//     #[inline]
+//     fn try_from(socket: rama_net::socket::core::Socket) -> Result<Self, Self::Error> {
+//         Self::bind_socket(socket)
+//     }
+// }
 
-impl TryFrom<StdUnixListener> for UnixListener {
-    type Error = io::Error;
+// impl TryFrom<StdUnixListener> for UnixListener {
+//     type Error = io::Error;
 
-    fn try_from(listener: StdUnixListener) -> Result<Self, Self::Error> {
-        listener.set_nonblocking(true)?;
-        let inner = TokioUnixListener::from_std(listener)?;
-        Ok(Self {
-            inner,
-            _cleanup: None,
-        })
-    }
-}
+//     fn try_from(listener: StdUnixListener) -> Result<Self, Self::Error> {
+//         listener.set_nonblocking(true)?;
+//         let inner = TokioUnixListener::from_std(listener)?;
+//         Ok(Self {
+//             inner,
+//             _cleanup: None,
+//         })
+//     }
+// }
 
 impl AsRawFd for UnixListener {
     #[inline]
@@ -209,63 +219,26 @@ impl UnixListener {
         Ok((stream.into(), addr.into()))
     }
 
-    /// Serve connections from this listener with the given service.
-    ///
-    /// This method will block the current listener for each incoming connection,
-    /// the underlying service can choose to spawn a task to handle the accepted stream.
-    pub async fn serve<S>(self, service: S)
-    where
-        S: Service<UnixStream>,
-    {
-        let service = Arc::new(service);
-
-        loop {
-            let (socket, peer_addr) = match self.inner.accept().await {
-                Ok(stream) => stream,
-                Err(err) => {
-                    handle_accept_err(err).await;
-                    continue;
-                }
-            };
-
-            let service = service.clone();
-
-            let peer_addr: UnixSocketAddress = peer_addr.into();
-            let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
-
-            let serve_span = tracing::trace_root_span!(
-                "unix::serve",
-                otel.kind = "server",
-                network.local.address = ?local_addr,
-                network.peer.address = ?peer_addr,
-                network.protocol.name = "uds",
-            );
-
-            let mut socket = UnixStream::new(socket);
-            socket
-                .extensions_mut()
-                .insert(UnixSocketInfo::new(local_addr, peer_addr));
-
-            tokio::spawn(
-                async move {
-                    let _ = service.serve(socket).await;
-                }
-                .instrument(serve_span),
-            );
-        }
-    }
-
     /// Serve gracefully connections from this listener with the given service.
     ///
     /// This method does the same as [`Self::serve`] but it
     /// will respect the given [`rama_core::graceful::ShutdownGuard`], and also pass
     /// it to the service.
-    pub async fn serve_graceful<S>(self, guard: ShutdownGuard, service: S)
+    pub async fn serve<S>(self, service: S)
     where
         S: Service<UnixStream>,
     {
         let service = Arc::new(service);
-        let mut cancelled_fut = pin!(guard.cancelled());
+        let guard = self.exec.guard().cloned();
+        let cancelled_fut = async {
+            if let Some(guard) = guard {
+                guard.cancelled().await;
+            } else {
+                // If there is no executor/guard, we never trigger shutdown this way
+                std::future::pending::<()>().await;
+            }
+        };
+        let mut cancelled_fut = pin!(cancelled_fut);
 
         loop {
             tokio::select! {
@@ -292,7 +265,7 @@ impl UnixListener {
                             let mut socket = UnixStream::new(socket);
                             socket.extensions_mut().insert(UnixSocketInfo::new(local_addr, peer_addr));
 
-                            guard.spawn_task(async move {
+                            self.exec.spawn_task(async move {
                                 let _ = service.serve(socket).await;
                             }.instrument(serve_span));
                         }

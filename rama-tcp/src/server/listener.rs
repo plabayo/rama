@@ -2,7 +2,6 @@ use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_core::extensions::ExtensionsMut;
-use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
@@ -23,17 +22,14 @@ use crate::TcpStream;
 /// Builder for `TcpListener`.
 pub struct TcpListenerBuilder {
     ttl: Option<u32>,
-    executor: Executor,
+    exec: Executor,
 }
 
 impl TcpListenerBuilder {
     /// Create a new `TcpListenerBuilder` without a state.
     #[must_use]
-    pub fn new(executor: Executor) -> Self {
-        Self {
-            ttl: None,
-            executor,
-        }
+    pub fn new(exec: Executor) -> Self {
+        Self { ttl: None, exec }
     }
 }
 
@@ -74,7 +70,7 @@ impl TcpListenerBuilder {
 
         Ok(TcpListener {
             inner,
-            executor: self.executor,
+            exec: self.exec,
         })
     }
 
@@ -87,7 +83,7 @@ impl TcpListenerBuilder {
         self,
         socket: rama_net::socket::core::Socket,
     ) -> Result<TcpListener, BoxError> {
-        tokio::task::spawn_blocking(|| bind_socket_internal(socket, self.executor))
+        tokio::task::spawn_blocking(|| bind_socket_internal(socket, self.exec))
             .await
             .context("await blocking bind socket task")?
     }
@@ -150,15 +146,15 @@ impl TcpListenerBuilder {
 /// using one of the `serve` methods such as [`TcpListener::serve`].
 pub struct TcpListener {
     inner: TokioTcpListener,
-    executor: Executor,
+    exec: Executor,
 }
 
 impl TcpListener {
     /// Create a new `TcpListenerBuilder` without a state,
     /// which can be used to configure a `TcpListener`.
     #[must_use]
-    pub fn build(executor: Executor) -> TcpListenerBuilder {
-        TcpListenerBuilder::new(executor)
+    pub fn build(exec: Executor) -> TcpListenerBuilder {
+        TcpListenerBuilder::new(exec)
     }
 
     /// Creates a new TcpListener, which will be bound to the specified (socket) address.
@@ -170,9 +166,9 @@ impl TcpListener {
     /// method.
     pub async fn bind_address<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
         addr: A,
-        executor: Executor,
+        exec: Executor,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(executor).bind_address(addr).await
+        TcpListenerBuilder::new(exec).bind_address(addr).await
     }
 
     #[cfg(any(target_os = "windows", target_family = "unix"))]
@@ -182,9 +178,9 @@ impl TcpListener {
     /// The returned listener is ready for accepting connections.
     pub async fn bind_socket(
         socket: rama_net::socket::core::Socket,
-        executor: Executor,
+        exec: Executor,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(executor).bind_socket(socket).await
+        TcpListenerBuilder::new(exec).bind_socket(socket).await
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -197,9 +193,9 @@ impl TcpListener {
     /// The returned listener is ready for accepting connections.
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         name: N,
-        executor: Executor,
+        exec: Executor,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(executor).bind_device(name).await
+        TcpListenerBuilder::new(exec).bind_device(name).await
     }
 
     /// Creates a new TcpListener, which will be bound to the specified interface.
@@ -207,15 +203,15 @@ impl TcpListener {
     /// The returned listener is ready for accepting connections.
     pub async fn bind<I: TryInto<Interface, Error: Into<BoxError>>>(
         interface: I,
-        executor: Executor,
+        exec: Executor,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(executor).bind(interface).await
+        TcpListenerBuilder::new(exec).bind(interface).await
     }
 }
 
 fn bind_socket_internal(
     socket: rama_net::socket::core::Socket,
-    executor: Executor,
+    exec: Executor,
 ) -> Result<TcpListener, BoxError> {
     let listener = std::net::TcpListener::from(socket);
     listener
@@ -223,7 +219,7 @@ fn bind_socket_internal(
         .context("set socket as non-blocking")?;
     Ok(TcpListener {
         inner: TokioTcpListener::from_std(listener)?,
-        executor,
+        exec,
     })
 }
 
@@ -276,6 +272,7 @@ impl TcpListener {
 
 // impl From<TokioTcpListener> for TcpListener {
 //     fn from(value: TokioTcpListener) -> Self {
+//         todo!();
 //         Self { inner: value }
 //     }
 // }
@@ -286,6 +283,7 @@ impl TcpListener {
 
 //     #[inline]
 //     fn try_from(value: rama_net::socket::core::Socket) -> Result<Self, Self::Error> {
+//         todo!();
 //         let listener = std::net::TcpListener::from(value);
 //         listener.try_into()
 //     }
@@ -295,6 +293,7 @@ impl TcpListener {
 //     type Error = std::io::Error;
 
 //     fn try_from(value: std::net::TcpListener) -> Result<Self, Self::Error> {
+//         todo!();
 //         value.set_nonblocking(true)?;
 //         Ok(Self {
 //             inner: TokioTcpListener::from_std(value)?,
@@ -321,7 +320,7 @@ impl TcpListener {
     {
         let service = Arc::new(service);
 
-        let guard = self.executor.guard().cloned();
+        let guard = self.exec.guard().cloned();
         let cancelled_fut = async {
             if let Some(guard) = guard {
                 guard.cancelled().await;
@@ -360,7 +359,7 @@ impl TcpListener {
 
                             socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr.into()));
 
-                            self.executor.spawn_task(async move {
+                            self.exec.spawn_task(async move {
                                 let _ = service.serve(socket).await;
                             }.instrument(span));
                         }

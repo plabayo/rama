@@ -48,14 +48,15 @@ async fn test_http_max_header_list_size_and_long_errors() {
     }
 
     let svc = test_server::TestServer::new(Svc);
-
     let (tx, rx) = oneshot::channel::<()>();
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0))
+
+    let graceful = Shutdown::new(async { drop(rx.await) });
+    let exec = Executor::graceful(graceful.guard());
+
+    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), exec)
         .await
         .unwrap();
     let addr = format!("http://{}", listener.local_addr().unwrap());
-
-    let graceful = Shutdown::new(async { drop(rx.await) });
 
     let jh = graceful.spawn_task_fn(async move |guard| {
         let mut http_server = HttpServer::h2(Executor::graceful(guard.clone()));
@@ -70,7 +71,7 @@ async fn test_http_max_header_list_size_and_long_errors() {
         })
         .into_layer(http_server.service(svc));
 
-        listener.serve_graceful(guard, tcp_service).await;
+        listener.serve(tcp_service).await;
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;

@@ -74,12 +74,13 @@ async fn h2_with_connection_pooling() {
 
 #[tokio::test]
 async fn h1_with_connection_pooling_detects_closed_connections() {
-    let http_server = HttpServer::http1().service(service_fn(async |_req: Request| {
-        let mut resp = Response::new(Body::empty());
-        resp.headers_mut()
-            .insert(header::CONNECTION, HeaderValue::from_static("close"));
-        Ok::<_, Infallible>(resp)
-    }));
+    let http_server =
+        HttpServer::http1(Executor::default()).service(service_fn(async |_req: Request| {
+            let mut resp = Response::new(Body::empty());
+            resp.headers_mut()
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            Ok::<_, Infallible>(resp)
+        }));
 
     let tls_service_data = {
         let tls_server_config = ServerConfig {

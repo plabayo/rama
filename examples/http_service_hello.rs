@@ -123,13 +123,12 @@ async fn main() {
                 .into_endpoint_service(),
             );
 
-        let tcp_http_service = HttpServer::auto(exec).service(http_service);
+        let tcp_http_service = HttpServer::auto(exec.clone()).service(http_service);
 
-        TcpListener::bind("127.0.0.1:62010")
+        TcpListener::bind("127.0.0.1:62010", exec)
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(
-                guard,
+            .serve(
                 (
                     TraceErrLayer::new(),
                     TimeoutLayer::new(Duration::from_secs(8)),

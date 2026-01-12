@@ -120,10 +120,10 @@ async fn main() {
     }
 
     graceful.spawn_task_fn(async move |guard| {
-        let tcp_service = TcpListener::build().bind("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
+                let exec = Executor::graceful(guard);
+        let tcp_service = TcpListener::build(exec.clone()).bind("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
 
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec)
+        let http_service = HttpServer::auto(exec.clone())
             .service((
                     TraceLayer::new_for_http(),
                     ConsumeErrLayer::default(),
@@ -156,17 +156,17 @@ async fn main() {
                         })
                     ),
                     UpgradeLayer::new(
-                        Executor::graceful(guard.clone()),
+                        exec.clone(),
                         MethodMatcher::CONNECT,
                         service_fn(http_connect_accept),
-                        ConsumeErrLayer::default().into_layer(Forwarder::ctx(Executor::graceful(guard.clone()))),
+                        ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
                     ),
                     RemoveResponseHeaderLayer::hop_by_hop(),
                     RemoveRequestHeaderLayer::hop_by_hop(),
                 )
             .into_layer(service_fn(http_plain_proxy)));
 
-            tcp_service.serve_graceful(guard, (
+            tcp_service.serve((
                 // protect the http proxy from too large bodies, both from request and response end
                 BodyLimitLayer::symmetric(2 * 1024 * 1024),
             ).into_layer(http_service)).await;

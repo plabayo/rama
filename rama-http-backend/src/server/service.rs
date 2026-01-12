@@ -32,7 +32,7 @@ use ::{rama_unix::server::UnixListener, std::path::Path};
 #[derive(Debug, Clone)]
 pub struct HttpServer<B> {
     builder: B,
-    guard: Option<ShutdownGuard>,
+    exec: Executor,
 }
 
 impl Default for HttpServer<AutoConnBuilder> {
@@ -45,19 +45,10 @@ impl Default for HttpServer<AutoConnBuilder> {
 impl HttpServer<Http1ConnBuilder> {
     /// Create a new http/1.1 `Builder` with default settings.
     #[must_use]
-    pub fn http1() -> Self {
+    pub fn http1(exec: Executor) -> Self {
         Self {
             builder: Http1ConnBuilder::new(),
-            guard: None,
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the guard that can be used by the [`HttpServer`],
-        /// to gracefully serve a connection.
-        pub fn guard(mut self, guard: Option<ShutdownGuard>) -> Self {
-            self.guard = guard;
-            self
+            exec,
         }
     }
 }
@@ -73,10 +64,9 @@ impl HttpServer<H2ConnBuilder> {
     /// Create a new h2 `Builder` with default settings.
     #[must_use]
     pub fn h2(exec: Executor) -> Self {
-        let guard = exec.guard().cloned();
         Self {
-            builder: H2ConnBuilder::new(exec),
-            guard,
+            builder: H2ConnBuilder::new(exec.clone()),
+            exec,
         }
     }
 }
@@ -92,10 +82,9 @@ impl HttpServer<AutoConnBuilder> {
     /// Create a new dual http/1.1 + h2 `Builder` with default settings.
     #[must_use]
     pub fn auto(exec: Executor) -> Self {
-        let guard = exec.guard().cloned();
         Self {
-            builder: AutoConnBuilder::new(exec),
-            guard,
+            builder: AutoConnBuilder::new(exec.clone()),
+            exec,
         }
     }
 }
@@ -120,7 +109,7 @@ where
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
     pub fn service<S>(self, service: S) -> HttpService<B, S> {
         HttpService {
-            guard: self.guard,
+            guard: self.exec.guard().cloned(),
             builder: Arc::new(self.builder),
             service: Arc::new(service),
         }
@@ -134,7 +123,7 @@ where
         IO: Stream + ExtensionsMut,
     {
         self.builder
-            .http_core_serve_connection(stream, service, self.guard.clone())
+            .http_core_serve_connection(stream, service, self.exec.guard().cloned())
             .await
     }
 
@@ -147,16 +136,13 @@ where
         Response: IntoResponse + Send + 'static,
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind(interface).await?;
+        let tcp = TcpListener::bind(interface, self.exec.clone()).await?;
         let service = HttpService {
-            guard: self.guard.clone(),
+            guard: self.exec.guard().cloned(),
             builder: Arc::new(self.builder),
             service: Arc::new(service),
         };
-        match self.guard {
-            Some(guard) => tcp.serve_graceful(guard, service).await,
-            None => tcp.serve(service).await,
-        };
+        tcp.serve(service).await;
         Ok(())
     }
 
@@ -171,16 +157,13 @@ where
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
-        let socket = UnixListener::bind_path(path).await?;
+        let socket = UnixListener::bind_path(path, self.exec.clone()).await?;
         let service = HttpService {
-            guard: self.guard.clone(),
+            guard: self.exec.guard().cloned(),
             builder: Arc::new(self.builder),
             service: Arc::new(service),
         };
-        match self.guard {
-            Some(guard) => socket.serve_graceful(guard, service).await,
-            None => socket.serve(service).await,
-        };
+        socket.serve(service).await;
         Ok(())
     }
 }

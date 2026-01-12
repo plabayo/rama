@@ -97,7 +97,7 @@ async fn run_service_in_background(latency: Duration, server_timeout: Duration) 
 
     let svc = test_server::TestServer::new(Svc { latency });
 
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0))
+    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), Executor::default())
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
