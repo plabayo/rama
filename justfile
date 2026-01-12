@@ -56,10 +56,12 @@ hack:
     cargo hack check --each-feature --no-dev-deps --workspace
 
 test *ARGS:
-    cargo test --all-features --workspace {{ARGS}}
+    @cargo install cargo-nextest --locked
+    cargo nextest run --all-features --workspace {{ARGS}}
 
 test-crate CRATE *ARGS:
-    cargo test --all-features -p {{CRATE}} {{ARGS}}
+    @cargo install cargo-nextest --locked
+    cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
 
 test-spec-h2 *ARGS:
     bash rama-http-core/ci/h2spec.sh {{ARGS}}
@@ -67,15 +69,16 @@ test-spec-h2 *ARGS:
 test-spec: test-spec-h2
 
 test-ignored:
-    cargo build --all-features --bins --examples
-    cargo test --all-features --workspace -- --ignored
+    @cargo install cargo-nextest --locked
+    cargo nextest run --all-features --workspace --run-ignored=only
 
 test-ignored-release:
-    cargo build --all-features --release --bins --examples
-    cargo test --all-features --release --workspace -- --ignored
+    @cargo install cargo-nextest --locked
+    cargo nextest run --all-features --release --workspace --run-ignored=only
 
 test-loom:
-    RUSTFLAGS="--cfg loom -Dwarnings" cargo test --all-features -p rama-utils
+    @cargo install cargo-nextest --locked
+    RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
 qq: lint check clippy doc extra-checks
 
