@@ -80,18 +80,32 @@ jobs:
           - stable
         os:
           - ubuntu-latest
+          - ubuntu-24.04-arm
           - macos-15-intel
           - macos-15
           - windows-2025
           - windows-11-arm
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            apt_packages: musl-tools
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            apt_packages: musl-tools
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
       - precheck-docs
     env:
       RUSTFLAGS: -D warnings
+      Matrix_Target_Flag: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
     steps:
       - uses: actions/checkout@v6
+      - name: Install Apt Packages
+        if: matrix.apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_packages }}
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
       - uses: arduino/setup-protoc@v3
@@ -100,13 +114,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.target }}
           components: clippy, rustfmt
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
         # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
         # https://github.com/cloudflare/boring/issues/414
@@ -116,11 +131,11 @@ jobs:
         run: |
           cargo update --package cmake --precise 0.1.54
       - name: Run tests (cargo test)
-        run: cargo nextest run --all-features --workspace
+        run: cargo nextest run --all-features --workspace ${Matrix_Target_Flag}
       - name: Run doc tests (cargo test)
-        run: cargo test --doc --all-features --workspace
+        run: cargo test --doc --all-features --workspace ${Matrix_Target_Flag}
       - name: Run example tests (cargo test)
-        run: cargo nextest run --all-features --examples --workspace --no-tests=pass
+        run: cargo nextest run --all-features --examples --workspace --no-tests=pass ${Matrix_Target_Flag}
 
   precheck-rust-tier2:
     strategy:
