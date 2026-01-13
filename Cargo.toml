@@ -162,17 +162,17 @@ pin-project-lite = "0.2"
 prettyplease = "0.2"
 proc-macro-crate = "3.4"
 proc-macro2 = "1.0"
-prost = "=0.14.3"
-prost-build = "=0.14.3"
-prost-types = "=0.14.3"
+prost = "0.14.3"
+prost-build = "0.14.3"
+prost-types = "0.14.3"
 psl = "2"
 quickcheck = "1.0"
 quickcheck_macros = "1.1"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.3.0-rc1", path = "." }
-rama-boring = "^0.5.7"
-rama-boring-tokio = "^0.5.7"
+rama-boring = "^0.5.9"
+rama-boring-tokio = "^0.5.9"
 rama-core = { version = "0.3.0-rc1", path = "./rama-core" }
 rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto" }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns" }

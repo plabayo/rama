@@ -85,37 +85,13 @@ jobs:
           - macos-15
           - windows-2025
           - windows-11-arm
-        libc: # linux
-          - glibc
-        include:
-          - custom_env: {}
-          - target: ""
-          - os: ubuntu-latest
-            toolchain: stable
-            libc: musl
-            target: x86_64-unknown-linux-musl
-            apt_packages: musl-tools
-            custom_env:
-              CC_aarch64_unknown_linux_musl: musl-gcc
-              CXX_aarch64_unknown_linux_musl: g++
-              CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          - os: ubuntu-24.04-arm
-            toolchain: stable
-            libc: musl
-            target: aarch64-unknown-linux-musl
-            apt_packages: musl-tools
-            custom_env:
-              CC_x86_64_unknown_linux_musl: musl-gcc
-              CXX_x86_64_unknown_linux_musl: g++
-              CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-    name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}-${{ matrix.os }}-${{ matrix.target || 'default' }}
+    name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
       - precheck-docs
     env:
       RUSTFLAGS: -D warnings
-      Matrix_Target_Flag: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
     steps:
       - uses: actions/checkout@v6
       - name: Install Apt Packages
@@ -148,14 +124,49 @@ jobs:
         run: |
           cargo update --package cmake --precise 0.1.54
       - name: Run tests (cargo test)
-        run: cargo nextest run --all-features --workspace ${Matrix_Target_Flag}
-        env: ${{ matrix.custom_env }}
+        run: cargo nextest run --all-features --workspace
       - name: Run doc tests (cargo test)
-        run: cargo test --doc --all-features --workspace ${Matrix_Target_Flag}
-        env: ${{ matrix.custom_env }}
+        run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)
-        run: cargo nextest run --all-features --examples --workspace --no-tests=pass ${Matrix_Target_Flag}
-        env: ${{ matrix.custom_env }}
+        run: cargo nextest run --all-features --examples --workspace --no-tests=pass
+
+  test-rust-build-musl:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            toolchain: stable
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            toolchain: stable
+            target: aarch64-unknown-linux-musl
+    name: test-rust-build-musl-${{ matrix.toolchain }}-${{ matrix.os }}-${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+      - name: Install Zig
+        if: contains(matrix.target, 'unknown-linux-musl')
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+      - name: Build Workspace
+        run: |
+          cargo zigbuild --workspace --target ${{ matrix.target }} --all-features
 
   precheck-rust-tier2:
     strategy:
@@ -472,6 +483,7 @@ jobs:
     needs:
       - precheck-rust-tier2
       - test-rust-base
+      - test-rust-build-musl
       - test-rust-extra
       - test-rust-e2e
       - test-ws-autobahn
