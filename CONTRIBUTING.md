@@ -55,7 +55,6 @@ What you will also need to have installed is:
 
 - `cmake`
 - `clang` (`llvm`)
-- `protobuf-compiler` (for `rama`'s gRPC support)
 
 Once this is all done you should be able to run `just qa`.
 When all these pass you can be pretty certain that all tests in the GitHub CI step
