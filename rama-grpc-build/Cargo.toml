@@ -18,12 +18,14 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["protobuf"]
-protobuf = ["dep:prost-build", "dep:prost-types"]
+default = ["protobuf", "vendor-protobuf"]
+protobuf = ["dep:prost-build", "dep:prost-types", ]
+vendor-protobuf = ["dep:protobuf-src"]
 
 [dependencies]
 prettyplease = { workspace = true }
 proc-macro-crate = { workspace = true }
+protobuf-src = { workspace = true, optional = true }
 proc-macro2 = { workspace = true }
 prost-build = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }

@@ -2588,6 +2588,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "protobuf-src"
+version = "2.1.1+27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6217c3504da19b85a3a4b2e9a5183d635822d83507ba0986624b5c05b83bfc40"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
 name = "psl"
 version = "2.1.178"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2869,6 +2878,7 @@ dependencies = [
  "proc-macro2",
  "prost-build",
  "prost-types",
+ "protobuf-src",
  "quote",
  "rama-grpc",
  "rama-utils",

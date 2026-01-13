@@ -772,6 +772,9 @@ impl RamaGrpcProtoBuilder {
             config.service_generator(Box::new(service_generator));
         };
 
+        #[cfg(feature = "vendor-protobuf")]
+        config.protoc_executable(protobuf_src::protoc());
+
         config.compile_protos(protos, includes)?;
 
         Ok(())
