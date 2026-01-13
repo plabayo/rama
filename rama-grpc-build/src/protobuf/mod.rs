@@ -772,8 +772,15 @@ impl RamaGrpcProtoBuilder {
             config.service_generator(Box::new(service_generator));
         };
 
-        #[cfg(feature = "vendor-protobuf")]
-        config.protoc_executable(protobuf_src::protoc());
+        #[cfg(feature = "vendor-protoc")]
+        match protoc_bin_vendored::protoc_bin_path() {
+            Ok(path) => {
+                config.protoc_executable(path);
+            }
+            Err(err) => {
+                eprintln!("failed to get protoc bin path (falling back to system install): {err}")
+            }
+        }
 
         config.compile_protos(protos, includes)?;
 
