@@ -346,6 +346,7 @@ async fn test_ua_emulation() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
     let ua_db = UserAgentDatabase::try_embedded().unwrap();
     assert!(!ua_db.is_empty(), "no profiles found");

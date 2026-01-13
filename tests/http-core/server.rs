@@ -1527,6 +1527,7 @@ async fn header_read_timeout_starts_immediately() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn header_read_timeout_slow_writes_multiple_requests() {
     let (listener, addr) = setup_tcp_listener();
 

@@ -101,6 +101,9 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
@@ -113,11 +116,11 @@ jobs:
         run: |
           cargo update --package cmake --precise 0.1.54
       - name: Run tests (cargo test)
-        run: cargo test --all-features --workspace
+        run: cargo nextest run --all-features --workspace
       - name: Run doc tests (cargo test)
         run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)
-        run: cargo test --all-features --examples --workspace
+        run: cargo nextest run --all-features --examples --workspace --no-tests=pass
 
   precheck-rust-tier2:
     strategy:
@@ -231,6 +234,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - uses: Swatinem/rust-cache@v2
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
@@ -239,7 +245,7 @@ jobs:
       - name: Run Loom tests (rama-utils)
         run: |
           RUSTFLAGS="--cfg loom -Dwarnings" \
-            cargo test --all-features -p rama-utils
+            cargo nextest run --all-features -p rama-utils
         # Extra: Cargo Hack
       - name: install cargo-hack
         uses: taiki-e/install-action@cargo-hack
@@ -281,6 +287,9 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
@@ -294,8 +303,7 @@ jobs:
           cargo update --package cmake --precise 0.1.54
       - name: Run tests (--ignored)
         run: |
-          cargo build --all-features --bins --examples
-          cargo test --all-features --workspace -- --ignored
+          cargo nextest run --all-features --workspace --run-ignored=only
 
   test-rust-e2e-release:
     strategy:
@@ -321,6 +329,9 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
@@ -334,8 +345,7 @@ jobs:
           cargo update --package cmake --precise 0.1.54
       - name: Run tests in release mode (--ignored)
         run: |
-          cargo build --all-features --release --bins --examples
-          cargo test --all-features --release --workspace -- --ignored
+          cargo nextest run --all-features --release --workspace --run-ignored=only
 
   test-ws-autobahn:
     runs-on: ubuntu-latest
