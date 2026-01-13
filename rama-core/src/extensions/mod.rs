@@ -31,6 +31,7 @@ use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use itertools::Either;
 pub use rama_utils::collections::AppendOnlyVec;
 use tokio::time::Instant;
 
@@ -39,6 +40,9 @@ use tokio::time::Instant;
 pub struct Extensions {
     stores: Vec<ExtensionStore>,
 }
+
+const REQUEST_STORE: &'static str = "REQUEST_STORE";
+const CONN_STORE: &'static str = "CONN_STORE";
 
 impl Default for Extensions {
     fn default() -> Self {
@@ -135,7 +139,7 @@ impl Extensions {
             clippy::unwrap_used,
             reason = "type_id_filter guarantees that this case will succeed"
         )]
-        self.iter_inner(Self::type_id_filter::<T>)
+        self.iter_inner(Self::type_id_filter::<T>, &[])
             .map(|item| item.1.extension.downcast_ref::<T>().unwrap())
     }
 
@@ -144,7 +148,7 @@ impl Extensions {
             clippy::unwrap_used,
             reason = "type_id_filter guarantees that this case will succeed"
         )]
-        self.iter_inner(Self::type_id_filter::<T>)
+        self.iter_inner(Self::type_id_filter::<T>, &[])
             .map(|item| item.1.extension.cloned_downcast::<T>().unwrap())
     }
 
@@ -153,16 +157,18 @@ impl Extensions {
         stored.extension.type_id != type_id
     }
 
-    pub fn iter_all_stored<'a>(
+    pub fn iter_all_stored<'a, 'b: 'a>(
         &'a self,
+        store_filter: &'b [&'static str],
     ) -> impl Iterator<Item = (&'static str, &'a StoredExtension)> + 'a {
-        self.iter_inner(|_| false)
+        self.iter_inner(|_| false, store_filter)
     }
 
     // TODO do we want to make a struct and potentially impl double sided iterator for this
-    fn iter_inner<'a, F>(
+    fn iter_inner<'a, 'b: 'a, F>(
         &'a self,
         filter: F,
+        store_filter: &'b [&'static str],
     ) -> impl Iterator<Item = (&'static str, &'a StoredExtension)> + 'a
     where
         F: Fn(&StoredExtension) -> bool + 'static,
@@ -174,6 +180,9 @@ impl Extensions {
             let mut earliest_time = None;
 
             for (i, store) in self.stores.iter().enumerate() {
+                if !store_filter.is_empty() && !store_filter.contains(&store.name) {
+                    continue;
+                }
                 let storage = &store.storage;
                 while cursors[i] < storage.len() && filter(&storage[cursors[i]]) {
                     cursors[i] += 1;
@@ -316,7 +325,7 @@ mod tests {
 
     #[test]
     fn setup() {
-        let mut request = Extensions::new("request");
+        let mut request = Extensions::new(REQUEST_STORE);
 
         request.insert(NoRetry);
         request.insert(TargetHttpVersion);
@@ -326,7 +335,7 @@ mod tests {
         // 1. now we go to connector setup
         // 2. we create the extensions for our connector
         // 3. we add request extensions to this, and vice versa
-        let connection = Extensions::new("connection");
+        let connection = Extensions::new(CONN_STORE);
 
         // We add connector extensions also to our request
         request.add_new_store(connection.main_store().clone());
@@ -359,13 +368,15 @@ mod tests {
         connection.insert(BrokenConnection);
         connection.insert(IsHealth(false));
 
-        // let timeline = request.iter_all_stored().collect::<Vec<_>>();
-        // println!("request extensions: {:#?}", timeline);
+        let timeline = request
+            .iter_all_stored(&[REQUEST_STORE])
+            .collect::<Vec<_>>();
+        println!("request extensions: {:#?}", timeline);
 
         // println!("is healthy {:?}", request.get_arc::<IsHealth>().unwrap().0);
         assert!(!request.get_arc::<IsHealth>().unwrap().0);
 
-        let _history: Vec<_> = request.iter::<IsHealth>().collect();
+        // let _history: Vec<_> = request.iter::<IsHealth>(&[]).collect();
         // println!("health history {history:#?}");
     }
 
