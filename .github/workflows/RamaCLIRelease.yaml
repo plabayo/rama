@@ -45,7 +45,9 @@ jobs:
       matrix:
         target:
           - name: x86_64-unknown-linux-gnu
+          - name: x86_64-unknown-linux-musl
           - name: aarch64-unknown-linux-gnu
+          - name: aarch64-unknown-linux-musl
           - name: armv7-unknown-linux-gnueabi
           - name: armv7-unknown-linux-gnueabihf
           - name: arm-unknown-linux-gnueabi
