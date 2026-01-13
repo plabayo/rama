@@ -88,16 +88,27 @@ jobs:
         libc: # linux
           - glibc
         include:
+          - custom_env: {}
+          - target: ""
           - os: ubuntu-latest
             toolchain: stable
             libc: musl
             target: x86_64-unknown-linux-musl
             apt_packages: musl-tools
+            custom_env:
+              CC_aarch64_unknown_linux_musl: musl-gcc
+              CXX_aarch64_unknown_linux_musl: g++
+              CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           - os: ubuntu-24.04-arm
             toolchain: stable
             libc: musl
             target: aarch64-unknown-linux-musl
             apt_packages: musl-tools
+            custom_env:
+              CC_x86_64_unknown_linux_musl: musl-gcc
+              CXX_x86_64_unknown_linux_musl: g++
+              CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}-${{ matrix.os }}-${{ matrix.target || 'default' }}
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
@@ -138,10 +149,13 @@ jobs:
           cargo update --package cmake --precise 0.1.54
       - name: Run tests (cargo test)
         run: cargo nextest run --all-features --workspace ${Matrix_Target_Flag}
+        env: ${{ matrix.custom_env }}
       - name: Run doc tests (cargo test)
         run: cargo test --doc --all-features --workspace ${Matrix_Target_Flag}
+        env: ${{ matrix.custom_env }}
       - name: Run example tests (cargo test)
         run: cargo nextest run --all-features --examples --workspace --no-tests=pass ${Matrix_Target_Flag}
+        env: ${{ matrix.custom_env }}
 
   precheck-rust-tier2:
     strategy:
