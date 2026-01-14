@@ -200,7 +200,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          bin="target/${{ matrix.target }}/debug/rama-cli"
+          bin="target/${{ matrix.target }}/debug/rama"
           echo "Binary path: $bin"
           ls -lah "$bin"
 
@@ -214,13 +214,13 @@ jobs:
           readelf -d "$bin" || true
 
           dir="$(mktemp -d)"
-          cp "$bin" "$dir/rama-cli"
-          chmod +x "$dir/rama-cli"
+          cp "$bin" "$dir/rama"
+          chmod +x "$dir/rama"
 
           cat > "$dir/Dockerfile" <<'EOF'
           FROM scratch
-          COPY rama-cli /rama-cli
-          ENTRYPOINT ["/rama-cli"]
+          COPY rama /rama
+          ENTRYPOINT ["/rama"]
           EOF
 
           echo "Building scratch image"
@@ -231,7 +231,8 @@ jobs:
 
           echo "HTTPS test in scratch"
           set +e
-          docker run --rm --name rama-cli-scratch-test-run rama-cli-scratch-test -k https://example.com
+          docker run --rm --name rama-cli-scratch-test-run \
+            rama-cli-scratch-test -k https://example.com
           rc="$?"
           set -e
 
