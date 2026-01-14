@@ -37,7 +37,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
-          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
@@ -52,15 +51,6 @@ jobs:
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
-      - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
-      - name: rustfmt
-        run: |
-          cargo fmt --all --check
-      - name: doc
-        run: |
-          cargo doc --all-features --no-deps --workspace
 
   precheck-docs:
     runs-on: ubuntu-latest
@@ -70,17 +60,17 @@ jobs:
         run: |
           ./scripts/extra-checks.sh
 
-  test-rust-base:
+  check-rust:
     strategy:
       matrix:
         toolchain:
+          - 1.91.0 # MSRV
           - stable
+          - beta
         os:
           - ubuntu-latest
-          - macos-15-intel
-          - macos-15
-          - windows-2025
-          - windows-11-arm
+          - macos-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
@@ -95,12 +85,66 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}
+        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
+        # https://github.com/cloudflare/boring/issues/414
+        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
+      - name: Pin some dependencies, temporary patch for cmake breakage
+        if: startsWith(matrix.os, 'windows')
+        run: |
+          cargo update --package cmake --precise 0.1.54
+      - name: clippy
+        run: |
+          cargo clippy --workspace --all-targets --all-features
+      - name: rustfmt
+        run: |
+          cargo fmt --all --check
+      - name: doc
+        run: |
+          cargo doc --all-features --no-deps --workspace
+
+  test-rust-base:
+    strategy:
+      matrix:
+        toolchain:
+          - stable
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-15-intel
+          - macos-15
+          - windows-2025
+          - windows-11-arm
+    name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Apt Packages
+        if: matrix.apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_packages }}
+      - uses: ilammy/setup-nasm@v1
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.target }}
+          components: clippy, rustfmt
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
         # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
         # https://github.com/cloudflare/boring/issues/414
@@ -115,6 +159,44 @@ jobs:
         run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)
         run: cargo nextest run --all-features --examples --workspace --no-tests=pass
+
+  test-rust-build-musl:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            toolchain: stable
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            toolchain: stable
+            target: aarch64-unknown-linux-musl
+    name: test-rust-build-musl-${{ matrix.toolchain }}-${{ matrix.os }}-${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+      - name: Install Zig
+        if: contains(matrix.target, 'unknown-linux-musl')
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+      - name: Build Workspace
+        run: |
+          cargo zigbuild -p rama -p rama-cli --target ${{ matrix.target }} --all-features
 
   precheck-rust-tier2:
     strategy:
@@ -412,9 +494,12 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - precheck-rust-tier2
+      - check-rust
       - test-rust-base
+      - test-rust-build-musl
       - test-rust-extra
       - test-rust-e2e
+      - test-rust-e2e-release
       - test-ws-autobahn
       - fuzz-rust
       - test-spec-h2
