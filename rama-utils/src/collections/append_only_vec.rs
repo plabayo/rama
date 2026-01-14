@@ -418,7 +418,7 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> FromIterator<T>
     }
 }
 
-#[cfg(test)]
+#[cfg(not(all(loom, test)))]
 mod tests {
     use super::*;
 
