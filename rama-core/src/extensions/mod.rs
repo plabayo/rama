@@ -31,54 +31,107 @@ use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use itertools::Either;
 pub use rama_utils::collections::AppendOnlyVec;
 use tokio::time::Instant;
 
 #[derive(Debug, Clone)]
 /// Combined view of all extensions that apply at a specific place
 pub struct Extensions {
-    stores: Vec<ExtensionStore>,
+    req_ext: ExtensionStores,
+    resp_ext: ExtensionStores,
+    ingress_ext: ExtensionStores,
+    pub egress_ext: ExtensionStores,
+    default_store: DefaultStore,
 }
 
-const REQUEST_STORE: &'static str = "REQUEST_STORE";
-const CONN_STORE: &'static str = "CONN_STORE";
+#[derive(Debug, Copy, Clone, Default)]
+pub enum DefaultStore {
+    #[default]
+    Request,
+    Response,
+    IngressConn,
+    EgressConn,
+}
 
 impl Default for Extensions {
     fn default() -> Self {
-        Self::new("unknown_name")
+        // TODO remove default impl altogether
+        Self::new(DefaultStore::Request, "default request")
     }
 }
 
 impl Extensions {
-    pub fn new(name: &'static str) -> Self {
+    pub fn new(default_store: DefaultStore, name: &'static str) -> Self {
         let store = ExtensionStore::new(name);
-        Self {
-            stores: vec![store],
+
+        let mut this = Self {
+            req_ext: Default::default(),
+            resp_ext: Default::default(),
+            ingress_ext: Default::default(),
+            egress_ext: Default::default(),
+            default_store,
+        };
+
+        this.store_mut().add_new_store(store);
+        this
+    }
+
+    pub fn store(&self) -> &ExtensionStores {
+        match self.default_store {
+            DefaultStore::Request => &self.req_ext,
+            DefaultStore::Response => &self.resp_ext,
+            DefaultStore::IngressConn => &self.ingress_ext,
+            DefaultStore::EgressConn => &self.egress_ext,
         }
     }
 
-    #[must_use]
-    pub fn new_from_current(&self, name: &'static str) -> Self {
-        let store = ExtensionStore::new(name);
-        let mut stores = self.stores.clone();
-        stores.insert(0, store);
-        Self { stores }
+    pub fn store_mut(&mut self) -> &mut ExtensionStores {
+        match self.default_store {
+            DefaultStore::Request => &mut self.req_ext,
+            DefaultStore::Response => &mut self.resp_ext,
+            DefaultStore::IngressConn => &mut self.ingress_ext,
+            DefaultStore::EgressConn => &mut self.egress_ext,
+        }
     }
 
+    pub fn get<T: Extension>(&self) -> Option<&T> {
+        self.store().get()
+    }
+
+    pub fn contains<T: Extension>(&self) -> bool {
+        self.store().contains::<T>()
+    }
+
+    pub fn insert<T: Extension>(&self, value: T) {
+        self.store().insert(value)
+    }
+
+    pub fn extend(&self, other: Self) {
+        match self.default_store {
+            DefaultStore::Request => self.req_ext.extend(&other.req_ext),
+            DefaultStore::Response => todo!(),
+            DefaultStore::IngressConn => todo!(),
+            DefaultStore::EgressConn => todo!(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExtensionStores(Vec<ExtensionStore>);
+
+impl ExtensionStores {
     pub fn add_new_store(&mut self, store: ExtensionStore) {
-        self.stores.push(store);
+        println!("push");
+        self.0.push(store);
+        println!("pushed");
     }
 
-    // TODO we could make this use &mut self, so we can still signal if this should be
-    // readonly or not. But do we ever have a need of making extensions readonly? Seems
-    // that we always have an owned version of it either way...
+    fn current_store(&self) -> &ExtensionStore {
+        &self.0[self.0.len() - 1]
+    }
+
     pub fn insert<T: Extension>(&self, val: T) {
-        self.main_store().insert(val);
-    }
-
-    pub fn main_store(&self) -> &ExtensionStore {
-        &self.stores[0]
+        self.current_store().insert(val);
     }
 
     pub fn get<T: Extension>(&self) -> Option<&T> {
@@ -96,8 +149,7 @@ impl Extensions {
 
         let mut latest: Option<&StoredExtension> = None;
 
-        // Here we iterate all stores one by one, we probably want to interleave this and do this smarter or concurrently
-        for store in &self.stores {
+        for store in &self.0 {
             for stored in store.storage.iter().rev() {
                 // No need to keep searching if we already have a match that is newer then we are now
                 if let Some(latest) = latest
@@ -120,7 +172,7 @@ impl Extensions {
     pub fn contains<T: Extension>(&self) -> bool {
         let type_id = TypeId::of::<T>();
 
-        for store in &self.stores {
+        for store in &self.0 {
             if store
                 .storage
                 .iter()
@@ -139,7 +191,7 @@ impl Extensions {
             clippy::unwrap_used,
             reason = "type_id_filter guarantees that this case will succeed"
         )]
-        self.iter_inner(Self::type_id_filter::<T>, &[])
+        self.iter_inner(Self::type_id_filter::<T>)
             .map(|item| item.1.extension.downcast_ref::<T>().unwrap())
     }
 
@@ -148,7 +200,7 @@ impl Extensions {
             clippy::unwrap_used,
             reason = "type_id_filter guarantees that this case will succeed"
         )]
-        self.iter_inner(Self::type_id_filter::<T>, &[])
+        self.iter_inner(Self::type_id_filter::<T>)
             .map(|item| item.1.extension.cloned_downcast::<T>().unwrap())
     }
 
@@ -159,30 +211,28 @@ impl Extensions {
 
     pub fn iter_all_stored<'a, 'b: 'a>(
         &'a self,
-        store_filter: &'b [&'static str],
     ) -> impl Iterator<Item = (&'static str, &'a StoredExtension)> + 'a {
-        self.iter_inner(|_| false, store_filter)
+        self.iter_inner(|_| false)
     }
 
     // TODO do we want to make a struct and potentially impl double sided iterator for this
     fn iter_inner<'a, 'b: 'a, F>(
         &'a self,
         filter: F,
-        store_filter: &'b [&'static str],
     ) -> impl Iterator<Item = (&'static str, &'a StoredExtension)> + 'a
     where
         F: Fn(&StoredExtension) -> bool + 'static,
     {
-        let mut cursors = vec![0; self.stores.len()];
+        let mut cursors = vec![0; self.0.len()];
 
         std::iter::from_fn(move || {
             let mut best_store = None;
             let mut earliest_time = None;
 
-            for (i, store) in self.stores.iter().enumerate() {
-                if !store_filter.is_empty() && !store_filter.contains(&store.name) {
-                    continue;
-                }
+            for (i, store) in self.0.iter().enumerate() {
+                // if !store_filter.is_empty() && !store_filter.contains(&store.name) {
+                //     continue;
+                // }
                 let storage = &store.storage;
                 while cursors[i] < storage.len() && filter(&storage[cursors[i]]) {
                     cursors[i] += 1;
@@ -201,26 +251,18 @@ impl Extensions {
             }
 
             if let Some(i) = best_store {
-                let stored = &self.stores[i].storage[cursors[i]];
+                let stored = &self.0[i].storage[cursors[i]];
                 cursors[i] += 1;
 
-                return Some((self.stores[i].name, stored));
+                return Some((self.0[i].name, stored));
             }
 
             None
         })
     }
 
-    // TODO instead of extensions do we just add the provided extensions store to the list over stores?
-
-    /// Extend this [`Extensions`] store with the [`Extension`]s from the provided store
-    ///
-    /// Warning: this will override the timestamp of the extensions to Instant::now,
-    /// this is need to make sure our datastructure is always ordered by timestamp
-    pub fn extend(&mut self, extensions: Self) {
-        self.main_store().extend(extensions.main_store());
-        // TODO we can just use a ref here, but do we want to?
-        drop(extensions);
+    pub fn extend(&self, extensions: &Self) {
+        self.current_store().extend(extensions.current_store());
     }
 }
 
@@ -297,6 +339,9 @@ impl TypeErasedExtension {
     }
 }
 
+struct Ingress<T>(T);
+struct Egress<T>(T);
+
 pub trait Extension: Any + Send + Sync + std::fmt::Debug + 'static {}
 // TODO remove this blacket impl and require everyone to implement this
 impl<T> Extension for T where T: Any + Send + Sync + std::fmt::Debug + 'static {}
@@ -325,24 +370,34 @@ mod tests {
 
     #[test]
     fn setup() {
-        let mut request = Extensions::new(REQUEST_STORE);
+        println!("start");
+        let mut request = Extensions::new(DefaultStore::Request, "request");
 
-        request.insert(NoRetry);
-        request.insert(TargetHttpVersion);
+        // By default we insert in request here
+        request.extensions().insert(NoRetry);
+        // but we can also choose specifically to insert in request extensions
+        // TODO this should actually be a connection extension, right now we need to know
+        // where to insert this, but should this be part of Extension trait logic if so
+        // ingress vs egress, do we give them different names so they only have one place?
+        request.req_ext().insert(TargetHttpVersion);
 
+        println!("request");
         // println!("request extensions {request:?}");
 
         // 1. now we go to connector setup
         // 2. we create the extensions for our connector
         // 3. we add request extensions to this, and vice versa
-        let connection = Extensions::new(CONN_STORE);
+        let mut connection = Extensions::new(DefaultStore::EgressConn, "egress connection");
 
+        // we do connection and then
         // We add connector extensions also to our request
-        request.add_new_store(connection.main_store().clone());
+        // TODO how do we expose this with mut?
+        request.egress_ext = connection.egress_ext.clone();
 
         // In connector setup now we only edit connection extension
-        connection.insert(ConnectionInfo);
-        connection.insert(IsHealth(true));
+        connection.extensions().insert(ConnectionInfo);
+        // Again default or we can choose
+        connection.egress_ext.insert(IsHealth(true));
 
         // We also have access to request to read thing, but all connection specific things
         // should add this point be copied over the connection which should survive a single request
@@ -352,7 +407,7 @@ mod tests {
         //     connection.insert(version)
         // }
 
-        request.insert(RequestInfoInner);
+        request.req_ext().insert(RequestInfoInner);
 
         // This should have the complete view, unified view is basically a combined time sorted view
         // all events/extensions added in correct order
@@ -365,17 +420,29 @@ mod tests {
 
         // // Now our connection's internal state machine detect it is broken
         // // and inserts this in extensions, our request should also be able to see this
-        connection.insert(BrokenConnection);
+        connection.extensions().insert(BrokenConnection);
+        // This is etensions object so we dont even have to use .extension()
         connection.insert(IsHealth(false));
+        println!("collecting");
 
-        let timeline = request
-            .iter_all_stored(&[REQUEST_STORE])
-            .collect::<Vec<_>>();
+        let timeline = request.req_ext().iter_all_stored().collect::<Vec<_>>();
         println!("request extensions: {:#?}", timeline);
 
-        // println!("is healthy {:?}", request.get_arc::<IsHealth>().unwrap().0);
-        assert!(!request.get_arc::<IsHealth>().unwrap().0);
+        let timeline = request.egress_ext().iter_all_stored().collect::<Vec<_>>();
+        println!("connection extensions: {:#?}", timeline);
 
+        // println!("is healthy {:?}", request.get_arc::<IsHealth>().unwrap().0);
+        assert!(!request.egress_ext().get_arc::<IsHealth>().unwrap().0);
+
+        println!("is healthy: {:?}", request.get::<IsHealth>());
+        println!(
+            "is healthy request: {:?}",
+            request.req_ext().get::<IsHealth>()
+        );
+        println!(
+            "is healthy connection: {:?}",
+            request.egress_ext().get::<IsHealth>()
+        );
         // let _history: Vec<_> = request.iter::<IsHealth>(&[]).collect();
         // println!("health history {history:#?}");
     }
@@ -391,6 +458,24 @@ mod tests {
 pub trait ExtensionsRef {
     /// Get reference to the underlying [`Extensions`] store
     fn extensions(&self) -> &Extensions;
+
+    // fn active_ext(&self) -> &ExtensionStores{}
+
+    fn req_ext(&self) -> &ExtensionStores {
+        &self.extensions().req_ext
+    }
+
+    fn resp_ext(&self) -> &ExtensionStores {
+        &self.extensions().resp_ext
+    }
+
+    fn egress_ext(&self) -> &ExtensionStores {
+        &self.extensions().egress_ext
+    }
+
+    fn ingress_ext(&self) -> &ExtensionStores {
+        &self.extensions().ingress_ext
+    }
 }
 
 impl ExtensionsRef for Extensions {

@@ -323,8 +323,7 @@ async fn test_ua_emulation() {
                     conn,
                 } = connector.serve(req).await.expect(description);
 
-                req.extensions_mut()
-                    .add_new_store(conn.extensions().main_store().clone());
+                req.extensions_mut().egress_ext = conn.extensions().store().clone();
                 // req.extensions_mut().extend(conn.extensions().clone());
 
                 let svc = (UserAgentEmulateHttpRequestModifierLayer::default()).layer(conn);
@@ -405,8 +404,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     } = connector.serve(req).await.expect(&expect_msg);
 
                     // req.extensions_mut().extend(conn.extensions().clone());
-                    req.extensions_mut()
-                        .add_new_store(conn.extensions().main_store().clone());
+                    req.extensions_mut().egress_ext = conn.extensions().store().clone();
 
                     let svc = (UserAgentEmulateHttpRequestModifierLayer::default()).layer(conn);
                     Ok::<_, Infallible>(svc.serve(req).await.expect(&expect_msg))

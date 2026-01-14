@@ -198,8 +198,7 @@ where
 
         // req.extensions_mut()
         //     .extend(http_connection.extensions().clone());
-        req.extensions_mut()
-            .add_new_store(http_connection.extensions().main_store().clone());
+        req.extensions_mut().egress_ext = http_connection.extensions().egress_ext().clone();
 
         let http_connection = self.jit_layers.layer(http_connection);
 

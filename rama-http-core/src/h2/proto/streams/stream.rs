@@ -2,7 +2,7 @@ use crate::h2::Reason;
 
 use super::*;
 
-use rama_core::extensions::Extensions;
+use rama_core::extensions::{ExtensionStore, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{self, warn};
 use std::fmt;
 use std::task::{Context, Waker};
@@ -203,9 +203,12 @@ impl Stream {
         id: StreamId,
         init_send_window: WindowSize,
         init_recv_window: WindowSize,
-        connection_extensions: &Extensions,
+        extensions: &Extensions,
     ) -> Result<Self, Reason> {
-        let extensions = connection_extensions.new_from_current("stream");
+        let store = ExtensionStore::new("stream");
+        // TODO fork
+        let mut extensions = extensions.clone();
+        extensions.store_mut().add_new_store(store);
 
         let mut send_flow = FlowControl::new();
         let mut recv_flow = FlowControl::new();
