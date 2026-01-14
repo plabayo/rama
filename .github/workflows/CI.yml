@@ -194,16 +194,28 @@ jobs:
           cargo zigbuild -p rama -p rama-cli --target ${{ matrix.target }} --all-features
       - name: Setup Docker buildx
         uses: docker/setup-buildx-action@v3
-      - name: Run rama-cli HTTPS test in scratch
+
+      - name: Scratch run test (rama-cli, with diagnostics)
         shell: bash
         run: |
           set -euo pipefail
 
           bin="target/${{ matrix.target }}/debug/rama-cli"
-          test -f "$bin"
+          echo "Binary path: $bin"
+          ls -lah "$bin"
+
+          echo "file:"
+          file "$bin" || true
+
+          echo "readelf program headers (interpreter should be absent for static):"
+          readelf -l "$bin" || true
+
+          echo "readelf dynamic section (NEEDED should be absent for static):"
+          readelf -d "$bin" || true
 
           dir="$(mktemp -d)"
           cp "$bin" "$dir/rama-cli"
+          chmod +x "$dir/rama-cli"
 
           cat > "$dir/Dockerfile" <<'EOF'
           FROM scratch
@@ -211,11 +223,32 @@ jobs:
           ENTRYPOINT ["/rama-cli"]
           EOF
 
-          docker buildx build --load -t rama-cli-scratch-test "$dir"
+          echo "Building scratch image"
+          docker buildx build --progress=plain --load -t rama-cli-scratch-test "$dir"
 
-          # Replace this command with the minimal HTTPS request your CLI supports
-          docker run --rm rama-cli-scratch-test \
-            -k https://example.com
+          echo "Smoke test in scratch: --help"
+          docker run --rm rama-cli-scratch-test --help || true
+
+          echo "HTTPS test in scratch"
+          set +e
+          docker run --rm --name rama-cli-scratch-test-run rama-cli-scratch-test -k https://example.com
+          rc="$?"
+          set -e
+
+          if [ "$rc" -ne 0 ]; then
+            echo "rama-cli exited with code $rc"
+
+            echo "docker inspect:"
+            docker inspect rama-cli-scratch-test-run || true
+
+            echo "docker logs:"
+            docker logs rama-cli-scratch-test-run || true
+
+            echo "docker rm:"
+            docker rm -f rama-cli-scratch-test-run >/dev/null 2>&1 || true
+
+            exit "$rc"
+          fi
 
   precheck-rust-tier2:
     strategy:
