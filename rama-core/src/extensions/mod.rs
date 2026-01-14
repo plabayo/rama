@@ -31,16 +31,17 @@ use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use rama_error::{ErrorContext, OpaqueError};
 pub use rama_utils::collections::AppendOnlyVec;
 use tokio::time::Instant;
 
 #[derive(Debug, Clone)]
 /// Combined view of all extensions that apply at a specific place
 pub struct Extensions {
-    req_ext: ExtensionStores,
-    resp_ext: ExtensionStores,
-    ingress_ext: ExtensionStores,
-    pub egress_ext: ExtensionStores,
+    req_ext: Option<ExtensionStores>,
+    resp_ext: Option<ExtensionStores>,
+    ingress_ext: Option<ExtensionStores>,
+    pub egress_ext: Option<ExtensionStores>,
     default_store: DefaultStore,
 }
 
@@ -72,25 +73,31 @@ impl Extensions {
             default_store,
         };
 
-        this.store_mut().add_new_store(store);
+        match default_store {
+            DefaultStore::Request => this.req_ext = Some(ExtensionStores::new(store)),
+            DefaultStore::Response => this.resp_ext = Some(ExtensionStores::new(store)),
+            DefaultStore::IngressConn => this.ingress_ext = Some(ExtensionStores::new(store)),
+            DefaultStore::EgressConn => this.egress_ext = Some(ExtensionStores::new(store)),
+        }
+
         this
     }
 
     pub fn store(&self) -> &ExtensionStores {
         match self.default_store {
-            DefaultStore::Request => &self.req_ext,
-            DefaultStore::Response => &self.resp_ext,
-            DefaultStore::IngressConn => &self.ingress_ext,
-            DefaultStore::EgressConn => &self.egress_ext,
+            DefaultStore::Request => self.req_ext.as_ref().unwrap(),
+            DefaultStore::Response => self.resp_ext.as_ref().unwrap(),
+            DefaultStore::IngressConn => self.ingress_ext.as_ref().unwrap(),
+            DefaultStore::EgressConn => self.egress_ext.as_ref().unwrap(),
         }
     }
 
     pub fn store_mut(&mut self) -> &mut ExtensionStores {
         match self.default_store {
-            DefaultStore::Request => &mut self.req_ext,
-            DefaultStore::Response => &mut self.resp_ext,
-            DefaultStore::IngressConn => &mut self.ingress_ext,
-            DefaultStore::EgressConn => &mut self.egress_ext,
+            DefaultStore::Request => self.req_ext.as_mut().unwrap(),
+            DefaultStore::Response => self.resp_ext.as_mut().unwrap(),
+            DefaultStore::IngressConn => self.ingress_ext.as_mut().unwrap(),
+            DefaultStore::EgressConn => self.egress_ext.as_mut().unwrap(),
         }
     }
 
@@ -108,7 +115,11 @@ impl Extensions {
 
     pub fn extend(&self, other: Self) {
         match self.default_store {
-            DefaultStore::Request => self.req_ext.extend(&other.req_ext),
+            DefaultStore::Request => self
+                .req_ext
+                .as_ref()
+                .unwrap()
+                .extend(&other.req_ext.unwrap()),
             DefaultStore::Response => todo!(),
             DefaultStore::IngressConn => todo!(),
             DefaultStore::EgressConn => todo!(),
@@ -116,14 +127,16 @@ impl Extensions {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExtensionStores(Vec<ExtensionStore>);
 
 impl ExtensionStores {
+    pub fn new(store: ExtensionStore) -> Self {
+        ExtensionStores(vec![store])
+    }
+
     pub fn add_new_store(&mut self, store: ExtensionStore) {
-        println!("push");
         self.0.push(store);
-        println!("pushed");
     }
 
     fn current_store(&self) -> &ExtensionStore {
@@ -271,7 +284,7 @@ impl ExtensionStores {
 pub struct ExtensionStore {
     // again no string later, but for proto type this works
     name: &'static str,
-    storage: Arc<AppendOnlyVec<StoredExtension, 30, 3>>,
+    storage: Arc<AppendOnlyVec<StoredExtension, 8, 3>>,
 }
 
 impl ExtensionStore {
@@ -376,10 +389,7 @@ mod tests {
         // TODO this should actually be a connection extension, right now we need to know
         // where to insert this, but should this be part of Extension trait logic if so
         // ingress vs egress, do we give them different names so they only have one place?
-        request.req_ext().insert(TargetHttpVersion);
-
-        println!("request");
-        // println!("request extensions {request:?}");
+        request.req_ext().unwrap().insert(TargetHttpVersion);
 
         // 1. now we go to connector setup
         // 2. we create the extensions for our connector
@@ -393,8 +403,8 @@ mod tests {
 
         // In connector setup now we only edit connection extension
         connection.extensions().insert(ConnectionInfo);
-        // Again default or we can choose
-        connection.egress_ext.insert(IsHealth(true));
+        // Again default or we can choose but then we have to deal with potentially missing stores
+        connection.egress_ext().unwrap().insert(IsHealth(true));
 
         // We also have access to request to read thing, but all connection specific things
         // should add this point be copied over the connection which should survive a single request
@@ -404,7 +414,7 @@ mod tests {
         //     connection.insert(version)
         // }
 
-        request.req_ext().insert(RequestInfoInner);
+        request.req_ext().unwrap().insert(RequestInfoInner);
 
         // This should have the complete view, unified view is basically a combined time sorted view
         // all events/extensions added in correct order
@@ -422,23 +432,38 @@ mod tests {
         connection.insert(IsHealth(false));
         println!("collecting");
 
-        let timeline = request.req_ext().iter_all_stored().collect::<Vec<_>>();
+        let timeline = request
+            .req_ext()
+            .unwrap()
+            .iter_all_stored()
+            .collect::<Vec<_>>();
         println!("request extensions: {:#?}", timeline);
 
-        let timeline = request.egress_ext().iter_all_stored().collect::<Vec<_>>();
+        let timeline = request
+            .egress_ext()
+            .unwrap()
+            .iter_all_stored()
+            .collect::<Vec<_>>();
         println!("connection extensions: {:#?}", timeline);
 
         // println!("is healthy {:?}", request.get_arc::<IsHealth>().unwrap().0);
-        assert!(!request.egress_ext().get_arc::<IsHealth>().unwrap().0);
+        assert!(
+            !request
+                .egress_ext()
+                .unwrap()
+                .get_arc::<IsHealth>()
+                .unwrap()
+                .0
+        );
 
         println!("is healthy: {:?}", request.get::<IsHealth>());
         println!(
             "is healthy request: {:?}",
-            request.req_ext().get::<IsHealth>()
+            request.req_ext().unwrap().get::<IsHealth>()
         );
         println!(
             "is healthy connection: {:?}",
-            request.egress_ext().get::<IsHealth>()
+            request.egress_ext().unwrap().get::<IsHealth>()
         );
         // let _history: Vec<_> = request.iter::<IsHealth>(&[]).collect();
         // println!("health history {history:#?}");
@@ -458,20 +483,32 @@ pub trait ExtensionsRef {
 
     // fn active_ext(&self) -> &ExtensionStores{}
 
-    fn req_ext(&self) -> &ExtensionStores {
-        &self.extensions().req_ext
+    fn req_ext(&self) -> Result<&ExtensionStores, OpaqueError> {
+        self.extensions()
+            .req_ext
+            .as_ref()
+            .context("no request extensions available at this place")
     }
 
-    fn resp_ext(&self) -> &ExtensionStores {
-        &self.extensions().resp_ext
+    fn resp_ext(&self) -> Result<&ExtensionStores, OpaqueError> {
+        self.extensions()
+            .resp_ext
+            .as_ref()
+            .context("no response extensions available at this place")
     }
 
-    fn egress_ext(&self) -> &ExtensionStores {
-        &self.extensions().egress_ext
+    fn egress_ext(&self) -> Result<&ExtensionStores, OpaqueError> {
+        self.extensions()
+            .egress_ext
+            .as_ref()
+            .context("no response extensions available at this place")
     }
 
-    fn ingress_ext(&self) -> &ExtensionStores {
-        &self.extensions().ingress_ext
+    fn ingress_ext(&self) -> Result<&ExtensionStores, OpaqueError> {
+        self.extensions()
+            .ingress_ext
+            .as_ref()
+            .context("no response extensions available at this place")
     }
 }
 

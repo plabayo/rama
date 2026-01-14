@@ -198,7 +198,7 @@ where
 
         // req.extensions_mut()
         //     .extend(http_connection.extensions().clone());
-        req.extensions_mut().egress_ext = http_connection.extensions().egress_ext().clone();
+        req.extensions_mut().egress_ext = Some(http_connection.extensions().store().clone());
 
         let http_connection = self.jit_layers.layer(http_connection);
 
