@@ -499,6 +499,7 @@ jobs:
       - test-rust-build-musl
       - test-rust-extra
       - test-rust-e2e
+      - test-rust-e2e-release
       - test-ws-autobahn
       - fuzz-rust
       - test-spec-h2
