@@ -339,9 +339,6 @@ impl TypeErasedExtension {
     }
 }
 
-struct Ingress<T>(T);
-struct Egress<T>(T);
-
 pub trait Extension: Any + Send + Sync + std::fmt::Debug + 'static {}
 // TODO remove this blacket impl and require everyone to implement this
 impl<T> Extension for T where T: Any + Send + Sync + std::fmt::Debug + 'static {}
@@ -387,7 +384,7 @@ mod tests {
         // 1. now we go to connector setup
         // 2. we create the extensions for our connector
         // 3. we add request extensions to this, and vice versa
-        let mut connection = Extensions::new(DefaultStore::EgressConn, "egress connection");
+        let connection = Extensions::new(DefaultStore::EgressConn, "egress connection");
 
         // we do connection and then
         // We add connector extensions also to our request

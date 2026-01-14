@@ -2,7 +2,7 @@ use crate::h2::Reason;
 
 use super::*;
 
-use rama_core::extensions::{ExtensionStore, Extensions, ExtensionsRef};
+use rama_core::extensions::{ExtensionStore, Extensions};
 use rama_core::telemetry::tracing::{self, warn};
 use std::fmt;
 use std::task::{Context, Waker};
