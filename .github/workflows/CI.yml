@@ -127,11 +127,6 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v6
-      - name: Install Apt Packages
-        if: matrix.apt_packages != ''
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.apt_packages }}
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@master
