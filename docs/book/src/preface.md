@@ -22,7 +22,7 @@ Rama is async first and built entirely on top of [`tokio`](https://tokio.rs).
 This book serves two audiences:
 
 ### 1. Developers and teams
-You want to understand what Rama is, why it exists, and how to use it to build proxies, web services or HTTP clients with full control over networking layers.
+You want to understand what Rama is, why it exists, and how to use it to build proxies, servers or clients with full control over networking layers.
 
 ### 2. Organisations
 You rely on networking infrastructure and want to understand whether Rama is the right long term foundation.  
