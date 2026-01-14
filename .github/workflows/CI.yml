@@ -155,7 +155,7 @@ jobs:
       - name: Run example tests (cargo test)
         run: cargo nextest run --all-features --examples --workspace --no-tests=pass
 
-  test-rust-build-musl:
+  test-rust-linux-musl:
     strategy:
       matrix:
         include:
@@ -165,7 +165,7 @@ jobs:
           - os: ubuntu-24.04-arm
             toolchain: stable
             target: aarch64-unknown-linux-musl
-    name: test-rust-build-musl-${{ matrix.toolchain }}-${{ matrix.os }}-${{ matrix.target }}
+    name: test-rust-linux-musl-${{ matrix.toolchain }}-${{ matrix.os }}-${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
@@ -192,6 +192,30 @@ jobs:
       - name: Build Workspace
         run: |
           cargo zigbuild -p rama -p rama-cli --target ${{ matrix.target }} --all-features
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Run rama-cli HTTPS test in scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bin="target/${{ matrix.target }}/debug/rama-cli"
+          test -f "$bin"
+
+          dir="$(mktemp -d)"
+          cp "$bin" "$dir/rama-cli"
+
+          cat > "$dir/Dockerfile" <<'EOF'
+          FROM scratch
+          COPY rama-cli /rama-cli
+          ENTRYPOINT ["/rama-cli"]
+          EOF
+
+          docker buildx build --load -t rama-cli-scratch-test "$dir"
+
+          # Replace this command with the minimal HTTPS request your CLI supports
+          docker run --rm rama-cli-scratch-test \
+            -k https://example.com
 
   precheck-rust-tier2:
     strategy:
@@ -491,7 +515,7 @@ jobs:
       - precheck-rust-tier2
       - check-rust
       - test-rust-base
-      - test-rust-build-musl
+      - test-rust-linux-musl
       - test-rust-extra
       - test-rust-e2e
       - test-rust-e2e-release
