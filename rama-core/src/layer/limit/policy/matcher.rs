@@ -16,7 +16,7 @@ where
 
     async fn check(&self, mut input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         for (matcher, policy) in self.iter() {
-            let mut ext = Extensions::new();
+            let mut ext = Extensions::default();
             if matcher.matches(Some(&mut ext), &input) {
                 input.extensions_mut().extend(ext);
                 let result = policy.check(input).await;
@@ -58,7 +58,7 @@ where
     async fn check(&self, mut input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         let (matchers, default_policy) = self;
         for (matcher, policy) in matchers.iter() {
-            let mut ext = Extensions::new();
+            let mut ext = Extensions::default();
             if matcher.matches(Some(&mut ext), &input) {
                 input.extensions_mut().extend(ext);
                 return policy.check(input).await;
@@ -115,18 +115,18 @@ mod tests {
 
         let policy = Arc::new(vec![(true, concurrency_policy)]);
 
-        let guard_1 = assert_ready(policy.check(Extensions::new()).await);
-        let guard_2 = assert_ready(policy.check(Extensions::new()).await);
+        let guard_1 = assert_ready(policy.check(Extensions::default()).await);
+        let guard_2 = assert_ready(policy.check(Extensions::default()).await);
 
-        assert_abort(&policy.check(Extensions::new()).await);
+        assert_abort(&policy.check(Extensions::default()).await);
 
         drop(guard_1);
-        let _guard_3 = assert_ready(policy.check(Extensions::new()).await);
+        let _guard_3 = assert_ready(policy.check(Extensions::default()).await);
 
-        assert_abort(&policy.check(Extensions::new()).await);
+        assert_abort(&policy.check(Extensions::default()).await);
 
         drop(guard_2);
-        assert_ready(policy.check(Extensions::new()).await);
+        assert_ready(policy.check(Extensions::default()).await);
     }
 
     #[derive(Debug, Clone)]

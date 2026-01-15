@@ -17,7 +17,7 @@ use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
-use rama_net::conn::{ConnectionHealth, ConnectionHealthStatus};
+use rama_net::conn::ConnectionHealth;
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
@@ -365,7 +365,7 @@ where
             stream_id,
             me.actions.send.init_window_sz(),
             me.actions.recv.init_window_sz(),
-            extensions,
+            &extensions,
         ).map_err(|err| {
             tracing::warn!("failed to create stream for id {stream_id:?} in send_request: {err}; library GO AWAY");
             Error::library_go_away(err)
@@ -586,7 +586,7 @@ impl Inner {
                             stream_id,
                             self.actions.send.init_window_sz(),
                             self.actions.recv.init_window_sz(),
-                            self.extensions.clone(),
+                            &self.extensions,
                         )
                         .map_err(|err| {
                             tracing::warn!("failed to create recv stream for id {stream_id:?}: {err}; library GO AWAY");
@@ -756,9 +756,7 @@ impl Inner {
 
         let actions = &mut self.actions;
 
-        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
-            health.set_status(ConnectionHealthStatus::Broken)
-        }
+        self.extensions.insert(ConnectionHealth::Broken);
 
         self.counts.transition(stream, |counts, stream| {
             actions.recv.recv_reset(frame, stream, counts)?;
@@ -825,9 +823,7 @@ impl Inner {
 
         let last_processed_id = actions.recv.last_processed_id();
 
-        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
-            health.set_status(ConnectionHealthStatus::Broken)
-        }
+        self.extensions.insert(ConnectionHealth::Broken);
 
         self.store.for_each(|stream| {
             counts.transition(stream, |counts, stream| {
@@ -854,9 +850,7 @@ impl Inner {
 
         let last_stream_id = frame.last_stream_id();
 
-        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
-            health.set_status(ConnectionHealthStatus::Broken)
-        }
+        self.extensions.insert(ConnectionHealth::Broken);
 
         actions.send.recv_go_away(last_stream_id)?;
 
@@ -932,6 +926,7 @@ impl Inner {
 
         // Try to handle the frame and create a corresponding key for the pushed stream
         // this requires a bit of indirection to make the borrow checker happy.
+
         let child_key: Option<store::Key> = {
             // Create state for the stream
             let stream = self.store.insert(promised_id, {
@@ -939,7 +934,7 @@ impl Inner {
                     promised_id,
                     self.actions.send.init_window_sz(),
                     self.actions.recv.init_window_sz(),
-                    self.extensions.clone(),
+                    &self.extensions,
                 ).map_err(|err| {
                     tracing::warn!("failed to create pushed stream for promised id {promised_id:?}: {err}; library GO AWAY");
                     Error::library_go_away(err)
@@ -1076,7 +1071,7 @@ impl Inner {
                     self.actions.recv.maybe_reset_next_stream_id(id);
                 }
 
-                match Stream::try_new(id, 0, 0, self.extensions.clone()) {
+                match Stream::try_new(id, 0, 0, &self.extensions) {
                     Ok(stream) => e.insert(stream),
                     Err(reason) => {
                         tracing::debug!(
@@ -1382,7 +1377,7 @@ impl<B> StreamRef<B> {
                     promised_id,
                     actions.send.init_window_sz(),
                     actions.recv.init_window_sz(),
-                    me.extensions.clone(),
+                    &me.extensions,
                 ).map_err(|err| {
                     tracing::warn!("failed to create stream for promised id {promised_id:?} in send_push_promise: {err}; library GO AWAY");
                     Error::library_go_away(err)

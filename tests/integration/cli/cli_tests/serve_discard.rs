@@ -27,7 +27,7 @@ async fn test_tcp_discard() {
 
     let mut stream = None;
     for i in 0..5 {
-        let extensions = Extensions::new();
+        let extensions = Extensions::default();
         match default_tcp_connect(
             &extensions,
             HostWithPort::local_ipv4(63114),

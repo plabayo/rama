@@ -25,7 +25,7 @@ impl TcpStream {
     pub fn new(stream: TurmoilTcpStream) -> Self {
         Self {
             stream,
-            extensions: Extensions::new(),
+            extensions: Extensions::default(),
         }
     }
 }

@@ -49,7 +49,7 @@ where
     type Error = S::Error;
 
     async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
-        let mut ext = Extensions::new();
+        let mut ext = Extensions::default();
         if self.matcher.matches(Some(&mut ext), &input) {
             input.extensions_mut().extend(ext);
             match self.hijack.serve(input).await {

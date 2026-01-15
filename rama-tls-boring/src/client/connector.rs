@@ -341,7 +341,7 @@ where
 #[cfg(feature = "http")]
 fn set_target_http_version(
     request_extensions: &Extensions,
-    conn_extensions: &mut Extensions,
+    conn_extensions: &Extensions,
     tls_params: &NegotiatedTlsParameters,
 ) -> Result<(), OpaqueError> {
     if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
@@ -364,7 +364,7 @@ fn set_target_http_version(
 }
 
 impl<S, K> TlsConnector<S, K> {
-    fn connector_data(&self, extensions: &mut Extensions) -> Result<TlsConnectorData, OpaqueError> {
+    fn connector_data(&self, extensions: &Extensions) -> Result<TlsConnectorData, OpaqueError> {
         #[cfg(feature = "http")]
         let target_version = extensions
             .get::<TargetHttpVersion>()

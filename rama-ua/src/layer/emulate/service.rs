@@ -1865,7 +1865,7 @@ mod tests {
                 method: None,
                 headers: None,
                 extensions: Some({
-                    let mut extensions = Extensions::default();
+                    let extensions = Extensions::default();
                     extensions.insert(RequestInitiator::Navigate);
                     extensions
                 }),
@@ -1877,7 +1877,7 @@ mod tests {
                 method: None,
                 headers: None,
                 extensions: Some({
-                    let mut extensions = Extensions::default();
+                    let extensions = Extensions::default();
                     extensions.insert(RequestInitiator::Form);
                     extensions
                 }),
@@ -2043,7 +2043,7 @@ mod tests {
                 method: Some(Method::DELETE),
                 headers: None,
                 extensions: Some({
-                    let mut extensions = Extensions::default();
+                    let extensions = Extensions::default();
                     extensions.insert(RequestInitiator::Xhr);
                     extensions
                 }),

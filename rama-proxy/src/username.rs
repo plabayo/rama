@@ -635,7 +635,7 @@ mod tests {
 
         for test_case in test_cases {
             let fmt_username = compose_username("john".to_owned(), &test_case).unwrap();
-            let mut ext = Extensions::new();
+            let mut ext = Extensions::default();
             let username = parse_username(
                 &mut ext,
                 ProxyFilterUsernameParser::default(),

@@ -31,7 +31,7 @@ impl Request {
             authority,
             protocol: None,
             http_version: None,
-            extensions: Extensions::new(),
+            extensions: Extensions::default(),
         }
     }
 

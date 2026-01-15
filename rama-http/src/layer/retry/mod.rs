@@ -212,7 +212,7 @@ mod test {
         }
 
         fn extensions() -> Extensions {
-            let mut extensions = Extensions::new();
+            let extensions = Extensions::default();
             extensions.insert(State {
                 retry_counter: Arc::new(AtomicUsize::new(0)),
             });
@@ -220,7 +220,7 @@ mod test {
         }
 
         fn do_not_retry_extensions() -> Extensions {
-            let mut extensions = extensions();
+            let extensions = extensions();
             extensions.insert(DoNotRetry::default());
             extensions
         }

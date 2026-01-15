@@ -33,7 +33,7 @@ async fn test_ws_tls_server() {
 
     // test the actual ws content
 
-    let mut extensions = Extensions::new();
+    let extensions = Extensions::default();
     let mut builder = extensions
         .get::<TlsConnectorDataBuilder>()
         .cloned()
