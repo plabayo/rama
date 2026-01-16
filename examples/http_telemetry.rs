@@ -63,7 +63,7 @@ use rama::{
             },
             semantic_conventions::{
                 self,
-                resource::{HOST_ARCH, OS_NAME},
+                resource::{HOST_ARCH, OS_NAME, SERVICE_NAME, SERVICE_VERSION},
             },
         },
         tracing::{
@@ -126,12 +126,13 @@ async fn main() {
         .with_interval(Duration::from_secs(3))
         .build();
 
+    let resource = Resource::builder()
+        .with_attribute(KeyValue::new(SERVICE_NAME, "http_telemetry"))
+        .with_attribute(KeyValue::new(SERVICE_VERSION, rama::utils::info::VERSION))
+        .build();
+
     let meter = SdkMeterProvider::builder()
-        .with_resource(
-            Resource::builder()
-                .with_attribute(KeyValue::new("service.name", "http_telemetry"))
-                .build(),
-        )
+        .with_resource(resource)
         .with_reader(meter_reader)
         .build();
 

@@ -1,12 +1,9 @@
 use std::borrow::Cow;
 
 use rama_core::telemetry::opentelemetry::{
-    InstrumentationScope, KeyValue, MeterOptions, ServiceInfo, global,
+    InstrumentationScope, KeyValue, MeterOptions, global,
     metrics::{Counter, Histogram, Meter},
-    semantic_conventions::{
-        self,
-        resource::{SERVICE_NAME, SERVICE_VERSION},
-    },
+    semantic_conventions,
 };
 use rama_utils::macros::generate_set_and_with;
 
@@ -67,17 +64,7 @@ impl PoolMetrics {
         meter_opts: MeterOptions,
         metric_opts: PoolMetricsOpts,
     ) -> Self {
-        let service_info = meter_opts.service.unwrap_or_else(|| ServiceInfo {
-            name: rama_utils::info::NAME.to_owned(),
-            version: rama_utils::info::VERSION.to_owned(),
-        });
-
-        let mut attributes = meter_opts
-            .attributes
-            .unwrap_or_else(|| Vec::with_capacity(2));
-        attributes.push(KeyValue::new(SERVICE_NAME, service_info.name));
-        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version));
-
+        let attributes = meter_opts.attributes.unwrap_or_default();
         let prefix = meter_opts.metric_prefix.as_deref();
 
         Self {
