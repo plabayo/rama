@@ -8,6 +8,7 @@ use rama::{
             KeyValue,
             collector::{SpanExporter, WithHttpConfig},
             sdk::{Resource, trace::SdkTracerProvider},
+            semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION},
             trace::TracerProvider,
         },
         tracing::{
@@ -61,13 +62,20 @@ fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxErr
         .build()
         .context("build span exporter w/ rama http client")?;
 
+    let resource = Resource::builder()
+        .with_attribute(KeyValue::new(
+            SERVICE_NAME,
+            rama::utils::info::NAME.to_owned(),
+        ))
+        .with_attribute(KeyValue::new(
+            SERVICE_VERSION,
+            rama::utils::info::VERSION.to_owned(),
+        ))
+        .build();
+
     let provider = SdkTracerProvider::builder()
         .with_batch_exporter(exportor)
-        .with_resource(
-            Resource::builder()
-                .with_attribute(KeyValue::new("service.name", "rama"))
-                .build(),
-        )
+        .with_resource(resource)
         .build();
 
     let tracer = provider.tracer("rama-cli");
