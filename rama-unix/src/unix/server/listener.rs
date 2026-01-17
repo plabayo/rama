@@ -163,38 +163,36 @@ impl UnixListener {
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.inner.local_addr()
     }
+
+    pub fn from_tokio_unix_listener(listener: TokioUnixListener, exec: Executor) -> Self {
+        Self {
+            inner: listener,
+            exec,
+            _cleanup: None,
+        }
+    }
+
+    pub fn try_from_socket(
+        socket: rama_net::socket::core::Socket,
+        exec: Executor,
+    ) -> Result<Self, io::Error> {
+        Self::bind_socket(socket, exec)
+    }
+
+    pub fn try_from_std_unix_listener(
+        listener: StdUnixListener,
+        exec: Executor,
+    ) -> Result<Self, io::Error> {
+        listener.set_nonblocking(true)?;
+        let inner = TokioUnixListener::from_std(listener)?;
+
+        Ok(Self {
+            inner,
+            exec,
+            _cleanup: None,
+        })
+    }
 }
-
-// impl From<TokioUnixListener> for UnixListener {
-//     fn from(value: TokioUnixListener) -> Self {
-//         Self {
-//             inner: value,
-//             _cleanup: None,
-//         }
-//     }
-// }
-
-// impl TryFrom<rama_net::socket::core::Socket> for UnixListener {
-//     type Error = io::Error;
-
-//     #[inline]
-//     fn try_from(socket: rama_net::socket::core::Socket) -> Result<Self, Self::Error> {
-//         Self::bind_socket(socket)
-//     }
-// }
-
-// impl TryFrom<StdUnixListener> for UnixListener {
-//     type Error = io::Error;
-
-//     fn try_from(listener: StdUnixListener) -> Result<Self, Self::Error> {
-//         listener.set_nonblocking(true)?;
-//         let inner = TokioUnixListener::from_std(listener)?;
-//         Ok(Self {
-//             inner,
-//             _cleanup: None,
-//         })
-//     }
-// }
 
 impl AsRawFd for UnixListener {
     #[inline]
