@@ -19,10 +19,12 @@
 
 use rama::{
     Layer,
-    http::server::HttpServer,
-    http::service::fs::DirectoryServeMode,
-    http::service::web::WebService,
+    http::{
+        server::HttpServer,
+        service::{fs::DirectoryServeMode, web::WebService},
+    },
     layer::TraceErrLayer,
+    rt::Executor,
     tcp::server::TcpListener,
     utils::include_dir::{Dir, include_dir},
 };
@@ -31,7 +33,7 @@ const ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/test-files");
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:62037")
+    let listener = TcpListener::bind("127.0.0.1:62037", Executor::default())
         .await
         .expect("bind TCP Listener");
 

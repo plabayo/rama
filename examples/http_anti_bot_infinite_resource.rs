@@ -98,12 +98,14 @@ async fn main() {
 
     let address = SocketAddress::local_ipv4(62039);
     tracing::info!("running service at: {address}");
-    let tcp_server = TcpListener::build()
+
+    let exec = Executor::graceful(graceful.guard());
+    let tcp_server = TcpListener::build(exec)
         .bind(address)
         .await
         .expect("bind tcp server");
 
-    graceful.spawn_task_fn(|guard| tcp_server.serve_graceful(guard, tcp_svc));
+    graceful.spawn_task(tcp_server.serve(tcp_svc));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(8))

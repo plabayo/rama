@@ -118,14 +118,15 @@ async fn main() {
         .build()
     };
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62029")
+    let exec = Executor::graceful(graceful.guard());
+
+    let tcp_service = TcpListener::bind("127.0.0.1:62029", exec.clone())
         .await
         .expect("bind http+https+socks5+socks5h proxy to 127.0.0.1:62029");
 
     let socks5_acceptor =
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
-    let exec = Executor::graceful(graceful.guard());
     let http_service = HttpServer::auto(exec.clone()).service(
         (
             TraceLayer::new_for_http(),
@@ -149,7 +150,7 @@ async fn main() {
     let auto_socks5_acceptor =
         Socks5PeekRouter::new(socks5_acceptor).with_fallback(auto_tls_acceptor);
 
-    graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, auto_socks5_acceptor));
+    graceful.spawn_task(tcp_service.serve(auto_socks5_acceptor));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(30))

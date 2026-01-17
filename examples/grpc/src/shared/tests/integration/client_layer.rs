@@ -37,18 +37,16 @@ async fn connect_supports_standard_rama_http_layers() {
     let svc = test_server::TestServer::new(Svc);
 
     let graceful = Shutdown::new(async { drop(rx.await) });
+    let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0))
+    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), exec)
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
     let jh = graceful.spawn_task_fn(async move |guard| {
         listener
-            .serve_graceful(
-                guard.clone(),
-                HttpServer::h2(Executor::graceful(guard)).service(svc),
-            )
+            .serve(HttpServer::h2(Executor::graceful(guard)).service(svc))
             .await;
     });
 

@@ -115,7 +115,7 @@ async fn main() {
     // create http server
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(service_fn(http_service));
+        let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
 
         let tcp_service = (
             ConsumeErrLayer::default(),
@@ -123,10 +123,10 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind("127.0.0.1:64802")
+        TcpListener::bind("127.0.0.1:64802", exec)
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 

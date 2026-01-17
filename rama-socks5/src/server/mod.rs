@@ -14,7 +14,11 @@ use crate::proto::{
     server::{Header, Reply, UsernamePasswordResponse},
 };
 use rama_core::{
-    Service, error::BoxError, extensions::Extensions, extensions::ExtensionsMut, stream::Stream,
+    Service,
+    error::BoxError,
+    extensions::{Extensions, ExtensionsMut},
+    rt::Executor,
+    stream::Stream,
     telemetry::tracing,
 };
 use rama_net::{
@@ -65,6 +69,8 @@ pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = (), A = ()> {
     //
     // This can be useful in case you also wish to support guest users.
     auth_opt: bool,
+
+    exec: Executor,
 }
 
 #[derive(Debug, Clone)]
@@ -79,13 +85,14 @@ impl Socks5Acceptor<(), (), (), ()> {
     /// Use [`Socks5Acceptor::default`] instead if you wish to create a default
     /// [`Socks5Acceptor`] which can be used as a simple and honest byte-byte proxy.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(exec: Executor) -> Self {
         Self {
             connector: (),
             binder: (),
             udp_associator: (),
             auth: AuthKind::NoAuth(()),
             auth_opt: false,
+            exec,
         }
     }
 }
@@ -98,6 +105,7 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
             udp_associator: self.udp_associator,
             auth: AuthKind::WithAuth(authorizer),
             auth_opt: self.auth_opt,
+            exec: self.exec,
         }
     }
 
@@ -127,6 +135,7 @@ impl<B, U, A> Socks5Acceptor<(), B, U, A> {
             udp_associator: self.udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
+            exec: self.exec,
         }
     }
 
@@ -154,6 +163,7 @@ impl<C, U, A> Socks5Acceptor<C, (), U, A> {
             udp_associator: self.udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
+            exec: self.exec,
         }
     }
 
@@ -181,6 +191,7 @@ impl<C, B, A> Socks5Acceptor<C, B, (), A> {
             udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
+            exec: self.exec,
         }
     }
 
@@ -198,7 +209,7 @@ impl<C, B, A> Socks5Acceptor<C, B, (), A> {
 impl Default for Socks5Acceptor {
     #[inline]
     fn default() -> Self {
-        Socks5Acceptor::new().with_default_connector()
+        Socks5Acceptor::new(Executor::default()).with_default_connector()
     }
 }
 
@@ -534,7 +545,7 @@ where
     where
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind(interface).await?;
+        let tcp = TcpListener::bind(interface, self.exec.clone()).await?;
         tcp.serve(self).await;
         Ok(())
     }

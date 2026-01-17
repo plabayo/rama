@@ -146,8 +146,8 @@ async fn main() {
     // http web service
     graceful.spawn_task_fn(async |guard| {
         // http service
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(
+        let exec = Executor::graceful(guard);
+        let http_service = HttpServer::auto(exec.clone()).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
                 WebService::default().with_get("/", async |ext: Extensions| {
                     ext.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
@@ -157,12 +157,11 @@ async fn main() {
         );
 
         // service setup & go
-        TcpListener::build()
+        TcpListener::build(exec)
             .bind("127.0.0.1:62012")
             .await
             .unwrap()
-            .serve_graceful(
-                guard,
+            .serve(
                 (
                     AddInputExtensionLayer::new(state),
                     NetworkMetricsLayer::default(),

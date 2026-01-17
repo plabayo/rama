@@ -236,6 +236,8 @@ async fn serve_http<Response>(
 where
     Response: IntoResponse + Send + 'static,
 {
+    let exec = Executor::graceful(graceful);
+
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {
@@ -247,7 +249,7 @@ where
                         vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
                     }
                 }),
-                Executor::graceful(graceful.clone()),
+                exec.clone(),
             )
         })
         .transpose()?;
@@ -257,7 +259,7 @@ where
         Some(cfg) => Some(cfg.try_into()?),
     };
 
-    let tcp_listener = TcpListener::build()
+    let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
@@ -288,49 +290,46 @@ where
         tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
     );
 
-    graceful.into_spawn_task_fn(async move |guard| match cfg.http_version {
-        HttpVersion::Auto => {
-            tracing::info!(
-                network.local.address = %bind_address.ip(),
-                network.local.port = %bind_address.port(),
-                "FP Service (auto) listening: bind interface = {}", cfg.bind,
-            );
-            tcp_listener
-                .serve_graceful(
-                    guard.clone(),
-                    tcp_service_builder.into_layer(
-                        HttpServer::auto(Executor::graceful(guard)).service(http_service),
-                    ),
-                )
-                .await;
-        }
-        HttpVersion::H1 => {
-            tracing::info!(
-                network.local.address = %bind_address.ip(),
-                network.local.port = %bind_address.port(),
-                "FP Service (HTTP/1.1) listening: bind interface = {}", cfg.bind,
-            );
-            tcp_listener
-                .serve_graceful(
-                    guard,
-                    tcp_service_builder.into_layer(HttpServer::http1().service(http_service)),
-                )
-                .await;
-        }
-        HttpVersion::H2 => {
-            tracing::info!(
-                network.local.address = %bind_address.ip(),
-                network.local.port = %bind_address.port(),
-                "FP Service (H2) listening: bind interface = {}", cfg.bind,
-            );
-            tcp_listener
-                .serve_graceful(
-                    guard.clone(),
-                    tcp_service_builder.into_layer(
-                        HttpServer::h2(Executor::graceful(guard)).service(http_service),
-                    ),
-                )
-                .await;
+    exec.clone().into_spawn_task(async move {
+        match cfg.http_version {
+            HttpVersion::Auto => {
+                tracing::info!(
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (auto) listening: bind interface = {}", cfg.bind,
+                );
+                tcp_listener
+                    .serve(
+                        tcp_service_builder
+                            .into_layer(HttpServer::auto(exec).service(http_service)),
+                    )
+                    .await;
+            }
+            HttpVersion::H1 => {
+                tracing::info!(
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (HTTP/1.1) listening: bind interface = {}", cfg.bind,
+                );
+                tcp_listener
+                    .serve(
+                        tcp_service_builder
+                            .into_layer(HttpServer::http1(exec).service(http_service)),
+                    )
+                    .await;
+            }
+            HttpVersion::H2 => {
+                tracing::info!(
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (H2) listening: bind interface = {}", cfg.bind,
+                );
+                tcp_listener
+                    .serve(
+                        tcp_service_builder.into_layer(HttpServer::h2(exec).service(http_service)),
+                    )
+                    .await;
+            }
         }
     });
 

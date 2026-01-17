@@ -82,20 +82,20 @@ async fn main() {
 
     let exec = Executor::graceful(graceful.guard());
     let http_mitm_service = new_http_mitm_proxy(exec.clone());
-    let http_service = HttpServer::auto(exec).service(http_mitm_service);
+    let http_service = HttpServer::auto(exec.clone()).service(http_mitm_service);
     let https_service = TlsAcceptorLayer::new(mitm_tls_service_data)
         .with_store_client_hello(true)
         .into_layer(http_service.clone());
 
     let auto_https_service = TlsPeekRouter::new(https_service).with_fallback(http_service);
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62022")
+    let tcp_service = TcpListener::bind("127.0.0.1:62022", exec.clone())
         .await
         .expect("bind proxy to 127.0.0.1:62022");
-    let socks5_acceptor = Socks5Acceptor::new()
+    let socks5_acceptor = Socks5Acceptor::new(exec)
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(LazyConnector::new(auto_https_service));
-    graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, socks5_acceptor));
+    graceful.spawn_task(tcp_service.serve(socks5_acceptor));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(30))

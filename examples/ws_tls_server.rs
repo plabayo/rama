@@ -25,6 +25,7 @@ use rama::{
         ApplicationProtocol,
         server::{SelfSignedData, ServerAuth, ServerConfig},
     },
+    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self, Level, info,
@@ -56,7 +57,7 @@ async fn main() {
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1().service(
+        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(
             Router::new().with_get("/", Html(INDEX)).with_get(
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG)
@@ -68,10 +69,10 @@ async fn main() {
 
         info!("open web echo chat @ https://127.0.0.1:62034");
         info!("or connect directly to wss://127.0.0.1:62034/echo (via 'rama')");
-        TcpListener::bind("127.0.0.1:62034")
+        TcpListener::bind("127.0.0.1:62034", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(guard, tls_server)
+            .serve(tls_server)
             .await;
     });
 

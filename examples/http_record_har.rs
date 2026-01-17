@@ -137,12 +137,12 @@ async fn main() -> Result<(), BoxError> {
     };
 
     graceful.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+        let exec = Executor::graceful(guard);
+
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62040")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62040");
-
-        let exec = Executor::graceful(guard.clone());
 
         let http_mitm_service = new_http_mitm_proxy(&state);
         let http_service = HttpServer::auto(exec.clone()).service(
@@ -187,8 +187,7 @@ async fn main() -> Result<(), BoxError> {
         );
 
         tcp_service
-            .serve_graceful(
-                guard,
+            .serve(
                 (
                     AddInputExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end

@@ -77,10 +77,10 @@ async fn main() {
 
         info!("open web echo chat @ https://127.0.0.1:62035");
         info!("or connect directly to wss://127.0.0.1:62035/echo (via 'rama')");
-        TcpListener::bind("127.0.0.1:62035")
+        TcpListener::bind("127.0.0.1:62035", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(guard, tls_server)
+            .serve(tls_server)
             .await;
     });
 

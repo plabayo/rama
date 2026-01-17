@@ -107,7 +107,9 @@ async fn smoke_error() {
 
 async fn bind() -> (TcpListener, String) {
     let addr = SocketAddress::local_ipv4(0);
-    let lis = TcpListener::bind(addr).await.expect("listener");
+    let lis = TcpListener::bind(addr, Executor::default())
+        .await
+        .expect("listener");
     let url = format!("http://{}", lis.local_addr().unwrap());
 
     (lis, url)

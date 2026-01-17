@@ -34,12 +34,13 @@ async fn http2_keepalive_does_not_cause_panics() {
     let svc = test_server::TestServer::new(Svc {});
     let (tx, rx) = oneshot::channel::<()>();
 
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0))
+    let graceful = Shutdown::new(async { drop(rx.await) });
+    let exec = Executor::graceful(graceful.guard());
+
+    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), exec)
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
-
-    let graceful = Shutdown::new(async { drop(rx.await) });
 
     let jh = graceful.spawn_task_fn(async move |guard| {
         let mut server = HttpServer::h2(Executor::graceful(guard.clone()));
@@ -47,7 +48,7 @@ async fn http2_keepalive_does_not_cause_panics() {
             .h2_mut()
             .set_keep_alive_interval(Duration::from_secs(10));
 
-        listener.serve_graceful(guard, server.service(svc)).await;
+        listener.serve(server.service(svc)).await;
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -71,12 +72,12 @@ async fn http2_keepalive_does_not_cause_panics_on_client_side() {
     let svc = test_server::TestServer::new(Svc {});
     let (tx, rx) = oneshot::channel::<()>();
 
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0))
+    let graceful = Shutdown::new(async { drop(rx.await) });
+    let exec = Executor::graceful(graceful.guard());
+    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), exec)
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
-
-    let graceful = Shutdown::new(async { drop(rx.await) });
 
     let jh = graceful.spawn_task_fn(async move |guard| {
         let mut server = HttpServer::h2(Executor::graceful(guard.clone()));
@@ -84,7 +85,7 @@ async fn http2_keepalive_does_not_cause_panics_on_client_side() {
             .h2_mut()
             .set_keep_alive_interval(Duration::from_secs(5));
 
-        listener.serve_graceful(guard, server.service(svc)).await;
+        listener.serve(server.service(svc)).await;
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;

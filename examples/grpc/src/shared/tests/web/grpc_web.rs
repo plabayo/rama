@@ -69,7 +69,9 @@ async fn text_request() {
 
 async fn spawn() -> String {
     let addr = SocketAddress::local_ipv4(0);
-    let listener = TcpListener::bind(addr).await.expect("listener");
+    let listener = TcpListener::bind(addr, Executor::default())
+        .await
+        .expect("listener");
     let url = format!("http://{}", listener.local_addr().unwrap());
 
     drop(tokio::spawn(async move {

@@ -92,8 +92,9 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62027))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62027), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -105,16 +106,13 @@ async fn main() {
     );
     tracing::info!("open http://{bind_address} in your browser to see the service in action");
 
-    graceful.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard.clone());
+    graceful.spawn_task(async move {
         let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
             Router::new()
                 .with_get("/", Html(INDEX_CONTENT))
                 .with_get("/api/events", api_events_endpoint),
         ));
-        listener
-            .serve_graceful(guard, HttpServer::auto(exec).service(app))
-            .await;
+        listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
     graceful

@@ -130,7 +130,7 @@ async fn main() {
         let executor = Executor::graceful(guard.clone());
 
         let tcp_service = TlsAcceptorLayer::new(tls_server_data).into_layer(
-            HttpServer::auto(executor).service(
+            HttpServer::auto(executor.clone()).service(
                 TraceLayer::new_for_http().into_layer(
                     WebService::default()
                         .with_get("/", Redirect::temporary("/hello"))
@@ -144,12 +144,12 @@ async fn main() {
             server.port = %SERVER_AUTHORITY.port,
             "start mtls (https) web service",
         );
-        TcpListener::bind(SERVER_AUTHORITY.to_string())
+        TcpListener::bind(SERVER_AUTHORITY.to_string(), executor)
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener ({SERVER_AUTHORITY}): mtls (https): web service: {e}")
             })
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 
@@ -161,18 +161,18 @@ async fn main() {
             "start mTLS TCP Tunnel Proxy",
         );
 
-        let forwarder = Forwarder::new(Executor::graceful(guard.clone()), SERVER_AUTHORITY)
-            .with_connector(
-                TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
-                    .with_connector_data(tls_client_data)
-                    .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
-            );
+        let exec = Executor::graceful(guard.clone());
+        let forwarder = Forwarder::new(exec.clone(), SERVER_AUTHORITY).with_connector(
+            TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
+                .with_connector_data(tls_client_data)
+                .into_layer(TcpConnector::new(exec.clone())),
+        );
 
         // L4 Proxy Service
-        TcpListener::bind(TUNNEL_AUTHORITY)
+        TcpListener::bind(TUNNEL_AUTHORITY, exec)
             .await
             .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
-            .serve_graceful(guard, TraceErrLayer::new().into_layer(forwarder))
+            .serve(TraceErrLayer::new().into_layer(forwarder))
             .await;
     });
 

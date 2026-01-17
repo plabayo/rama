@@ -91,15 +91,12 @@ async fn main() {
             network.local.port = %interface.port,
             "[tcp] spawn sni router: bind and go",
         );
-        TcpListener::bind(interface)
+        TcpListener::bind(interface, Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener for SNI router")
-            .serve_graceful(
-                guard.clone(),
-                SniRouter::new(SniRouterSvc {
-                    exec: Executor::graceful(guard),
-                }),
-            )
+            .serve(SniRouter::new(SniRouterSvc {
+                exec: Executor::graceful(guard.clone()),
+            }))
             .await;
     });
 
@@ -183,17 +180,14 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: Socke
             network.local.port = %interface.port,
             "[tcp] spawn https server: bind and go",
         );
-        TcpListener::bind(interface)
+        TcpListener::bind(interface, Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener for web server")
-            .serve_graceful(
-                guard.clone(),
-                TlsAcceptorLayer::new(acceptor_data).into_layer(
-                    HttpServer::auto(Executor::graceful(guard)).service(
-                        TraceLayer::new_for_http().into_layer(Router::new().with_get("/", name)),
-                    ),
+            .serve(TlsAcceptorLayer::new(acceptor_data).into_layer(
+                HttpServer::auto(Executor::graceful(guard)).service(
+                    TraceLayer::new_for_http().into_layer(Router::new().with_get("/", name)),
                 ),
-            )
+            ))
             .instrument(tracing::debug_span!(
                 "tcp::serve(https)",
                 server.service.name = %name,

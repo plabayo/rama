@@ -142,8 +142,9 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(62030))
+    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(62030), exec.clone())
         .await
         .expect("bind tcp interface for connectivity example");
 
@@ -157,7 +158,6 @@ async fn main() {
     )
         .into_layer(service_fn(http_plain_proxy));
 
-    let exec = Executor::graceful(graceful.guard());
     let http_service = HttpServer::auto(exec.clone()).service(
         (
             TraceLayer::new_for_http(),
@@ -174,14 +174,14 @@ async fn main() {
     );
 
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
-        .with_fallback(Forwarder::ctx(exec));
-    let socks5_acceptor = Socks5Acceptor::new()
+        .with_fallback(Forwarder::ctx(exec.clone()));
+    let socks5_acceptor = Socks5Acceptor::new(exec.clone())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(LazyConnector::new(socks5_svc));
 
     let auto_socks5_acceptor = Socks5PeekRouter::new(socks5_acceptor).with_fallback(http_service);
 
-    graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, auto_socks5_acceptor));
+    graceful.spawn_task(tcp_service.serve(auto_socks5_acceptor));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(30))

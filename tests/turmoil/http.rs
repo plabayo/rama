@@ -42,7 +42,7 @@ async fn start_server(
     let (conn, _) = conn_result?;
     let conn = TcpStream::new(conn);
 
-    let server = HttpServer::http1();
+    let server = HttpServer::http1(Executor::default());
     server
         .serve(
             conn,

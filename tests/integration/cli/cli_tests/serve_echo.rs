@@ -506,7 +506,9 @@ async fn test_https_with_remote_tls_cert_issuer() {
 
     tracing::info!("spawning tcp listener for remote tls issuer");
 
-    let tpc_listener = TcpListener::bind("[::1]:63132").await.unwrap();
+    let tpc_listener = TcpListener::bind("[::1]:63132", Executor::default())
+        .await
+        .unwrap();
 
     tracing::info!("spawning tokio task for remote tls https");
 
