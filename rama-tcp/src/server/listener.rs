@@ -111,7 +111,7 @@ impl TcpListenerBuilder {
             socket
                 .listen(4096)
                 .context("mark the socket as ready to accept incoming connection requests")?;
-            bind_socket_internal(socket, self.executor)
+            bind_socket_internal(socket, self.exec)
         })
         .await
         .context("await blocking bind socket task")?
