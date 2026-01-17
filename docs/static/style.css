@@ -934,197 +934,38 @@ sup a:hover {
     opacity: 0.85;
 }
 
-/* Pricing Section Styles */
-.pricing {
-    padding: 4rem 1rem;
-    max-width: 1200px;
-    margin: 0 auto;
-}
-
-.pricing-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 2rem;
-    margin-top: 2rem;
-    align-items: start;
-}
-
-.pricing-card {
-    background: var(--bg-card, #1a1a1a);
-    border: 1px solid var(--border-color, #333);
-    border-radius: 12px;
-    padding: 2rem;
+.commercial-note {
+    margin: 20px auto 30px;
+    max-width: 900px;
     display: flex;
-    flex-direction: column;
-    height: 100%;
-    position: relative;
-    transition: transform 0.2s ease;
-}
-
-.pricing-card:hover {
-    transform: translateY(-5px);
-    border-color: #5046e4;
-}
-
-/* Recommended Tier Styling */
-.pricing-card.recommended {
-    border: 2px solid #00c800;
-    box-shadow: 0 0 20px rgba(0, 200, 0, 0.1);
-}
-
-.recommended-badge {
-    position: absolute;
-    top: -12px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: #00c800;
-    color: #000;
-    padding: 4px 12px;
-    font-size: 0.8rem;
-    font-weight: bold;
-    border-radius: 20px;
-    text-transform: uppercase;
-}
-
-.pricing-header {
-    text-align: center;
-    margin-bottom: 2rem;
-    border-bottom: 1px solid #333;
-    padding-bottom: 1.5rem;
-}
-
-.pricing-header h3 {
-    font-size: 1.5rem;
-    margin-bottom: 0.5rem;
-    color: var(--text-heading, #fff);
-}
-
-.price {
-    font-size: 2rem;
-    font-weight: 700;
-    color: var(--text-primary, #fff);
-}
-
-.price .period {
-    font-size: 1rem;
-    font-weight: 400;
-    color: #888;
-}
-
-.pricing-features {
-    list-style: none;
-    padding: 0;
-    margin: 0 0 2rem 0;
-    flex-grow: 1;
-}
-
-.pricing-features li {
-    margin-bottom: 1rem;
-    padding-left: 1.5rem;
-    position: relative;
-    line-height: 1.4;
-    color: var(--text-secondary, #ccc);
-}
-
-/* Bullet point styling */
-.pricing-features li::before {
-    content: "•";
-    color: #5046e4;
-    position: absolute;
-    left: 0;
-    font-size: 1.5em;
-    line-height: 1rem;
-}
-
-.sub-text {
-    font-size: 0.85em;
-    color: #888;
-}
-
-.pricing-cta {
-    text-align: center;
-}
-
-.pricing-note {
-    text-align: center;
-    margin: 2rem 0 4rem;
-    color: #888;
-}
-
-/* Hourly Rates Section */
-.rates-breakdown {
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: 12px;
-    padding: 2rem;
-    border: 1px solid #333;
-}
-
-.rates-breakdown h3 {
-    text-align: center;
-    margin-bottom: 0.5rem;
-}
-
-.rates-breakdown > p {
-    text-align: center;
-    margin-bottom: 2rem;
-    color: #aaa;
-}
-
-.rates-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2rem;
-}
-
-.rate-item {
-    padding: 1.5rem;
-    background: rgba(0, 0, 0, 0.2);
-    border-radius: 8px;
-}
-
-.rate-item h4 {
-    margin-top: 0;
-    color: #fff;
-}
-
-.rate-discount {
-    display: flex;
+    gap: 16px;
     align-items: center;
-    gap: 0.8rem;
-    margin: 1rem 0;
-    font-family: monospace;
-    font-size: 1.1rem;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+    background: color-mix(in srgb, #000 10%, transparent);
 }
 
-.rate-discount .original {
-    text-decoration: line-through;
-    color: #666;
+.commercial-note-text {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    flex-wrap: wrap;
 }
 
-.rate-discount .new {
-    color: #00c800;
-    font-weight: bold;
+.commercial-note-text strong {
+    font-weight: 700;
 }
 
-.badge-discount {
-    background: #00c800;
-    color: #000;
-    font-size: 0.7rem;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-weight: bold;
+.commercial-note-text span {
+    opacity: 0.85;
 }
 
-.rate-item p {
-    font-size: 0.9rem;
-    line-height: 1.5;
-    color: #ccc;
-    margin: 0;
-}
-
-@media (max-width: 768px) {
-    .rates-grid {
-        grid-template-columns: 1fr;
+@media (max-width: 720px) {
+    .commercial-note {
+        flex-direction: column;
+        align-items: stretch;
+        text-align: left;
     }
 }
 
