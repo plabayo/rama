@@ -134,22 +134,7 @@ middleware, services and stacks you'll build yourself:
 > Starting from `v0.3.0` we'll switch things up. Releases will be in frequent ~ 6 week release trains,
 > with no more alpha releases in between.
 
-## For organisations
-
-If your organisation relies on rama or plans to, we offer:
-
-- **Support and maintenance contracts**  
-  Help with upgrades, bug fixes and operational questions.
-- **Feature development contracts**  
-  Higher priority or extended scope features in rama itself.
-- **Consulting and integration**  
-  Design and implementation of proxies, scraping pipelines, security layers and other network services built on rama.
-- **Training and knowledge transfer**  
-  Workshops and mentoring so your team can become productive with rama and its ecosystem.
-
-> 📩 Contact us at [hello@plabayo.tech](mailto:hello@plabayo.tech) to discuss your needs.
-
-### Commercial support and services
+## Commercial support and services
 
 Rama can be backed by professional commercial service contracts
 for organizations that need long term support, guaranteed response times,
