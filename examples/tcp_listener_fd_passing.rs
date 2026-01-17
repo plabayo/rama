@@ -69,7 +69,7 @@ mod unix_example {
         println!("Creating TCP listener...");
 
         // Create listener
-        let listener = TcpListener::bind("127.0.0.1:62046").await?;
+        let listener = TcpListener::bind("127.0.0.1:62046", Executor::default()).await?;
         let addr = listener.local_addr()?;
         println!("✓ Listening on {addr}");
 
@@ -128,6 +128,9 @@ mod unix_example {
         // Give parent time to set up
         tokio::time::sleep(Duration::from_millis(100)).await;
 
+        let shutdown = Shutdown::default();
+        let guard = shutdown.guard();
+
         println!("\n=== Child Process ===");
         println!("Connecting to parent...");
 
@@ -146,15 +149,15 @@ mod unix_example {
         println!("✓ Reconstructed listener on {addr}");
 
         // Convert to rama listener
-        let listener = TcpListener::try_from(std_listener)?;
+        let listener = TcpListener::try_from_std_tcp_listener(
+            std_listener,
+            Executor::graceful(guard.clone()),
+        )?;
         println!("✓ Converted to rama::tcp::TcpListener");
 
         // Start serving
         println!("\n=== Child now serving ===");
         println!("Will serve for 10 seconds, then exit\n");
-
-        let shutdown = Shutdown::default();
-        let guard = shutdown.guard();
 
         let http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(service_fn(
             |_req: Request| async move {
@@ -173,7 +176,7 @@ mod unix_example {
             shutdown.shutdown().await;
         });
 
-        listener.serve_graceful(guard, http_service).await;
+        listener.serve(http_service).await;
         println!("✓ Child shutdown complete\n");
 
         Ok(())

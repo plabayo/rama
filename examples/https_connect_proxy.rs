@@ -113,12 +113,12 @@ async fn main() {
 
     // create tls proxy
     shutdown.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+        let exec = Executor::graceful(guard);
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62016")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62016");
 
-        let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
@@ -137,8 +137,7 @@ async fn main() {
         );
 
         tcp_service
-            .serve_graceful(
-                guard,
+            .serve(
                 (
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),

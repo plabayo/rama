@@ -268,38 +268,34 @@ impl TcpListener {
     pub fn into_inner(self) -> TokioTcpListener {
         self.inner
     }
+
+    pub fn from_tokio_tcp_listener(listener: TokioTcpListener, exec: Executor) -> Self {
+        Self {
+            inner: listener,
+            exec,
+        }
+    }
+
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    pub fn try_from_socket(
+        socket: rama_net::socket::core::Socket,
+        exec: Executor,
+    ) -> Result<Self, std::io::Error> {
+        let listener = std::net::TcpListener::from(socket);
+        Self::try_from_std_tcp_listener(listener, exec)
+    }
+
+    pub fn try_from_std_tcp_listener(
+        listener: std::net::TcpListener,
+        exec: Executor,
+    ) -> Result<Self, std::io::Error> {
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            inner: TokioTcpListener::from_std(listener)?,
+            exec,
+        })
+    }
 }
-
-// impl From<TokioTcpListener> for TcpListener {
-//     fn from(value: TokioTcpListener) -> Self {
-//         todo!();
-//         Self { inner: value }
-//     }
-// }
-
-// #[cfg(any(target_os = "windows", target_family = "unix"))]
-// impl TryFrom<rama_net::socket::core::Socket> for TcpListener {
-//     type Error = std::io::Error;
-
-//     #[inline]
-//     fn try_from(value: rama_net::socket::core::Socket) -> Result<Self, Self::Error> {
-//         todo!();
-//         let listener = std::net::TcpListener::from(value);
-//         listener.try_into()
-//     }
-// }
-
-// impl TryFrom<std::net::TcpListener> for TcpListener {
-//     type Error = std::io::Error;
-
-//     fn try_from(value: std::net::TcpListener) -> Result<Self, Self::Error> {
-//         todo!();
-//         value.set_nonblocking(true)?;
-//         Ok(Self {
-//             inner: TokioTcpListener::from_std(value)?,
-//         })
-//     }
-// }
 
 impl TcpListener {
     /// Accept a single connection from this listener,
@@ -312,8 +308,8 @@ impl TcpListener {
 
     /// Serve connections from this listener with the given service.
     ///
-    /// This method will block the current listener for each incoming connection,
-    /// the underlying service can choose to spawn a task to handle the accepted stream.
+    /// This listener will spawn a task in which the inner service will
+    /// handle the incomming connection
     pub async fn serve<S>(self, service: S)
     where
         S: Service<TcpStream>,
