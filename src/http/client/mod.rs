@@ -18,6 +18,7 @@ use crate::{
 
 #[doc(inline)]
 pub use ::rama_http_backend::client::*;
+use rama_core::extensions::EgressConnectionExtensions;
 
 pub mod builder;
 #[doc(inline)]
@@ -192,13 +193,13 @@ where
         let uri = req.uri().clone();
 
         let EstablishedClientConnection {
-            input: mut req,
+            input: req,
             conn: http_connection,
         } = self.connector.serve(req).await?;
 
-        // req.extensions_mut()
-        //     .extend(http_connection.extensions().clone());
-        req.extensions_mut().egress_ext = Some(http_connection.extensions().store().clone());
+        req.extensions().insert(EgressConnectionExtensions(
+            http_connection.extensions().clone(),
+        ));
 
         let http_connection = self.jit_layers.layer(http_connection);
 

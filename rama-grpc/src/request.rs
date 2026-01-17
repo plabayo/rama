@@ -109,7 +109,7 @@ impl<T> Request<T> {
         Self {
             metadata: MetadataMap::new(),
             message,
-            extensions: Extensions::new(rama_core::extensions::DefaultStore::Request, "request"),
+            extensions: Extensions::new(),
         }
     }
 

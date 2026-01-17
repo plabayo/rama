@@ -7,7 +7,7 @@ use crate::h2::{client, proto, server};
 
 use parking_lot::Mutex;
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{EgressConnectionExtensions, Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
 use rama_http::proto::h1::Http1HeaderMap;
@@ -361,11 +361,12 @@ where
             None,
         )?;
 
+        let extensions = EgressConnectionExtensions(extensions);
         let mut stream = Stream::try_new(
             stream_id,
             me.actions.send.init_window_sz(),
             me.actions.recv.init_window_sz(),
-            &extensions,
+            extensions,
         ).map_err(|err| {
             tracing::warn!("failed to create stream for id {stream_id:?} in send_request: {err}; library GO AWAY");
             Error::library_go_away(err)
@@ -586,7 +587,7 @@ impl Inner {
                             stream_id,
                             self.actions.send.init_window_sz(),
                             self.actions.recv.init_window_sz(),
-                            &self.extensions,
+                            EgressConnectionExtensions(self.extensions.clone()),
                         )
                         .map_err(|err| {
                             tracing::warn!("failed to create recv stream for id {stream_id:?}: {err}; library GO AWAY");
@@ -934,7 +935,7 @@ impl Inner {
                     promised_id,
                     self.actions.send.init_window_sz(),
                     self.actions.recv.init_window_sz(),
-                    &self.extensions,
+                    EgressConnectionExtensions(self.extensions.clone()),
                 ).map_err(|err| {
                     tracing::warn!("failed to create pushed stream for promised id {promised_id:?}: {err}; library GO AWAY");
                     Error::library_go_away(err)
@@ -1071,7 +1072,12 @@ impl Inner {
                     self.actions.recv.maybe_reset_next_stream_id(id);
                 }
 
-                match Stream::try_new(id, 0, 0, &self.extensions) {
+                match Stream::try_new(
+                    id,
+                    0,
+                    0,
+                    EgressConnectionExtensions(self.extensions.clone()),
+                ) {
                     Ok(stream) => e.insert(stream),
                     Err(reason) => {
                         tracing::debug!(
@@ -1377,7 +1383,7 @@ impl<B> StreamRef<B> {
                     promised_id,
                     actions.send.init_window_sz(),
                     actions.recv.init_window_sz(),
-                    &me.extensions,
+                    EgressConnectionExtensions(me.extensions.clone()),
                 ).map_err(|err| {
                     tracing::warn!("failed to create stream for promised id {promised_id:?} in send_push_promise: {err}; library GO AWAY");
                     Error::library_go_away(err)

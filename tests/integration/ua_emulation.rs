@@ -1,4 +1,4 @@
-use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama::extensions::{EgressConnectionExtensions, Extensions, ExtensionsMut, ExtensionsRef};
 use rama::http::Request;
 use rama::http::client::HttpConnectorLayer;
 use rama::http::proto::h1::Http1HeaderMap;
@@ -323,7 +323,8 @@ async fn test_ua_emulation() {
                     conn,
                 } = connector.serve(req).await.expect(description);
 
-                req.extensions_mut().egress_ext = Some(conn.extensions().store().clone());
+                req.extensions()
+                    .insert(EgressConnectionExtensions(conn.extensions().clone()));
                 // req.extensions_mut().extend(conn.extensions().clone());
 
                 let svc = (UserAgentEmulateHttpRequestModifierLayer::default()).layer(conn);
@@ -404,7 +405,8 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     } = connector.serve(req).await.expect(&expect_msg);
 
                     // req.extensions_mut().extend(conn.extensions().clone());
-                    req.extensions_mut().egress_ext = Some(conn.extensions().store().clone());
+                    req.extensions()
+                        .insert(EgressConnectionExtensions(conn.extensions().clone()));
 
                     let svc = (UserAgentEmulateHttpRequestModifierLayer::default()).layer(conn);
                     Ok::<_, Infallible>(svc.serve(req).await.expect(&expect_msg))

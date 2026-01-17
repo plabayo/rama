@@ -31,298 +31,176 @@ use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use rama_error::{ErrorContext, OpaqueError};
 pub use rama_utils::collections::AppendOnlyVec;
-use tokio::time::Instant;
 
-#[derive(Debug, Clone)]
-/// Combined view of all extensions that apply at a specific place
+use crate::stream;
+
+#[derive(Debug, Clone, Default)]
+/// A type map of protocol extensions.
+///
+/// `Extensions` can be used by `Request` and `Response` to store
+/// extra data derived from the underlying protocol.
 pub struct Extensions {
-    req_ext: Option<ExtensionStores>,
-    resp_ext: Option<ExtensionStores>,
-    ingress_ext: Option<ExtensionStores>,
-    pub egress_ext: Option<ExtensionStores>,
-    default_store: DefaultStore,
-}
-
-#[derive(Debug, Copy, Clone, Default)]
-pub enum DefaultStore {
-    #[default]
-    Request,
-    Response,
-    IngressConn,
-    EgressConn,
-}
-
-impl Default for Extensions {
-    fn default() -> Self {
-        // TODO remove default impl altogether
-        Self::new(DefaultStore::Request, "default request")
-    }
+    extensions: Arc<AppendOnlyVec<TypeErasedExtension, 8, 3>>,
 }
 
 impl Extensions {
-    pub fn new(default_store: DefaultStore, name: &'static str) -> Self {
-        let store = ExtensionStore::new(name);
-
-        let mut this = Self {
-            req_ext: Default::default(),
-            resp_ext: Default::default(),
-            ingress_ext: Default::default(),
-            egress_ext: Default::default(),
-            default_store,
-        };
-
-        match default_store {
-            DefaultStore::Request => this.req_ext = Some(ExtensionStores::new(store)),
-            DefaultStore::Response => this.resp_ext = Some(ExtensionStores::new(store)),
-            DefaultStore::IngressConn => this.ingress_ext = Some(ExtensionStores::new(store)),
-            DefaultStore::EgressConn => this.egress_ext = Some(ExtensionStores::new(store)),
-        }
-
-        this
+    /// Create an empty [`Extensions`] store.
+    #[inline(always)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn store(&self) -> &ExtensionStores {
-        match self.default_store {
-            DefaultStore::Request => self.req_ext.as_ref().unwrap(),
-            DefaultStore::Response => self.resp_ext.as_ref().unwrap(),
-            DefaultStore::IngressConn => self.ingress_ext.as_ref().unwrap(),
-            DefaultStore::EgressConn => self.egress_ext.as_ref().unwrap(),
-        }
+    /// Insert a type into this [`Extensions]` store.
+    pub fn insert<T: Extension>(&self, val: T) -> &T {
+        let extension = TypeErasedExtension::new(val);
+        let idx = self.extensions.push(extension);
+
+        self.extensions[idx].downcast_ref().unwrap()
     }
 
-    pub fn store_mut(&mut self) -> &mut ExtensionStores {
-        match self.default_store {
-            DefaultStore::Request => self.req_ext.as_mut().unwrap(),
-            DefaultStore::Response => self.resp_ext.as_mut().unwrap(),
-            DefaultStore::IngressConn => self.ingress_ext.as_mut().unwrap(),
-            DefaultStore::EgressConn => self.egress_ext.as_mut().unwrap(),
+    /// Insert a type into this [`Extensions]` store.
+    pub fn insert_arc<T: Extension>(&self, val: Arc<T>) -> Arc<T> {
+        let extension = TypeErasedExtension::new(val);
+        let idx = self.extensions.push(extension);
+
+        self.extensions[idx].cloned_downcast().unwrap()
+    }
+
+    /// Extend this [`Extensions`] store with the [`Extensions`] from the provided store
+    pub fn extend(&self, extensions: Self) {
+        for ext in extensions.extensions.iter() {
+            self.extensions.push(ext.clone());
         }
     }
 
-    pub fn get<T: Extension>(&self) -> Option<&T> {
-        self.store().get()
-    }
-
-    pub fn contains<T: Extension>(&self) -> bool {
-        self.store().contains::<T>()
-    }
-
-    pub fn insert<T: Extension>(&self, value: T) {
-        self.store().insert(value)
-    }
-
-    pub fn extend(&self, other: Self) {
-        match self.default_store {
-            DefaultStore::Request => self
-                .req_ext
-                .as_ref()
-                .unwrap()
-                .extend(&other.req_ext.unwrap()),
-            DefaultStore::Response => todo!(),
-            DefaultStore::IngressConn => todo!(),
-            DefaultStore::EgressConn => todo!(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ExtensionStores(Vec<ExtensionStore>);
-
-impl ExtensionStores {
-    pub fn new(store: ExtensionStore) -> Self {
-        ExtensionStores(vec![store])
-    }
-
-    pub fn add_new_store(&mut self, store: ExtensionStore) {
-        self.0.push(store);
-    }
-
-    fn current_store(&self) -> &ExtensionStore {
-        &self.0[self.0.len() - 1]
-    }
-
-    pub fn insert<T: Extension>(&self, val: T) {
-        self.current_store().insert(val);
-    }
-
-    pub fn get<T: Extension>(&self) -> Option<&T> {
-        self.get_inner::<T>()
-            .and_then(|stored| stored.extension.downcast_ref::<T>())
-    }
-
-    pub fn get_arc<T: Extension>(&self) -> Option<Arc<T>> {
-        self.get_inner::<T>()
-            .and_then(|stored| stored.extension.cloned_downcast::<T>())
-    }
-
-    fn get_inner<T: Extension>(&self) -> Option<&StoredExtension> {
-        let type_id = TypeId::of::<T>();
-
-        let mut latest: Option<&StoredExtension> = None;
-
-        for store in &self.0 {
-            for stored in store.storage.iter().rev() {
-                // No need to keep searching if we already have a match that is newer then we are now
-                if let Some(latest) = latest
-                    && stored.timestamp < latest.timestamp
-                {
-                    break;
-                }
-                if stored.extension.type_id == type_id {
-                    // We already checked that this is the most recent one in our first if clause,
-                    // and we also checked if the type_it matched, so when we get here we have a match
-                    latest = Some(stored);
-                    break;
-                }
-            }
-        }
-
-        latest
-    }
-
+    /// Returns true if the [`Extensions`] store contains the given type.
+    #[must_use]
     pub fn contains<T: Extension>(&self) -> bool {
         let type_id = TypeId::of::<T>();
-
-        for store in &self.0 {
-            if store
-                .storage
-                .iter()
-                .rev()
-                .any(|stored| stored.extension.type_id == type_id)
-            {
-                return true;
-            }
-        }
-
-        false
+        self.extensions
+            .iter()
+            .rev()
+            .any(|item| item.type_id == type_id)
     }
 
-    pub fn iter<'a, T: Extension>(&'a self) -> impl Iterator<Item = &'a T> + 'a {
-        #[allow(
-            clippy::unwrap_used,
-            reason = "type_id_filter guarantees that this case will succeed"
-        )]
-        self.iter_inner(Self::type_id_filter::<T>)
-            .map(|item| item.1.extension.downcast_ref::<T>().unwrap())
-    }
-
-    pub fn iter_arc<'a, T: Extension>(&'a self) -> impl Iterator<Item = Arc<T>> + 'a {
-        #[allow(
-            clippy::unwrap_used,
-            reason = "type_id_filter guarantees that this case will succeed"
-        )]
-        self.iter_inner(Self::type_id_filter::<T>)
-            .map(|item| item.1.extension.cloned_downcast::<T>().unwrap())
-    }
-
-    fn type_id_filter<T: Extension>(stored: &StoredExtension) -> bool {
-        let type_id = TypeId::of::<T>();
-        stored.extension.type_id != type_id
-    }
-
-    pub fn iter_all_stored<'a, 'b: 'a>(
-        &'a self,
-    ) -> impl Iterator<Item = (&'static str, &'a StoredExtension)> + 'a {
-        self.iter_inner(|_| false)
-    }
-
-    // TODO do we want to make a struct and potentially impl double sided iterator for this
-    fn iter_inner<'a, 'b: 'a, F>(
-        &'a self,
-        filter: F,
-    ) -> impl Iterator<Item = (&'static str, &'a StoredExtension)> + 'a
-    where
-        F: Fn(&StoredExtension) -> bool + 'static,
-    {
-        let mut cursors = vec![0; self.0.len()];
-
-        std::iter::from_fn(move || {
-            let mut best_store = None;
-            let mut earliest_time = None;
-
-            for (i, store) in self.0.iter().enumerate() {
-                // if !store_filter.is_empty() && !store_filter.contains(&store.name) {
-                //     continue;
-                // }
-                let storage = &store.storage;
-                while cursors[i] < storage.len() && filter(&storage[cursors[i]]) {
-                    cursors[i] += 1;
-                }
-
-                if cursors[i] == storage.len() {
-                    continue;
-                }
-
-                let item = &storage[cursors[i]];
-
-                if earliest_time.is_none_or(|t| item.timestamp < t) {
-                    earliest_time = Some(item.timestamp);
-                    best_store = Some(i);
-                }
-            }
-
-            if let Some(i) = best_store {
-                let stored = &self.0[i].storage[cursors[i]];
-                cursors[i] += 1;
-
-                return Some((self.0[i].name, stored));
-            }
-
-            None
-        })
-    }
-
-    pub fn extend(&self, extensions: &Self) {
-        self.current_store().extend(extensions.current_store());
-    }
-}
-
-#[derive(Debug, Clone)]
-/// Single extensions store, this is readonly and appendonly, we use &self for everything
-pub struct ExtensionStore {
-    // again no string later, but for proto type this works
-    name: &'static str,
-    storage: Arc<AppendOnlyVec<StoredExtension, 8, 3>>,
-}
-
-impl ExtensionStore {
-    pub fn new(name: &'static str) -> Self {
-        Self {
-            name,
-            storage: Default::default(),
-        }
-    }
-
-    /// Insert a new value in this [`ExtensionStore`]
-    pub fn insert<T: Extension>(&self, value: T) {
-        let extension = StoredExtension {
-            extension: TypeErasedExtension::new(value),
-            timestamp: Instant::now(),
-        };
-        self.storage.push(extension);
-    }
-
-    /// Extend this [`Extensions`] store with the [`Extension`]s from the provided store
+    /// Get a shared reference to the most recently insert item of type T
     ///
-    /// Warning: this will override the timestamp of the extensions to Instant::now,
-    /// this is need to make sure our datastructure is always ordered by timestamp
-    pub fn extend(&self, extensions: &Self) {
-        let now = Instant::now();
-        for stored in extensions.storage.iter() {
-            self.storage.push(StoredExtension {
-                extension: stored.extension.clone(),
-                timestamp: now,
-            });
-        }
+    /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
+    /// if you need the oldest item T use [`Self::first`]
+    #[must_use]
+    pub fn get<T: Extension>(&self) -> Option<&T> {
+        let type_id = TypeId::of::<T>();
+        self.extensions
+            .iter()
+            .rev()
+            .find(|item| item.type_id == type_id)
+            .and_then(|ext| ext.downcast_ref())
     }
-}
 
-#[derive(Clone, Debug)]
-pub struct StoredExtension {
-    extension: TypeErasedExtension,
-    timestamp: Instant,
+    /// Get a shared reference to the most recently insert item of type T
+    ///
+    /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
+    /// if you need the oldest item T use [`Self::first`]
+    #[must_use]
+    pub fn get_arc<T: Extension>(&self) -> Option<Arc<T>> {
+        let type_id = TypeId::of::<T>();
+        self.extensions
+            .iter()
+            .rev()
+            .find(|item| item.type_id == type_id)
+            .and_then(|ext| ext.cloned_downcast())
+    }
+
+    /// Get a shared reference to the most recently insert item of type T, or insert in case no item was found
+    ///
+    /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
+    /// if you need the oldest item T use [`Self::first`]
+    pub fn get_or_insert<T, F>(&self, create_fn: F) -> &T
+    where
+        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+        F: FnOnce() -> T,
+    {
+        self.get().unwrap_or_else(|| self.insert(create_fn()))
+    }
+
+    pub fn get_or_insert_arc<T, F>(&self, create_fn: F) -> Arc<T>
+    where
+        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+        F: FnOnce() -> Arc<T>,
+    {
+        self.get_arc()
+            .unwrap_or_else(|| self.insert_arc(create_fn()))
+    }
+
+    /// Get a shared reference to the oldest inserted item of type T
+    ///
+    /// Note: [`Self::first`] will return the first added item T, in most cases this is not what you want,
+    /// instead use [`Self::get`] to get the most recently inserted item T
+    #[must_use]
+    pub fn first<T: Extension>(&self) -> Option<&T> {
+        let type_id = TypeId::of::<T>();
+        self.extensions
+            .iter()
+            .find(|item| item.type_id == type_id)
+            .and_then(|ext| ext.downcast_ref())
+    }
+
+    #[must_use]
+    pub fn first_arc<T: Extension>(&self) -> Option<Arc<T>> {
+        let type_id = TypeId::of::<T>();
+        self.extensions
+            .iter()
+            .find(|item| item.type_id == type_id)
+            .and_then(|ext| ext.cloned_downcast())
+    }
+
+    /// Iterate over all the inserted items of type T
+    ///
+    /// Note: items are ordered from oldest to newest
+    pub fn iter<T: Extension>(&self) -> impl Iterator<Item = &T> {
+        let type_id = TypeId::of::<T>();
+
+        // Note: unsafe downcast_ref_unchecked is not stabilized yet, so we have to use the safe version with unwrap
+        #[allow(
+            clippy::unwrap_used,
+            reason = "`downcast_ref` can only be none if TypeId doesn't match, but we already filter on that first"
+        )]
+        self.extensions
+            .iter()
+            .filter(move |item| item.type_id == type_id)
+            .map(|ext| ext.downcast_ref().unwrap())
+    }
+
+    pub fn iter_arc<T: Extension>(&self) -> impl Iterator<Item = Arc<T>> {
+        let type_id = TypeId::of::<T>();
+
+        // Note: unsafe downcast_ref_unchecked is not stabilized yet, so we have to use the safe version with unwrap
+        #[allow(
+            clippy::unwrap_used,
+            reason = "`downcast_ref` can only be none if TypeId doesn't match, but we already filter on that first"
+        )]
+        self.extensions
+            .iter()
+            .filter(move |item| item.type_id == type_id)
+            .map(|ext| ext.cloned_downcast().unwrap())
+    }
+
+    /// Stream iterator over all the inserted items of type T
+    ///
+    /// Note: items are ordered from oldest to newest
+    pub fn stream_iter<T: Extension>(&self) -> stream::Iter<impl Iterator<Item = &T>> {
+        stream::iter(self.iter())
+    }
+
+    pub fn stream_iter_arc<T: Extension>(&self) -> stream::Iter<impl Iterator<Item = Arc<T>>> {
+        stream::iter(self.iter_arc())
+    }
+
+    pub fn iter_all(&self) -> impl Iterator<Item = &TypeErasedExtension> {
+        self.extensions.iter()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -334,19 +212,31 @@ pub struct TypeErasedExtension {
 
 impl TypeErasedExtension {
     /// Create a new [`TypeErasedExtension`]
-    fn new<T: Extension>(value: T) -> Self {
+    pub fn new<T: Extension>(value: T) -> Self {
         Self {
             type_id: TypeId::of::<T>(),
             value: Arc::new(value),
         }
     }
 
-    fn cloned_downcast<T: Extension>(&self) -> Option<Arc<T>> {
+    /// Create a new [`TypeErasedExtension`]
+    pub fn new_arc<T: Extension>(value: Arc<T>) -> Self {
+        Self {
+            type_id: TypeId::of::<T>(),
+            value,
+        }
+    }
+
+    pub fn type_id(&self) -> TypeId {
+        self.type_id
+    }
+
+    pub fn cloned_downcast<T: Extension>(&self) -> Option<Arc<T>> {
         let any = self.value.clone() as Arc<dyn Any + Send + Sync>;
         any.clone().downcast::<T>().ok()
     }
 
-    fn downcast_ref<T: Extension>(&self) -> Option<&T> {
+    pub fn downcast_ref<T: Extension>(&self) -> Option<&T> {
         let inner_any = self.value.as_ref() as &dyn Any;
         (inner_any).downcast_ref::<T>()
     }
@@ -356,160 +246,9 @@ pub trait Extension: Any + Send + Sync + std::fmt::Debug + 'static {}
 // TODO remove this blacket impl and require everyone to implement this
 impl<T> Extension for T where T: Any + Send + Sync + std::fmt::Debug + 'static {}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Clone, Debug)]
-    struct NoRetry;
-
-    #[derive(Clone, Debug)]
-    struct TargetHttpVersion;
-
-    #[derive(Clone, Debug)]
-    struct ConnectionInfo;
-
-    #[derive(Clone, Debug)]
-    struct RequestInfoInner;
-
-    #[derive(Clone, Debug)]
-    struct BrokenConnection;
-
-    #[derive(Clone, Debug)]
-    struct IsHealth(bool);
-
-    #[test]
-    fn setup() {
-        println!("start");
-        let mut request = Extensions::new(DefaultStore::Request, "request");
-
-        // By default we insert in request here
-        request.extensions().insert(NoRetry);
-        // but we can also choose specifically to insert in request extensions
-        // TODO this should actually be a connection extension, right now we need to know
-        // where to insert this, but should this be part of Extension trait logic if so
-        // ingress vs egress, do we give them different names so they only have one place?
-        request.req_ext().unwrap().insert(TargetHttpVersion);
-
-        // 1. now we go to connector setup
-        // 2. we create the extensions for our connector
-        // 3. we add request extensions to this, and vice versa
-        let connection = Extensions::new(DefaultStore::EgressConn, "egress connection");
-
-        // we do connection and then
-        // We add connector extensions also to our request
-        // TODO how do we expose this with mut?
-        request.egress_ext = connection.egress_ext.clone();
-
-        // In connector setup now we only edit connection extension
-        connection.extensions().insert(ConnectionInfo);
-        // Again default or we can choose but then we have to deal with potentially missing stores
-        connection.egress_ext().unwrap().insert(IsHealth(true));
-
-        // We also have access to request to read thing, but all connection specific things
-        // should add this point be copied over the connection which should survive a single request
-        // flow. Here this would be TargetHttpVersion since this is used by connector.
-
-        // if Some(version) = request.get::<TargetHttpVersion>() {
-        //     connection.insert(version)
-        // }
-
-        request.req_ext().unwrap().insert(RequestInfoInner);
-
-        // This should have the complete view, unified view is basically a combined time sorted view
-        // all events/extensions added in correct order
-        // println!("request extensions: {:#?}", request.unified_view());
-
-        // This should only see intial request extensions and the connection extensions
-        // println!("connection extensions: {:#?}", connection.unified_view());
-
-        // println!("is healthy {:?}", request.get::<IsHealth>().unwrap().0);
-
-        // // Now our connection's internal state machine detect it is broken
-        // // and inserts this in extensions, our request should also be able to see this
-        connection.extensions().insert(BrokenConnection);
-        // This is etensions object so we dont even have to use .extension()
-        connection.insert(IsHealth(false));
-        println!("collecting");
-
-        let timeline = request
-            .req_ext()
-            .unwrap()
-            .iter_all_stored()
-            .collect::<Vec<_>>();
-        println!("request extensions: {:#?}", timeline);
-
-        let timeline = request
-            .egress_ext()
-            .unwrap()
-            .iter_all_stored()
-            .collect::<Vec<_>>();
-        println!("connection extensions: {:#?}", timeline);
-
-        // println!("is healthy {:?}", request.get_arc::<IsHealth>().unwrap().0);
-        assert!(
-            !request
-                .egress_ext()
-                .unwrap()
-                .get_arc::<IsHealth>()
-                .unwrap()
-                .0
-        );
-
-        println!("is healthy: {:?}", request.get::<IsHealth>());
-        println!(
-            "is healthy request: {:?}",
-            request.req_ext().unwrap().get::<IsHealth>()
-        );
-        println!(
-            "is healthy connection: {:?}",
-            request.egress_ext().unwrap().get::<IsHealth>()
-        );
-        // let _history: Vec<_> = request.iter::<IsHealth>(&[]).collect();
-        // println!("health history {history:#?}");
-    }
-
-    #[test]
-    fn basic() {
-        let request = Extensions::default();
-        request.insert(IsHealth(true));
-        // println!("is healthy {:?}", request.get_arc::<IsHealth>());
-    }
-}
-
 pub trait ExtensionsRef {
     /// Get reference to the underlying [`Extensions`] store
     fn extensions(&self) -> &Extensions;
-
-    // fn active_ext(&self) -> &ExtensionStores{}
-
-    fn req_ext(&self) -> Result<&ExtensionStores, OpaqueError> {
-        self.extensions()
-            .req_ext
-            .as_ref()
-            .context("no request extensions available at this place")
-    }
-
-    fn resp_ext(&self) -> Result<&ExtensionStores, OpaqueError> {
-        self.extensions()
-            .resp_ext
-            .as_ref()
-            .context("no response extensions available at this place")
-    }
-
-    fn egress_ext(&self) -> Result<&ExtensionStores, OpaqueError> {
-        self.extensions()
-            .egress_ext
-            .as_ref()
-            .context("no response extensions available at this place")
-    }
-
-    fn ingress_ext(&self) -> Result<&ExtensionStores, OpaqueError> {
-        self.extensions()
-            .ingress_ext
-            .as_ref()
-            .context("no response extensions available at this place")
-    }
 }
 
 impl ExtensionsRef for Extensions {
@@ -683,6 +422,21 @@ where
 /// Wrapper type that can be inserted by leaf-like services
 /// when returning an output, to have the input extensions be accessible and preserved.
 pub struct InputExtensions(pub Extensions);
+
+#[derive(Debug, Clone)]
+pub struct OutputExtensions(pub Extensions);
+
+#[derive(Debug, Clone)]
+pub struct EgressConnectionExtensions(pub Extensions);
+
+#[derive(Debug, Clone)]
+pub struct IngressConnectionExtensions(pub Extensions);
+
+#[derive(Debug, Clone)]
+pub struct EgressStreamExtensions(pub Extensions);
+
+#[derive(Debug, Clone)]
+pub struct IngressStreamExtensions(pub Extensions);
 
 // #[cfg(test)]
 // mod tests {
