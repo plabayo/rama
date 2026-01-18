@@ -159,7 +159,6 @@ impl<A, S> Binder<A, S> {
 }
 
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 /// Default factory [`Service`] used by [`DefaultBinder`].
 pub struct DefaultAcceptorFactory {
     exec: Executor,

@@ -34,11 +34,15 @@ impl UnixListenerBuilder {
     pub fn new(exec: Executor) -> Self {
         Self { exec }
     }
+
+    pub fn default_with_executor(exec: Executor) -> Self {
+        Self::new(exec)
+    }
 }
 
 impl Default for UnixListenerBuilder {
     fn default() -> Self {
-        Self::new(Executor::default())
+        Self::default_with_executor(Executor::default())
     }
 }
 
@@ -217,11 +221,11 @@ impl UnixListener {
         Ok((stream.into(), addr.into()))
     }
 
-    /// Serve gracefully connections from this listener with the given service.
+    /// Serve connections from this listener with the given service.
     ///
-    /// This method does the same as [`Self::serve`] but it
-    /// will respect the given [`rama_core::graceful::ShutdownGuard`], and also pass
-    /// it to the service.
+    /// This listener will spawn a task in which the inner service will
+    /// handle the incomming connection. Connections will be served
+    /// gracefully if the [`UnixListener`] is configured with a graceful [`Executor`].
     pub async fn serve<S>(self, service: S)
     where
         S: Service<UnixStream>,

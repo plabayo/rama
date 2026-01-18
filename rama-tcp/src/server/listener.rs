@@ -309,7 +309,8 @@ impl TcpListener {
     /// Serve connections from this listener with the given service.
     ///
     /// This listener will spawn a task in which the inner service will
-    /// handle the incomming connection
+    /// handle the incomming connection. Cconnections will be served
+    /// gracefully if the [`TcpListener`] is configured with a graceful [`Executor`].
     pub async fn serve<S>(self, service: S)
     where
         S: Service<TcpStream>,

@@ -206,10 +206,17 @@ impl<C, B, A> Socks5Acceptor<C, B, (), A> {
     }
 }
 
+impl Socks5Acceptor {
+    #[inline]
+    pub fn default_with_executor(exec: Executor) -> Self {
+        Socks5Acceptor::new(exec).with_default_connector()
+    }
+}
+
 impl Default for Socks5Acceptor {
     #[inline]
     fn default() -> Self {
-        Socks5Acceptor::new(Executor::default()).with_default_connector()
+        Self::default_with_executor(Executor::default())
     }
 }
 
