@@ -36,14 +36,14 @@
 
 It gives you programmable control over how packets move through your stack, so you can build:
 
-- production grade reverse and forward proxies
-- HTTP and [TLS termination](./examples/tls_boring_termination.rs) layers
-- security inspection and [distortion proxies](./examples/http_mitm_proxy_boring.rs)
-- high volume scraping and data extraction pipelines
-- custom HTTP clients with deep control over the wire
+- a foundation for building networked systems at any position in the input or output path
+- reusable primitives for composing clients, servers, and intermediaries
+- fine grained control over transports, protocols, and data flow
+- designed for high performance, correctness, and long running production workloads
 
 **rama is already used in production by companies at scale for use cases such as network security,
-data extraction, API gateways and routing**.
+data extraction, API gateways and routing**. We also offer **commercial support**.
+Service contracts and partner offerings are available at [ramaproxy.com](https://ramaproxy.com).
 
 > [!TIP]
 > 📖 New to rama
@@ -51,7 +51,7 @@ data extraction, API gateways and routing**.
 > 1. Read the ["Why rama" chapter](https://ramaproxy.org/book/why_rama) for background.
 > 2. Run one of the [examples](https://github.com/plabayo/rama/tree/main/examples).
 > 3. Use the [rama book](https://ramaproxy.org/book) and [edge Rust docs](https://ramaproxy.org/docs/rama)
->    as reference while building your own stack.
+> as reference while building your own stack.
 
 Whether you're intercepting traffic for security analysis, writing a web service,
 emulating clients with custom user agents, hijacking connections for advanced testing, or building high-performance proxies, rama provides a clean and composable [Tokio](https://tokio.rs/)-native foundation to program network services in Rust.
@@ -61,7 +61,6 @@ to design and operate dynamic, programmable network services.
 
 Network protocols supported and implemented by rama allow you to build servers,
 clients and proxies.
-
 
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
