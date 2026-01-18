@@ -7,11 +7,12 @@
 //! ```no_run
 //! use rama_unix::{UnixStream, server::UnixListener};
 //! use rama_core::service::service_fn;
+//! use rama_core::rt::Executor;
 //! use tokio::io::AsyncWriteExt;
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     UnixListener::bind_path("/tmp/example.socket")
+//!     UnixListener::bind_path("/tmp/example.socket", Executor::default())
 //!         .await
 //!         .expect("bind Unix Listener")
 //!         .serve(service_fn(async |mut stream: UnixStream| {
