@@ -3026,7 +3026,7 @@ type ReplyBody = BoxBody<Bytes, BoxError>;
 #[derive(Debug)]
 enum Reply {
     Status(rama::http::StatusCode),
-    ReasonPhrase(rama::http::core::ext::ReasonPhrase),
+    ReasonPhrase(rama::http::proto::h1::ext::ReasonPhrase),
     Version(rama::http::Version),
     Header(HeaderName, HeaderValue),
     Body(ReplyBody),

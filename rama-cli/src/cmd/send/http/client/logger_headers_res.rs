@@ -4,7 +4,7 @@ use rama::{
     http::{
         Request, Response, Version,
         proto::{
-            h1::Http1HeaderMap,
+            h1::{Http1HeaderMap, ext::ReasonPhrase},
             h2::{self, PseudoHeader, PseudoHeaderOrder},
         },
     },
@@ -34,7 +34,10 @@ where
                 "* {:?} {} {}",
                 res.version(),
                 res.status().as_u16(),
-                res.status().canonical_reason().unwrap_or_default()
+                match res.extensions().get::<ReasonPhrase>() {
+                    Some(reason) => String::from_utf8_lossy(reason.as_bytes()),
+                    None => res.status().canonical_reason().unwrap_or_default().into(),
+                },
             );
 
             if let Some(pseudo_headers) = res.extensions().get::<PseudoHeaderOrder>() {

@@ -33,12 +33,15 @@ impl ReasonPhrase {
         Self(Bytes::from_static(reason))
     }
 
-    // Not public on purpose.
     /// Converts a `Bytes` directly into a `ReasonPhrase` without validating.
     ///
     /// Use with care; invalid bytes in a reason phrase can cause serious security problems if
     /// emitted in a response.
-    pub(crate) fn from_bytes_unchecked(reason: Bytes) -> Self {
+    ///
+    /// # Safety
+    ///
+    /// Given `reason` parameter is a valid "reason phrase"
+    pub unsafe fn from_bytes_unchecked(reason: Bytes) -> Self {
         Self(reason)
     }
 }

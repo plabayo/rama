@@ -42,8 +42,6 @@ pub use self::error::{Error, Result};
 
 pub mod h2;
 
-pub mod ext;
-
 pub mod service;
 
 mod headers;

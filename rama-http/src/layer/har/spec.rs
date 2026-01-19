@@ -19,6 +19,7 @@ use rama_http_headers::{
 use rama_http_headers::{HeaderEncode, SetCookie};
 use rama_http_types::mime::Mime;
 use rama_http_types::proto::h1::Http1HeaderName;
+use rama_http_types::proto::h1::ext::ReasonPhrase;
 use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1HeaderMap};
 use rama_net::address::SocketAddress;
 
@@ -563,7 +564,14 @@ impl Response {
 
         Ok(Self {
             status: parts.status.as_u16(),
-            status_text: parts.status.canonical_reason().map(Into::into),
+            status_text: match parts.extensions.get::<ReasonPhrase>() {
+                Some(reason) => Some(
+                    String::from_utf8_lossy(reason.as_bytes())
+                        .into_owned()
+                        .into(),
+                ),
+                None => parts.status.canonical_reason().map(Into::into),
+            },
             http_version: parts.version.into(),
             cookies,
             headers: into_har_headers(header_map),

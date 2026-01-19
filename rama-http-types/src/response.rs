@@ -5,10 +5,12 @@ use std::fmt;
 use crate::dep::hyperium::http::Extensions as HyperExtensions;
 use crate::dep::hyperium::http::response::{Parts as HyperiumParts, Response as HyperiumResponse};
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
+use crate::proto::h1::ext::ReasonPhrase;
 use crate::status::StatusCode;
 use crate::version::Version;
 use crate::{Body, Result};
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_error::OpaqueError;
 
 /// Represents an HTTP response
 ///
@@ -310,6 +312,94 @@ impl<T> Response<T> {
     #[inline]
     pub fn status_mut(&mut self) -> &mut StatusCode {
         &mut self.head.status
+    }
+
+    /// Turn a response into an error if the server returned an error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama_http_types::Response;
+    /// fn on_response(res: Response) {
+    ///     match res.error_for_status() {
+    ///         Ok(_res) => (),
+    ///         Err(err) => {
+    ///             // asserting a 400 as an example
+    ///             // it could be any status between 400...599
+    ///             assert_eq!(
+    ///                 err.status(),
+    ///                 Some(rama_http_types::StatusCode::BAD_REQUEST)
+    ///             );
+    ///         }
+    ///     }
+    /// }
+    /// # fn main() {}
+    /// ```
+    pub fn error_for_status(self) -> std::result::Result<Self, OpaqueError> {
+        let status = self.status();
+        if status.is_client_error() {
+            Err(OpaqueError::from_display(format!(
+                "http client error: status={status}; reason: '{}'",
+                match self.extensions().get::<ReasonPhrase>() {
+                    Some(reason) => String::from_utf8_lossy(reason.as_bytes()),
+                    None => status.canonical_reason().unwrap_or_default().into(),
+                }
+            )))
+        } else if status.is_server_error() {
+            Err(OpaqueError::from_display(format!(
+                "http server error: status={status}; reason: {}",
+                match self.extensions().get::<ReasonPhrase>() {
+                    Some(reason) => String::from_utf8_lossy(reason.as_bytes()),
+                    None => status.canonical_reason().unwrap_or_default().into(),
+                }
+            )))
+        } else {
+            Ok(self)
+        }
+    }
+
+    /// Turn a reference to a response into an error if the server returned an error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama_http_types::Response;
+    /// fn on_response(res: &Response) {
+    ///     match res.error_for_status_ref() {
+    ///         Ok(_res) => (),
+    ///         Err(err) => {
+    ///             // asserting a 400 as an example
+    ///             // it could be any status between 400...599
+    ///             assert_eq!(
+    ///                 err.status(),
+    ///                 Some(rama_http_types::StatusCode::BAD_REQUEST)
+    ///             );
+    ///         }
+    ///     }
+    /// }
+    /// # fn main() {}
+    /// ```
+    pub fn error_for_status_ref(&self) -> std::result::Result<&Self, OpaqueError> {
+        let status = self.status();
+        if status.is_client_error() {
+            Err(OpaqueError::from_display(format!(
+                "http client error: status={status}; reason: '{}'",
+                match self.extensions().get::<ReasonPhrase>() {
+                    Some(reason) => String::from_utf8_lossy(reason.as_bytes()),
+                    None => status.canonical_reason().unwrap_or_default().into(),
+                }
+            )))
+        } else if status.is_server_error() {
+            Err(OpaqueError::from_display(format!(
+                "http server error: status={status}; reason: {}",
+                match self.extensions().get::<ReasonPhrase>() {
+                    Some(reason) => String::from_utf8_lossy(reason.as_bytes()),
+                    None => status.canonical_reason().unwrap_or_default().into(),
+                }
+            )))
+        } else {
+            Ok(self)
+        }
     }
 
     /// Returns a reference to the associated version.

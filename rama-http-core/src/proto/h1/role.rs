@@ -6,6 +6,7 @@ use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
+use rama_http::proto::h1::ext::ReasonPhrase;
 use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
@@ -339,7 +340,7 @@ impl Http1Transaction for Server {
         let init_cap = 30 + msg.head.headers.len() * AVERAGE_HEADER_SIZE;
         dst.reserve(init_cap);
 
-        let custom_reason_phrase = msg.head.extensions.get::<crate::ext::ReasonPhrase>();
+        let custom_reason_phrase = msg.head.extensions.get::<ReasonPhrase>();
 
         if msg.head.version == Version::HTTP_11
             && msg.head.subject == StatusCode::OK
@@ -944,9 +945,9 @@ impl Http1Transaction for Client {
             let headers = headers.consume(&mut extensions);
 
             if let Some(reason) = reason {
-                // Safety: httparse ensures that only valid reason phrase bytes are present in this
-                // field.
-                let reason = crate::ext::ReasonPhrase::from_bytes_unchecked(reason);
+                // SAFETY: httparse ensures that only valid reason
+                // phrase bytes are present in this field.
+                let reason = unsafe { ReasonPhrase::from_bytes_unchecked(reason) };
                 extensions.insert(reason);
             }
 

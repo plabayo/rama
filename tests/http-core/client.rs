@@ -1501,6 +1501,8 @@ mod conn {
     use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
+    use rama_http::proto::h1::ext::ReasonPhrase;
+    use rama_http::proto::h1::ext::informational::on_informational;
     use tokio::io::{
         AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf,
     };
@@ -1621,7 +1623,7 @@ mod conn {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
             assert_eq!(
                 res.extensions()
-                    .get::<rama::http::core::ext::ReasonPhrase>()
+                    .get::<ReasonPhrase>()
                     .expect("custom reason phrase is present")
                     .as_bytes(),
                 &b"Alright"[..]
@@ -2143,7 +2145,7 @@ mod conn {
             .unwrap();
         let cnt = Arc::new(AtomicUsize::new(0));
         let cnt2 = cnt.clone();
-        rama_http_core::ext::on_informational(&mut req, move |res| {
+        on_informational(&mut req, move |res| {
             assert_eq!(res.status(), 100);
             cnt2.fetch_add(1, Ordering::Relaxed);
         });
