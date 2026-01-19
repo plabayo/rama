@@ -1502,7 +1502,7 @@ mod conn {
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
     use rama_http::proto::h1::ext::ReasonPhrase;
-    use rama_http::proto::h1::ext::informational::on_informational;
+    use rama_http::proto::h1::ext::informational::OnInformational;
     use tokio::io::{
         AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf,
     };
@@ -2145,10 +2145,11 @@ mod conn {
             .unwrap();
         let cnt = Arc::new(AtomicUsize::new(0));
         let cnt2 = cnt.clone();
-        on_informational(&mut req, move |res| {
-            assert_eq!(res.status(), 100);
-            cnt2.fetch_add(1, Ordering::Relaxed);
-        });
+        req.extensions_mut()
+            .insert(OnInformational::new_fn(move |res| {
+                assert_eq!(res.status(), 100);
+                cnt2.fetch_add(1, Ordering::Relaxed);
+            }));
         let _res = client.send_request(req).await.expect("send_request");
         assert_eq!(1, cnt.load(Ordering::Relaxed));
     }

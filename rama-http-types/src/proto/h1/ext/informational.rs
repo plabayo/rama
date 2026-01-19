@@ -2,44 +2,23 @@
 
 use std::sync::Arc;
 
-use rama_core::extensions::ExtensionsMut;
-
 #[derive(Clone)]
 pub struct OnInformational(Arc<dyn OnInformationalCallback + Send + Sync>);
+
+impl OnInformational {
+    /// Create a function callback for 1xx informational responses.
+    ///
+    /// To be inserted in the request extensions for usage at response time.
+    #[must_use]
+    pub fn new_fn(callback: impl Fn(Response<'_>) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(OnInformationalClosure(callback)))
+    }
+}
 
 impl std::fmt::Debug for OnInformational {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("OnInformational").finish()
     }
-}
-
-/// Add a callback for 1xx informational responses.
-///
-/// # Example
-///
-/// ```
-/// # let some_body = ();
-/// let mut req = rama_http_types::Request::new(some_body);
-///
-/// rama_http_core::ext::on_informational(&mut req, |res| {
-///     println!("informational: {:?}", res.status());
-/// });
-///
-/// // send request on a client connection...
-/// ```
-pub fn on_informational<B, F>(req: &mut crate::Request<B>, callback: F)
-where
-    F: Fn(Response<'_>) + Send + Sync + 'static,
-{
-    on_informational_raw(req, OnInformationalClosure(callback));
-}
-
-pub(crate) fn on_informational_raw<B, C>(req: &mut crate::Request<B>, callback: C)
-where
-    C: OnInformationalCallback + Send + Sync + 'static,
-{
-    req.extensions_mut()
-        .insert(OnInformational(Arc::new(callback)));
 }
 
 // Sealed, not actually nameable bounds

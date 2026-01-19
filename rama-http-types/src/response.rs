@@ -328,7 +328,7 @@ impl<T> Response<T> {
     ///             // it could be any status between 400...599
     ///             assert_eq!(
     ///                 err.status(),
-    ///                 Some(rama_http_types::StatusCode::BAD_REQUEST)
+    ///                 rama_http_types::StatusCode::BAD_REQUEST,
     ///             );
     ///         }
     ///     }
@@ -369,7 +369,7 @@ impl<T> Response<T> {
     ///             // it could be any status between 400...599
     ///             assert_eq!(
     ///                 err.status(),
-    ///                 Some(rama_http_types::StatusCode::BAD_REQUEST)
+    ///                 rama_http_types::StatusCode::BAD_REQUEST
     ///             );
     ///         }
     ///     }

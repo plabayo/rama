@@ -59,7 +59,14 @@ test *ARGS:
     @cargo install cargo-nextest --locked
     cargo nextest run --all-features --workspace {{ARGS}}
 
+test-doc *ARGS:
+    cargo test --doc --all-features --workspace {{ARGS}}
+
 test-crate CRATE *ARGS:
+    @cargo install cargo-nextest --locked
+    cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
+
+test-doc-crate CRATE *ARGS:
     @cargo install cargo-nextest --locked
     cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
 
@@ -82,7 +89,7 @@ test-loom:
 
 qq: lint check clippy doc extra-checks
 
-qa: qq test
+qa: qq test test-doc
 
 qa-crate CRATE:
     just check-crate {{CRATE}}
