@@ -31,6 +31,7 @@ use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use rama_error::OpaqueError;
 pub use rama_utils::collections::AppendOnlyVec;
 
 use crate::stream;
@@ -57,7 +58,9 @@ impl Extensions {
         let extension = TypeErasedExtension::new(val);
         let idx = self.extensions.push(extension);
 
-        self.extensions[idx].downcast_ref().unwrap()
+        // SAFETY: this is safe since we just stored item T, so we know this is the
+        // correct type
+        self.extensions[idx].downcast_ref::<T>().unwrap()
     }
 
     /// Insert a type into this [`Extensions]` store.
@@ -65,7 +68,7 @@ impl Extensions {
         let extension = TypeErasedExtension::new(val);
         let idx = self.extensions.push(extension);
 
-        self.extensions[idx].cloned_downcast().unwrap()
+       self.extensions[idx].cloned_downcast::<T>().unwrap()
     }
 
     /// Extend this [`Extensions`] store with the [`Extensions`] from the provided store
@@ -85,24 +88,18 @@ impl Extensions {
             .any(|item| item.type_id == type_id)
     }
 
-    /// Get a shared reference to the most recently insert item of type T
-    ///
-    /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
-    /// if you need the oldest item T use [`Self::first`]
     #[must_use]
-    pub fn get<T: Extension>(&self) -> Option<&T> {
+    pub fn get_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
             .rev()
             .find(|item| item.type_id == type_id)
-            .and_then(|ext| ext.downcast_ref())
+            .and_then(|ext| 
+                ext.downcast_ref()
+            )
     }
 
-    /// Get a shared reference to the most recently insert item of type T
-    ///
-    /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
-    /// if you need the oldest item T use [`Self::first`]
     #[must_use]
     pub fn get_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let type_id = TypeId::of::<T>();
@@ -110,22 +107,24 @@ impl Extensions {
             .iter()
             .rev()
             .find(|item| item.type_id == type_id)
-            .and_then(|ext| ext.cloned_downcast())
+            .and_then(|ext| 
+                // SAFETY we just filtered on type_id so we know this is the correct type
+                ext.cloned_downcast())
     }
 
     /// Get a shared reference to the most recently insert item of type T, or insert in case no item was found
     ///
     /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
     /// if you need the oldest item T use [`Self::first`]
-    pub fn get_or_insert<T, F>(&self, create_fn: F) -> &T
+    pub fn get_ref_or_insert<T, F>(&self, create_fn: F) -> &T
     where
         T: Clone + Send + Sync + std::fmt::Debug + 'static,
         F: FnOnce() -> T,
     {
-        self.get().unwrap_or_else(|| self.insert(create_fn()))
+        self.get_ref().unwrap_or_else(|| self.insert(create_fn()))
     }
 
-    pub fn get_or_insert_arc<T, F>(&self, create_fn: F) -> Arc<T>
+    pub fn get_arc_or_insert<T, F>(&self, create_fn: F) -> Arc<T>
     where
         T: Clone + Send + Sync + std::fmt::Debug + 'static,
         F: FnOnce() -> Arc<T>,
@@ -139,12 +138,15 @@ impl Extensions {
     /// Note: [`Self::first`] will return the first added item T, in most cases this is not what you want,
     /// instead use [`Self::get`] to get the most recently inserted item T
     #[must_use]
-    pub fn first<T: Extension>(&self) -> Option<&T> {
+    pub fn first_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
             .find(|item| item.type_id == type_id)
-            .and_then(|ext| ext.downcast_ref())
+            .and_then(|ext| 
+                // SAFETY we just filtered on type_id so we know this is the correct type
+                ext.downcast_ref())
+
     }
 
     #[must_use]
@@ -153,13 +155,13 @@ impl Extensions {
         self.extensions
             .iter()
             .find(|item| item.type_id == type_id)
-            .and_then(|ext| ext.cloned_downcast())
+            .and_then(|ext|ext.cloned_downcast())
     }
 
     /// Iterate over all the inserted items of type T
     ///
     /// Note: items are ordered from oldest to newest
-    pub fn iter<T: Extension>(&self) -> impl Iterator<Item = &T> {
+    pub fn iter<T: Extension>(&self) -> impl Iterator<Item = &Arc<T>> {
         let type_id = TypeId::of::<T>();
 
         // Note: unsafe downcast_ref_unchecked is not stabilized yet, so we have to use the safe version with unwrap
@@ -170,32 +172,16 @@ impl Extensions {
         self.extensions
             .iter()
             .filter(move |item| item.type_id == type_id)
-            .map(|ext| ext.downcast_ref().unwrap())
+            .map(|ext|ext.downcast_arc_ref().unwrap())
+
     }
 
-    pub fn iter_arc<T: Extension>(&self) -> impl Iterator<Item = Arc<T>> {
-        let type_id = TypeId::of::<T>();
-
-        // Note: unsafe downcast_ref_unchecked is not stabilized yet, so we have to use the safe version with unwrap
-        #[allow(
-            clippy::unwrap_used,
-            reason = "`downcast_ref` can only be none if TypeId doesn't match, but we already filter on that first"
-        )]
-        self.extensions
-            .iter()
-            .filter(move |item| item.type_id == type_id)
-            .map(|ext| ext.cloned_downcast().unwrap())
-    }
 
     /// Stream iterator over all the inserted items of type T
     ///
     /// Note: items are ordered from oldest to newest
-    pub fn stream_iter<T: Extension>(&self) -> stream::Iter<impl Iterator<Item = &T>> {
+    pub fn stream_iter<T: Extension>(&self) -> stream::Iter<impl Iterator<Item = &Arc<T>>> {
         stream::iter(self.iter())
-    }
-
-    pub fn stream_iter_arc<T: Extension>(&self) -> stream::Iter<impl Iterator<Item = Arc<T>>> {
-        stream::iter(self.iter_arc())
     }
 
     pub fn iter_all(&self) -> impl Iterator<Item = &TypeErasedExtension> {
@@ -231,16 +217,30 @@ impl TypeErasedExtension {
         self.type_id
     }
 
+
     pub fn cloned_downcast<T: Extension>(&self) -> Option<Arc<T>> {
         let any = self.value.clone() as Arc<dyn Any + Send + Sync>;
-        any.clone().downcast::<T>().ok()
+        any.downcast::<T>().ok()
     }
 
-    pub fn downcast_ref<T: Extension>(&self) -> Option<&T> {
+
+    pub fn downcast_arc_ref<T: Extension>(&self) -> Option<& Arc<T>> {
+
+        let any = &self.value as &dyn Any;
+        any.downcast_ref::<Arc<T>>()
+    }
+
+
+
+    pub fn downcast_ref<T: Extension>(&self) -> Option<& T> {
         let inner_any = self.value.as_ref() as &dyn Any;
         (inner_any).downcast_ref::<T>()
     }
+
+
 }
+
+
 
 pub trait Extension: Any + Send + Sync + std::fmt::Debug + 'static {}
 // TODO remove this blacket impl and require everyone to implement this
@@ -394,8 +394,8 @@ where
     fn get<I: Extension>(&self) -> Option<&I> {
         self.0
             .extensions()
-            .get::<I>()
-            .or_else(|| self.1.extensions().get::<I>())
+            .get_ref::<I>()
+            .or_else(|| self.1.extensions().get_ref::<I>())
     }
 }
 
