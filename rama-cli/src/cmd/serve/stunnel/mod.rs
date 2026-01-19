@@ -144,7 +144,9 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
     )?;
     let acceptor_data = TlsAcceptorData::try_from(server_config)?;
 
-    let tcp_listener = TcpListener::bind(cfg.bind.clone())
+    let exec = Executor::graceful(graceful);
+
+    let tcp_listener = TcpListener::bind(cfg.bind.clone(), exec.clone())
         .await
         .map_err(OpaqueError::from_boxed)
         .context("bind stunnel exit node")?;
@@ -154,7 +156,7 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
         .context("get local addr of tcp listener")?;
     let forward_addr = cfg.forward;
 
-    graceful.into_spawn_task_fn(async move |guard| {
+    exec.clone().into_spawn_task(async move {
         tracing::info!("Stunnel exit node is running...");
         tracing::info!(
             "Listening on {} and forwarding to {}",
@@ -162,11 +164,9 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
             forward_addr
         );
 
-        let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(Forwarder::new(
-            Executor::graceful(guard.clone()),
-            forward_addr,
-        ));
-        tcp_listener.serve_graceful(guard, tcp_service).await;
+        let tcp_service =
+            TlsAcceptorLayer::new(acceptor_data).into_layer(Forwarder::new(exec, forward_addr));
+        tcp_listener.serve(tcp_service).await;
     });
 
     Ok(())
@@ -175,7 +175,8 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
 async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(), BoxError> {
     let tls_connector_data = build_tls_connector(&cfg)?;
 
-    let tcp_listener = TcpListener::bind(cfg.bind.clone())
+    let exec = Executor::graceful(graceful);
+    let tcp_listener = TcpListener::bind(cfg.bind.clone(), exec.clone())
         .await
         .map_err(OpaqueError::from_boxed)
         .context("bind stunnel entry node")?;
@@ -185,7 +186,7 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
         .context("get local addr of tcp listener")?;
     let connect_authority = cfg.connect;
 
-    graceful.into_spawn_task_fn(async move |guard| {
+    exec.clone().into_spawn_task(async move {
         tracing::info!("Stunnel entry node is running...");
         tracing::info!(
             "Listening on {} and connecting to {}",
@@ -193,14 +194,13 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
             connect_authority
         );
 
-        let tcp_service = Forwarder::new(Executor::graceful(guard.clone()), connect_authority)
-            .with_connector(
-                TlsConnectorLayer::secure()
-                    .with_connector_data(tls_connector_data)
-                    .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
-            );
+        let tcp_service = Forwarder::new(exec.clone(), connect_authority).with_connector(
+            TlsConnectorLayer::secure()
+                .with_connector_data(tls_connector_data)
+                .into_layer(TcpConnector::new(exec)),
+        );
 
-        tcp_listener.serve_graceful(guard, tcp_service).await;
+        tcp_listener.serve(tcp_service).await;
     });
 
     Ok(())

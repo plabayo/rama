@@ -63,7 +63,7 @@ async fn test_http_mitm_proxy() {
     });
 
     tokio::spawn(async {
-        HttpServer::http1()
+        HttpServer::http1(Executor::default())
             .listen(
                 "127.0.0.1:63013",
                 (
@@ -152,7 +152,7 @@ async fn test_http_mitm_proxy() {
     );
 
     tokio::spawn(async {
-        TcpListener::bind("127.0.0.1:63004")
+        TcpListener::bind("127.0.0.1:63004", Executor::default())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)
@@ -168,12 +168,12 @@ async fn test_http_mitm_proxy() {
     .expect("with env key logger")
     .build();
 
-    let http_1_over_tls_server = HttpServer::http1();
+    let http_1_over_tls_server = HttpServer::http1(Executor::default());
     let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn)
         .into_layer(http_1_over_tls_server.service(Router::new().with_get("/ping", "pong")));
 
     tokio::spawn(async {
-        TcpListener::bind("127.0.0.1:63008")
+        TcpListener::bind("127.0.0.1:63008", Executor::default())
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener: secure web service (for h1 traffic): {e}")

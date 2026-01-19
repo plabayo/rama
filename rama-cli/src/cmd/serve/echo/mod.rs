@@ -159,6 +159,7 @@ async fn bind_echo_http_service(
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
 ) -> Result<(), OpaqueError> {
+    let exec = Executor::graceful(graceful);
     let tcp_service = EchoServiceBuilder::new()
         .with_concurrent(cfg.concurrent.unwrap_or_default())
         .with_timeout(Duration::from_secs(cfg.timeout.unwrap_or(300)))
@@ -167,7 +168,7 @@ async fn bind_echo_http_service(
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_config)
         .with_user_agent_database(Arc::new(UserAgentDatabase::try_embedded()?))
-        .build(Executor::graceful(graceful.clone()))
+        .build(exec.clone())
         .map_err(OpaqueError::from_boxed)
         .context("build http(s) echo service")?;
 
@@ -175,7 +176,7 @@ async fn bind_echo_http_service(
         "starting http(s) echo service: bind interface = {:?}",
         cfg.bind
     );
-    let tcp_listener = TcpListener::build()
+    let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
@@ -188,17 +189,14 @@ async fn bind_echo_http_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "http");
 
-    graceful.into_spawn_task_fn(async move |guard| {
+    exec.spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
             "http(s) echo service ready: bind interface = {}", cfg.bind,
         );
 
-        tcp_listener
-            .serve_graceful(guard, tcp_service)
-            .instrument(span)
-            .await;
+        tcp_listener.serve(tcp_service).instrument(span).await;
     });
 
     Ok(())
@@ -209,6 +207,7 @@ async fn bind_echo_tcp_service(
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
 ) -> Result<(), OpaqueError> {
+    let exec = Executor::graceful(graceful);
     if cfg.ws {
         return Err(OpaqueError::from_display(
             "websocket support is only possible in http(s) mode",
@@ -265,7 +264,7 @@ async fn bind_echo_tcp_service(
     let echo_svc = middleware.into_layer(EchoService::new());
 
     tracing::info!("starting TCP echo service: bind interface = {:?}", cfg.bind);
-    let tcp_listener = TcpListener::build()
+    let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
@@ -278,17 +277,14 @@ async fn bind_echo_tcp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "tcp");
 
-    graceful.into_spawn_task_fn(async move |guard| {
+    exec.spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
             "tcp echo service ready: bind interface = {}", cfg.bind,
         );
 
-        tcp_listener
-            .serve_graceful(guard, echo_svc)
-            .instrument(span)
-            .await;
+        tcp_listener.serve(echo_svc).instrument(span).await;
     });
 
     Ok(())

@@ -188,10 +188,10 @@ async fn main() {
         let tcp_service =
             TlsAcceptorLayer::new(acceptor_data).layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind("127.0.0.1:5001")
+        TcpListener::bind("127.0.0.1:5001", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener: tls")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 
@@ -232,7 +232,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(service_fn(async || {
+        let http_service = HttpServer::auto(exec.clone()).service(service_fn(async || {
             Ok::<_, Infallible>("hello".into_response())
         }));
 
@@ -248,10 +248,10 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind(ADDR)
+        TcpListener::bind(ADDR, exec)
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 

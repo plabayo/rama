@@ -57,7 +57,8 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let tcp_http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(
+        let exec = Executor::graceful(guard);
+        let tcp_http_service = HttpServer::auto(exec.clone()).service(
             AddRequiredResponseHeaders::new(Router::new().with_get(
                 "/",
                 async |req: Request| -> Result<String, (StatusCode, String)> {
@@ -77,11 +78,10 @@ async fn main() {
             )),
         );
 
-        TcpListener::bind("127.0.0.1:62025")
+        TcpListener::bind("127.0.0.1:62025", exec)
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(
-                guard,
+            .serve(
                 HaProxyLayer::new()
                     // by default [`HaProxyLayer`] is enforced,
                     // setting peek=true allows you to make it optional,

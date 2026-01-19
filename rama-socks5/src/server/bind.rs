@@ -1,5 +1,6 @@
 use std::{io, time::Duration};
 
+use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, error::BoxError, layer::timeout::DefaultTimeout, stream::Stream};
 use rama_net::address::HostWithPort;
@@ -158,16 +159,17 @@ impl<A, S> Binder<A, S> {
 }
 
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 /// Default factory [`Service`] used by [`DefaultBinder`].
-pub struct DefaultAcceptorFactory;
+pub struct DefaultAcceptorFactory {
+    exec: Executor,
+}
 
 impl Service<Interface> for DefaultAcceptorFactory {
     type Output = TcpListener;
     type Error = BoxError;
 
     async fn serve(&self, interface: Interface) -> Result<Self::Output, Self::Error> {
-        let acceptor = TcpListener::bind(interface).await?;
+        let acceptor = TcpListener::bind(interface, self.exec.clone()).await?;
         Ok(acceptor)
     }
 }

@@ -35,6 +35,7 @@ use rama::{
     error::{ErrorContext as _, OpaqueError},
     futures::SinkExt,
     net::address::SocketAddress,
+    rt::Executor,
     service::service_fn,
     stream::{codec::FramedWrite, json::JsonEncoder},
     tcp::{TcpStream, server::TcpListener},
@@ -93,8 +94,9 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62042))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62042), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -108,11 +110,7 @@ async fn main() {
         "establish a (client) tcp connection to {bind_address} to see the service in action"
     );
 
-    graceful.spawn_task_fn(async |guard| {
-        listener
-            .serve_graceful(guard, service_fn(serve_stream))
-            .await;
-    });
+    graceful.spawn_task(listener.serve(service_fn(serve_stream)));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(30))

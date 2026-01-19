@@ -154,8 +154,8 @@ async fn main() -> Result<(), BoxError> {
         exec: exec.clone(),
     };
 
-    graceful.spawn_task_fn(async move |guard| {
-        let tcp_service = TcpListener::build()
+    graceful.spawn_task(async {
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62017")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62017");
@@ -179,8 +179,7 @@ async fn main() -> Result<(), BoxError> {
         );
 
         tcp_service
-            .serve_graceful(
-                guard,
+            .serve(
                 (
                     AddInputExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end

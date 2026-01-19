@@ -20,12 +20,13 @@ use rama::{
     Layer,
     http::{server::HttpServer, service::fs::ServeDir},
     layer::TraceErrLayer,
+    rt::Executor,
     tcp::server::TcpListener,
 };
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:62009")
+    let listener = TcpListener::bind("127.0.0.1:62009", Executor::default())
         .await
         .expect("bind TCP Listener");
 

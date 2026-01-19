@@ -65,8 +65,9 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62036))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62036), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -77,9 +78,7 @@ async fn main() {
         "http's tcp listener ready to serve",
     );
 
-    graceful.spawn_task_fn(async move |guard| {
-        let exec = Executor::graceful(guard.clone());
-
+    graceful.spawn_task(async {
         let router = Arc::new(Router::new().with_match_route(
             "/test",
             HttpMatcher::method_get().or_method_post(),
@@ -87,9 +86,7 @@ async fn main() {
         ));
 
         let app = (TraceLayer::new_for_http()).into_layer(router);
-        listener
-            .serve_graceful(guard, HttpServer::auto(exec).service(app))
-            .await;
+        listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
     graceful
