@@ -177,15 +177,11 @@ impl Incomplete {
             Err(error) => {
                 let valid_up_to = error.valid_up_to();
                 if valid_up_to > 0 {
-                    let consumed = valid_up_to
-                        .checked_sub(initial_buffer_len)
-                        .unwrap_or_default();
+                    let consumed = valid_up_to.saturating_sub(initial_buffer_len);
                     self.buffer_len = valid_up_to as u8;
                     (consumed, Some(Ok(())))
                 } else if let Some(invalid_sequence_length) = error.error_len() {
-                    let consumed = invalid_sequence_length
-                        .checked_sub(initial_buffer_len)
-                        .unwrap_or_default();
+                    let consumed = invalid_sequence_length.saturating_sub(initial_buffer_len);
                     self.buffer_len = invalid_sequence_length as u8;
                     (consumed, Some(Err(())))
                 } else {
