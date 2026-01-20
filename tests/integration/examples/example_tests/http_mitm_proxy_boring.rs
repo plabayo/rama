@@ -1,4 +1,4 @@
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use super::utils;
 
@@ -44,19 +44,21 @@ async fn test_http_mitm_proxy() {
         HttpServer::auto(Executor::default())
             .listen(
                 "127.0.0.1:63003",
-                Router::new()
-                    .with_match_route(
-                        "/echo",
-                        HttpMatcher::custom(WebSocketMatcher::new()),
-                        ConsumeErrLayer::trace(Level::DEBUG)
-                            .into_layer(WebSocketAcceptor::new().into_echo_service()),
-                    )
-                    .with_get("/{*any}", async |req: Request| {
-                        Json(json!({
-                            "method": req.method().as_str(),
-                            "path": req.uri().path(),
-                        }))
-                    }),
+                Arc::new(
+                    Router::new()
+                        .with_match_route(
+                            "/echo",
+                            HttpMatcher::custom(WebSocketMatcher::new()),
+                            ConsumeErrLayer::trace(Level::DEBUG)
+                                .into_layer(WebSocketAcceptor::new().into_echo_service()),
+                        )
+                        .with_get("/{*any}", async |req: Request| {
+                            Json(json!({
+                                "method": req.method().as_str(),
+                                "path": req.uri().path(),
+                            }))
+                        }),
+                ),
             )
             .await
             .unwrap();
@@ -66,7 +68,7 @@ async fn test_http_mitm_proxy() {
         HttpServer::http1(Executor::default())
             .listen(
                 "127.0.0.1:63013",
-                (
+                Arc::new((
                     ConsumeErrLayer::default(),
                     CompressionLayer::new().with_compress_predicate(Always::new()),
                 ).into_layer(Router::new()
@@ -111,7 +113,7 @@ async fn test_http_mitm_proxy() {
                                 .into_response(),
                         )
                     })),
-            )
+            ))
             .await
             .unwrap();
     });
@@ -131,7 +133,7 @@ async fn test_http_mitm_proxy() {
     let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().set_enable_connect_protocol();
     let tcp_service = TlsAcceptorLayer::new(data).into_layer(
-        http_tp.service(
+        http_tp.service(Arc::new(
             Router::new()
                 .with_match_route(
                     "/echo",
@@ -148,7 +150,7 @@ async fn test_http_mitm_proxy() {
                         "path": req.uri().path(),
                     }))
                 }),
-        ),
+        )),
     );
 
     tokio::spawn(async {
@@ -169,8 +171,9 @@ async fn test_http_mitm_proxy() {
     .build();
 
     let http_1_over_tls_server = HttpServer::http1(Executor::default());
-    let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn)
-        .into_layer(http_1_over_tls_server.service(Router::new().with_get("/ping", "pong")));
+    let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn).into_layer(
+        http_1_over_tls_server.service(Arc::new(Router::new().with_get("/ping", "pong"))),
+    );
 
     tokio::spawn(async {
         TcpListener::bind("127.0.0.1:63008", Executor::default())

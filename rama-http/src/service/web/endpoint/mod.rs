@@ -1,5 +1,5 @@
 use crate::{Body, Request, Response, matcher::HttpMatcher};
-use rama_core::{Layer, Service, layer::MapOutputLayer, service::BoxService};
+use rama_core::{Service, service::BoxService};
 use std::convert::Infallible;
 
 pub mod extract;
@@ -15,16 +15,46 @@ pub(crate) struct Endpoint {
 
 /// utility trait to accept multiple types as an endpoint service for [`super::WebService`]
 pub trait IntoEndpointService<T>: private::Sealed<T, ()> {
+    type Service: Service<Request, Output = Response, Error = Infallible>;
+
     /// convert the type into a [`rama_core::Service`].
-    fn into_endpoint_service(self) -> impl Service<Request, Output = Response, Error = Infallible>;
+    fn into_endpoint_service(self) -> Self::Service;
 }
 
 pub trait IntoEndpointServiceWithState<T, State>: private::Sealed<T, State> {
+    type Service: Service<Request, Output = Response, Error = Infallible>;
+
     /// convert the type into a [`rama_core::Service`] with state.
-    fn into_endpoint_service_with_state(
-        self,
-        state: State,
-    ) -> impl Service<Request, Output = Response, Error = Infallible>;
+    fn into_endpoint_service_with_state(self, state: State) -> Self::Service;
+}
+
+/// A [`Service`] that maps response for an inner service.
+#[derive(Debug, Clone)]
+pub struct MapResponseServie<S>(S);
+
+impl<S, R> MapResponseServie<S>
+where
+    S: Service<Request, Output = R, Error = Infallible>,
+    R: IntoResponse + Send + Sync + 'static,
+{
+    /// Create a new [`MapResponseServie`] with the given service.
+    #[inline(always)]
+    pub fn new(svc: S) -> Self {
+        Self(svc)
+    }
+}
+
+impl<S, R> Service<Request> for MapResponseServie<S>
+where
+    S: Service<Request, Output = R, Error = Infallible>,
+    R: IntoResponse + Send + Sync + 'static,
+{
+    type Output = Response;
+    type Error = Infallible;
+
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
+        self.0.serve(req).await.map(IntoResponse::into_response)
+    }
 }
 
 impl<S, R> IntoEndpointService<(R,)> for S
@@ -32,8 +62,11 @@ where
     S: Service<Request, Output = R, Error = Infallible>,
     R: IntoResponse + Send + Sync + 'static,
 {
-    fn into_endpoint_service(self) -> impl Service<Request, Output = Response, Error = Infallible> {
-        MapOutputLayer::new(R::into_response).into_layer(self)
+    type Service = MapResponseServie<S>;
+
+    #[inline(always)]
+    fn into_endpoint_service(self) -> Self::Service {
+        MapResponseServie::new(self)
     }
 }
 
@@ -42,11 +75,10 @@ where
     S: Service<Request, Output = R, Error = Infallible>,
     R: IntoResponse + Send + Sync + 'static,
 {
-    fn into_endpoint_service_with_state(
-        self,
-        _state: State,
-    ) -> impl Service<Request, Output = Response, Error = Infallible> {
-        MapOutputLayer::new(R::into_response).into_layer(self)
+    type Service = MapResponseServie<S>;
+
+    fn into_endpoint_service_with_state(self, _state: State) -> Self::Service {
+        MapResponseServie::new(self)
     }
 }
 
@@ -54,7 +86,9 @@ impl<R> IntoEndpointService<()> for R
 where
     R: IntoResponse + Clone + Send + Sync + 'static,
 {
-    fn into_endpoint_service(self) -> impl Service<Request, Output = Response, Error = Infallible> {
+    type Service = StaticService<R>;
+
+    fn into_endpoint_service(self) -> Self::Service {
         StaticService(self)
     }
 }
@@ -63,10 +97,9 @@ impl<R, State> IntoEndpointServiceWithState<(), State> for R
 where
     R: IntoResponse + Clone + Send + Sync + 'static,
 {
-    fn into_endpoint_service_with_state(
-        self,
-        _state: State,
-    ) -> impl Service<Request, Output = Response, Error = Infallible> {
+    type Service = StaticService<R>;
+
+    fn into_endpoint_service_with_state(self, _state: State) -> Self::Service {
         StaticService(self)
     }
 }
@@ -80,6 +113,7 @@ where
     R: IntoResponse + Clone + Send + Sync + 'static,
 {
     /// Create a new [`StaticService`] with the given response.
+    #[inline(always)]
     pub fn new(response: R) -> Self {
         Self(response)
     }
@@ -101,7 +135,8 @@ mod service;
 #[doc(inline)]
 pub use service::EndpointServiceFn;
 
-struct EndpointServiceFnWrapper<F, T, State> {
+/// Wrapper svc used for creating a endpoint service from a function.
+pub struct EndpointServiceFnWrapper<F, T, State> {
     inner: F,
     _marker: std::marker::PhantomData<fn(T) -> ()>,
     state: State,
@@ -155,7 +190,9 @@ where
     F: EndpointServiceFn<T, ()>,
     T: Send + 'static,
 {
-    fn into_endpoint_service(self) -> impl Service<Request, Output = Response, Error = Infallible> {
+    type Service = EndpointServiceFnWrapper<F, T, ()>;
+
+    fn into_endpoint_service(self) -> Self::Service {
         EndpointServiceFnWrapper {
             inner: self,
             _marker: std::marker::PhantomData,
@@ -170,10 +207,9 @@ where
     T: Send + 'static,
     State: Send + Sync + Clone + 'static,
 {
-    fn into_endpoint_service_with_state(
-        self,
-        state: State,
-    ) -> impl Service<Request, Output = Response, Error = Infallible> {
+    type Service = EndpointServiceFnWrapper<F, T, State>;
+
+    fn into_endpoint_service_with_state(self, state: State) -> Self::Service {
         EndpointServiceFnWrapper {
             inner: self,
             _marker: std::marker::PhantomData,
@@ -324,7 +360,7 @@ mod tests {
             ..Default::default()
         };
 
-        let svc = async |State(state): State<String>| state;
+        let svc = async |State(state): State<GlobalState>| state.text;
         let svc = svc.into_endpoint_service_with_state(state.clone());
 
         let resp = svc

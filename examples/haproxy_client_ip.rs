@@ -41,7 +41,7 @@ use rama::{
     },
 };
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -58,7 +58,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard);
-        let tcp_http_service = HttpServer::auto(exec.clone()).service(
+        let tcp_http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             AddRequiredResponseHeaders::new(Router::new().with_get(
                 "/",
                 async |req: Request| -> Result<String, (StatusCode, String)> {
@@ -76,7 +76,7 @@ async fn main() {
                     Ok(client_ip.to_string())
                 },
             )),
-        );
+        ));
 
         TcpListener::bind("127.0.0.1:62025", exec)
             .await

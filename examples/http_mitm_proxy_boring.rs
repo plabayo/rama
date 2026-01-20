@@ -161,7 +161,7 @@ async fn main() -> Result<(), BoxError> {
             .expect("bind tcp proxy to 127.0.0.1:62017");
 
         let http_mitm_service = new_http_mitm_proxy(&state);
-        let http_service = HttpServer::auto(exec.clone()).service(
+        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -176,7 +176,7 @@ async fn main() -> Result<(), BoxError> {
                 ),
             )
                 .into_layer(http_mitm_service),
-        );
+        ));
 
         tcp_service
             .serve(
@@ -252,19 +252,21 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
 fn new_http_mitm_proxy(
     state: &State,
-) -> impl Service<Request, Output = Response, Error = Infallible> {
-    (
-        MapResponseBodyLayer::new(Body::new),
-        TraceLayer::new_for_http(),
-        ConsumeErrLayer::default(),
-        UserAgentEmulateLayer::new(state.ua_db.clone())
-            .with_try_auto_detect_user_agent(true)
-            .with_is_optional(true),
-        CompressionLayer::new(),
-        AddRequiredRequestHeadersLayer::new(),
-        EmulateTlsProfileLayer::new(),
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
+    Arc::new(
+        (
+            MapResponseBodyLayer::new(Body::new),
+            TraceLayer::new_for_http(),
+            ConsumeErrLayer::default(),
+            UserAgentEmulateLayer::new(state.ua_db.clone())
+                .with_try_auto_detect_user_agent(true)
+                .with_is_optional(true),
+            CompressionLayer::new(),
+            AddRequiredRequestHeadersLayer::new(),
+            EmulateTlsProfileLayer::new(),
+        )
+            .into_layer(service_fn(http_mitm_proxy)),
     )
-        .into_layer(service_fn(http_mitm_proxy))
 }
 
 async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {

@@ -82,13 +82,13 @@ async fn main() {
         .with_get("/internal/clients.csv", infinite_resource);
 
     let exec = Executor::graceful(graceful.guard());
-    let app = HttpServer::auto(exec).service(
+    let app = HttpServer::auto(exec).service(Arc::new(
         (
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
         )
             .into_layer(router),
-    );
+    ));
 
     let tcp_svc = (
         ConsumeErrLayer::default(),

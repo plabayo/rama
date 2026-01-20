@@ -41,7 +41,7 @@ use rama::{
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -65,13 +65,13 @@ async fn main() {
     graceful.spawn_task_fn(async |guard| {
         let mut h2 = HttpServer::h2(Executor::graceful(guard.clone()));
         h2.h2_mut().set_enable_connect_protocol(); // required for WS sockets
-        let server = h2.service(
+        let server = h2.service(Arc::new(
             Router::new().with_get("/", Html(INDEX)).with_connect(
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG)
                     .into_layer(WebSocketAcceptor::new().into_echo_service()),
             ),
-        );
+        ));
 
         let tls_server = TlsAcceptorLayer::new(acceptor_data).into_layer(server);
 

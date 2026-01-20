@@ -107,11 +107,11 @@ where
 {
     /// Turn this `HttpServer` into a [`Service`] that can be used to serve
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
-    pub fn service<S>(self, service: S) -> HttpService<B, S> {
+    pub fn service<S: Clone>(self, service: S) -> HttpService<B, S> {
         HttpService {
             guard: self.exec.guard().cloned(),
             builder: Arc::new(self.builder),
-            service: Arc::new(service),
+            service,
         }
     }
 
@@ -132,7 +132,7 @@ where
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
     pub async fn listen<S, Response, I>(self, interface: I, service: S) -> HttpServeResult
     where
-        S: Service<Request, Output = Response, Error = Infallible>,
+        S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
@@ -140,7 +140,7 @@ where
         let service = HttpService {
             guard: self.exec.guard().cloned(),
             builder: Arc::new(self.builder),
-            service: Arc::new(service),
+            service,
         };
         tcp.serve(service).await;
         Ok(())
@@ -172,7 +172,7 @@ where
 pub struct HttpService<B, S> {
     guard: Option<ShutdownGuard>,
     builder: Arc<B>,
-    service: Arc<S>,
+    service: S,
 }
 
 impl<B, S> std::fmt::Debug for HttpService<B, S>
@@ -189,7 +189,7 @@ where
     }
 }
 
-impl<B, S> Clone for HttpService<B, S> {
+impl<B, S: Clone> Clone for HttpService<B, S> {
     fn clone(&self) -> Self {
         Self {
             guard: self.guard.clone(),
@@ -202,7 +202,7 @@ impl<B, S> Clone for HttpService<B, S> {
 impl<B, S, Response, IO> Service<IO> for HttpService<B, S>
 where
     B: HttpCoreConnServer,
-    S: Service<Request, Output = Response, Error = Infallible>,
+    S: Service<Request, Output = Response, Error = Infallible> + Clone,
     Response: IntoResponse + Send + 'static,
     IO: Stream + ExtensionsMut,
 {

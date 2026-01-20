@@ -35,7 +35,7 @@ use rama::{
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -57,13 +57,13 @@ async fn main() {
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(
+        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Arc::new(
             Router::new().with_get("/", Html(INDEX)).with_get(
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG)
                     .into_layer(WebSocketAcceptor::new().into_echo_service()),
             ),
-        );
+        ));
 
         let tls_server = TlsAcceptorLayer::new(acceptor_data).into_layer(server);
 

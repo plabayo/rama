@@ -22,6 +22,8 @@
 
 #[cfg(target_family = "unix")]
 mod unix_example {
+    use std::sync::Arc;
+
     use rama::{
         http::{server::HttpServer, service::web::Router},
         rt::Executor,
@@ -58,7 +60,10 @@ mod unix_example {
                 "ready to unix-serve",
             );
             listener
-                .serve(HttpServer::http1(exec).service(Router::new().with_get("/ping", "pong")))
+                .serve(
+                    HttpServer::http1(exec)
+                        .service(Arc::new(Router::new().with_get("/ping", "pong"))),
+                )
                 .await;
         });
 

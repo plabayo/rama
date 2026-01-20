@@ -32,7 +32,7 @@ use crate::{
     ua::layer::classifier::UserAgentClassifierLayer,
 };
 
-use std::{convert::Infallible, path::PathBuf, time::Duration};
+use std::{convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
 
 #[cfg(feature = "boring")]
 use crate::{
@@ -234,7 +234,7 @@ where
             _ => None,
         };
 
-        let http_service = self.build_http()?;
+        let http_service = Arc::new(self.build_http()?);
 
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config;

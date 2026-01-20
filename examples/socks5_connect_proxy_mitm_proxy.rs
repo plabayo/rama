@@ -62,7 +62,7 @@ use rama::{
     },
 };
 
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -105,17 +105,19 @@ async fn main() {
 
 fn new_http_mitm_proxy(
     exec: Executor,
-) -> impl Service<Request, Output = Response, Error = Infallible> {
-    (
-        MapResponseBodyLayer::new(Body::new),
-        TraceLayer::new_for_http(),
-        ConsumeErrLayer::default(),
-        RemoveResponseHeaderLayer::hop_by_hop(),
-        RemoveRequestHeaderLayer::hop_by_hop(),
-        CompressionLayer::new(),
-        AddRequiredRequestHeadersLayer::new(),
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
+    Arc::new(
+        (
+            MapResponseBodyLayer::new(Body::new),
+            TraceLayer::new_for_http(),
+            ConsumeErrLayer::default(),
+            RemoveResponseHeaderLayer::hop_by_hop(),
+            RemoveRequestHeaderLayer::hop_by_hop(),
+            CompressionLayer::new(),
+            AddRequiredRequestHeadersLayer::new(),
+        )
+            .into_layer(HttpMitmProxy { exec }),
     )
-        .into_layer(HttpMitmProxy { exec })
 }
 
 #[derive(Debug)]

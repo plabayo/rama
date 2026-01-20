@@ -39,7 +39,7 @@ use rama::{
 };
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::broadcast;
 
 #[tokio::main]
@@ -56,7 +56,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Router::new().with_get("/", Html(INDEX)).with_get(
+        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Arc::new(Router::new().with_get("/", Html(INDEX)).with_get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
                 async |mut ws: ServerWebSocket| {
@@ -117,7 +117,7 @@ async fn main() {
                     }
                 },
             )),
-        ));
+        )));
         info!("open mini web chat @ http://127.0.0.1:62033");
         info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama')");
 
@@ -125,7 +125,7 @@ async fn main() {
         TcpListener::bind("127.0.0.1:62033", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
-            .serve( AddInputExtensionLayer::new(State::default()).into_layer(server))
+            .serve(AddInputExtensionLayer::new(State::default()).into_layer(server))
             .await;
     });
 

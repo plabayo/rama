@@ -12,7 +12,7 @@ use rama::{
 };
 
 use clap::Args;
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use crate::utils::tls::try_new_server_config;
 
@@ -114,7 +114,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
             network.local.port = %bind_address.port(),
             "ready to serve: bind interface = {}", cfg.bind,
         );
-        tcp_listener.serve(tcp_service).await;
+        tcp_listener.serve(Arc::new(tcp_service)).await;
     });
 
     Ok(())

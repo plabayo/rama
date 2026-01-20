@@ -26,7 +26,7 @@ use rama_net::{
     user::{self, authority::Authorizer},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 mod peek;
 #[doc(inline)]
@@ -553,7 +553,7 @@ where
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
         let tcp = TcpListener::bind(interface, self.exec.clone()).await?;
-        tcp.serve(self).await;
+        tcp.serve(Arc::new(self)).await;
         Ok(())
     }
 }

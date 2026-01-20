@@ -208,13 +208,15 @@ async fn main() -> Result<(), BoxError> {
     // NOTE: this example shows a very simplistic HTTPS stack,
     // for productions scenarios you probably want to expand this
     // in terms of security, error scenario handling, protocol support, etc...
-    let http_svc = (
-        ConsumeErrLayer::trace(Level::DEBUG),
-        MapResponseBodyLayer::new(Body::new),
-        TraceLayer::new_for_http(),
-        AddRequiredResponseHeadersLayer::new(),
-    )
-        .into_layer(HttpsMITMService { https_client });
+    let http_svc = Arc::new(
+        (
+            ConsumeErrLayer::trace(Level::DEBUG),
+            MapResponseBodyLayer::new(Body::new),
+            TraceLayer::new_for_http(),
+            AddRequiredResponseHeadersLayer::new(),
+        )
+            .into_layer(HttpsMITMService { https_client }),
+    );
 
     let https_svc = TlsAcceptorLayer::new(tls_service_data)
         .into_layer(HttpServer::auto(Executor::graceful(shutdown.guard())).service(http_svc));
@@ -243,7 +245,7 @@ const DOMAIN_RAMAPROXY_ORG: Domain = Domain::from_static("ramaproxy.org");
 #[derive(Debug, Clone)]
 struct IngressSNI(Domain);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SniRouterService<T> {
     https_svc: T,
     exec: Executor,

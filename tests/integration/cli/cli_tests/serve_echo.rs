@@ -447,22 +447,17 @@ async fn test_https_with_remote_tls_cert_issuer() {
         key: PKey<Private>,
     }
 
-    let crt_issuer_https_svc = (
-        HaProxyLayer::new().with_peek(true),
-        TlsAcceptorLayer::new(tls_acceptor_data),
-    ).into_layer(
-        HttpServer::auto(Executor::default()).service(
-            (
-                MapResponseBodyLayer::new(Body::new),
-                TraceLayer::new_for_http(),
-                CompressionLayer::new(),
-                cors::CorsLayer::permissive(),
-                SetResponseHeaderLayer::if_not_present_typed(
-                    StrictTransportSecurity::including_subdomains_for_max_seconds(31536000),
-                ),
-                AddRequiredResponseHeadersLayer::new(),
-            )
-                .into_layer(
+    let http_svc = (
+        MapResponseBodyLayer::new(Body::new),
+        TraceLayer::new_for_http(),
+        CompressionLayer::new(),
+        cors::CorsLayer::permissive(),
+        SetResponseHeaderLayer::if_not_present_typed(
+            StrictTransportSecurity::including_subdomains_for_max_seconds(31536000),
+        ),
+        AddRequiredResponseHeadersLayer::new(),
+    )
+        .into_layer(
             Router::new_with_state(CaInfo {
                 crt: ca_issuer_cert,
                 key: ca_issuer_key,
@@ -500,9 +495,14 @@ async fn test_https_with_remote_tls_cert_issuer() {
                         key_pem_base64,
                     }))
                 },
-            )),
-        ),
-    );
+            ),
+        );
+
+    let crt_issuer_https_svc = (
+        HaProxyLayer::new().with_peek(true),
+        TlsAcceptorLayer::new(tls_acceptor_data),
+    )
+        .into_layer(HttpServer::auto(Executor::default()).service(Arc::new(http_svc)));
 
     tracing::info!("spawning tcp listener for remote tls issuer");
 
