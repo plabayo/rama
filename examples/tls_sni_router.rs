@@ -65,7 +65,7 @@ use rama::{
 
 // everything else is provided by the standard library, community crates or tokio
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -117,7 +117,7 @@ const INTERFACE_BAR: SocketAddress = SocketAddress::local_ipv4(63805);
 const NAME_BAZ: &str = "baz";
 const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(63806);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SniRouterSvc {
     exec: Executor,
 }
@@ -184,9 +184,9 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: Socke
             .await
             .expect("bind TCP Listener for web server")
             .serve(TlsAcceptorLayer::new(acceptor_data).into_layer(
-                HttpServer::auto(Executor::graceful(guard)).service(
+                HttpServer::auto(Executor::graceful(guard)).service(Arc::new(
                     TraceLayer::new_for_http().into_layer(Router::new().with_get("/", name)),
-                ),
+                )),
             ))
             .instrument(tracing::debug_span!(
                 "tcp::serve(https)",

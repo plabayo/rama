@@ -2,7 +2,7 @@ use super::service_ready::Ready;
 use crate::core::Layer as TowerLayer;
 use crate::core::Service as TowerService;
 use rama_core::error::BoxError;
-use std::{fmt, pin::Pin, sync::Arc};
+use std::{fmt, pin::Pin};
 
 /// Adapter to use a [`tower::Layer`]-[`tower::Service`] as a [`rama::Layer`]-[`rama::Service`].
 ///
@@ -55,7 +55,7 @@ impl<L: fmt::Debug> fmt::Debug for LayerAdapter<L> {
 /// [`tower::Layer`]: tower_layer::Layer
 /// [`rama::Service`]: rama_core::Service
 pub struct TowerAdapterService<S> {
-    inner: Arc<S>,
+    inner: S,
 }
 
 impl<S> TowerAdapterService<S> {
@@ -64,7 +64,7 @@ impl<S> TowerAdapterService<S> {
     /// [`rama::Service`]: rama_core::Service
     #[must_use]
     pub fn inner(&self) -> &S {
-        self.inner.as_ref()
+        &self.inner
     }
 }
 
@@ -76,7 +76,7 @@ impl<S: fmt::Debug> fmt::Debug for TowerAdapterService<S> {
     }
 }
 
-impl<S> Clone for TowerAdapterService<S> {
+impl<S: Clone> Clone for TowerAdapterService<S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -106,9 +106,7 @@ where
     type Service = LayerAdapterService<L::Service>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        let tower_svc = TowerAdapterService {
-            inner: Arc::new(inner),
-        };
+        let tower_svc = TowerAdapterService { inner };
         let layered_tower_svc = self.inner.layer(tower_svc);
         LayerAdapterService(layered_tower_svc)
     }
@@ -116,7 +114,7 @@ where
 
 impl<T, Input> TowerService<Input> for TowerAdapterService<T>
 where
-    T: rama_core::Service<Input, Error: Into<BoxError>>,
+    T: rama_core::Service<Input, Error: Into<BoxError>> + Clone,
     Input: Send + 'static,
 {
     type Response = T::Output;

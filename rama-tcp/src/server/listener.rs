@@ -9,7 +9,6 @@ use rama_net::socket::Interface;
 use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
 use std::pin::pin;
-use std::sync::Arc;
 use std::{io, net::SocketAddr};
 use tokio::net::TcpListener as TokioTcpListener;
 
@@ -313,10 +312,8 @@ impl TcpListener {
     /// gracefully if the [`TcpListener`] is configured with a graceful [`Executor`].
     pub async fn serve<S>(self, service: S)
     where
-        S: Service<TcpStream>,
+        S: Service<TcpStream> + Clone,
     {
-        let service = Arc::new(service);
-
         let guard = self.exec.guard().cloned();
         let cancelled_fut = async {
             if let Some(guard) = guard {

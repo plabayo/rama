@@ -11,7 +11,6 @@ use std::os::unix::net::UnixListener as StdUnixListener;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::pin;
-use std::sync::Arc;
 use tokio::net::UnixListener as TokioUnixListener;
 use tokio::net::unix::SocketAddr;
 
@@ -228,9 +227,8 @@ impl UnixListener {
     /// gracefully if the [`UnixListener`] is configured with a graceful [`Executor`].
     pub async fn serve<S>(self, service: S)
     where
-        S: Service<UnixStream>,
+        S: Service<UnixStream> + Clone,
     {
-        let service = Arc::new(service);
         let guard = self.exec.guard().cloned();
         let cancelled_fut = async {
             if let Some(guard) = guard {

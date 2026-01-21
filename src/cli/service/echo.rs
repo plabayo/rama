@@ -45,7 +45,7 @@ use crate::{
 
 use serde::Serialize;
 use serde_json::json;
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
@@ -247,7 +247,7 @@ where
             _ => None,
         };
 
-        let http_service = self.build_http(exec.clone());
+        let http_service = Arc::new(self.build_http(exec.clone()));
 
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config;

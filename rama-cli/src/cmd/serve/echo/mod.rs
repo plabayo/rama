@@ -196,7 +196,10 @@ async fn bind_echo_http_service(
             "http(s) echo service ready: bind interface = {}", cfg.bind,
         );
 
-        tcp_listener.serve(tcp_service).instrument(span).await;
+        tcp_listener
+            .serve(Arc::new(tcp_service))
+            .instrument(span)
+            .await;
     });
 
     Ok(())

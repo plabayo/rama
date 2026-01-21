@@ -145,7 +145,7 @@ async fn main() -> Result<(), BoxError> {
             .expect("bind tcp proxy to 127.0.0.1:62040");
 
         let http_mitm_service = new_http_mitm_proxy(&state);
-        let http_service = HttpServer::auto(exec.clone()).service(
+        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -183,7 +183,7 @@ async fn main() -> Result<(), BoxError> {
                     service_fn(http_connect_proxy),
                 ),
             )
-                .into_layer(http_mitm_service),
+                .into_layer(http_mitm_service)),
         );
 
         tcp_service
@@ -238,7 +238,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     // for upstream http requests.
 
     let state = upgraded.extensions().get::<State>().unwrap();
-    let http_service = new_http_mitm_proxy(state);
+    let http_service = Arc::new(new_http_mitm_proxy(state));
 
     let executor = state.exec.clone();
 

@@ -46,7 +46,7 @@ use rama::{
 
 use clap::Args;
 use itertools::Itertools;
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 mod data;
 mod endpoints;
@@ -222,7 +222,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             Redirect::temporary("/consent")
         });
 
-    let http_service = middlewares.into_layer(router);
+    let http_service = Arc::new(middlewares.into_layer(router));
 
     serve_http(graceful, cfg, http_service, tcp_forwarded_layer).await
 }
@@ -230,7 +230,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
 async fn serve_http<Response>(
     graceful: ShutdownGuard,
     cfg: CliCommandFingerprint,
-    http_service: impl Service<Request, Output = Response, Error = Infallible>,
+    http_service: impl Service<Request, Output = Response, Error = Infallible> + Clone,
     maybe_ha_proxy_layer: Option<HaProxyLayer>,
 ) -> Result<(), BoxError>
 where

@@ -29,7 +29,7 @@ use rama::{
 };
 
 use clap::Args;
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use crate::utils::{http::HttpVersion, tls::try_new_server_config};
 
@@ -99,7 +99,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
         )
         .with_get("/sse", endpoint::sse::service());
 
-    let http_service = middlewares.into_layer(router);
+    let http_service = Arc::new(middlewares.into_layer(router));
 
     serve_http(graceful, cfg, http_service).await
 }
@@ -107,7 +107,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
 async fn serve_http<Response>(
     graceful: ShutdownGuard,
     cfg: CliCommandHttpTest,
-    http_service: impl Service<Request, Output = Response, Error = Infallible>,
+    http_service: impl Service<Request, Output = Response, Error = Infallible> + Clone,
 ) -> Result<(), BoxError>
 where
     Response: IntoResponse + Send + 'static,
