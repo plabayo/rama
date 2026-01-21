@@ -238,7 +238,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     // for upstream http requests.
 
     let state = upgraded.extensions().get::<State>().unwrap();
-    let http_service = new_http_mitm_proxy(state);
+    let http_service = Arc::new(new_http_mitm_proxy(state));
 
     let executor = state.exec.clone();
 
@@ -258,21 +258,19 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
 fn new_http_mitm_proxy(
     state: &State,
-) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
-    Arc::new(
-        (
-            MapResponseBodyLayer::new(Body::new),
-            TraceLayer::new_for_http(),
-            ConsumeErrLayer::default(),
-            UserAgentEmulateLayer::new(state.ua_db.clone())
-                .with_try_auto_detect_user_agent(true)
-                .with_is_optional(true),
-            CompressionLayer::new(),
-            AddRequiredRequestHeadersLayer::new(),
-            EmulateTlsProfileLayer::new(),
-        )
-            .into_layer(service_fn(http_mitm_proxy)),
+) -> impl Service<Request, Output = Response, Error = Infallible> {
+    (
+        MapResponseBodyLayer::new(Body::new),
+        TraceLayer::new_for_http(),
+        ConsumeErrLayer::default(),
+        UserAgentEmulateLayer::new(state.ua_db.clone())
+            .with_try_auto_detect_user_agent(true)
+            .with_is_optional(true),
+        CompressionLayer::new(),
+        AddRequiredRequestHeadersLayer::new(),
+        EmulateTlsProfileLayer::new(),
     )
+        .into_layer(service_fn(http_mitm_proxy))
 }
 
 async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
