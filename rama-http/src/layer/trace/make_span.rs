@@ -2,6 +2,7 @@ use crate::Request;
 use crate::header::USER_AGENT;
 use crate::opentelemetry::version_as_protocol_version;
 use rama_core::telemetry::tracing::{self, Level, Span};
+use rama_net::http::RequestContext;
 
 use super::DEFAULT_MESSAGE_LEVEL;
 
@@ -83,6 +84,27 @@ impl Default for DefaultMakeSpan {
 
 impl<B> MakeSpan<B> for DefaultMakeSpan {
     fn make_span(&self, request: &Request<B>) -> Span {
+        // to ensure that we always log authority even if not included in full protocol
+        // TODO: in near future this will be slightly more elegant with input extensions,
+        // it is blocking on the url rework that has to be done first
+        let req_ctx = RequestContext::try_from(request);
+        let (found_domain, found_port, found_scheme) = match &req_ctx {
+            Ok(req_ctx) => {
+                // according to OTEL spec domain can be domain or IP, so host is fine
+                let authority = req_ctx.host_with_port();
+                let scheme = req_ctx.protocol.as_str();
+
+                (Some(authority.host), Some(authority.port), Some(scheme))
+            }
+            Err(err) => {
+                tracing::debug!("error extracting request context: {err:?}");
+                (None, None, None)
+            }
+        };
+
+        let found_domain_cow_str = found_domain.as_ref().map(|d| d.to_str());
+        let found_domain_str = found_domain_cow_str.as_deref();
+
         // This ugly macro is needed, unfortunately, because `tracing::span!`
         // required the level argument to be static. Meaning we can't just pass
         // `self.level`.
@@ -94,9 +116,11 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                         "request",
                         http.request.method = %request.method(),
                         url.full = %request.uri(),
-                        url.path = %request.uri().path(),
-                        url.query = request.uri().query().unwrap_or_default(),
-                        url.scheme = %request.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                        url.domain = found_domain_str,
+                        url.port = found_port,
+                        url.path = request.uri().path(),
+                        url.query = request.uri().query(),
+                        url.scheme = found_scheme,
                         network.protocol.name = "http",
                         network.protocol.version = version_as_protocol_version(request.version()),
                         user_agent.original = %request.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
@@ -108,9 +132,11 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                         "request",
                         http.request.method = %request.method(),
                         url.full = %request.uri(),
-                        url.path = %request.uri().path(),
-                        url.query = request.uri().query().unwrap_or_default(),
-                        url.scheme = %request.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                        url.domain = found_domain_str,
+                        url.port = found_port,
+                        url.path = request.uri().path(),
+                        url.query = request.uri().query(),
+                        url.scheme = found_scheme,
                         network.protocol.name = "http",
                         network.protocol.version = version_as_protocol_version(request.version()),
                         user_agent.original = %request.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
