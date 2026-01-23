@@ -1,6 +1,6 @@
 //! Limit policies for [`super::Limit`]
-//! define how requests are handled when the limit is reached
-//! for a given request.
+//! define how inputs are handled when the limit is reached
+//! for a given input.
 //!
 //! [`Option`] can be used to disable a limit policy for some scenarios
 //! while enabling it for others.
@@ -12,7 +12,7 @@
 //! To avoid cloning you best use an Arc<...> around the most outer vec.
 //!
 //! The first matching policy is used.
-//! If no policy matches, the request is allowed to proceed as well.
+//! If no policy matches, the input is allowed to proceed as well.
 //! If you want to enforce a default policy, you can add a policy with a [`Matcher`] that always matches,
 //! such as the bool `true`.
 //!
@@ -178,7 +178,7 @@ where
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-/// An unlimited policy that allows all requests to proceed.
+/// An unlimited policy that allows all inputs to proceed.
 pub struct UnlimitedPolicy;
 
 impl UnlimitedPolicy {

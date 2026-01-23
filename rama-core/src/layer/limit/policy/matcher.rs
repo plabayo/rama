@@ -98,14 +98,14 @@ mod tests {
         }
     }
 
-    type NumberedRequest = ServiceInput<usize>;
+    type NumberedInput = ServiceInput<usize>;
 
     #[tokio::test]
     async fn matcher_policy_empty() {
         let policy = Vec::<(bool, ConcurrentPolicy<(), ConcurrentCounter>)>::new();
 
         for i in 0..10 {
-            assert_ready(policy.check(NumberedRequest::new(i)).await);
+            assert_ready(policy.check(NumberedInput::new(i)).await);
         }
     }
 
@@ -135,8 +135,8 @@ mod tests {
         Odd,
     }
 
-    impl Matcher<NumberedRequest> for TestMatchers {
-        fn matches(&self, _ext: Option<&mut Extensions>, req: &NumberedRequest) -> bool {
+    impl Matcher<NumberedInput> for TestMatchers {
+        fn matches(&self, _ext: Option<&mut Extensions>, req: &NumberedInput) -> bool {
             match self {
                 Self::Const(n) => *n == req.input,
                 Self::Odd => req.input % 2 == 1,
@@ -153,44 +153,44 @@ mod tests {
 
         // even numbers (except 42) will always be allowed
         for i in 1..10 {
-            assert_ready(policy.check(NumberedRequest::new(i * 2)).await);
+            assert_ready(policy.check(NumberedInput::new(i * 2)).await);
         }
 
-        let odd_guard_1 = assert_ready(policy.check(NumberedRequest::new(1)).await);
+        let odd_guard_1 = assert_ready(policy.check(NumberedInput::new(1)).await);
 
-        let const_guard_1 = assert_ready(policy.check(NumberedRequest::new(42)).await);
+        let const_guard_1 = assert_ready(policy.check(NumberedInput::new(42)).await);
 
-        let odd_guard_2 = assert_ready(policy.check(NumberedRequest::new(3)).await);
+        let odd_guard_2 = assert_ready(policy.check(NumberedInput::new(3)).await);
 
         // both the odd and 42 limit is reached
-        assert_abort(&policy.check(NumberedRequest::new(5)).await);
-        assert_abort(&policy.check(NumberedRequest::new(42)).await);
+        assert_abort(&policy.check(NumberedInput::new(5)).await);
+        assert_abort(&policy.check(NumberedInput::new(42)).await);
 
         // even numbers except 42 will match nothing and thus have no limit
         for i in 1..10 {
-            assert_ready(policy.check(NumberedRequest::new(i * 2)).await);
+            assert_ready(policy.check(NumberedInput::new(i * 2)).await);
         }
 
         // only once we drop a guard can we make a new odd input
         drop(odd_guard_1);
-        let _odd_guard_3 = assert_ready(policy.check(NumberedRequest::new(9)).await);
+        let _odd_guard_3 = assert_ready(policy.check(NumberedInput::new(9)).await);
 
         // only once we drop the current 42 guard can we get a new guard,
         // as the limit is 1 for 42
-        assert_abort(&policy.check(NumberedRequest::new(42)).await);
+        assert_abort(&policy.check(NumberedInput::new(42)).await);
         drop(const_guard_1);
-        assert_ready(policy.check(NumberedRequest::new(42)).await);
+        assert_ready(policy.check(NumberedInput::new(42)).await);
 
         // odd limit reached again so no luck here
-        assert_abort(&policy.check(NumberedRequest::new(11)).await);
+        assert_abort(&policy.check(NumberedInput::new(11)).await);
 
         // dropping another odd guard makes room for a new odd input
         drop(odd_guard_2);
-        assert_ready(policy.check(NumberedRequest::new(13)).await);
+        assert_ready(policy.check(NumberedInput::new(13)).await);
 
         // even numbers (except 42) will always be allowed
         for i in 1..10 {
-            assert_ready(policy.check(NumberedRequest::new(i * 2)).await);
+            assert_ready(policy.check(NumberedInput::new(i * 2)).await);
         }
     }
 }

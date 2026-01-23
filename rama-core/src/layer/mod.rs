@@ -941,6 +941,9 @@ pub use map_result::{MapResult, MapResultLayer};
 pub mod timeout;
 pub use timeout::{Timeout, TimeoutLayer};
 
+pub mod abort;
+pub use abort::{Abortable, AbortableLayer};
+
 pub mod limit;
 pub use limit::{Limit, LimitLayer};
 

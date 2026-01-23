@@ -318,10 +318,10 @@ mod tests {
             Ok::<_, Infallible>(ServiceInput::new(()))
         }));
 
-        let mut request = ServiceInput::new(value.clone());
-        request.extensions_mut().insert(State(42));
+        let mut input = ServiceInput::new(value.clone());
+        input.extensions_mut().insert(State(42));
 
-        let res = svc.serve(request).await.unwrap();
+        let res = svc.serve(input).await.unwrap();
 
         assert!(res.extensions.get::<State>().is_none());
 

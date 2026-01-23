@@ -14,22 +14,20 @@ macro_rules! __static_str_error {
 
         impl $name {
             #[doc = concat!("Create a new ", stringify!($name), ".")]
-            #[must_use] pub fn new() -> Self {
-                Self::default()
+            #[inline(always)]
+            #[must_use] pub const fn new() -> Self {
+                Self
             }
         }
 
         impl std::fmt::Display for $name {
+            #[inline(always)]
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, $desc)
             }
         }
 
-        impl std::error::Error for $name {
-            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                Some(self)
-            }
-        }
+        impl std::error::Error for $name {}
     }
 }
 #[doc(inline)]
