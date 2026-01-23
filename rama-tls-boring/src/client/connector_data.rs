@@ -523,13 +523,11 @@ impl TlsConnectorDataBuilder {
                                         }
                                     }
                                     Err(err) => {
-                                        debug!(concat!(
-                                            "failed to open ",
+                                        debug!(
+                                            "failed to open {} cert store using schannel::cert_store::CertStore::{}; err = {err:?}",
                                             $store,
-                                            " cert store using schannel::cert_store::CertStore::",
                                             stringify!($method),
-                                            "; err = {err:?}"
-                                        ));
+                                        );
                                     }
                                 }
                             }};
