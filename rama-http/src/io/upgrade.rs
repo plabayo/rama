@@ -97,16 +97,36 @@ pub struct Parts<T> {
 
 /// Gets a pending HTTP upgrade from this message and handles it.
 ///
-/// This can be called on the following types:
+/// This can be called on types implementing [`ExtensionsRef`]:
 ///
+/// Some notable examples are:
 /// - `http::Request<B>`
 /// - `http::Response<B>`
 /// - `&rama_http::Request<B>`
 /// - `&rama_http::Response<B>`
-pub fn handle_upgrade<T: sealed::HandleUpgrade>(
+pub fn handle_upgrade<T: ExtensionsRef>(
     msg: T,
-) -> impl Future<Output = Result<Upgraded, OpaqueError>> {
-    msg.handle_upgrade()
+) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+    let on_upgrade = match msg.extensions().get::<OnUpgrade>().cloned() {
+        Some(on_upgrade) => {
+            trace!("upgrading this: {:?}", on_upgrade);
+            if on_upgrade.has_handled_upgrade() {
+                Err(OpaqueError::from_display(
+                    "upgraded has already been handled",
+                ))
+            } else {
+                Ok(on_upgrade)
+            }
+        }
+        None => Err(OpaqueError::from_display("no pending update found")),
+    };
+
+    async {
+        match on_upgrade {
+            Ok(on_upgrade) => on_upgrade.await,
+            Err(err) => Err(err),
+        }
+    }
 }
 
 /// A pending upgrade, created with [`pending`].
@@ -302,71 +322,6 @@ impl Pending {
         let _ = self.tx.send(Err(OpaqueError::from_display(
             "OnUpgrade: manual upgrade failed",
         )));
-    }
-}
-
-mod sealed {
-    use rama_core::{extensions::ExtensionsRef, telemetry::tracing::trace};
-    use rama_error::OpaqueError;
-    use rama_http_types::{Request, Response};
-
-    use crate::io::upgrade::Upgraded;
-
-    use super::OnUpgrade;
-
-    pub trait HandleUpgrade {
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static;
-    }
-
-    fn handle_upgrade<T: ExtensionsRef>(
-        obj: T,
-    ) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-        let on_upgrade = match obj.extensions().get::<OnUpgrade>().cloned() {
-            Some(on_upgrade) => {
-                trace!("upgrading this: {:?}", on_upgrade);
-                if on_upgrade.has_handled_upgrade() {
-                    Err(OpaqueError::from_display(
-                        "upgraded has already been handled",
-                    ))
-                } else {
-                    Ok(on_upgrade)
-                }
-            }
-            None => Err(OpaqueError::from_display("no pending update found")),
-        };
-
-        async {
-            match on_upgrade {
-                Ok(on_upgrade) => on_upgrade.await,
-                Err(err) => Err(err),
-            }
-        }
-    }
-
-    impl<B> HandleUpgrade for Request<B> {
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-
-    impl<B> HandleUpgrade for &Request<B> {
-        #[inline(always)]
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-
-    impl<B> HandleUpgrade for Response<B> {
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-
-    impl<B> HandleUpgrade for &Response<B> {
-        #[inline(always)]
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
     }
 }
 
