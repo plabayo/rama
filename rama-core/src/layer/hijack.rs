@@ -1,8 +1,8 @@
-//! Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
+//! Middleware to hijack an input to a [`Service`] which match using a [`Matcher`].
 //!
-//! Common usecases for hijacking requests are:
-//! - Redirecting requests to a different service based on the conditions specified in the [`Matcher`].
-//! - Block requests based on the conditions specified in the [`Matcher`] (and thus act like a Firewall).
+//! Common usecases for hijacking inputs are:
+//! - Redirecting inputs to a different service based on the conditions specified in the [`Matcher`].
+//! - Block inputs based on the conditions specified in the [`Matcher`] (and thus act like a Firewall).
 //!
 //! [`Service`]: crate
 //! [`Matcher`]: crate::matcher::Matcher
@@ -10,11 +10,11 @@
 use crate::{Layer, Service, extensions::Extensions, extensions::ExtensionsMut, matcher::Matcher};
 use rama_utils::macros::define_inner_service_accessors;
 
-/// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
+/// Middleware to hijack inputs to a [`Service`] which match using a [`Matcher`].
 ///
-/// Common usecases for hijacking requests are:
-/// - Redirecting requests to a different service based on the conditions specified in the [`Matcher`].
-/// - Block requests based on the conditions specified in the [`Matcher`] (and thus act like a Firewall).
+/// Common usecases for hijacking inputs are:
+/// - Redirecting inputs to a different service based on the conditions specified in the [`Matcher`].
+/// - Block inputs based on the conditions specified in the [`Matcher`] (and thus act like a Firewall).
 ///
 /// [`Service`]: crate
 /// [`Matcher`]: crate::matcher::Matcher
@@ -62,11 +62,11 @@ where
     }
 }
 
-/// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
+/// Middleware to hijack an inputs to a [`Service`] which match using a [`Matcher`].
 ///
-/// Common usecases for hijacking requests are:
-/// - Redirecting requests to a different service based on the conditions specified in the [`Matcher`].
-/// - Block requests based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
+/// Common usecases for hijacking inputs are:
+/// - Redirecting inputs to a different service based on the conditions specified in the [`Matcher`].
+/// - Block inputs based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
 ///
 /// [`Service`]: crate
 /// [`Matcher`]: crate::matcher::Matcher

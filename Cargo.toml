@@ -568,6 +568,10 @@ name = "http_key_value_store"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_abort"
+required-features = ["http-full"]
+
+[[example]]
 name = "http_listener_hello"
 required-features = ["http-full"]
 

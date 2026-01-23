@@ -18,6 +18,7 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_web_service_dir_and_api.rs`](./http_web_service_dir_and_api.rs) - Combined directory and API service
 - [`http_web_router.rs`](./http_web_router.rs) - HTTP router implementation
 - [`http_service_match.rs`](./http_service_match.rs) - Service matching example
+- [`http_abort.rs`](./http_abort.rs) - A small example how one can control a lower network layer from within the http (application) layer
 - [`http_form.rs`](./http_form.rs) - Form handling example
 - [`http_health_check.rs`](./http_health_check.rs) - Health check endpoint implementation
 - [`http_k8s_health.rs`](./http_k8s_health.rs) - Kubernetes health check implementation

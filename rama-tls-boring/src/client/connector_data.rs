@@ -504,41 +504,43 @@ impl TlsConnectorDataBuilder {
 
                         macro_rules! try_load_certs {
                             ($builder:ident, $certs_added:ident, $method:ident, $store:literal) => {{
-                                let cstore =
-                                    schannel::cert_store::CertStore::open_current_user("ROOT")
-                                        .context(concat!(
-                                            "open ",
-                                            $store,
-                                            " cert store using schannel::cert_store::CertStore::",
-                                            stringify!($method),
-                                        ))?;
-
-                                for cert in cstore.certs() {
-                                    // Convert the Windows cert to DER, then to BoringSSL X509
-                                    match X509::from_der(cert.to_der()) {
-                                        Ok(x509) => {
-                                            if let Err(err) = builder.add_cert(x509) {
-                                                debug!("failed to add x509 cert to windows: {err}");
-                                            } else {
-                                                $certs_added = true;
+                                match schannel::cert_store::CertStore::$method($store) {
+                                    Ok(cstore) => {
+                                        for cert in cstore.certs() {
+                                            // Convert the Windows cert to DER, then to BoringSSL X509
+                                            match X509::from_der(cert.to_der()) {
+                                                Ok(x509) => {
+                                                    if let Err(err) = builder.add_cert(x509) {
+                                                        debug!("failed to add x509 cert to windows: {err}");
+                                                    } else {
+                                                        $certs_added = true;
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    debug!("failed to convert DER cert to x509: {err}");
+                                                }
                                             }
                                         }
-                                        Err(err) => {
-                                            debug!("failed to convert DER cert to x509: {err}");
-                                        }
+                                    }
+                                    Err(err) => {
+                                        debug!(
+                                            "failed to open {} cert store using schannel::cert_store::CertStore::{}; err = {err:?}",
+                                            $store,
+                                            stringify!($method),
+                                        );
                                     }
                                 }
                             }};
                         }
 
-                        try_load_certs!(builder, certs_added, open_current_user, "ROOT");
+                        try_load_certs!(builder, certs_added, open_current_user, "Root");
                         try_load_certs!(builder, certs_added, open_current_user, "CA");
-                        try_load_certs!(builder, certs_added, open_local_machine, "ROOT");
+                        try_load_certs!(builder, certs_added, open_local_machine, "Root");
                         try_load_certs!(builder, certs_added, open_local_machine, "CA");
 
                         if !certs_added {
                             return Err(OpaqueError::from_display(
-                                "failed to add windows certs from system (user/machine x root/ca)",
+                                "failed to add windows certs from system (user/machine x Root/CA)",
                             ));
                         }
 

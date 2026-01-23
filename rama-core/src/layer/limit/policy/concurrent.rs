@@ -1,4 +1,4 @@
-//! A [`Policy`] that limits the number of concurrent requests.
+//! A [`Policy`] that limits the number of concurrent inputs.
 //!
 //! See [`ConcurrentPolicy`].
 //!
@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 use rama_utils::backoff::Backoff;
 use std::sync::Arc;
 
-/// A [`Policy`] that limits the number of concurrent requests.
+/// A [`Policy`] that limits the number of concurrent inputs.
 #[derive(Debug, Clone)]
 pub struct ConcurrentPolicy<B, C> {
     tracker: C,
@@ -135,7 +135,7 @@ pub trait ConcurrentTracker: Send + Sync + 'static {
     fn try_access(&self) -> Result<Self::Guard, Self::Error>;
 }
 
-/// The default [`ConcurrentTracker`] that uses a counter to track the concurrent requests.
+/// The default [`ConcurrentTracker`] that uses a counter to track the concurrent inputs.
 #[derive(Debug, Clone)]
 pub struct ConcurrentCounter {
     max: usize,
@@ -207,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_policy_zero() {
-        // for cases where you want to also block specific requests as part of your rate limiting,
+        // for cases where you want to also block specific inputs as part of your rate limiting,
         // bit of a contrived example, but possible
 
         let policy = ConcurrentPolicy::max(0);

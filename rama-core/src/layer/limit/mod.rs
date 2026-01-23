@@ -17,7 +17,7 @@ pub use layer::LimitLayer;
 
 mod into_output;
 
-/// Limit requests based on a [`Policy`].
+/// Limit inputs based on a [`Policy`].
 ///
 /// [`Policy`]: crate::layer::limit::Policy
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ impl<S, P> Limit<S, P, ()> {
 impl<T> Limit<T, UnlimitedPolicy, ()> {
     /// Creates a new [`Limit`] with an unlimited policy.
     ///
-    /// Meaning that all requests are allowed to proceed.
+    /// Meaning that all inputs are allowed to proceed.
     pub const fn unlimited(inner: T) -> Self {
         Self {
             inner,
@@ -137,15 +137,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit() {
-        async fn handle_request<Input>(req: Input) -> Result<Input, Infallible> {
+        async fn handle_input<Input>(req: Input) -> Result<Input, Infallible> {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             Ok(req)
         }
 
         let layer: LimitLayer<ConcurrentPolicy<_, _>> = LimitLayer::new(ConcurrentPolicy::max(1));
 
-        let service_1 = layer.layer(service_fn(handle_request));
-        let service_2 = layer.layer(service_fn(handle_request));
+        let service_1 = layer.layer(service_fn(handle_input));
+        let service_2 = layer.layer(service_fn(handle_input));
 
         let future_1 = service_1.serve("Hello");
         let future_2 = service_2.serve("Hello");
@@ -163,7 +163,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_error_into_response_fn() {
-        async fn handle_request<Input>(_req: Input) -> Result<&'static str, Infallible> {
+        async fn handle_input<Input>(_req: Input) -> Result<&'static str, Infallible> {
             Ok("good")
         }
 
@@ -171,7 +171,7 @@ mod tests {
             LimitLayer::new(ConcurrentPolicy::max(0))
                 .with_error_into_response_fn(|_| Ok::<_, Infallible>("bad"));
 
-        let service = layer.layer(service_fn(handle_request));
+        let service = layer.layer(service_fn(handle_input));
 
         let resp = service.serve("Hello").await.unwrap();
         assert_eq!("bad", resp);
@@ -179,13 +179,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_zero_limit() {
-        async fn handle_request<Input>(req: Input) -> Result<Input, Infallible> {
+        async fn handle_input<Input>(req: Input) -> Result<Input, Infallible> {
             Ok(req)
         }
 
         let layer: LimitLayer<ConcurrentPolicy<_, _>> = LimitLayer::new(ConcurrentPolicy::max(0));
 
-        let service_1 = layer.layer(service_fn(handle_request));
+        let service_1 = layer.layer(service_fn(handle_input));
         let result_1 = service_1.serve("Hello").await;
         assert!(result_1.is_err());
     }
