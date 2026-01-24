@@ -3,6 +3,8 @@ use std::{env, path::PathBuf};
 fn main() {
     build_examples();
     build_tests();
+
+    println!("cargo::rerun-if-changed=proto");
 }
 
 fn build_examples() {
@@ -112,10 +114,6 @@ fn build_tests_web() {
     rama::http::grpc::build::protobuf::configure()
         .compile_protos(protos, &["proto/tests/web"])
         .unwrap();
-
-    protos
-        .iter()
-        .for_each(|file| println!("cargo:rerun-if-changed={file}"));
 }
 
 fn build_tests_integration() {
