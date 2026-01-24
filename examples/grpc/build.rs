@@ -3,6 +3,8 @@ use std::{env, path::PathBuf};
 fn main() {
     build_examples();
     build_tests();
+
+    println!("cargo:rerun-if-changed=proto");
 }
 
 fn build_examples() {
