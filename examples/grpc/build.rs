@@ -4,7 +4,7 @@ fn main() {
     build_examples();
     build_tests();
 
-    println!("cargo:rerun-if-changed=proto");
+    println!("cargo::rerun-if-changed=proto");
 }
 
 fn build_examples() {
@@ -117,7 +117,7 @@ fn build_tests_web() {
 
     protos
         .iter()
-        .for_each(|file| println!("cargo:rerun-if-changed={file}"));
+        .for_each(|file| println!("cargo::rerun-if-changed={file}"));
 }
 
 fn build_tests_integration() {
