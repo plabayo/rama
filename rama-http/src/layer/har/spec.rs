@@ -257,13 +257,13 @@ pub struct PageTimings {
     /// Number of milliseconds since page load started (page.startedDateTime).
     /// Use -1 if the timing does not apply to the current request.
     #[serde(rename = "onContentLoad")]
-    pub on_content_load: Option<u64>,
+    pub on_content_load: Option<i64>,
     /// Page is loaded (onLoad event fired).
     ///
     /// Number of milliseconds since page load started (page.startedDateTime).
     /// Use -1 if the timing does not apply to the current request.
     #[serde(rename = "onLoad")]
-    pub on_load: Option<u64>,
+    pub on_load: Option<i64>,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
 }
@@ -797,17 +797,17 @@ pub struct Timings {
     /// Time spent in a queue waiting for a network connection.
     ///
     /// Use -1 if the timing does not apply to the current request.
-    pub blocked: Option<u64>, // TODO
+    pub blocked: Option<i64>, // TODO
     /// DNS resolution time.
     ///
     /// The time required to resolve a host name.
     ///
     /// Use -1 if the timing does not apply to the current request.
-    pub dns: Option<u64>, // TODO
+    pub dns: Option<i64>, // TODO
     /// Time required to create TCP connection.
     ///
     /// Use -1 if the timing does not apply to the current request.
-    pub connect: Option<u64>, // TODO
+    pub connect: Option<i64>, // TODO
     /// Time required to send HTTP request to the server.
     pub send: u64, // TODO
     /// Waiting for a response from the server.
@@ -820,7 +820,7 @@ pub struct Timings {
     /// (to ensure backward compatibility with HAR 1.1).
     ///
     /// Use -1 if the timing does not apply to the current request.
-    pub ssl: Option<u64>, // TODO
+    pub ssl: Option<i64>, // TODO
     /// A comment provided by the user or the application.
     pub comment: Option<String>,
 }
