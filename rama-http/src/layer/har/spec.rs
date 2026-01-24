@@ -484,6 +484,7 @@ pub struct Response {
     #[serde(rename = "statusText")]
     pub status_text: Option<ArcStr>,
     /// Response HTTP Version.
+    #[serde(rename = "httpVersion")]
     pub http_version: HttpVersion,
     /// List of cookie objects.
     pub cookies: Vec<Cookie>,
@@ -513,6 +514,49 @@ pub struct Response {
     pub body_size: i64,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
+}
+
+impl TryFrom<Response> for crate::Response {
+    type Error = OpaqueError;
+
+    fn try_from(har_response: Response) -> Result<Self, Self::Error> {
+        let body = match har_response.content.text {
+            Some(s) => match ENGINE.decode(&s) {
+                Ok(v) => crate::Body::from(v),
+                Err(_) => crate::Body::from(s),
+            },
+            None => crate::Body::empty(),
+        };
+
+        let mut orig_headers = Http1HeaderMap::with_capacity(har_response.headers.len());
+        for header in har_response.headers {
+            orig_headers.append(
+                Http1HeaderName::from_str(&header.name).context("convert http header name")?,
+                crate::HeaderValue::from_maybe_shared(header.value)
+                    .context("convert http header value")?,
+            );
+        }
+        let (headers, orig_headers) = orig_headers.into_parts();
+
+        let builder = crate::Response::builder().status(
+            crate::StatusCode::from_u16(har_response.status).context("convert HAR status code")?,
+        );
+
+        let builder = if let Ok(ver) = har_response.http_version.try_into() {
+            builder.version(ver)
+        } else {
+            builder
+        };
+
+        let mut res = builder
+            .body(body)
+            .context("build http response from HAR data")?;
+
+        *res.headers_mut() = headers;
+        res.extensions_mut().insert(orig_headers);
+
+        Ok(res)
+    }
 }
 
 impl Response {
@@ -686,7 +730,7 @@ pub struct Content {
     ///
     /// Leave out this field if the information is not available.
     pub compression: Option<i64>, // TODO: support
-    #[serde(with = "mime_serde", rename = "mimetype")]
+    #[serde(with = "mime_serde", rename = "mimeType")]
     /// MIME type of the response text
     ///
     /// (value of the Content-Type response header).
