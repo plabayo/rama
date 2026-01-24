@@ -121,7 +121,11 @@ where
             let entry = Entry {
                 page_ref: None,
                 started_date_time: entry_start_info.start_time,
-                time: entry_start_info.begin.elapsed().as_millis() as u64,
+                time: entry_start_info
+                    .begin
+                    .elapsed()
+                    .as_millis()
+                    .min(i64::MAX as u128) as i64,
                 request: entry_start_info.request,
                 response,
                 cache,

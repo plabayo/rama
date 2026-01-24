@@ -282,7 +282,7 @@ pub struct Entry {
     /// Total elapsed time of the request in milliseconds.
     ///
     /// This is the sum of all timings available in the timings object (i.e. not including -1 values).
-    pub time: u64,
+    pub time: i64,
     /// Detailed info about the request.
     pub request: Request,
     /// Detailed info about the response.
@@ -809,11 +809,11 @@ pub struct Timings {
     /// Use -1 if the timing does not apply to the current request.
     pub connect: Option<i64>, // TODO
     /// Time required to send HTTP request to the server.
-    pub send: u64, // TODO
+    pub send: i64, // TODO
     /// Waiting for a response from the server.
-    pub wait: u64, // TODO
+    pub wait: i64, // TODO
     /// Time required to read entire response from the server (or cache).
-    pub receive: u64, // TODO
+    pub receive: i64, // TODO
     /// Time required for SSL/TLS negotiation.
     ///
     /// If this field is defined then the time is also included in the connect field
