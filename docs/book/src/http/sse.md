@@ -1,7 +1,7 @@
 # Server-Sent Events (SSE)
 
 <div class="book-article-intro">
-    <img src="img/llama_sse.jpg" alt="artistical representation of a llama streaming events as glowing envelopes across the wire from space">
+    <img src="../img/llama_sse.jpg" alt="artistical representation of a llama streaming events as glowing envelopes across the wire from space">
     <div>
         Server-Sent Events (SSE) is a simple and efficient mechanism for servers to push real-time updates to clients over HTTP. Unlike WebSockets, which provide full-duplex communication, SSE establishes a one-way channel from server to client using a long-lived HTTP connection.
         <p>— <a href="https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events">MDN Web Docs</a></p>

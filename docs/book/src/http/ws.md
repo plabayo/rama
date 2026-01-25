@@ -2,7 +2,7 @@
 
 <div class="book-article-intro">
     <img
-        src="img/rama_ws.jpg"
+        src="../img/rama_ws.jpg"
         alt="artistical representation of a llama tethered to a bi-directional glowing wire stretching between Earth and space"
     >
     <div>
@@ -144,7 +144,7 @@ The [rama CLI tool](./deploy/rama-cli.md) has WebSocket support:
   - this can be a useful client to quickly test out a WebSocket service or a MITM WS Proxy;
 
 <div class="book-article-image-center">
-<img src="img/rama_ws_client_tui_demo.gif" alt="visual demo of the rama ws command and its TUI">
+<img src="../img/rama_ws_client_tui_demo.gif" alt="visual demo of the rama ws command and its TUI">
 </div>
 
 ### Examples

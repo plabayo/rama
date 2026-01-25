@@ -21,6 +21,7 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_abort.rs`](./http_abort.rs) - A small example how one can control a lower network layer from within the http (application) layer
 - [`http_form.rs`](./http_form.rs) - Form handling example
 - [`http_health_check.rs`](./http_health_check.rs) - Health check endpoint implementation
+- [`http_har_replay.rs`](./http_har_replay.rs): HAR replay demonstration
 - [`http_k8s_health.rs`](./http_k8s_health.rs) - Kubernetes health check implementation
 - [`http_record_har.rs`](./http_record_har.rs) - Demo of HAR HTTP layer provided by rama
 - [`http_octet_stream.rs`](./http_octet_stream.rs) - Binary data responses with file downloads
