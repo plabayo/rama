@@ -1,7 +1,7 @@
 # HTTP Archive (HAR)
 
 <div class="book-article-intro">
-    <img src="../img/llama_har.png" alt="artistical representation of a llama carefully collecting and replaying HTTP requests and responses">
+    <img src="../img/llama_har.jpg" alt="artistical representation of a llama carefully collecting and replaying HTTP requests and responses">
     <div>
         HTTP Archive, usually referred to as HAR, is a standardized JSON based format for recording HTTP interactions.
         It captures requests, responses, timing information, headers, payloads, and metadata in a single portable document.
