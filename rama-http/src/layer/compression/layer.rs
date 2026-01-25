@@ -14,6 +14,7 @@ use rama_core::Layer;
 pub struct CompressionLayer<P = DefaultPredicate> {
     accept: AcceptEncoding,
     predicate: P,
+    respect_content_encoding_if_possible: bool,
     quality: CompressionLevel,
 }
 
@@ -28,6 +29,7 @@ where
             inner,
             accept: self.accept,
             predicate: self.predicate.clone(),
+            respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
         }
     }
@@ -37,6 +39,7 @@ where
             inner,
             accept: self.accept,
             predicate: self.predicate,
+            respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
         }
     }
@@ -49,6 +52,21 @@ impl CompressionLayer {
         Self::default()
     }
 
+    /// Replace the current compression predicate.
+    pub fn with_compress_predicate<C>(self, predicate: C) -> CompressionLayer<C>
+    where
+        C: Predicate,
+    {
+        CompressionLayer {
+            accept: self.accept,
+            predicate,
+            respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
+            quality: self.quality,
+        }
+    }
+}
+
+impl<P> CompressionLayer<P> {
     rama_utils::macros::generate_set_and_with! {
         /// Sets whether to enable the gzip encoding.
         pub fn gzip(mut self, enable: bool) -> Self {
@@ -89,15 +107,15 @@ impl CompressionLayer {
         }
     }
 
-    /// Replace the current compression predicate.
-    pub fn with_compress_predicate<C>(self, predicate: C) -> CompressionLayer<C>
-    where
-        C: Predicate,
-    {
-        CompressionLayer {
-            accept: self.accept,
-            predicate,
-            quality: self.quality,
+    rama_utils::macros::generate_set_and_with! {
+        /// Allow responses with content-encoding.
+        ///
+        /// Useful in case your stack uses that response header as preference.
+        /// Not something you want for regular servers or proxies however,
+        /// or most use cases for that matter.
+        pub fn respect_content_encoding_if_possible(mut self) -> Self {
+            self.respect_content_encoding_if_possible = true;
+            self
         }
     }
 }

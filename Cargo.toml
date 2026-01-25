@@ -270,7 +270,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 todo = "warn"
-empty_enum = "warn"
+empty_enums = "warn"
 enum_glob_use = "warn"
 equatable_if_let = "warn"
 mem_forget = "warn"

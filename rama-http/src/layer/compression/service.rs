@@ -6,8 +6,12 @@ use crate::headers::encoding::{AcceptEncoding, Encoding};
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
 use rama_core::Service;
+use rama_core::telemetry::tracing;
+use rama_http_headers::ContentEncoding;
+use rama_http_headers::HeaderDecode;
 use rama_http_types::HeaderValue;
 use rama_http_types::StreamingBody;
+use rama_http_types::header::Entry;
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::submatch_ignore_ascii_case;
 
@@ -22,6 +26,7 @@ pub struct Compression<S, P = DefaultPredicate> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,
     pub(crate) predicate: P,
+    pub(crate) respect_content_encoding_if_possible: bool,
     pub(crate) quality: CompressionLevel,
 }
 
@@ -32,6 +37,7 @@ impl<S> Compression<S, DefaultPredicate> {
             inner: service,
             accept: AcceptEncoding::default(),
             predicate: DefaultPredicate::default(),
+            respect_content_encoding_if_possible: false,
             quality: CompressionLevel::default(),
         }
     }
@@ -76,6 +82,18 @@ impl<S, P> Compression<S, P> {
         /// Sets the compression quality.
         pub fn quality(mut self, quality: CompressionLevel) -> Self {
             self.quality = quality;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Allow responses with content-encoding.
+        ///
+        /// Useful in case your stack uses that response header as preference.
+        /// Not something you want for regular servers or proxies however,
+        /// or most use cases for that matter.
+        pub fn respect_content_encoding_if_possible(mut self) -> Self {
+            self.respect_content_encoding_if_possible = true;
             self
         }
     }
@@ -125,6 +143,7 @@ impl<S, P> Compression<S, P> {
             inner: self.inner,
             accept: self.accept,
             predicate,
+            respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
         }
     }
@@ -142,15 +161,29 @@ where
 
     #[allow(unreachable_code, unused_mut, unused_variables, unreachable_patterns)]
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let encoding = Encoding::from_accept_encoding_headers(req.headers(), self.accept);
+        let mut selected_encoding =
+            Encoding::from_accept_encoding_headers(req.headers(), self.accept);
 
-        let res = self.inner.serve(req).await?;
+        let mut res = self.inner.serve(req).await?;
 
-        // never recompress responses that are already compressed
-        let should_compress = !res.headers().contains_key(header::CONTENT_ENCODING)
-            // never compress responses that are ranges
-            && !res.headers().contains_key(header::CONTENT_RANGE)
-            && self.predicate.should_compress(&res);
+        let should_compress =
+            //never compress responses that are ranges
+            !res.headers().contains_key(header::CONTENT_RANGE) &&
+            self.predicate.should_compress(&res) && if self.respect_content_encoding_if_possible {
+                if let Entry::Occupied(entry) =  res.headers_mut().entry(header::CONTENT_ENCODING) {
+                    let mut opt = entry.remove_entry_mult().1.next();
+                    tracing::trace!("detected response content-encoding: {opt:?}");
+                    if let Ok(encoding) = ContentEncoding::decode(&mut opt.iter())
+                        && let Some(overwrite) = Encoding::maybe_from_content_encoding_directive(&encoding.0.head, self.accept) {
+                            tracing::debug!("overwrite req encoding {selected_encoding:?} with respected content-encoding: {overwrite:?}");
+                            selected_encoding = overwrite;
+                    }
+                }
+                true
+            } else {
+                // unless requested do not recompress responses that are already compressed
+                !res.headers().contains_key(header::CONTENT_ENCODING)
+            };
 
         let (mut parts, body) = res.into_parts();
 
@@ -167,7 +200,7 @@ where
                 .append(header::VARY, header::ACCEPT_ENCODING.into());
         }
 
-        let body = match (should_compress, encoding) {
+        let body = match (should_compress, selected_encoding) {
             // if compression is _not_ supported or the client doesn't accept it
             (false, _) | (_, Encoding::Identity) => {
                 return Ok(Response::from_parts(
@@ -214,9 +247,10 @@ where
         parts.headers.remove(header::ACCEPT_RANGES);
         parts.headers.remove(header::CONTENT_LENGTH);
 
-        parts
-            .headers
-            .insert(header::CONTENT_ENCODING, HeaderValue::from(encoding));
+        parts.headers.insert(
+            header::CONTENT_ENCODING,
+            HeaderValue::from(selected_encoding),
+        );
 
         let res = Response::from_parts(parts, body);
         Ok(res)
