@@ -548,6 +548,10 @@ name = "http_form"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_har_replay"
+required-features = ["http-full"]
+
+[[example]]
 name = "http_health_check"
 required-features = ["http-full"]
 

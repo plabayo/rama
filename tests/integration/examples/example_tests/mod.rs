@@ -13,6 +13,8 @@ mod http_connect_proxy;
 #[cfg(feature = "http-full")]
 mod http_form;
 #[cfg(feature = "http-full")]
+mod http_har_replay;
+#[cfg(feature = "http-full")]
 mod http_health_check;
 #[cfg(feature = "http-full")]
 mod http_high_level_client;
