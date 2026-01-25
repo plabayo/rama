@@ -1,6 +1,10 @@
 //! Collections such as [`NonEmptyVec`] and [`NonEmptySmallVec`] provided by rama,
 //! mostly for internal usage, but available for others to use as well.
 
+pub mod append_only_vec;
+#[doc(inline)]
+pub use append_only_vec::AppendOnlyVec;
+
 mod non_empty_vec;
 #[doc(inline)]
 pub use non_empty_vec::{NonEmptyVec, NonEmptyVecEmptyError, NonEmptyVecIter};
