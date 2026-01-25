@@ -1,7 +1,6 @@
 [book]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
 language = "en"
-multilingual = false
 src = "src"
 title = "Rama"
 
@@ -17,4 +16,3 @@ enable = false
 
 [preprocessor.graphviz]
 command = "mdbook-graphviz"
-output-to-file = false

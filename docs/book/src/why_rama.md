@@ -54,7 +54,7 @@ both forward and reverse proxies.
 ## More than proxies
 
 During Rama's initial development, we discovered that its advantages extend beyond proxy development
-to [web servers](./web_servers.md) and [http clients](./http_clients.md):
+to [web servers](./web_servers.md) and clients (not just [http clients](./http/http_clients.md)):
 
 * Utilize Async Method Traits for efficient asynchronous operations;
 * Leverage modular [Tower](https://github.com/tower-rs/tower)-like middleware with extensions;

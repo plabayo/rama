@@ -98,7 +98,7 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 
 ### Server-Sent Events (SSE)
 
-See [./sse.md].
+See [./http/sse.md].
 
 ### Anti-Bot Examples
 
