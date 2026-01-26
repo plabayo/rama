@@ -571,9 +571,7 @@ impl TlsConnectorDataBuilder {
                                     }
                                     Err(err) => {
                                         debug!(
-                                            "failed to open {} cert store using schannel::cert_store::CertStore::{}; err = {err:?}",
-                                            $store,
-                                            stringify!($method),
+                                            "failed to open {windows_store_name} cert store using schannel::cert_store::CertStore::{open_fn_name}; err = {err:?}",
                                         );
                                     }
                                 }
