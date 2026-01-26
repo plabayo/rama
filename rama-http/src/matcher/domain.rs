@@ -38,7 +38,7 @@ impl DomainMatcher {
 }
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
-    fn matches(&self, _: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, _: Option<&Extensions>, req: &Request<Body>) -> bool {
         let host = {
             let req_ctx = match RequestContext::try_from(req) {
                 Ok(req_ctx) => req_ctx,

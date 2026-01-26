@@ -4,7 +4,7 @@ use crate::conn::{ConnectionHealth, ConnectionHealthStatus};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
-use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
@@ -29,7 +29,7 @@ pub mod metrics;
 /// remove one, this results in the storage deciding which mode we use for connection
 /// reuse and dropping (eg FIFO for reuse and LRU for dropping conn when pool is full)
 pub trait Pool<C, ID>: Send + Sync + 'static {
-    type Connection: Send + ExtensionsMut;
+    type Connection: Send + ExtensionsRef;
     type CreatePermit: Send;
 
     /// Get a connection from the pool, if no connection is found a [`Pool::CreatePermit`] is returned
@@ -85,7 +85,7 @@ pub struct NoPool;
 
 impl<C, ID> Pool<C, ID> for NoPool
 where
-    C: Send + ExtensionsMut + 'static,
+    C: Send + ExtensionsRef + 'static,
     ID: Clone + Send + Sync + PartialEq + 'static,
 {
     type Connection = C;
@@ -109,14 +109,14 @@ where
 /// take ownership of the connection `C` with [`LeasedConnection::into_connection()`].
 /// [`LeasedConnection`]s are considered active pool connections until dropped or
 /// ownership is taken of the internal connection.
-pub struct LeasedConnection<C: ExtensionsMut, ID> {
+pub struct LeasedConnection<C: ExtensionsRef, ID> {
     pooled_conn: ManuallyDrop<PooledConnection<C, ID>>,
     pooled_conn_taken: bool,
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
 }
 
-impl<C: ExtensionsMut, ID> LeasedConnection<C, ID> {
+impl<C: ExtensionsRef, ID> LeasedConnection<C, ID> {
     pub fn into_connection(mut self) -> C {
         // SAFETY: value is only dropped in `Self::Drop`
         // and value is only taken here if we move out of leased drop
@@ -129,15 +129,9 @@ impl<C: ExtensionsMut, ID> LeasedConnection<C, ID> {
     }
 }
 
-impl<C: ExtensionsMut, ID> ExtensionsRef for LeasedConnection<C, ID> {
+impl<C: ExtensionsRef, ID> ExtensionsRef for LeasedConnection<C, ID> {
     fn extensions(&self) -> &Extensions {
         self.pooled_conn.extensions()
-    }
-}
-
-impl<C: ExtensionsMut, ID> ExtensionsMut for LeasedConnection<C, ID> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.pooled_conn.extensions_mut()
     }
 }
 
@@ -155,12 +149,6 @@ struct PooledConnection<C, ID> {
 impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
     fn extensions(&self) -> &Extensions {
         self.conn.extensions()
-    }
-}
-
-impl<C: ExtensionsMut, ID> ExtensionsMut for PooledConnection<C, ID> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.conn.extensions_mut()
     }
 }
 
@@ -287,7 +275,7 @@ impl<C, ID> LruDropPool<C, ID> {
 
 impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
 where
-    C: Send + ExtensionsMut + 'static,
+    C: Send + ExtensionsRef + 'static,
     ID: ConnID,
 {
     type Connection = LeasedConnection<C, ID>;
@@ -352,7 +340,7 @@ where
             let pooled_conn = storage.remove(idx)?;
 
             // This will make sure we skip and drop broken connections
-            if let Some(health) = pooled_conn.extensions().get::<ConnectionHealth>()
+            if let Some(health) = pooled_conn.extensions().get_ref::<ConnectionHealth>()
                 && health.status() == ConnectionHealthStatus::Broken
             {
                 continue;
@@ -453,7 +441,7 @@ impl<C: Debug, ID: Debug> Debug for PooledConnection<C, ID> {
 
 impl<C, ID> Debug for LeasedConnection<C, ID>
 where
-    C: Debug + ExtensionsMut,
+    C: Debug + ExtensionsRef,
     ID: Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -464,7 +452,7 @@ where
     }
 }
 
-impl<C: ExtensionsMut, ID> Deref for LeasedConnection<C, ID> {
+impl<C: ExtensionsRef, ID> Deref for LeasedConnection<C, ID> {
     type Target = C;
 
     fn deref(&self) -> &Self::Target {
@@ -472,28 +460,28 @@ impl<C: ExtensionsMut, ID> Deref for LeasedConnection<C, ID> {
     }
 }
 
-impl<C: ExtensionsMut, ID> DerefMut for LeasedConnection<C, ID> {
+impl<C: ExtensionsRef, ID> DerefMut for LeasedConnection<C, ID> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.pooled_conn.conn
     }
 }
 
-impl<C: ExtensionsMut, ID> AsRef<C> for LeasedConnection<C, ID> {
+impl<C: ExtensionsRef, ID> AsRef<C> for LeasedConnection<C, ID> {
     fn as_ref(&self) -> &C {
         self
     }
 }
 
-impl<C: ExtensionsMut, ID> AsMut<C> for LeasedConnection<C, ID> {
+impl<C: ExtensionsRef, ID> AsMut<C> for LeasedConnection<C, ID> {
     fn as_mut(&mut self) -> &mut C {
         self
     }
 }
 
-impl<C: ExtensionsMut, ID> Drop for LeasedConnection<C, ID> {
+impl<C: ExtensionsRef, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if !self.pooled_conn_taken {
-            if let Some(health) = self.extensions().get::<ConnectionHealth>()
+            if let Some(health) = self.extensions().get_ref::<ConnectionHealth>()
                 && health.status() == ConnectionHealthStatus::Broken
             {
                 trace!("LRU connection pool: dropping pooled connection that was marked as failed");
@@ -525,7 +513,7 @@ impl<C: ExtensionsMut, ID> Drop for LeasedConnection<C, ID> {
 impl<C, ID> Socket for LeasedConnection<C, ID>
 where
     ID: Send + Sync + 'static,
-    C: Socket + ExtensionsMut,
+    C: Socket + ExtensionsRef,
 {
     fn local_addr(&self) -> std::io::Result<SocketAddress> {
         self.as_ref().local_addr()
@@ -539,7 +527,7 @@ where
 #[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncWrite for LeasedConnection<C, ID>
 where
-    C: AsyncWrite + Unpin + ExtensionsMut,
+    C: AsyncWrite + Unpin + ExtensionsRef,
     ID: Unpin,
 {
     fn poll_write(
@@ -580,7 +568,7 @@ where
 #[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncRead for LeasedConnection<C, ID>
 where
-    C: AsyncRead + Unpin + ExtensionsMut,
+    C: AsyncRead + Unpin + ExtensionsRef,
     ID: Unpin,
 {
     fn poll_read(
@@ -595,7 +583,7 @@ where
 impl<Input, C, ID> Service<Input> for LeasedConnection<C, ID>
 where
     ID: Send + Sync + Debug + 'static,
-    C: Service<Input> + ExtensionsMut,
+    C: Service<Input> + ExtensionsRef,
     Input: Send + 'static,
 {
     type Output = C::Output;
@@ -610,7 +598,7 @@ where
                 "LRU connection pool: detected error result, marking connection w/ id {id:?} as failed"
             );
 
-            if let Some(health) = self.extensions().get::<ConnectionHealth>() {
+            if let Some(health) = self.extensions().get_ref::<ConnectionHealth>() {
                 health.set_status(ConnectionHealthStatus::Broken);
             }
         }
@@ -739,7 +727,7 @@ where
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
 
-        let pool = if let Some(pool) = input.extensions().get::<P>() {
+        let pool = if let Some(pool) = input.extensions().get_ref::<P>() {
             trace!("pooled connector: using pool from ctx");
             pool
         } else {
@@ -775,7 +763,7 @@ where
                 trace!(
                     "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
                 );
-                let pool = input.extensions().get::<P>().unwrap_or(&self.pool);
+                let pool = input.extensions().get_ref::<P>().unwrap_or(&self.pool);
                 let conn = pool.create(conn_id, conn, permit).await;
                 Ok(EstablishedClientConnection { input, conn })
             }
@@ -829,7 +817,7 @@ mod tests {
     use super::*;
     use crate::client::EstablishedClientConnection;
     use rama_core::ServiceInput;
-    use rama_core::extensions::ExtensionsMut;
+    use rama_core::extensions::ExtensionsRef;
     use rama_core::{Service, extensions::Extensions};
     use std::sync::atomic::AtomicBool;
     use std::{
@@ -868,12 +856,6 @@ mod tests {
     impl ExtensionsRef for Conn {
         fn extensions(&self) -> &Extensions {
             &self.extensions
-        }
-    }
-
-    impl ExtensionsMut for Conn {
-        fn extensions_mut(&mut self) -> &mut Extensions {
-            &mut self.extensions
         }
     }
 
@@ -1035,9 +1017,9 @@ mod tests {
         type Error = Infallible;
 
         async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-            let mut conn = InnerService::default();
+            let conn = InnerService::default();
 
-            conn.extensions_mut().insert(ConnectionHealth::default());
+            conn.extensions().insert(ConnectionHealth::default());
 
             self.created_connection.fetch_add(1, Ordering::Relaxed);
             Ok(EstablishedClientConnection { input, conn })
@@ -1056,12 +1038,6 @@ mod tests {
         }
     }
 
-    impl ExtensionsMut for InnerService {
-        fn extensions_mut(&mut self) -> &mut Extensions {
-            &mut self.extensions
-        }
-    }
-
     impl Service<bool> for InnerService {
         type Output = ();
         type Error = BoxError;
@@ -1070,7 +1046,7 @@ mod tests {
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
             if should_error {
                 self.extensions
-                    .get::<ConnectionHealth>()
+                    .get_ref::<ConnectionHealth>()
                     .unwrap()
                     .set_status(ConnectionHealthStatus::Broken);
                 self.should_error.store(true, Ordering::Relaxed);
@@ -1145,7 +1121,7 @@ mod tests {
         // Normally the connection would edit this in extensions but since we dont have ownership here
         // we just clone the extensions and edit it like this
         conn_extensions
-            .get::<ConnectionHealth>()
+            .get_ref::<ConnectionHealth>()
             .unwrap()
             .set_status(ConnectionHealthStatus::Broken);
 

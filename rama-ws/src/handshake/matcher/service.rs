@@ -1,7 +1,7 @@
 use std::{convert::Infallible, sync::Arc};
 
 use rama_core::{
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     matcher::service::{ServiceMatch, ServiceMatcher},
     telemetry::tracing,
 };
@@ -141,7 +141,7 @@ where
             let head = svc_match.input.clone_parts();
             svc_match
                 .input
-                .extensions_mut()
+                .extensions()
                 .insert(HttpWebSocketRelayHandshakeRequest(head.into()));
         }
 
@@ -178,7 +178,7 @@ where
             let head = svc_match.input.clone_parts();
             svc_match
                 .input
-                .extensions_mut()
+                .extensions()
                 .insert(HttpWebSocketRelayHandshakeRequest(head.into()));
         }
 
@@ -245,7 +245,7 @@ where
             let head = svc_match.input.clone_parts();
             svc_match
                 .input
-                .extensions_mut()
+                .extensions()
                 .insert(HttpWebSocketRelayHandshakeResponse(head.into()));
         }
 
@@ -255,7 +255,7 @@ where
         ) {
             svc_match
                 .input
-                .extensions_mut()
+                .extensions()
                 .insert(RelayWebSocketConfig(cfg));
         }
 
@@ -294,7 +294,7 @@ where
             let head = svc_match.input.clone_parts();
             svc_match
                 .input
-                .extensions_mut()
+                .extensions()
                 .insert(HttpWebSocketRelayHandshakeResponse(head.into()));
         }
 
@@ -304,7 +304,7 @@ where
         ) {
             svc_match
                 .input
-                .extensions_mut()
+                .extensions()
                 .insert(RelayWebSocketConfig(cfg));
         }
 

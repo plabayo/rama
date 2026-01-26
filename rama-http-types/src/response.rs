@@ -9,7 +9,7 @@ use crate::proto::h1::ext::ReasonPhrase;
 use crate::status::StatusCode;
 use crate::version::Version;
 use crate::{Body, Result};
-use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 
 /// Represents an HTTP response
 ///
@@ -131,7 +131,7 @@ impl<T> From<Response<T>> for HyperiumResponse<T> {
 
         let mut hyper_extensions = parts
             .extensions
-            .get::<HyperExtensions>()
+            .get_ref::<HyperExtensions>()
             .cloned()
             .unwrap_or_default();
 
@@ -169,7 +169,7 @@ pub struct Parts {
 
 impl From<HyperiumParts> for Parts {
     fn from(mut value: HyperiumParts) -> Self {
-        let mut rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
+        let rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
         rama_extensions.insert(value.extensions);
 
         Self {
@@ -194,12 +194,6 @@ impl From<Parts> for HyperiumParts {
 impl ExtensionsRef for Parts {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for Parts {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 
@@ -340,7 +334,7 @@ impl<T> Response<T> {
         if status.is_client_error() || status.is_server_error() {
             Err(StatusCodeError {
                 status,
-                reason: match self.extensions().get::<ReasonPhrase>() {
+                reason: match self.extensions().get_ref::<ReasonPhrase>() {
                     Some(reason) => Some(
                         String::from_utf8_lossy(reason.as_bytes())
                             .into_owned()
@@ -381,7 +375,7 @@ impl<T> Response<T> {
         if status.is_client_error() || status.is_server_error() {
             Err(StatusCodeError {
                 status,
-                reason: match self.extensions().get::<ReasonPhrase>() {
+                reason: match self.extensions().get_ref::<ReasonPhrase>() {
                     Some(reason) => Some(
                         String::from_utf8_lossy(reason.as_bytes())
                             .into_owned()
@@ -567,12 +561,6 @@ impl<T: fmt::Debug> fmt::Debug for Response<T> {
 impl<T> ExtensionsRef for Response<T> {
     fn extensions(&self) -> &Extensions {
         &self.head.extensions
-    }
-}
-
-impl<T> ExtensionsMut for Response<T> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.head.extensions
     }
 }
 
@@ -815,14 +803,14 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     ///
-    /// assert_eq!(response.extensions().get::<&'static str>(),
+    /// assert_eq!(response.extensions().get_ref::<&'static str>(),
     ///            Some(&"My Extension"));
     /// ```
     pub fn extension<T>(self, extension: T) -> Self
     where
         T: Extension + Clone,
     {
-        self.and_then(move |mut head| {
+        self.and_then(move |head| {
             head.extensions.insert(extension);
             Ok(head)
         })
@@ -837,31 +825,13 @@ impl Builder {
     /// ```
     /// # use rama_http_types::Response;
     /// let res = Response::builder().extension("My Extension").extension(5u32);
-    /// let extensions = res.extensions_ref().unwrap();
-    /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
-    /// assert_eq!(extensions.get::<u32>(), Some(&5u32));
+    /// let extensions = res.extensions().unwrap();
+    /// assert_eq!(extensions.get_ref::<&'static str>(), Some(&"My Extension"));
+    /// assert_eq!(extensions.get_ref::<u32>(), Some(&5u32));
     /// ```
     #[must_use]
-    pub fn extensions_ref(&self) -> Option<&Extensions> {
+    pub fn extensions(&self) -> Option<&Extensions> {
         self.inner.as_ref().ok().map(|h| &h.extensions)
-    }
-
-    /// Get a mutable reference to the extensions for this response builder.
-    ///
-    /// If the builder has an error, this returns `None`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rama_http_types::Response;
-    /// let mut res = Response::builder().extension("My Extension");
-    /// let mut extensions = res.extensions_mut().unwrap();
-    /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
-    /// extensions.insert(5u32);
-    /// assert_eq!(extensions.get::<u32>(), Some(&5u32));
-    /// ```
-    pub fn extensions_mut(&mut self) -> Option<&mut Extensions> {
-        self.inner.as_mut().ok().map(|h| &mut h.extensions)
     }
 
     /// "Consumes" this builder, using the provided `body` to return a

@@ -8,7 +8,7 @@ use crate::{
 };
 use rama_core::bytes::{Buf, Bytes, BytesMut, buf::Chain};
 use rama_core::error::BoxError;
-use rama_core::extensions::{Extensions, ExtensionsMut};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http_headers::{ContentDisposition, ContentLength, ContentType, HeaderMapExt};
 use rama_http_types::InfiniteReader;
@@ -315,8 +315,8 @@ impl IntoResponse for HeaderMap {
 
 impl IntoResponse for Extensions {
     fn into_response(self) -> Response {
-        let mut res = ().into_response();
-        *res.extensions_mut() = self;
+        let res = ().into_response();
+        res.extensions().extend(&self);
         res
     }
 }

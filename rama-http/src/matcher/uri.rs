@@ -93,7 +93,7 @@ impl From<Wildcard<'static>> for UriMatcher {
 }
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for UriMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         let uri = crate::utils::request_uri(req);
         // TODO: in future we probably do not want to go via request_uri,
         // as this allocates an entire uri even though we do not want query etc...

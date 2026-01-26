@@ -8,7 +8,7 @@ use std::fmt;
 use crate::{
     Layer, Service,
     error::BoxError,
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     http::{Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
     rt::Executor,
@@ -206,12 +206,11 @@ where
         let uri = req.uri().clone();
 
         let EstablishedClientConnection {
-            input: mut req,
+            input: req,
             conn: http_connection,
         } = self.connector.serve(req).await.into_opaque_error()?;
 
-        req.extensions_mut()
-            .extend(http_connection.extensions().clone());
+        req.extensions().extend(http_connection.extensions());
 
         let http_connection = self.jit_layers.layer(http_connection);
 

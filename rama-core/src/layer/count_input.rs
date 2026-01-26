@@ -21,7 +21,7 @@
 
 use crate::{
     Layer, Service,
-    extensions::{Extension, ExtensionsMut},
+    extensions::{Extension, ExtensionsRef},
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::{
@@ -165,7 +165,7 @@ impl<C: InputCounter> Drop for DecrementGuard<C> {
 ///
 /// For each input:
 /// - increments the counter
-/// - inserts the returned tracker into `input.extensions_mut()`
+/// - inserts the returned tracker into `input.extensions()`
 /// - ensures decrement is executed by relying on a drop guard
 #[derive(Debug, Clone)]
 pub struct CountInput<S, C = DefaultInputCounter> {
@@ -194,16 +194,16 @@ impl<S, C, Input> Service<Input> for CountInput<S, C>
 where
     S: Service<Input>,
     C: InputCounter,
-    Input: ExtensionsMut + Send + 'static,
+    Input: ExtensionsRef + Send + 'static,
 {
     type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let tracker = self.counter.increment();
         let _guard = DecrementGuard::new(self.counter.clone());
 
-        input.extensions_mut().insert(tracker);
+        input.extensions().insert(tracker);
 
         self.inner.serve(input).await
     }
@@ -323,7 +323,7 @@ mod tests {
             Ok::<_, Infallible>(
                 input
                     .extensions
-                    .get::<InputCounterExtension>()
+                    .get_ref::<InputCounterExtension>()
                     .unwrap()
                     .input_count(),
             )

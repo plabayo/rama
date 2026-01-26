@@ -188,7 +188,7 @@ where
     type Output = S::Output;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let req = if req.extensions().get::<DoNotWriteRequest>().is_some() {
+        let req = if req.extensions().get_ref::<DoNotWriteRequest>().is_some() {
             req.map(Body::new)
         } else {
             let (parts, body) = req.into_parts();

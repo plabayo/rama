@@ -165,7 +165,7 @@ pub(crate) async fn websocket_echo(
     proxy_kind: ProxyKind,
     proxy_addr: std::net::SocketAddr,
 ) {
-    let mut extensions = rama::extensions::Extensions::new();
+    let extensions = rama::extensions::Extensions::new();
     if let Some(proxy_address) = proxy_address(proxy_kind, proxy_addr) {
         extensions.insert(proxy_address);
     }

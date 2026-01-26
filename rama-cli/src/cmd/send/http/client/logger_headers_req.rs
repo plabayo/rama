@@ -38,7 +38,7 @@ where
             if req.version() == Version::HTTP_2 || req.version() == Version::HTTP_3 {
                 let pseudo_headers = req
                     .extensions()
-                    .get::<PseudoHeaderOrder>()
+                    .get_ref::<PseudoHeaderOrder>()
                     .cloned()
                     .unwrap_or_else(|| {
                         PseudoHeaderOrder::from_iter([
@@ -72,7 +72,8 @@ where
                             }
                             PseudoHeader::Status => "<???>".to_owned(),
                             PseudoHeader::Protocol => {
-                                if let Some(proto) = req.extensions().get::<h2::ext::Protocol>() {
+                                if let Some(proto) = req.extensions().get_ref::<h2::ext::Protocol>()
+                                {
                                     proto.as_str().to_owned()
                                 } else {
                                     continue;

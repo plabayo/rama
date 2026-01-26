@@ -7,7 +7,7 @@ use std::{
 use pin_project_lite::pin_project;
 use rama_core::{
     ServiceInput,
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 
@@ -52,13 +52,6 @@ impl ExtensionsRef for TcpFlow {
     #[inline(always)]
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for TcpFlow {
-    #[inline(always)]
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

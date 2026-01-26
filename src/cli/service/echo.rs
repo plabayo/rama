@@ -385,7 +385,7 @@ impl Service<Request> for EchoService {
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let user_agent_info = req
             .extensions()
-            .get()
+            .get_ref()
             .map(|ua: &UserAgent| {
                 json!({
                     "user_agent": ua.header_str().to_owned(),
@@ -494,7 +494,7 @@ impl Service<Request> for EchoService {
         #[cfg(any(feature = "rustls", feature = "boring"))]
         let tls_info = parts
             .extensions
-            .get::<SecureTransport>()
+            .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .map(|hello| {
                 let ja4 = Ja4::compute(parts.extensions.extensions())
@@ -512,7 +512,7 @@ impl Service<Request> for EchoService {
                         .compute_ja4(
                             parts
                                 .extensions
-                                .get::<NegotiatedTlsParameters>()
+                                .get_ref::<NegotiatedTlsParameters>()
                                 .map(|param| param.protocol_version),
                         )
                         .inspect_err(|err| {
@@ -553,7 +553,7 @@ impl Service<Request> for EchoService {
                         .compute_ja3(
                             parts
                                 .extensions
-                                .get::<NegotiatedTlsParameters>()
+                                .get_ref::<NegotiatedTlsParameters>()
                                 .map(|param| param.protocol_version),
                         )
                         .inspect_err(|err| {
@@ -708,8 +708,8 @@ impl Service<Request> for EchoService {
 
         let mut h2 = None;
         if parts.version == Version::HTTP_2 {
-            let early_frames = parts.extensions.get::<EarlyFrameCapture>();
-            let pseudo_headers = parts.extensions.get::<PseudoHeaderOrder>();
+            let early_frames = parts.extensions.get_ref::<EarlyFrameCapture>();
+            let pseudo_headers = parts.extensions.get_ref::<PseudoHeaderOrder>();
             let akamai_h2 = AkamaiH2::compute(&parts.extensions)
                 .inspect_err(|err| tracing::trace!("akamai h2 compute failure: {err:?}"))
                 .ok()
@@ -743,11 +743,11 @@ impl Service<Request> for EchoService {
                 "curl": curl_request,
             },
             "tls": tls_info,
-            "socket_addr": parts.extensions.get::<Forwarded>()
+            "socket_addr": parts.extensions.get_ref::<Forwarded>()
                 .and_then(|f|
                         f.client_socket_addr().map(|addr| addr.to_string())
                             .or_else(|| f.client_ip().map(|ip| ip.to_string()))
-                ).or_else(|| parts.extensions.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
+                ).or_else(|| parts.extensions.get_ref::<SocketInfo>().map(|v| v.peer_addr().to_string())),
         }))
         .into_response())
     }

@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use super::extensions::Extensions;
 use crate::Service;
-use crate::extensions::ExtensionsMut;
+use crate::extensions::ExtensionsRef;
 use rama_macros::paste;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
@@ -52,7 +52,7 @@ pub trait Matcher<Input>: Send + Sync + 'static {
     /// `ext` is None in case the callee is not interested in collecting potential
     /// match metadata gathered during the matching process. An example of this
     /// path parameters for an http Uri matcher.
-    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool;
+    fn matches(&self, ext: Option<&Extensions>, input: &Input) -> bool;
 
     /// Provide an alternative matcher to match if the current one does not match.
     fn or<M>(self, other: M) -> impl Matcher<Input>
@@ -85,7 +85,7 @@ impl<Input, T> Matcher<Input> for Arc<T>
 where
     T: Matcher<Input>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, input: &Input) -> bool {
         (**self).matches(ext, input)
     }
 }
@@ -95,7 +95,7 @@ where
     T: Matcher<Input>,
 {
     #[inline(always)]
-    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, input: &Input) -> bool {
         (**self).matches(ext, input)
     }
 }
@@ -104,7 +104,7 @@ impl<Input, T> Matcher<Input> for Option<T>
 where
     T: Matcher<Input>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, input: &Input) -> bool {
         match self {
             Some(inner) => inner.matches(ext, input),
             None => false,
@@ -116,7 +116,7 @@ impl<Input, T> Matcher<Input> for Box<T>
 where
     T: Matcher<Input>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, input: &Input) -> bool {
         (**self).matches(ext, input)
     }
 }
@@ -125,13 +125,13 @@ impl<Input> Matcher<Input> for Box<dyn Matcher<Input> + 'static>
 where
     Input: Send + 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, input: &Input) -> bool {
         (**self).matches(ext, input)
     }
 }
 
 impl<Input> Matcher<Input> for bool {
-    fn matches(&self, _: Option<&mut Extensions>, _: &Input) -> bool {
+    fn matches(&self, _: Option<&Extensions>, _: &Input) -> bool {
         *self
     }
 }
@@ -146,7 +146,7 @@ macro_rules! impl_matcher_either {
         {
             fn matches(
                 &self,
-                ext: Option<&mut Extensions>,
+                ext: Option<&Extensions>,
                 input: &Input
             ) -> bool{
                 match self {
@@ -173,7 +173,7 @@ macro_rules! impl_matcher_service_tuple {
             #[allow(non_snake_case)]
             impl<$([<M_ $T>], $T),+, S, Input, Output, Error> Service<Input> for MatcherRouter<($(([<M_ $T>], $T)),+, S)>
             where
-                Input: Send + ExtensionsMut + 'static,
+                Input: Send + ExtensionsRef + 'static,
                 Output: Send + 'static,
                 $(
                     [<M_ $T>]: Matcher<Input>,
@@ -187,13 +187,13 @@ macro_rules! impl_matcher_service_tuple {
 
                 async fn serve(
                     &self,
-                    mut input: Input,
+                    input: Input,
                 ) -> Result<Self::Output, Self::Error> {
                     let ($(([<M_ $T>], $T)),+, S) = &self.0;
                     $(
-                        let mut ext = Extensions::new();
-                        if [<M_ $T>].matches(Some(&mut ext), &input) {
-                            input.extensions_mut().extend(ext);
+                        let ext = Extensions::new();
+                        if [<M_ $T>].matches(Some(&ext), &input) {
+                            input.extensions().extend(&ext);
                             return $T.serve(input).await;
                         }
                     )+

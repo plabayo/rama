@@ -1,7 +1,7 @@
 use crate::{
     Layer, Service,
     error::BoxError,
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
     http::client::proxy::layer::{
         HttpProxyConnector, HttpProxyConnectorLayer, MaybeHttpProxiedConnection,
     },
@@ -82,14 +82,14 @@ where
     S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
-        + ExtensionsMut
+        + ExtensionsRef
         + 'static,
 {
     type Output = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let proxy = input.extensions().get::<ProxyAddress>();
+        let proxy = input.extensions().get_ref::<ProxyAddress>();
 
         match proxy {
             None => {
@@ -143,7 +143,7 @@ pin_project! {
     }
 }
 
-impl<S: ExtensionsMut> MaybeProxiedConnection<S> {
+impl<S: ExtensionsRef> MaybeProxiedConnection<S> {
     pub fn direct(conn: S) -> Self {
         Self {
             inner: Connection::Direct { conn },
@@ -176,15 +176,6 @@ impl<S: ExtensionsRef> ExtensionsRef for MaybeProxiedConnection<S> {
         match &self.inner {
             Connection::Direct { conn } | Connection::Socks { conn } => conn.extensions(),
             Connection::Http { conn } => conn.extensions(),
-        }
-    }
-}
-
-impl<S: ExtensionsMut> ExtensionsMut for MaybeProxiedConnection<S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        match &mut self.inner {
-            Connection::Direct { conn } | Connection::Socks { conn } => conn.extensions_mut(),
-            Connection::Http { conn } => conn.extensions_mut(),
         }
     }
 }

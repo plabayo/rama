@@ -48,7 +48,7 @@ where
         req: Request<RetryBody>,
         result: Result<Response, Error>,
     ) -> PolicyResult<Response, Error> {
-        if req.extensions().get::<DoNotRetry>().is_some() {
+        if req.extensions().get_ref::<DoNotRetry>().is_some() {
             // Custom extension to signal that the request should not be retried.
             return PolicyResult::Abort(result);
         }
@@ -63,7 +63,7 @@ where
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        if req.extensions().get::<DoNotRetry>().is_some() {
+        if req.extensions().get_ref::<DoNotRetry>().is_some() {
             None
         } else {
             self.clone.clone_input(req)
@@ -254,7 +254,7 @@ mod private {
 mod tests {
     use super::*;
     use crate::{StatusCode, service::web::response::IntoResponse};
-    use rama_core::extensions::ExtensionsMut;
+    use rama_core::extensions::ExtensionsRef;
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::time::Duration;
 
@@ -317,7 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn managed_policy_default_do_not_retry() {
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method("GET")
             .uri("http://example.com")
             .body(RetryBody::empty())
@@ -325,7 +325,7 @@ mod tests {
 
         let policy = ManagedPolicy::default();
 
-        req.extensions_mut().insert(DoNotRetry);
+        req.extensions().insert(DoNotRetry);
 
         assert_clone_input_none(&req, &policy);
 

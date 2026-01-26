@@ -43,7 +43,7 @@
 //!
 //! let response = client.serve(request).await?;
 //! // Get the final request URI.
-//! assert_eq!(response.extensions().get::<RequestUri>().unwrap().0, "https://www.rust-lang.org/");
+//! assert_eq!(response.extensions().get_ref::<RequestUri>().unwrap().0, "https://www.rust-lang.org/");
 //! # Ok(())
 //! # }
 //! ```
@@ -103,7 +103,7 @@ pub mod policy;
 
 use crate::{Method, Request, Response, StatusCode, StreamingBody, Uri, header::LOCATION};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
-use rama_core::{Layer, Service, extensions::ExtensionsMut};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http_types::{
     HeaderMap,
     header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
@@ -229,8 +229,8 @@ where
 
         async move {
             loop {
-                let mut res = service.serve(req).await?;
-                res.extensions_mut().insert(RequestUri(uri.clone()));
+                let res = service.serve(req).await?;
+                res.extensions().insert(RequestUri(uri.clone()));
 
                 let drop_payload_headers = |headers: &mut HeaderMap| {
                     for header in &[
@@ -391,7 +391,7 @@ mod tests {
         let res = svc.serve(req).await.unwrap();
         assert_eq!(*res.body(), 0);
         assert_eq!(
-            res.extensions().get::<RequestUri>().unwrap().0,
+            res.extensions().get_ref::<RequestUri>().unwrap().0,
             "http://example.com/0"
         );
     }
@@ -406,7 +406,7 @@ mod tests {
         let res = svc.serve(req).await.unwrap();
         assert_eq!(*res.body(), 42);
         assert_eq!(
-            res.extensions().get::<RequestUri>().unwrap().0,
+            res.extensions().get_ref::<RequestUri>().unwrap().0,
             "http://example.com/42"
         );
     }
@@ -421,7 +421,7 @@ mod tests {
         let res = svc.serve(req).await.unwrap();
         assert_eq!(*res.body(), 42 - 10);
         assert_eq!(
-            res.extensions().get::<RequestUri>().unwrap().0,
+            res.extensions().get_ref::<RequestUri>().unwrap().0,
             "http://example.com/32"
         );
     }

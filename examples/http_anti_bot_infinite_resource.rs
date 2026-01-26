@@ -214,7 +214,7 @@ where
     async fn serve(&self, stream: TcpStream) -> Result<Self::Output, Self::Error> {
         let ip_addr = stream
             .extensions()
-            .get::<SocketInfo>()
+            .get_ref::<SocketInfo>()
             .context("no socket info found")?
             .peer_addr()
             .ip_addr;

@@ -126,6 +126,9 @@ impl<S, T, Fut, F> GetInputExtension<S, T, Fut, F> {
     define_inner_service_accessors!();
 }
 
+// TODO should we return Arc<T> here instead, caller can then still decide if he wants
+// to clone T, but this makes it possible to implement this layer with `T: Clone` bound
+
 impl<Input, S, T, Fut, F> Service<Input> for GetInputExtension<S, T, Fut, F>
 where
     Input: Send + ExtensionsRef + 'static,
@@ -138,7 +141,7 @@ where
     type Error = S::Error;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        if let Some(value) = input.extensions().get::<T>() {
+        if let Some(value) = input.extensions().get_ref::<T>() {
             let value = value.clone();
             (self.callback)(value).await;
         }
@@ -277,7 +280,7 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let res = self.inner.serve(input).await?;
-        if let Some(value) = res.extensions().get::<T>() {
+        if let Some(value) = res.extensions().get_ref::<T>() {
             let value = value.clone();
             (self.callback)(value).await;
         }
@@ -288,7 +291,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ServiceInput, extensions::ExtensionsMut, service::service_fn};
+    use crate::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
     use std::{
         convert::Infallible,
         sync::{
@@ -312,7 +315,7 @@ mod tests {
             }
         })
         .into_layer(service_fn(async |req: ServiceInput<Arc<AtomicI32>>| {
-            let State(n) = req.extensions().get().cloned().unwrap();
+            let State(n) = req.extensions().get_ref().cloned().unwrap();
             assert_eq!(42, n);
 
             let value = req.input.load(atomic::Ordering::Acquire);
@@ -321,12 +324,12 @@ mod tests {
             Ok::<_, Infallible>(ServiceInput::new(()))
         }));
 
-        let mut input = ServiceInput::new(value.clone());
-        input.extensions_mut().insert(State(42));
+        let input = ServiceInput::new(value.clone());
+        input.extensions().insert(State(42));
 
         let res = svc.serve(input).await.unwrap();
 
-        assert!(res.extensions.get::<State>().is_none());
+        assert!(res.extensions.get_ref::<State>().is_none());
 
         let value = value.load(atomic::Ordering::Acquire);
         assert_eq!(42, value);
@@ -347,15 +350,15 @@ mod tests {
             let value = req.input.load(atomic::Ordering::Acquire);
             assert_eq!(0, value);
 
-            assert!(req.extensions.get::<State>().is_none());
+            assert!(req.extensions.get_ref::<State>().is_none());
 
-            let mut res = ServiceInput::new(());
-            res.extensions_mut().insert(State(42));
+            let res = ServiceInput::new(());
+            res.extensions().insert(State(42));
             Ok::<_, Infallible>(res)
         }));
 
         let res = svc.serve(ServiceInput::new(value.clone())).await.unwrap();
-        let State(n) = res.extensions.get().cloned().unwrap();
+        let State(n) = res.extensions.get_ref().cloned().unwrap();
         assert_eq!(42, n);
 
         let value = value.load(atomic::Ordering::Acquire);

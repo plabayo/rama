@@ -16,7 +16,7 @@ impl<T> And<T> {
 macro_rules! impl_and_matches {
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+        fn matches(&self, ext: Option<&Extensions>, req: &Request) -> bool {
             let ($($ty),+,) = &self.0;
             match ext {
                 Some(ext) => {
@@ -26,7 +26,7 @@ macro_rules! impl_and_matches {
                             return false;
                         }
                     )+
-                    ext.extend(inner_ext);
+                    ext.extend(&inner_ext);
                     true
                 }
                 None => {

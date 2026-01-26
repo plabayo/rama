@@ -1,7 +1,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext, ErrorExt},
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef, InputExtensions},
+    extensions::{Extensions, ExtensionsRef, InputExtensions},
     telemetry::tracing,
 };
 use rama_http::{StreamingBody, header::SEC_WEBSOCKET_KEY};
@@ -70,7 +70,7 @@ where
 
         let req_extensions = req.extensions().clone();
 
-        let mut resp = match &self.sender {
+        let resp = match &self.sender {
             SendRequest::Http1(sender) => {
                 let mut sender = sender.lock().await;
                 if let Err(err) = sender.ready().await {
@@ -113,8 +113,7 @@ where
             }
         };
 
-        resp.extensions_mut()
-            .insert(InputExtensions(req_extensions));
+        resp.extensions().insert(InputExtensions(req_extensions));
 
         Ok(resp.map(rama_http_types::Body::new))
     }
@@ -126,12 +125,6 @@ impl<B> ExtensionsRef for HttpClientService<B> {
     }
 }
 
-impl<B> ExtensionsMut for HttpClientService<B> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
-    }
-}
-
 fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError> {
     // logic specific to this method
     if req.method() == Method::CONNECT && req.uri().host().is_none() {
@@ -140,7 +133,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
 
     let uses_http_proxy = req
         .extensions()
-        .get::<ProxyAddress>()
+        .get_ref::<ProxyAddress>()
         .and_then(|proxy| proxy.protocol.as_ref())
         .map(|protocol| protocol.is_http())
         .unwrap_or_default();
@@ -378,9 +371,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut req = Request::builder().uri(uri).body(()).unwrap();
+        let req = Request::builder().uri(uri).body(()).unwrap();
 
-        req.extensions_mut().insert(ProxyAddress {
+        req.extensions().insert(ProxyAddress {
             address: rama_net::address::HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
@@ -404,9 +397,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut req = Request::builder().uri(uri).body(()).unwrap();
+        let req = Request::builder().uri(uri).body(()).unwrap();
 
-        req.extensions_mut().insert(ProxyAddress {
+        req.extensions().insert(ProxyAddress {
             address: rama_net::address::HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
@@ -430,9 +423,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut req = Request::builder().uri(uri).body(()).unwrap();
+        let req = Request::builder().uri(uri).body(()).unwrap();
 
-        req.extensions_mut().insert(ProxyAddress {
+        req.extensions().insert(ProxyAddress {
             address: rama_net::address::HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::SOCKS5),

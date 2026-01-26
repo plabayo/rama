@@ -18,10 +18,12 @@ define_http_rejection! {
     pub struct MissingExtension;
 }
 
+// TODO get_arc, or just remove this thing?
+
 impl<State, T> FromPartsStateRefPair<State> for Extension<T>
 where
     State: Send + Sync,
-    T: Send + Sync + Clone + std::fmt::Debug + 'static,
+    T: rama_core::extensions::Extension + Clone,
 {
     type Rejection = MissingExtension;
 
@@ -29,7 +31,7 @@ where
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
-        match parts.extensions.get::<T>() {
+        match parts.extensions.get_ref::<T>() {
             Some(ext) => Ok(Self(ext.clone())),
             None => Err(MissingExtension),
         }
@@ -38,7 +40,7 @@ where
 impl<State, T> OptionalFromPartsStateRefPair<State> for Extension<T>
 where
     State: Send + Sync,
-    T: Send + Sync + Clone + std::fmt::Debug + 'static,
+    T: rama_core::extensions::Extension + Clone,
 {
     type Rejection = Infallible;
 
@@ -46,7 +48,7 @@ where
         parts: &Parts,
         _state: &State,
     ) -> Result<Option<Self>, Self::Rejection> {
-        Ok(parts.extensions.get::<T>().map(|ext| Self(ext.clone())))
+        Ok(parts.extensions.get_ref::<T>().map(|ext| Self(ext.clone())))
     }
 }
 

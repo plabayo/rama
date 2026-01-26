@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     graceful::ShutdownGuard,
     io::{BridgeIo, GracefulIo, Io},
     layer::{
@@ -182,8 +182,8 @@ impl<M> HttpMitmRelay<M> {
 
 impl<Ingress, Egress, M> Service<BridgeIo<Ingress, Egress>> for HttpMitmRelay<M>
 where
-    Ingress: Io + Unpin + ExtensionsMut,
-    Egress: Io + Unpin + ExtensionsMut,
+    Ingress: Io + Unpin + ExtensionsRef,
+    Egress: Io + Unpin + ExtensionsRef,
     M: Layer<
             HttpClientService<Body>,
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
@@ -261,7 +261,7 @@ impl TryFrom<Version> for RelayMode {
 
 enum RelayState<Egress, Middleware>
 where
-    Egress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<HttpClientService<Body>>,
 {
     Uninitialized {
@@ -279,7 +279,7 @@ where
 
 impl<Egress, Middleware> RelayState<Egress, Middleware>
 where
-    Egress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<HttpClientService<Body>>,
 {
     fn new(egress_stream: Egress, middleware: Middleware) -> Self {
@@ -297,7 +297,7 @@ async fn handle_relay_request<Egress, Middleware>(
     close_ingress: CancellationToken,
 ) -> Response
 where
-    Egress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<
             HttpClientService<Body>,
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
@@ -401,7 +401,7 @@ async fn serve_http1_request<Egress, Middleware>(
     close_ingress: CancellationToken,
 ) -> Result<Response, BoxError>
 where
-    Egress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<
             HttpClientService<Body>,
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
@@ -446,7 +446,7 @@ async fn relay_connect_http1_if_needed<Egress, Middleware>(
     close_ingress: CancellationToken,
 ) -> Result<Request, Response>
 where
-    Egress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<
             HttpClientService<Body>,
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
@@ -495,7 +495,7 @@ async fn relay_connect_http2_if_needed<Egress, Middleware>(
     close_ingress: CancellationToken,
 ) -> Result<(Middleware::Service, Request), Response>
 where
-    Egress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<
             HttpClientService<Body>,
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
@@ -545,7 +545,7 @@ async fn connect_relay<Egress, Middleware>(
     close_ingress: CancellationToken,
 ) -> Result<Request, Response>
 where
-    Egress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<
             HttpClientService<Body>,
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
@@ -619,7 +619,7 @@ async fn serve_relay_request<Egress, Middleware, Client>(
     state: &mut RelayState<Egress, Middleware>,
 ) -> Result<Response, BoxError>
 where
-    Egress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<HttpClientService<Body>>,
     Client: Service<Request, Output = Response, Error: Into<BoxError>>,
 {

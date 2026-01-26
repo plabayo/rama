@@ -610,7 +610,7 @@ pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxE
 
     if let Some(hello) = parts
         .extensions
-        .get::<SecureTransport>()
+        .get_ref::<SecureTransport>()
         .and_then(|st| st.client_hello())
         && let Some(storage) = state.storage.as_ref()
     {

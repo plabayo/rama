@@ -1,7 +1,7 @@
 use crate::metadata::{MetadataMap, MetadataValue};
 use rama_core::{
     error::{BoxError, ErrorContext as _},
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
     futures::Stream,
 };
 use rama_http::header::{self, RAMA_ID_HEADER_VALUE, USER_AGENT};
@@ -182,7 +182,7 @@ impl<T> Request<T> {
             SanitizeHeaders::Yes => self.metadata.into_sanitized_headers(),
             SanitizeHeaders::No => self.metadata.into_headers(),
         };
-        *request.extensions_mut() = self.extensions;
+        request.extensions().extend(&self.extensions);
 
         if let header::Entry::Vacant(header) = request.headers_mut().entry(USER_AGENT) {
             header.insert(RAMA_ID_HEADER_VALUE.clone());
@@ -227,12 +227,6 @@ impl<T> Request<T> {
 impl<T> ExtensionsRef for Request<T> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl<T> ExtensionsMut for Request<T> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

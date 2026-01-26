@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rama_core::{
     bytes::Bytes,
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
 };
 use tokio::sync::mpsc;
 
@@ -39,11 +39,5 @@ impl UdpFlow {
 impl ExtensionsRef for UdpFlow {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for UdpFlow {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }

@@ -147,7 +147,7 @@ pub(super) struct RequestInfo {
 
 pub(super) async fn get_user_agent_info(extensions: &Extensions) -> UserAgentInfo {
     extensions
-        .get()
+        .get_ref()
         .map(|ua: &UserAgent| UserAgentInfo {
             user_agent: ua.header_str().to_owned(),
             kind: ua.info().map(|info| info.kind.to_string()),
@@ -186,7 +186,7 @@ pub(super) async fn get_request_info(
         uri: parts.uri.to_string(),
         peer_addr: parts
             .extensions
-            .get::<Forwarded>()
+            .get_ref::<Forwarded>()
             .and_then(|f| {
                 f.client_socket_addr()
                     .map(|addr| addr.to_string())
@@ -195,7 +195,7 @@ pub(super) async fn get_request_info(
             .or_else(|| {
                 parts
                     .extensions
-                    .get::<SocketInfo>()
+                    .get_ref::<SocketInfo>()
                     .map(|v| v.peer_addr().to_string())
             }),
     })
@@ -251,8 +251,8 @@ pub(super) async fn get_and_store_http_info(
 
     let h2_settings = match http_version {
         http::Version::HTTP_2 => Some(Http2Settings {
-            http_pseudo_headers: ext.get::<PseudoHeaderOrder>().cloned(),
-            early_frames: ext.get::<EarlyFrameCapture>().cloned(),
+            http_pseudo_headers: ext.get_ref::<PseudoHeaderOrder>().cloned(),
+            early_frames: ext.get_ref::<EarlyFrameCapture>().cloned(),
         }),
         _ => None,
     };
@@ -430,7 +430,7 @@ pub(super) async fn get_tls_display_info_and_store(
     ua: String,
 ) -> Result<Option<TlsDisplayInfo>, BoxError> {
     let hello: &ClientHello = match extensions
-        .get::<SecureTransport>()
+        .get_ref::<SecureTransport>()
         .and_then(|st| st.client_hello())
     {
         Some(hello) => hello,

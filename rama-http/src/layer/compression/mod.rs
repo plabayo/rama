@@ -108,7 +108,7 @@ mod tests {
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
     use rama_core::Service;
-    use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+    use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
     use rama_core::stream::io::StreamReader;
     use rama_http_types::Body;
@@ -218,8 +218,8 @@ mod tests {
     #[tokio::test]
     async fn predicate_only_compresses_previously_decompressed_responses() {
         let svc = service_fn(async |_| {
-            let mut res = Response::new(Body::from("Hello, World!"));
-            res.extensions_mut().insert(DecompressedFrom::Gzip);
+            let res = Response::new(Body::from("Hello, World!"));
+            res.extensions().insert(DecompressedFrom::Gzip);
             Ok::<_, Infallible>(res)
         });
         let svc = Compression::new(svc).with_compress_predicate(MirrorDecompressed::new());
@@ -263,12 +263,12 @@ mod tests {
     #[tokio::test]
     async fn mirror_decompressed_sets_preferred_encoding() {
         let mut res = Response::new(Body::from("Hello, World!"));
-        res.extensions_mut().insert(DecompressedFrom::Brotli);
+        res.extensions().insert(DecompressedFrom::Brotli);
 
         let predicate = MirrorDecompressed::new();
         assert!(predicate.should_compress(&mut res));
         assert_eq!(
-            res.extensions().get::<PreferredEncoding>(),
+            res.extensions().get_ref::<PreferredEncoding>(),
             Some(&PreferredEncoding::Brotli)
         );
     }
@@ -279,7 +279,7 @@ mod tests {
             let mut res = Response::new(Body::from("Hello, World! Hello, World! Hello, World!"));
             res.headers_mut()
                 .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
-            res.extensions_mut().insert(PreferredEncoding::Brotli);
+            res.extensions().insert(PreferredEncoding::Brotli);
             Ok::<_, Infallible>(res)
         });
         let svc = Compression::new(svc)

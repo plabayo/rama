@@ -2,7 +2,7 @@ use super::{Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyQueryPredicate};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt},
-    extensions::{Extensions, ExtensionsMut},
+    extensions::{Extensions, ExtensionsRef},
 };
 use rama_net::{
     Protocol,
@@ -135,14 +135,14 @@ where
     P: ProxyQueryPredicate,
     F: UsernameFormatter,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
-        + ExtensionsMut
+        + ExtensionsRef
         + Send
         + 'static,
 {
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         if self.preserve && input.extensions().contains::<ProxyAddress>() {
             // shortcut in case a proxy address is already set,
             // and we wish to preserve it
@@ -150,27 +150,27 @@ where
         }
 
         let maybe_filter = match self.mode {
-            ProxyFilterMode::Optional => input.extensions().get::<ProxyFilter>().cloned(),
+            ProxyFilterMode::Optional => input.extensions().get_ref::<ProxyFilter>().cloned(),
             ProxyFilterMode::Default => Some(
-                if let Some(stored) = input.extensions().get::<ProxyFilter>() {
+                if let Some(stored) = input.extensions().get_ref::<ProxyFilter>() {
                     stored.clone()
                 } else {
-                    input.extensions_mut().insert(ProxyFilter::default());
+                    input.extensions().insert(ProxyFilter::default());
                     ProxyFilter::default()
                 },
             ),
             ProxyFilterMode::Required => Some(
                 input
                     .extensions()
-                    .get::<ProxyFilter>()
+                    .get_ref::<ProxyFilter>()
                     .cloned()
                     .context("missing proxy filter")?,
             ),
             ProxyFilterMode::Fallback(ref filter) => Some(
-                if let Some(stored) = input.extensions().get::<ProxyFilter>() {
+                if let Some(stored) = input.extensions().get_ref::<ProxyFilter>() {
                     stored.clone()
                 } else {
-                    input.extensions_mut().insert(filter.clone());
+                    input.extensions().insert(filter.clone());
                     filter.clone()
                 },
             ),
@@ -267,15 +267,15 @@ where
             }
 
             // insert proxy address in context so it will be used
-            input.extensions_mut().insert(proxy_address);
+            input.extensions().insert(proxy_address);
 
             // insert the id of the selected proxy
             input
-                .extensions_mut()
+                .extensions()
                 .insert(super::ProxyID::from(proxy.id.clone()));
 
             // insert the entire proxy also in there, for full "Context"
-            input.extensions_mut().insert(proxy);
+            input.extensions().insert(proxy);
         }
 
         self.inner.serve(input).await.into_box_error()
@@ -519,17 +519,17 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .version(Version::HTTP_3)
             .method("GET")
             .uri("https://example.com")
             .body(Body::empty())
             .unwrap();
 
-        req.extensions_mut().insert(ProxyFilter {
+        req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
             mobile: Some(true),
             residential: Some(true),
@@ -569,17 +569,17 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .version(Version::HTTP_3)
             .method("GET")
             .uri("https://example.com")
             .body(Body::empty())
             .unwrap();
 
-        req.extensions_mut().insert(ProxyFilter {
+        req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
             mobile: Some(true),
             residential: Some(true),
@@ -642,17 +642,17 @@ mod tests {
                 None
             })
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .version(Version::HTTP_3)
             .method("GET")
             .uri("https://example.com")
             .body(Body::empty())
             .unwrap();
 
-        req.extensions_mut().insert(ProxyFilter {
+        req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
             mobile: Some(true),
             residential: Some(true),
@@ -715,13 +715,13 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: rama_tcp::client::Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut req = rama_tcp::client::Request::new("www.example.com:443".parse().unwrap())
+        let req = rama_tcp::client::Request::new("www.example.com:443".parse().unwrap())
             .with_protocol(Protocol::HTTPS);
 
-        req.extensions_mut().insert(ProxyFilter {
+        req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
             mobile: Some(true),
             residential: Some(true),
@@ -754,17 +754,17 @@ mod tests {
             .with_preserve_proxy(true)
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .version(Version::HTTP_11)
             .method("GET")
             .uri("http://example.com")
             .body(Body::empty())
             .unwrap();
 
-        req.extensions_mut()
+        req.extensions()
             .insert(ProxyAddress::try_from("http://john:secret@1.2.3.4:1234").unwrap());
 
         let proxy_address = service.serve(req).await.unwrap();
@@ -778,10 +778,10 @@ mod tests {
 
         let service =
             ProxyDBLayer::new(Arc::new(db)).into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().cloned())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().cloned())
             }));
 
-        for (filter, expected_authority, mut req) in [
+        for (filter, expected_authority, req) in [
             (
                 None,
                 None,
@@ -822,7 +822,7 @@ mod tests {
             ),
         ] {
             if let Some(filter) = filter {
-                req.extensions_mut().insert(filter);
+                req.extensions().insert(filter);
             }
 
             let maybe_proxy_address = service.serve(req).await.unwrap();
@@ -841,7 +841,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
         for (filter, expected_addresses, req_info) in [
@@ -863,7 +863,7 @@ mod tests {
         ] {
             let mut seen_addresses = Vec::new();
             for _ in 0..5000 {
-                let mut req = Request::builder()
+                let req = Request::builder()
                     .version(req_info.0)
                     .method(req_info.1)
                     .uri(req_info.2)
@@ -871,7 +871,7 @@ mod tests {
                     .unwrap();
 
                 if let Some(filter) = filter.clone() {
-                    req.extensions_mut().insert(filter);
+                    req.extensions().insert(filter);
                 }
 
                 let proxy_address = service.serve(req).await.unwrap().address.to_string();
@@ -898,7 +898,7 @@ mod tests {
                 ..Default::default()
             }))
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
         for (filter, expected_addresses, req_info) in [
@@ -920,7 +920,7 @@ mod tests {
         ] {
             let mut seen_addresses = Vec::new();
             for _ in 0..5000 {
-                let mut req = Request::builder()
+                let req = Request::builder()
                     .version(req_info.0)
                     .method(req_info.1)
                     .uri(req_info.2)
@@ -928,7 +928,7 @@ mod tests {
                     .unwrap();
 
                 if let Some(filter) = filter.clone() {
-                    req.extensions_mut().insert(filter);
+                    req.extensions().insert(filter);
                 }
 
                 let proxy_address = service.serve(req).await.unwrap().address.to_string();
@@ -950,10 +950,10 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Required)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
-        for (filter, expected_address, mut req) in [
+        for (filter, expected_address, req) in [
             (
                 None,
                 None,
@@ -1010,7 +1010,7 @@ mod tests {
             ),
         ] {
             if let Some(filter) = filter.clone() {
-                req.extensions_mut().insert(filter);
+                req.extensions().insert(filter);
             }
 
             let proxy_address_result = service.serve(req).await;
@@ -1036,10 +1036,10 @@ mod tests {
             .with_filter_mode(ProxyFilterMode::Required)
             .with_select_predicate(|proxy: &Proxy| proxy.mobile)
             .into_layer(service_fn(async |req: Request| {
-                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+                Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
-        for (filter, expected, mut req) in [
+        for (filter, expected, req) in [
             (
                 None,
                 None,
@@ -1110,7 +1110,7 @@ mod tests {
             ),
         ] {
             if let Some(filter) = filter {
-                req.extensions_mut().insert(filter);
+                req.extensions().insert(filter);
             }
 
             let proxy_result = service.serve(req).await;

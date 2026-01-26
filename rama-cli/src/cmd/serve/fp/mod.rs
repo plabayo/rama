@@ -5,7 +5,7 @@ use rama::{
     cli::ForwardKind,
     combinators::{Either, Either7},
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     graceful::ShutdownGuard,
     http::{
         HeaderName, HeaderValue, Request,
@@ -396,7 +396,7 @@ where
                 .filter_map(|(k, v)| {
                     if k.eq_ignore_ascii_case("rama-storage-auth") {
                         if Some(v) == self.storage_auth.as_deref() {
-                            req.extensions_mut().insert(StorageAuthorized);
+                            req.extensions().insert(StorageAuthorized);
                         }
                         Some("rama-storage-auth=xxx".to_owned())
                     } else if !k.starts_with("source-") {

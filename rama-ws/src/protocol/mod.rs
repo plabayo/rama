@@ -1,6 +1,6 @@
 //! Generic WebSocket message stream.
 
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::{
     error::BoxError,
@@ -552,12 +552,6 @@ impl<Stream: Read + Write> WebSocket<Stream> {
 impl<Stream: ExtensionsRef> ExtensionsRef for WebSocket<Stream> {
     fn extensions(&self) -> &Extensions {
         self.socket.extensions()
-    }
-}
-
-impl<Stream: ExtensionsMut> ExtensionsMut for WebSocket<Stream> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.socket.extensions_mut()
     }
 }
 

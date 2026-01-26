@@ -59,7 +59,7 @@ use std::marker::PhantomData;
 /// use rama_http::Request;
 /// use rama_core::service::service_fn;
 /// use rama_http::{headers::forwarded::XRealIp, layer::forwarded::SetForwardedHeaderLayer};
-/// use rama_core::{extensions::ExtensionsMut, Service, Layer};
+/// use rama_core::{extensions::ExtensionsRef, Service, Layer};
 /// use std::convert::Infallible;
 ///
 /// # type Body = ();
@@ -80,7 +80,7 @@ use std::marker::PhantomData;
 ///     .into_layer(service_fn(svc));
 ///
 /// # let mut req = Request::builder().uri("example.com").body(()).unwrap();
-/// # req.extensions_mut().insert(SocketInfo::new(None, "42.37.100.50:62345".parse().unwrap()));
+/// # req.extensions().insert(SocketInfo::new(None, "42.37.100.50:62345".parse().unwrap()));
 /// service.serve(req).await.unwrap();
 /// # }
 /// ```
@@ -310,13 +310,13 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
-        let forwarded: Option<rama_net::forwarded::Forwarded> = req.extensions().get().cloned();
+        let forwarded: Option<rama_net::forwarded::Forwarded> = req.extensions().get_ref().cloned();
 
         let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
 
         if let Some(peer_addr) = req
             .extensions()
-            .get::<SocketInfo>()
+            .get_ref::<SocketInfo>()
             .map(|socket| socket.peer_addr())
         {
             forwarded_element.set_forwarded_for(peer_addr);
@@ -355,7 +355,7 @@ mod tests {
         headers::forwarded::{TrueClientIp, XRealIp},
         service::web::response::IntoResponse,
     };
-    use rama_core::{Layer, error::BoxError, extensions::ExtensionsMut, service::service_fn};
+    use rama_core::{Layer, error::BoxError, extensions::ExtensionsRef, service::service_fn};
     use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<Request<()>>>(_: T) {}
@@ -414,15 +414,14 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc));
-        let mut req = Request::builder()
+        let req = Request::builder()
             .uri("https://www.example.com")
             .body(())
             .unwrap();
-        req.extensions_mut()
-            .insert(rama_net::forwarded::Forwarded::new(
-                ForwardedElement::new_forwarded_for(IpAddr::from([12, 23, 34, 45])),
-            ));
-        req.extensions_mut()
+        req.extensions().insert(rama_net::forwarded::Forwarded::new(
+            ForwardedElement::new_forwarded_for(IpAddr::from([12, 23, 34, 45])),
+        ));
+        req.extensions()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
         service.serve(req).await.unwrap();
     }
@@ -438,15 +437,14 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::x_forwarded_for(service_fn(svc));
-        let mut req = Request::builder()
+        let req = Request::builder()
             .uri("https://www.example.com")
             .body(())
             .unwrap();
-        req.extensions_mut()
-            .insert(rama_net::forwarded::Forwarded::new(
-                ForwardedElement::new_forwarded_for(IpAddr::from([12, 23, 34, 45])),
-            ));
-        req.extensions_mut()
+        req.extensions().insert(rama_net::forwarded::Forwarded::new(
+            ForwardedElement::new_forwarded_for(IpAddr::from([12, 23, 34, 45])),
+        ));
+        req.extensions()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
         service.serve(req).await.unwrap();
     }
@@ -463,11 +461,11 @@ mod tests {
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc))
             .with_forward_by(IpAddr::from([12, 23, 34, 45]));
-        let mut req = Request::builder()
+        let req = Request::builder()
             .uri("https://www.example.com")
             .body(())
             .unwrap();
-        req.extensions_mut()
+        req.extensions()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
         service.serve(req).await.unwrap();
     }
@@ -483,11 +481,11 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc));
-        let mut req = Request::builder()
+        let req = Request::builder()
             .uri("https://www.example.com")
             .body(())
             .unwrap();
-        req.extensions_mut()
+        req.extensions()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
         service.serve(req).await.unwrap();
     }

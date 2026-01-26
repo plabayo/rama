@@ -6,7 +6,7 @@
 
 use crate::{
     Layer, Service,
-    extensions::{Extension, ExtensionsMut},
+    extensions::{Extension, ExtensionsRef},
 };
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -62,15 +62,15 @@ impl<S, T> AddInputExtension<S, T> {
 
 impl<Input, S, T> Service<Input> for AddInputExtension<S, T>
 where
-    Input: Send + ExtensionsMut + 'static,
+    Input: Send + ExtensionsRef + 'static,
     S: Service<Input>,
     T: Extension + Clone,
 {
     type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
-        input.extensions_mut().insert(self.value.clone());
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        input.extensions().insert(self.value.clone());
         self.inner.serve(input).await
     }
 }
@@ -128,15 +128,15 @@ impl<S, T> AddOutputExtension<S, T> {
 impl<Input, S, T> Service<Input> for AddOutputExtension<S, T>
 where
     Input: Send + 'static,
-    S: Service<Input, Output: Send + ExtensionsMut + 'static>,
+    S: Service<Input, Output: Send + ExtensionsRef + 'static>,
     T: Extension + Clone,
 {
     type Output = S::Output;
     type Error = S::Error;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let mut res = self.inner.serve(input).await?;
-        res.extensions_mut().insert(self.value.clone());
+        let res = self.inner.serve(input).await?;
+        res.extensions().insert(self.value.clone());
         Ok(res)
     }
 }
@@ -154,27 +154,27 @@ mod tests {
     async fn basic_input() {
         let svc = AddInputExtensionLayer::new(Counter(42)).into_layer(service_fn(
             async |req: ServiceInput<()>| {
-                let Counter(n) = req.extensions().get().copied().unwrap();
+                let Counter(n) = req.extensions().get_ref().copied().unwrap();
                 assert_eq!(42, n);
                 Ok::<_, Infallible>(ServiceInput::new(()))
             },
         ));
 
         let res = svc.serve(ServiceInput::new(())).await.unwrap();
-        assert!(res.extensions.get::<Counter>().is_none());
+        assert!(res.extensions.get_ref::<Counter>().is_none());
     }
 
     #[tokio::test]
     async fn basic_output() {
         let svc = AddOutputExtensionLayer::new(Counter(42)).into_layer(service_fn(
             async |req: ServiceInput<()>| {
-                assert!(req.extensions.get::<Counter>().is_none());
+                assert!(req.extensions.get_ref::<Counter>().is_none());
                 Ok::<_, Infallible>(ServiceInput::new(()))
             },
         ));
 
         let res = svc.serve(ServiceInput::new(())).await.unwrap();
-        let Counter(n) = res.extensions().get().copied().unwrap();
+        let Counter(n) = res.extensions().get_ref().copied().unwrap();
         assert_eq!(42, n);
     }
 }

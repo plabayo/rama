@@ -1,4 +1,4 @@
-use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama::extensions::{Extensions, ExtensionsRef};
 use rama::http::Request;
 use rama::http::client::HttpConnectorLayer;
 use rama::http::proto::h1::Http1HeaderMap;
@@ -259,7 +259,7 @@ async fn test_ua_emulation() {
         }
 
         async fn server_svc_fn(req: Request) -> Result<Response, Infallible> {
-            let state = req.extensions().get::<State>().unwrap();
+            let state = req.extensions().get_ref::<State>().unwrap();
             let expected = state.expected;
             let description = state.description;
 
@@ -301,15 +301,15 @@ async fn test_ua_emulation() {
             UserAgentEmulateLayer::new(Arc::new(profile)),
             EmulateTlsProfileLayer::new(),
         )
-            .into_layer(service_fn(async |mut req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 // We can edit our current builder directly or create a new one if needed
                 let mut builder = req
-                    .extensions_mut()
-                    .get::<TlsConnectorDataBuilder>()
+                    .extensions()
+                    .get_ref::<TlsConnectorDataBuilder>()
                     .cloned()
                     .unwrap_or_default();
                 builder.set_server_verify_mode(ServerVerifyMode::Disable);
-                req.extensions_mut().insert(builder);
+                req.extensions().insert(builder);
 
                 // We dont need to set connector data on TlsConnector as it will get it from extensions
                 let connector = HttpConnectorLayer::default().into_layer(
@@ -318,18 +318,16 @@ async fn test_ua_emulation() {
                     )),
                 );
 
-                let EstablishedClientConnection {
-                    input: mut req,
-                    conn,
-                } = connector.serve(req).await.expect(description);
+                let EstablishedClientConnection { input: req, conn } =
+                    connector.serve(req).await.expect(description);
 
-                req.extensions_mut().extend(conn.extensions().clone());
+                req.extensions().extend(conn.extensions());
 
                 let svc = (UserAgentEmulateHttpRequestModifierLayer::default()).layer(conn);
                 Ok::<_, Infallible>(svc.serve(req).await.expect(description))
             }));
 
-        let mut server_extensions = Extensions::new();
+        let server_extensions = Extensions::new();
         server_extensions.insert(State {
             expected,
             description,
@@ -366,7 +364,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
 
             async fn server_svc_fn(req: Request) -> Result<Response, Infallible> {
                 req.extensions()
-                    .get::<State>()
+                    .get_ref::<State>()
                     .unwrap()
                     .counter
                     .fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -395,22 +393,23 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                         )),
                     );
 
-                    let profile = req.extensions().get::<SelectedUserAgentProfile>().unwrap();
+                    let profile = req
+                        .extensions()
+                        .get_ref::<SelectedUserAgentProfile>()
+                        .unwrap();
                     let expect_msg = format!("selected profile to work: {profile:?}");
 
-                    let EstablishedClientConnection {
-                        input: mut req,
-                        conn,
-                    } = connector.serve(req).await.expect(&expect_msg);
+                    let EstablishedClientConnection { input: req, conn } =
+                        connector.serve(req).await.expect(&expect_msg);
 
-                    req.extensions_mut().extend(conn.extensions().clone());
+                    req.extensions().extend(conn.extensions());
                     let svc = (UserAgentEmulateHttpRequestModifierLayer::default()).layer(conn);
                     Ok::<_, Infallible>(svc.serve(req).await.expect(&expect_msg))
                 }));
 
             let expect_msg = format!("profile to work: {profile:?}");
 
-            let mut server_extensions = Extensions::new();
+            let server_extensions = Extensions::new();
             server_extensions.insert(State {
                 counter: counter.clone(),
             });
@@ -463,10 +462,10 @@ where
     type Output = EstablishedClientConnection<MockSocket, Request>;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let (client_socket, mut server_socket) = new_mock_sockets();
+        let (client_socket, server_socket) = new_mock_sockets();
 
-        if let Some(extensions) = req.extensions().get::<ServerExtensions>() {
-            *server_socket.extensions_mut() = extensions.0.clone();
+        if let Some(extensions) = req.extensions().get_ref::<ServerExtensions>() {
+            server_socket.extensions().extend(&extensions.0);
         }
 
         let svc = self.serve_svc.clone();

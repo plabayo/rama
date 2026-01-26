@@ -25,7 +25,8 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let ec = self.0.connect(input).await?;
         if ec.input.extensions().contains::<VerboseLogs>() {
-            if let Some(client_tls_data) = ec.input.extensions().get::<TlsConnectorDataBuilder>()
+            if let Some(client_tls_data) =
+                ec.input.extensions().get_ref::<TlsConnectorDataBuilder>()
                 && let Some(alpn) = client_tls_data.alpn_protos()
             {
                 let mut protocols = Vec::new();
@@ -35,7 +36,8 @@ where
                 }
                 eprintln!("* ALPN: rama offers {}", protocols.join(","));
             }
-            if let Some(server_tls_data) = ec.conn.extensions().get::<NegotiatedTlsParameters>() {
+            if let Some(server_tls_data) = ec.conn.extensions().get_ref::<NegotiatedTlsParameters>()
+            {
                 eprintln!(
                     "* TLS Connection using version {:?}",
                     server_tls_data.protocol_version

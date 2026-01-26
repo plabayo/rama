@@ -5,7 +5,7 @@
 
 use crate::Request;
 use crate::headers::{HeaderMapExt, ProxyAuthorization};
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http_types::proxy::is_req_http_proxy_connect;
@@ -63,7 +63,7 @@ where
     type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if is_req_http_proxy_connect(&req) {
             tracing::trace!("DpiProxyCredentialExtractor: try to extract proxy authorization data");
 
@@ -71,13 +71,13 @@ where
                 tracing::debug!(
                     "DpiProxyCredentialExtractor: extracted Basic proxy auth: inserted in req extensions"
                 );
-                req.extensions_mut()
+                req.extensions()
                     .insert(DpiProxyCredential(ProxyCredential::Basic(credentials)));
             } else if let Some(ProxyAuthorization::<Bearer>(token)) = req.headers().typed_get() {
                 tracing::debug!(
                     "DpiProxyCredentialExtractor: extracted Bearer proxy auth: inserted in req extensions"
                 );
-                req.extensions_mut()
+                req.extensions()
                     .insert(DpiProxyCredential(ProxyCredential::Bearer(token)));
             }
         }

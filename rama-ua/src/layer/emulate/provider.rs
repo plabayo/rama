@@ -101,7 +101,7 @@ impl UserAgentProvider for UserAgentProfile {
 impl UserAgentProvider for UserAgentDatabase {
     #[inline]
     fn select_user_agent_profile(&self, extensions: &Extensions) -> Option<&UserAgentProfile> {
-        match (extensions.get(), extensions.get()) {
+        match (extensions.get_ref(), extensions.get_ref()) {
             (Some(agent), _) => self.get(agent),
             (None, Some(UserAgentSelectFallback::Random)) => self.rnd(),
             (None, None | Some(UserAgentSelectFallback::Abort)) => None,

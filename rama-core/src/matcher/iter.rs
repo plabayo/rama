@@ -9,11 +9,11 @@ where
 {
     /// Matches in case all [`Matcher`] elements match for the given `Input`
     /// within the specified [`Extensions`].
-    fn matches_and(self, ext: Option<&mut Extensions>, input: &Input) -> bool;
+    fn matches_and(self, ext: Option<&Extensions>, input: &Input) -> bool;
 
     /// Matches in case any of the [`Matcher`] elements match for the given `Input`
     /// within the specified [`Extensions`].
-    fn matches_or(self, ext: Option<&mut Extensions>, input: &Input) -> bool;
+    fn matches_or(self, ext: Option<&Extensions>, input: &Input) -> bool;
 }
 
 impl<'a, I, M, Input> IteratorMatcherExt<'a, M, Input> for I
@@ -21,7 +21,7 @@ where
     I: Iterator<Item = &'a M> + 'a,
     M: Matcher<Input>,
 {
-    fn matches_and(self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+    fn matches_and(self, ext: Option<&Extensions>, input: &Input) -> bool {
         match ext {
             None => {
                 for matcher in self {
@@ -32,19 +32,19 @@ where
                 true
             }
             Some(ext) => {
-                let mut inner_ext = Extensions::new();
+                let inner_ext = Extensions::new();
                 for matcher in self {
-                    if !matcher.matches(Some(&mut inner_ext), input) {
+                    if !matcher.matches(Some(&inner_ext), input) {
                         return false;
                     }
                 }
-                ext.extend(inner_ext);
+                ext.extend(&inner_ext);
                 true
             }
         }
     }
 
-    fn matches_or(self, ext: Option<&mut Extensions>, input: &Input) -> bool {
+    fn matches_or(self, ext: Option<&Extensions>, input: &Input) -> bool {
         let mut it = self.peekable();
         if it.peek().is_none() {
             return true;
@@ -61,9 +61,9 @@ where
             }
             Some(ext) => {
                 for matcher in it {
-                    let mut inner_ext = Extensions::new();
-                    if matcher.matches(Some(&mut inner_ext), input) {
-                        ext.extend(inner_ext);
+                    let inner_ext = Extensions::new();
+                    if matcher.matches(Some(&inner_ext), input) {
+                        ext.extend(&inner_ext);
                         return true;
                     }
                 }

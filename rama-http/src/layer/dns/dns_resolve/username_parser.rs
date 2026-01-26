@@ -51,7 +51,7 @@ impl UsernameLabelParser for DnsResolveModeUsernameParser {
         }
     }
 
-    fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
+    fn build(self, ext: &Extensions) -> Result<(), Self::Error> {
         if self.key_found {
             return Err(BoxError::from("unused dns resolve mode username key: dns"));
         }
@@ -92,12 +92,12 @@ mod tests {
         ];
 
         for (username, expected_username, expected_mode) in test_cases.into_iter() {
-            let mut ext = Extensions::default();
+            let ext = Extensions::default();
 
             let parser = DnsResolveModeUsernameParser::default();
 
-            let username = parse_username(&mut ext, parser, username).unwrap();
-            let mode = *ext.get::<DnsResolveMode>().unwrap();
+            let username = parse_username(&ext, parser, username).unwrap();
+            let mode = *ext.get_ref::<DnsResolveMode>().unwrap();
             assert_eq!(
                 username, expected_username,
                 "username = '{username}' ; expected_username = '{expected_username}'",
@@ -118,12 +118,12 @@ mod tests {
             "john-dns-eager-dns",
             "john-dns-foo",
         ] {
-            let mut ext = Extensions::default();
+            let ext = Extensions::default();
 
             let parser = DnsResolveModeUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username).is_err(),
+                parse_username(&ext, parser, username).is_err(),
                 "username = {username}",
             );
         }

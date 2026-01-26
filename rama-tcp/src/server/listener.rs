@@ -1,7 +1,7 @@
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
@@ -306,7 +306,7 @@ impl TcpListener {
                 result = self.inner.accept() => {
                     match result {
                         Ok((socket, peer_addr)) => {
-                            let mut socket = TcpStream::new(socket);
+                            let socket = TcpStream::new(socket);
                             let service = service.clone();
 
                             let local_addr = socket.local_addr().ok();
@@ -323,7 +323,7 @@ impl TcpListener {
                                 network.protocol.name = "tcp",
                             );
 
-                            socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr.into()));
+                            socket.extensions().insert(SocketInfo::new(local_addr, peer_addr.into()));
 
                             self.exec.spawn_task(async move {
                                 let _ = service.serve(socket).await;

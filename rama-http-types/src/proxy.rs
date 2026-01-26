@@ -32,7 +32,7 @@ impl HttpProxyConnectMatcher {
 
 impl<Body> Matcher<Request<Body>> for HttpProxyConnectMatcher {
     #[inline(always)]
-    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         is_req_http_proxy_connect(req)
     }
 }

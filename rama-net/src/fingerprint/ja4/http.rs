@@ -364,8 +364,8 @@ mod tests {
                     ).unwrap();
                 )+
 
-                let mut extensions = rama_core::extensions::Extensions::default();
-                let headers = map.consume(&mut extensions);
+                let extensions = rama_core::extensions::Extensions::default();
+                let headers = map.consume(&extensions);
 
                 let (mut parts, body) = Request::new(()).into_parts();
                 parts.method = $method;

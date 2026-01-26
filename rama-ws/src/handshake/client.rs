@@ -5,7 +5,7 @@ use std::ops::{Deref, DerefMut};
 
 use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::{Extensions, ExtensionsMut};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http::conn::TargetHttpVersion;
 use rama_http::headers::sec_websocket_extensions::{Extension, PerMessageDeflateConfig};
@@ -509,7 +509,7 @@ impl WebSocketRequestBuilder<request::Builder> {
 
         // only required for h2, but we might upgrade from h1 to h2 based on layers such as tls
         request
-            .extensions_mut()
+            .extensions()
             .insert(Protocol::from_static("websocket"));
 
         Ok(HandshakeRequest {
@@ -752,7 +752,7 @@ where
     /// to [`NegotiatedHandshakeRequest`].
     pub async fn initiate_handshake(
         self,
-        mut extensions: Extensions,
+        extensions: Extensions,
     ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
         let builder = match self.protocols.as_ref() {
             Some(protocols) => self.inner.builder.overwrite_typed_header(protocols),
@@ -779,10 +779,10 @@ where
         };
 
         // only required in h1, but because of layers such as tls we might anyway turn from h1 into h2
-        let mut builder = builder.extension(Protocol::from_static("websocket"));
+        let builder = builder.extension(Protocol::from_static("websocket"));
 
-        if let Some(ext) = builder.extensions_mut() {
-            ext.extend(extensions);
+        if let Some(ext) = builder.extensions() {
+            ext.extend(&extensions);
         }
 
         let response = builder
@@ -854,7 +854,7 @@ pub fn apply_response_data_to_base_websocket_config<Body>(
         .typed_get::<SecWebSocketProtocol>()
         .map(|h| h.accept_first_protocol())
     {
-        res.extensions_mut().insert(accepted_protocol);
+        res.extensions().insert(accepted_protocol);
     }
 
     #[cfg(feature = "compression")]

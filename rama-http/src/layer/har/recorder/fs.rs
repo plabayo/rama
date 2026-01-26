@@ -228,7 +228,7 @@ impl FileRecorderTask {
                         }
                     }
 
-                    let mut extensions = Extensions::new();
+                    let extensions = Extensions::new();
                     extensions.insert(HarFilePath(storage_ref.path.clone().into()));
                     if ext.send(extensions).is_err() {
                         tracing::debug!(

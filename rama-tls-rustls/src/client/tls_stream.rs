@@ -1,6 +1,6 @@
 use super::RustlsTlsStream;
 use pin_project_lite::pin_project;
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use std::{
     io,
     pin::Pin,
@@ -16,13 +16,13 @@ pin_project! {
     }
 }
 
-impl<IO: ExtensionsMut> TlsStream<IO> {
+impl<IO: ExtensionsRef> TlsStream<IO> {
     pub fn new(stream: RustlsTlsStream<IO>) -> Self {
         Self { stream }
     }
 }
 
-impl<IO: ExtensionsMut> From<RustlsTlsStream<IO>> for TlsStream<IO> {
+impl<IO: ExtensionsRef> From<RustlsTlsStream<IO>> for TlsStream<IO> {
     fn from(value: RustlsTlsStream<IO>) -> Self {
         Self::new(value)
     }
@@ -37,12 +37,6 @@ impl<IO> From<TlsStream<IO>> for RustlsTlsStream<IO> {
 impl<IO: ExtensionsRef> ExtensionsRef for TlsStream<IO> {
     fn extensions(&self) -> &Extensions {
         self.stream.get_ref().0.extensions()
-    }
-}
-
-impl<IO: ExtensionsMut> ExtensionsMut for TlsStream<IO> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.stream.get_mut().0.extensions_mut()
     }
 }
 

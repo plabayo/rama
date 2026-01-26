@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::{ChainableExtensions, ExtensionsMut, ExtensionsRef},
+    extensions::{ChainableExtensions, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_http::headers::{ClientHint, all_client_hints};
@@ -132,9 +132,9 @@ where
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         if let Some(fallback) = self.select_fallback {
-            req.extensions_mut().insert(fallback);
+            req.extensions().insert(fallback);
         }
 
         if self.try_auto_detect_user_agent && !req.extensions().contains::<UserAgent>() {
@@ -149,7 +149,7 @@ where
                         user_agent.original = %ua_str,
                         "user agent {user_agent} auto-detected from request"
                     );
-                    req.extensions_mut().insert(user_agent);
+                    req.extensions().insert(user_agent);
                 }
                 None => {
                     tracing::debug!(
@@ -178,7 +178,7 @@ where
 
         let preserve_http = matches!(
             req.extensions()
-                .get::<UserAgent>()
+                .get_ref::<UserAgent>()
                 .and_then(|ua| ua.http_agent()),
             Some(HttpAgent::Preserve),
         );
@@ -197,7 +197,7 @@ where
                 user_agent.platform = ?profile.platform,
                 "user agent emulation: inject http context data to prepare for HTTP emulation"
             );
-            req.extensions_mut().insert(profile.http.clone());
+            req.extensions().insert(profile.http.clone());
 
             if let Some(header) = self
                 .input_header_order
@@ -213,7 +213,7 @@ where
                     }
                     headers.push(s.parse().context("parse header part as h1 headern name")?);
                 }
-                req.extensions_mut().insert(headers);
+                req.extensions().insert(headers);
             }
         }
 
@@ -223,7 +223,7 @@ where
 
             let preserve_tls = matches!(
                 req.extensions()
-                    .get::<UserAgent>()
+                    .get_ref::<UserAgent>()
                     .and_then(|ua| ua.tls_agent()),
                 Some(TlsAgent::Preserve),
             );
@@ -235,7 +235,7 @@ where
                     "user agent emulation: skip tls settings as tls is instructed to be preserved"
                 );
             } else {
-                req.extensions_mut().insert(profile.tls.clone());
+                req.extensions().insert(profile.tls.clone());
                 tracing::trace!(
                     user_agent.kind = %profile.ua_kind,
                     user_agent.version = ?profile.ua_version,
@@ -246,7 +246,7 @@ where
         }
 
         // inject the selected user agent profile into the context
-        req.extensions_mut()
+        req.extensions()
             .insert(SelectedUserAgentProfile::from(profile));
 
         // serve emulated http(s) request via inner service
@@ -280,18 +280,16 @@ where
     type Output = EstablishedClientConnection<S::Connection, Request<ReqBody>>;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection {
-            conn,
-            input: mut req,
-        } = self.inner.connect(req).await.into_box_error()?;
+        let EstablishedClientConnection { conn, input: req } =
+            self.inner.connect(req).await.into_box_error()?;
 
-        match (&conn, &req).get().cloned() {
+        match (&conn, &req).get_ref().cloned() {
             Some(http_profile) => {
                 tracing::trace!(
                     http.version = ?req.version(),
                     "http profile found in context to use for http connection emulation, proceed",
                 );
-                emulate_http_connect_settings(&mut req, &http_profile);
+                emulate_http_connect_settings(&req, &http_profile);
             }
             None => {
                 tracing::trace!(
@@ -316,11 +314,11 @@ impl<S> Layer<S> for UserAgentEmulateHttpConnectModifierLayer {
     }
 }
 
-fn emulate_http_connect_settings<Body>(req: &mut Request<Body>, profile: &HttpProfile) {
+fn emulate_http_connect_settings<Body>(req: &Request<Body>, profile: &HttpProfile) {
     match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             tracing::trace!("UA emulation add http1-specific settings",);
-            req.extensions_mut().insert(Http1ClientContextParams {
+            req.extensions().insert(Http1ClientContextParams {
                 title_header_case: profile.h1.settings.title_case_headers,
             });
         }
@@ -334,7 +332,7 @@ fn emulate_http_connect_settings<Body>(req: &mut Request<Body>, profile: &HttpPr
                     pseudo_headers,
                     early_frames,
                 );
-                req.extensions_mut().insert(H2ClientContextParams {
+                req.extensions().insert(H2ClientContextParams {
                     headers_pseudo_order: pseudo_headers,
                     early_frames,
                     ..Default::default()
@@ -378,7 +376,7 @@ where
     type Output = S::Output;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        match req.extensions().get().cloned() {
+        match req.extensions().get_ref().cloned() {
             Some(http_profile) => {
                 tracing::trace!(
                     http.version = ?req.version(),
@@ -387,7 +385,7 @@ where
 
                 match get_base_http_headers(&req, &http_profile) {
                     Some(base_http_headers) => {
-                        let original_http_header_order = req.extensions().get().cloned();
+                        let original_http_header_order = req.extensions().get_ref().cloned();
                         let original_headers = req.headers().clone();
 
                         let preserve_ua_header =
@@ -415,14 +413,14 @@ where
                             protocol,
                             Some(req.method()),
                             req.extensions()
-                                .get::<Vec<ClientHint>>()
+                                .get_ref::<Vec<ClientHint>>()
                                 .map(|v| v.as_slice()),
                         );
 
                         tracing::trace!("user agent emulation: http emulated");
                         let (output_headers, original_headers) = output_headers.into_parts();
                         *req.headers_mut() = output_headers;
-                        req.extensions_mut().insert(original_headers);
+                        req.extensions().insert(original_headers);
                     }
                     None => {
                         tracing::debug!(
@@ -439,7 +437,7 @@ where
                     );
 
                     if let Some(pseudo_headers) = pseudo_headers {
-                        req.extensions_mut().insert(pseudo_headers);
+                        req.extensions().insert(pseudo_headers);
                     }
                 }
             }
@@ -486,7 +484,7 @@ fn get_base_http_headers<'a, Body>(
             return None;
         }
     };
-    match req.extensions().get::<RequestInitiator>().copied() {
+    match req.extensions().get_ref::<RequestInitiator>().copied() {
         Some(req_init) => {
             tracing::trace!(
                 "base http headers defined based on hint from UserAgent (overwrite): {req_init}"
@@ -1858,7 +1856,7 @@ mod tests {
                 method: None,
                 headers: None,
                 extensions: Some({
-                    let mut extensions = Extensions::default();
+                    let extensions = Extensions::default();
                     extensions.insert(RequestInitiator::Navigate);
                     extensions
                 }),
@@ -1870,7 +1868,7 @@ mod tests {
                 method: None,
                 headers: None,
                 extensions: Some({
-                    let mut extensions = Extensions::default();
+                    let extensions = Extensions::default();
                     extensions.insert(RequestInitiator::Form);
                     extensions
                 }),
@@ -2036,7 +2034,7 @@ mod tests {
                 method: Some(Method::DELETE),
                 headers: None,
                 extensions: Some({
-                    let mut extensions = Extensions::default();
+                    let extensions = Extensions::default();
                     extensions.insert(RequestInitiator::Xhr);
                     extensions
                 }),
@@ -2054,7 +2052,7 @@ mod tests {
                 req.headers_mut().extend(headers);
             }
             if let Some(extensions) = test_case.extensions {
-                *req.extensions_mut() = extensions;
+                req.extensions().extend(&extensions);
             }
 
             let res = ua_service.serve(req).await.unwrap();

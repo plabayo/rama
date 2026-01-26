@@ -3,7 +3,7 @@ use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use crate::{
     Layer, Service,
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     io::{CancelIo, GracefulIo, Io},
 };
 
@@ -25,14 +25,14 @@ impl<S> GracefulIoService<S> {
 impl<S, IO> Service<IO> for GracefulIoService<S>
 where
     S: Service<GracefulIo<WaitForCancellationFutureOwned, IO>>,
-    IO: Io + ExtensionsMut,
+    IO: Io + ExtensionsRef,
 {
     type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut io: IO) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, io: IO) -> Result<Self::Output, Self::Error> {
         let token = CancellationToken::new();
-        io.extensions_mut().insert(CancelIo(token.clone()));
+        io.extensions().insert(CancelIo(token.clone()));
         self.inner
             .serve(GracefulIo::new(token.cancelled_owned(), io))
             .await
@@ -74,8 +74,8 @@ mod tests {
     async fn graceful_io_layer_injects_cancel_token() {
         let svc = GracefulIoLayer::new().into_layer(service_fn(
             async |stream: GracefulIo<WaitForCancellationFutureOwned, ServiceInput<_>>| {
-                assert!(stream.extensions().get::<CancelIo>().is_some());
-                let cancel = stream.extensions().get::<CancelIo>().unwrap().clone();
+                assert!(stream.extensions().get_ref::<CancelIo>().is_some());
+                let cancel = stream.extensions().get_ref::<CancelIo>().unwrap().clone();
                 cancel.0.cancel();
 
                 let mut stream = std::pin::pin!(stream);
@@ -94,7 +94,7 @@ mod tests {
     async fn graceful_io_layer_reads_eof_after_cancel() {
         let svc = GracefulIoService::new(service_fn(
             async |stream: GracefulIo<WaitForCancellationFutureOwned, ServiceInput<_>>| {
-                let cancel = stream.extensions().get::<CancelIo>().unwrap().clone();
+                let cancel = stream.extensions().get_ref::<CancelIo>().unwrap().clone();
                 cancel.0.cancel();
 
                 let mut stream = std::pin::pin!(stream);

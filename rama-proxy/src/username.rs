@@ -162,7 +162,7 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
         UsernameLabelState::Used
     }
 
-    fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
+    fn build(self, ext: &Extensions) -> Result<(), Self::Error> {
         if let Some(key) = self.key {
             return Err(
                 BoxError::from("unused proxy filter username key").context_debug_field("key", key)
@@ -523,12 +523,12 @@ mod tests {
         ];
 
         for (username, expected_username, expected_filter) in test_cases.into_iter() {
-            let mut ext = Extensions::default();
+            let ext = Extensions::default();
 
             let parser = ProxyFilterUsernameParser::default();
 
-            let username = parse_username(&mut ext, parser, username).unwrap();
-            let filter = ext.get::<ProxyFilter>().cloned();
+            let username = parse_username(&ext, parser, username).unwrap();
+            let filter = ext.get_ref::<ProxyFilter>().cloned();
             assert_eq!(
                 username, expected_username,
                 "username = '{username}' ; expected_username = '{expected_username}'",
@@ -552,12 +552,12 @@ mod tests {
             "john-country",
             "john-id-", // empty id is invalid
         ] {
-            let mut ext = Extensions::default();
+            let ext = Extensions::default();
 
             let parser = ProxyFilterUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username).is_err(),
+                parse_username(&ext, parser, username).is_err(),
                 "username = {username}",
             );
         }
@@ -572,12 +572,12 @@ mod tests {
             "john-!city-ny",
             "john-!carrier-c",
         ] {
-            let mut ext = Extensions::default();
+            let ext = Extensions::default();
 
             let parser = ProxyFilterUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username).is_err(),
+                parse_username(&ext, parser, username).is_err(),
                 "username = {username}",
             );
         }
@@ -637,18 +637,15 @@ mod tests {
 
         for test_case in test_cases {
             let fmt_username = compose_username("john".to_owned(), &test_case).unwrap();
-            let mut ext = Extensions::new();
-            let username = parse_username(
-                &mut ext,
-                ProxyFilterUsernameParser::default(),
-                &fmt_username,
-            )
-            .unwrap_or_else(|_| panic!("to be ok: {fmt_username}"));
+            let ext = Extensions::new();
+            let username =
+                parse_username(&ext, ProxyFilterUsernameParser::default(), &fmt_username)
+                    .unwrap_or_else(|_| panic!("to be ok: {fmt_username}"));
             assert_eq!("john", username);
             if test_case == Default::default() {
                 assert!(!ext.contains::<ProxyFilter>());
             } else {
-                let result = ext.get::<ProxyFilter>().unwrap();
+                let result = ext.get_ref::<ProxyFilter>().unwrap();
                 assert_eq!(test_case, *result);
             }
         }

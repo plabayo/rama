@@ -131,15 +131,12 @@ mod tests {
         let test_cases = [DnsResolveMode::eager(), DnsResolveMode::lazy()];
         for test_case in test_cases {
             let fmt_username = compose_username("john".to_owned(), test_case).unwrap();
-            let mut ext = Extensions::new();
-            let username = parse_username(
-                &mut ext,
-                DnsResolveModeUsernameParser::default(),
-                fmt_username,
-            )
-            .unwrap();
+            let ext = Extensions::new();
+            let username =
+                parse_username(&ext, DnsResolveModeUsernameParser::default(), fmt_username)
+                    .unwrap();
             assert_eq!("john", username);
-            let result = ext.get::<DnsResolveMode>().unwrap();
+            let result = ext.get_ref::<DnsResolveMode>().unwrap();
             assert_eq!(test_case, *result);
         }
     }

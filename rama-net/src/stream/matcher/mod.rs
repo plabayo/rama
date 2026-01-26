@@ -472,7 +472,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcherKind<Requ
 where
     Body: 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         match self {
             Self::SocketAddress(matcher) => matcher.matches(ext, req),
             Self::IpNet(matcher) => matcher.matches(ext, req),
@@ -491,7 +491,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcher<Request<
 where
     Body: 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         let result = self.kind.matches(ext, req);
         if self.negate { !result } else { result }
     }
@@ -501,7 +501,7 @@ impl<Socket> rama_core::matcher::Matcher<Socket> for SocketMatcherKind<Socket>
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, stream: &Socket) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, stream: &Socket) -> bool {
         match self {
             Self::SocketAddress(matcher) => matcher.matches(ext, stream),
             Self::IpNet(matcher) => matcher.matches(ext, stream),
@@ -519,7 +519,7 @@ impl<Socket> rama_core::matcher::Matcher<Socket> for SocketMatcher<Socket>
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, stream: &Socket) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, stream: &Socket) -> bool {
         let result = self.kind.matches(ext, stream);
         if self.negate { !result } else { result }
     }
@@ -536,7 +536,7 @@ mod test {
     struct BooleanMatcher(bool);
 
     impl Matcher<Request<()>> for BooleanMatcher {
-        fn matches(&self, _ext: Option<&mut Extensions>, _req: &Request<()>) -> bool {
+        fn matches(&self, _ext: Option<&Extensions>, _req: &Request<()>) -> bool {
             self.0
         }
     }

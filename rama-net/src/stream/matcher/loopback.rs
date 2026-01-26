@@ -48,9 +48,9 @@ impl Default for LoopbackMatcher {
 
 #[cfg(feature = "http")]
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for LoopbackMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         req.extensions()
-            .get::<SocketInfo>()
+            .get_ref::<SocketInfo>()
             .map(|info| info.peer_addr().ip_addr.is_loopback())
             .unwrap_or(self.optional)
     }
@@ -60,7 +60,7 @@ impl<Socket> rama_core::matcher::Matcher<Socket> for LoopbackMatcher
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(&self, _ext: Option<&mut Extensions>, stream: &Socket) -> bool {
+    fn matches(&self, _ext: Option<&Extensions>, stream: &Socket) -> bool {
         stream
             .peer_addr()
             .map(|addr| addr.ip_addr.is_loopback())
@@ -78,7 +78,7 @@ mod test {
     #[cfg(feature = "http")]
     #[test]
     fn test_loopback_matcher_http() {
-        use rama_core::extensions::ExtensionsMut;
+        use rama_core::extensions::ExtensionsRef;
 
         let matcher = LoopbackMatcher::new();
 
@@ -95,34 +95,34 @@ mod test {
         assert!(!matcher.matches(None, &req));
 
         // test #2: no match: test with network address (ipv4)
-        let mut req = create_request();
-        req.extensions_mut()
+        let req = create_request();
+        req.extensions()
             .insert(SocketInfo::new(None, ([192, 168, 0, 1], 8080).into()));
         assert!(!matcher.matches(None, &req));
 
         // test #3: no match: test with network address (ipv6)
-        let mut req = create_request();
-        req.extensions_mut().insert(SocketInfo::new(
+        let req = create_request();
+        req.extensions().insert(SocketInfo::new(
             None,
             ([1, 1, 1, 1, 1, 1, 1, 1], 8080).into(),
         ));
         assert!(!matcher.matches(None, &req));
 
         // test #4: match: test with loopback address (ipv4)
-        let mut req = create_request();
-        req.extensions_mut()
+        let req = create_request();
+        req.extensions()
             .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
         assert!(matcher.matches(None, &req));
 
         // test #5: match: test with another loopback address (ipv4)
-        let mut req = create_request();
-        req.extensions_mut()
+        let req = create_request();
+        req.extensions()
             .insert(SocketInfo::new(None, ([127, 3, 2, 1], 8080).into()));
         assert!(matcher.matches(None, &req));
 
         // test #6: match: test with loopback address (ipv6)
-        let mut req = create_request();
-        req.extensions_mut().insert(SocketInfo::new(
+        let req = create_request();
+        req.extensions().insert(SocketInfo::new(
             None,
             ([0, 0, 0, 0, 0, 0, 0, 1], 8080).into(),
         ));

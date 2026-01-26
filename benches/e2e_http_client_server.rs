@@ -8,7 +8,7 @@ use rama::{
     Layer, Service,
     bytes::Bytes,
     error::{BoxError, extra::OpaqueError},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     http::{
         HeaderName, HeaderValue, Request, Response, Version,
         body::util::BodyExt,
@@ -172,7 +172,7 @@ fn get_http_service_boxed<Input>(
     body_content: Bytes,
 ) -> BoxService<Input, (), BoxError>
 where
-    Input: ExtensionsMut + AsyncRead + AsyncWrite + Send + 'static,
+    Input: ExtensionsRef + AsyncRead + AsyncWrite + Send + 'static,
 {
     let handler = move |req: Request| {
         let body_content = body_content.clone();
@@ -238,7 +238,7 @@ fn get_boring_tls_data(params: TestParameters) -> boring::server::TlsAcceptorDat
 
 fn get_http_proxy_service_boxed<Input>(params: TestParameters) -> BoxService<Input, (), BoxError>
 where
-    Input: ExtensionsMut + AsyncRead + AsyncWrite + Send + 'static,
+    Input: ExtensionsRef + AsyncRead + AsyncWrite + Send + 'static,
 {
     let handler = move |req: Request| async move {
         let client = get_inner_client(params.version, params.tls);

@@ -100,7 +100,7 @@ impl MethodMatcher {
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for MethodMatcher {
     /// returns true on a match, false otherwise
-    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         Self::try_from(req.method())
             .ok()
             .map(|method| self.contains(method))

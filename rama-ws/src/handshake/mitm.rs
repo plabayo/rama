@@ -4,7 +4,7 @@ use rama_core::{
     Service,
     bytes::Bytes,
     error::{BoxError, ErrorExt},
-    extensions::{self, Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{self, Extensions, ExtensionsRef},
     futures::SinkExt as _,
     io::{BridgeIo, Io},
     service::MirrorService,
@@ -58,13 +58,6 @@ impl ExtensionsRef for WebSocketRelayInput {
     }
 }
 
-impl ExtensionsMut for WebSocketRelayInput {
-    #[inline(always)]
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
-    }
-}
-
 #[derive(Debug, Clone)]
 /// Most typically used as Output
 /// for users of [`WebSocketRelayService`].
@@ -94,13 +87,6 @@ impl ExtensionsRef for WebSocketRelayOutput {
     #[inline(always)]
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for WebSocketRelayOutput {
-    #[inline(always)]
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 
@@ -134,8 +120,8 @@ pub enum WebSocketRelayDirection {
 impl<S, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for WebSocketRelayService<S>
 where
     S: Service<WebSocketRelayInput, Output: Into<WebSocketRelayOutput>, Error: Into<BoxError>>,
-    Ingress: Io + Unpin + extensions::ExtensionsMut,
-    Egress: Io + Unpin + extensions::ExtensionsMut,
+    Ingress: Io + Unpin + extensions::ExtensionsRef,
+    Egress: Io + Unpin + extensions::ExtensionsRef,
 {
     type Output = ();
     type Error = Infallible;
@@ -148,7 +134,7 @@ where
 
         let maybe_ws_config = egress_stream
             .extensions()
-            .get()
+            .get_ref()
             .map(|RelayWebSocketConfig(cfg)| *cfg);
 
         let mut ingress_socket =

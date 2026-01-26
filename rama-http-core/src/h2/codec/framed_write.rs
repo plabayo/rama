@@ -1,6 +1,6 @@
 use crate::h2::codec::UserError;
 
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_http_types::proto::h2::frame::{self, Frame, FrameSize};
 use rama_http_types::proto::h2::hpack;
 
@@ -210,12 +210,6 @@ enum ControlFlow {
 impl<T: ExtensionsRef, B> ExtensionsRef for FramedWrite<T, B> {
     fn extensions(&self) -> &rama_core::extensions::Extensions {
         self.inner.extensions()
-    }
-}
-
-impl<T: ExtensionsMut, B> ExtensionsMut for FramedWrite<T, B> {
-    fn extensions_mut(&mut self) -> &mut rama_core::extensions::Extensions {
-        self.inner.extensions_mut()
     }
 }
 

@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 use rama::ServiceInput;
 use rama::error::BoxError;
 use rama::extensions::Extensions;
-use rama::extensions::ExtensionsMut;
+use rama::extensions::ExtensionsRef;
 use rama::futures::future::{self, Either, FutureExt};
 use rama::http::body::util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use rama::http::core::h2::client::SendRequest;
@@ -3156,7 +3156,7 @@ impl TestService {
                     *res.status_mut() = s;
                 }
                 Reply::ReasonPhrase(reason) => {
-                    res.extensions_mut().insert(reason);
+                    res.extensions().insert(reason);
                 }
                 Reply::Version(v) => {
                     *res.version_mut() = v;

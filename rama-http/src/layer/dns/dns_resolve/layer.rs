@@ -41,7 +41,7 @@ mod tests {
         let svc = DnsResolveModeLayer::new(HeaderName::from_static("x-dns-resolve")).into_layer(
             service_fn(async |req: Request<()>| {
                 assert_eq!(
-                    req.extensions().get::<DnsResolveMode>().unwrap(),
+                    req.extensions().get_ref::<DnsResolveMode>().unwrap(),
                     &DnsResolveMode::eager()
                 );
                 Ok::<_, Infallible>(())
