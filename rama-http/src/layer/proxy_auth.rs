@@ -6,7 +6,7 @@ use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, ExtensionsMut, ExtensionsRef};
 use rama_core::{Layer, Service};
 use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_http_types::body::OptionalBody;
@@ -165,7 +165,7 @@ impl<A: Clone, C, S: Clone, L> Clone for ProxyAuthService<A, C, S, L> {
 impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for ProxyAuthService<A, C, S, L>
 where
     A: Authority<C, L>,
-    C: Credentials + Clone + Send + Sync + 'static,
+    C: Credentials + Extension + Clone,
     S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     L: 'static,
     ReqBody: Send + 'static,

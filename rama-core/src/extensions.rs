@@ -27,11 +27,9 @@
 //! assert_eq!(ext.get::<i32>(), Some(&5i32));
 //! ```
 
-use std::any::{Any, TypeId};
+use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
-
-use crate::futures::stream;
 
 /// A type map of protocol extensions.
 ///
@@ -40,11 +38,11 @@ use crate::futures::stream;
 #[derive(Clone, Default, Debug)]
 pub struct Extensions {
     // TODO potentially optimize this storage https://github.com/plabayo/rama/issues/746
-    extensions: Vec<Extension>,
+    extensions: Vec<StoredExtension>,
 }
 
 #[derive(Clone, Debug)]
-struct Extension(TypeId, Box<dyn ExtensionType>);
+struct StoredExtension(std::any::TypeId, Box<dyn ExtensionType>);
 
 impl Extensions {
     /// Create an empty [`Extensions`] store.
@@ -55,11 +53,8 @@ impl Extensions {
     }
 
     /// Insert a type into this [`Extensions]` store.
-    pub fn insert<T>(&mut self, val: T) -> &T
-    where
-        T: Clone + Send + Sync + std::fmt::Debug + 'static,
-    {
-        let extension = Extension(TypeId::of::<T>(), Box::new(val));
+    pub fn insert<T: Extension + Clone>(&mut self, val: T) -> &T {
+        let extension = StoredExtension(std::any::TypeId::of::<T>(), Box::new(val));
         self.extensions.push(extension);
 
         let ext = &self.extensions[self.extensions.len() - 1];
@@ -71,15 +66,14 @@ impl Extensions {
     }
 
     /// Extend this [`Extensions`] store with the [`Extensions`] from the provided store
-    pub fn extend(&mut self, extensions: Self) -> &mut Self {
+    pub fn extend(&mut self, extensions: Self) {
         self.extensions.extend(extensions.extensions);
-        self
     }
 
     /// Returns true if the [`Extensions`] store contains the given type.
     #[must_use]
-    pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
-        let type_id = TypeId::of::<T>();
+    pub fn contains<T: Extension + Clone>(&self) -> bool {
+        let type_id = std::any::TypeId::of::<T>();
         self.extensions.iter().rev().any(|item| item.0 == type_id)
     }
 
@@ -88,8 +82,8 @@ impl Extensions {
     /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
     /// if you need the oldest item T use [`Self::first`]
     #[must_use]
-    pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        let type_id = TypeId::of::<T>();
+    pub fn get<T: Extension + Clone>(&self) -> Option<&T> {
+        let type_id = std::any::TypeId::of::<T>();
         self.extensions
             .iter()
             .rev()
@@ -103,10 +97,10 @@ impl Extensions {
     /// if you need the oldest item T use [`Self::first`]
     pub fn get_or_insert<T, F>(&mut self, create_fn: F) -> &T
     where
-        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+        T: Extension + Clone,
         F: FnOnce() -> T,
     {
-        let type_id = TypeId::of::<T>();
+        let type_id = std::any::TypeId::of::<T>();
 
         let stored = self
             .extensions
@@ -131,8 +125,8 @@ impl Extensions {
     /// Note: [`Self::first`] will return the first added item T, in most cases this is not what you want,
     /// instead use [`Self::get`] to get the most recently inserted item T
     #[must_use]
-    pub fn first<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        let type_id = TypeId::of::<T>();
+    pub fn first<T: Extension + Clone>(&self) -> Option<&T> {
+        let type_id = std::any::TypeId::of::<T>();
         self.extensions
             .iter()
             .find(|item| item.0 == type_id)
@@ -142,8 +136,8 @@ impl Extensions {
     /// Iterate over all the inserted items of type T
     ///
     /// Note: items are ordered from oldest to newest
-    pub fn iter<T: Send + Sync + 'static>(&self) -> impl Iterator<Item = &T> {
-        let type_id = TypeId::of::<T>();
+    pub fn iter<T: Extension + Clone>(&self) -> impl Iterator<Item = &T> {
+        let type_id = std::any::TypeId::of::<T>();
 
         // Note: unsafe downcast_ref_unchecked is not stabilized yet, so we have to use the safe version with unwrap
         #[allow(
@@ -155,14 +149,18 @@ impl Extensions {
             .filter(move |item| item.0 == type_id)
             .map(|ext| (*ext.1).as_any().downcast_ref().unwrap())
     }
-
-    /// Stream iterator over all the inserted items of type T
-    ///
-    /// Note: items are ordered from oldest to newest
-    pub fn stream_iter<T: Send + Sync + 'static>(&self) -> stream::Iter<impl Iterator<Item = &T>> {
-        stream::iter(self.iter())
-    }
 }
+
+/// [`Extension`] is type which can be stored inside an [`Extensions`] store
+///
+/// Currently this trait has no internal logic, but over time this might change
+/// and this might be extended to support more advanced use cases. For now this
+/// is still usefull because it shows all the [`Extension`]s we have grouped in
+/// the exported rust-docs.
+pub trait Extension: Any + Send + Sync + std::fmt::Debug + 'static {}
+
+// TODO remove this blacket impl and require everyone to implement this (with derive impl)
+impl<T> Extension for T where T: Any + Send + Sync + std::fmt::Debug + 'static {}
 
 pub trait ExtensionsRef {
     /// Get reference to the underlying [`Extensions`] store
@@ -296,8 +294,8 @@ macro_rules! impl_extensions_either {
 crate::combinators::impl_either!(impl_extensions_either);
 
 pub trait ChainableExtensions {
-    fn contains<T: Send + Sync + 'static>(&self) -> bool;
-    fn get<T: Send + Sync + 'static>(&self) -> Option<&T>;
+    fn contains<T: Extension + Clone>(&self) -> bool;
+    fn get<T: Extension + Clone>(&self) -> Option<&T>;
 }
 
 impl<S, T> ChainableExtensions for (S, T)
@@ -305,11 +303,11 @@ where
     S: ExtensionsRef,
     T: ExtensionsRef,
 {
-    fn contains<I: Send + Sync + 'static>(&self) -> bool {
+    fn contains<I: Extension + Clone>(&self) -> bool {
         self.0.extensions().contains::<I>() || self.1.extensions().contains::<I>()
     }
 
-    fn get<I: Send + Sync + 'static>(&self) -> Option<&I> {
+    fn get<I: Extension + Clone>(&self) -> Option<&I> {
         self.0
             .extensions()
             .get::<I>()
@@ -323,11 +321,11 @@ where
     T: ExtensionsRef,
     U: ExtensionsRef,
 {
-    fn contains<I: Send + Sync + 'static>(&self) -> bool {
+    fn contains<I: Extension + Clone>(&self) -> bool {
         (&self.0, &self.1).contains::<I>() || self.2.extensions().contains::<I>()
     }
 
-    fn get<I: Send + Sync + 'static>(&self) -> Option<&I> {
+    fn get<I: Extension + Clone>(&self) -> Option<&I> {
         self.0
             .extensions()
             .get::<I>()
@@ -336,12 +334,12 @@ where
     }
 }
 
-trait ExtensionType: Any + Send + Sync + std::fmt::Debug {
+trait ExtensionType: Extension {
     fn clone_box(&self) -> Box<dyn ExtensionType>;
     fn as_any(&self) -> &dyn Any;
 }
 
-impl<T: Clone + Send + Sync + std::fmt::Debug + 'static> ExtensionType for T {
+impl<T: Extension + Clone> ExtensionType for T {
     fn clone_box(&self) -> Box<dyn ExtensionType> {
         Box::new(self.clone())
     }

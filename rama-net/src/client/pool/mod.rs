@@ -4,7 +4,7 @@ use crate::conn::{ConnectionHealth, ConnectionHealthStatus};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
@@ -723,7 +723,7 @@ impl<Input, S, P, R> Service<Input> for PooledConnector<S, P, R>
 where
     S: ConnectorService<Input>,
     Input: Send + ExtensionsRef + 'static,
-    P: Pool<S::Connection, R::ID>,
+    P: Pool<S::Connection, R::ID> + Extension + Clone,
     R: ReqToConnID<Input>,
 {
     type Output = EstablishedClientConnection<P::Connection, Input>;

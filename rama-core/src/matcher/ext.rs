@@ -1,5 +1,5 @@
 use crate::{
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     matcher::{Extensions, Matcher},
 };
 
@@ -45,7 +45,7 @@ where
 impl<Request, P, T> Matcher<Request> for ExtensionMatcher<P, T>
 where
     Request: Send + ExtensionsRef + 'static,
-    T: Clone + Send + Sync + 'static,
+    T: Extension + Clone,
     P: private::ExtensionPredicate<T>,
 {
     fn matches(&self, _ext: Option<&mut Extensions>, req: &Request) -> bool {

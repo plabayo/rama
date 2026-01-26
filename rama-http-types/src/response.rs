@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::borrow::Cow;
 use std::convert::TryInto;
 use std::fmt::{self, Display};
@@ -10,7 +9,7 @@ use crate::proto::h1::ext::ReasonPhrase;
 use crate::status::StatusCode;
 use crate::version::Version;
 use crate::{Body, Result};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 
 /// Represents an HTTP response
 ///
@@ -815,7 +814,7 @@ impl Builder {
     /// ```
     pub fn extension<T>(self, extension: T) -> Self
     where
-        T: Clone + Any + Send + Sync + std::fmt::Debug + 'static,
+        T: Extension + Clone,
     {
         self.and_then(move |mut head| {
             head.extensions.insert(extension);

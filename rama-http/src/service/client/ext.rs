@@ -2,8 +2,7 @@ use crate::{Method, Request, Response, Uri};
 use rama_core::{
     Service,
     error::{BoxError, ErrorExt, OpaqueError},
-    extensions::Extensions,
-    extensions::ExtensionsMut,
+    extensions::{Extension, Extensions, ExtensionsMut},
 };
 use rama_http_headers::authorization::Credentials;
 
@@ -573,7 +572,7 @@ where
     #[must_use]
     pub fn extension<T>(mut self, extension: T) -> Self
     where
-        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+        T: Extension + Clone,
     {
         match self.state {
             RequestBuilderState::PreBody(builder) => {

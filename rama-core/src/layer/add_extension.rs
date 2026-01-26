@@ -4,7 +4,10 @@
 //! but instead use extensions for optional behaviour to change. Static typed state
 //! is better embedded in service structs or as state for routers.
 
-use crate::{Layer, Service, extensions::ExtensionsMut};
+use crate::{
+    Layer, Service,
+    extensions::{Extension, ExtensionsMut},
+};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// [`Layer`] for adding some shareable value to incoming input's extensions.
@@ -61,7 +64,7 @@ impl<Input, S, T> Service<Input> for AddInputExtension<S, T>
 where
     Input: Send + ExtensionsMut + 'static,
     S: Service<Input>,
-    T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    T: Extension + Clone,
 {
     type Output = S::Output;
     type Error = S::Error;
@@ -126,7 +129,7 @@ impl<Input, S, T> Service<Input> for AddOutputExtension<S, T>
 where
     Input: Send + 'static,
     S: Service<Input, Output: Send + ExtensionsMut + 'static>,
-    T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    T: Extension + Clone,
 {
     type Output = S::Output;
     type Error = S::Error;
