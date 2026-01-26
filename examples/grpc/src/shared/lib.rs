@@ -28,7 +28,7 @@ pub mod hello_world {
                 "Got a request from {:?}",
                 request
                     .extensions()
-                    .get::<SocketInfo>()
+                    .get_ref::<SocketInfo>()
                     .map(|info| info.peer_addr())
             );
 

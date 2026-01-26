@@ -5,7 +5,7 @@ use crate::{
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _, ErrorExt},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     io::Io,
     telemetry::tracing,
 };
@@ -326,14 +326,14 @@ where
     S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
-        + ExtensionsMut
+        + ExtensionsRef
         + 'static,
 {
     type Output = EstablishedClientConnection<S::Connection, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
-        let address = input.extensions_mut().get::<ProxyAddress>().cloned();
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let address = input.extensions().get_ref::<ProxyAddress>().cloned();
         if !address
             .as_ref()
             .and_then(|addr| addr.protocol.as_ref())
@@ -349,11 +349,11 @@ where
             Some(addr) => {
                 let addr = self
                     .normalize_socks5_proxy_addr(
-                        input.extensions().get().copied().unwrap_or_default(),
+                        input.extensions().get_ref().copied().unwrap_or_default(),
                         addr,
                     )
                     .await;
-                input.extensions_mut().insert(addr.clone());
+                input.extensions().insert(addr.clone());
                 Some(addr)
             }
             None => None,

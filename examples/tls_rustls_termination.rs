@@ -135,12 +135,16 @@ where
     // REMARK: builds on the assumption that we are using the haproxy protocol
     let client_addr = stream
         .extensions()
-        .get::<Forwarded>()
+        .get_ref::<Forwarded>()
         .unwrap()
         .client_socket_addr()
         .unwrap();
     // REMARK: builds on the assumption that rama's TCP service sets this for you :)
-    let proxy_addr = stream.extensions().get::<SocketInfo>().unwrap().peer_addr();
+    let proxy_addr = stream
+        .extensions()
+        .get_ref::<SocketInfo>()
+        .unwrap()
+        .peer_addr();
 
     // create the minimal http response
     let payload = format!(

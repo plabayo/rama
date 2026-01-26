@@ -139,8 +139,8 @@ async fn main() {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path(),
-                                    "username_labels": req.extensions().get::<UsernameLabels>().map(|labels| &labels.0),
-                                    "user_priority": req.extensions().get::<Priority>().map(|p| match p {
+                                    "username_labels": req.extensions().get_ref::<UsernameLabels>().map(|labels| &labels.0),
+                                    "user_priority": req.extensions().get_ref::<Priority>().map(|p| match p {
                                         Priority::High => "high",
                                         Priority::Medium => "medium",
                                         Priority::Low => "low",
@@ -182,8 +182,8 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         Ok(resp) => {
             if let Some(client_socket_info) = resp
                 .extensions()
-                .get()
-                .and_then(|InputExtensions(ext)| ext.get::<ClientSocketInfo>())
+                .get_ref()
+                .and_then(|InputExtensions(ext)| ext.get_ref::<ClientSocketInfo>())
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),
@@ -248,7 +248,7 @@ impl UsernameLabelParser for PriorityUsernameLabelParser {
         UsernameLabelState::Used
     }
 
-    fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
+    fn build(self, ext: &Extensions) -> Result<(), Self::Error> {
         if let Some(priority) = self.priority {
             ext.insert(priority);
         }

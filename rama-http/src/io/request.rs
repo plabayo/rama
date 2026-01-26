@@ -39,7 +39,7 @@ where
         )
         .await?;
 
-        if let Some(pseudo_headers) = parts.extensions.get::<PseudoHeaderOrder>() {
+        if let Some(pseudo_headers) = parts.extensions.get_ref::<PseudoHeaderOrder>() {
             for header in pseudo_headers.iter() {
                 match header {
                     PseudoHeader::Method => {
@@ -79,7 +79,7 @@ where
 
         let header_map = Http1HeaderMap::new(parts.headers, Some(&parts.extensions));
         // put a clone of this data back into parts as we don't really want to consume it, just trace it
-        parts.headers = header_map.clone().consume(&mut parts.extensions);
+        parts.headers = header_map.clone().consume(&parts.extensions);
 
         for (name, value) in header_map {
             match parts.version {

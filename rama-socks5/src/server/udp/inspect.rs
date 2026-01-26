@@ -2,7 +2,7 @@ use super::relay::{UdpRelayState, UdpSocketRelay};
 use crate::server::Error;
 use rama_core::bytes::Bytes;
 use rama_core::error::ErrorContext as _;
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::{Service, error::BoxError};
 use rama_net::address::SocketAddress;
@@ -101,12 +101,6 @@ impl ExtensionsRef for RelayRequest {
     }
 }
 
-impl ExtensionsMut for RelayRequest {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct RelayResponse {
     pub maybe_payload: Option<Bytes>,
@@ -116,12 +110,6 @@ pub struct RelayResponse {
 impl ExtensionsRef for RelayResponse {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for RelayResponse {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

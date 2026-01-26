@@ -5,7 +5,7 @@ use crate::{
     Layer, Service,
     dns::client::resolver::DnsAddressResolver,
     error::BoxError,
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     http::{
         Request, StreamingBody, client::proxy::layer::HttpProxyConnector,
         layer::version_adapter::RequestVersionAdapter,
@@ -531,7 +531,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// This also applies a [`RequestVersionAdapter`] layer to make sure that request versions
     /// are adapted when pooled connections are used, which you almost always need, but in case
     /// that is unwanted, you can use [`Self::with_custom_connection_pool`] instead.
-    pub fn try_with_connection_pool<C: ExtensionsMut>(
+    pub fn try_with_connection_pool<C: ExtensionsRef>(
         self,
         config: HttpPooledConnectorConfig,
     ) -> Result<DefaultConnectionPoolBuilder<T, C>, BoxError> {
@@ -546,7 +546,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
 
     #[inline(always)]
     /// Same as [`Self::try_with_connection_pool`] but using the default [`HttpPooledConnectorConfig`].
-    pub fn try_with_default_connection_pool<C: ExtensionsMut>(
+    pub fn try_with_default_connection_pool<C: ExtensionsRef>(
         self,
     ) -> Result<DefaultConnectionPoolBuilder<T, C>, BoxError> {
         self.try_with_connection_pool(Default::default())
@@ -592,7 +592,7 @@ impl<T, S> EasyHttpConnectorBuilder<T, S> {
                 Output = EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>,
                 Error: Into<BoxError>,
             >,
-        ConnResponse: ExtensionsMut,
+        ConnResponse: ExtensionsRef,
     {
         super::EasyHttpWebClient::new(self.connector)
     }

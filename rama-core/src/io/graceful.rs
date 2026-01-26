@@ -8,7 +8,7 @@ use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::sync::CancellationToken;
 
-use crate::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use crate::extensions::{Extensions, ExtensionsRef};
 
 /// Extension type that can be injected into an I/O stream to cancel it gracefully.
 ///
@@ -60,12 +60,6 @@ impl<F, S> GracefulIo<F, S> {
 impl<F, S: ExtensionsRef> ExtensionsRef for GracefulIo<F, S> {
     fn extensions(&self) -> &Extensions {
         self.inner.extensions()
-    }
-}
-
-impl<F, S: ExtensionsMut> ExtensionsMut for GracefulIo<F, S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.inner.extensions_mut()
     }
 }
 
@@ -205,12 +199,12 @@ mod tests {
 
     #[test]
     fn cancel_io_can_be_stored_in_extensions() {
-        let mut extensions = Extensions::new();
+        let extensions = Extensions::new();
         let token = CancellationToken::new();
 
         extensions.insert(CancelIo(token.clone()));
 
-        let stored = extensions.get::<CancelIo>().unwrap();
+        let stored = extensions.get_ref::<CancelIo>().unwrap();
         assert!(!stored.0.is_cancelled());
 
         token.cancel();

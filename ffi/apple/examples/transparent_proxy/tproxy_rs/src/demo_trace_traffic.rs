@@ -79,7 +79,7 @@ where
 
         let (app_bundle_id, pid, process_path, process_args) = req
             .extensions()
-            .get::<Arc<TransparentProxyFlowMeta>>()
+            .get_ref::<Arc<TransparentProxyFlowMeta>>()
             .map(|meta| {
                 let app_bundle_id = meta.source_app_bundle_identifier.as_deref();
                 let maybe_pid = meta.source_app_pid;

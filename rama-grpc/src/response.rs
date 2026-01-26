@@ -1,4 +1,4 @@
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 
 use crate::metadata::MetadataMap;
 
@@ -84,7 +84,7 @@ impl<T> Response<T> {
 
         *res.version_mut() = rama_http_types::Version::HTTP_2;
         *res.headers_mut() = self.metadata.into_sanitized_headers();
-        *res.extensions_mut() = self.extensions;
+        res.extensions().extend(&self.extensions);
 
         res
     }
@@ -112,7 +112,7 @@ impl<T> Response<T> {
     /// still be compressed according to the configuration of the server.
     #[cfg(feature = "compression")]
     pub fn disable_compression(&mut self) {
-        self.extensions_mut()
+        self.extensions()
             .insert(crate::codec::compression::SingleMessageCompressionOverride::Disable);
     }
 }
@@ -120,12 +120,6 @@ impl<T> Response<T> {
 impl<T> ExtensionsRef for Response<T> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl<T> ExtensionsMut for Response<T> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

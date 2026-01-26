@@ -35,7 +35,7 @@ use rama::{
     extensions::ExtensionsRef,
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer},
-    layer::{ConsumeErrLayer, GetInputExtensionLayer},
+    layer::{ConsumeErrLayer, GetInputExtensionRefLayer},
     net::{
         address::HostWithPort,
         forwarded::Forwarded,
@@ -85,7 +85,7 @@ async fn main() {
     shutdown.spawn_task_fn(async move |guard| {
         let tcp_service = (
             TlsAcceptorLayer::new(acceptor_data).with_store_client_hello(true),
-            GetInputExtensionLayer::new(async move |st: SecureTransport| {
+            GetInputExtensionRefLayer::new(|st: &SecureTransport| {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
@@ -133,12 +133,16 @@ async fn http_service(req: Request) -> Result<Response, Infallible> {
     // REMARK: builds on the assumption that we are using the haproxy protocol
     let client_addr = req
         .extensions()
-        .get::<Forwarded>()
+        .get_ref::<Forwarded>()
         .unwrap()
         .client_socket_addr()
         .unwrap();
     // REMARK: builds on the assumption that rama's TCP service sets this for you :)
-    let proxy_addr = req.extensions().get::<SocketInfo>().unwrap().peer_addr();
+    let proxy_addr = req
+        .extensions()
+        .get_ref::<SocketInfo>()
+        .unwrap()
+        .peer_addr();
 
     Ok(Response::new(
         format!(

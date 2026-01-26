@@ -252,7 +252,7 @@ pub trait Authority<C, L>: Send + Sync + 'static {
 /// A synchronous version of [`Authority`], to be used for primitive implementations.
 pub trait AuthoritySync<C, L>: Send + Sync + 'static {
     /// Returns `true` if the credentials are authorized, otherwise `false`.
-    fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool;
+    fn authorized(&self, ext: &Extensions, credentials: &C) -> bool;
 }
 
 impl<A, C, L> Authority<C, L> for A
@@ -262,8 +262,8 @@ where
     L: 'static,
 {
     async fn authorized(&self, credentials: C) -> Option<Extensions> {
-        let mut ext = Extensions::new();
-        if self.authorized(&mut ext, &credentials) {
+        let ext = Extensions::new();
+        if self.authorized(&ext, &credentials) {
             Some(ext)
         } else {
             None
@@ -272,7 +272,7 @@ where
 }
 
 impl<T: UsernameLabelParser> AuthoritySync<Self, T> for Basic {
-    fn authorized(&self, ext: &mut Extensions, credentials: &Self) -> bool {
+    fn authorized(&self, ext: &Extensions, credentials: &Self) -> bool {
         let username = credentials.username();
         let password = credentials.password();
 
@@ -280,8 +280,8 @@ impl<T: UsernameLabelParser> AuthoritySync<Self, T> for Basic {
             return false;
         }
 
-        let mut parser_ext = Extensions::new();
-        let username = match parse_username(&mut parser_ext, T::default(), username) {
+        let parser_ext = Extensions::new();
+        let username = match parse_username(&parser_ext, T::default(), username) {
             Ok(t) => t,
             Err(err) => {
                 tracing::trace!("failed to parse username: {:?}", err);
@@ -298,7 +298,7 @@ impl<T: UsernameLabelParser> AuthoritySync<Self, T> for Basic {
             return false;
         }
 
-        ext.extend(parser_ext);
+        ext.extend(&parser_ext);
         ext.insert(UserId::Username(username));
         true
     }
@@ -309,7 +309,7 @@ where
     C: Credentials + Send + 'static,
     T: AuthoritySync<C, L>,
 {
-    fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
+    fn authorized(&self, ext: &Extensions, credentials: &C) -> bool {
         self.iter().any(|t| t.authorized(ext, credentials))
     }
 }
@@ -319,7 +319,7 @@ where
     C: Credentials + Send + 'static,
     T: AuthoritySync<C, L>,
 {
-    fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
+    fn authorized(&self, ext: &Extensions, credentials: &C) -> bool {
         self.iter().any(|t| t.authorized(ext, credentials))
     }
 }
@@ -441,7 +441,7 @@ mod test_auth {
         let auth = basic!("Aladdin", "open sesame");
         let auths = vec![basic!("foo", "bar"), auth.clone()];
         let ext = Authority::<_, ()>::authorized(&auths, auth).await.unwrap();
-        let user: &UserId = ext.get().unwrap();
+        let user: &UserId = ext.get_ref().unwrap();
         assert_eq!(user, "Aladdin");
     }
 
@@ -456,10 +456,10 @@ mod test_auth {
         .await
         .unwrap();
 
-        let c: &UserId = ext.get().unwrap();
+        let c: &UserId = ext.get_ref().unwrap();
         assert_eq!(c, "john");
 
-        let labels: &UsernameLabels = ext.get().unwrap();
+        let labels: &UsernameLabels = ext.get_ref().unwrap();
         assert_eq!(&labels.0, &vec!["green".to_owned(), "red".to_owned()]);
     }
 
@@ -472,9 +472,9 @@ mod test_auth {
             .await
             .unwrap();
 
-        let c: &UserId = ext.get().unwrap();
+        let c: &UserId = ext.get_ref().unwrap();
         assert_eq!(c, "john");
 
-        assert!(ext.get::<UsernameLabels>().is_none());
+        assert!(ext.get_ref::<UsernameLabels>().is_none());
     }
 }

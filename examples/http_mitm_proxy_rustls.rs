@@ -164,7 +164,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
     let http_service = new_http_mitm_proxy();
 
-    let state = upgraded.extensions().get::<State>().unwrap();
+    let state = upgraded.extensions().get_ref::<State>().unwrap();
 
     let executor = state.exec.clone();
     let http_transport_service = HttpServer::auto(executor).service(http_service);
@@ -206,7 +206,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_no_cert_verifier()
         .build();
 
-    let state = req.extensions().get::<State>().unwrap();
+    let state = req.extensions().get_ref::<State>().unwrap();
     let executor = state.exec.clone();
 
     let client = EasyHttpWebClient::connector_builder()

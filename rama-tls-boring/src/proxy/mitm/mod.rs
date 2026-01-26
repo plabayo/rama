@@ -8,7 +8,7 @@ use rama_core::{
     Layer,
     conversion::RamaTryInto as _,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
-    extensions::{self, ExtensionsMut as _},
+    extensions::{self, ExtensionsRef as _},
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
@@ -336,15 +336,15 @@ where
         connector_data: Option<client::TlsConnectorData>,
     ) -> Result<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, TlsMitmRelayError>
     where
-        Ingress: Io + Unpin + extensions::ExtensionsMut,
-        Egress: Io + Unpin + extensions::ExtensionsMut,
+        Ingress: Io + Unpin + extensions::ExtensionsRef,
+        Egress: Io + Unpin + extensions::ExtensionsRef,
     {
         let store_server_certificate_chain = connector_data
             .as_ref()
             .map(|cd| cd.store_server_certificate_chain)
             .unwrap_or_default();
 
-        let mut egress_tls_stream = crate::client::tls_connect(egress_stream, connector_data)
+        let egress_tls_stream = crate::client::tls_connect(egress_stream, connector_data)
             .await
             .map_err(|err| match err {
                 client::TlsConnectError::Builder(error) => TlsMitmRelayError::handshake(
@@ -559,11 +559,11 @@ where
                 && let Ok(neg_version) = rama_http_types::Version::try_from(proto)
             {
                 egress_tls_stream
-                    .extensions_mut()
+                    .extensions()
                     .insert(rama_http_types::conn::TargetHttpVersion(neg_version));
             }
 
-            egress_tls_stream.extensions_mut().insert(negotiated_params);
+            egress_tls_stream.extensions().insert(negotiated_params);
         }
 
         let ingress_tls_stream = TlsStream::new(ingress_boring_ssl_stream);

@@ -4,7 +4,7 @@ use crate::Result;
 use crate::dep::hyperium::http::Extensions as HyperExtensions;
 use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
-use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 
 /// Represents an HTTP request.
 ///
@@ -113,7 +113,7 @@ impl<T> From<Request<T>> for HyperiumRequest<T> {
 
         let mut hyper_extensions = parts
             .extensions
-            .get::<HyperExtensions>()
+            .get_ref::<HyperExtensions>()
             .cloned()
             .unwrap_or_default();
 
@@ -151,7 +151,7 @@ pub struct Parts {
 
 impl From<HyperiumParts> for Parts {
     fn from(mut value: HyperiumParts) -> Self {
-        let mut rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
+        let rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
         rama_extensions.insert(value.extensions);
 
         Self {
@@ -177,12 +177,6 @@ impl From<Parts> for HyperiumParts {
 impl ExtensionsRef for Parts {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for Parts {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 
@@ -697,12 +691,6 @@ impl<B> ExtensionsRef for Request<B> {
     }
 }
 
-impl<B> ExtensionsMut for Request<B> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.head.extensions
-    }
-}
-
 impl Parts {
     /// Creates a new default instance of `Parts`
     fn new() -> Self {
@@ -976,14 +964,14 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     ///
-    /// assert_eq!(req.extensions().get::<&'static str>(),
+    /// assert_eq!(req.extensions().get_ref::<&'static str>(),
     ///            Some(&"My Extension"));
     /// ```
     pub fn extension<T>(self, extension: T) -> Self
     where
         T: Extension + Clone,
     {
-        self.and_then(move |mut head| {
+        self.and_then(move |head| {
             head.extensions.insert(extension);
             Ok(head)
         })
@@ -998,30 +986,12 @@ impl Builder {
     /// ```
     /// # use rama_http_types::Request;
     /// let req = Request::builder().extension("My Extension").extension(5u32);
-    /// let extensions = req.extensions_ref().unwrap();
-    /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
-    /// assert_eq!(extensions.get::<u32>(), Some(&5u32));
+    /// let extensions = req.extensions().unwrap();
+    /// assert_eq!(extensions.get_ref::<&'static str>(), Some(&"My Extension"));
+    /// assert_eq!(extensions.get_ref::<u32>(), Some(&5u32));
     /// ```
-    pub fn extensions_ref(&self) -> Option<&Extensions> {
+    pub fn extensions(&self) -> Option<&Extensions> {
         self.inner.as_ref().ok().map(|h| &h.extensions)
-    }
-
-    /// Get a mutable reference to the extensions for this request builder.
-    ///
-    /// If the builder has an error, this returns `None`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rama_http_types::Request;
-    /// let mut req = Request::builder().extension("My Extension");
-    /// let mut extensions = req.extensions_mut().unwrap();
-    /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
-    /// extensions.insert(5u32);
-    /// assert_eq!(extensions.get::<u32>(), Some(&5u32));
-    /// ```
-    pub fn extensions_mut(&mut self) -> Option<&mut Extensions> {
-        self.inner.as_mut().ok().map(|h| &mut h.extensions)
     }
 
     /// "Consumes" this builder, using the provided `body` to return a
@@ -1161,7 +1131,7 @@ impl HttpRequestParts for Parts {
 }
 
 /// Same as [`HttpRequestParts`] but also adding mutable access
-pub trait HttpRequestPartsMut: HttpRequestParts + ExtensionsMut {
+pub trait HttpRequestPartsMut: HttpRequestParts + ExtensionsRef {
     fn method_mut(&mut self) -> &mut Method;
     fn uri_mut(&mut self) -> &mut Uri;
     fn version_mut(&mut self) -> &mut Version;
@@ -1259,7 +1229,7 @@ mod tests {
             .insert(header_key, header_value.clone());
 
         let extension = "test extensions".to_owned();
-        rama_request.extensions_mut().insert(extension.clone());
+        rama_request.extensions().insert(extension.clone());
 
         let mut hyper_request = HyperiumRequest::from(rama_request);
 
@@ -1284,7 +1254,10 @@ mod tests {
             .extensions_mut()
             .get_mut::<Extensions>()
             .unwrap();
-        assert_eq!(*rama_wrapped_extensions.get::<String>().unwrap(), extension);
+        assert_eq!(
+            *rama_wrapped_extensions.get_ref::<String>().unwrap(),
+            extension
+        );
         rama_wrapped_extensions.insert(Arc::new(true));
 
         let rama_request = Request::from(hyper_request);
@@ -1299,15 +1272,18 @@ mod tests {
         );
         // Original rama extension
         assert_eq!(
-            *rama_request.extensions().get::<String>().unwrap(),
+            *rama_request.extensions().get_ref::<String>().unwrap(),
             extension
         );
         // Hyper extension
-        let hyper_wrapper_extensions = rama_request.extensions().get::<HyperExtensions>().unwrap();
+        let hyper_wrapper_extensions = rama_request
+            .extensions()
+            .get_ref::<HyperExtensions>()
+            .unwrap();
         assert_eq!(*hyper_wrapper_extensions.get::<usize>().unwrap(), 4);
         // Rama extension inserted into hyper request
         assert_eq!(
-            *rama_request.extensions().get::<Arc<bool>>().unwrap(),
+            *rama_request.extensions().get_ref::<Arc<bool>>().unwrap(),
             Arc::new(true)
         );
     }

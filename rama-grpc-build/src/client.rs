@@ -209,12 +209,12 @@ fn generate_unary<T: Service>(
             &self,
             request: impl #root_crate_name::IntoRequest<#request>,
         ) -> std::result::Result<#root_crate_name::Response<#response>, #root_crate_name::Status> {
-            use #root_crate_name::codegen::ExtensionsMut as _;
+            use #root_crate_name::codegen::ExtensionsRef as _;
 
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
-            let mut req = request.into_request();
-            req.extensions_mut().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
+            let req = request.into_request();
+            req.extensions().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -240,12 +240,12 @@ fn generate_server_streaming<T: Service>(
             &self,
             request: impl #root_crate_name::IntoRequest<#request>,
         ) -> std::result::Result<#root_crate_name::Response<#root_crate_name::codec::Streaming<#response>>, #root_crate_name::Status> {
-            use #root_crate_name::codegen::ExtensionsMut as _;
+            use #root_crate_name::codegen::ExtensionsRef as _;
 
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
-            let mut req = request.into_request();
-            req.extensions_mut().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
+            let req = request.into_request();
+            req.extensions().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
             self.inner.server_streaming(req, path, codec).await
         }
     }
@@ -271,12 +271,12 @@ fn generate_client_streaming<T: Service>(
             &self,
             request: impl #root_crate_name::IntoStreamingRequest<Message = #request>
         ) -> std::result::Result<#root_crate_name::Response<#response>, #root_crate_name::Status> {
-            use #root_crate_name::codegen::ExtensionsMut as _;
+            use #root_crate_name::codegen::ExtensionsRef as _;
 
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
-            let mut req = request.into_streaming_request();
-            req.extensions_mut().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
+            let req = request.into_streaming_request();
+            req.extensions().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
             self.inner.client_streaming(req, path, codec).await
         }
     }
@@ -302,12 +302,12 @@ fn generate_streaming<T: Service>(
             &self,
             request: impl #root_crate_name::IntoStreamingRequest<Message = #request>
         ) -> std::result::Result<#root_crate_name::Response<#root_crate_name::codec::Streaming<#response>>, #root_crate_name::Status> {
-            use #root_crate_name::codegen::ExtensionsMut as _;
+            use #root_crate_name::codegen::ExtensionsRef as _;
 
             let codec = #codec_name::default();
             let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
-            let mut req = request.into_streaming_request();
-            req.extensions_mut().insert(#root_crate_name::GrpcMethod::new(#service_name,#method_name));
+            let req = request.into_streaming_request();
+            req.extensions().insert(#root_crate_name::GrpcMethod::new(#service_name,#method_name));
             self.inner.streaming(req, path, codec).await
         }
     }

@@ -2,7 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     io::Io,
     rt::Executor,
 };
@@ -54,7 +54,7 @@ impl<S, Body> HttpConnector<S, Body> {
 /// Establish an HTTP connection on the pre-established IO (bytes) stream
 /// with the given http request as context for the initial setup.
 pub async fn http_connect<IO, BodyIn, BodyConnection>(
-    mut io: IO,
+    io: IO,
     req: Request<BodyIn>,
     exec: Executor,
 ) -> Result<
@@ -62,7 +62,7 @@ pub async fn http_connect<IO, BodyIn, BodyConnection>(
     OpaqueError,
 >
 where
-    IO: Io + Unpin + ExtensionsMut,
+    IO: Io + Unpin + ExtensionsRef,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     // Body type this connector will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
@@ -72,7 +72,7 @@ where
     // TODO this is way to tricky, this needs to be here on the io extensions
     // Not the ones we clone, ideally the exentions should all just use the same store
     // We can solve this by making them clonable
-    io.extensions_mut().get_or_insert(ConnectionHealth::default);
+    io.extensions().get_ref_or_insert(ConnectionHealth::default);
 
     let extensions = io.extensions().clone();
 
@@ -94,15 +94,15 @@ where
 
             let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
 
-            if req.extensions().get::<Protocol>().is_some() {
+            if req.extensions().get_ref::<Protocol>().is_some() {
                 // e.g. used for h2 bootstrap support for WebSocket
                 builder.set_enable_connect_protocol(1);
             }
 
             if let Some(params) = req
                 .extensions()
-                .get::<H2ClientContextParams>()
-                .or_else(|| req.extensions().get())
+                .get_ref::<H2ClientContextParams>()
+                .or_else(|| req.extensions().get_ref())
             {
                 if let Some(order) = params.headers_pseudo_order.clone() {
                     builder.set_headers_pseudo_order(order);
@@ -132,7 +132,8 @@ where
                 if let Some(adaptive_window) = params.adaptive_window {
                     builder.set_adaptive_window(adaptive_window);
                 }
-            } else if let Some(pseudo_order) = req.extensions().get::<PseudoHeaderOrder>().cloned()
+            } else if let Some(pseudo_order) =
+                req.extensions().get_ref::<PseudoHeaderOrder>().cloned()
             {
                 builder.set_headers_pseudo_order(pseudo_order);
             }
@@ -176,7 +177,7 @@ where
         Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
             tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
             let mut builder = rama_http_core::client::conn::http1::Builder::new();
-            if let Some(params) = req.extensions().get::<Http1ClientContextParams>() {
+            if let Some(params) = req.extensions().get_ref::<Http1ClientContextParams>() {
                 builder.set_title_case_headers(params.title_header_case);
             }
             let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;

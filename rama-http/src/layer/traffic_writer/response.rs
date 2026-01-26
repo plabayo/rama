@@ -9,6 +9,7 @@ use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt::Debug;
+use std::sync::Arc;
 use tokio::io::{AsyncWrite, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
 
@@ -281,7 +282,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let do_not_print_response: Option<DoNotWriteResponse> = req.extensions().get().cloned();
+        let do_not_print_response: Option<Arc<DoNotWriteResponse>> = req.extensions().get_arc();
         let resp = self.inner.serve(req).await.into_box_error()?;
         let resp = if do_not_print_response.is_some() {
             resp.map(Body::new)

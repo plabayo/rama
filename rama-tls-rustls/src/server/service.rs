@@ -8,7 +8,7 @@ use rama_core::{
     Service,
     conversion::RamaInto,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     io::Io,
 };
 use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
@@ -38,7 +38,7 @@ impl<S> TlsAcceptorService<S> {
 
 impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
-    IO: Io + Unpin + ExtensionsMut + 'static,
+    IO: Io + Unpin + ExtensionsRef + 'static,
     S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
     type Output = S::Output;
@@ -47,7 +47,7 @@ where
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
         let tls_acceptor_data = stream
             .extensions()
-            .get::<TlsAcceptorData>()
+            .get_ref::<TlsAcceptorData>()
             .unwrap_or(&self.data)
             .clone();
 
@@ -67,7 +67,7 @@ where
         };
 
         let stream = start.into_stream(server_config).await?;
-        let mut stream = TlsStream::new(stream);
+        let stream = TlsStream::new(stream);
 
         let (_, conn_data_ref) = stream.stream.get_ref();
         let negotiated_tls_params = NegotiatedTlsParameters {
@@ -82,8 +82,8 @@ where
             peer_certificate_chain: None,
         };
 
-        stream.extensions_mut().insert(negotiated_tls_params);
-        stream.extensions_mut().insert(secure_transport);
+        stream.extensions().insert(negotiated_tls_params);
+        stream.extensions().insert(secure_transport);
 
         self.inner
             .serve(stream)

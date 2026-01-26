@@ -70,7 +70,7 @@ mod private {
     use crate::server::HttpServeResult;
 
     use rama_core::Service;
-    use rama_core::extensions::ExtensionsMut;
+    use rama_core::extensions::ExtensionsRef;
     use rama_core::futures::FutureExt;
     use rama_core::graceful::ShutdownGuard;
     use rama_core::io::Io;
@@ -91,7 +91,7 @@ mod private {
             guard: Option<ShutdownGuard>,
         ) -> impl Future<Output = HttpServeResult> + Send + '_
         where
-            IO: Io + ExtensionsMut,
+            IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static;
     }
@@ -105,7 +105,7 @@ mod private {
             guard: Option<ShutdownGuard>,
         ) -> HttpServeResult
         where
-            IO: Io + ExtensionsMut,
+            IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
@@ -147,7 +147,7 @@ mod private {
             guard: Option<ShutdownGuard>,
         ) -> HttpServeResult
         where
-            IO: Io + ExtensionsMut,
+            IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
@@ -189,7 +189,7 @@ mod private {
             guard: Option<ShutdownGuard>,
         ) -> HttpServeResult
         where
-            IO: Io + ExtensionsMut,
+            IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {

@@ -368,7 +368,7 @@ impl UdpSocketRelay {
         resolver: Option<BoxDnsAddressResolver>,
     ) -> Self {
         self.dns_resolver = resolver;
-        if let Some(mode) = extensions.get().copied() {
+        if let Some(mode) = extensions.get_ref().copied() {
             self.dns_resolve_mode = mode;
         }
         self

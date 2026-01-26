@@ -3,7 +3,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_net::client::EstablishedClientConnection;
@@ -77,7 +77,7 @@ where
             .await
             .into_box_error()?;
 
-        let mut conn = connector
+        let conn = connector
             .connect(self.target.0.clone())
             .await
             .into_box_error()?;
@@ -95,7 +95,7 @@ where
                 .peer_addr()
                 .context("failed to retrieve peer address of established connection")?,
         ));
-        conn.extensions_mut().insert(info);
+        conn.extensions().insert(info);
 
         Ok(EstablishedClientConnection { input, conn })
     }

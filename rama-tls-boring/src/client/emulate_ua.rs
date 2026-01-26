@@ -2,7 +2,7 @@ use super::TlsConnectorDataBuilder;
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_net::{
@@ -39,14 +39,14 @@ impl<S> EmulateTlsProfileService<S> {
 
 impl<S, Input> Service<Input> for EmulateTlsProfileService<S>
 where
-    Input: TryRefIntoTransportContext<Error: Into<BoxError>> + Send + ExtensionsMut + 'static,
+    Input: TryRefIntoTransportContext<Error: Into<BoxError>> + Send + ExtensionsRef + 'static,
     S: Service<Input, Error: Into<BoxError>>,
 {
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
-        let tls_profile = input.extensions().get::<TlsProfile>().cloned();
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let tls_profile = input.extensions().get_ref::<TlsProfile>().cloned();
 
         // Right now this is very simple, but it will get a lot more complex, which is why it is separated from the connector itself
         if let Some(profile) = tls_profile {
@@ -114,8 +114,8 @@ where
             }
 
             let mut builder = input
-                .extensions_mut()
-                .get::<TlsConnectorDataBuilder>()
+                .extensions()
+                .get_ref::<TlsConnectorDataBuilder>()
                 .cloned()
                 .unwrap_or_default();
 
@@ -136,7 +136,7 @@ where
                 builder.push_base_config(overwrite);
             }
 
-            input.extensions_mut().insert(builder);
+            input.extensions().insert(builder);
         }
 
         self.inner.serve(input).await.into_box_error()

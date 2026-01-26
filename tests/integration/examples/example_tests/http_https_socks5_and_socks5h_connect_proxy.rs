@@ -5,7 +5,7 @@ use super::utils;
 use rama::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     http::{
         Body, BodyExtractExt, Request, client::EasyHttpWebClient, server::HttpServer,
         service::web::Router,
@@ -120,12 +120,12 @@ async fn test_http_client_over_socks5_proxy_connect(
             "try to establish proxied connection over SOCKS5",
         );
 
-        let mut request = Request::builder()
+        let request = Request::builder()
             .uri(uri.clone())
             .body(Body::empty())
             .expect("build simple GET request");
 
-        request.extensions_mut().insert(ProxyAddress {
+        request.extensions().insert(ProxyAddress {
             protocol: Some(Protocol::SOCKS5),
             address: proxy_socket_addr.into(),
             credential: Some(ProxyCredential::Basic(Basic::new(

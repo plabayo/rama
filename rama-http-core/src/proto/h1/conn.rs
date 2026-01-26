@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::{debug, error, trace};
 use rama_http::io::upgrade;
@@ -43,7 +42,7 @@ pub(crate) struct Conn<I, B, T> {
 
 impl<I, B, T> Conn<I, B, T>
 where
-    I: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
+    I: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     B: Buf,
     T: Http1Transaction,
 {
@@ -600,7 +599,7 @@ where
             buf,
         ) {
             Ok(encoder) => {
-                self.state.on_informational = head.extensions.get::<OnInformational>().cloned();
+                self.state.on_informational = head.extensions.get_ref::<OnInformational>().cloned();
                 self.state.encoded_request_extensions = Some(head.extensions);
                 Some(encoder)
             }
@@ -791,7 +790,7 @@ where
     }
 
     pub(crate) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(health) = self.io.extensions().get::<ConnectionHealth>() {
+        if let Some(health) = self.io.extensions().get_ref::<ConnectionHealth>() {
             health.set_status(ConnectionHealthStatus::Broken);
         }
         match ready!(Pin::new(self.io.io_mut()).poll_shutdown(cx)) {

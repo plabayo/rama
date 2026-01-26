@@ -204,7 +204,7 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
                         res
                     } else {
                         req.extensions()
-                            .get::<AbortController>()
+                            .get_ref::<AbortController>()
                             .unwrap()
                             .abort()
                             .await;

@@ -1,4 +1,4 @@
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::futures::task;
 use rama_core::telemetry::tracing::trace;
 use std::sync::Arc;
@@ -181,12 +181,6 @@ where
 impl<S: ExtensionsRef> ExtensionsRef for AllowStd<S> {
     fn extensions(&self) -> &Extensions {
         self.inner.extensions()
-    }
-}
-
-impl<S: ExtensionsMut> ExtensionsMut for AllowStd<S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.inner.extensions_mut()
     }
 }
 

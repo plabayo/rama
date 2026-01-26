@@ -189,7 +189,7 @@ where
         let egress_addr = match self.address_provider.clone() {
             AddressProvider::Static(host_with_port) => host_with_port,
             AddressProvider::ExtensionProxyTarget => {
-                if let Some(ProxyTarget(host_with_port)) = ingress.extensions().get().cloned() {
+                if let Some(ProxyTarget(host_with_port)) = ingress.extensions().get_ref().cloned() {
                     host_with_port
                 } else {
                     return Err(BoxError::from(

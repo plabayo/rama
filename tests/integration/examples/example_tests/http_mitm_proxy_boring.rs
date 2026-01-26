@@ -201,7 +201,7 @@ async fn test_http_mitm_proxy() {
     let expected_value = json!({"method":"GET","path":"/foo/bar"});
     assert_eq!(expected_value, result);
 
-    let mut extensions = Extensions::new();
+    let extensions = Extensions::new();
     extensions.insert(proxy_address.clone());
 
     // test transfer chunked encoding over MITM Proxy

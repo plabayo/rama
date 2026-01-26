@@ -1,6 +1,6 @@
 use rama_core::{
     Service,
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     io::{CancelIo, GracefulIo, Io},
 };
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
@@ -39,7 +39,7 @@ impl<S> GracefulConnectorService<S> {
 impl<S, Input> Service<Input> for GracefulConnectorService<S>
 where
     S: ConnectorService<Input>,
-    S::Connection: Io + ExtensionsMut,
+    S::Connection: Io + ExtensionsRef,
     Input: Send + 'static,
 {
     type Output = EstablishedClientConnection<
@@ -49,9 +49,9 @@ where
     type Error = S::Error;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { input, mut conn } = self.inner.connect(input).await?;
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         let token = CancellationToken::new();
-        conn.extensions_mut().insert(CancelIo(token.clone()));
+        conn.extensions().insert(CancelIo(token.clone()));
 
         Ok(EstablishedClientConnection {
             input,
@@ -90,7 +90,7 @@ mod tests {
         let svc = GracefulConnectorService::new(EchoConnector);
         let EstablishedClientConnection { conn, .. } = svc.serve(()).await.unwrap();
 
-        let cancel = conn.extensions().get::<CancelIo>().unwrap().clone();
+        let cancel = conn.extensions().get_arc::<CancelIo>().unwrap();
         cancel.0.cancel();
 
         let mut conn = std::pin::pin!(conn);

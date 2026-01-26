@@ -3,7 +3,7 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, extensions::Extensions, matcher::Matcher, service::BoxService};
@@ -93,13 +93,13 @@ where
     type Output = O;
     type Error = E;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         for handler in &self.handlers {
-            let mut ext = Extensions::new();
-            if !handler.matcher.matches(Some(&mut ext), &req) {
+            let ext = Extensions::new();
+            if !handler.matcher.matches(Some(&ext), &req) {
                 continue;
             }
-            req.extensions_mut().extend(ext);
+            req.extensions().extend(&ext);
 
             return match handler.responder.serve(req).await {
                 Ok((resp, req)) => {
@@ -120,8 +120,8 @@ where
                     self.exec.spawn_task(
                         async move {
                             match rama_http::io::upgrade::handle_upgrade(&req).await {
-                                Ok(mut upgraded) => {
-                                    upgraded.extensions_mut().extend(req.extensions().clone());
+                                Ok(upgraded) => {
+                                    upgraded.extensions().extend(req.extensions());
                                     let _ = handler.serve(upgraded).await;
                                 }
                                 Err(e) => {

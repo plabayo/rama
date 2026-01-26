@@ -62,7 +62,7 @@ where
         if !is_req_http_proxy_connect(&svc_match.input) {
             tracing::debug!(
                 "no req http proxy connect match: target = {:?}; http version = {:?}; method = {:?}; uri = {:?}",
-                svc_match.input.extensions().get::<ProxyTarget>(),
+                svc_match.input.extensions().get_ref::<ProxyTarget>(),
                 svc_match.input.version(),
                 svc_match.input.method(),
                 svc_match.input.uri(),
@@ -72,7 +72,7 @@ where
 
         tracing::debug!(
             "http proxy connect match: target = {:?}; http version = {:?}; method = {:?}; uri = {:?}",
-            svc_match.input.extensions().get::<ProxyTarget>(),
+            svc_match.input.extensions().get_ref::<ProxyTarget>(),
             svc_match.input.version(),
             svc_match.input.method(),
             svc_match.input.uri(),
@@ -99,7 +99,7 @@ where
         if !is_req_http_proxy_connect(&svc_match.input) {
             tracing::debug!(
                 "no req http proxy connect match: target = {:?}; http version = {:?}; method = {:?}; uri = {:?}",
-                svc_match.input.extensions().get::<ProxyTarget>(),
+                svc_match.input.extensions().get_ref::<ProxyTarget>(),
                 svc_match.input.version(),
                 svc_match.input.method(),
                 svc_match.input.uri(),
@@ -109,7 +109,7 @@ where
 
         tracing::debug!(
             "http proxy connect match: target = {:?}; http version = {:?}; method = {:?}; uri = {:?}",
-            svc_match.input.extensions().get::<ProxyTarget>(),
+            svc_match.input.extensions().get_ref::<ProxyTarget>(),
             svc_match.input.version(),
             svc_match.input.method(),
             svc_match.input.uri(),
@@ -151,18 +151,18 @@ where
         if !svc_match.input.status().is_success() {
             tracing::debug!(
                 "no res http proxy connect match: target = {:?}; http version = {:?}",
-                svc_match.input.extensions().get::<ProxyTarget>(),
+                svc_match.input.extensions().get_ref::<ProxyTarget>(),
                 svc_match.input.version(),
             );
             return Ok(svc_match);
         }
 
-        let proxy_target = svc_match.input.extensions().get::<ProxyTarget>();
+        let proxy_target = svc_match.input.extensions().get_ref::<ProxyTarget>();
         let proxy_credential_info =
             svc_match
                 .input
                 .extensions()
-                .get()
+                .get_ref()
                 .map(|DpiProxyCredential(c)| match c {
                     ProxyCredential::Basic(user_pass) => ("basic", user_pass.username()),
                     ProxyCredential::Bearer(_) => ("bearer", "***"),
@@ -190,18 +190,18 @@ where
         if !svc_match.input.status().is_success() {
             tracing::debug!(
                 "no res http proxy connect match: target = {:?}; http version = {:?}",
-                svc_match.input.extensions().get::<ProxyTarget>(),
+                svc_match.input.extensions().get_ref::<ProxyTarget>(),
                 svc_match.input.version(),
             );
             return Ok(svc_match);
         }
 
-        let proxy_target = svc_match.input.extensions().get::<ProxyTarget>();
+        let proxy_target = svc_match.input.extensions().get_ref::<ProxyTarget>();
         let proxy_credential_info =
             svc_match
                 .input
                 .extensions()
-                .get()
+                .get_ref()
                 .map(|DpiProxyCredential(c)| match c {
                     ProxyCredential::Basic(user_pass) => ("basic", user_pass.username()),
                     ProxyCredential::Bearer(_) => ("bearer", "***"),

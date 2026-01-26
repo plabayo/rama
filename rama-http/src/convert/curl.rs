@@ -129,7 +129,7 @@ fn write_curl_command_for_request_parts(
     let mut uri_parts = parts.uri().clone().into_parts();
     if let Some((authority, protocol)) = parts
         .extensions()
-        .get::<RequestContext>()
+        .get_ref::<RequestContext>()
         .map(|rc| {
             (
                 if rc.authority_has_default_port() {
@@ -190,8 +190,8 @@ fn write_curl_command_for_request_parts(
 
     if let Some(proxy_addr) = parts
         .extensions()
-        .get::<ProxyAddress>()
-        .or_else(|| parts.extensions().get())
+        .get_ref::<ProxyAddress>()
+        .or_else(|| parts.extensions().get_ref())
     {
         writer.write_tuple("-x", proxy_addr, true);
         if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential
@@ -206,8 +206,8 @@ fn write_curl_command_for_request_parts(
     }
 
     match (
-        parts.extensions().get::<DnsResolveIpMode>(),
-        parts.extensions().get::<ConnectIpMode>(),
+        parts.extensions().get_ref::<DnsResolveIpMode>(),
+        parts.extensions().get_ref::<ConnectIpMode>(),
     ) {
         (Some(DnsResolveIpMode::SingleIpV4), _)
         | (
@@ -230,8 +230,8 @@ fn write_curl_command_for_request_parts(
 
     let original_http_headers = parts
         .extensions()
-        .get::<OriginalHttp1Headers>()
-        .or_else(|| parts.extensions().get())
+        .get_ref::<OriginalHttp1Headers>()
+        .or_else(|| parts.extensions().get_ref())
         .cloned()
         .unwrap_or_default();
     for (key, value) in Http1HeaderMap::from_parts(parts.headers().clone(), original_http_headers) {
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_no_auth() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_ipv4_preference() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_ipv6_preference() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_with_auth_basic_only_username() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_with_auth_basic() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_with_auth_bearer() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .uri("example.com")
             .body(())
             .unwrap()
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_cmd_string_for_request_with_socks5_proxy() {
-        let (mut parts, _) = crate::Request::builder()
+        let (parts, _) = crate::Request::builder()
             .version(Version::HTTP_3)
             .uri("example.com")
             .body(())

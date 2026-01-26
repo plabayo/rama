@@ -3,7 +3,7 @@ use std::fmt;
 use super::RustlsTlsStream;
 use pin_project_lite::pin_project;
 use rama_core::{
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
     io::Io,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -16,7 +16,7 @@ pin_project! {
     }
 }
 
-impl<S: ExtensionsMut> AutoTlsStream<S> {
+impl<S: ExtensionsRef> AutoTlsStream<S> {
     pub fn secure(inner: RustlsTlsStream<S>) -> Self {
         Self {
             inner: AutoTlsStreamData::Secure { inner },
@@ -135,15 +135,6 @@ impl<S: ExtensionsRef> ExtensionsRef for AutoTlsStream<S> {
         match &self.inner {
             AutoTlsStreamData::Secure { inner } => inner.get_ref().0.extensions(),
             AutoTlsStreamData::Plain { inner } => inner.extensions(),
-        }
-    }
-}
-
-impl<S: ExtensionsMut> ExtensionsMut for AutoTlsStream<S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        match &mut self.inner {
-            AutoTlsStreamData::Secure { inner } => inner.get_mut().0.extensions_mut(),
-            AutoTlsStreamData::Plain { inner } => inner.extensions_mut(),
         }
     }
 }

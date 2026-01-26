@@ -1,6 +1,6 @@
 //! Predicates for influencing compression of responses.
 
-use rama_core::{extensions::Extensions, extensions::ExtensionsMut, extensions::ExtensionsRef};
+use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 
@@ -34,7 +34,7 @@ pub trait Predicate: Clone {
 
 impl<F> Predicate for F
 where
-    F: Fn(StatusCode, Version, &HeaderMap, &mut Extensions) -> bool + Clone,
+    F: Fn(StatusCode, Version, &HeaderMap, &Extensions) -> bool + Clone,
 {
     fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
@@ -43,7 +43,7 @@ where
         let status = response.status();
         let version = response.version();
         let headers = response.headers().clone();
-        let extensions = response.extensions_mut();
+        let extensions = response.extensions();
         self(status, version, &headers, extensions)
     }
 }
@@ -235,7 +235,7 @@ impl Predicate for MirrorDecompressed {
     where
         B: StreamingBody,
     {
-        let preferred = match response.extensions().get::<DecompressedFrom>() {
+        let preferred = match response.extensions().get_ref::<DecompressedFrom>() {
             Some(DecompressedFrom::Gzip) => PreferredEncoding::Gzip,
             Some(DecompressedFrom::Deflate) => PreferredEncoding::Deflate,
             Some(DecompressedFrom::Brotli) => PreferredEncoding::Brotli,
@@ -243,7 +243,7 @@ impl Predicate for MirrorDecompressed {
             None => return false,
         };
 
-        response.extensions_mut().insert(preferred);
+        response.extensions().insert(preferred);
         true
     }
 }

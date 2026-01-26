@@ -143,11 +143,11 @@ macro_rules! set_forwarded_service_for_tuple {
                 &self,
                 mut req: Request<Body>,
             ) -> Result<Self::Output, Self::Error> {
-                let forwarded: Option<Forwarded> = req.extensions().get().cloned();
+                let forwarded: Option<Forwarded> = req.extensions().get_ref().cloned();
 
                 let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
 
-                if let Some(peer_addr) = req.extensions().get::<SocketInfo>().map(|socket| socket.peer_addr()) {
+                if let Some(peer_addr) = req.extensions().get_ref::<SocketInfo>().map(|socket| socket.peer_addr()) {
                     forwarded_element.set_forwarded_for(peer_addr);
                 }
 

@@ -3,7 +3,7 @@
 //! This is similar to a timeout but based on any kind of external condition.
 
 use super::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
-use crate::{Service, extensions::ExtensionsMut};
+use crate::{Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 use tokio::sync::{mpsc, oneshot};
 
@@ -103,7 +103,7 @@ where
 
 impl<T, F, Input, E> Service<Input> for Abortable<T, F>
 where
-    Input: ExtensionsMut + Send + 'static,
+    Input: ExtensionsRef + Send + 'static,
     F: MakeLayerError<Error = E>,
     E: Into<T::Error> + Send + 'static,
     T: Service<Input>,
@@ -111,9 +111,9 @@ where
     type Output = T::Output;
     type Error = T::Error;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let (abort_tx, mut abort_rx) = mpsc::channel(1);
-        input.extensions_mut().insert(AbortController {
+        input.extensions().insert(AbortController {
             // clone so that we ensure we never abort due to no more controller...
             abort_tx: abort_tx.clone(),
         });
@@ -143,7 +143,7 @@ mod tests {
         let abortable_svc = Abortable::new(service_fn(async move |input: ServiceInput<()>| {
             input
                 .extensions()
-                .get::<AbortController>()
+                .get_ref::<AbortController>()
                 .unwrap()
                 .abort()
                 .await;

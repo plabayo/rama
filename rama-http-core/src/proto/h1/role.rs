@@ -282,14 +282,14 @@ impl Http1Transaction for Server {
             return Err(Parse::transfer_encoding_invalid());
         }
 
-        let mut extensions = ctx.extensions.take().unwrap_or_else(|| {
+        let extensions = ctx.extensions.take().unwrap_or_else(|| {
             warn!(
                 "extensions should always be set in ParseContext: was None: use default instead..."
             );
             Default::default()
         });
 
-        let headers = headers.consume(&mut extensions);
+        let headers = headers.consume(&extensions);
 
         *ctx.req_method = Some(subject.0.clone());
 
@@ -345,7 +345,7 @@ impl Http1Transaction for Server {
         let init_cap = 30 + msg.head.headers.len() * AVERAGE_HEADER_SIZE;
         dst.reserve(init_cap);
 
-        let custom_reason_phrase = msg.head.extensions.get::<ReasonPhrase>();
+        let custom_reason_phrase = msg.head.extensions.get_ref::<ReasonPhrase>();
 
         if msg.head.version == Version::HTTP_11
             && msg.head.subject == StatusCode::OK
@@ -944,7 +944,7 @@ impl Http1Transaction for Client {
 
             // TODO we can do this without cloning in a lot of cases, but we need
             // to be careful with things like http 100
-            let mut extensions = ctx
+            let extensions = ctx
                 .extensions
                 .as_ref()
                 .cloned()
@@ -957,7 +957,7 @@ impl Http1Transaction for Client {
             let req_ext = RequestExtensions::from(extensions.clone());
             extensions.insert(req_ext);
 
-            let headers = headers.consume(&mut extensions);
+            let headers = headers.consume(&extensions);
 
             if let Some(reason) = reason {
                 // SAFETY: httparse ensures that only valid reason
@@ -1658,7 +1658,7 @@ mod tests {
         let mut orig_headers = parsed_message
             .head
             .extensions
-            .get::<OriginalHttp1Headers>()
+            .get_ref::<OriginalHttp1Headers>()
             .unwrap()
             .clone()
             .into_iter();
@@ -1907,7 +1907,7 @@ mod tests {
 
     #[test]
     fn test_decoder_response_request_extensions() {
-        let mut request_exts = Extensions::new();
+        let request_exts = Extensions::new();
 
         request_exts.insert(42u64);
 
@@ -1935,9 +1935,9 @@ mod tests {
             42u64,
             msg.head
                 .extensions
-                .get::<RequestExtensions>()
+                .get_ref::<RequestExtensions>()
                 .unwrap()
-                .get::<u64>()
+                .get_ref::<u64>()
                 .copied()
                 .unwrap()
         );
@@ -1947,7 +1947,7 @@ mod tests {
     fn test_decoder_response() {
         fn parse(s: &str) -> ParsedMessage<StatusCode> {
             let msg = parse_with_method(s, Method::GET);
-            let size = msg.head.extensions.get::<HeaderByteLength>().unwrap().0;
+            let size = msg.head.extensions.get_ref::<HeaderByteLength>().unwrap().0;
             assert_eq!(size, s.len(), "parsed header: {s}");
             msg
         }
@@ -2752,7 +2752,7 @@ mod tests {
         let mut orig_cases = OriginalHttp1Headers::default();
         orig_cases.push("X-EmptY".parse().unwrap());
 
-        let mut ext = Extensions::new();
+        let ext = Extensions::new();
         ext.insert(orig_cases);
 
         let mut dst = Vec::new();
@@ -2777,7 +2777,7 @@ mod tests {
         orig_cases.push("X-Empty".parse().unwrap());
         orig_cases.push("X-EMPTY".parse().unwrap());
 
-        let mut ext = Extensions::new();
+        let ext = Extensions::new();
         ext.insert(orig_cases);
 
         let mut dst = Vec::new();

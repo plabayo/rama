@@ -1,4 +1,4 @@
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 // Re-export H2 crate
 pub use rama_http_core::h2;
 
@@ -99,7 +99,7 @@ pub trait ClientExt {
 
 impl<T, B> ClientExt for client::Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef + 'static,
     B: Buf,
 {
     fn run<'a, F: Future + Unpin + 'a>(

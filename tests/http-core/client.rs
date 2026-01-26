@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use rama::ServiceInput;
-use rama::extensions::ExtensionsMut;
+use rama::extensions::ExtensionsRef;
 use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
@@ -358,9 +358,9 @@ macro_rules! test {
             }
             *req.uri_mut() = builder.build().unwrap();
 
-            let mut resp = sender.send_request(req).await?;
+            let resp = sender.send_request(req).await?;
 
-            resp.extensions_mut().insert(extra);
+            resp.extensions().insert(extra);
             Ok(resp)
         };
 
@@ -389,11 +389,11 @@ macro_rules! test {
 
         let rx = rx.expect("thread panicked");
 
-        rt.block_on(future::try_join(res, rx).map_ok(|r| r.0)).map(move |mut resp| {
+        rt.block_on(future::try_join(res, rx).map_ok(|r| r.0)).map(move |resp| {
             // Always check that HttpConnector has set the "extra" info...
             let extra = resp
-                .extensions_mut()
-                .get::<HttpInfo>()
+                .extensions()
+                .get_ref::<HttpInfo>()
                 .expect("HttpConnector should set HttpInfo");
 
             assert_eq!(extra.remote_addr, addr, "HttpInfo should have server addr");
@@ -1572,7 +1572,7 @@ mod conn {
     use futures_channel::{mpsc, oneshot};
     use rama::ServiceInput;
     use rama::bytes::{Buf, Bytes};
-    use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+    use rama::extensions::{Extensions, ExtensionsRef};
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
     use rama_http::proto::h1::ext::ReasonPhrase;
@@ -1697,7 +1697,7 @@ mod conn {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
             assert_eq!(
                 res.extensions()
-                    .get::<ReasonPhrase>()
+                    .get_ref::<ReasonPhrase>()
                     .expect("custom reason phrase is present")
                     .as_bytes(),
                 &b"Alright"[..]
@@ -2213,17 +2213,16 @@ mod conn {
             let _ = conn.await;
         });
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .uri("/a")
             .body(Empty::<Bytes>::new())
             .unwrap();
         let cnt = Arc::new(AtomicUsize::new(0));
         let cnt2 = cnt.clone();
-        req.extensions_mut()
-            .insert(OnInformational::new_fn(move |res| {
-                assert_eq!(res.status(), 100);
-                cnt2.fetch_add(1, Ordering::Relaxed);
-            }));
+        req.extensions().insert(OnInformational::new_fn(move |res| {
+            assert_eq!(res.status(), 100);
+            cnt2.fetch_add(1, Ordering::Relaxed);
+        }));
         let _res = client.send_request(req).await.expect("send_request");
         assert_eq!(1, cnt.load(Ordering::Relaxed));
     }
@@ -2852,12 +2851,6 @@ mod conn {
     impl ExtensionsRef for DebugStream {
         fn extensions(&self) -> &Extensions {
             &self.extensions
-        }
-    }
-
-    impl ExtensionsMut for DebugStream {
-        fn extensions_mut(&mut self) -> &mut Extensions {
-            &mut self.extensions
         }
     }
 

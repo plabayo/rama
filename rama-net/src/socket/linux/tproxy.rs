@@ -9,7 +9,7 @@ use std::{
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
 };
 
 use crate::{address::SocketAddress, proxy::ProxyTarget};
@@ -47,17 +47,15 @@ pub struct ProxyTargetFromGetSocketname<S> {
 impl<S, Input> Service<Input> for ProxyTargetFromGetSocketname<S>
 where
     S: Service<Input, Error: Into<BoxError>>,
-    Input: AsRawFd + ExtensionsMut + Send + 'static,
+    Input: AsRawFd + ExtensionsRef + Send + 'static,
 {
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let proxy_target = proxy_target_from_input(input.as_raw_fd())
             .context("get proxy target from input stream")?;
-        input
-            .extensions_mut()
-            .insert(ProxyTarget(proxy_target.into()));
+        input.extensions().insert(ProxyTarget(proxy_target.into()));
         self.inner.serve(input).await.context("inner serve tcp")
     }
 }

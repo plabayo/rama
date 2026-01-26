@@ -19,7 +19,7 @@ pub trait MatchFn<Request, A>: private::Sealed<Request, A> + Send + Sync + 'stat
 // When all arguments are present
 
 impl<F, Request> MatchFn<Request, ((Extensions,), (Request,))> for F where
-    F: Fn(Option<&mut Extensions>, &Request) -> bool + Send + Sync + 'static
+    F: Fn(Option<&Extensions>, &Request) -> bool + Send + Sync + 'static
 {
 }
 
@@ -29,7 +29,7 @@ impl<F, Request> MatchFn<Request, ((), (Request,))> for F where
 }
 
 impl<F, Request> MatchFn<Request, ((Extensions,), ())> for F where
-    F: Fn(Option<&mut Extensions>) -> bool + Send + Sync + 'static
+    F: Fn(Option<&Extensions>) -> bool + Send + Sync + 'static
 {
 }
 
@@ -64,7 +64,7 @@ where
     A: Send + 'static,
     F: MatchFn<Request, A>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, req: &Request) -> bool {
         self.f.call(ext, req)
     }
 }
@@ -78,25 +78,25 @@ mod private {
         /// `ext` is None in case the callee is not interested in collecting potential
         /// match metadata gathered during the matching process. An example of this
         /// path parameters for an http Uri matcher.
-        fn call(&self, ext: Option<&mut Extensions>, req: &Request) -> bool;
+        fn call(&self, ext: Option<&Extensions>, req: &Request) -> bool;
     }
 
     // When all options are present
 
     impl<F, Request> Sealed<Request, ((Extensions,), (Request,))> for F
     where
-        F: Fn(Option<&mut Extensions>, &Request) -> bool + Send + Sync + 'static,
+        F: Fn(Option<&Extensions>, &Request) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+        fn call(&self, ext: Option<&Extensions>, req: &Request) -> bool {
             (self)(ext, req)
         }
     }
 
     impl<F, Request> Sealed<Request, ((Extensions,), ())> for F
     where
-        F: Fn(Option<&mut Extensions>) -> bool + Send + Sync + 'static,
+        F: Fn(Option<&Extensions>) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, ext: Option<&mut Extensions>, _req: &Request) -> bool {
+        fn call(&self, ext: Option<&Extensions>, _req: &Request) -> bool {
             (self)(ext)
         }
     }
@@ -105,7 +105,7 @@ mod private {
     where
         F: Fn(&Request) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, _ext: Option<&mut Extensions>, req: &Request) -> bool {
+        fn call(&self, _ext: Option<&Extensions>, req: &Request) -> bool {
             (self)(req)
         }
     }
@@ -114,7 +114,7 @@ mod private {
     where
         F: Fn() -> bool + Send + Sync + 'static,
     {
-        fn call(&self, _ext: Option<&mut Extensions>, __req: &Request) -> bool {
+        fn call(&self, _ext: Option<&Extensions>, __req: &Request) -> bool {
             (self)()
         }
     }

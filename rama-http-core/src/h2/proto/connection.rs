@@ -3,7 +3,7 @@ use crate::h2::proto::*;
 use crate::h2::{client, server};
 
 use rama_core::bytes::Bytes;
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::Stream;
 use rama_core::telemetry::tracing;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
@@ -104,7 +104,7 @@ enum State {
 
 impl<T, P, B> Connection<T, P, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     P: Peer,
     B: Buf,
 {

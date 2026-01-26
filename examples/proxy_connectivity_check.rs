@@ -195,8 +195,8 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         Ok(resp) => {
             if let Some(client_socket_info) = resp
                 .extensions()
-                .get()
-                .and_then(|InputExtensions(ext)| ext.get::<ClientSocketInfo>())
+                .get_ref()
+                .and_then(|InputExtensions(ext)| ext.get_ref::<ClientSocketInfo>())
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),

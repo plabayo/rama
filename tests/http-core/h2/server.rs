@@ -1,8 +1,8 @@
 #![deny(warnings)]
 
 use h2_support::prelude::*;
-use rama::{ServiceInput, extensions::ExtensionsMut};
-use rama_core::{extensions::ExtensionsRef, futures::StreamExt};
+use rama::{ServiceInput, extensions::ExtensionsRef};
+use rama_core::futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 
 const SETTINGS: &[u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
@@ -1237,8 +1237,8 @@ async fn serve_when_request_in_response_extensions() {
         let mut srv = server::handshake(io).await.expect("handshake");
         let (req, mut stream) = srv.next().await.unwrap().unwrap();
 
-        let mut rsp = http::Response::new(());
-        rsp.extensions_mut().insert(Arc::new(req));
+        let rsp = http::Response::new(());
+        rsp.extensions().insert(Arc::new(req));
         stream.send_response(rsp, true).unwrap();
 
         assert!(srv.next().await.is_none());
@@ -1391,7 +1391,7 @@ async fn extended_connect_protocol_enabled_during_handshake() {
 
         assert_eq!(
             req.extensions()
-                .get::<rama::http::core::h2::ext::Protocol>(),
+                .get_ref::<rama::http::core::h2::ext::Protocol>(),
             Some(&rama::http::core::h2::ext::Protocol::from_static(
                 "the-bread-protocol"
             ))

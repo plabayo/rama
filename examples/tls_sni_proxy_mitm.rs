@@ -88,7 +88,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, extra::OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     graceful::Shutdown,
     http::{
         HeaderValue, Request, Response,
@@ -254,7 +254,7 @@ struct SniRouterService<T> {
 
 impl<T, S> Service<SniRequest<S>> for SniRouterService<T>
 where
-    S: Io + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsRef,
     T: Service<SniPrefixedIo<S>, Output = (), Error: Into<BoxError>>,
 {
     type Output = ();
@@ -262,7 +262,7 @@ where
 
     async fn serve(
         &self,
-        SniRequest { sni, mut stream }: SniRequest<S>,
+        SniRequest { sni, stream }: SniRequest<S>,
     ) -> Result<Self::Output, Self::Error> {
         let Some(sni) = sni else {
             // NOTE: in production systems you may want
@@ -282,7 +282,7 @@ where
         // is probably dynamic in nature so you can update it on the fly,
         // for this example we just keep it simple with 2 hardcoded domains.
         if sni == DOMAIN_EXAMPLE || DOMAIN_RAMAPROXY_ORG.is_parent_of(&sni) {
-            stream.extensions_mut().insert(IngressSNI(sni.clone()));
+            stream.extensions().insert(IngressSNI(sni.clone()));
             self.https_svc
                 .serve(stream)
                 .await
@@ -327,7 +327,7 @@ where
     async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
         let Some(domain) = req
             .extensions()
-            .get::<IngressSNI>()
+            .get_ref::<IngressSNI>()
             .map(|sni| sni.0.clone())
             .or_else(|| {
                 RequestContext::try_from(&req)

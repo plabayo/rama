@@ -1,7 +1,4 @@
-use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-};
+use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_http_types::Version;
 use rama_net::{
     Protocol,
@@ -67,12 +64,6 @@ impl Request {
 impl ExtensionsRef for Request {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for Request {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

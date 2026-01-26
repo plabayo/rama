@@ -965,7 +965,9 @@ pub use arc::ArcLayer;
 
 pub mod get_extension;
 pub use get_extension::{
-    GetInputExtension, GetInputExtensionLayer, GetOutputExtension, GetOutputExtensionLayer,
+    GetInputExtensionOwned, GetInputExtensionOwnedLayer, GetInputExtensionRef,
+    GetInputExtensionRefLayer, GetOutputExtensionOwned, GetOutputExtensionOwnedLayer,
+    GetOutputExtensionRef, GetOutputExtensionRefLayer,
 };
 
 use crate::Service;
@@ -1002,22 +1004,23 @@ crate::combinators::impl_either!(impl_layer_either);
 #[cfg(test)]
 mod tests {
     use rama_error::BoxError;
+    use std::sync::Arc;
 
     use crate::{ServiceInput, service::service_fn};
 
     use super::*;
 
     #[tokio::test]
-    async fn simple_input_layer() {
-        let svc = (GetInputExtensionLayer::new(async |_: String| {}))
+    async fn simple_input_owned_layer() {
+        let svc = (GetInputExtensionOwnedLayer::new(async |_: Arc<String>| {}))
             .into_layer(service_fn(async || Ok::<_, BoxError>(())));
 
         svc.serve(ServiceInput::new(())).await.unwrap();
     }
 
     #[tokio::test]
-    async fn simple_optional_input_layer() {
-        let maybe_layer = Some(GetInputExtensionLayer::new(async |_: String| {}));
+    async fn simple_optional_input_ref_layer() {
+        let maybe_layer = Some(GetInputExtensionRefLayer::new(|_: &String| {}));
 
         let svc = (maybe_layer).into_layer(service_fn(async || Ok::<_, BoxError>(())));
 
@@ -1025,17 +1028,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn simple_output_layer() {
-        let svc = (GetOutputExtensionLayer::new(async |_: String| {})).into_layer(service_fn(
-            async || Ok::<_, BoxError>(ServiceInput::new(())),
-        ));
+    async fn simple_output_owned_layer() {
+        let svc = (GetOutputExtensionOwnedLayer::new(async |_: Arc<String>| {})).into_layer(
+            service_fn(async || Ok::<_, BoxError>(ServiceInput::new(()))),
+        );
 
         svc.serve(ServiceInput::new(())).await.unwrap();
     }
 
     #[tokio::test]
-    async fn simple_optional_output_layer() {
-        let maybe_layer = Some(GetOutputExtensionLayer::new(async |_: String| {}));
+    async fn simple_optional_output_ref_layer() {
+        let maybe_layer = Some(GetOutputExtensionRefLayer::new(|_: &String| {}));
 
         let svc = (maybe_layer).into_layer(service_fn(async || {
             Ok::<_, BoxError>(ServiceInput::new(()))

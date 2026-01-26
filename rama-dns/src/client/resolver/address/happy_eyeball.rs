@@ -72,12 +72,12 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         let ip_mode = self
             .extensions
             .as_ref()
-            .and_then(|ext| ext.get().copied())
+            .and_then(|ext| ext.get_ref().copied())
             .unwrap_or_default();
         let dns_mode = self
             .extensions
             .as_ref()
-            .and_then(|ext| ext.get().copied())
+            .and_then(|ext| ext.get_ref().copied())
             .unwrap_or_default();
 
         let domain = match self.host {
@@ -105,7 +105,7 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         let maybe_dns_overwrite = self
             .extensions
             .as_ref()
-            .and_then(|ext| ext.get::<DnsAddresssResolverOverwrite>());
+            .and_then(|ext| ext.get_ref::<DnsAddresssResolverOverwrite>());
 
         let make_ipv4_stream = || {
             stream::StreamExt::flatten(stream::iter(

@@ -1,11 +1,11 @@
-use crate::extensions::{ExtensionsMut, ExtensionsRef};
+use crate::extensions::ExtensionsRef;
 
 /// A bidirectional bridge between two [`Io`] objects.
 ///
 /// Often this is for Client-Server communication,
 /// but in a P2P like topology it can also be equal nodes.
 ///
-/// [`ExtensionsRef`] and [`ExtensionsMut`] is implemented
+/// [`ExtensionsRef`] and [`ExtensionsRef`] is implemented
 /// in function of `Io1` as it is assumed that in flows where
 /// [`BridgeIo`] is used that we keep moving from "left" (`Io1`)
 /// to "right" (`Io2`) until we start to actually relay bytes,
@@ -21,13 +21,6 @@ impl<Io1: ExtensionsRef, Io2> ExtensionsRef for BridgeIo<Io1, Io2> {
     fn extensions(&self) -> &crate::extensions::Extensions {
         let Self(left, _) = self;
         left.extensions()
-    }
-}
-impl<Io1: ExtensionsMut, Io2> ExtensionsMut for BridgeIo<Io1, Io2> {
-    #[inline(always)]
-    fn extensions_mut(&mut self) -> &mut crate::extensions::Extensions {
-        let Self(left, _) = self;
-        left.extensions_mut()
     }
 }
 

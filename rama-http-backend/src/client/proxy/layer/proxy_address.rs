@@ -1,7 +1,7 @@
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_http::Request;
@@ -157,7 +157,7 @@ where
 
     fn serve(
         &self,
-        mut req: Request<Body>,
+        req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         if let Some(ref proxy_info) = self.proxy_info
             && (!self.preserve || !req.extensions().contains::<ProxyAddress>())
@@ -167,7 +167,7 @@ where
                 server.port = proxy_info.address.port,
                 "setting proxy address",
             );
-            req.extensions_mut().insert(proxy_info.clone());
+            req.extensions().insert(proxy_info.clone());
         }
         self.inner.serve(req)
     }

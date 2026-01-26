@@ -4,7 +4,7 @@
 //! in Rama. Extensions are additional pieces of information or features that can be attached to HTTP1
 //! messages via the [`rama_core::extensions::Extensions`] map, which is
 //! accessible through the methods provided by the
-//! [`rama_core::extensions::ExtensionsRef`] and [`rama_core::extensions::ExtensionsMut`]
+//! [`rama_core::extensions::ExtensionsRef`]
 //! traits implemented for [`crate::Request`] and [`crate::Response`].
 //!
 //! # What are extensions?
@@ -23,7 +23,7 @@
 //! ```rust
 //! # use rama_core::extensions::ExtensionsRef;
 //! # let response = rama_http_types::Response::new(());
-//! if let Some(ext) = response.extensions().get::<rama_http_types::proto::h1::ext::ReasonPhrase>() {
+//! if let Some(ext) = response.extensions().get_ref::<rama_http_types::proto::h1::ext::ReasonPhrase>() {
 //!     // use the extension
 //! }
 //! ```

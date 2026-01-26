@@ -141,7 +141,7 @@ async fn main() {
         let http_service = HttpServer::auto(exec.clone()).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
                 WebService::default().with_get("/", async |ext: Extensions| {
-                    ext.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
+                    ext.get_ref::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),
             ),

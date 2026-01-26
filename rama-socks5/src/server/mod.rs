@@ -16,7 +16,7 @@ use crate::proto::{
 use rama_core::{
     Service,
     error::BoxError,
-    extensions::{Extensions, ExtensionsMut},
+    extensions::{Extensions, ExtensionsRef},
     io::Io,
     rt::Executor,
     telemetry::tracing,
@@ -342,7 +342,7 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
         U: Socks5UdpAssociator<S>,
         A: Authorizer<user::Basic, Error: fmt::Debug>,
         B: Socks5Binder<S>,
-        S: Io + Unpin + ExtensionsMut,
+        S: Io + Unpin + ExtensionsRef,
     {
         let client_header = client::Header::read_from(&mut stream)
             .await
@@ -353,7 +353,7 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
             .await?;
 
         if let Some(ext) = maybe_ext {
-            stream.extensions_mut().extend(ext);
+            stream.extensions().extend(&ext);
         }
 
         tracing::trace!(
@@ -524,7 +524,7 @@ where
     U: Socks5UdpAssociator<S>,
     A: Authorizer<user::Basic, Error: fmt::Debug>,
     B: Socks5Binder<S>,
-    S: Io + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsRef,
 {
     type Output = ();
     type Error = Error;

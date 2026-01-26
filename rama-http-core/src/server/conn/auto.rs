@@ -10,7 +10,7 @@ use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
 use rama_core::Service;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_http::{Request, Response};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
@@ -120,7 +120,7 @@ impl Builder {
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<'_, I, S>
     where
         S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
-        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     {
         let state = match self.version {
             Some(Version::H1) => {
@@ -317,7 +317,7 @@ pin_project! {
 impl<I, S> Connection<'_, I, S>
 where
     S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
-    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -361,7 +361,7 @@ where
 impl<I, S> Future for Connection<'_, I, S>
 where
     S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
-    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
 {
     type Output = Result<(), BoxError>;
 
@@ -447,7 +447,7 @@ pin_project! {
 impl<I, S> UpgradeableConnection<'_, I, S>
 where
     S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
-    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -491,7 +491,7 @@ where
 impl<I, S> Future for UpgradeableConnection<'_, I, S>
 where
     S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
-    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
 {
     type Output = Result<(), BoxError>;
 

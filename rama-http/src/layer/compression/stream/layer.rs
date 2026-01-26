@@ -111,7 +111,7 @@ mod tests {
     use crate::layer::decompression::DecompressedFrom;
     use crate::{Request, Response, body::util::BodyExt, header::ACCEPT_ENCODING};
     use rama_core::Service;
-    use rama_core::extensions::ExtensionsMut;
+    use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
     use rama_core::stream::io::ReaderStream;
     use rama_http_types::Body;
@@ -228,9 +228,8 @@ mod tests {
         let service = StreamCompressionLayer::new()
             .with_compress_predicate(MirrorDecompressed::new())
             .into_layer(service_fn(|_: Request<Body>| async {
-                let mut res =
-                    Response::new(Body::from("Hello, World! Hello, World! Hello, World!"));
-                res.extensions_mut().insert(DecompressedFrom::Brotli);
+                let res = Response::new(Body::from("Hello, World! Hello, World! Hello, World!"));
+                res.extensions().insert(DecompressedFrom::Brotli);
                 Ok::<_, Infallible>(res)
             }));
 

@@ -51,15 +51,11 @@ mod tests {
     fn parse_compose_username_labels() {
         const COMPOSED_USERNAME: &str = "john-foo-bar-baz";
 
-        let mut ext = Extensions::new();
-        let username = parse_username(
-            &mut ext,
-            UsernameOpaqueLabelParser::new(),
-            COMPOSED_USERNAME,
-        )
-        .unwrap();
+        let ext = Extensions::new();
+        let username =
+            parse_username(&ext, UsernameOpaqueLabelParser::new(), COMPOSED_USERNAME).unwrap();
         assert_eq!("john", username);
-        let labels = ext.get::<UsernameLabels>().unwrap();
+        let labels = ext.get_ref::<UsernameLabels>().unwrap();
 
         let compose_username_result = compose_username("john".to_owned(), labels).unwrap();
         assert_eq!(COMPOSED_USERNAME, compose_username_result);
