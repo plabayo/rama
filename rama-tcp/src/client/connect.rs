@@ -341,7 +341,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let ip_it = match ip_kind {
-        IpKind::Ipv4 => match dns.ipv4_lookup(domain).await {
+        IpKind::Ipv4 => match dns.ipv4_lookup(domain.clone()).await {
             Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
             Err(err) => {
                 let err = OpaqueError::from_boxed(err.into());
@@ -351,7 +351,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                 return;
             }
         },
-        IpKind::Ipv6 => match dns.ipv6_lookup(domain).await {
+        IpKind::Ipv6 => match dns.ipv6_lookup(domain.clone()).await {
             Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
                 let err = OpaqueError::from_boxed(err.into());
@@ -429,12 +429,14 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                 Ok(stream) => {
                     tracing::trace!("[{ip_kind:?}] #{index}: tcp connection stablished to {addr}");
                     if let Err(err) = tx.send((stream, addr)).await {
-                        tracing::trace!("[{ip_kind:?}] #{index}: failed to send resolved IP address: {err:?}");
+                        tracing::trace!(
+                            "[{ip_kind:?}] #{index}: failed to send resolved IP address {addr}: {err:?}"
+                        );
                     }
                 }
                 Err(err) => {
                     let err = OpaqueError::from_boxed(err.into());
-                    tracing::trace!("[{ip_kind:?}] #{index}: tcp connector failed to connect: {err:?}");
+                    tracing::trace!("[{ip_kind:?}] #{index}: tcp connector failed to connect to {addr}: {err:?}");
                 }
             };
         }.instrument(trace_span!(
@@ -442,6 +444,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
             otel.kind = "client",
             network.protocol.name = "tcp",
             network.peer.address = %ip,
+            server.address = %domain,
             %index,
         )));
     }

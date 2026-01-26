@@ -538,7 +538,7 @@ pub fn self_signed_server_auth_gen_cert(
             .context("append subject alt name to x509 name builder")?;
     }
     x509_name
-        .append_entry_by_nid(Nid::COMMONNAME, common_name.to_string().as_str())
+        .append_entry_by_nid(Nid::COMMONNAME, common_name.as_str())
         .context("append common name to x509 name builder")?;
     let x509_name = x509_name.build();
 
@@ -661,7 +661,7 @@ fn self_signed_server_auth_gen_ca(
             .context("append subject alt name to x509 name builder")?;
     }
     x509_name
-        .append_entry_by_nid(Nid::COMMONNAME, common_name.to_string().as_str())
+        .append_entry_by_nid(Nid::COMMONNAME, common_name.as_str())
         .context("append common name to x509 name builder")?;
     let x509_name = x509_name.build();
 

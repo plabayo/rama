@@ -47,7 +47,7 @@ use crate::{
     Request,
     utils::{HeaderValueErr, HeaderValueGetter},
 };
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::{Extension, ExtensionsMut};
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
@@ -140,7 +140,7 @@ where
 impl<T, S, Body, E> Service<Request<Body>> for HeaderConfigService<T, S>
 where
     S: Service<Request<Body>, Error = E>,
-    T: DeserializeOwned + Clone + Send + Sync + std::fmt::Debug + 'static,
+    T: DeserializeOwned + Extension + Clone,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {

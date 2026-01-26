@@ -1,11 +1,10 @@
-use std::any::Any;
 use std::fmt;
 
 use crate::Result;
 use crate::dep::hyperium::http::Extensions as HyperExtensions;
 use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 
 /// Represents an HTTP request.
 ///
@@ -976,7 +975,7 @@ impl Builder {
     /// ```
     pub fn extension<T>(self, extension: T) -> Self
     where
-        T: Clone + Any + Send + Sync + std::fmt::Debug + 'static,
+        T: Extension + Clone,
     {
         self.and_then(move |mut head| {
             head.extensions.insert(extension);

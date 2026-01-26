@@ -1997,9 +1997,9 @@ dependencies = [
 
 [[package]]
 name = "moka"
-version = "0.12.11"
+version = "0.12.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8261cd88c312e0004c1d51baad2980c66528dfdb2bee62003e643a4d8f86b077"
+checksum = "b4ac832c50ced444ef6be0767a008b02c106a909ba79d1d830501e94b96f6b7e"
 dependencies = [
  "crossbeam-channel",
  "crossbeam-epoch",
@@ -2007,7 +2007,6 @@ dependencies = [
  "equivalent",
  "parking_lot",
  "portable-atomic",
- "rustc_version",
  "smallvec",
  "tagptr",
  "uuid",
@@ -2674,9 +2673,9 @@ checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 
 [[package]]
 name = "psl"
-version = "2.1.168"
+version = "2.1.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6faf5b87f44516ca3989e1e315a0413f7a4d4886e63664cbd4a5f492c73cad93"
+checksum = "f4171658a0c9db483caa2dbd02dd4ade6574a23d7e3ff3483646f9b5e9dbd5b0"
 dependencies = [
  "psl-types",
 ]
@@ -2791,9 +2790,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.5.9"
+version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "288926585d0b8ed1b1dd278a31ea1367007ad0bd4263ca84810e10939c2398a3"
+checksum = "84f7f862c81618f9aef40bd32e73986321109a24272c79e040377c5ac29491e8"
 dependencies = [
  "bitflags 2.10.0",
  "foreign-types",
@@ -2804,9 +2803,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.5.9"
+version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "421ebb40444a6d740f867a5055a710a73e7cd74b9b389583b45e9b29d1330465"
+checksum = "d5bfe3e86d71e9b91dae7561d5ceeaceb37a7d4fc078ab241afd7aab777f606f"
 dependencies = [
  "bindgen",
  "cmake",
@@ -2816,9 +2815,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.5.9"
+version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "913cf3d377b37ff903cd57c2f6133ba7da5b7e0fe94821dec83daa8a024bb6ce"
+checksum = "9c7d71fab2ce4408cc40f819865501dbc63272ddab0e77dd3500ff77f1a0f883"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -5572,18 +5571,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.31"
+version = "0.8.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd74ec98b9250adb3ca554bdde269adf631549f51d8a8f8f0a10b50f1cb298c3"
+checksum = "71ddd76bcebeed25db614f82bf31a9f4222d3fbba300e6fb6c00afa26cbd4d9d"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.31"
+version = "0.8.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8a8d209fdf45cf5138cbb5a506f6b52522a25afccc534d1475dad8e31105c6a"
+checksum = "d8187381b52e32220d50b255276aa16a084ec0a9017a0ca2152a1f55c539758d"
 dependencies = [
  "proc-macro2",
  "quote",
