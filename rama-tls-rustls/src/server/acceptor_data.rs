@@ -217,7 +217,7 @@ pub fn self_signed_server_auth(
     );
     ca_params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, common_name.to_string().as_str());
+        .push(rcgen::DnType::CommonName, common_name.as_str());
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![
         rcgen::KeyUsagePurpose::KeyCertSign,

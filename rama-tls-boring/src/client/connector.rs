@@ -415,13 +415,23 @@ where
 
     let server_host = data.server_name.map(Host::Name).unwrap_or(server_host);
     let stream: SslStream<T> =
-        rama_boring_tokio::connect(data.config, server_host.to_string().as_str(), stream)
+        rama_boring_tokio::connect(data.config, &server_host.to_str(), stream)
             .await
-            .map_err(|err| match err.as_io_error() {
-                Some(err) => OpaqueError::from_display(err.to_string())
-                    .context("boring ssl connector: connect")
-                    .into_boxed(),
-                None => OpaqueError::from_display("boring ssl connector: connect").into_boxed(),
+            .map_err(|err| {
+                let maybe_ssl_code = err.code();
+                if let Some(io_err) = err.as_io_error() {
+                    OpaqueError::from_display(format!(
+                        "boring ssl connector: connect (code: {maybe_ssl_code:?}); domain = {server_host}; without io-error: {io_err}"
+                    )).into_boxed()
+                } else if let Some(err) = err.as_ssl_error_stack() {
+                    OpaqueError::from_std(err).context(format!(
+                        "boring ssl connector: connect (code: {maybe_ssl_code:?}); domain = {server_host}; with ssl-error info"
+                    )).into_boxed()
+                } else {
+                    OpaqueError::from_display(format!(
+                        "boring ssl connector: connect (code: {maybe_ssl_code:?}); domain = {server_host}; without error info"
+                    )).into_boxed()
+                }
             })?;
     Ok(TlsStream::new(stream))
 }
