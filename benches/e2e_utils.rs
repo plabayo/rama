@@ -5,8 +5,7 @@ use std::{
 
 use rama::telemetry::tracing::{
     self,
-    level_filters::LevelFilter,
-    subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    subscriber::{filter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
 use tracing_appender::non_blocking::WorkerGuard;
 
@@ -26,11 +25,7 @@ pub fn setup_tracing(test_file: &str) -> WorkerGuard {
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     tracing::subscriber::registry()
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::DEBUG.into())
-                .from_env_lossy(),
-        )
+        .with(filter::LevelFilter::DEBUG)
         .with(fmt::layer().with_writer(non_blocking))
         .init();
 
