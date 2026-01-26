@@ -118,12 +118,14 @@ async fn main() {
         .with_keylog_intent(rama::net::tls::KeyLogIntent::Environment)
         .into_shared_builder();
 
+    let graceful = graceful::Shutdown::default();
+
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::graceful(graceful.guard()))
         .build_client()
         .boxed();
 
@@ -186,8 +188,6 @@ async fn main() {
         key_authorization: key_authorization.clone(),
     });
 
-    let graceful = graceful::Shutdown::default();
-
     let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
         HttpServer::auto(exec)
@@ -243,7 +243,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(service_fn(async || {
+        let http_service = HttpServer::auto(exec.clone()).service(service_fn(async || {
             Ok::<_, Infallible>("hello".into_response())
         }));
 
@@ -258,10 +258,10 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind(ADDR)
+        TcpListener::bind(ADDR, exec)
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 

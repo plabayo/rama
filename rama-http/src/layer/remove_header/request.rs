@@ -31,7 +31,7 @@
 use crate::{HeaderName, Request, Response};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use smol_str::SmolStr;
+use rama_utils::str::smol_str::SmolStr;
 
 #[derive(Debug, Clone)]
 /// Layer that applies [`RemoveRequestHeader`] which removes request headers.

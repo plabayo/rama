@@ -1,6 +1,6 @@
 use rama_core::telemetry::tracing;
+use rama_utils::collections::smallvec::SmallVec;
 use serde::{Deserialize, Serialize, de::Error};
-use smallvec::SmallVec;
 use std::{fmt, str::FromStr};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]

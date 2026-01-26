@@ -14,6 +14,7 @@ use rama::{
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
     net::{socket::Interface, stream::service::DiscardService},
+    rt::Executor,
     stream::{codec::BytesCodec, io::StreamReader},
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
@@ -80,9 +81,10 @@ impl fmt::Display for Mode {
 
 /// run the rama echo service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), BoxError> {
+    let exec = Executor::graceful(graceful);
     let maybe_tls_cfg: Option<TlsAcceptorData> = if cfg.mode == Mode::Tls {
         tracing::info!("create tls server config...");
-        let cfg = try_new_server_config(None)?;
+        let cfg = try_new_server_config(None, exec.clone())?;
         Some(cfg.try_into()?)
     } else {
         None
@@ -110,7 +112,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
                 "starting TCP discard service: bind interface = {:?}",
                 cfg.bind
             );
-            let tcp_listener = TcpListener::build()
+            let tcp_listener = TcpListener::build(exec.clone())
                 .bind(cfg.bind.clone())
                 .await
                 .map_err(OpaqueError::from_boxed)
@@ -126,17 +128,14 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
                 network.protocol.name = "tcp"
             );
 
-            graceful.into_spawn_task_fn(async move |guard| {
+            exec.spawn_task(async move {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),
                     "discard service ready: bind interface = {}", cfg.bind,
                 );
 
-                tcp_listener
-                    .serve_graceful(guard, discard_svc)
-                    .instrument(span)
-                    .await;
+                tcp_listener.serve(discard_svc).instrument(span).await;
             });
         }
         Mode::Udp => {

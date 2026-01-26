@@ -13,7 +13,9 @@ use rama_core::telemetry::tracing::{debug, error, trace, warn};
 use rama_http::io::upgrade;
 use rama_http_types::body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
+use rama_http_types::proto::h1::ext::informational::OnInformational;
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
+use rama_net::conn::{ConnectionHealth, ConnectionHealthStatus};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
 
@@ -598,10 +600,7 @@ where
             buf,
         ) {
             Ok(encoder) => {
-                self.state.on_informational = head
-                    .extensions
-                    .get::<crate::ext::OnInformational>()
-                    .cloned();
+                self.state.on_informational = head.extensions.get::<OnInformational>().cloned();
                 self.state.encoded_request_extensions = Some(head.extensions);
                 Some(encoder)
             }
@@ -794,6 +793,9 @@ where
     }
 
     pub(crate) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Some(health) = self.io.extensions().get::<ConnectionHealth>() {
+            health.set_status(ConnectionHealthStatus::Broken);
+        }
         match ready!(Pin::new(self.io.io_mut()).poll_shutdown(cx)) {
             Ok(()) => {
                 trace!("shut down IO complete");
@@ -892,7 +894,7 @@ struct State {
     /// If set, called with each 1xx informational response received for
     /// the current request. MUST be unset after a non-1xx response is
     /// received.
-    on_informational: Option<crate::ext::OnInformational>,
+    on_informational: Option<OnInformational>,
     /// Set to true when the Dispatcher should poll read operations
     /// again. See the `maybe_notify` method for more.
     notify_read: bool,

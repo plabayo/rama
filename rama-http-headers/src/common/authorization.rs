@@ -243,9 +243,7 @@ impl Credentials for Bearer {
     }
 }
 
-/// The `Authority` trait is used to determine if a set of [`Credential`]s are authorized.
-///
-/// [`Credential`]: rama_http_headers::authorization::Credentials
+/// The `Authority` trait is used to determine if a set of [`Credentials`] are authorized.
 pub trait Authority<C, L>: Send + Sync + 'static {
     /// Returns `true` if the credentials are authorized, otherwise `false`.
     fn authorized(&self, credentials: C) -> impl Future<Output = Option<Extensions>> + Send + '_;

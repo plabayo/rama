@@ -19,6 +19,7 @@ use rama_http_headers::{
 use rama_http_headers::{HeaderEncode, SetCookie};
 use rama_http_types::mime::Mime;
 use rama_http_types::proto::h1::Http1HeaderName;
+use rama_http_types::proto::h1::ext::ReasonPhrase;
 use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1HeaderMap};
 use rama_net::address::SocketAddress;
 
@@ -26,6 +27,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use chrono::{DateTime, Utc};
 use rama_utils::str::arcstr::ArcStr;
+use rama_utils::str::smol_str::{ToSmolStr, format_smolstr};
 use rama_utils::str::{NonEmptyStr, non_empty_str};
 use serde::{Deserialize, Serialize};
 
@@ -126,8 +128,15 @@ fn into_query_string(parts: &ReqParts) -> Vec<QueryStringPair> {
         return Vec::default();
     };
 
-    match Query::parse_query_str(query_str) {
-        Ok(q) => q.0,
+    match Query::<Vec<(ArcStr, ArcStr)>>::parse_query_str(query_str) {
+        Ok(Query(v)) => v
+            .into_iter()
+            .map(|(name, value)| QueryStringPair {
+                name,
+                value,
+                comment: None,
+            })
+            .collect(),
         Err(err) => {
             tracing::debug!("failure to parse query string: {err:?}");
             vec![]
@@ -145,8 +154,8 @@ fn parse_cookie_part(part: &str) -> Option<Cookie> {
         return None;
     }
     let mut split = trimmed.splitn(2, '=');
-    let name = split.next()?.trim().to_owned();
-    let value = split.next()?.trim().to_owned();
+    let name = split.next()?.trim().into();
+    let value = split.next()?.trim().into();
     Some(Cookie {
         name,
         value,
@@ -158,10 +167,10 @@ fn into_har_headers(header_map: Http1HeaderMap) -> Vec<Header> {
     header_map
         .into_iter()
         .map(|(name, value)| Header {
-            name: name.to_string(),
+            name: name.as_str().into(),
             value: match value.to_str() {
-                Ok(s) => s.to_owned(),
-                Err(_) => format!("{value:x?}"),
+                Ok(s) => s.into(),
+                Err(_) => format_smolstr!("{value:x?}").into(),
             },
             comment: None,
         })
@@ -222,9 +231,9 @@ pub struct Creator {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Browser {
     /// Name of the application/browser used to export the log.
-    pub name: String,
+    pub name: ArcStr,
     /// Version of the application/browser used to export the log.
-    pub version: Option<String>,
+    pub version: Option<ArcStr>,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
 }
@@ -235,9 +244,9 @@ pub struct Page {
     #[serde(with = "chrono_serializer", rename = "startedDateTime")]
     pub started_date_time: DateTime<Utc>,
     /// Unique identifier of a page within the [Log]. Entries use it to refer the parent page.
-    pub id: String,
+    pub id: ArcStr,
     /// Page title
-    pub title: String,
+    pub title: ArcStr,
     /// Detailed timing info about page load.
     #[serde(rename = "pageTimings")]
     pub page_timings: PageTimings,
@@ -256,13 +265,13 @@ pub struct PageTimings {
     /// Number of milliseconds since page load started (page.startedDateTime).
     /// Use -1 if the timing does not apply to the current request.
     #[serde(rename = "onContentLoad")]
-    pub on_content_load: Option<u64>,
+    pub on_content_load: Option<i64>,
     /// Page is loaded (onLoad event fired).
     ///
     /// Number of milliseconds since page load started (page.startedDateTime).
     /// Use -1 if the timing does not apply to the current request.
     #[serde(rename = "onLoad")]
-    pub on_load: Option<u64>,
+    pub on_load: Option<i64>,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
 }
@@ -273,15 +282,15 @@ pub struct Entry {
     /// Reference to the parent page.
     ///
     /// Leave out this field if the application does not support grouping by pages.
-    #[serde(rename = "pageref")]
-    pub page_ref: Option<String>,
+    #[serde(rename = "pageRef")]
+    pub page_ref: Option<ArcStr>,
     /// Date and time stamp of the request start (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
     #[serde(with = "chrono_serializer", rename = "startedDateTime")]
     pub started_date_time: DateTime<Utc>,
     /// Total elapsed time of the request in milliseconds.
     ///
     /// This is the sum of all timings available in the timings object (i.e. not including -1 values).
-    pub time: u64,
+    pub time: i64,
     /// Detailed info about the request.
     pub request: Request,
     /// Detailed info about the response.
@@ -304,7 +313,7 @@ pub struct Entry {
     /// any other unique connection ID can be used instead (e.g. connection index).
     ///
     /// Leave out this field if the application doesn't support this info.
-    pub connection: Option<String>,
+    pub connection: Option<ArcStr>,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
 }
@@ -313,9 +322,9 @@ pub struct Entry {
 /// This object contains detailed info about performed request.
 pub struct Request {
     /// Request method (GET, POST, ...).
-    pub method: String,
+    pub method: ArcStr,
     /// Absolute URL of the request (fragments are not included).
-    pub url: String,
+    pub url: ArcStr,
     /// Request HTTP Version.
     #[serde(rename = "httpVersion")]
     pub http_version: HttpVersion,
@@ -376,7 +385,7 @@ impl TryFrom<Request> for crate::Request {
                     .parse::<crate::Method>()
                     .context("parse HAR HTTP Method")?,
             )
-            .uri(har_request.url);
+            .uri(har_request.url.as_str());
 
         let builder = if let Ok(ver) = har_request.http_version.try_into() {
             builder.version(ver)
@@ -414,8 +423,8 @@ impl Request {
             };
 
             let text = match std::str::from_utf8(payload) {
-                Ok(s) => s.to_owned(),
-                Err(_) => ENGINE.encode(payload),
+                Ok(s) => s.into(),
+                Err(_) => ENGINE.encode(payload).into(),
             };
 
             Some(PostData {
@@ -439,8 +448,8 @@ impl Request {
             .map(|c| {
                 c.iter()
                     .map(|(k, v)| Cookie {
-                        name: k.to_owned(),
-                        value: v.to_owned(),
+                        name: k.into(),
+                        value: v.into(),
                         path: None,
                         domain: None,
                         expires: None,
@@ -460,8 +469,8 @@ impl Request {
         let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);
 
         Ok(Self {
-            method: parts.method.to_string(),
-            url: parts.uri.to_string(),
+            method: parts.method.to_smolstr().into(),
+            url: parts.uri.to_string().into(),
             http_version: parts.version.into(),
             cookies,
             headers: into_har_headers(header_map),
@@ -483,6 +492,7 @@ pub struct Response {
     #[serde(rename = "statusText")]
     pub status_text: Option<ArcStr>,
     /// Response HTTP Version.
+    #[serde(rename = "httpVersion")]
     pub http_version: HttpVersion,
     /// List of cookie objects.
     pub cookies: Vec<Cookie>,
@@ -492,7 +502,7 @@ pub struct Response {
     pub content: Content,
     /// Redirection target URL from the Location response header.
     #[serde(rename = "redirectUrl")]
-    pub redirect_url: Option<String>,
+    pub redirect_url: Option<ArcStr>,
     /// Total number of bytes from the start of the HTTP response message
     ///
     /// Until (and including) the double CRLF before the body.
@@ -514,6 +524,49 @@ pub struct Response {
     pub comment: Option<ArcStr>,
 }
 
+impl TryFrom<Response> for crate::Response {
+    type Error = OpaqueError;
+
+    fn try_from(har_response: Response) -> Result<Self, Self::Error> {
+        let body = match har_response.content.text {
+            Some(s) => match ENGINE.decode(&s) {
+                Ok(v) => crate::Body::from(v),
+                Err(_) => crate::Body::from(s),
+            },
+            None => crate::Body::empty(),
+        };
+
+        let mut orig_headers = Http1HeaderMap::with_capacity(har_response.headers.len());
+        for header in har_response.headers {
+            orig_headers.append(
+                Http1HeaderName::from_str(&header.name).context("convert http header name")?,
+                crate::HeaderValue::from_maybe_shared(header.value)
+                    .context("convert http header value")?,
+            );
+        }
+        let (headers, orig_headers) = orig_headers.into_parts();
+
+        let builder = crate::Response::builder().status(
+            crate::StatusCode::from_u16(har_response.status).context("convert HAR status code")?,
+        );
+
+        let builder = if let Ok(ver) = har_response.http_version.try_into() {
+            builder.version(ver)
+        } else {
+            builder
+        };
+
+        let mut res = builder
+            .body(body)
+            .context("build http response from HAR data")?;
+
+        *res.headers_mut() = headers;
+        res.extensions_mut().insert(orig_headers);
+
+        Ok(res)
+    }
+}
+
 impl Response {
     pub fn from_http_response_parts(
         parts: &RespParts,
@@ -524,8 +577,8 @@ impl Response {
             compression: None,
             mime_type: get_mime(&parts.headers),
             text: (!payload.is_empty()).then(|| match std::str::from_utf8(payload) {
-                Ok(s) => s.to_owned(),
-                Err(_) => ENGINE.encode(payload),
+                Ok(s) => s.into(),
+                Err(_) => ENGINE.encode(payload).into(),
             }),
             encoding: parts
                 .headers
@@ -538,7 +591,7 @@ impl Response {
             .headers
             .typed_get::<Location>()
             .and_then(|h| h.encode_to_value())
-            .and_then(|v| v.to_str().ok().map(ToOwned::to_owned));
+            .and_then(|v| v.to_str().ok().map(Into::into));
 
         let cookies = parts
             .headers
@@ -563,7 +616,14 @@ impl Response {
 
         Ok(Self {
             status: parts.status.as_u16(),
-            status_text: parts.status.canonical_reason().map(Into::into),
+            status_text: match parts.extensions.get::<ReasonPhrase>() {
+                Some(reason) => Some(
+                    String::from_utf8_lossy(reason.as_bytes())
+                        .into_owned()
+                        .into(),
+                ),
+                None => parts.status.canonical_reason().map(Into::into),
+            },
             http_version: parts.version.into(),
             cookies,
             headers: into_har_headers(header_map),
@@ -585,13 +645,13 @@ impl Response {
 /// (used in [Request] and [Response] objects).
 pub struct Cookie {
     /// The name of the cookie.
-    pub name: String,
+    pub name: ArcStr,
     /// The cookie value.
-    pub value: String,
+    pub value: ArcStr,
     /// The path pertaining to the cookie.
-    pub path: Option<String>,
+    pub path: Option<ArcStr>,
     /// The host of the cookie.
-    pub domain: Option<String>,
+    pub domain: Option<ArcStr>,
     /// Date and time stamp of the request start
     ///
     /// (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
@@ -609,9 +669,9 @@ pub struct Cookie {
 /// Single HTTP Header.
 pub struct Header {
     /// Name of header.
-    pub name: String,
+    pub name: ArcStr,
     /// Value of header.
-    pub value: String,
+    pub value: ArcStr,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
 }
@@ -621,9 +681,9 @@ pub struct Header {
 /// if any (embedded in [Request] object).
 pub struct QueryStringPair {
     /// Name of parameter.
-    pub name: String,
+    pub name: ArcStr,
     /// Value of parameter.
-    pub value: String,
+    pub value: ArcStr,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
 }
@@ -641,26 +701,26 @@ pub struct PostData {
     /// (in case of URL encoded parameters).
     pub params: Option<Vec<PostParam>>,
     /// Plain text posted data
-    pub text: Option<String>,
+    pub text: Option<ArcStr>,
     /// A comment provided by the user or the application.
     pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostParam {
-    pub name: String,
-    pub value: Option<String>,
+    pub name: ArcStr,
+    pub value: Option<ArcStr>,
     #[serde(rename = "fileName")]
-    pub file_name: Option<String>,
+    pub file_name: Option<ArcStr>,
     #[serde(rename = "contentType")]
-    pub content_type: Option<String>,
-    pub comment: Option<String>,
+    pub content_type: Option<ArcStr>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// This object describes details about response content
 ///
-/// (embedded in <response> object).
+/// (embedded in `<response>` object).
 ///
 /// Before setting the text field,
 /// the HTTP response is decoded (decompressed & unchunked),
@@ -678,7 +738,7 @@ pub struct Content {
     ///
     /// Leave out this field if the information is not available.
     pub compression: Option<i64>, // TODO: support
-    #[serde(with = "mime_serde", rename = "mimetype")]
+    #[serde(with = "mime_serde", rename = "mimeType")]
     /// MIME type of the response text
     ///
     /// (value of the Content-Type response header).
@@ -686,7 +746,7 @@ pub struct Content {
     /// The charset attribute of the MIME type is included
     /// (if available).
     pub mime_type: Option<Mime>,
-    pub text: Option<String>,
+    pub text: Option<ArcStr>,
     /// Response body sent from the server or loaded from the browser cache.
     ///
     /// This field is populated with textual content only.
@@ -696,7 +756,7 @@ pub struct Content {
     /// Leave out this field if the information is not available.
     pub encoding: Option<ContentEncodingDirective>,
     /// A comment provided by the user or the application.
-    pub comment: Option<String>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -713,7 +773,7 @@ pub struct Cache {
     #[serde(rename = "afterRequest")]
     pub after_request: Option<CacheState>,
     /// A comment provided by the user or the application.
-    pub comment: Option<String>,
+    pub comment: Option<ArcStr>,
 } // TODO: support this once we have cache support in rama, e.g. based on extension info
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -726,15 +786,15 @@ pub struct CacheState {
     pub expires: DateTime<Utc>,
     /// The last time the cache entry was opened.
     #[serde(rename = "lastAccess")]
-    pub last_access: Option<String>,
+    pub last_access: Option<ArcStr>,
     /// Etag
     #[serde(rename = "eTag")]
-    pub e_tag: Option<String>,
+    pub e_tag: Option<ArcStr>,
     /// The number of times the cache entry has been opened.
     #[serde(rename = "hitCount")]
     pub hit_count: Option<i64>,
     /// A comment provided by the user or the application.
-    pub comment: Option<String>,
+    pub comment: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -745,30 +805,215 @@ pub struct Timings {
     /// Time spent in a queue waiting for a network connection.
     ///
     /// Use -1 if the timing does not apply to the current request.
-    pub blocked: Option<u64>, // TODO
+    pub blocked: Option<i64>, // TODO
     /// DNS resolution time.
     ///
     /// The time required to resolve a host name.
     ///
     /// Use -1 if the timing does not apply to the current request.
-    pub dns: Option<u64>, // TODO
+    pub dns: Option<i64>, // TODO
     /// Time required to create TCP connection.
     ///
     /// Use -1 if the timing does not apply to the current request.
-    pub connect: Option<u64>, // TODO
+    pub connect: Option<i64>, // TODO
     /// Time required to send HTTP request to the server.
-    pub send: u64, // TODO
+    pub send: i64, // TODO
     /// Waiting for a response from the server.
-    pub wait: u64, // TODO
+    pub wait: i64, // TODO
     /// Time required to read entire response from the server (or cache).
-    pub receive: u64, // TODO
+    pub receive: i64, // TODO
     /// Time required for SSL/TLS negotiation.
     ///
     /// If this field is defined then the time is also included in the connect field
     /// (to ensure backward compatibility with HAR 1.1).
     ///
     /// Use -1 if the timing does not apply to the current request.
-    pub ssl: Option<u64>, // TODO
+    pub ssl: Option<i64>, // TODO
     /// A comment provided by the user or the application.
-    pub comment: Option<String>,
+    pub comment: Option<ArcStr>,
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_http_types::body::util::BodyExt as _;
+
+    use super::*;
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn test_load_har_entries() {
+        let log_file: LogFile = serde_json::from_str(HAR_LOG_FILE_EXAMPLE).unwrap();
+
+        assert_eq!(6, log_file.log.entries.len());
+
+        let entry0 = &log_file.log.entries[0];
+        assert_eq!("http://www.igvita.com/", entry0.request.url);
+        assert_eq!("GET", entry0.request.method);
+        assert!(matches!(entry0.request.http_version, HttpVersion::Http11));
+        assert_eq!(0, entry0.request.query_string.len());
+
+        let entry1 = &log_file.log.entries[1];
+        assert_eq!(
+            "http://fonts.googleapis.com/css?family=Open+Sans:400,600",
+            entry1.request.url
+        );
+        assert_eq!(1, entry1.request.query_string.len());
+        assert_eq!("family", entry1.request.query_string[0].name);
+        assert_eq!("Open+Sans:400,600", entry1.request.query_string[0].value);
+
+        let entry5 = &log_file.log.entries[5];
+        assert_eq!(
+            "http://1-ps.googleusercontent.com/beacon?org=50_1_cn&ets=load:93&ifr=0&hft=32&url=http%3A%2F%2Fwww.igvita.com%2F",
+            entry5.request.url
+        );
+        assert_eq!(5, entry5.request.query_string.len());
+
+        // HAR Request to rama Request
+        let req0: crate::Request = entry0.request.clone().try_into().unwrap();
+        let (req0_parts, req0_body) = req0.into_parts();
+        drop(req0_body);
+
+        assert_eq!(crate::Method::GET, req0_parts.method);
+        assert_eq!(entry0.request.url, req0_parts.uri.to_string());
+        assert_eq!(RamaHttpVersion::HTTP_11, req0_parts.version);
+
+        let host = req0_parts
+            .headers
+            .get("Host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!("www.igvita.com", host);
+
+        // rama Request to HAR Request
+        let req0_back = Request::from_http_request_parts(&req0_parts, &[]).unwrap();
+        assert_eq!(entry0.request.method, req0_back.method);
+        assert_eq!(entry0.request.url, req0_back.url);
+        assert!(matches!(req0_back.http_version, HttpVersion::Http11));
+        assert_eq!(0, req0_back.body_size);
+
+        let ua = req0_back
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("User-Agent"))
+            .map(|h| h.value.as_str())
+            .unwrap();
+        assert!(ua.contains("Chrome/21.0.1180.82"));
+
+        // Query parsing sanity check when converting rama Request parts back into HAR Request
+        let req5: crate::Request = entry5.request.clone().try_into().unwrap();
+        let (req5_parts, req5_body) = req5.into_parts();
+        drop(req5_body);
+
+        let req5_back = Request::from_http_request_parts(&req5_parts, &[]).unwrap();
+        assert_eq!(5, req5_back.query_string.len(), "req: {req5_back:?}");
+        assert!(
+            req5_back
+                .query_string
+                .iter()
+                .any(|p| p.name == "org" && p.value == "50_1_cn"),
+            "query string: {:?}",
+            req5_back.query_string
+        );
+        assert!(
+            req5_back
+                .query_string
+                .iter()
+                .any(|p| p.name == "ets" && p.value == "load:93"),
+            "query string: {:?}",
+            req5_back.query_string
+        );
+        assert!(
+            req5_back
+                .query_string
+                .iter()
+                .any(|p| p.name == "url" && p.value == "http://www.igvita.com/"),
+            "query string: {:?}",
+            req5_back.query_string
+        );
+
+        // HAR Response to rama Response
+        let har_res0 = entry0.response.clone().unwrap();
+        let res0: crate::Response = har_res0.try_into().unwrap();
+        let (res0_parts, res0_body) = res0.into_parts();
+        drop(res0_body);
+
+        assert_eq!(crate::StatusCode::OK, res0_parts.status);
+        assert_eq!(RamaHttpVersion::HTTP_11, res0_parts.version);
+
+        let ct = res0_parts
+            .headers
+            .get("Content-Type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert!(ct.starts_with("text/html"));
+
+        let ce = res0_parts
+            .headers
+            .get("Content-Encoding")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!("gzip", ce);
+
+        // rama Response to HAR Response
+        let res0_back = Response::from_http_response_parts(&res0_parts, &[]).unwrap();
+        assert_eq!(200, res0_back.status);
+        assert_eq!(Some("OK"), res0_back.status_text.as_deref());
+        assert!(matches!(res0_back.http_version, HttpVersion::Http11));
+
+        let mime = res0_back.content.mime_type.unwrap();
+        assert_eq!("text/html; charset=utf-8", mime.as_ref());
+
+        let encoding = res0_back.content.encoding.unwrap();
+        assert_eq!(ContentEncodingDirective::Gzip, encoding);
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_load_har_entries_payload_roundtrip() {
+        let log_file: LogFile = serde_json::from_str(HAR_LOG_FILE_PAYLOAD_EXAMPLE).unwrap();
+        assert_eq!(1, log_file.log.entries.len());
+
+        let entry = &log_file.log.entries[0];
+
+        // HAR -> rama request payload
+        let req: crate::Request = entry.request.clone().try_into().unwrap();
+        let (req_parts, req_body) = req.into_parts();
+
+        let req_payload = vec![0u8, 255, 1, 2, 3];
+        let req_bytes = req_body.collect().await.unwrap().to_bytes().to_vec();
+        assert_eq!(req_payload, req_bytes);
+
+        // rama request parts + payload -> HAR request payload
+        let har_req_back = Request::from_http_request_parts(&req_parts, &req_payload).unwrap();
+        let post_data = har_req_back.post_data.unwrap();
+        assert_eq!(
+            Some(Mime::from_str("application/octet-stream").unwrap()),
+            post_data.mime_type
+        );
+        assert_eq!(Some("AP8BAgM="), post_data.text.as_deref());
+        assert_eq!(req_payload.len() as i64, har_req_back.body_size);
+
+        // HAR -> rama response payload
+        let har_res = entry.response.clone().unwrap();
+        let res: crate::Response = har_res.try_into().unwrap();
+        let (res_parts, res_body) = res.into_parts();
+
+        let res_payload = vec![10u8, 20, 30, 255, 0];
+        let res_bytes = res_body.collect().await.unwrap().to_bytes().to_vec();
+        assert_eq!(res_payload, res_bytes);
+
+        // rama response parts + payload -> HAR response payload
+        let har_res_back = Response::from_http_response_parts(&res_parts, &res_payload).unwrap();
+        assert_eq!(res_payload.len() as i64, har_res_back.content.size);
+        assert_eq!(
+            Some(Mime::from_str("application/octet-stream").unwrap()),
+            har_res_back.content.mime_type
+        );
+        assert_eq!(Some("ChQe/wA="), har_res_back.content.text.as_deref());
+        assert_eq!(res_payload.len() as i64, har_res_back.body_size);
+    }
+
+    const HAR_LOG_FILE_EXAMPLE: &str = r##"{"log":{"version":"1.2","creator":{"name":"WebInspector","version":"537.1"},"pages":[{"startedDateTime":"2012-08-28T05:14:24.803Z","id":"page_1","title":"http://www.igvita.com/","pageTimings":{"onContentLoad":299,"onLoad":301}}],"entries":[{"startedDateTime":"2012-08-28T05:14:24.803Z","time":121,"request":{"method":"GET","url":"http://www.igvita.com/","httpVersion":"HTTP/1.1","headers":[{"name":"Accept-Encoding","value":"gzip,deflate,sdch"},{"name":"Accept-Language","value":"en-US,en;q=0.8"},{"name":"Connection","value":"keep-alive"},{"name":"Accept-Charset","value":"ISO-8859-1,utf-8;q=0.7,*;q=0.3"},{"name":"Host","value":"www.igvita.com"},{"name":"User-Agent","value":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_4) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.82 Safari/537.1"},{"name":"Accept","value":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},{"name":"Cache-Control","value":"max-age=0"}],"queryString":[],"cookies":[],"headersSize":678,"bodySize":0},"response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Tue, 28 Aug 2012 05:14:24 GMT"},{"name":"Via","value":"HTTP/1.1 GWA"},{"name":"Transfer-Encoding","value":"chunked"},{"name":"Content-Encoding","value":"gzip"},{"name":"X-XSS-Protection","value":"1; mode=block"},{"name":"X-UA-Compatible","value":"IE=Edge,chrome=1"},{"name":"X-Page-Speed","value":"50_1_cn"},{"name":"Server","value":"nginx/1.0.11"},{"name":"Vary","value":"Accept-Encoding"},{"name":"Content-Type","value":"text/html; charset=utf-8"},{"name":"Cache-Control","value":"max-age=0, no-cache"},{"name":"Expires","value":"Tue, 28 Aug 2012 05:14:24 GMT"}],"cookies":[],"content":{"size":9521,"mimeType":"text/html","compression":5896},"redirectURL":"","headersSize":379,"bodySize":3625},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":1,"wait":112,"receive":6,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.011Z","time":10,"request":{"method":"GET","url":"http://fonts.googleapis.com/css?family=Open+Sans:400,600","httpVersion":"HTTP/1.1","headers":[],"queryString":[{"name":"family","value":"Open+Sans:400,600"}],"cookies":[],"headersSize":71,"bodySize":0},"response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1","headers":[],"cookies":[],"content":{"size":542,"mimeType":"text/css"},"redirectURL":"","headersSize":17,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":-1,"wait":-1,"receive":2,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.017Z","time":31,"request":{"method":"GET","url":"http://1-ps.googleusercontent.com/h/www.igvita.com/css/style.css.pagespeed.ce.LzjUDNB25e.css","httpVersion":"HTTP/1.1","headers":[{"name":"Accept-Encoding","value":"gzip,deflate,sdch"},{"name":"Accept-Language","value":"en-US,en;q=0.8"},{"name":"Connection","value":"keep-alive"},{"name":"If-Modified-Since","value":"Mon, 27 Aug 2012 15:28:34 GMT"},{"name":"Accept-Charset","value":"ISO-8859-1,utf-8;q=0.7,*;q=0.3"},{"name":"Host","value":"1-ps.googleusercontent.com"},{"name":"User-Agent","value":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_4) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.82 Safari/537.1"},{"name":"Accept","value":"text/css,*/*;q=0.1"},{"name":"Cache-Control","value":"max-age=0"},{"name":"If-None-Match","value":"W/0"},{"name":"Referer","value":"http://www.igvita.com/"}],"queryString":[],"cookies":[],"headersSize":539,"bodySize":0},"response":{"status":304,"statusText":"Not Modified","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Mon, 27 Aug 2012 06:01:49 GMT"},{"name":"Age","value":"83556"},{"name":"Server","value":"GFE/2.0"},{"name":"ETag","value":"W/0"},{"name":"Expires","value":"Tue, 27 Aug 2013 06:01:49 GMT"}],"cookies":[],"content":{"size":14679,"mimeType":"text/css"},"redirectURL":"","headersSize":146,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":1,"wait":24,"receive":2,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.021Z","time":30,"request":{"method":"GET","url":"http://1-ps.googleusercontent.com/h/www.igvita.com/js/libs/modernizr.84728.js.pagespeed.jm._DgXLhVY42.js","httpVersion":"HTTP/1.1","headers":[{"name":"Accept-Encoding","value":"gzip,deflate,sdch"},{"name":"Accept-Language","value":"en-US,en;q=0.8"},{"name":"Connection","value":"keep-alive"},{"name":"If-Modified-Since","value":"Sat, 25 Aug 2012 14:30:37 GMT"},{"name":"Accept-Charset","value":"ISO-8859-1,utf-8;q=0.7,*;q=0.3"},{"name":"Host","value":"1-ps.googleusercontent.com"},{"name":"User-Agent","value":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_4) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.82 Safari/537.1"},{"name":"Accept","value":"*/*"},{"name":"Cache-Control","value":"max-age=0"},{"name":"If-None-Match","value":"W/0"},{"name":"Referer","value":"http://www.igvita.com/"}],"queryString":[],"cookies":[],"headersSize":536,"bodySize":0},"response":{"status":304,"statusText":"Not Modified","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Sat, 25 Aug 2012 14:30:37 GMT"},{"name":"Age","value":"225828"},{"name":"Server","value":"GFE/2.0"},{"name":"ETag","value":"W/0"},{"name":"Expires","value":"Sun, 25 Aug 2013 14:30:37 GMT"}],"cookies":[],"content":{"size":11831,"mimeType":"text/javascript"},"redirectURL":"","headersSize":147,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":0,"send":1,"wait":27,"receive":1,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.103Z","time":0,"request":{"method":"GET","url":"http://www.google-analytics.com/ga.js","httpVersion":"HTTP/1.1","headers":[],"queryString":[],"cookies":[],"headersSize":52,"bodySize":0},"response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Mon, 27 Aug 2012 21:57:00 GMT"},{"name":"Content-Encoding","value":"gzip"},{"name":"X-Content-Type-Options","value":"nosniff, nosniff"},{"name":"Age","value":"23052"},{"name":"Last-Modified","value":"Thu, 16 Aug 2012 07:05:05 GMT"},{"name":"Server","value":"GFE/2.0"},{"name":"Vary","value":"Accept-Encoding"},{"name":"Content-Type","value":"text/javascript"},{"name":"Expires","value":"Tue, 28 Aug 2012 09:57:00 GMT"},{"name":"Cache-Control","value":"max-age=43200, public"},{"name":"Content-Length","value":"14804"}],"cookies":[],"content":{"size":36893,"mimeType":"text/javascript"},"redirectURL":"","headersSize":17,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":-1,"wait":-1,"receive":0,"ssl":-1},"pageref":"page_1"},{"startedDateTime":"2012-08-28T05:14:25.123Z","time":91,"request":{"method":"GET","url":"http://1-ps.googleusercontent.com/beacon?org=50_1_cn&ets=load:93&ifr=0&hft=32&url=http%3A%2F%2Fwww.igvita.com%2F","httpVersion":"HTTP/1.1","headers":[{"name":"Accept-Encoding","value":"gzip,deflate,sdch"},{"name":"Accept-Language","value":"en-US,en;q=0.8"},{"name":"Connection","value":"keep-alive"},{"name":"Accept-Charset","value":"ISO-8859-1,utf-8;q=0.7,*;q=0.3"},{"name":"Host","value":"1-ps.googleusercontent.com"},{"name":"User-Agent","value":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_4) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/21.0.1180.82 Safari/537.1"},{"name":"Accept","value":"*/*"},{"name":"Referer","value":"http://www.igvita.com/"}],"queryString":[{"name":"org","value":"50_1_cn"},{"name":"ets","value":"load:93"},{"name":"ifr","value":"0"},{"name":"hft","value":"32"},{"name":"url","value":"http%3A%2F%2Fwww.igvita.com%2F"}],"cookies":[],"headersSize":448,"bodySize":0},"response":{"status":204,"statusText":"No Content","httpVersion":"HTTP/1.1","headers":[{"name":"Date","value":"Tue, 28 Aug 2012 05:14:25 GMT"},{"name":"Content-Length","value":"0"},{"name":"X-XSS-Protection","value":"1; mode=block"},{"name":"Server","value":"PagespeedRewriteProxy 0.1"},{"name":"Content-Type","value":"text/plain"},{"name":"Cache-Control","value":"no-cache"}],"cookies":[],"content":{"size":0,"mimeType":"text/plain","compression":0},"redirectURL":"","headersSize":202,"bodySize":0},"cache":{},"timings":{"blocked":0,"dns":-1,"connect":-1,"send":0,"wait":70,"receive":7,"ssl":-1},"pageref":"page_1"}]}}"##;
+
+    const HAR_LOG_FILE_PAYLOAD_EXAMPLE: &str = r##"{"log":{"version":"1.2","creator":{"name":"rama-test","version":"0.0"},"entries":[{"startedDateTime":"2012-08-28T05:14:24.803Z","time":1,"request":{"method":"POST","url":"http://example.test/upload","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Type","value":"application/octet-stream"}],"queryString":[],"cookies":[],"postData":{"mimeType":"application/octet-stream","text":"AP8BAgM="},"headersSize":-1,"bodySize":5},"response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1","headers":[{"name":"Content-Type","value":"application/octet-stream"}],"cookies":[],"content":{"size":5,"mimeType":"application/octet-stream","text":"ChQe/wA="},"redirectURL":"","headersSize":-1,"bodySize":5},"cache":{},"timings":{"send":0,"wait":1,"receive":0}}]}}"##;
 }

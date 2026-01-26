@@ -3,6 +3,8 @@ mod utils;
 #[cfg(all(feature = "haproxy", feature = "http-full"))]
 mod haproxy_client_ip;
 #[cfg(feature = "http-full")]
+mod http_abort;
+#[cfg(feature = "http-full")]
 mod http_anti_bot_infinite_resource;
 #[cfg(feature = "http-full")]
 mod http_anti_bot_zip_bomb;
@@ -10,6 +12,8 @@ mod http_anti_bot_zip_bomb;
 mod http_connect_proxy;
 #[cfg(feature = "http-full")]
 mod http_form;
+#[cfg(feature = "http-full")]
+mod http_har_replay;
 #[cfg(feature = "http-full")]
 mod http_health_check;
 #[cfg(feature = "http-full")]
@@ -27,7 +31,7 @@ mod http_k8s_health;
 mod http_key_value_store;
 #[cfg(feature = "http-full")]
 mod http_listener_hello;
-#[cfg(all(feature = "http-full", feature = "rustls",))]
+#[cfg(all(feature = "http-full", feature = "rustls", feature = "boring"))]
 mod http_mitm_proxy_boring;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
 mod http_mitm_proxy_rustls;
@@ -73,6 +77,8 @@ mod https_web_service_with_hsts;
 mod mtls_tunnel_and_service;
 #[cfg(all(feature = "tls", feature = "socks5", feature = "http-full",))]
 mod proxy_connectivity_check;
+#[cfg(all(feature = "http-full", target_family = "unix"))]
+mod tcp_listener_fd_passing;
 #[cfg(feature = "tcp")]
 mod tcp_listener_hello;
 #[cfg(feature = "tcp")]

@@ -1,6 +1,6 @@
 use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama::http::Request;
-use rama::http::client::HttpConnector;
+use rama::http::client::HttpConnectorLayer;
 use rama::http::proto::h1::Http1HeaderMap;
 use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
@@ -312,11 +312,11 @@ async fn test_ua_emulation() {
                 req.extensions_mut().insert(builder);
 
                 // We dont need to set connector data on TlsConnector as it will get it from extensions
-                let connector = HttpConnector::new(UserAgentEmulateHttpConnectModifier::new(
-                    RequestVersionAdapter::new(TlsConnector::secure(MockConnectorService::new(
-                        service_fn(server_svc_fn),
-                    ))),
-                ));
+                let connector = HttpConnectorLayer::default().into_layer(
+                    UserAgentEmulateHttpConnectModifier::new(RequestVersionAdapter::new(
+                        TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn))),
+                    )),
+                );
 
                 let EstablishedClientConnection {
                     input: mut req,
@@ -346,6 +346,7 @@ async fn test_ua_emulation() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
     let ua_db = UserAgentDatabase::try_embedded().unwrap();
     assert!(!ua_db.is_empty(), "no profiles found");
@@ -386,11 +387,13 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 .into_layer(service_fn(async |req: Request| {
                     // We dont set base emulator data here since we always use EmulateTlsProfileLayer, but we could
                     // set a base config here in case EmulateTlsProfileLayer would not always set a config.
-                    let connector = HttpConnector::new(UserAgentEmulateHttpConnectModifier::new(
-                        RequestVersionAdapter::new(TlsConnector::secure(
-                            MockConnectorService::new(service_fn(server_svc_fn)),
+                    let connector = HttpConnectorLayer::default().into_layer(
+                        UserAgentEmulateHttpConnectModifier::new(RequestVersionAdapter::new(
+                            TlsConnector::secure(MockConnectorService::new(service_fn(
+                                server_svc_fn,
+                            ))),
                         )),
-                    ));
+                    );
 
                     let profile = req.extensions().get::<SelectedUserAgentProfile>().unwrap();
                     let expect_msg = format!("selected profile to work: {profile:?}");

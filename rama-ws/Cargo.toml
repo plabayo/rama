@@ -32,7 +32,6 @@ tokio = { workspace = true, features = ["time", "macros"] }
 
 [dev-dependencies]
 pin-project-lite = { workspace = true }
-rama-http-backend = { workspace = true }
 tracing-test = { workspace = true }
 
 [lints]

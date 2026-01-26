@@ -27,8 +27,6 @@ default = []
 tls = ["rama-net/tls"]
 
 [dependencies]
-const_format = { workspace = true }
-h2 = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-http = { workspace = true }
@@ -40,11 +38,8 @@ rama-tcp = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_family = "unix")'.dependencies]
 rama-unix = { workspace = true }
-
-[dev-dependencies]
-tokio-test = { workspace = true }
 
 [lints]
 workspace = true

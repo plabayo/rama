@@ -63,6 +63,11 @@ impl<S> AllowStd<S> {
         res
     }
 
+    /// Returns the underlying stream.
+    pub(crate) fn into_inner(self) -> S {
+        self.inner
+    }
+
     // Set the read or write waker for our proxies.
     //
     // Read: this is only supposed to be called by read (or handshake) operations, i.e. the Stream

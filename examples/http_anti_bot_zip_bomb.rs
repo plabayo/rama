@@ -50,7 +50,7 @@ use rama::{
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde::Deserialize;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -70,19 +70,22 @@ async fn main() {
         .with_get("/api/rates/{year}.csv", api_rates_csv);
 
     let exec = Executor::graceful(graceful.guard());
-    let app = HttpServer::auto(exec).service(
+    let app = HttpServer::auto(exec).service(Arc::new(
         (
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
         )
             .into_layer(router),
-    );
+    ));
 
     let address = SocketAddress::local_ipv4(62036);
     tracing::info!("running service at: {address}");
-    let tcp_server = TcpListener::bind(address).await.expect("bind tcp server");
+    let exec = Executor::graceful(graceful.guard());
+    let tcp_server = TcpListener::bind(address, exec)
+        .await
+        .expect("bind tcp server");
 
-    graceful.spawn_task_fn(|guard| tcp_server.serve_graceful(guard, app));
+    graceful.spawn_task(tcp_server.serve(app));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(8))

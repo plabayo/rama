@@ -6,10 +6,7 @@
 - [Built with Rust](./rust.md)
 - [Do It Yourself](./diy.md)
 - [Web Servers](./web_servers.md)
-- [Http Clients](./http_clients.md)
 - [Transport Protocols](./transport.md)
-- [Server-Sent Events (SSE)](./sse.md)
-- [WebSockets (WS)](./ws.md)
 
 # Rama 101
 
@@ -41,6 +38,13 @@
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
     - [🧭 HaProxy (PROXY protocol)](./proxies/haproxy.md)
 - [🔍 Protocol Inspection](./proxies/protocol_inspection.md)
+
+# Intro to HTTP
+
+- [Http Clients](./http/http_clients.md)
+- [Server-Sent Events (SSE)](./http/sse.md)
+- [WebSockets (WS)](./http/ws.md)
+- [HTTP Archive format (HAR)](./http/har.md)
 
 # Deploy
 

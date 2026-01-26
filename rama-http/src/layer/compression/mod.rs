@@ -1,5 +1,8 @@
 //! Middleware that compresses response bodies.
 //!
+//! If you require streaming compression (e.g. for SSE etc),
+//! you most likely want to use the compression middleware from [`stream`] instead.
+//!
 //! # Example
 //!
 //! Example showing how to respond with the compressed contents of a file.
@@ -35,7 +38,7 @@
 //!     });
 //!     // Convert the `Stream` into a `Body`.
 //!     let body = StreamBody::new(stream);
-//!     // Erase the type because its very hard to name in the function signature.
+//!     // Erase the type because it's very hard to name in the function signature.
 //!     let body = BodyExt::boxed(body);
 //!     // Create response.
 //!     Ok(Response::new(body))
@@ -74,6 +77,7 @@
 //!
 
 pub mod predicate;
+pub mod stream;
 
 pub(crate) mod body;
 mod layer;

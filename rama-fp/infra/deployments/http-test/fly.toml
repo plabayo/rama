@@ -1,0 +1,44 @@
+# fly.toml app configuration file generated for rama-http-test on 2025-12-13T21:38:20+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'rama-http-test'
+primary_region = 'fra'
+
+[build]
+  image = 'glendc/rama:edge'
+
+[env]
+  RUST_LOG = 'debug'
+
+[processes]
+  app_insecure = 'serve http-test --bind 0.0.0.0:8080 -c 2048 -t 300'
+  app_secure = 'serve http-test --bind 0.0.0.0:8443 -c 2048 -t 300 --secure'
+
+[[services]]
+  protocol = 'tcp'
+  internal_port = 8080
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app_insecure']
+
+  [[services.ports]]
+    port = 80
+
+[[services]]
+  protocol = 'tcp'
+  internal_port = 8443
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app_secure']
+
+  [[services.ports]]
+    port = 443
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1

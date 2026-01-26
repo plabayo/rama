@@ -90,7 +90,8 @@ mod header;
 use header::InsertHeaderMode;
 
 pub use header::{
-    BoxMakeHeaderValueFn, MakeHeaderValue, MakeHeaderValueDefault, TypedHeaderAsMaker,
+    BoxMakeHeaderValueFn, MakeHeaderValue, MakeHeaderValueDefault, MakeHeaderValueFn,
+    TypedHeaderAsMaker,
 };
 
 /// Layer that applies [`SetRequestHeader`] which adds a request header.
@@ -175,7 +176,7 @@ impl SetRequestHeaderLayer<Option<HeaderValue>> {
 }
 
 impl<F, A> SetRequestHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
-    /// Create a new [`SetRequestHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeaderLayer`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeaderLayer::overriding`] for more details.
     #[inline(always)]
@@ -187,7 +188,7 @@ impl<F, A> SetRequestHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetRequestHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeaderLayer`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeaderLayer::appending`] for more details.
     #[inline(always)]
@@ -199,7 +200,7 @@ impl<F, A> SetRequestHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetRequestHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeaderLayer`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeaderLayer::if_not_present`] for more details.
     #[inline(always)]
@@ -213,7 +214,7 @@ impl<F, A> SetRequestHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
 }
 
 impl<M> SetRequestHeaderLayer<M> {
-    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetRequestHeaderLayer::overriding`] for more details.
     #[inline(always)]
@@ -227,7 +228,7 @@ impl<M> SetRequestHeaderLayer<M> {
         )
     }
 
-    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetRequestHeaderLayer::appending`] for more details.
     #[inline(always)]
@@ -241,7 +242,7 @@ impl<M> SetRequestHeaderLayer<M> {
         )
     }
 
-    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetRequestHeaderLayer::if_not_present`] for more details.
     #[inline(always)]
@@ -409,7 +410,7 @@ impl<S, M> SetRequestHeader<S, M> {
 }
 
 impl<S, F, A> SetRequestHeader<S, BoxMakeHeaderValueFn<F, A>> {
-    /// Create a new [`SetRequestHeader`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeader`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeader::overriding`] for more details.
     pub fn overriding_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
@@ -421,7 +422,7 @@ impl<S, F, A> SetRequestHeader<S, BoxMakeHeaderValueFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetRequestHeader`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeader`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeader::appending`] for more details.
     pub fn appending_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
@@ -433,7 +434,7 @@ impl<S, F, A> SetRequestHeader<S, BoxMakeHeaderValueFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetRequestHeader`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeader`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeader::if_not_present`] for more details.
     pub fn if_not_present_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
@@ -447,7 +448,7 @@ impl<S, F, A> SetRequestHeader<S, BoxMakeHeaderValueFn<F, A>> {
 }
 
 impl<S, M> SetRequestHeader<S, M> {
-    /// Create a new [`SetRequestHeader`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetRequestHeader`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetRequestHeader::overriding`] for more details.
     #[inline(always)]
@@ -463,7 +464,7 @@ impl<S, M> SetRequestHeader<S, M> {
         )
     }
 
-    /// Create a new [`SetRequestHeader`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetRequestHeader`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetRequestHeader::appending`] for more details.
     #[inline(always)]
@@ -479,7 +480,7 @@ impl<S, M> SetRequestHeader<S, M> {
         )
     }
 
-    /// Create a new [`SetRequestHeader`] from a [`Default`] [`super::MakeHeaderValue`].
+    /// Create a new [`SetRequestHeader`] from a [`Default`] [`MakeHeaderValue`].
     ///
     /// See [`SetRequestHeader::if_not_present`] for more details.
     #[inline(always)]

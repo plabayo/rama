@@ -1,0 +1,40 @@
+[package]
+name = "rama-grpc-build"
+description = "Grpc codegen support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "grpc", "network", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["protobuf", "vendor-protoc"]
+protobuf = ["dep:prost-build", "dep:prost-types"]
+vendor-protoc = ["dep:protoc-bin-vendored"]
+
+[dependencies]
+prettyplease = { workspace = true }
+proc-macro-crate = { workspace = true }
+proc-macro2 = { workspace = true }
+prost-build = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
+protoc-bin-vendored = { workspace = true, optional = true }
+quote = { workspace = true }
+rama-utils = { workspace = true }
+syn = { workspace = true }
+
+[dev-dependencies]
+rama-grpc = { workspace = true }
+
+[lints]
+workspace = true

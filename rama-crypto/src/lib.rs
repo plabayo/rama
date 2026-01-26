@@ -53,7 +53,7 @@ pub mod dep {
     }
 
     pub mod pki_types {
-        //! Re-export of the [`rustls-pki-types`] crate.
+        //! Re-export of the [`rustls-pki-types`][rustls_pki_types] crate.
         //!
         //! [`rustls_pki_types`]: https://docs.rs/rustls-pki-types
 

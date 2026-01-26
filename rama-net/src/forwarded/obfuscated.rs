@@ -1,5 +1,5 @@
 use rama_core::error::{ErrorContext, OpaqueError};
-use smol_str::SmolStr;
+use rama_utils::str::smol_str::SmolStr;
 use std::fmt;
 
 macro_rules! create_obf_type {

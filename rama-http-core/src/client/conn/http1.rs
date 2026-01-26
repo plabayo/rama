@@ -262,8 +262,6 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Enable this connection to support higher-level HTTP upgrades.
-    ///
-    /// See [the `upgrade` module](crate::upgrade) for more.
     pub fn with_upgrades(self) -> upgrades::UpgradeableConnection<T, B> {
         upgrades::UpgradeableConnection { inner: Some(self) }
     }

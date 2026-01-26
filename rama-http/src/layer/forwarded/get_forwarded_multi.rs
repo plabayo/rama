@@ -34,11 +34,11 @@ use std::marker::PhantomData;
 /// There are no [`GetForwardedHeadersLayer`] constructors for these headers,
 /// but you can use the [`GetForwardedHeadersLayer::new`] constructor and pass the header type as a type parameter in a tuple with other headers.
 ///
-/// [`X-Real-Ip`]: crate::headers::XRealIp
-/// [`X-Client-Ip`]: crate::headers::XClientIp
-/// [`Client-Ip`]: crate::headers::ClientIp
-/// [`CF-Connecting-Ip`]: crate::headers::CFConnectingIp
-/// [`True-Client-Ip`]: crate::headers::TrueClientIp
+/// [`X-Real-Ip`]: crate::headers::forwarded::XRealIp
+/// [`X-Client-Ip`]: crate::headers::forwarded::XClientIp
+/// [`Client-Ip`]: crate::headers::forwarded::ClientIp
+/// [`CF-Connecting-Ip`]: crate::headers::forwarded::CFConnectingIp
+/// [`True-Client-Ip`]: crate::headers::forwarded::TrueClientIp
 pub struct GetForwardedHeadersLayer<T = Forwarded> {
     _headers: PhantomData<fn() -> T>,
 }

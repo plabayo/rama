@@ -135,6 +135,8 @@ impl RamaTryFrom<&rama_boring::stack::StackRef<rama_boring::x509::X509>, RamaTls
 /// create an openssl cipher list str from the given [`CipherSuite`]
 ///
 /// ref doc: <https://docs.openssl.org/1.1.1/man1/ciphers/#tls-v13-cipher-suites>
+///
+/// [`CipherSuite`]: rama_net::tls::CipherSuite
 #[must_use]
 pub fn openssl_cipher_list_str_from_cipher_list(
     suites: &[rama_net::tls::CipherSuite],

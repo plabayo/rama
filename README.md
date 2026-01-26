@@ -32,18 +32,18 @@
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
-🦙 rama™ (ラマ) is a modular service framework for the 🦀 Rust language.
+🦙 rama® (ラマ) is a modular service framework for the 🦀 Rust language.
 
 It gives you programmable control over how packets move through your stack, so you can build:
 
-- production grade reverse and forward proxies
-- HTTP and [TLS termination](./examples/tls_boring_termination.rs) layers
-- security inspection and [distortion proxies](./examples/http_mitm_proxy_boring.rs)
-- high volume scraping and data extraction pipelines
-- custom HTTP clients with deep control over the wire
+- a foundation for building networked systems at any position in the input or output path
+- reusable primitives for composing clients, servers, and intermediaries
+- fine grained control over transports, protocols, and data flow
+- designed for high performance, correctness, and long running production workloads
 
 **rama is already used in production by companies at scale for use cases such as network security,
-data extraction, API gateways and routing**.
+data extraction, API gateways and routing**. We also offer **commercial support**.
+Service contracts and partner offerings are available at [ramaproxy.com](https://ramaproxy.com).
 
 > [!TIP]
 > 📖 New to rama
@@ -51,7 +51,7 @@ data extraction, API gateways and routing**.
 > 1. Read the ["Why rama" chapter](https://ramaproxy.org/book/why_rama) for background.
 > 2. Run one of the [examples](https://github.com/plabayo/rama/tree/main/examples).
 > 3. Use the [rama book](https://ramaproxy.org/book) and [edge Rust docs](https://ramaproxy.org/docs/rama)
->    as reference while building your own stack.
+> as reference while building your own stack.
 
 Whether you're intercepting traffic for security analysis, writing a web service,
 emulating clients with custom user agents, hijacking connections for advanced testing, or building high-performance proxies, rama provides a clean and composable [Tokio](https://tokio.rs/)-native foundation to program network services in Rust.
@@ -61,7 +61,6 @@ to design and operate dynamic, programmable network services.
 
 Network protocols supported and implemented by rama allow you to build servers,
 clients and proxies.
-
 
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
@@ -112,7 +111,7 @@ middleware, services and stacks you'll build yourself:
 | ✅ [tls](https://ramaproxy.org/docs/rama/tls/index.html) | ✅ [Rustls](https://ramaproxy.org/docs/rama/tls/rustls/index.html) ⸱ ✅ [BoringSSL](https://ramaproxy.org/docs/rama/tls/boring/index.html) ⸱ ❌ NSS <sup>(3)</sup> |
 | ✅ [dns](https://ramaproxy.org/docs/rama/dns/index.html) | ✅ [DNS Resolver](https://ramaproxy.org/docs/rama/dns/trait.DnsResolver.html) |
 | ✅ [proxy protocols](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [PROXY protocol](https://ramaproxy.org/docs/rama/proxy/haproxy/index.html) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ ✅ [socks5(h) proxy](https://github.com/plabayo/rama/blob/main/examples/socks5_connect_proxy.rs) |
-| ✅ web protocols | ✅ [SSE](https://ramaproxy.org/docs/rama/http/sse/index.html) ⸱ ✅ [WS](https://ramaproxy.org/docs/rama/http/ws/index.html) ⸱ ❌ Web Transport <sup>(1)</sup> ⸱ 🏗️ gRPC <sup>(1)</sup> |
+| ✅ web protocols | ✅ [SSE](https://ramaproxy.org/docs/rama/http/sse/index.html) ⸱ ✅ [WS](https://ramaproxy.org/docs/rama/http/ws/index.html) ⸱ ❌ Web Transport <sup>(1)</sup> ⸱ ✅ [gRPC](https://ramaproxy.org/docs/rama/http/grpc/index.html) |
 | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service](https://ramaproxy.org/docs/rama/service/trait.Service.html) ⸱ ✅ [Layer](https://ramaproxy.org/docs/rama/layer/trait.Layer.html) ⸱ ✅ [extensions](https://ramaproxy.org/docs/rama/extensions/index.html) ⸱ ✅ [dyn dispatch](https://ramaproxy.org/docs/rama/service/struct.BoxService.html) ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/layer/index.html) |
 | ✅ [telemetry](https://ramaproxy.org/docs/rama/telemetry/index.html) | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html) ⸱ ✅ [http metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html) ⸱ ✅ [transport metrics](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html) |
 | ✅ Diagnostics | ✅ [curl export](https://ramaproxy.org/docs/rama/http/convert/curl/index.html) ⸱ ✅ [HAR](https://ramaproxy.org/docs/rama/http/layer/har/index.html) |
@@ -134,45 +133,20 @@ middleware, services and stacks you'll build yourself:
 > Starting from `v0.3.0` we'll switch things up. Releases will be in frequent ~ 6 week release trains,
 > with no more alpha releases in between.
 
-## For organisations
+## Commercial support and services
 
-If your organisation relies on rama or plans to, we offer:
+Rama can be backed by professional commercial service contracts
+for organizations that need long term support, guaranteed response times,
+strategic guidance, or dedicated development capacity.
 
-- **Support and maintenance contracts**  
-  Help with upgrades, bug fixes and operational questions.
-- **Feature development contracts**  
-  Higher priority or extended scope features in rama itself.
-- **Consulting and integration**  
-  Design and implementation of proxies, scraping pipelines, security layers and other network services built on rama.
-- **Training and knowledge transfer**  
-  Workshops and mentoring so your team can become productive with rama and its ecosystem.
+These offerings cover areas such as support and maintenance, proactive improvements,
+architectural guidance, priority development, custom integrations, and training,
+tailored to different team sizes and operational needs.
 
-> 📩 Contact us at [hello@plabayo.tech](mailto:hello@plabayo.tech) to discuss your needs.
+For up to date information about available
+service contracts and commercial offerings, please visit:
 
-### Partnership Models
-
-We offer sustainable service contracts designed to fit different organizational needs:
-
-| | The Insurance | The Partner (Recommended) | Fractional Team |
-| :--- | :---: | :---: | :---: |
-| **Cost** | **€2,500 / mo** | **€5,000 / mo** | **€10,000 / mo** |
-| **Support** | Email/GitHub (24h) | Includes *Insurance* + Discord | Corperate IM |
-| **Maintenance** | Keep Rama up to date | Includes *Insurance* + Pro-active improvements | Includes *The Partner* |
-| **Strategy** | — | Bi-weekly Architecture Calls (30 min) | Join Sprint Planning |
-| **Development** | — | Opportunity Scanning | **1 Day / Week** Focus (Rama) |
-| **Deadlines** | — | Best Effort | Priority Handling |
-| **Hourly Discount** | — | ✅ Included | ✅ Included |
-
-> *10% discount available for annual commitments (no refunds).*
-
-### Retainer Benefits (Hourly Rates)
-
-Partners (Tier 2 and above) unlock discounted rates for specialized work beyond the retainer scope:
-
-* **Rama Priority Work:** **€112.50/hr** (Standard: €150) — *25% Discount*
-    * *Scope: Feature development or bug fixes within Rama core.*
-* **Private Integration:** **€180.00/hr** (Standard: €200) — *10% Discount*
-    * *Scope: Private meetings, mentoring, code reviews, and custom integration.*
+👉 <https://ramaproxy.com>
 
 ## 🧪 | Experimental
 
@@ -331,6 +305,8 @@ Here is a list of all `rama` crates:
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers
+- [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
+- [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
@@ -409,17 +385,6 @@ rama rust docs:
 - Extractor support (`ReadSignals`): <https://ramaproxy.org/docs/rama/http/service/web/extract/datastar/index.html>
 - Embedded JS Script: <https://ramaproxy.org/docs/rama/http/service/web/response/struct.DatastarScript.html>
 
-### Shuttle
-
-[![Crates.io](https://img.shields.io/crates/v/shuttle-rama.svg)](https://crates.io/crates/shuttle-rama)
-[![Docs.rs](https://img.shields.io/docsrs/shuttle-rama/latest)](https://docs.rs/shuttle-rama/latest/shuttle_rama/index.html)
-
-[Shuttle](https://www.shuttle.dev/) is a Rust-native cloud development platform that lets you deploy your app while also taking care of all of your infrastructure. rama is one of a series of frameworks
-that is officially supported by Shuttle as part of their official SDK crates.
-
-Learn more about what shuttle is and how to deploy services built with rama
-on [our Shuttle docs](https://ramaproxy.org/book/deploy/shuttle.html).
-
 ## 🧑‍💻 | Web Clients
 
 In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pillar of rama's architecture is built on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
@@ -466,12 +431,25 @@ Most organisations running rama in production do so on a variety of Linux system
 
 | platform | tested | test platform |
 |----------|--------|---------------|
-| MacOS    | ✅     | MacOS 15 Apple Silicon: developer machine + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
-| Linux    | ✅     | AMD x64 developer machine with Ubuntu 25 + [GitHub Action (Ubuntu 24.04)](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
-| Windows  | ✅     | Windows 11 AMD x64 developer machine + [GitHub Action (Windows latest (x64))](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
+| MacOS    | ✅     | developer machine (arm64) + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and intel) |
+| Linux    | ✅     | AMD x64 developer machine with Ubuntu 25 + [GitHub Action (Ubuntu 24.04)](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and amd64) |
+| Windows  | ✅     | Windows 11 AMD x64 developer machine + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and amd64) |
 
-Android and iOS should work for the most part, but are currently not tested holistically.
-`rama-boring` and friends are already tested in CI on these mobile platforms. rama itself not yet.
+### Tier 2 Platforms
+
+Tier 2 platforms run `cargo check` and also `cargo build` tests.
+These platforms do however not run tests, let alone integration tests.
+
+Some users of rama do run actual Rama production code on these platforms.
+
+Targets checked in CI:
+
+- `armv7-linux-androideabi`
+- `aarch64-linux-android`
+- `i686-linux-android`
+- `x86_64-linux-android`
+- `aarch64-apple-ios`
+- `x86_64-apple-ios`
 
 ### Other Platforms
 

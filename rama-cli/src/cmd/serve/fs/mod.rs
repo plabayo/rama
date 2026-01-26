@@ -12,7 +12,7 @@ use rama::{
 };
 
 use clap::Args;
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use crate::utils::tls::try_new_server_config;
 
@@ -72,13 +72,17 @@ pub struct CliCommandFs {
 
 /// run the rama serve service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxError> {
+    let exec = Executor::graceful(graceful);
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {
-            try_new_server_config(Some(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]))
+            try_new_server_config(
+                Some(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11,
+                ]),
+                exec.clone(),
+            )
         })
         .transpose()?;
 
@@ -89,12 +93,12 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
         .maybe_with_tls_server_config(maybe_tls_server_config)
         .maybe_with_content_path(cfg.path)
         .with_directory_serve_mode(cfg.dir_serve)
-        .build(Executor::graceful(graceful.clone()))
+        .build(exec.clone())
         .map_err(OpaqueError::from_boxed)
         .context("build serve service")?;
 
     tracing::info!("starting serve service on: bind interface = {}", cfg.bind);
-    let tcp_listener = TcpListener::build()
+    let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
@@ -104,13 +108,13 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    graceful.into_spawn_task_fn(async move |guard| {
+    exec.spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
             "ready to serve: bind interface = {}", cfg.bind,
         );
-        tcp_listener.serve_graceful(guard, tcp_service).await;
+        tcp_listener.serve(Arc::new(tcp_service)).await;
     });
 
     Ok(())

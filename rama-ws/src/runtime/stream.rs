@@ -93,6 +93,11 @@ impl<S> AsyncWebSocket<S> {
         f(&mut self.inner)
     }
 
+    /// Consumes the `WebSocketStream` and returns the underlying stream.
+    pub fn into_inner(self) -> S {
+        self.inner.into_inner().into_inner()
+    }
+
     /// Returns a shared reference to the inner stream.
     pub fn get_ref(&self) -> &S
     where

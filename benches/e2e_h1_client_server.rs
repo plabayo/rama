@@ -12,12 +12,12 @@ use rama::{
         service::web::WebService,
     },
     net::address::SocketAddress,
+    rt::Executor,
 };
 
 use rama_http::{
     HeaderName, HeaderValue,
     layer::{
-        catch_panic::CatchPanicLayer,
         cors::CorsLayer,
         required_header::{AddRequiredRequestHeadersLayer, AddRequiredResponseHeadersLayer},
         set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
@@ -96,7 +96,6 @@ async fn run_server(random_bytes: RandomBytes) {
     let http_service = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
-        CatchPanicLayer::new(),
         AddRequiredResponseHeadersLayer::default()
             .with_server_header_value(HeaderValue::from_static("foo")),
         SetResponseHeaderLayer::if_not_present(
@@ -105,7 +104,7 @@ async fn run_server(random_bytes: RandomBytes) {
         ),
         CorsLayer::permissive(),
     )
-        .into_layer(
+        .layer(
             WebService::default()
                 .with_post(get_endpoint_for_size(&Size::Empty), random_bytes.empty)
                 .with_post(get_endpoint_for_size(&Size::Small), random_bytes.small)
@@ -113,7 +112,7 @@ async fn run_server(random_bytes: RandomBytes) {
                 .with_post(get_endpoint_for_size(&Size::Large), random_bytes.large),
         );
 
-    HttpServer::http1()
+    HttpServer::http1(Executor::default())
         .listen(ADDRESS, http_service)
         .await
         .unwrap();

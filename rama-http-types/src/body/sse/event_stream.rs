@@ -9,7 +9,7 @@ use rama_core::futures::stream::Stream;
 use rama_core::futures::task::{Context, Poll};
 use rama_core::telemetry::tracing;
 use rama_error::{BoxError, ErrorContext as _, OpaqueError};
-use smol_str::SmolStr;
+use rama_utils::str::smol_str::SmolStr;
 use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;

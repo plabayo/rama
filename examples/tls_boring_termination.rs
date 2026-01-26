@@ -37,6 +37,7 @@ use rama::{
     http::{Request, Response, server::HttpServer},
     layer::{ConsumeErrLayer, GetInputExtensionLayer},
     net::{
+        address::HostWithPort,
         forwarded::Forwarded,
         stream::SocketInfo,
         tls::{
@@ -91,30 +92,37 @@ async fn main() {
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
         )
-            .into_layer(Forwarder::new(([127, 0, 0, 1], 62801)).with_connector(
-                // ha proxy protocol used to forwarded the client original IP
-                HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
-            ));
+            .into_layer(
+                Forwarder::new(
+                    Executor::graceful(guard.clone()),
+                    HostWithPort::local_ipv4(62801),
+                )
+                .with_connector(
+                    // ha proxy protocol used to forwarded the client original IP
+                    HaProxyClientLayer::tcp()
+                        .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
+                ),
+            );
 
-        TcpListener::bind("127.0.0.1:63801")
+        TcpListener::bind("127.0.0.1:63801", Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener: tls")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 
     // create http server
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(service_fn(http_service));
+        let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
 
         let tcp_service =
             (ConsumeErrLayer::default(), HaProxyServerLayer::new()).into_layer(http_service);
 
-        TcpListener::bind("127.0.0.1:62801")
+        TcpListener::bind("127.0.0.1:62801", exec)
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 

@@ -1,7 +1,6 @@
-//! Extract a header config from a request or response and insert it into the [`Extensions`] of its [`Context`].
+//! Extract a header config from a request or response and insert it into [`Extensions`].
 //!
 //! [`Extensions`]: rama_core::extensions::Extensions
-//! [`Context`]: rama_core::Context
 //!
 //! # Example
 //!

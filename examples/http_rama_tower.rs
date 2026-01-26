@@ -46,6 +46,7 @@ use std::{
     convert::Infallible,
     future::{Ready, ready},
     pin::Pin,
+    sync::Arc,
     time::Duration,
 };
 use tokio::time::Sleep;
@@ -65,7 +66,7 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let router: Router = Router::new().with_get("/", ServiceAdapter::new(HelloSvc));
+    let router = Arc::new(Router::new().with_get("/", ServiceAdapter::new(HelloSvc)));
     let app = LayerAdapter::new((
         TimeoutLayer(Duration::from_secs(30)),
         AddHelloMarkerHeaderLayer,

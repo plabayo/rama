@@ -4,8 +4,8 @@ use std::{borrow::Cow, sync::Arc};
 
 use rama_core::error::OpaqueError;
 use rama_http_types::Uri;
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::thirdparty::wildcard::Wildcard;
-use smallvec::SmallVec;
 
 mod fmt;
 
@@ -28,7 +28,7 @@ mod fallthrough;
 pub use fallthrough::UriMatchReplaceFallthrough;
 
 /// A trait for types that can match and optionally replace (rewrite)
-/// [`Uri`](rama_http_types::Uri) values.
+/// [`Uri`] values.
 ///
 /// # Blanket implementations
 ///

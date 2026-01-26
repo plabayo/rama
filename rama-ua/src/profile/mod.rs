@@ -9,7 +9,7 @@
 //! at <https://ramaproxy.org/book/intro/user_agent.html>.
 //!
 //! [`UserAgentProfile`]: crate::profile::UserAgentProfile
-//! [`UserAgentEmulateService`]: crate::emulate::UserAgentEmulateService
+//! [`UserAgentEmulateService`]: crate::layer::emulate::UserAgentEmulateService
 
 mod http;
 pub use http::*;

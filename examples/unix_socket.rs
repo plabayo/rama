@@ -28,6 +28,7 @@ mod unix_example {
         extensions::ExtensionsRef,
         graceful::ShutdownGuard,
         layer::AddInputExtensionLayer,
+        rt::Executor,
         service::service_fn,
         stream::Stream,
         telemetry::tracing::{
@@ -51,10 +52,11 @@ mod unix_example {
             .init();
 
         let graceful = rama::graceful::Shutdown::default();
+        let exec = Executor::graceful(graceful.guard());
 
         const PATH: &str = "/tmp/rama_example_unix.socket";
 
-        let listener = UnixListener::build()
+        let listener = UnixListener::build(exec.clone())
             .bind_path(PATH)
             .await
             .expect("bind Unix socket");
@@ -110,10 +112,7 @@ mod unix_example {
                 "ready to unix-serve",
             );
             listener
-                .serve_graceful(
-                    guard.clone(),
-                    AddInputExtensionLayer::new(guard).into_layer(service_fn(handle)),
-                )
+                .serve(AddInputExtensionLayer::new(guard).into_layer(service_fn(handle)))
                 .await;
         });
 

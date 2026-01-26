@@ -16,7 +16,7 @@ mod layer;
 #[doc(inline)]
 pub use layer::TimeoutLayer;
 
-/// Applies a timeout to requests.
+/// Applies a timeout to inputs.
 #[derive(Debug, Clone)]
 pub struct Timeout<S, F> {
     inner: S,

@@ -69,7 +69,7 @@ derive_non_empty_flat_csv_header! {
     ///
     /// let transfer = TransferEncoding::chunked();
     /// ```
-    pub struct TransferEncoding(pub NonEmptyVec<TransferEncodingDirective>);
+    pub struct TransferEncoding(pub NonEmptySmallVec<2, TransferEncodingDirective>);
 }
 
 impl TransferEncoding {
@@ -89,7 +89,7 @@ impl TransferEncoding {
 
 #[cfg(test)]
 mod tests {
-    use rama_utils::collections::non_empty_vec;
+    use rama_utils::collections::non_empty_smallvec;
 
     use super::super::{test_decode, test_encode};
     use super::{TransferEncoding, TransferEncodingDirective};
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn encode_multi() {
-        let allow = TransferEncoding(non_empty_vec![
+        let allow = TransferEncoding(non_empty_smallvec![
             TransferEncodingDirective::Deflate,
             TransferEncodingDirective::Chunked,
         ]);

@@ -21,7 +21,7 @@ use tokio::sync::Mutex;
 ///
 /// [`tower::Service`]: tower_service::Service
 /// [`tower::Layer`]: tower_layer::Layer
-/// [`rama::Service`]: ::Service
+/// [`rama::Service`]: rama_core::Service
 /// [`LayerAdapter`]: super::LayerServiceAdapter.
 /// [`LayerServiceAdapter`]: super::LayerServiceAdapter.
 /// [`poll_ready`]: tower_service::Service::poll_ready

@@ -27,7 +27,7 @@ use rama_http::{
     service::web::response::{self, Headers, IntoResponse},
 };
 use rama_utils::{
-    collections::non_empty_vec,
+    collections::non_empty_smallvec,
     str::{NonEmptyStr, non_empty_str},
 };
 
@@ -351,7 +351,7 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Define the WebSocket rama echo protocols.
         pub fn echo_protocols(mut self) -> Self {
-            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_vec![
+            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_smallvec![
                 ECHO_SERVICE_SUB_PROTOCOL_DEFAULT,
                     ECHO_SERVICE_SUB_PROTOCOL_UPPER,
                     ECHO_SERVICE_SUB_PROTOCOL_LOWER,
@@ -430,6 +430,26 @@ impl WebSocketAcceptor {
         WebSocketAcceptorService {
             acceptor: self,
             config: None,
+            exec: None,
+            service,
+        }
+    }
+
+    /// Consume `self` into a [`WebSocketAcceptorService`] ready to serve.
+    ///
+    /// Same as [`Self::into_service`] but using the given executor
+    /// to spawn child tasks instead of using the default (tokio) one.
+    ///
+    /// Use the `UpgradeLayer` in case the ws upgrade is optional.
+    pub fn into_service_with_executor<S>(
+        self,
+        service: S,
+        exec: Executor,
+    ) -> WebSocketAcceptorService<S> {
+        WebSocketAcceptorService {
+            acceptor: self,
+            config: None,
+            exec: Some(exec),
             service,
         }
     }
@@ -437,19 +457,42 @@ impl WebSocketAcceptor {
     /// Turn this [`WebSocketAcceptor`] into an echo [`WebSocketAcceptorService`]].
     #[must_use]
     pub fn into_echo_service(mut self) -> WebSocketAcceptorService<WebSocketEchoService> {
+        self.norm_echo_flex_protocols_if_protocols_is_none();
+        WebSocketAcceptorService {
+            acceptor: self,
+            config: None,
+            exec: None,
+            service: WebSocketEchoService::new(),
+        }
+    }
+
+    /// Turn this [`WebSocketAcceptor`] into an echo [`WebSocketAcceptorService`]
+    /// using the provided [`Executor`] instead of the default (tokio) one.
+    ///
+    /// Same as [`Self::into_echo_service`] but using the given executor
+    /// to spawn child tasks instead of using the default (tokio) one.
+    #[must_use]
+    pub fn into_echo_service_with_executor(
+        mut self,
+        exec: Executor,
+    ) -> WebSocketAcceptorService<WebSocketEchoService> {
+        self.norm_echo_flex_protocols_if_protocols_is_none();
+        WebSocketAcceptorService {
+            acceptor: self,
+            config: None,
+            exec: Some(exec),
+            service: WebSocketEchoService::new(),
+        }
+    }
+
+    fn norm_echo_flex_protocols_if_protocols_is_none(&mut self) {
         if self.protocols.is_none() {
             self.protocols_flex = true;
-            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_vec![
+            self.protocols = Some(headers::SecWebSocketProtocol(non_empty_smallvec![
                 ECHO_SERVICE_SUB_PROTOCOL_DEFAULT,
                 ECHO_SERVICE_SUB_PROTOCOL_UPPER,
                 ECHO_SERVICE_SUB_PROTOCOL_LOWER,
             ]));
-        }
-
-        WebSocketAcceptorService {
-            acceptor: self,
-            config: None,
-            service: WebSocketEchoService::new(),
         }
     }
 }
@@ -665,6 +708,7 @@ where
 pub struct WebSocketAcceptorService<S> {
     acceptor: WebSocketAcceptor,
     config: Option<WebSocketConfig>,
+    exec: Option<Executor>,
     service: S,
 }
 
@@ -683,7 +727,9 @@ impl<S> WebSocketAcceptorService<S> {
 ///
 /// Utility type created via [`WebSocketAcceptorService`].
 ///
-/// [`AcceptedSubProtocol`] can be found in the [`Context`], if any.
+/// [`AcceptedWebSocketProtocol`] can be found in the extensions, if any.
+///
+/// [`AcceptedWebSocketProtocol`]: headers::sec_websocket_protocol::AcceptedWebSocketProtocol
 pub struct ServerWebSocket {
     socket: AsyncWebSocket,
     request: request::Parts,
@@ -750,13 +796,8 @@ where
                     network.protocol.name = "ws",
                 );
 
-                let exec = req
-                    .extensions()
-                    .get::<Executor>()
-                    .cloned()
-                    .unwrap_or_default();
-
-                exec.spawn_task(
+                let exec = self.exec.clone().unwrap_or_default();
+                exec.into_spawn_task(
                     async move {
                         match upgrade::handle_upgrade(&req).await {
                             Ok(upgraded) => {
@@ -825,7 +866,7 @@ pub const ECHO_SERVICE_SUB_PROTOCOL_LOWER: NonEmptyStr = non_empty_str!("echo-lo
 pub struct WebSocketEchoService;
 
 impl WebSocketEchoService {
-    /// Create a new [`EchoWebSocketService`].
+    /// Create a new [`WebSocketEchoService`].
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -924,7 +965,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
 mod tests {
     use headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
     use rama_http::Body;
-    use rama_utils::{collections::non_empty_vec, str::non_empty_str};
+    use rama_utils::str::non_empty_str;
 
     use super::*;
 
@@ -1391,7 +1432,7 @@ mod tests {
     #[tokio::test]
     async fn test_websocket_accept_required_protocols() {
         let acceptor = WebSocketAcceptor::default().with_protocols(headers::SecWebSocketProtocol(
-            non_empty_vec![
+            non_empty_smallvec![
                 non_empty_str!("foo"),
                 non_empty_str!("a"),
                 non_empty_str!("b")

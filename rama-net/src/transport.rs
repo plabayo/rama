@@ -59,7 +59,9 @@ pub enum TransportProtocol {
 /// to turn combined types into a [`TransportContext`],
 /// not expressible with [`Into`].
 ///
-/// e.g. `&Request: Into<TransportContext>` would not work if it needs also [`Context`] and be a ref.
+/// e.g. `&Request: Into<TransportContext>` would not work if it needs also [`Extensions`] and be a ref.
+///
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub trait TryRefIntoTransportContext {
     /// The error that can happen when trying to turn the self reference into the TransportContext.
     type Error;

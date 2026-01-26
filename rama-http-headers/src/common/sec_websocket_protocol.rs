@@ -7,7 +7,7 @@ derive_non_empty_flat_csv_header! {
     /// Sub protocols are advertised by the client,
     /// and the server has to match it if defined.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SecWebSocketProtocol(pub NonEmptyVec<NonEmptyStr>);
+    pub struct SecWebSocketProtocol(pub NonEmptySmallVec<3, NonEmptyStr>);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +39,7 @@ impl SecWebSocketProtocol {
         AcceptedWebSocketProtocol(self.0[0].clone())
     }
 
-    /// returns true if the given protocol is found in this [`SubProtocols`]
+    /// returns true if the given protocol is found in this [`SecWebSocketProtocol`]
     pub fn contains(&self, protocol: impl AsRef<str>) -> Option<AcceptedWebSocketProtocol> {
         let protocol = protocol.as_ref().trim();
         self.0.iter().find_map(|candidate| {
@@ -50,7 +50,7 @@ impl SecWebSocketProtocol {
         })
     }
 
-    /// returns true if any of the given protocol is found in this [`SubProtocols`]
+    /// returns true if any of the given protocol is found in this [`SecWebSocketProtocol`]
     ///
     /// Searched in order.
     pub fn contains_any(

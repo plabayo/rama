@@ -22,6 +22,7 @@ use rama::{
             udp::{RelayDirection, UdpInspectAction},
         },
     },
+    rt::Executor,
     tcp::{client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -47,9 +48,10 @@ async fn main() {
     let socks5_socket_addr = spawn_socks5_server().await;
 
     let ext = Extensions::default();
-    let (proxy_client_stream, _) = default_tcp_connect(&ext, socks5_socket_addr.into())
-        .await
-        .expect("establish connection to socks5 server (from client)");
+    let (proxy_client_stream, _) =
+        default_tcp_connect(&ext, socks5_socket_addr.into(), Executor::default())
+            .await
+            .expect("establish connection to socks5 server (from client)");
 
     let socks5_client = Socks5Client::new().with_auth(basic!("john", "secret"));
 
@@ -133,7 +135,7 @@ async fn main() {
 }
 
 async fn spawn_socks5_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::local_ipv4(0))
+    let tcp_service = TcpListener::bind(SocketAddress::local_ipv4(0), Executor::default())
         .await
         .expect("bind socks5 UDP Associate proxy on open port");
 
@@ -142,7 +144,7 @@ async fn spawn_socks5_server() -> SocketAddress {
         .expect("get bind address of socks5 proxy server")
         .into();
 
-    let socks5_acceptor = Socks5Acceptor::new()
+    let socks5_acceptor = Socks5Acceptor::new(Executor::default())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_udp_associator(
             DefaultUdpRelay::default()

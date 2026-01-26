@@ -1,0 +1,20 @@
+[package]
+name = "my_application"
+description = "examples for rama's grpc capabilities"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+publish = false
+
+[dependencies]
+rama = { workspace = true, features = ["grpc"] }
+uuid = { package = "uuid1", path = "../uuid" }
+
+[build-dependencies]
+rama = { workspace = true, features = ["grpc"] }
+
+[lints]
+workspace = true

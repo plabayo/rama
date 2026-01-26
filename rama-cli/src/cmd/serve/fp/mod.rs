@@ -41,12 +41,12 @@ use rama::{
     telemetry::tracing,
     tls::boring::server::TlsAcceptorLayer,
     ua::layer::classifier::UserAgentClassifierLayer,
-    utils::{backoff::ExponentialBackoff, collections::non_empty_vec, str::non_empty_str},
+    utils::{backoff::ExponentialBackoff, collections::non_empty_smallvec, str::non_empty_str},
 };
 
 use clap::Args;
 use itertools::Itertools;
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 mod data;
 mod endpoints;
@@ -146,7 +146,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
 
     let ws_service = ConsumeErrLayer::default().into_layer(
         WebSocketAcceptor::new()
-            .with_protocols(SecWebSocketProtocol(non_empty_vec![
+            .with_protocols(SecWebSocketProtocol(non_empty_smallvec![
                 non_empty_str!("a"),
                 non_empty_str!("b"),
             ]))
@@ -212,7 +212,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             "/api/xml/number/{number}",
             endpoints::post_api_xml_http_request_number,
         )
-        .match_route(
+        .with_match_route(
             "/form",
             HttpMatcher::method_get().or_method_post().and_path("/form"),
             endpoints::form,
@@ -222,7 +222,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             Redirect::temporary("/consent")
         });
 
-    let http_service = middlewares.into_layer(router);
+    let http_service = Arc::new(middlewares.into_layer(router));
 
     serve_http(graceful, cfg, http_service, tcp_forwarded_layer).await
 }
@@ -230,22 +230,27 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
 async fn serve_http<Response>(
     graceful: ShutdownGuard,
     cfg: CliCommandFingerprint,
-    http_service: impl Service<Request, Output = Response, Error = Infallible>,
+    http_service: impl Service<Request, Output = Response, Error = Infallible> + Clone,
     maybe_ha_proxy_layer: Option<HaProxyLayer>,
 ) -> Result<(), BoxError>
 where
     Response: IntoResponse + Send + 'static,
 {
+    let exec = Executor::graceful(graceful);
+
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {
-            try_new_server_config(Some(match cfg.http_version {
-                HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-                HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                HttpVersion::Auto => {
-                    vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
-                }
-            }))
+            try_new_server_config(
+                Some(match cfg.http_version {
+                    HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+                    HttpVersion::Auto => {
+                        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                    }
+                }),
+                exec.clone(),
+            )
         })
         .transpose()?;
 
@@ -254,7 +259,7 @@ where
         Some(cfg) => Some(cfg.try_into()?),
     };
 
-    let tcp_listener = TcpListener::build()
+    let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
@@ -285,49 +290,46 @@ where
         tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
     );
 
-    graceful.into_spawn_task_fn(async move |guard| match cfg.http_version {
-        HttpVersion::Auto => {
-            tracing::info!(
-                network.local.address = %bind_address.ip(),
-                network.local.port = %bind_address.port(),
-                "FP Service (auto) listening: bind interface = {}", cfg.bind,
-            );
-            tcp_listener
-                .serve_graceful(
-                    guard.clone(),
-                    tcp_service_builder.into_layer(
-                        HttpServer::auto(Executor::graceful(guard)).service(http_service),
-                    ),
-                )
-                .await;
-        }
-        HttpVersion::H1 => {
-            tracing::info!(
-                network.local.address = %bind_address.ip(),
-                network.local.port = %bind_address.port(),
-                "FP Service (HTTP/1.1) listening: bind interface = {}", cfg.bind,
-            );
-            tcp_listener
-                .serve_graceful(
-                    guard,
-                    tcp_service_builder.into_layer(HttpServer::http1().service(http_service)),
-                )
-                .await;
-        }
-        HttpVersion::H2 => {
-            tracing::info!(
-                network.local.address = %bind_address.ip(),
-                network.local.port = %bind_address.port(),
-                "FP Service (H2) listening: bind interface = {}", cfg.bind,
-            );
-            tcp_listener
-                .serve_graceful(
-                    guard.clone(),
-                    tcp_service_builder.into_layer(
-                        HttpServer::h2(Executor::graceful(guard)).service(http_service),
-                    ),
-                )
-                .await;
+    exec.clone().into_spawn_task(async move {
+        match cfg.http_version {
+            HttpVersion::Auto => {
+                tracing::info!(
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (auto) listening: bind interface = {}", cfg.bind,
+                );
+                tcp_listener
+                    .serve(
+                        tcp_service_builder
+                            .into_layer(HttpServer::auto(exec).service(http_service)),
+                    )
+                    .await;
+            }
+            HttpVersion::H1 => {
+                tracing::info!(
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (HTTP/1.1) listening: bind interface = {}", cfg.bind,
+                );
+                tcp_listener
+                    .serve(
+                        tcp_service_builder
+                            .into_layer(HttpServer::http1(exec).service(http_service)),
+                    )
+                    .await;
+            }
+            HttpVersion::H2 => {
+                tracing::info!(
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (H2) listening: bind interface = {}", cfg.bind,
+                );
+                tcp_listener
+                    .serve(
+                        tcp_service_builder.into_layer(HttpServer::h2(exec).service(http_service)),
+                    )
+                    .await;
+            }
         }
     });
 

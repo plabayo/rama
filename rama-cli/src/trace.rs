@@ -2,11 +2,13 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     http::{client::EasyHttpWebClient, service::opentelemetry::OtelExporter},
     net::client::pool::http::HttpPooledConnectorConfig,
+    rt::Executor,
     telemetry::{
         opentelemetry::{
             KeyValue,
             collector::{SpanExporter, WithHttpConfig},
             sdk::{Resource, trace::SdkTracerProvider},
+            semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION},
             trace::TracerProvider,
         },
         tracing::{
@@ -48,7 +50,7 @@ fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxErr
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(None)
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::default())
         .try_with_connection_pool(HttpPooledConnectorConfig::default())
         .context("build http exporter client service")?
         .build_client();
@@ -60,13 +62,20 @@ fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxErr
         .build()
         .context("build span exporter w/ rama http client")?;
 
+    let resource = Resource::builder()
+        .with_attribute(KeyValue::new(
+            SERVICE_NAME,
+            rama::utils::info::NAME.to_owned(),
+        ))
+        .with_attribute(KeyValue::new(
+            SERVICE_VERSION,
+            rama::utils::info::VERSION.to_owned(),
+        ))
+        .build();
+
     let provider = SdkTracerProvider::builder()
         .with_batch_exporter(exportor)
-        .with_resource(
-            Resource::builder()
-                .with_attribute(KeyValue::new("service.name", "rama"))
-                .build(),
-        )
+        .with_resource(resource)
         .build();
 
     let tracer = provider.tracer("rama-cli");

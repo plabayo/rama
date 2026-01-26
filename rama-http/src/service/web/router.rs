@@ -1,6 +1,5 @@
 use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
-use smol_str::StrExt;
 use std::{convert::Infallible, path::Path, sync::Arc};
 
 use crate::{
@@ -21,7 +20,10 @@ use rama_core::{
 use rama_http_types::{
     Body, OriginalRouterUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
 };
-use rama_utils::include_dir;
+use rama_utils::{
+    include_dir,
+    str::smol_str::{StrExt as _, format_smolstr},
+};
 
 /// A basic router that can be used to route requests to different services based on the request path.
 ///
@@ -80,7 +82,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_get();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a GET route to the router.
@@ -103,7 +105,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_post();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a POST route to the router.
@@ -124,7 +126,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_put();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a PUT route to the router.
@@ -145,7 +147,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_delete();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a DELETE route to the router.
@@ -166,7 +168,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_patch();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a PATCH route to the router.
@@ -187,7 +189,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_head();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a HEAD route to the router.
@@ -208,7 +210,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_options();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a OPTIONS route to the router.
@@ -229,7 +231,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_trace();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a TRACE route to the router.
@@ -250,7 +252,7 @@ where
         I: IntoEndpointServiceWithState<T, State>,
     {
         let matcher = HttpMatcher::method_connect();
-        self.match_route(path, matcher, service)
+        self.with_match_route(path, matcher, service)
     }
 
     /// add a CONNECT route to the router.
@@ -419,7 +421,7 @@ where
     /// The prefix is used to match the request path and strip it from the request URI.
     ///
     /// Warning: This sub-service has no notion of the state this router has. If you want
-    /// to create a sub-router that shares the same state this router has, use [`Router::sub`] instead.
+    /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
     #[must_use]
     #[inline]
     pub fn with_sub_service<I, T>(mut self, prefix: impl AsRef<str>, service: I) -> Self
@@ -435,7 +437,7 @@ where
     /// The prefix is used to match the request path and strip it from the request URI.
     ///
     /// Warning: This sub-service has no notion of the state this router has. If you want
-    /// to create a sub-router that shares the same state this router has, use [`Router::sub`] instead.
+    /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
     #[inline]
     pub fn set_sub_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
     where
@@ -491,7 +493,7 @@ where
     /// add a route to the router with it's matcher and service.
     #[inline(always)]
     #[must_use]
-    pub fn match_route<I, T>(
+    pub fn with_match_route<I, T>(
         mut self,
         path: impl AsRef<str>,
         matcher: HttpMatcher<Body>,
@@ -522,7 +524,7 @@ where
             .boxed();
 
         let path = path.as_ref().trim().trim_matches('/');
-        let path = smol_str::format_smolstr!("/{path}").to_lowercase_smolstr();
+        let path = format_smolstr!("/{path}").to_lowercase_smolstr();
 
         if let Ok(matched) = self.routes.at_mut(&path) {
             matched.value.push((matcher, service));
@@ -639,7 +641,7 @@ where
 
                     let mut ext = Extensions::new();
                     if matcher.matches_path(Some(&mut ext), fragments_path) {
-                        let full_prefix = smol_str::format_smolstr!("{prefix}/{fragments_path}",);
+                        let full_prefix = format_smolstr!("{prefix}/{fragments_path}",);
                         let modified_uri = match try_to_strip_path_prefix_from_uri(
                             &parts.uri,
                             &full_prefix,

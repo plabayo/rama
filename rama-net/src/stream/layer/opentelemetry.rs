@@ -4,13 +4,11 @@
 
 use crate::stream::SocketInfo;
 use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_core::telemetry::opentelemetry::semantic_conventions::resource::{
-    SERVICE_NAME, SERVICE_VERSION,
-};
+
 use rama_core::telemetry::opentelemetry::semantic_conventions::trace::{
     NETWORK_TRANSPORT, NETWORK_TYPE,
 };
-use rama_core::telemetry::opentelemetry::{AttributesFactory, MeterOptions, ServiceInfo};
+use rama_core::telemetry::opentelemetry::{AttributesFactory, MeterOptions};
 use rama_core::telemetry::opentelemetry::{
     InstrumentationScope, KeyValue, global,
     metrics::{Counter, Histogram, Meter},
@@ -81,15 +79,7 @@ impl NetworkMetricsLayer {
     /// with a custom name and version.
     #[must_use]
     pub fn custom(opts: MeterOptions) -> Self {
-        let service_info = opts.service.unwrap_or_else(|| ServiceInfo {
-            name: rama_utils::info::NAME.to_owned(),
-            version: rama_utils::info::VERSION.to_owned(),
-        });
-
-        let mut attributes = opts.attributes.unwrap_or_else(|| Vec::with_capacity(2));
-        attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
-        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version));
-
+        let attributes = opts.attributes.unwrap_or_default();
         let meter = get_versioned_meter();
         let metrics = Metrics::new(&meter, opts.metric_prefix.as_deref());
 
@@ -184,7 +174,7 @@ impl<S, F> NetworkMetricsService<S, F> {
             let peer_addr = socket_info.peer_addr();
             attributes.push(KeyValue::new(
                 NETWORK_TYPE,
-                match peer_addr.ip() {
+                match peer_addr.ip_addr {
                     IpAddr::V4(_) => "ipv4",
                     IpAddr::V6(_) => "ipv6",
                 },
@@ -238,16 +228,7 @@ mod tests {
     fn test_default_svc_compute_attributes_default() {
         let svc = NetworkMetricsService::new(());
         let attributes = svc.compute_attributes(&Extensions::default());
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME)
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION)
-        );
+
         assert!(
             attributes
                 .iter()
@@ -258,26 +239,13 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_default() {
         let svc = NetworkMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
         .into_layer(());
 
         let attributes = svc.compute_attributes(&Extensions::default());
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()
@@ -288,10 +256,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_attributes_vec() {
         let svc = NetworkMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -299,16 +263,7 @@ mod tests {
         .into_layer(());
 
         let attributes = svc.compute_attributes(&Extensions::default());
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()
@@ -324,10 +279,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_attribute_fn() {
         let svc = NetworkMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -339,16 +290,7 @@ mod tests {
         .into_layer(());
 
         let attributes = svc.compute_attributes(&Extensions::default());
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()

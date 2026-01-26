@@ -38,7 +38,7 @@ use crate::{
 
 use super::{SelectedUserAgentProfile, UserAgentProvider, UserAgentSelectFallback};
 
-/// Service to select a [`UserAgentProfile`] and inject its info into the input [`Context`].
+/// Service to select a [`UserAgentProfile`] and inject its info into the input [`Extensions`].
 ///
 /// Note that actual http emulation is done by also ensuring a service
 /// such as [`UserAgentEmulateHttpRequestModifier`] and [`UserAgentEmulateHttpConnectModifier`] is in use within your connector stack.
@@ -48,6 +48,8 @@ use super::{SelectedUserAgentProfile, UserAgentProvider, UserAgentSelectFallback
 /// See the implementation of[`EasyHttpWebClient`] for the reference implementation of how
 /// one can make use of this profile to emulate a user agent on the tls layer.
 ///
+/// [`UserAgentProfile`]: crate::profile::UserAgentProfile
+/// [`Extensions`]: rama_core::extensions::Extensions
 /// [`EasyHttpWebClient`]: https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html
 #[derive(Debug, Clone)]
 pub struct UserAgentEmulateService<S, P> {
@@ -336,6 +338,7 @@ fn emulate_http_connect_settings<Body>(req: &mut Request<Body>, profile: &HttpPr
                 req.extensions_mut().insert(H2ClientContextParams {
                     headers_pseudo_order: pseudo_headers,
                     early_frames,
+                    ..Default::default()
                 });
             }
         }

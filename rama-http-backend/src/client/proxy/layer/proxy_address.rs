@@ -9,12 +9,12 @@ use rama_net::address::ProxyAddress;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which allows you to add a [`ProxyAddress`]
-/// to the [`Context`] in order to have your client connector
+/// to the [`Extensions`] in order to have your client connector
 /// make a connection via this proxy (e.g. by using [`HttpProxyConnectorLayer`]).
 ///
 /// See [`HttpProxyAddressService`] for more information.
 ///
-/// [`Context`]: rama_core::Context
+/// [`Extensions`]: rama_core::extensions::Extensions
 /// [`HttpProxyConnectorLayer`]: crate::client::proxy::layer::HttpProxyConnectorLayer
 pub struct HttpProxyAddressLayer {
     address: Option<ProxyAddress>,
@@ -85,10 +85,10 @@ impl<S> Layer<S> for HttpProxyAddressLayer {
 }
 
 /// A [`Service`] which allows you to add a [`ProxyAddress`]
-/// to the [`Context`] in order to have your client connector
+/// to the [`Extensions`] in order to have your client connector
 /// make a connection via this proxy (e.g. by using [`HttpProxyConnectorLayer`]).
 ///
-/// [`Context`]: rama_core::Context
+/// [`Extensions`]: rama_core::extensions::Extensions
 /// [`HttpProxyConnectorLayer`]: crate::client::proxy::layer::HttpProxyConnectorLayer
 #[derive(Debug, Clone)]
 pub struct HttpProxyAddressService<S> {

@@ -1,6 +1,6 @@
 //! Module in function of the [`Path`] extractor.
 
-use super::FromRequestContextRefPair;
+use super::FromPartsStateRefPair;
 use crate::matcher::{UriParams, UriParamsDeserializeError};
 use crate::request::Parts;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
@@ -29,14 +29,14 @@ composite_http_rejection! {
     }
 }
 
-impl<T, State> FromRequestContextRefPair<State> for Path<T>
+impl<T, State> FromPartsStateRefPair<State> for Path<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync,
 {
     type Rejection = PathRejection;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {

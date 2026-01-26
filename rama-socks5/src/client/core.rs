@@ -2,6 +2,7 @@ use rama_core::error::BoxError;
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_net::address::{Host, HostWithPort, SocketAddress};
+use rama_utils::collections::smallvec::smallvec;
 use std::fmt;
 
 use crate::{
@@ -308,8 +309,10 @@ impl Client {
     /// Establish a connection with a Socks5 server making use of the [`Command::UdpAssociate`] flow.
     ///
     /// This method returns a [`UdpSocketRelayBinder`] that can be used
-    /// to bind to an interface as to get a [`UdpSocketRelay`] ready to to send udp packets through
+    /// to bind to an interface as to get a relay [`Service`] ready to to send udp packets through
     /// socks5 proxy server to the required.
+    ///
+    /// [`Service`]: rama_core::Service
     pub async fn handshake_udp<S: Stream + Unpin>(
         &self,
         mut stream: S,
@@ -409,7 +412,7 @@ impl Client {
         &self,
         stream: &mut S,
     ) -> Result<SocksMethod, HandshakeError> {
-        let header = Header::new(smallvec::smallvec![SocksMethod::NoAuthenticationRequired]);
+        let header = Header::new(smallvec![SocksMethod::NoAuthenticationRequired]);
         header.write_to(stream).await.map_err(|err| {
             HandshakeError::io(err).with_context("write client headers: no auth required")
         })?;

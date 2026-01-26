@@ -31,6 +31,7 @@
 //! [`tower::Layer`]: tower_layer::Layer
 //! [`rama::Service`]: rama_core::Service
 //! [`rama::Layer`]: rama_core::Layer
+//! [`Mutex`]: tokio::sync::Mutex
 //!
 //! ## Halting
 //!

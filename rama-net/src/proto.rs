@@ -1,9 +1,9 @@
-use smol_str::SmolStr;
 use std::cmp::min;
 use std::str::FromStr;
 
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_utils::macros::str::eq_ignore_ascii_case;
+use rama_utils::str::smol_str::SmolStr;
 
 #[cfg(feature = "http")]
 use rama_http_types::Scheme;

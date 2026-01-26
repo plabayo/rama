@@ -24,11 +24,10 @@ pub struct TlsTunnel {
 }
 
 #[derive(Debug, Clone, Default)]
-/// An [`Extensions`] value that can be added to the [`Context`]
+/// Metadata that can be added to the [`Extensions`]
 /// of a transport layer to signal that the transport is secure.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
-/// [`Context`]: rama_core::Context
 pub struct SecureTransport {
     client_hello: Option<client::ClientHello>,
 }
@@ -37,6 +36,8 @@ impl SecureTransport {
     /// Create a [`SecureTransport`] with a [`ClientHello`]
     /// attached to it, containing the client hello info
     /// used to establish this secure transport.
+    ///
+    /// [`ClientHello`]: crate::tls::client::ClientHello
     #[must_use]
     pub fn with_client_hello(hello: client::ClientHello) -> Self {
         Self {
@@ -46,6 +47,8 @@ impl SecureTransport {
 
     /// Return the [`ClientHello`] used to establish this secure transport,
     /// only available if the tls service stored it.
+    ///
+    /// [`ClientHello`]: crate::tls::client::ClientHello
     #[must_use]
     pub fn client_hello(&self) -> Option<&client::ClientHello> {
         self.client_hello.as_ref()

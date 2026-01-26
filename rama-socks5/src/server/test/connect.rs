@@ -21,7 +21,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_failure_method_not_supporte
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new();
+    let server = Socks5Acceptor::new(Executor::default());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }
@@ -41,7 +41,7 @@ async fn test_socks5_acceptor_auth_flow_declined_connect_failure_method_not_supp
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new();
+    let server = Socks5Acceptor::new(Executor::default());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }
@@ -65,7 +65,8 @@ async fn test_socks5_acceptor_auth_flow_used_connect_failure_method_not_supporte
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new().with_authorizer(basic!("john", "secret").into_authorizer());
+    let server = Socks5Acceptor::new(Executor::default())
+        .with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }
@@ -89,7 +90,7 @@ async fn test_socks5_acceptor_auth_flow_username_only_connect_failure_method_not
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new()
+    let server = Socks5Acceptor::new(Executor::default())
         .with_authorizer(user::Basic::new_insecure(non_empty_str!("john")).into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
@@ -110,8 +111,8 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_failure() {
 
     let stream = ServiceInput::new(stream);
 
-    let server =
-        Socks5Acceptor::new().with_connector(MockConnector::new_err(ReplyKind::ConnectionRefused));
+    let server = Socks5Acceptor::new(Executor::default())
+        .with_connector(MockConnector::new_err(ReplyKind::ConnectionRefused));
     let result = server.accept(stream).await;
     assert!(result.is_err());
 }
@@ -131,8 +132,8 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_no_data() {
 
     let stream = ServiceInput::new(stream);
 
-    let server =
-        Socks5Acceptor::new().with_connector(MockConnector::new(HostWithPort::local_ipv4(42)));
+    let server = Socks5Acceptor::new(Executor::default())
+        .with_connector(MockConnector::new(HostWithPort::local_ipv4(42)));
     let result = server.accept(stream).await;
     assert!(result.is_ok());
 }
@@ -156,7 +157,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_with_data() {
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new().with_connector(
+    let server = Socks5Acceptor::new(Executor::default()).with_connector(
         MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(
             tokio_test::io::Builder::new()
                 // client data
@@ -193,7 +194,7 @@ async fn test_socks5_acceptor_with_auth_flow_client_connect_mock_success_with_da
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new()
+    let server = Socks5Acceptor::new(Executor::default())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(
             MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(
@@ -232,7 +233,7 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_connect_mock_s
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new()
+    let server = Socks5Acceptor::new(Executor::default())
         .with_authorizer(user::Basic::new_insecure(non_empty_str!("john")).into_authorizer())
         .with_connector(
             MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(

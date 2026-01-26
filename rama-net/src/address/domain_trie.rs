@@ -1,6 +1,6 @@
 use itertools::Itertools as _;
 use radix_trie::{Trie, TrieCommon};
-use smol_str::SmolStrBuilder;
+use rama_utils::str::smol_str::SmolStrBuilder;
 use std::fmt;
 
 use crate::address::{AsDomainRef, Domain};

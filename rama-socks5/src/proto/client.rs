@@ -13,8 +13,8 @@ use super::{
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
 use rama_net::{address::HostWithPort, user};
+use rama_utils::collections::smallvec::{SmallVec, smallvec};
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
-use smallvec::{SmallVec, smallvec};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +29,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// +-----+----------+----------|
 /// ```
 ///
-/// Reference: https://datatracker.ietf.org/doc/html/rfc1928
+/// Reference: <https://datatracker.ietf.org/doc/html/rfc1928>
 pub struct Header {
     pub version: ProtocolVersion,
     pub methods: SmallVec<[SocksMethod; 2]>,
@@ -563,7 +563,7 @@ mod tests {
     #[tokio::test]
     async fn test_header_write_read_eq() {
         test_write_read_eq!(
-            Header::new(smallvec::smallvec![SocksMethod::NoAuthenticationRequired]),
+            Header::new(smallvec![SocksMethod::NoAuthenticationRequired]),
             Header,
         );
         test_write_read_eq!(

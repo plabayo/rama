@@ -10,14 +10,14 @@
 //!
 //! You are responsible for any other pre-requisites to establish an upgrade,
 //! such as sending the appropriate headers, methods, and status codes. You can
-//! then use [`on`][] to grab a `Future` which will resolve to the upgraded
+//! then use [`handle_upgrade`] to grab a `Future` which will resolve to the upgraded
 //! connection object, or an error if the upgrade fails.
 //!
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
 //!
 //! # Client
 //!
-//! Sending an HTTP upgrade from the [`client`](super::client) involves setting
+//! Sending an HTTP upgrade from the client involves setting
 //! either the appropriate method, if wanting to `CONNECT`, or headers such as
 //! `Upgrade` and `Connection`, on the `http::Request`. Once receiving the
 //! `http::Response` back, you must check for the specific information that the
@@ -56,7 +56,7 @@ use rama_core::telemetry::tracing::trace;
 ///
 /// This type holds a trait object internally of the original IO that
 /// was used to speak HTTP before the upgrade. It can be used directly
-/// as a [`Read`] or [`Write`] for convenience.
+/// as a [`AsyncRead`] or [`AsyncWrite`] for convenience.
 ///
 /// Alternatively, if the exact type is known, this can be deconstructed
 /// into its parts.
@@ -97,16 +97,36 @@ pub struct Parts<T> {
 
 /// Gets a pending HTTP upgrade from this message and handles it.
 ///
-/// This can be called on the following types:
+/// This can be called on types implementing [`ExtensionsRef`]:
 ///
+/// Some notable examples are:
 /// - `http::Request<B>`
 /// - `http::Response<B>`
 /// - `&rama_http::Request<B>`
 /// - `&rama_http::Response<B>`
-pub fn handle_upgrade<T: sealed::HandleUpgrade>(
+pub fn handle_upgrade<T: ExtensionsRef>(
     msg: T,
-) -> impl Future<Output = Result<Upgraded, OpaqueError>> {
-    msg.handle_upgrade()
+) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+    let on_upgrade = match msg.extensions().get::<OnUpgrade>().cloned() {
+        Some(on_upgrade) => {
+            trace!("upgrading this: {:?}", on_upgrade);
+            if on_upgrade.has_handled_upgrade() {
+                Err(OpaqueError::from_display(
+                    "upgraded has already been handled",
+                ))
+            } else {
+                Ok(on_upgrade)
+            }
+        }
+        None => Err(OpaqueError::from_display("no pending update found")),
+    };
+
+    async {
+        match on_upgrade {
+            Ok(on_upgrade) => on_upgrade.await,
+            Err(err) => Err(err),
+        }
+    }
 }
 
 /// A pending upgrade, created with [`pending`].
@@ -302,71 +322,6 @@ impl Pending {
         let _ = self.tx.send(Err(OpaqueError::from_display(
             "OnUpgrade: manual upgrade failed",
         )));
-    }
-}
-
-mod sealed {
-    use rama_core::{extensions::ExtensionsRef, telemetry::tracing::trace};
-    use rama_error::OpaqueError;
-    use rama_http_types::{Request, Response};
-
-    use crate::io::upgrade::Upgraded;
-
-    use super::OnUpgrade;
-
-    pub trait HandleUpgrade {
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static;
-    }
-
-    fn handle_upgrade<T: ExtensionsRef>(
-        obj: T,
-    ) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-        let on_upgrade = match obj.extensions().get::<OnUpgrade>().cloned() {
-            Some(on_upgrade) => {
-                trace!("upgrading this: {:?}", on_upgrade);
-                if on_upgrade.has_handled_upgrade() {
-                    Err(OpaqueError::from_display(
-                        "upgraded has already been handled",
-                    ))
-                } else {
-                    Ok(on_upgrade)
-                }
-            }
-            None => Err(OpaqueError::from_display("no pending update found")),
-        };
-
-        async {
-            match on_upgrade {
-                Ok(on_upgrade) => on_upgrade.await,
-                Err(err) => Err(err),
-            }
-        }
-    }
-
-    impl<B> HandleUpgrade for Request<B> {
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-
-    impl<B> HandleUpgrade for &Request<B> {
-        #[inline(always)]
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-
-    impl<B> HandleUpgrade for Response<B> {
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-
-    impl<B> HandleUpgrade for &Response<B> {
-        #[inline(always)]
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
     }
 }
 

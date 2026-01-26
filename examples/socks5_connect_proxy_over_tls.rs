@@ -21,10 +21,10 @@
 //! that goes through Tls, with the power of rama. Be empowered, be brave, go forward.
 
 use rama::{
-    Service,
+    Layer as _, Service,
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{
-        Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
+        Body, BodyExtractExt, Request, client::HttpConnectorLayer, server::HttpServer,
         service::web::Router,
     },
     net::{
@@ -38,6 +38,7 @@ use rama::{
         user::{ProxyCredential, credentials::basic},
     },
     proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
+    rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -78,8 +79,9 @@ async fn main() {
         .with_server_verify_mode(ServerVerifyMode::Disable)
         .into_shared_builder();
 
-    let client = HttpConnector::new(Socks5ProxyConnector::required(
-        TlsConnector::secure(TcpConnector::new()).with_connector_data(tls_conn_data),
+    let client = HttpConnectorLayer::default().into_layer(Socks5ProxyConnector::required(
+        TlsConnector::secure(TcpConnector::new(Executor::default()))
+            .with_connector_data(tls_conn_data),
     ));
 
     let uri = format!("http://{http_socket_addr}/ping");
@@ -128,7 +130,7 @@ async fn main() {
 }
 
 async fn spawn_socks5_over_tls_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63011))
+    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63011), Executor::default())
         .await
         .expect("bind socks5-over-tls CONNECT proxy on open port");
 
@@ -152,7 +154,7 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
 }
 
 async fn spawn_http_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63012))
+    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63012), Executor::default())
         .await
         .expect("bind HTTP server on open port");
 

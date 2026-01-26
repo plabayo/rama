@@ -18,8 +18,10 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_web_service_dir_and_api.rs`](./http_web_service_dir_and_api.rs) - Combined directory and API service
 - [`http_web_router.rs`](./http_web_router.rs) - HTTP router implementation
 - [`http_service_match.rs`](./http_service_match.rs) - Service matching example
+- [`http_abort.rs`](./http_abort.rs) - A small example how one can control a lower network layer from within the http (application) layer
 - [`http_form.rs`](./http_form.rs) - Form handling example
 - [`http_health_check.rs`](./http_health_check.rs) - Health check endpoint implementation
+- [`http_har_replay.rs`](./http_har_replay.rs): HAR replay demonstration
 - [`http_k8s_health.rs`](./http_k8s_health.rs) - Kubernetes health check implementation
 - [`http_record_har.rs`](./http_record_har.rs) - Demo of HAR HTTP layer provided by rama
 - [`http_octet_stream.rs`](./http_octet_stream.rs) - Binary data responses with file downloads
@@ -30,6 +32,10 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_key_value_store.rs`](./http_key_value_store.rs) - Key-value store service
 - [`http_telemetry.rs`](./http_telemetry.rs) - Telemetry and monitoring
 - [`http_user_agent_classifier.rs`](./http_user_agent_classifier.rs) - User agent classification
+
+### gRPC
+
+See [the gRPC examples README at ./grpc/README.md](./grpc/README.md).
 
 ### Newline Delimited JSON (ndjson)
 
@@ -132,6 +138,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation
 
 ## Network and Transport
+- [`tcp_listener_fd_passing.rs`](./tcp_listener_fd_passing.rs) - FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
 - [`tcp_listener_hello.rs`](./tcp_listener_hello.rs) - Basic TCP listener example
 - [`tcp_listener_layers.rs`](./tcp_listener_layers.rs) - TCP listener with layers
 - [`tcp_nd_json.rs`](./tcp_nd_json.rs) - TCP listener serving a ndjson (Newline Delimited JSON) stream of data

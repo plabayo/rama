@@ -4,15 +4,16 @@ use crate::service::web::response::IntoResponse;
 use crate::{Request, StatusCode};
 use ahash::{HashMap, HashMapExt as _};
 use rama_core::extensions::Extensions;
+use rama_net::uri::util::percent_encoding;
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::str::arcstr::ArcStr;
+use rama_utils::str::smol_str::{StrExt as _, format_smolstr};
 use rama_utils::str::starts_with_ignore_ascii_case;
-use smallvec::SmallVec;
-use smol_str::StrExt as _;
 
 mod de;
 
 #[derive(Debug, Clone, Default)]
-/// parameters that are inserted in the [`Context`],
+/// parameters that are inserted in the [`Extensions`],
 /// in case the [`PathMatcher`] found a match for the given [`Request`].
 pub struct UriParams {
     params: Option<HashMap<ArcStr, ArcStr>>,
@@ -37,9 +38,9 @@ impl UriParams {
     fn append_glob(&mut self, value: &str) {
         self.glob = Some(ArcStr::from(
             if let Some(glob) = self.glob.take() {
-                smol_str::format_smolstr!("{glob}/{value}")
+                format_smolstr!("{glob}/{value}")
             } else {
-                smol_str::format_smolstr!("/{value}")
+                format_smolstr!("/{value}")
             }
             .as_str(),
         ))

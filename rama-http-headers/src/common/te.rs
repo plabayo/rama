@@ -1,5 +1,5 @@
 use crate::specifier::QualityValue;
-use rama_utils::collections::NonEmptyVec;
+use rama_utils::collections::NonEmptySmallVec;
 
 rama_utils::macros::enums::enum_builder! {
     /// Directive for the [`Te`] header.
@@ -44,14 +44,14 @@ derive_non_empty_flat_csv_header! {
     /// # Example values
     /// * `trailers`
     /// * `trailers, deflate;q=0.5`
-    pub struct Te(pub NonEmptyVec<QualityValue<TeDirective>>);
+    pub struct Te(pub NonEmptySmallVec<2, QualityValue<TeDirective>>);
 }
 
 impl Te {
     /// Create a `TE: trailers` header.
     #[must_use]
     pub fn trailers() -> Self {
-        Self(NonEmptyVec::new(QualityValue::new_value(
+        Self(NonEmptySmallVec::new(QualityValue::new_value(
             TeDirective::Trailers,
         )))
     }

@@ -58,7 +58,7 @@ use rama::{
     extensions::{ExtensionsMut, ExtensionsRef},
     futures::SinkExt,
     http::{
-        Body, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         headers::{
@@ -128,6 +128,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 struct State {
     mitm_tls_service_data: TlsAcceptorData,
     ua_db: Arc<UserAgentDatabase>,
+    exec: Executor,
 }
 
 #[tokio::main]
@@ -144,23 +145,23 @@ async fn main() -> Result<(), BoxError> {
     let mitm_tls_service_data =
         try_new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
 
+    let graceful = rama::graceful::Shutdown::default();
+
+    let exec = Executor::graceful(graceful.guard());
     let state = State {
         mitm_tls_service_data,
         ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
+        exec: exec.clone(),
     };
 
-    let graceful = rama::graceful::Shutdown::default();
-
-    graceful.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+    graceful.spawn_task(async {
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62017")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62017");
 
-        let exec = Executor::graceful(guard.clone());
-
         let http_mitm_service = new_http_mitm_proxy(&state);
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -168,17 +169,17 @@ async fn main() -> Result<(), BoxError> {
                 // e.g. can also be used to extract upstream proxy filters
                 ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
+                    exec,
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
                 ),
             )
                 .into_layer(http_mitm_service),
-        );
+        ));
 
         tcp_service
-            .serve_graceful(
-                guard,
+            .serve(
                 (
                     AddInputExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end
@@ -231,11 +232,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
-    let executor = upgraded
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let executor = state.exec.clone();
 
     let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().set_enable_connect_protocol();
@@ -255,19 +252,21 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
 fn new_http_mitm_proxy(
     state: &State,
-) -> impl Service<Request, Output = Response, Error = Infallible> {
-    (
-        MapResponseBodyLayer::new(Body::new),
-        TraceLayer::new_for_http(),
-        ConsumeErrLayer::default(),
-        UserAgentEmulateLayer::new(state.ua_db.clone())
-            .with_try_auto_detect_user_agent(true)
-            .with_is_optional(true),
-        CompressionLayer::new(),
-        AddRequiredRequestHeadersLayer::new(),
-        EmulateTlsProfileLayer::new(),
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
+    Arc::new(
+        (
+            MapResponseBodyLayer::new(Body::new),
+            TraceLayer::new_for_http(),
+            ConsumeErrLayer::default(),
+            UserAgentEmulateLayer::new(state.ua_db.clone())
+                .with_try_auto_detect_user_agent(true)
+                .with_is_optional(true),
+            CompressionLayer::new(),
+            AddRequiredRequestHeadersLayer::new(),
+            EmulateTlsProfileLayer::new(),
+        )
+            .into_layer(service_fn(http_mitm_proxy)),
     )
-        .into_layer(service_fn(http_mitm_proxy))
 }
 
 async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
@@ -290,11 +289,8 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
-    let executor = req
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let state = req.extensions().get::<State>().unwrap();
+    let executor = state.exec.clone();
 
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
@@ -303,9 +299,12 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
-        .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
+        .with_tls_support_using_boringssl_and_default_http_version(
+            Some(Arc::new(base_tls_config)),
+            Version::HTTP_11,
+        )
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector()
+        .with_default_http_connector(executor.clone())
         .build_client()
         .with_jit_layer((
             UserAgentEmulateHttpRequestModifierLayer::default(),
@@ -372,11 +371,10 @@ where
     let parts_copy = parts.clone();
 
     let req = Request::from_parts(parts, body);
-    let guard = req
-        .extensions()
-        .get::<Executor>()
-        .and_then(|exec| exec.guard())
-        .cloned();
+
+    let state = req.extensions().get::<State>().unwrap();
+    let guard = state.exec.guard().cloned();
+
     let cancel = async move {
         match guard {
             Some(guard) => guard.downgrade().into_cancelled().await,

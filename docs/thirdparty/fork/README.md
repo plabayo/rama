@@ -9,14 +9,14 @@ as a distant relative.
 
 ### hyperium
 
-- h2: <https://github.com/hyperium/h2/tree/b9d5397bd751633f676b3164ebe03cb3c4534a75>
+- h2: <https://github.com/hyperium/h2/tree/e38678b1e2c465965f3ce5ec8d3040458415b376>
   - License:
-    - Original: <https://github.com/hyperium/h2/blob/b9d5397bd751633f676b3164ebe03cb3c4534a75/LICENSE>
+    - Original: <https://github.com/hyperium/h2/blob/e38678b1e2c465965f3ce5ec8d3040458415b376/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/f9f8f44058745d23fa52abf51b96b61ee7665642>
+- hyper: <https://github.com/hyperium/hyper/tree/32b76f4742df62f4419b9f87ef464bc0b1c21e72>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/f9f8f44058745d23fa52abf51b96b61ee7665642/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/32b76f4742df62f4419b9f87ef464bc0b1c21e72/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
@@ -24,28 +24,33 @@ as a distant relative.
     - Original: <https://github.com/hyperium/hyper-util/blob/66afc93debef02548c86e8454e6bc01cf4fca280/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
-- headers: <https://github.com/hyperium/headers/tree/c91416787b689b6ad838d4579556e10fac474d14>
+- headers: <https://github.com/hyperium/headers/tree/de0b1a1e97d20f3667a346c4d5b5973d92ab58f9>
   - License:
-    - Original: <https://github.com/hyperium/headers/blob/c91416787b689b6ad838d4579556e10fac474d14/LICENSE>
+    - Original: <https://github.com/hyperium/headers/blob/de0b1a1e97d20f3667a346c4d5b5973d92ab58f9/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
+- tonic: <https://github.com/hyperium/tonic/tree/88a448a2fdedf06340deac645a061120a2612537>
+  - License:
+    - Original: <https://github.com/hyperium/tonic/blob/88a448a2fdedf06340deac645a061120a2612537/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/tonic](./licenses/tonic)
 
 ### tower-rs
 
-- <https://github.com/tower-rs/tower/tree/21e01e977e97a7025ff4beb00b2acd79eadf7285>
+- <https://github.com/tower-rs/tower/tree/1992ebd196467deffe193d5a073db655492ce168>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
   - License:
-    - Original: <https://github.com/tower-rs/tower/blob/21e01e977e97a7025ff4beb00b2acd79eadf7285/LICENSE>
+    - Original: <https://github.com/tower-rs/tower/blob/1992ebd196467deffe193d5a073db655492ce168/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/1fe4c091df13eb9dd7c58786615f08abe0d73bc6>
+- <https://github.com/tower-rs/tower-http/tree/1a55dd83ab9e2268453018877a74ce2171f4701a>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/1fe4c091df13eb9dd7c58786615f08abe0d73bc6/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/1a55dd83ab9e2268453018877a74ce2171f4701a/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
@@ -76,21 +81,15 @@ but still directly in function of Rama.
 
 ## Relative Forks
 
-- <https://github.com/tokio-rs/axum/tree/ff031867df7126abe288f13a62c51849c9e544af>
+- <https://github.com/tokio-rs/axum/tree/061666a1116d853f9ca838fb2d0c668614a9f535>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code
   - License:
-    - Originals:
-      - <https://github.com/tokio-rs/axum/blob/ff031867df7126abe288f13a62c51849c9e544af/axum-core/LICENSE>
-      - <https://github.com/tokio-rs/axum/blob/ff031867df7126abe288f13a62c51849c9e544af/axum-extra/LICENSE>
-      - <https://github.com/tokio-rs/axum/blob/ff031867df7126abe288f13a62c51849c9e544af/axum/LICENSE>
+    - Original: <https://github.com/tokio-rs/axum/blob/061666a1116d853f9ca838fb2d0c668614a9f535/LICENSE>
     - Type: MIT
-    - Copies:
-      - [./licenses/axum-core](./licenses/axum-core)
-      - [./licenses/axum-extra](./licenses/axum-extra)
-      - [./licenses/axum](./licenses/axum)
+    - Copy: [./licenses/axum](./licenses/axum)
 - <https://github.com/dtolnay/paste/tree/6a302522990cbfd9de4e0c61d91854622f7b2999>
   - it was no longer maintained, so we're taking it over for ourselves
   - License:
@@ -103,16 +102,16 @@ but still directly in function of Rama.
     - Original: <https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/rust-utf8](./licenses/rust-utf8)
-- <https://github.com/snapview/tungstenite-rs/tree/3ffeb33e29824deae10d86f7edff2ed4de22e91b>
+- <https://github.com/snapview/tungstenite-rs/tree/2d4abe8dba23b283c1a3d2f4f4937c2f9a8d91e7>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tungstenite-rs/blob/3ffeb33e29824deae10d86f7edff2ed4de22e91b/LICENSE-MIT>
+    - Original: <https://github.com/snapview/tungstenite-rs/blob/2d4abe8dba23b283c1a3d2f4f4937c2f9a8d91e7/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
-- <https://github.com/snapview/tokio-tungstenite/tree/25b544e43fe979bca951f085ee1b66e9c1cc3113>
+- <https://github.com/snapview/tokio-tungstenite/tree/35d110c24c9d030d1608ec964d70c789dfb27452>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tokio-tungstenite/blob/25b544e43fe979bca951f085ee1b66e9c1cc3113/LICENSE>
+    - Original: <https://github.com/snapview/tokio-tungstenite/blob/35d110c24c9d030d1608ec964d70c789dfb27452/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tokio-tungstenite](./licenses/tokio-tungstenite)
 - <https://github.com/Michael-F-Bryan/include_dir/tree/d742c6fffce99ee89da91b934e7ce6fb2a82680c>

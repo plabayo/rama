@@ -11,7 +11,7 @@ use rustls::client::danger::ServerCertVerifier;
 use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone)]
-/// Internal data used as configuration/input for the [`super::HttpsConnector`].
+/// Internal data used as configuration/input for the [`super::TlsConnector`].
 ///
 /// Created by converting a [`rustls::ClientConfig`] into it directly,
 /// or by using [`TlsConnectorDataBuilder`] to build this in a more ergonomic way.
@@ -68,7 +68,7 @@ impl TlsConnectorData {
     }
 }
 
-/// [`ClientConfigBuilder`] can be used to construct [`rustls::ClientConfig`] for most common use cases in Rama.
+/// [`TlsConnectorDataBuilder`] can be used to construct [`rustls::ClientConfig`] for most common use cases in Rama.
 ///
 /// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ClientConfig`]
 pub struct TlsConnectorDataBuilder {

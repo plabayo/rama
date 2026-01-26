@@ -1,3 +1,4 @@
+use crate::StreamingBody;
 use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::{
     decompression::DecompressionBody,
@@ -5,13 +6,10 @@ use crate::layer::{
     util::compression::{CompressionLevel, WrapBody},
 };
 use crate::{HeaderValue, Request, Response, StatusCode, header};
-use crate::{
-    StreamingBody,
-    body::util::{BodyExt, Empty, combinators::UnsyncBoxBody},
-};
 use rama_core::Service;
-use rama_core::bytes::Buf;
+use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_http_types::Body;
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Decompresses request bodies and calls its underlying service.
@@ -32,7 +30,7 @@ pub struct RequestDecompression<S> {
     pub(super) pass_through_unaccepted: bool,
 }
 
-impl<S, ReqBody, ResBody, D> Service<Request<ReqBody>> for RequestDecompression<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for RequestDecompression<S>
 where
     S: Service<
             Request<DecompressionBody<ReqBody>>,
@@ -40,10 +38,9 @@ where
             Error: Into<BoxError>,
         >,
     ReqBody: StreamingBody + Send + 'static,
-    ResBody: StreamingBody<Data = D, Error: Into<BoxError>> + Send + 'static,
-    D: Buf + 'static,
+    ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Output = Response<UnsyncBoxBody<D, BoxError>>;
+    type Output = Response;
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
@@ -84,17 +81,12 @@ where
         self.inner
             .serve(req)
             .await
-            .map(|res| res.map(|body| body.map_err(Into::into).boxed_unsync()))
+            .map(|res| res.map(Body::new))
             .map_err(Into::into)
     }
 }
 
-fn unsupported_encoding<D>(
-    accept: AcceptEncoding,
-) -> Result<Response<UnsyncBoxBody<D, BoxError>>, BoxError>
-where
-    D: Buf + 'static,
-{
+fn unsupported_encoding(accept: AcceptEncoding) -> Result<Response, BoxError> {
     let res = Response::builder()
         .header(
             header::ACCEPT_ENCODING,
@@ -103,7 +95,7 @@ where
                 .unwrap_or(HeaderValue::from_static("identity")),
         )
         .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
-        .body(Empty::new().map_err(Into::into).boxed_unsync())?;
+        .body(Body::empty())?;
     Ok(res)
 }
 

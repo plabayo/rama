@@ -41,8 +41,6 @@ rama-utils = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-smallvec = { workspace = true }
-smol_str = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 
@@ -51,7 +49,6 @@ hex = { workspace = true }
 quickcheck = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
 
 [lints]
 workspace = true

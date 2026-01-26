@@ -20,6 +20,10 @@ endpoints=(
     # including in CI can have flaky IPv6 support... sigh
     # "https://ipv6.ramaproxy.org;--http1.1"
     # "https://ipv6.ramaproxy.org;--http2"
+    "http://http-test.ramaproxy.org;--http1.1"
+    "http://http-test.ramaproxy.org;--http2"
+    "https://http-test.ramaproxy.org;--http1.1"
+    "https://http-test.ramaproxy.org;--http2"
 )
 
 failed=0

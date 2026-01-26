@@ -11,3 +11,4 @@ pub mod credentials;
 pub use credentials::{Basic, Bearer, ProxyCredential};
 
 pub mod authority;
+pub mod layer;

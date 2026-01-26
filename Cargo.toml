@@ -18,15 +18,23 @@ resolver = "3"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[package.metadata.cargo-machete]
+ignored = ["rustversion"]
+
 [workspace]
 members = [
     ".",
+    "examples/grpc",
+    "examples/grpc/tests/extern_path/my_application",
+    "examples/grpc/tests/extern_path/uuid",
     "fuzz",
     "rama-cli",
     "rama-core",
     "rama-crypto",
     "rama-dns",
     "rama-error",
+    "rama-grpc",
+    "rama-grpc-build",
     "rama-haproxy",
     "rama-http",
     "rama-http-backend",
@@ -53,7 +61,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0-alpha.4"
+version = "0.3.0-rc1"
 license = "MIT OR Apache-2.0"
 edition = "2024"
 repository = "https://github.com/plabayo/rama"
@@ -90,11 +98,12 @@ chrono = { version = "0.4", default-features = false, features = [
     "clock",
 ] }
 clap = { version = "4.5", features = ["derive", "unstable-v5", "wrap_help"] }
+compression-codecs = "0.4"
+compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.0"
 divan = "0.1"
-env_logger = "0.11"
 escargot = "0.5"
 flate2 = "1.1"
 flume = "0.12"
@@ -102,7 +111,6 @@ fnv = "1.0"
 futures = "0.3"
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
-h2 = "0.4"
 hex = "0.4"
 hickory-resolver = { version = "0.25", default-features = false, features = [
     "tokio",
@@ -151,40 +159,49 @@ opentelemetry_sdk = { version = "0.31", default-features = false, features = [
 parking_lot = "0.12"
 percent-encoding = "2.3"
 pin-project-lite = "0.2"
+prettyplease = "0.2"
 proc-macro-crate = "3.4"
 proc-macro2 = "1.0"
+prost = "0.14.3"
+prost-build = "0.14.3"
+prost-types = "0.14.3"
+protoc-bin-vendored = "3.2.0"
 psl = "2"
 quickcheck = "1.0"
+quickcheck_macros = "1.1"
 quote = "1.0"
 radix_trie = "0.3"
-rama-boring = "^0.5.7"
-rama-boring-tokio = "^0.5.7"
-rama-core = { version = "0.3.0-alpha.4", path = "./rama-core" }
-rama-crypto = { version = "0.3.0-alpha.4", path = "./rama-crypto" }
-rama-dns = { version = "0.3.0-alpha.4", path = "./rama-dns" }
-rama-error = { version = "0.3.0-alpha.4", path = "./rama-error" }
-rama-haproxy = { version = "0.3.0-alpha.4", path = "./rama-haproxy" }
-rama-http = { version = "0.3.0-alpha.4", path = "./rama-http" }
-rama-http-backend = { version = "0.3.0-alpha.4", path = "./rama-http-backend" }
-rama-http-core = { version = "0.3.0-alpha.4", path = "./rama-http-core" }
-rama-http-headers = { version = "0.3.0-alpha.4", path = "./rama-http-headers" }
-rama-http-types = { version = "0.3.0-alpha.4", path = "./rama-http-types" }
-rama-macros = { version = "0.3.0-alpha.4", path = "./rama-macros" }
-rama-net = { version = "0.3.0-alpha.4", path = "./rama-net" }
-rama-proxy = { version = "0.3.0-alpha.4", path = "./rama-proxy" }
-rama-socks5 = { version = "0.3.0-alpha.4", path = "./rama-socks5" }
-rama-tcp = { version = "0.3.0-alpha.4", path = "./rama-tcp" }
-rama-tls-acme = { version = "0.3.0-alpha.4", path = "./rama-tls-acme" }
-rama-tls-boring = { version = "0.3.0-alpha.4", path = "./rama-tls-boring" }
-rama-tls-rustls = { version = "0.3.0-alpha.4", path = "./rama-tls-rustls" }
-rama-tower = { version = "0.3.0-alpha.4", path = "./rama-tower" }
-rama-ua = { version = "0.3.0-alpha.4", path = "./rama-ua" }
-rama-udp = { version = "0.3.0-alpha.4", path = "./rama-udp" }
-rama-unix = { version = "0.3.0-alpha.4", path = "./rama-unix" }
-rama-utils = { version = "0.3.0-alpha.4", path = "./rama-utils" }
-rama-ws = { version = "0.3.0-alpha.4", path = "./rama-ws" }
+rama = { version = "0.3.0-rc1", path = "." }
+rama-boring = "^0.5.9"
+rama-boring-tokio = "^0.5.9"
+rama-core = { version = "0.3.0-rc1", path = "./rama-core" }
+rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto" }
+rama-dns = { version = "0.3.0-rc1", path = "./rama-dns" }
+rama-error = { version = "0.3.0-rc1", path = "./rama-error" }
+rama-grpc = { version = "0.3.0-rc1", path = "./rama-grpc" }
+rama-grpc-build = { version = "0.3.0-rc1", path = "./rama-grpc-build" }
+rama-haproxy = { version = "0.3.0-rc1", path = "./rama-haproxy" }
+rama-http = { version = "0.3.0-rc1", path = "./rama-http" }
+rama-http-backend = { version = "0.3.0-rc1", path = "./rama-http-backend" }
+rama-http-core = { version = "0.3.0-rc1", path = "./rama-http-core" }
+rama-http-headers = { version = "0.3.0-rc1", path = "./rama-http-headers" }
+rama-http-types = { version = "0.3.0-rc1", path = "./rama-http-types" }
+rama-macros = { version = "0.3.0-rc1", path = "./rama-macros" }
+rama-net = { version = "0.3.0-rc1", path = "./rama-net" }
+rama-proxy = { version = "0.3.0-rc1", path = "./rama-proxy" }
+rama-socks5 = { version = "0.3.0-rc1", path = "./rama-socks5" }
+rama-tcp = { version = "0.3.0-rc1", path = "./rama-tcp" }
+rama-tls-acme = { version = "0.3.0-rc1", path = "./rama-tls-acme" }
+rama-tls-boring = { version = "0.3.0-rc1", path = "./rama-tls-boring" }
+rama-tls-rustls = { version = "0.3.0-rc1", path = "./rama-tls-rustls" }
+rama-tower = { version = "0.3.0-rc1", path = "./rama-tower" }
+rama-ua = { version = "0.3.0-rc1", path = "./rama-ua" }
+rama-udp = { version = "0.3.0-rc1", path = "./rama-udp" }
+rama-unix = { version = "0.3.0-rc1", path = "./rama-unix" }
+rama-utils = { version = "0.3.0-rc1", path = "./rama-utils" }
+rama-ws = { version = "0.3.0-rc1", path = "./rama-ws" }
 rand = "0.9"
-ratatui = "0.29"
+ratatui = "0.30"
 rawzip = { version = "0.4" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
 regex = "1.12"
@@ -199,16 +216,17 @@ rustls-pki-types = "^1"
 rustversion = "1.0"
 schannel = "0.1"
 serde = "1.0"
-serde_html_form = "0.2"
+serde_html_form = "0.4"
 serde_json = "1.0"
 serde_test = "1"
 sha1 = "0.10"
 sha2 = "0.10"
 slab = "0.4"
-smallvec = { version = "1.15", features = ["const_generics", "const_new"] }
+smallvec = { version = "1.15" }
 smol_str = "0.3"
 socket2 = "0.6"
 spmc = "0.3"
+static_assertions = "1"
 syn = "2.0"
 sync_wrapper = "1.0"
 tempfile = "3.23"
@@ -233,7 +251,7 @@ tracing-subscriber = "0.3"
 tracing-test = "0.2"
 tracing-tree = "0.4"
 trybuild = "1.0"
-tui-logger = { version = "0.17", features = ["tracing-support"] }
+tui-logger = { version = "0.18", features = ["tracing-support"] }
 turmoil = "0.7"
 unicode-normalization = "0.1"
 uuid = "1.18"
@@ -242,7 +260,7 @@ walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
 wildcard = "0.3"
-x509-parser = "0.18"
+x509-parser = { version = "0.18", default-features = false, features = ["aws-lc-rs", "verify", "verify-aws"] }
 zstd = "0.13"
 
 [workspace.lints.rust]
@@ -253,7 +271,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 todo = "warn"
-empty_enum = "warn"
+empty_enums = "warn"
 enum_glob_use = "warn"
 equatable_if_let = "warn"
 mem_forget = "warn"
@@ -276,7 +294,6 @@ linkedlist = "warn"
 macro_use_imports = "warn"
 manual_let_else = "warn"
 match_same_arms = "warn"
-must_use_candidate = "warn"
 needless_pass_by_ref_mut = "warn"
 needless_pass_by_value = "warn"
 option_option = "warn"
@@ -293,6 +310,9 @@ use_self = "warn"
 uninlined_format_args = "warn"
 fallible_impl_from = "warn"
 
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
 [features]
 default = []
 full = [
@@ -303,7 +323,9 @@ full = [
     "cli",
     "tcp",
     "udp",
+    "grpc",
     "http-full",
+    "grpc-full",
     "proxy-full",
     "tower",
     "opentelemetry",
@@ -313,6 +335,7 @@ compression = [
     "rama-http?/compression",
     "rama-tls-boring?/compression",
     "rama-ws?/compression",
+    "rama-grpc?/compression",
 ]
 crypto = ["dep:rama-crypto"]
 tls = [
@@ -343,6 +366,8 @@ tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
 acme = ["crypto", "dep:rama-tls-acme"]
+grpc = ["http", "dep:rama-grpc"]
+grpc-full = ["grpc", "http-full"]
 http = [
     "dep:rama-http",
     "ua",
@@ -362,6 +387,7 @@ http-full = [
     "ua-embed-profiles",
     "compression",
     "dep:tokio",
+    "rama-grpc?/transport",
 ]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
@@ -390,6 +416,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
+rama-grpc = { workspace = true, optional = true }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
@@ -411,10 +438,11 @@ serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
+tokio-util = { workspace = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_family = "unix")'.dependencies]
 rama-unix = { workspace = true }
 
 [build-dependencies]
@@ -422,14 +450,15 @@ rustversion = { workspace = true }
 
 [dev-dependencies]
 bytes = { workspace = true }
-derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
+flate2 = { workspace = true }
 futures-channel = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }
+libc = "0.2"
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true }
@@ -530,6 +559,10 @@ name = "http_form"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_har_replay"
+required-features = ["http-full"]
+
+[[example]]
 name = "http_health_check"
 required-features = ["http-full"]
 
@@ -547,6 +580,10 @@ required-features = ["http-full", "boring"]
 
 [[example]]
 name = "http_key_value_store"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_abort"
 required-features = ["http-full"]
 
 [[example]]
@@ -656,6 +693,10 @@ required-features = ["http-full", "boring"]
 [[example]]
 name = "tls_sni_router"
 required-features = ["http-full", "boring"]
+
+[[example]]
+name = "tcp_listener_fd_passing"
+required-features = ["http-full"]
 
 [[example]]
 name = "tcp_listener_hello"

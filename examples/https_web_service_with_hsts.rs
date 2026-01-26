@@ -57,7 +57,7 @@ use rama::{
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -104,13 +104,13 @@ async fn main() {
 
     // create http service
     shutdown.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+        let exec = Executor::graceful(guard);
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62043")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62043");
 
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec.clone()).service(
+        let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
                 AddRequiredResponseHeadersLayer::default(),
@@ -118,18 +118,18 @@ async fn main() {
                 .into_layer(RedirectHttpToHttps::new().with_overwrite_port(62044)),
         );
 
-        tcp_service.serve_graceful(guard, http_service).await;
+        tcp_service.serve(http_service).await;
     });
 
     // create https service
     shutdown.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+        let exec = Executor::graceful(guard);
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62044")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62044");
 
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec.clone()).service(
+        let http_service = HttpServer::auto(exec).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 AddRequiredResponseHeadersLayer::default(),
@@ -140,13 +140,10 @@ async fn main() {
                 .into_layer(
                     Router::new().with_get("/", Html(r##"<h1>Hello HSTS</h1>"##.to_owned())),
                 ),
-        );
+        ));
 
         tcp_service
-            .serve_graceful(
-                guard,
-                TlsAcceptorLayer::new(tls_service_data).into_layer(http_service),
-            )
+            .serve(TlsAcceptorLayer::new(tls_service_data).into_layer(http_service))
             .await;
     });
 

@@ -346,6 +346,67 @@ impl RamaService {
         Self { process }
     }
 
+    // Start the rama http-test service with the given port.
+    pub(super) fn serve_http_test(port: u16, secure: bool) -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        if secure {
+            const BASE64: base64::engine::GeneralPurpose =
+                base64::engine::general_purpose::STANDARD;
+
+            builder.env(
+                "RAMA_TLS_CRT",
+                BASE64.encode(include_bytes!("./example_tls.crt")),
+            );
+            builder.env(
+                "RAMA_TLS_KEY",
+                BASE64.encode(include_bytes!("./example_tls.key")),
+            );
+        }
+
+        builder
+            .stdout(std::process::Stdio::piped())
+            .arg("serve")
+            .arg("http-test")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        if secure {
+            builder.arg("--secure");
+        }
+
+        let mut process = builder.spawn().unwrap();
+
+        let stdout = process.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout).lines();
+
+        for line in &mut stdout {
+            let line = line.unwrap();
+            if line.contains("HTTP Test Service (auto) listening") {
+                break;
+            }
+        }
+
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                println!("rama http-test >> {line}");
+            }
+        });
+
+        Self { process }
+    }
+
     /// Run any rama cmd
     pub(super) fn run(args: Vec<&'static str>) -> Result<String, Box<dyn std::error::Error>> {
         let child = escargot::CargoBuild::new()

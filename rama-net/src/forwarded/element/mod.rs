@@ -38,7 +38,7 @@ struct ExtensionValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Similar to [`Authority`] but with the port being optional.
+/// Wrapper of a value [`HostWithOptPort`] to provide some forward-specific utilities.
 pub struct ForwardedAuthority(pub HostWithOptPort);
 
 impl ForwardedAuthority {
@@ -175,7 +175,7 @@ impl ForwardedElement {
     }
 
     /// Create a new [`ForwardedElement`] with the "host" parameter set
-    /// using the given [`Host`], [`Authority`] or [`SocketAddr`].
+    /// using the given [`Host`], [`Domain`], [`HostWithPort`], [`IpAddr`], [`SocketAddress`] and more.
     pub fn new_forwarded_host(authority: impl Into<ForwardedAuthority>) -> Self {
         Self {
             by_node: None,

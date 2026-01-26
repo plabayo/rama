@@ -27,6 +27,8 @@ use rama::{
         LimitLayer,
         limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
+    net::client::pool::http::HttpPooledConnectorConfig,
+    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -57,8 +59,8 @@ async fn main() {
         .without_tls_proxy_support()
         .with_proxy_support()
         .without_tls_support()
-        .with_default_http_connector()
-        .try_with_connection_pool(Default::default())
+        .with_default_http_connector(Executor::default())
+        .try_with_connection_pool(HttpPooledConnectorConfig::default())
         .expect("connection pool")
         .build_client();
 
@@ -104,7 +106,7 @@ async fn run_server(addr: &str, ready: Sender<()>) {
     let http_service =
         HttpServer::default().service(WebService::default().with_get("/", "Hello, World!"));
 
-    let serve = TcpListener::build()
+    let serve = TcpListener::build(Executor::default())
         .bind(addr)
         .await
         .expect("bind TCP Listener")

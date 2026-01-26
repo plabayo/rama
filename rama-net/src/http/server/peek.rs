@@ -14,8 +14,8 @@ use tokio::io::AsyncReadExt;
 /// A [`Service`] router that can be used to support
 /// http/1x and h2 traffic as well as non-tls traffic.
 ///
-/// By default non-tls traffic is rejected using [`RejectService`].
-/// Use [`TlsPeekRouter::with_fallback`] to configure the fallback service.
+/// By default non-http traffic is rejected using [`RejectService`].
+/// Use [`HttpPeekRouter::with_fallback`] to configure the fallback service.
 #[derive(Debug, Clone)]
 pub struct HttpPeekRouter<T, F = RejectService<(), NoHttpRejectError>> {
     http_acceptor: T,

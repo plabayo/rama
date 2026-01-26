@@ -1,4 +1,5 @@
 use rama_error::{ErrorContext, OpaqueError};
+use rama_http_types::body::OptionalBody;
 
 use super::ValidateRequest;
 use crate::{
@@ -15,10 +16,7 @@ pub struct AcceptHeader<ResBody = Body> {
 
 impl<ResBody> AcceptHeader<ResBody> {
     /// Create a new `AcceptHeader` from the given Mime.
-    pub(super) fn new(mime: Mime) -> Self
-    where
-        ResBody: Default,
-    {
+    pub(super) fn new(mime: Mime) -> Self {
         Self {
             header_value: Arc::new(mime),
             _ty: PhantomData,
@@ -30,10 +28,7 @@ impl<ResBody> AcceptHeader<ResBody> {
     /// # Errors
     ///
     /// Errors if `header_value` is not in the form: `type/subtype`, such as `application/json`
-    pub(super) fn try_new(header_value: &str) -> Result<Self, OpaqueError>
-    where
-        ResBody: Default,
-    {
+    pub(super) fn try_new(header_value: &str) -> Result<Self, OpaqueError> {
         Ok(Self {
             header_value: Arc::new(
                 header_value
@@ -65,9 +60,9 @@ impl<ResBody> fmt::Debug for AcceptHeader<ResBody> {
 impl<B, ResBody> ValidateRequest<B> for AcceptHeader<ResBody>
 where
     B: Send + Sync + 'static,
-    ResBody: Default + Send + 'static,
+    ResBody: Send + 'static,
 {
-    type ResponseBody = ResBody;
+    type ResponseBody = OptionalBody<ResBody>;
 
     async fn validate(&self, req: Request<B>) -> Result<Request<B>, Response<Self::ResponseBody>> {
         if !req.headers().contains_key(header::ACCEPT) {
@@ -100,7 +95,7 @@ where
         {
             return Ok(req);
         }
-        let mut res = Response::new(ResBody::default());
+        let mut res = Response::new(OptionalBody::none());
         *res.status_mut() = StatusCode::NOT_ACCEPTABLE;
         Err(res)
     }

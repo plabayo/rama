@@ -15,12 +15,9 @@ use rama_core::telemetry::opentelemetry::semantic_conventions::metric::{
     HTTP_SERVER_ACTIVE_REQUESTS, HTTP_SERVER_REQUEST_BODY_SIZE,
 };
 use rama_core::telemetry::opentelemetry::{
-    AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, ServiceInfo, global,
+    AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, global,
     metrics::{Counter, Histogram, Meter},
-    semantic_conventions::{
-        self,
-        resource::{SERVICE_NAME, SERVICE_VERSION},
-    },
+    semantic_conventions,
 };
 use rama_core::{Layer, Service};
 use rama_error::BoxError;
@@ -146,15 +143,7 @@ impl RequestMetricsLayer<()> {
     /// with a custom name and version.
     #[must_use]
     pub fn custom(opts: MeterOptions) -> Self {
-        let service_info = opts.service.unwrap_or_else(|| ServiceInfo {
-            name: rama_utils::info::NAME.to_owned(),
-            version: rama_utils::info::VERSION.to_owned(),
-        });
-
-        let mut attributes = opts.attributes.unwrap_or_else(|| Vec::with_capacity(2));
-        attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
-        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version));
-
+        let attributes = opts.attributes.unwrap_or_default();
         let meter = get_versioned_meter();
         let metrics = Metrics::new(&meter, opts.metric_prefix.as_deref());
 
@@ -405,16 +394,7 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&req);
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME)
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION)
-        );
+
         assert!(
             attributes
                 .iter()
@@ -425,10 +405,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_default() {
         let svc = RequestMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -439,16 +415,7 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&req);
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()
@@ -459,10 +426,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_attributes_vec() {
         let svc = RequestMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -474,16 +437,6 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&req);
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
         assert!(
             attributes
                 .iter()
@@ -499,10 +452,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_attribute_fn() {
         let svc = RequestMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -518,16 +467,7 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&req);
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()

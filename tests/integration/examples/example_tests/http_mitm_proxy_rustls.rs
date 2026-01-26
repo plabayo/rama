@@ -54,7 +54,7 @@ async fn test_http_mitm_proxy() {
     ));
 
     tokio::spawn(async {
-        TcpListener::bind("127.0.0.1:63006")
+        TcpListener::bind("127.0.0.1:63006", Executor::default())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)

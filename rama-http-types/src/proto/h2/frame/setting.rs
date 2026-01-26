@@ -1,9 +1,9 @@
 use rama_core::bytes::{BufMut as _, BytesMut};
 use rama_core::telemetry::tracing;
+use rama_utils::collections::smallvec::{self, SmallVec};
 use rama_utils::macros::enums::enum_builder;
 use rama_utils::octets::{unpack_octets_as_u16, unpack_octets_as_u32};
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
 
 /// A struct representing the combination of a [`SettingId`] with its u32 value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

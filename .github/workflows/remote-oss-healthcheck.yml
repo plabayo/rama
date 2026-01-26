@@ -10,6 +10,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - run: |
           bash rama-fp/infra/scripts/remote-healthcheck.sh

@@ -40,10 +40,6 @@ Common examples include:
 - **Control**: Rama gives you more direct access to the network stack and transport layers
 - **Integration**: Rama makes it easier to combine web services with proxy functionality
 
-The choice between them often comes down to your priorities:
-- Choose Axum if you want a framework optimized for traditional web development with excellent developer experience
-- Choose Rama if you need more control, want to integrate with proxy services, or have specific requirements that benefit from direct access to the network stack
-
 ## Datastar
 
 > Datastar helps you build reactive web applications with the simplicity of server-side rendering and the power of a full-stack SPA framework.
@@ -92,7 +88,9 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 ### Basic Services
 - [/examples/http_listener_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_listener_hello.rs): A minimal web service example
 - [/examples/http_health_check.rs](https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs): A health check service
+- [/examples/http_har_replay.rs](https://github.com/plabayo/rama/blob/main/examples/http_har_replay.rs): HAR replay demonstration
 - [/examples/http_service_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs): Demonstrates transport layer control
+- [/examples/http_abort.rs](https://github.com/plabayo/rama/blob/main/examples/http_abort.rs): A small example how one can control a lower network layer from within the http (application) layer.
 
 ### Newline Delimited JSON (ndjson)
 
@@ -100,7 +98,7 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 
 ### Server-Sent Events (SSE)
 
-See [./sse.md].
+See [./http/sse.md].
 
 ### Anti-Bot Examples
 

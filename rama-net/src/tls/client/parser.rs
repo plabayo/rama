@@ -43,7 +43,7 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
 
 /// Parse a [`ClientHello`] from the raw incoming "wire" client handshake bytes to find the SNI Host value.
 ///
-/// Same as [`extract_sni_from_client_hello`] but handles the full handshake bytes, meaning
+/// Same as [`extract_sni_from_client_hello_record`] but handles the full handshake bytes, meaning
 /// the client hello record itself and the handshake header bytes in front of it.
 pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain>, OpaqueError> {
     parse_client_hello_handshake_sni_inner(i)

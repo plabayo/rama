@@ -24,22 +24,22 @@ derive_non_empty_flat_csv_header! {
     /// # Examples
     ///
     /// ```
-    /// use rama_utils::collections::non_empty_vec;
+    /// use rama_utils::collections::non_empty_smallvec;
     /// use rama_http_types::Method;
     /// use rama_http_headers::Allow;
     ///
     /// let allow_methods = Allow(
-    ///     non_empty_vec![Method::GET, Method::PUT],
+    ///     non_empty_smallvec![Method::GET, Method::PUT],
     /// );
     /// ```
-    pub struct Allow(pub NonEmptyVec<Method>);
+    pub struct Allow(pub NonEmptySmallVec<7, Method>);
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::{test_decode, test_encode};
     use super::*;
-    use rama_utils::collections::non_empty_vec;
+    use rama_utils::collections::non_empty_smallvec;
 
     #[test]
     fn decode_single() {
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn encode() {
-        let allow = Allow(non_empty_vec![Method::GET, Method::PUT]);
+        let allow = Allow(non_empty_smallvec![Method::GET, Method::PUT]);
 
         let headers = test_encode(allow);
         assert_eq!(headers["allow"], "GET, PUT");

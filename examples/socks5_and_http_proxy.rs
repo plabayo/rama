@@ -67,24 +67,25 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62023")
+    let tcp_service = TcpListener::bind("127.0.0.1:62023", exec.clone())
         .await
         .expect("bind socks5+http proxy to 127.0.0.1:62023");
 
     let socks5_acceptor =
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
-    let exec = Executor::graceful(graceful.guard());
-    let http_service = HttpServer::auto(exec).service(
+    let http_service = HttpServer::auto(exec.clone()).service(
         (
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
             ProxyAuthLayer::new(basic!("tom", "clancy")),
             UpgradeLayer::new(
+                exec.clone(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
-                ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
+                ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
             ),
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),
@@ -94,7 +95,7 @@ async fn main() {
 
     let auto_socks5_acceptor = Socks5PeekRouter::new(socks5_acceptor).with_fallback(http_service);
 
-    graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, auto_socks5_acceptor));
+    graceful.spawn_task(tcp_service.serve(auto_socks5_acceptor));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(30))
@@ -132,10 +133,10 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),
-                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port().to_string()).unwrap_or_default(),
-                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip().to_string()).unwrap_or_default(),
-                    network.peer.port = %client_socket_info.peer_addr().port(),
-                    network.peer.address = %client_socket_info.peer_addr().ip(),
+                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port.to_string()).unwrap_or_default(),
+                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip_addr.to_string()).unwrap_or_default(),
+                    network.peer.port = %client_socket_info.peer_addr().port,
+                    network.peer.address = %client_socket_info.peer_addr().ip_addr,
                     "http plain text proxy received response",
                 )
             } else {

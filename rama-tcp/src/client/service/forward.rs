@@ -4,6 +4,7 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
+    rt::Executor,
     stream::Stream,
 };
 use rama_net::{
@@ -30,19 +31,21 @@ pub type DefaultForwarder = Forwarder<super::TcpConnector>;
 
 impl DefaultForwarder {
     /// Create a new static forwarder for the given target [`HostWithPort`]
-    pub fn new(target: impl Into<HostWithPort>) -> Self {
+    pub fn new(exec: Executor, target: impl Into<HostWithPort>) -> Self {
         Self {
             kind: ForwarderKind::Static(target.into()),
-            connector: TcpConnector::new(),
+            connector: TcpConnector::new(exec),
         }
     }
 
-    /// Create a new dynamic forwarder, which will fetch the target from the [`Context`]
+    /// Create a new dynamic forwarder, which will fetch the target from the [`Extensions`]
+    ///
+    /// [`Extensions`]: rama_core::extensions::Extensions
     #[must_use]
-    pub fn ctx() -> Self {
+    pub fn ctx(exec: Executor) -> Self {
         Self {
             kind: ForwarderKind::Dynamic,
-            connector: TcpConnector::new(),
+            connector: TcpConnector::new(exec),
         }
     }
 }

@@ -91,6 +91,25 @@ impl Encoding {
         }
     }
 
+    pub fn maybe_from_content_encoding_directive(
+        encoding: &crate::ContentEncodingDirective,
+        supported_encoding: impl SupportedEncodings,
+    ) -> Option<Self> {
+        match encoding {
+            crate::ContentEncodingDirective::Gzip if supported_encoding.gzip() => Some(Self::Gzip),
+            crate::ContentEncodingDirective::Deflate if supported_encoding.deflate() => {
+                Some(Self::Deflate)
+            }
+            crate::ContentEncodingDirective::Brotli if supported_encoding.br() => {
+                Some(Self::Brotli)
+            }
+            crate::ContentEncodingDirective::ZStandard if supported_encoding.zstd() => {
+                Some(Self::Zstd)
+            }
+            _ => None,
+        }
+    }
+
     pub fn maybe_from_content_encoding_header(
         headers: &rama_http_types::HeaderMap,
         supported_encoding: impl SupportedEncodings,
@@ -136,7 +155,7 @@ impl Encoding {
     }
 }
 
-/// based on https://github.com/http-rs/accept-encoding
+/// based on <https://github.com/http-rs/accept-encoding>
 pub fn parse_accept_encoding_headers<'a>(
     headers: &'a rama_http_types::HeaderMap,
     supported_encoding: impl SupportedEncodings + 'a,

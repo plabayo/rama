@@ -70,7 +70,7 @@ where
 pub struct BoxedConnectorService<S>(S);
 
 impl<S> BoxedConnectorService<S> {
-    /// Create a new [`BoxedConnector`].
+    /// Create a new [`BoxedConnectorService`].
     pub fn new(connector: S) -> Self {
         Self(connector)
     }

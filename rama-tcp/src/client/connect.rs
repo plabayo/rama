@@ -28,7 +28,7 @@ use tokio::sync::{
 use crate::TcpStream;
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
-/// to actually establish the [`TcpStream`.]
+/// to actually establish the [`TcpStream`]
 pub trait TcpStreamConnector: Clone + Send + Sync + 'static {
     /// Type of error that can occurr when establishing the connection failed.
     type Error;
@@ -182,10 +182,11 @@ macro_rules! impl_stream_connector_either {
 pub async fn default_tcp_connect(
     extensions: &Extensions,
     address: HostWithPort,
+    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
 {
-    tcp_connect(extensions, address, GlobalDnsResolver::default(), ()).await
+    tcp_connect(extensions, address, GlobalDnsResolver::default(), (), exec).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`HostWithPort`].
@@ -194,6 +195,7 @@ pub async fn tcp_connect<Dns, Connector>(
     address: HostWithPort,
     dns: Dns,
     connector: Connector,
+    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     Dns: DnsResolver + Clone,
@@ -230,28 +232,28 @@ where
 
     if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>().cloned() {
         tcp_connect_inner(
-            extensions,
             domain.clone(),
             port,
             dns_mode,
             (dns_overwrite, dns),
             connector.clone(),
             ip_mode,
+            exec,
         )
         .await
     } else {
-        tcp_connect_inner(extensions, domain, port, dns_mode, dns, connector, ip_mode).await
+        tcp_connect_inner(domain, port, dns_mode, dns, connector, ip_mode, exec).await
     }
 }
 
 async fn tcp_connect_inner<Dns, Connector>(
-    extensions: &Extensions,
     domain: Domain,
     port: u16,
     dns_mode: DnsResolveIpMode,
     dns: Dns,
     connector: Connector,
     connect_mode: ConnectIpMode,
+    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     Dns: DnsResolver + Clone,
@@ -261,10 +263,8 @@ where
     let connected = Arc::new(AtomicBool::new(false));
     let sem = Arc::new(Semaphore::new(3));
 
-    let executor = extensions.get::<Executor>().cloned().unwrap_or_default();
-
     if dns_mode.ipv4_supported() {
-        executor.spawn_task(
+        exec.spawn_task(
             tcp_connect_inner_branch(
                 dns_mode,
                 dns.clone(),
@@ -286,7 +286,7 @@ where
     }
 
     if dns_mode.ipv6_supported() {
-        executor.spawn_task(
+        exec.into_spawn_task(
             tcp_connect_inner_branch(
                 dns_mode,
                 dns.clone(),

@@ -210,6 +210,8 @@ impl fmt::UpperHex for Ja3 {
 /// error identifying a failure in [`Ja3::compute`]
 pub enum Ja3ComputeError {
     /// missing [`ClientHello`]
+    ///
+    /// [`ClientHello`]: crate::tls::client::ClientHello
     MissingClientHello,
     /// cipher suites was empty
     EmptyCipherSuites,

@@ -4,8 +4,7 @@ use crate::sse::{
 };
 use mime::Mime;
 use rama_error::{ErrorContext, OpaqueError};
-use rama_utils::str::NonEmptyStr;
-use smol_str::SmolStr;
+use rama_utils::str::{NonEmptyStr, smol_str::SmolStr};
 
 /// [`ExecuteScript`] executes JavaScript in the browser
 ///

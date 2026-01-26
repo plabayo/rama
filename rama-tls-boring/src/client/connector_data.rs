@@ -242,7 +242,7 @@ impl TlsConnectorDataBuilder {
             .expect("with http 2")
     }
 
-    /// Add [`ConfigBuilder`] to the end of our base builder
+    /// Add [`TlsConnectorDataBuilder`] to the end of our base builder
     ///
     /// When evaluating builders we start from this builder (the last one) and
     /// work our way back until we find a value.
@@ -251,7 +251,7 @@ impl TlsConnectorDataBuilder {
         self
     }
 
-    /// Add [`ConfigBuilder`] to the start of our base builders
+    /// Add [`TlsConnectorDataBuilder`] to the start of our base builders
     ///
     /// Builder in the start is evaluated as the last one when iterating over builders
     pub fn prepend_base_config(&mut self, config: Arc<Self>) -> &mut Self {
@@ -495,20 +495,53 @@ impl TlsConnectorDataBuilder {
                 // this code path is there to set it anyway
                 static WINDOWS_ROOT_CA: std::sync::LazyLock<Result<X509Store, OpaqueError>> =
                     std::sync::LazyLock::new(|| {
-                        trace!("boring connector: windows: load root certs for current user");
-
-                        // Trusted Root Certification Authorities
-                        let user_root = schannel::cert_store::CertStore::open_current_user("ROOT")
-                            .context("open (root) cert store for current user")?;
+                        trace!("boring connector: windows: load system certs");
 
                         let mut builder = rama_boring::x509::store::X509StoreBuilder::new()
                             .context("build x509 store builder")?;
 
-                        for cert in user_root.certs() {
-                            // Convert the Windows cert to DER, then to BoringSSL X509
-                            if let Ok(x509) = X509::from_der(cert.to_der()) {
-                                let _ = builder.add_cert(x509);
-                            }
+                        let mut certs_added = false;
+
+                        macro_rules! try_load_certs {
+                            ($builder:ident, $certs_added:ident, $method:ident, $store:literal) => {{
+                                match schannel::cert_store::CertStore::$method($store) {
+                                    Ok(cstore) => {
+                                        for cert in cstore.certs() {
+                                            // Convert the Windows cert to DER, then to BoringSSL X509
+                                            match X509::from_der(cert.to_der()) {
+                                                Ok(x509) => {
+                                                    if let Err(err) = builder.add_cert(x509) {
+                                                        debug!("failed to add x509 cert to windows: {err}");
+                                                    } else {
+                                                        $certs_added = true;
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    debug!("failed to convert DER cert to x509: {err}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        debug!(
+                                            "failed to open {} cert store using schannel::cert_store::CertStore::{}; err = {err:?}",
+                                            $store,
+                                            stringify!($method),
+                                        );
+                                    }
+                                }
+                            }};
+                        }
+
+                        try_load_certs!(builder, certs_added, open_current_user, "Root");
+                        try_load_certs!(builder, certs_added, open_current_user, "CA");
+                        try_load_certs!(builder, certs_added, open_local_machine, "Root");
+                        try_load_certs!(builder, certs_added, open_local_machine, "CA");
+
+                        if !certs_added {
+                            return Err(OpaqueError::from_display(
+                                "failed to add windows certs from system (user/machine x Root/CA)",
+                            ));
                         }
 
                         Ok(builder.build())

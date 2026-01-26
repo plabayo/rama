@@ -52,7 +52,7 @@ use rama::{
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde::Deserialize;
 use serde_json::json;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 const ADDRESS: &str = "127.0.0.1:62018";
 
@@ -140,7 +140,7 @@ async fn main() {
         tracing::info!("running service at: {ADDRESS}");
         let exec = Executor::graceful(guard);
         HttpServer::auto(exec)
-            .listen(ADDRESS, middlewares.into_layer(router))
+            .listen(ADDRESS, Arc::new(middlewares.into_layer(router)))
             .await
             .unwrap();
     });

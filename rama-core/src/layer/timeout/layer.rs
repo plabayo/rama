@@ -7,7 +7,7 @@ use crate::{
 
 use super::{Timeout, error::Elapsed};
 
-/// Applies a timeout to requests via the supplied inner service.
+/// Applies a timeout to inputs via the supplied inner service.
 #[derive(Debug, Clone)]
 pub struct TimeoutLayer<F> {
     timeout: Option<Duration>,

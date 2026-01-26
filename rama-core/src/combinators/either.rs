@@ -77,7 +77,7 @@ macro_rules! __define_either {
             }
         }
 
-        impl<$($param),+, Output> std::future::Future for $id<$($param),+>
+        impl<$($param),+, Output> Future for $id<$($param),+>
         where
             $($param: Future<Output = Output>),+
         {

@@ -1,7 +1,7 @@
 use crate::{Request, Uri};
 use rama_core::{combinators::Either, telemetry::tracing};
 use rama_net::http::RequestContext;
-use smallvec::SmallVec;
+use rama_utils::collections::smallvec::SmallVec;
 use std::borrow::Cow;
 use std::io::Write as _;
 

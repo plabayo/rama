@@ -26,6 +26,7 @@
 //! connection index and count of requests within that connection.
 
 use rama_core::ServiceInput;
+use rama_core::telemetry::tracing;
 use rama_error::BoxError;
 use rama_http_core::h2::client;
 use rama_http_types::{
@@ -35,14 +36,13 @@ use rama_http_types::{
 use tokio::net::TcpStream;
 
 #[tokio::main]
+#[tracing_test::traced_test]
 pub async fn main() -> Result<(), BoxError> {
-    let _ = env_logger::try_init();
-
     let tcp = TcpStream::connect("127.0.0.1:5928").await?;
     let tcp = ServiceInput::new(tcp);
     let (mut client, h2) = client::handshake(tcp).await?;
 
-    println!("sending request");
+    tracing::info!("sending request");
 
     let request = Request::builder()
         .uri("https://example.com/")
@@ -63,22 +63,22 @@ pub async fn main() -> Result<(), BoxError> {
     // Spawn a task to run the conn...
     tokio::spawn(async move {
         if let Err(e) = h2.await {
-            println!("GOT ERR={e:?}");
+            tracing::info!("GOT ERR={e:?}");
         }
     });
 
     let response = response.await?;
-    println!("GOT RESPONSE: {response:?}");
+    tracing::info!("GOT RESPONSE: {response:?}");
 
     // Get the body
     let mut body = response.into_body();
 
     while let Some(chunk) = body.data().await {
-        println!("GOT CHUNK = {:?}", chunk?);
+        tracing::info!("GOT CHUNK = {:?}", chunk?);
     }
 
     if let Some(trailers) = body.trailers().await? {
-        println!("GOT TRAILERS: {trailers:?}");
+        tracing::info!("GOT TRAILERS: {trailers:?}");
     }
 
     Ok(())

@@ -273,6 +273,14 @@ impl From<(Ipv6Addr, u16)> for SocketAddress {
     }
 }
 
+impl From<([u16; 8], u16)> for SocketAddress {
+    #[inline]
+    fn from((ip, port): ([u16; 8], u16)) -> Self {
+        let ip: IpAddr = ip.into();
+        (ip, port).into()
+    }
+}
+
 impl From<([u8; 16], u16)> for SocketAddress {
     #[inline]
     fn from((ip, port): ([u8; 16], u16)) -> Self {

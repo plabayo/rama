@@ -1,13 +1,14 @@
 use rama_core::extensions::Extensions;
-use std::net::SocketAddr;
+
+use crate::address::SocketAddress;
 
 #[cfg(feature = "http")]
 use {crate::stream::SocketInfo, rama_core::extensions::ExtensionsRef, rama_http_types::Request};
 
 #[derive(Debug, Clone)]
-/// Matcher based on the [`SocketAddr`] of the peer.
+/// Matcher based on the [`SocketAddress`] of the peer.
 pub struct SocketAddressMatcher {
-    addr: SocketAddr,
+    addr: SocketAddress,
     optional: bool,
 }
 
@@ -17,7 +18,7 @@ impl SocketAddressMatcher {
     /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
     /// use the [`SocketAddressMatcher::optional`] constructor..
-    pub fn new(addr: impl Into<SocketAddr>) -> Self {
+    pub fn new(addr: impl Into<SocketAddress>) -> Self {
         Self {
             addr: addr.into(),
             optional: false,
@@ -29,7 +30,7 @@ impl SocketAddressMatcher {
     /// This matcher will match in case socket address could not be found.
     /// Use the [`SocketAddressMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
-    pub fn optional(addr: impl Into<SocketAddr>) -> Self {
+    pub fn optional(addr: impl Into<SocketAddress>) -> Self {
         Self {
             addr: addr.into(),
             optional: true,
@@ -42,7 +43,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketAddressMatcher {
     fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         req.extensions()
             .get::<SocketInfo>()
-            .map(|info| info.peer_addr() == &self.addr)
+            .map(|info| info.peer_addr() == self.addr)
             .unwrap_or(self.optional)
     }
 }
@@ -105,19 +106,19 @@ mod test {
         let matcher = SocketAddressMatcher::new(([127, 0, 0, 1], 8080));
 
         struct FakeSocket {
-            local_addr: Option<SocketAddr>,
-            peer_addr: Option<SocketAddr>,
+            local_addr: Option<SocketAddress>,
+            peer_addr: Option<SocketAddress>,
         }
 
         impl crate::stream::Socket for FakeSocket {
-            fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            fn local_addr(&self) -> std::io::Result<SocketAddress> {
                 match &self.local_addr {
                     Some(addr) => Ok(*addr),
                     None => Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)),
                 }
             }
 
-            fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+            fn peer_addr(&self) -> std::io::Result<SocketAddress> {
                 match &self.peer_addr {
                     Some(addr) => Ok(*addr),
                     None => Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)),

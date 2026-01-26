@@ -82,13 +82,13 @@ async fn main() {
         .with_get("/internal/clients.csv", infinite_resource);
 
     let exec = Executor::graceful(graceful.guard());
-    let app = HttpServer::auto(exec).service(
+    let app = HttpServer::auto(exec).service(Arc::new(
         (
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
         )
             .into_layer(router),
-    );
+    ));
 
     let tcp_svc = (
         ConsumeErrLayer::default(),
@@ -98,12 +98,14 @@ async fn main() {
 
     let address = SocketAddress::local_ipv4(62039);
     tracing::info!("running service at: {address}");
-    let tcp_server = TcpListener::build()
+
+    let exec = Executor::graceful(graceful.guard());
+    let tcp_server = TcpListener::build(exec)
         .bind(address)
         .await
         .expect("bind tcp server");
 
-    graceful.spawn_task_fn(|guard| tcp_server.serve_graceful(guard, tcp_svc));
+    graceful.spawn_task(tcp_server.serve(tcp_svc));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(8))
@@ -143,7 +145,7 @@ async fn infinite_resource(
     State(block_list): State<BlockList>,
     Query(parameters): Query<InfiniteResourceParameters>,
 ) -> impl IntoResponse {
-    let ip_addr = socket_info.peer_addr().ip();
+    let ip_addr = socket_info.peer_addr().ip_addr;
     let mut block_list = block_list.lock().await;
     block_list.insert(ip_addr);
     tracing::info!(
@@ -209,7 +211,7 @@ where
             .get::<SocketInfo>()
             .ok_or_else(|| OpaqueError::from_display("no socket info found").into_boxed())?
             .peer_addr()
-            .ip();
+            .ip_addr;
         let block_list = self.block_list.lock().await;
         if block_list.contains(&ip_addr) {
             return Err(OpaqueError::from_display(format!(

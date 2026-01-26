@@ -153,7 +153,7 @@ impl From<Type> for SocketType {
 #[derive(Debug, Clone, Default, Serialize)]
 /// Configures a [`Socket`]'s TCP keepalive parameters.
 ///
-/// See [`SocketOptions::tcp_keepalive`].
+/// See [`SocketOptions::tcp_keep_alive`].
 pub struct TcpKeepAlive {
     /// Set the amount of time after which TCP keepalive probes will be sent on
     /// idle connections.

@@ -1,8 +1,13 @@
 use crate::Request;
-use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_core::telemetry::tracing;
-use rama_net::address::{Domain, Host, IntoDomain};
-use rama_net::http::RequestContext;
+
+use rama_core::{
+    extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing,
+};
+use rama_net::{
+    address::{Domain, Host, IntoDomain},
+    http::RequestContext,
+};
 
 #[derive(Debug, Clone)]
 /// Matcher based on the (sub)domain of the request's URI.

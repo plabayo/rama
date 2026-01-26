@@ -1,8 +1,9 @@
 use std::io::Result;
-use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 
 use rama_core::ServiceInput;
+
+use crate::address::SocketAddress;
 
 /// Common information exposed by a Socket-like construct.
 ///
@@ -10,68 +11,68 @@ use rama_core::ServiceInput;
 /// are the types that are relevant to Rama.
 pub trait Socket: Send + Sync + 'static {
     /// Try to get the local address of the socket.
-    fn local_addr(&self) -> Result<SocketAddr>;
+    fn local_addr(&self) -> Result<SocketAddress>;
 
     /// Try to get the remote address of the socket.
-    fn peer_addr(&self) -> Result<SocketAddr>;
+    fn peer_addr(&self) -> Result<SocketAddress>;
 }
 
 impl Socket for std::net::TcpStream {
     #[inline]
-    fn local_addr(&self) -> Result<SocketAddr> {
-        self.local_addr()
+    fn local_addr(&self) -> Result<SocketAddress> {
+        self.local_addr().map(Into::into)
     }
 
     #[inline]
-    fn peer_addr(&self) -> Result<SocketAddr> {
-        self.peer_addr()
+    fn peer_addr(&self) -> Result<SocketAddress> {
+        self.peer_addr().map(Into::into)
     }
 }
 
 impl Socket for tokio::net::TcpStream {
     #[inline]
-    fn local_addr(&self) -> Result<SocketAddr> {
-        self.local_addr()
+    fn local_addr(&self) -> Result<SocketAddress> {
+        self.local_addr().map(Into::into)
     }
 
     #[inline]
-    fn peer_addr(&self) -> Result<SocketAddr> {
-        self.peer_addr()
+    fn peer_addr(&self) -> Result<SocketAddress> {
+        self.peer_addr().map(Into::into)
     }
 }
 
 impl Socket for std::net::UdpSocket {
     #[inline]
-    fn local_addr(&self) -> Result<SocketAddr> {
-        self.local_addr()
+    fn local_addr(&self) -> Result<SocketAddress> {
+        self.local_addr().map(Into::into)
     }
 
     #[inline]
-    fn peer_addr(&self) -> Result<SocketAddr> {
-        self.peer_addr()
+    fn peer_addr(&self) -> Result<SocketAddress> {
+        self.peer_addr().map(Into::into)
     }
 }
 
 impl Socket for tokio::net::UdpSocket {
     #[inline]
-    fn local_addr(&self) -> Result<SocketAddr> {
-        self.local_addr()
+    fn local_addr(&self) -> Result<SocketAddress> {
+        self.local_addr().map(Into::into)
     }
 
     #[inline]
-    fn peer_addr(&self) -> Result<SocketAddr> {
-        self.peer_addr()
+    fn peer_addr(&self) -> Result<SocketAddress> {
+        self.peer_addr().map(Into::into)
     }
 }
 
 impl<T: Socket> Socket for ServiceInput<T> {
     #[inline]
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+    fn local_addr(&self) -> std::io::Result<SocketAddress> {
         self.input.local_addr()
     }
 
     #[inline]
-    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+    fn peer_addr(&self) -> std::io::Result<SocketAddress> {
         self.input.peer_addr()
     }
 }
@@ -108,14 +109,14 @@ impl DerefMut for ClientSocketInfo {
 #[derive(Debug, Clone)]
 /// Connected socket information.
 pub struct SocketInfo {
-    local_addr: Option<SocketAddr>,
-    peer_addr: SocketAddr,
+    local_addr: Option<SocketAddress>,
+    peer_addr: SocketAddress,
 }
 
 impl SocketInfo {
     /// Create a new `SocketInfo`.
     #[must_use]
-    pub const fn new(local_addr: Option<SocketAddr>, peer_addr: SocketAddr) -> Self {
+    pub fn new(local_addr: Option<SocketAddress>, peer_addr: SocketAddress) -> Self {
         Self {
             local_addr,
             peer_addr,
@@ -124,13 +125,13 @@ impl SocketInfo {
 
     /// Get the local address of the socket.
     #[must_use]
-    pub fn local_addr(&self) -> Option<&SocketAddr> {
-        self.local_addr.as_ref()
+    pub fn local_addr(&self) -> Option<SocketAddress> {
+        self.local_addr
     }
 
     /// Get the peer address of the socket.
     #[must_use]
-    pub fn peer_addr(&self) -> &SocketAddr {
-        &self.peer_addr
+    pub fn peer_addr(&self) -> SocketAddress {
+        self.peer_addr
     }
 }

@@ -6,11 +6,13 @@ use rama::{
         ws::handshake::client::HttpClientWebSocketExt,
     },
     net::address::SocketAddress,
+    rt::Executor,
     tcp::client::default_tcp_connect,
     telemetry::tracing,
     udp::bind_udp,
     utils::str::non_empty_str,
 };
+use rama_net::address::HostWithPort;
 
 #[cfg(feature = "boring")]
 use ::{
@@ -113,7 +115,13 @@ async fn test_tcp_echo() {
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(&extensions, ([127, 0, 0, 1], 63110).into()).await {
+        match default_tcp_connect(
+            &extensions,
+            HostWithPort::local_ipv4(63110),
+            Executor::default(),
+        )
+        .await
+        {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;
@@ -142,9 +150,10 @@ async fn test_tls_tcp_echo() {
 
     let mut stream = None;
     for i in 0..5 {
-        let connector = TlsConnector::secure(TcpConnector::new()).with_connector_data(Arc::new(
-            TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
-        ));
+        let connector = TlsConnector::secure(TcpConnector::new(Executor::default()))
+            .with_connector_data(Arc::new(
+                TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
+            ));
         match connector
             .connect(TcpRequest::new(([127, 0, 0, 1], 63111).into()))
             .await
@@ -198,6 +207,8 @@ async fn test_udp_echo() {
 #[tokio::test]
 #[cfg(feature = "boring")]
 async fn test_https_echo() {
+    use rama::rt::Executor;
+
     utils::init_tracing();
 
     let _guard = utils::RamaService::serve_echo(63103, utils::EchoMode::Https);
@@ -241,7 +252,7 @@ async fn test_https_echo() {
             TlsConnectorDataBuilder::new_http_1()
                 .with_server_verify_mode(ServerVerifyMode::Disable),
         )))
-        .with_default_http_connector()
+        .with_default_http_connector(Executor::default())
         .build_client();
 
     let mut ws = client
@@ -436,22 +447,17 @@ async fn test_https_with_remote_tls_cert_issuer() {
         key: PKey<Private>,
     }
 
-    let crt_issuer_https_svc = (
-        HaProxyLayer::new().with_peek(true),
-        TlsAcceptorLayer::new(tls_acceptor_data),
-    ).into_layer(
-        HttpServer::auto(Executor::default()).service(
-            (
-                MapResponseBodyLayer::new(Body::new),
-                TraceLayer::new_for_http(),
-                CompressionLayer::new(),
-                cors::CorsLayer::permissive(),
-                SetResponseHeaderLayer::if_not_present_typed(
-                    StrictTransportSecurity::including_subdomains_for_max_seconds(31536000),
-                ),
-                AddRequiredResponseHeadersLayer::new(),
-            )
-                .into_layer(
+    let http_svc = (
+        MapResponseBodyLayer::new(Body::new),
+        TraceLayer::new_for_http(),
+        CompressionLayer::new(),
+        cors::CorsLayer::permissive(),
+        SetResponseHeaderLayer::if_not_present_typed(
+            StrictTransportSecurity::including_subdomains_for_max_seconds(31536000),
+        ),
+        AddRequiredResponseHeadersLayer::new(),
+    )
+        .into_layer(
             Router::new_with_state(CaInfo {
                 crt: ca_issuer_cert,
                 key: ca_issuer_key,
@@ -489,13 +495,20 @@ async fn test_https_with_remote_tls_cert_issuer() {
                         key_pem_base64,
                     }))
                 },
-            )),
-        ),
-    );
+            ),
+        );
+
+    let crt_issuer_https_svc = (
+        HaProxyLayer::new().with_peek(true),
+        TlsAcceptorLayer::new(tls_acceptor_data),
+    )
+        .into_layer(HttpServer::auto(Executor::default()).service(Arc::new(http_svc)));
 
     tracing::info!("spawning tcp listener for remote tls issuer");
 
-    let tpc_listener = TcpListener::bind("[::1]:63132").await.unwrap();
+    let tpc_listener = TcpListener::bind("[::1]:63132", Executor::default())
+        .await
+        .unwrap();
 
     tracing::info!("spawning tokio task for remote tls https");
 

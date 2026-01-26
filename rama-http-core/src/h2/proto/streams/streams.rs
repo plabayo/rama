@@ -17,6 +17,7 @@ use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
+use rama_net::conn::{ConnectionHealth, ConnectionHealthStatus};
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
@@ -200,7 +201,23 @@ where
                         // NOTE: if ever issues, we might need to do something locally with settings as well
                         return Poll::Ready(Ok((!settings.flags.is_ack()).then_some(settings)));
                     }
-                    frame::EarlyFrame::WindowUpdate(window_update) => window_update.into(),
+                    // NOTE: this can cause issues in case regular logic would also send a windows update soon afterwards
+                    frame::EarlyFrame::WindowUpdate(window_update) => {
+                        tracing::trace!(
+                            "replay: increment h2 window update size w/ {}",
+                            window_update.size_increment
+                        );
+                        if let Err(reason) = me.actions.recv.set_target_connection_window(
+                            window_update.size_increment,
+                            &mut me.actions.task,
+                        ) {
+                            tracing::debug!(
+                                "h2 streams: failed to replay window update (set_target_connection_window): reason = {reason}; go away"
+                            );
+                            return Poll::Ready(Err(Error::library_go_away(reason)));
+                        }
+                        return Poll::Ready(Ok(None));
+                    }
                 };
                 Poll::Ready(match dst.buffer(frame) {
                     Ok(_) => Ok(None),
@@ -739,6 +756,10 @@ impl Inner {
 
         let actions = &mut self.actions;
 
+        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
+            health.set_status(ConnectionHealthStatus::Broken)
+        }
+
         self.counts.transition(stream, |counts, stream| {
             actions.recv.recv_reset(frame, stream, counts)?;
             actions.send.handle_error(send_buffer, stream, counts);
@@ -804,6 +825,10 @@ impl Inner {
 
         let last_processed_id = actions.recv.last_processed_id();
 
+        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
+            health.set_status(ConnectionHealthStatus::Broken)
+        }
+
         self.store.for_each(|stream| {
             counts.transition(stream, |counts, stream| {
                 actions.recv.handle_error(&err, &mut *stream);
@@ -828,6 +853,10 @@ impl Inner {
         let send_buffer = &mut *send_buffer;
 
         let last_stream_id = frame.last_stream_id();
+
+        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
+            health.set_status(ConnectionHealthStatus::Broken)
+        }
 
         actions.send.recv_go_away(last_stream_id)?;
 
@@ -1268,6 +1297,43 @@ impl<B> StreamRef<B> {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn send_informational_headers(&mut self, frame: frame::Headers) -> Result<(), UserError> {
+        let mut me = self.opaque.inner.lock();
+        let me = &mut *me;
+
+        let stream = me.store.resolve(self.opaque.key);
+        let actions = &mut me.actions;
+        let mut send_buffer = self.send_buffer.inner.lock();
+        let send_buffer = &mut *send_buffer;
+
+        me.counts.transition(stream, |counts, stream| {
+            // For informational responses (1xx), we need to send headers without
+            // changing the stream state. This allows multiple informational responses
+            // to be sent before the final response.
+
+            // Validate that this is actually an informational response
+            debug_assert!(
+                frame.is_informational(),
+                "Frame must be informational after conversion from informational response"
+            );
+
+            // Ensure the frame is not marked as end_stream for informational responses
+            if frame.is_end_stream() {
+                return Err(UserError::UnexpectedFrameType);
+            }
+            // Send the interim informational headers directly to the buffer without state changes
+            // This bypasses the normal send_headers flow that would transition the stream state
+            actions.send.send_interim_informational_headers(
+                frame,
+                send_buffer,
+                stream,
+                counts,
+                &mut actions.task,
+            )
+        })
+    }
+
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_response(
         &mut self,
         response: Response<()>,
@@ -1472,6 +1538,20 @@ impl OpaqueStreamRef {
         let mut stream = me.store.resolve(self.key);
 
         me.actions.recv.poll_response(cx, &mut stream)
+    }
+
+    /// Called by a client to check for informational responses (1xx status codes)
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn poll_informational(
+        &mut self,
+        cx: &Context,
+    ) -> Poll<Option<Result<Response<()>, proto::Error>>> {
+        let mut me = self.inner.lock();
+        let me = &mut *me;
+
+        let mut stream = me.store.resolve(self.key);
+
+        me.actions.recv.poll_informational(cx, &mut stream)
     }
 
     /// Called by a client to check for a pushed request.

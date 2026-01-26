@@ -19,6 +19,7 @@ use rama::{
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::ConsumeErrLayer,
+    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self, Level, info,
@@ -27,7 +28,7 @@ use rama::{
     },
 };
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
@@ -43,7 +44,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1().service(
+        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Arc::new(
             Router::new().with_get("/", Html(INDEX)).with_get(
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG).into_layer(
@@ -52,13 +53,13 @@ async fn main() {
                         .into_echo_service(),
                 ),
             ),
-        );
+        ));
         info!("open web echo chat @ http://127.0.0.1:62038");
         info!("or connect directly to ws://127.0.0.1:62038/echo (via 'rama')");
-        TcpListener::bind("127.0.0.1:62038")
+        TcpListener::bind("127.0.0.1:62038", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(guard, server)
+            .serve(server)
             .await;
     });
 

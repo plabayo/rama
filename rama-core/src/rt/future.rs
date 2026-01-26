@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 ///
 /// If the future wasn't ready, it future likely can't be driven to completion any more: the polling
 /// uses a no-op waker, so knowledge of what the pending future was waiting for is lost.
-pub fn now_or_never<F: std::future::Future>(fut: F) -> Option<F::Output> {
+pub fn now_or_never<F: Future>(fut: F) -> Option<F::Output> {
     let waker = std::task::Waker::noop();
     let mut cx = Context::from_waker(waker);
     let fut = std::pin::pin!(fut);

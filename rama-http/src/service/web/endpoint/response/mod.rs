@@ -27,7 +27,7 @@ pub use script::Script;
 
 mod datastar;
 #[doc(inline)]
-pub use datastar::DatastarScript;
+pub use datastar::{DatastarScript, DatastarSourceMap};
 
 mod css;
 #[doc(inline)]
@@ -36,6 +36,8 @@ pub use css::Css;
 mod json;
 #[doc(inline)]
 pub use json::Json;
+
+mod json_lines;
 
 mod csv;
 #[doc(inline)]

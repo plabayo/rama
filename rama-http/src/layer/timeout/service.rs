@@ -1,6 +1,7 @@
 use super::TimeoutBody;
 use crate::{Request, Response, StatusCode};
 use rama_core::{Layer, Service};
+use rama_http_types::body::OptionalBody;
 use rama_utils::macros::define_inner_service_accessors;
 use std::time::Duration;
 
@@ -78,16 +79,16 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Timeout<S>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
-    ResBody: Default + Send + 'static,
+    ResBody: Send + 'static,
 {
-    type Output = S::Output;
+    type Output = Response<OptionalBody<ResBody>>;
     type Error = S::Error;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         tokio::select! {
-            res = self.inner.serve(req) => res,
+            res = self.inner.serve(req) => Ok(res?.map(OptionalBody::some)),
             _ = tokio::time::sleep(self.timeout) => {
-                let mut res = Response::new(ResBody::default());
+                let mut res = Response::new(OptionalBody::none());
                 *res.status_mut() = self.status_code;
                 Ok(res)
             }
@@ -134,8 +135,6 @@ impl<S> RequestBodyTimeout<S> {
     }
 
     /// Returns a new [`Layer`] that wraps services with a [`RequestBodyTimeoutLayer`] middleware.
-    ///
-    /// [`Layer`]: tower_layer::Layer
     #[must_use]
     pub fn layer(timeout: Duration) -> RequestBodyTimeoutLayer {
         RequestBodyTimeoutLayer::new(timeout)
@@ -191,7 +190,7 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseBodyTimeout<S>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
-    ResBody: Default + Send + 'static,
+    ResBody: Send + 'static,
 {
     type Output = Response<TimeoutBody<ResBody>>;
     type Error = S::Error;
@@ -213,8 +212,6 @@ impl<S> ResponseBodyTimeout<S> {
     }
 
     /// Returns a new [`Layer`] that wraps services with a [`ResponseBodyTimeoutLayer`] middleware.
-    ///
-    /// [`Layer`]: tower_layer::Layer
     #[must_use]
     pub fn layer(timeout: Duration) -> ResponseBodyTimeoutLayer {
         ResponseBodyTimeoutLayer::new(timeout)

@@ -1,7 +1,7 @@
 use super::{Limit, into_output::ErrorIntoOutputFn, policy::UnlimitedPolicy};
 use crate::Layer;
 
-/// Limit requests based on a [`Policy`].
+/// Limit inputs based on a [`Policy`].
 ///
 /// [`Policy`]: crate::layer::limit::Policy
 #[derive(Debug, Clone)]
@@ -32,7 +32,7 @@ impl<P> LimitLayer<P> {
 impl LimitLayer<UnlimitedPolicy> {
     /// Creates a new [`LimitLayer`] with an unlimited policy.
     ///
-    /// Meaning that all requests are allowed to proceed.
+    /// Meaning that all inputs are allowed to proceed.
     #[must_use]
     pub fn unlimited() -> Self {
         Self::new(UnlimitedPolicy::default())

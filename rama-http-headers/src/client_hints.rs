@@ -181,7 +181,7 @@ client_hint! {
         Model("sec-ch-ua-model"),
         /// Sec-CH-UA-Mobile is used to detect whether or not a user agent prefers a «mobile» user experience.
         Mobile("sec-ch-ua-mobile"),
-        /// Sec-CH-UA-Form-Factors represents the form-factors of a device, historically represented as a <deviceCompat> token in the User-Agent string.
+        /// Sec-CH-UA-Form-Factors represents the form-factors of a device, historically represented as a `<deviceCompat>` token in the User-Agent string.
         FormFactor("sec-ch-ua-form-factors"),
         /// Sec-CH-Lang  (or Lang) represents the user's language preference.
         Lang("sec-ch-lang", "lang"),

@@ -38,7 +38,7 @@ use rama_net::tls::TlsTunnel;
 /// A connector which can be used to establish a connection over an HTTP Proxy.
 ///
 /// This behaviour is optional and only triggered in case there
-/// is a [`ProxyAddress`] found in the [`Context`].
+/// is a [`ProxyAddress`] found in the [`Extensions`].
 #[derive(Debug, Clone)]
 pub struct HttpProxyConnector<S> {
     pub(super) inner: S,
@@ -84,7 +84,7 @@ impl<S> HttpProxyConnector<S> {
 
     /// Create a new [`HttpProxyConnector`]
     /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
-    /// in the [`Context`].
+    /// in the [`Extensions`].
     #[must_use]
     pub fn optional(inner: S) -> Self {
         Self::new(inner, false)
@@ -92,7 +92,7 @@ impl<S> HttpProxyConnector<S> {
 
     /// Create a new [`HttpProxyConnector`]
     /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
-    /// not available in the [`Context`].
+    /// not available in the [`Extensions`].
     #[must_use]
     pub fn required(inner: S) -> Self {
         Self::new(inner, true)
@@ -261,7 +261,7 @@ where
 }
 
 #[derive(Clone, Debug)]
-/// Extension added to the [`Context`] by [`HttpProxyConnector`] to record the
+/// Extension added to the [`Extensions`] by [`HttpProxyConnector`] to record the
 /// headers from a successful CONNECT response.
 ///
 /// This can be useful, for example, when the upstream proxy provider exposes

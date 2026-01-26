@@ -118,7 +118,7 @@ impl Default for TlsConnectorLayer<ConnectorKindAuto> {
 /// By default it will created in auto mode ([`TlsConnector::auto`]),
 /// which will perform the Tls handshake on the underlying stream,
 /// only if the request requires a secure connection. You can instead use
-/// [`TlsConnector::secure_only`] to force the connector to always
+/// [`TlsConnector::secure`] to force the connector to always
 /// establish a secure connection.
 #[derive(Debug, Clone)]
 pub struct TlsConnector<S, K = ConnectorKindAuto> {
@@ -505,7 +505,7 @@ pub struct ConnectorKindSecure;
 /// and using the hardcoded host otherwise.
 /// Context always overwrites though.
 ///
-/// [`TlsTunnel`]: crate::TlsTunnel
+/// [`TlsTunnel`]: rama_net::tls::TlsTunnel
 pub struct ConnectorKindTunnel {
     host: Option<Host>,
 }

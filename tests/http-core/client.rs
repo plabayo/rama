@@ -17,6 +17,7 @@ use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::http::uri::PathAndQuery;
 use rama::http::{Method, Request, StatusCode, StreamingBody, Uri, Version};
 use rama::net::stream::Socket;
+use rama_net::address::SocketAddress;
 
 use super::support;
 
@@ -53,7 +54,7 @@ async fn tcp_connect(addr: &SocketAddr) -> std::io::Result<TcpStream> {
 
 #[derive(Clone, Debug)]
 struct HttpInfo {
-    remote_addr: SocketAddr,
+    remote_addr: SocketAddress,
 }
 
 #[derive(Debug)]
@@ -1500,6 +1501,8 @@ mod conn {
     use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
+    use rama_http::proto::h1::ext::ReasonPhrase;
+    use rama_http::proto::h1::ext::informational::OnInformational;
     use tokio::io::{
         AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf,
     };
@@ -1620,7 +1623,7 @@ mod conn {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
             assert_eq!(
                 res.extensions()
-                    .get::<rama::http::core::ext::ReasonPhrase>()
+                    .get::<ReasonPhrase>()
                     .expect("custom reason phrase is present")
                     .as_bytes(),
                 &b"Alright"[..]
@@ -2142,10 +2145,11 @@ mod conn {
             .unwrap();
         let cnt = Arc::new(AtomicUsize::new(0));
         let cnt2 = cnt.clone();
-        rama_http_core::ext::on_informational(&mut req, move |res| {
-            assert_eq!(res.status(), 100);
-            cnt2.fetch_add(1, Ordering::Relaxed);
-        });
+        req.extensions_mut()
+            .insert(OnInformational::new_fn(move |res| {
+                assert_eq!(res.status(), 100);
+                cnt2.fetch_add(1, Ordering::Relaxed);
+            }));
         let _res = client.send_request(req).await.expect("send_request");
         assert_eq!(1, cnt.load(Ordering::Relaxed));
     }

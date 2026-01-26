@@ -32,6 +32,8 @@ use std::{fmt, sync::Arc};
 #[cfg(feature = "http")]
 use rama_http_types::Request;
 
+use crate::address::SocketAddress;
+
 /// A matcher to match on a [`Socket`].
 ///
 /// [`Socket`]: crate::stream::Socket
@@ -120,7 +122,7 @@ impl<Socket> SocketMatcher<Socket> {
     /// Create a new socket address matcher to match on a socket address.
     ///
     /// See [`SocketAddressMatcher::new`] for more information.
-    pub fn socket_addr(addr: impl Into<std::net::SocketAddr>) -> Self {
+    pub fn socket_addr(addr: impl Into<SocketAddress>) -> Self {
         Self {
             kind: SocketMatcherKind::SocketAddress(SocketAddressMatcher::new(addr)),
             negate: false,
@@ -131,7 +133,7 @@ impl<Socket> SocketMatcher<Socket> {
     /// this matcher will match in case socket address could not be found.
     ///
     /// See [`SocketAddressMatcher::optional`] for more information.
-    pub fn optional_socket_addr(addr: impl Into<std::net::SocketAddr>) -> Self {
+    pub fn optional_socket_addr(addr: impl Into<SocketAddress>) -> Self {
         Self {
             kind: SocketMatcherKind::SocketAddress(SocketAddressMatcher::optional(addr)),
             negate: false,
@@ -140,7 +142,7 @@ impl<Socket> SocketMatcher<Socket> {
 
     /// Add a new socket address matcher to the existing [`SocketMatcher`] to also match on a socket address.
     #[must_use]
-    pub fn and_socket_addr(self, addr: impl Into<std::net::SocketAddr>) -> Self {
+    pub fn and_socket_addr(self, addr: impl Into<SocketAddress>) -> Self {
         self.and(Self::socket_addr(addr))
     }
 
@@ -148,7 +150,7 @@ impl<Socket> SocketMatcher<Socket> {
     ///
     /// See [`SocketAddressMatcher::optional`] for more information.
     #[must_use]
-    pub fn and_optional_socket_addr(self, addr: impl Into<std::net::SocketAddr>) -> Self {
+    pub fn and_optional_socket_addr(self, addr: impl Into<SocketAddress>) -> Self {
         self.and(Self::optional_socket_addr(addr))
     }
 
@@ -156,7 +158,7 @@ impl<Socket> SocketMatcher<Socket> {
     ///
     /// See [`SocketAddressMatcher::new`] for more information.
     #[must_use]
-    pub fn or_socket_addr(self, addr: impl Into<std::net::SocketAddr>) -> Self {
+    pub fn or_socket_addr(self, addr: impl Into<SocketAddress>) -> Self {
         self.or(Self::socket_addr(addr))
     }
 
@@ -164,7 +166,7 @@ impl<Socket> SocketMatcher<Socket> {
     ///
     /// See [`SocketAddressMatcher::optional`] for more information.
     #[must_use]
-    pub fn or_optional_socket_addr(self, addr: impl Into<std::net::SocketAddr>) -> Self {
+    pub fn or_optional_socket_addr(self, addr: impl Into<SocketAddress>) -> Self {
         self.or(Self::optional_socket_addr(addr))
     }
 

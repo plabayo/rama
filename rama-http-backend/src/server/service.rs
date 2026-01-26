@@ -32,7 +32,7 @@ use ::{rama_unix::server::UnixListener, std::path::Path};
 #[derive(Debug, Clone)]
 pub struct HttpServer<B> {
     builder: B,
-    guard: Option<ShutdownGuard>,
+    exec: Executor,
 }
 
 impl Default for HttpServer<AutoConnBuilder> {
@@ -45,19 +45,10 @@ impl Default for HttpServer<AutoConnBuilder> {
 impl HttpServer<Http1ConnBuilder> {
     /// Create a new http/1.1 `Builder` with default settings.
     #[must_use]
-    pub fn http1() -> Self {
+    pub fn http1(exec: Executor) -> Self {
         Self {
             builder: Http1ConnBuilder::new(),
-            guard: None,
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the guard that can be used by the [`HttpServer`]
-        /// in case it is turned into an http1 listener.
-        pub fn guard(mut self, guard: Option<ShutdownGuard>) -> Self {
-            self.guard = guard;
-            self
+            exec,
         }
     }
 }
@@ -73,10 +64,9 @@ impl HttpServer<H2ConnBuilder> {
     /// Create a new h2 `Builder` with default settings.
     #[must_use]
     pub fn h2(exec: Executor) -> Self {
-        let guard = exec.guard().cloned();
         Self {
-            builder: H2ConnBuilder::new(exec),
-            guard,
+            builder: H2ConnBuilder::new(exec.clone()),
+            exec,
         }
     }
 }
@@ -92,10 +82,9 @@ impl HttpServer<AutoConnBuilder> {
     /// Create a new dual http/1.1 + h2 `Builder` with default settings.
     #[must_use]
     pub fn auto(exec: Executor) -> Self {
-        let guard = exec.guard().cloned();
         Self {
-            builder: AutoConnBuilder::new(exec),
-            guard,
+            builder: AutoConnBuilder::new(exec.clone()),
+            exec,
         }
     }
 }
@@ -118,8 +107,12 @@ where
 {
     /// Turn this `HttpServer` into a [`Service`] that can be used to serve
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
-    pub fn service<S>(self, service: S) -> HttpService<B, S> {
-        HttpService::new(self.builder, service)
+    pub fn service<S: Clone>(self, service: S) -> HttpService<B, S> {
+        HttpService {
+            guard: self.exec.guard().cloned(),
+            builder: Arc::new(self.builder),
+            service,
+        }
     }
 
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
@@ -130,7 +123,7 @@ where
         IO: Stream + ExtensionsMut,
     {
         self.builder
-            .http_core_serve_connection(stream, service)
+            .http_core_serve_connection(stream, service, self.exec.guard().cloned())
             .await
     }
 
@@ -139,16 +132,17 @@ where
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
     pub async fn listen<S, Response, I>(self, interface: I, service: S) -> HttpServeResult
     where
-        S: Service<Request, Output = Response, Error = Infallible>,
+        S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind(interface).await?;
-        let service = HttpService::new(self.builder, service);
-        match self.guard {
-            Some(guard) => tcp.serve_graceful(guard, service).await,
-            None => tcp.serve(service).await,
+        let tcp = TcpListener::bind(interface, self.exec.clone()).await?;
+        let service = HttpService {
+            guard: self.exec.guard().cloned(),
+            builder: Arc::new(self.builder),
+            service,
         };
+        tcp.serve(service).await;
         Ok(())
     }
 
@@ -163,20 +157,22 @@ where
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
-        let socket = UnixListener::bind_path(path).await?;
-        let service = HttpService::new(self.builder, service);
-        match self.guard {
-            Some(guard) => socket.serve_graceful(guard, service).await,
-            None => socket.serve(service).await,
+        let socket = UnixListener::bind_path(path, self.exec.clone()).await?;
+        let service = HttpService {
+            guard: self.exec.guard().cloned(),
+            builder: Arc::new(self.builder),
+            service: Arc::new(service),
         };
+        socket.serve(service).await;
         Ok(())
     }
 }
 
 /// A [`Service`] that can be used to serve IO Byte streams (e.g. a TCP Stream) as HTTP.
 pub struct HttpService<B, S> {
+    guard: Option<ShutdownGuard>,
     builder: Arc<B>,
-    service: Arc<S>,
+    service: S,
 }
 
 impl<B, S> std::fmt::Debug for HttpService<B, S>
@@ -186,24 +182,17 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpService")
+            .field("guard", &self.guard)
             .field("builder", &self.builder)
             .field("service", &self.service)
             .finish()
     }
 }
 
-impl<B, S> HttpService<B, S> {
-    fn new(builder: B, service: S) -> Self {
-        Self {
-            builder: Arc::new(builder),
-            service: Arc::new(service),
-        }
-    }
-}
-
-impl<B, S> Clone for HttpService<B, S> {
+impl<B, S: Clone> Clone for HttpService<B, S> {
     fn clone(&self) -> Self {
         Self {
+            guard: self.guard.clone(),
             builder: self.builder.clone(),
             service: self.service.clone(),
         }
@@ -213,7 +202,7 @@ impl<B, S> Clone for HttpService<B, S> {
 impl<B, S, Response, IO> Service<IO> for HttpService<B, S>
 where
     B: HttpCoreConnServer,
-    S: Service<Request, Output = Response, Error = Infallible>,
+    S: Service<Request, Output = Response, Error = Infallible> + Clone,
     Response: IntoResponse + Send + 'static,
     IO: Stream + ExtensionsMut,
 {
@@ -225,6 +214,7 @@ where
         stream: IO,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let service = self.service.clone();
-        self.builder.http_core_serve_connection(stream, service)
+        self.builder
+            .http_core_serve_connection(stream, service, self.guard.clone())
     }
 }

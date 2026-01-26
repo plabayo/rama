@@ -6,12 +6,13 @@ use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
+use rama_http::proto::h1::ext::ReasonPhrase;
 use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
-use smallvec::{SmallVec, smallvec, smallvec_inline};
+use rama_utils::collections::smallvec::{SmallVec, smallvec, smallvec_inline};
 
 use crate::body::DecodedLength;
 use crate::common::date;
@@ -155,20 +156,18 @@ impl Http1Transaction for Server {
                     headers_len = req.headers.len();
                 }
                 Ok(httparse::Status::Partial) => return Ok(None),
-                Err(err) => {
-                    return Err(match err {
-                        // if invalid Token, try to determine if for method or path
-                        httparse::Error::Token => {
-                            if req.method.is_none() {
-                                Parse::Method
-                            } else {
-                                debug_assert!(req.path.is_none());
-                                Parse::Uri
-                            }
+                // if invalid Token, try to determine if for method or path
+                Err(httparse::Error::Token) => {
+                    return Err({
+                        if req.method.is_none() {
+                            Parse::Method
+                        } else {
+                            debug_assert!(req.path.is_none());
+                            Parse::Uri
                         }
-                        other => other.into(),
                     });
                 }
+                Err(err) => return Err(err.into()),
             }
         };
 
@@ -341,7 +340,7 @@ impl Http1Transaction for Server {
         let init_cap = 30 + msg.head.headers.len() * AVERAGE_HEADER_SIZE;
         dst.reserve(init_cap);
 
-        let custom_reason_phrase = msg.head.extensions.get::<crate::ext::ReasonPhrase>();
+        let custom_reason_phrase = msg.head.extensions.get::<ReasonPhrase>();
 
         if msg.head.version == Version::HTTP_11
             && msg.head.subject == StatusCode::OK
@@ -946,9 +945,9 @@ impl Http1Transaction for Client {
             let headers = headers.consume(&mut extensions);
 
             if let Some(reason) = reason {
-                // Safety: httparse ensures that only valid reason phrase bytes are present in this
-                // field.
-                let reason = crate::ext::ReasonPhrase::from_bytes_unchecked(reason);
+                // SAFETY: httparse ensures that only valid reason
+                // phrase bytes are present in this field.
+                let reason = unsafe { ReasonPhrase::from_bytes_unchecked(reason) };
                 extensions.insert(reason);
             }
 

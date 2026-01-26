@@ -1,10 +1,15 @@
+use rama_core::rt::Executor;
+
 use super::HttpConnector;
 use crate::{
     Layer, Service,
     dns::DnsResolver,
     error::{BoxError, OpaqueError},
     extensions::ExtensionsMut,
-    http::{Request, StreamingBody, client::proxy::layer::HttpProxyConnector},
+    http::{
+        Request, StreamingBody, client::proxy::layer::HttpProxyConnector,
+        layer::version_adapter::RequestVersionAdapter,
+    },
     net::client::{
         EstablishedClientConnection,
         pool::{
@@ -21,9 +26,6 @@ use crate::tls::boring::client as boring_client;
 
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
-
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::http::layer::version_adapter::RequestVersionAdapter;
 
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
@@ -379,6 +381,33 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         }
     }
 
+    #[cfg(feature = "boring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
+    /// Same as [`Self::with_tls_support_using_boringssl`] but also
+    /// setting the default `TargetHttpVersion` in case no ALPN is negotiated.
+    ///
+    /// This is a fairly important detail for proxy purposes given otherwise
+    /// you might come in situations where the ingress traffic is negotiated to `h2`,
+    /// but the egress traffic has no negotiation which would without a default
+    /// http version remain on h2... In such a case you can get failed
+    /// requests if the egress server does not handle multiple http versions.
+    pub fn with_tls_support_using_boringssl_and_default_http_version(
+        self,
+        config: Option<std::sync::Arc<boring_client::TlsConnectorDataBuilder>>,
+        default_http_version: rama_http::Version,
+    ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<boring_client::TlsConnector<T>>, TlsStage>
+    {
+        let connector =
+            boring_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector =
+            RequestVersionAdapter::new(connector).with_default_version(default_http_version);
+
+        EasyHttpConnectorBuilder {
+            connector,
+            _phantom: PhantomData,
+        }
+    }
+
     #[cfg(feature = "rustls")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
     /// Support https connections by using ruslts for tls
@@ -401,6 +430,33 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
         }
     }
 
+    #[cfg(feature = "rustls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rustls")))]
+    /// Same as [`Self::with_tls_support_using_rustls`] but also
+    /// setting the default `TargetHttpVersion` in case no ALPN is negotiated.
+    ///
+    /// This is a fairly important detail for proxy purposes given otherwise
+    /// you might come in situations where the ingress traffic is negotiated to `h2`,
+    /// but the egress traffic has no negotiation which would without a default
+    /// http version remain on h2... In such a case you can get failed
+    /// requests if the egress server does not handle multiple http versions.
+    pub fn with_tls_support_using_rustls_and_default_http_version(
+        self,
+        config: Option<rustls_client::TlsConnectorData>,
+        default_http_version: rama_http::Version,
+    ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<rustls_client::TlsConnector<T>>, TlsStage>
+    {
+        let connector =
+            rustls_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector =
+            RequestVersionAdapter::new(connector).with_default_version(default_http_version);
+
+        EasyHttpConnectorBuilder {
+            connector,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Dont support https on this connector
     pub fn without_tls_support(self) -> EasyHttpConnectorBuilder<T, TlsStage> {
         EasyHttpConnectorBuilder {
@@ -414,8 +470,9 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
     /// Add http support to this connector
     pub fn with_default_http_connector<Body>(
         self,
+        exec: Executor,
     ) -> EasyHttpConnectorBuilder<HttpConnector<T, Body>, HttpStage> {
-        let connector = HttpConnector::new(self.connector);
+        let connector = HttpConnector::new(self.connector, exec);
 
         EasyHttpConnectorBuilder {
             connector,
@@ -441,7 +498,9 @@ impl<T> EasyHttpConnectorBuilder<T, TlsStage> {
 }
 
 type DefaultConnectionPoolBuilder<T, C> = EasyHttpConnectorBuilder<
-    PooledConnector<T, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+    RequestVersionAdapter<
+        PooledConnector<T, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+    >,
     PoolStage,
 >;
 
@@ -457,11 +516,16 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// If you need a different pool or custom way to group connection you can
     /// use [`EasyHttpConnectorBuilder::with_custom_connection_pool()`] to provide
     /// you own.
-    pub fn try_with_connection_pool<C>(
+    ///
+    /// This also applies a [`RequestVersionAdapter`] layer to make sure that request versions
+    /// are adapted when pooled connections are used, which you almost always need, but in case
+    /// that is unwanted, you can use [`Self::with_custom_connection_pool`] instead.
+    pub fn try_with_connection_pool<C: ExtensionsMut>(
         self,
         config: HttpPooledConnectorConfig,
     ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
         let connector = config.build_connector(self.connector)?;
+        let connector = RequestVersionAdapter::new(connector);
 
         Ok(EasyHttpConnectorBuilder {
             connector,
@@ -471,7 +535,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
 
     #[inline(always)]
     /// Same as [`Self::try_with_connection_pool`] but using the default [`HttpPooledConnectorConfig`].
-    pub fn try_with_default_connection_pool<C>(
+    pub fn try_with_default_connection_pool<C: ExtensionsMut>(
         self,
     ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
         self.try_with_connection_pool(Default::default())
@@ -480,6 +544,10 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// Configure this client to use the provided [`Pool`] and [`ReqToConnId`]
     ///
     /// Use `wait_for_pool_timeout` to limit how long we wait for the pool to give us a connection
+    ///
+    /// Warning: this does not apply a [`RequestVersionAdapter`] layer to make sure that request versions
+    /// are adapted when pooled connections are used, which you almost always. This should be manually added
+    /// by using [`Self::with_custom_connector`] after configuring this pool and providing a [`RequestVersionAdapter`] there.
     ///
     /// [`Pool`]: rama_net::client::pool::Pool
     /// [`ReqToConnId`]: rama_net::client::pool::ReqToConnID

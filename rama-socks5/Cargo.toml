@@ -30,7 +30,6 @@ rama-tcp = { workspace = true, features = ["http"] }
 rama-udp = { workspace = true }
 rama-utils = { workspace = true }
 rand = { workspace = true, optional = true }
-smallvec = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]

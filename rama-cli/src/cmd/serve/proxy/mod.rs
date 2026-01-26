@@ -53,8 +53,9 @@ pub struct CliCommandProxy {
 /// run the rama proxy service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), BoxError> {
     tracing::info!("starting proxy on: bind interface = {}", cfg.bind);
+    let exec = Executor::graceful(graceful);
 
-    let tcp_service = TcpListener::build()
+    let tcp_service = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
@@ -64,15 +65,15 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    graceful.into_spawn_task_fn(async move |guard| {
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(
+    exec.clone().into_spawn_task(async move {
+        let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
                 UpgradeLayer::new(
+                    exec.clone(),
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
-                    ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
+                    ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
                 ),
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 RemoveRequestHeaderLayer::hop_by_hop(),
@@ -102,7 +103,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         );
 
         tcp_service
-            .serve_graceful(guard, tcp_service_builder.into_layer(http_service))
+            .serve(tcp_service_builder.into_layer(http_service))
             .await;
     });
 

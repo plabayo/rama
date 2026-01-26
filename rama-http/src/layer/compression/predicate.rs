@@ -1,10 +1,4 @@
 //! Predicates for disabling compression of responses.
-//!
-//! Predicates are applied with [`Compression::compress_when`] or
-//! [`CompressionLayer::compress_when`].
-//!
-//! [`Compression::compress_when`]: super::Compression::compress_when
-//! [`CompressionLayer::compress_when`]: super::CompressionLayer::compress_when
 
 use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
@@ -45,6 +39,27 @@ where
         let headers = response.headers();
         let extensions = response.extensions();
         self(status, version, headers, extensions)
+    }
+}
+
+/// Predicate to _always_ compress.
+#[derive(Debug, Clone, Default, Copy)]
+#[non_exhaustive]
+pub struct Always;
+
+impl Always {
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Predicate for Always {
+    fn should_compress<B>(&self, _response: &rama_http_types::Response<B>) -> bool
+    where
+        B: StreamingBody,
+    {
+        true
     }
 }
 
@@ -146,6 +161,33 @@ impl Predicate for DefaultPredicate {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DefaultStreamPredicate(And<SizeAbove, NotForContentType>);
+
+impl DefaultStreamPredicate {
+    /// Create a new `DefaultStreamPredicate`.
+    #[must_use]
+    pub fn new() -> Self {
+        let inner = SizeAbove::new(SizeAbove::DEFAULT_MIN_SIZE).and(NotForContentType::IMAGES);
+        Self(inner)
+    }
+}
+
+impl Default for DefaultStreamPredicate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Predicate for DefaultStreamPredicate {
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    where
+        B: StreamingBody,
+    {
+        self.0.should_compress(response)
+    }
+}
+
 /// [`Predicate`] that will only allow compression of responses above a certain size.
 #[derive(Clone, Copy, Debug)]
 pub struct SizeAbove(u16);
@@ -157,7 +199,7 @@ impl SizeAbove {
     /// `min_size_bytes`.
     ///
     /// The response will be compressed if the exact size cannot be determined through either the
-    /// `content-length` header or [`Body::size_hint`].
+    /// `content-length` header or [`StreamingBody::size_hint`].
     #[must_use]
     pub const fn new(min_size_bytes: u16) -> Self {
         Self(min_size_bytes)

@@ -69,6 +69,9 @@ use rama::{
     utils::str::non_empty_str,
 };
 
+#[cfg(debug_assertions)]
+use rama::http::service::web::response::DatastarSourceMap;
+
 use std::{
     convert::Infallible,
     sync::{
@@ -91,8 +94,9 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62031))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62031), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -106,9 +110,7 @@ async fn main() {
 
     let controller = Controller::new(graceful.guard());
 
-    graceful.spawn_task_fn(async move |guard| {
-        let exec = Executor::graceful(guard.clone());
-
+    graceful.spawn_task(async {
         let app = Router::new_with_state(controller.clone())
             .with_get("/", handlers::index)
             .with_post("/start", handlers::start)
@@ -116,15 +118,15 @@ async fn main() {
             .with_get("/assets/datastar.js", DatastarScript::default());
 
         #[cfg(debug_assertions)]
-        let app = app.with_get("/hotreload", handlers::hotreload);
+        let app = app
+            .with_get("/assets/datastar.js.map", DatastarSourceMap::default())
+            .with_get("/hotreload", handlers::hotreload);
 
         let router = Arc::new(app);
         let graceful_router = GracefulRouter { router, controller };
 
         let app = TraceLayer::new_for_http().into_layer(graceful_router);
-        listener
-            .serve_graceful(guard, HttpServer::auto(exec).service(app))
-            .await;
+        listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
     graceful

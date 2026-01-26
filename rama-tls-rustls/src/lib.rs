@@ -78,6 +78,15 @@ pub mod dep {
         pub use rcgen::*;
     }
 
+    pub mod x509_parser {
+        //! Re-export of the [`x509-parser`] crate.
+        //!
+        //! [`x509-parser`]: https://docs.rs/x509-parser
+
+        #[doc(inline)]
+        pub use x509_parser::*;
+    }
+
     pub mod rustls {
         //! Re-export of the [`rustls`] and  [`tokio-rustls`] crates.
         //!
@@ -85,7 +94,7 @@ pub mod dep {
         //!
         //! [`rustls`]: https://docs.rs/rustls
         //! [`tokio-rustls`]: https://docs.rs/tokio-rustls
-        //! [`TlsAcceptorLayer`]: crate::rustls::server::TlsAcceptorLayer
+        //! [`TlsAcceptorLayer`]: crate::server::TlsAcceptorLayer
 
         #[doc(inline)]
         pub use rustls::*;
