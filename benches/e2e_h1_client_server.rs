@@ -1,3 +1,5 @@
+use std::{thread, time::Duration};
+
 use rama::{
     Layer, Service,
     http::{
@@ -22,6 +24,7 @@ use rama_http::{
     },
 };
 
+use rand::RngCore;
 use tokio_test::block_on;
 
 pub mod e2e_utils;
@@ -33,15 +36,29 @@ const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62004);
 // static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 
 fn main() {
-    // Make Tokio available for the duration of the process:
-    let executor = tokio::runtime::Runtime::new().unwrap();
-    let _guard = executor.enter();
+    // Spawn thread with explicit stack size
+    let large_stack_thread = thread::Builder::new()
+        .stack_size(1024 * 1024 * 25) // 25MB
+        .spawn(|| {
+            // Make Tokio available for the duration of the process:
+            let executor = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(1024 * 1024 * 15) // 15MB
+                .build()
+                .unwrap();
+            let _guard = executor.enter();
 
-    e2e_utils::setup_tracing("e2e_h1_client_server");
-    tokio::spawn(run_server());
+            // non_blocking trace appender guard needs to live for the
+            // duration of the process
+            let _appender_guard = e2e_utils::setup_tracing("e2e_h1_client_server");
 
-    // Run registered benchmarks.
-    divan::main();
+            // Run registered benchmarks.
+            divan::main();
+        })
+        .unwrap();
+
+    // Wait for thread to join
+    large_stack_thread.join().unwrap();
 }
 
 #[derive(Debug)]
@@ -58,13 +75,12 @@ struct Payload {
     client: Size,
 }
 
-fn get_body_for_size(size: &Size) -> &'static [u8] {
-    match size {
-        Size::Empty => &[b'x'; 0],
-        Size::Small => &[b'x'; 1000],
-        Size::Medium => &[b'x'; 100_000],
-        Size::Large => &[b'x'; 10_000_000],
-    }
+#[derive(Debug, Clone)]
+struct RandomBytes {
+    empty: [u8; 0],
+    small: [u8; 1000],
+    medium: [u8; 100_000],
+    large: [u8; 10_000_000],
 }
 
 fn get_endpoint_for_size(size: &Size) -> &'static str {
@@ -76,7 +92,7 @@ fn get_endpoint_for_size(size: &Size) -> &'static str {
     }
 }
 
-async fn run_server() {
+async fn run_server(random_bytes: RandomBytes) {
     let http_service = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
@@ -91,22 +107,10 @@ async fn run_server() {
     )
         .into_layer(
             WebService::default()
-                .with_post(
-                    get_endpoint_for_size(&Size::Empty),
-                    get_body_for_size(&Size::Empty),
-                )
-                .with_post(
-                    get_endpoint_for_size(&Size::Small),
-                    get_body_for_size(&Size::Small),
-                )
-                .with_post(
-                    get_endpoint_for_size(&Size::Medium),
-                    get_body_for_size(&Size::Medium),
-                )
-                .with_post(
-                    get_endpoint_for_size(&Size::Large),
-                    get_body_for_size(&Size::Large),
-                ),
+                .with_post(get_endpoint_for_size(&Size::Empty), random_bytes.empty)
+                .with_post(get_endpoint_for_size(&Size::Small), random_bytes.small)
+                .with_post(get_endpoint_for_size(&Size::Medium), random_bytes.medium)
+                .with_post(get_endpoint_for_size(&Size::Large), random_bytes.large),
         );
 
     HttpServer::http1()
@@ -115,13 +119,13 @@ async fn run_server() {
         .unwrap();
 }
 
-async fn request_payload(client: impl Service<Request>, payload: &Payload) {
+async fn request_payload(client: impl Service<Request>, payload: &Payload, body_content: Vec<u8>) {
     let endpoint = get_endpoint_for_size(&payload.server);
 
     let req = Request::builder()
         .uri(format!("http://{ADDRESS}/{endpoint}"))
         .method("POST")
-        .body(Body::from(get_body_for_size(&payload.client)))
+        .body(Body::from(body_content))
         .unwrap();
 
     let _ = client.serve(req).await;
@@ -149,6 +153,27 @@ async fn request_payload(client: impl Service<Request>, payload: &Payload) {
     Payload { server: Size::Large, client: Size::Large },
 ])]
 fn h1_client_server(b: divan::Bencher, payload: &Payload) {
+    let mut server_random_bytes = RandomBytes {
+        empty: [0u8; 0],
+        small: [0u8; 1000],
+        medium: [0u8; 100_000],
+        large: [0u8; 10_000_000],
+    };
+    let mut client_random_bytes = server_random_bytes.clone();
+
+    let mut rng = rand::rng();
+    rng.fill_bytes(&mut server_random_bytes.small);
+    rng.fill_bytes(&mut server_random_bytes.medium);
+    rng.fill_bytes(&mut server_random_bytes.large);
+    rng.fill_bytes(&mut client_random_bytes.small);
+    rng.fill_bytes(&mut client_random_bytes.medium);
+    rng.fill_bytes(&mut client_random_bytes.large);
+
+    let server_thread = tokio::spawn(run_server(server_random_bytes));
+
+    // wait for server to come online
+    block_on(tokio::time::sleep(Duration::from_secs(1)));
+
     let client = (
         TraceLayer::new_for_http(),
         DecompressionLayer::new(),
@@ -161,5 +186,19 @@ fn h1_client_server(b: divan::Bencher, payload: &Payload) {
     )
         .into_layer(EasyHttpWebClient::default());
 
-    b.bench_local(|| block_on(request_payload(client.clone(), payload)));
+    let body_content = match payload.client {
+        Size::Empty => client_random_bytes.empty.to_vec(),
+        Size::Small => client_random_bytes.small.to_vec(),
+        Size::Medium => client_random_bytes.medium.to_vec(),
+        Size::Large => client_random_bytes.large.to_vec(),
+    };
+    b.bench_local(|| {
+        block_on(request_payload(
+            client.clone(),
+            payload,
+            body_content.clone(),
+        ))
+    });
+
+    server_thread.abort();
 }
