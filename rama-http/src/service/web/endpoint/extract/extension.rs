@@ -21,7 +21,7 @@ define_http_rejection! {
 impl<State, T> FromPartsStateRefPair<State> for Extension<T>
 where
     State: Send + Sync,
-    T: Send + Sync + Clone + 'static,
+    T: Send + Sync + Clone + std::fmt::Debug + 'static,
 {
     type Rejection = MissingExtension;
 
@@ -38,7 +38,7 @@ where
 impl<State, T> OptionalFromPartsStateRefPair<State> for Extension<T>
 where
     State: Send + Sync,
-    T: Send + Sync + Clone + 'static,
+    T: Send + Sync + Clone + std::fmt::Debug + 'static,
 {
     type Rejection = Infallible;
 
