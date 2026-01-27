@@ -74,22 +74,22 @@ struct Payload {
     client: Size,
 }
 
-fn random_bytes_by_size(rng: &mut ChaCha12Rng, size: &Size) -> Vec<u8> {
+fn random_bytes_by_size(rng: &mut ChaCha12Rng, size: Size) -> Vec<u8> {
     match size {
         Size::Small => {
             let mut bytes = [0u8; 10_000];
             rng.fill_bytes(&mut bytes);
             bytes.to_vec()
-        },
+        }
         Size::Large => {
             let mut bytes = [0u8; 10_000_000];
             rng.fill_bytes(&mut bytes);
             bytes.to_vec()
-        },
+        }
     }
 }
 
-fn get_endpoint_for_size(size: &Size) -> &'static str {
+fn get_endpoint_for_size(size: Size) -> &'static str {
     match size {
         Size::Small => "small",
         Size::Large => "large",
@@ -108,10 +108,7 @@ async fn run_server(size: Size, body_content: Vec<u8>) {
         ),
         CorsLayer::permissive(),
     )
-        .layer(
-            WebService::default()
-                .with_post(get_endpoint_for_size(&size), body_content),
-        );
+        .layer(WebService::default().with_post(get_endpoint_for_size(size), body_content));
 
     HttpServer::http1(Executor::default())
         .listen(ADDRESS, http_service)
@@ -120,7 +117,7 @@ async fn run_server(size: Size, body_content: Vec<u8>) {
 }
 
 async fn request_payload(client: impl Service<Request>, payload: &Payload, body_content: Vec<u8>) {
-    let endpoint = get_endpoint_for_size(&payload.server);
+    let endpoint = get_endpoint_for_size(payload.server);
 
     let req = Request::builder()
         .uri(format!("http://{ADDRESS}/{endpoint}"))
@@ -144,12 +141,12 @@ const SEEDS: [u64; 5] = [42, 10191, 451, 73, 8128];
 fn h1_client_server(bencher: divan::Bencher, payload: Payload) {
     let mut iter_num = 0;
     let mut seed_num = 0;
-    
-    let mut rng = ChaCha12Rng::seed_from_u64(SEEDS[seed_num]);
-    let mut server_random_bytes = random_bytes_by_size(&mut rng, &payload.server);
-    let mut client_random_bytes = random_bytes_by_size(&mut rng, &payload.client);
 
-    let mut server_thread = tokio::spawn(run_server(payload.server.clone(), server_random_bytes.clone()));
+    let mut rng = ChaCha12Rng::seed_from_u64(SEEDS[seed_num]);
+    let mut server_random_bytes = random_bytes_by_size(&mut rng, payload.server);
+    let mut client_random_bytes = random_bytes_by_size(&mut rng, payload.client);
+
+    let mut server_thread = tokio::spawn(run_server(payload.server, server_random_bytes.clone()));
     block_on(tokio::time::sleep(Duration::from_micros(10)));
 
     bencher
@@ -161,10 +158,11 @@ fn h1_client_server(bencher: divan::Bencher, payload: Payload) {
                 block_on(tokio::time::sleep(Duration::from_micros(10)));
 
                 rng = ChaCha12Rng::seed_from_u64(SEEDS[seed_num]);
-                server_random_bytes = random_bytes_by_size(&mut rng, &payload.server);
-                client_random_bytes = random_bytes_by_size(&mut rng, &payload.client);
+                server_random_bytes = random_bytes_by_size(&mut rng, payload.server);
+                client_random_bytes = random_bytes_by_size(&mut rng, payload.client);
 
-                server_thread = tokio::spawn(run_server(payload.server.clone(), server_random_bytes.clone()));
+                server_thread =
+                    tokio::spawn(run_server(payload.server, server_random_bytes.clone()));
                 block_on(tokio::time::sleep(Duration::from_micros(10)));
             }
             iter_num += 1;
@@ -184,11 +182,7 @@ fn h1_client_server(bencher: divan::Bencher, payload: Payload) {
             (client, client_random_bytes.clone())
         })
         .bench_local_values(|(client, body_content)| {
-            block_on(request_payload(
-                client,
-                &payload,
-                body_content,
-            ))
+            block_on(request_payload(client, &payload, body_content))
         });
 
     server_thread.abort();
