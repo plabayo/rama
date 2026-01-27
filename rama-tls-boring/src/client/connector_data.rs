@@ -523,7 +523,7 @@ impl TlsConnectorDataBuilder {
                         ];
 
                         for (open_fn, open_fn_name) in CERTIFICATE_OPENERS {
-                            for windows_store_name in ["ROOT", "CA"] {
+                            for windows_store_name in WINDOWS_STORE_NAMES {
                                 match open_fn(windows_store_name) {
                                     Ok(cstore) => {
                                         let mut current_cert_count = 0;
