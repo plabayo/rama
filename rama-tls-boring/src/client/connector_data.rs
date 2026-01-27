@@ -573,7 +573,7 @@ impl TlsConnectorDataBuilder {
                                             }
                                         }
                                         trace!(
-                                            "boring connector: windows: {open_fn_name}::{windows_store_name}: added {current_added_cert_count} certs of {total_cert_count} certs (invalid schannel certs: {current_invalid_cert_count})"
+                                            "boring connector: windows: {open_fn_name}::{windows_store_name}: added {current_added_cert_count} certs of {current_cert_count} certs (invalid schannel certs: {current_invalid_cert_count})"
                                         );
                                     }
                                     Err(err) => {
