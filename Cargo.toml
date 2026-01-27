@@ -201,6 +201,7 @@ rama-unix = { version = "0.3.0-rc1", path = "./rama-unix" }
 rama-utils = { version = "0.3.0-rc1", path = "./rama-utils" }
 rama-ws = { version = "0.3.0-rc1", path = "./rama-ws" }
 rand = "0.9"
+rand_chacha = "0.9"
 ratatui = "0.30"
 rawzip = { version = "0.4" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
@@ -434,6 +435,7 @@ rama-udp = { workspace = true, optional = true }
 rama-utils = { workspace = true }
 rama-ws = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
+rand_chacha = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
@@ -462,6 +464,7 @@ libc = "0.2"
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true }
+rand_chacha = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }

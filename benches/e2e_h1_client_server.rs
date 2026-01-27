@@ -24,7 +24,8 @@ use rama_http::{
     },
 };
 
-use rand::RngCore;
+use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaCha12Rng;
 use tokio_test::block_on;
 
 pub mod e2e_utils;
@@ -38,7 +39,7 @@ const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62004);
 fn main() {
     // Spawn thread with explicit stack size
     let large_stack_thread = thread::Builder::new()
-        .stack_size(1024 * 1024 * 25) // 25MB
+        .stack_size(1024 * 1024 * 30) // 30MB
         .spawn(|| {
             // Make Tokio available for the duration of the process:
             let executor = tokio::runtime::Builder::new_multi_thread()
@@ -61,38 +62,41 @@ fn main() {
     large_stack_thread.join().unwrap();
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Size {
-    Empty,
     Small,
-    Medium,
     Large,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Payload {
     server: Size,
     client: Size,
 }
 
-#[derive(Debug, Clone)]
-struct RandomBytes {
-    empty: [u8; 0],
-    small: [u8; 1000],
-    medium: [u8; 100_000],
-    large: [u8; 10_000_000],
+fn random_bytes_by_size(rng: &mut ChaCha12Rng, size: &Size) -> Vec<u8> {
+    match size {
+        Size::Small => {
+            let mut bytes = [0u8; 10_000];
+            rng.fill_bytes(&mut bytes);
+            bytes.to_vec()
+        },
+        Size::Large => {
+            let mut bytes = [0u8; 10_000_000];
+            rng.fill_bytes(&mut bytes);
+            bytes.to_vec()
+        },
+    }
 }
 
 fn get_endpoint_for_size(size: &Size) -> &'static str {
     match size {
-        Size::Empty => "empty",
         Size::Small => "small",
-        Size::Medium => "medium",
         Size::Large => "large",
     }
 }
 
-async fn run_server(random_bytes: RandomBytes) {
+async fn run_server(size: Size, body_content: Vec<u8>) {
     let http_service = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
@@ -106,10 +110,7 @@ async fn run_server(random_bytes: RandomBytes) {
     )
         .layer(
             WebService::default()
-                .with_post(get_endpoint_for_size(&Size::Empty), random_bytes.empty)
-                .with_post(get_endpoint_for_size(&Size::Small), random_bytes.small)
-                .with_post(get_endpoint_for_size(&Size::Medium), random_bytes.medium)
-                .with_post(get_endpoint_for_size(&Size::Large), random_bytes.large),
+                .with_post(get_endpoint_for_size(&size), body_content),
         );
 
     HttpServer::http1(Executor::default())
@@ -130,74 +131,65 @@ async fn request_payload(client: impl Service<Request>, payload: &Payload, body_
     let _ = client.serve(req).await;
 }
 
-#[divan::bench(args = [
-    Payload { server: Size::Empty, client: Size::Empty },
-    Payload { server: Size::Small, client: Size::Empty },
-    Payload { server: Size::Medium, client: Size::Empty },
-    Payload { server: Size::Large, client: Size::Empty },
+// make sure SAMPLE_COUNT is divisible by SEEDS.len()
+const SAMPLE_COUNT: u32 = 10_000;
+const SEEDS: [u64; 5] = [42, 10191, 451, 73, 8128];
 
-    Payload { server: Size::Empty, client: Size::Small },
+#[divan::bench(sample_count = SAMPLE_COUNT, args = [
     Payload { server: Size::Small, client: Size::Small },
-    Payload { server: Size::Medium, client: Size::Small },
     Payload { server: Size::Large, client: Size::Small },
-
-    Payload { server: Size::Empty, client: Size::Medium },
-    Payload { server: Size::Small, client: Size::Medium },
-    Payload { server: Size::Medium, client: Size::Medium },
-    Payload { server: Size::Large, client: Size::Medium },
-
-    Payload { server: Size::Empty, client: Size::Large },
     Payload { server: Size::Small, client: Size::Large },
-    Payload { server: Size::Medium, client: Size::Large },
     Payload { server: Size::Large, client: Size::Large },
 ])]
-fn h1_client_server(b: divan::Bencher, payload: &Payload) {
-    let mut server_random_bytes = RandomBytes {
-        empty: [0u8; 0],
-        small: [0u8; 1000],
-        medium: [0u8; 100_000],
-        large: [0u8; 10_000_000],
-    };
-    let mut client_random_bytes = server_random_bytes.clone();
+fn h1_client_server(bencher: divan::Bencher, payload: Payload) {
+    let mut iter_num = 0;
+    let mut seed_num = 0;
+    
+    let mut rng = ChaCha12Rng::seed_from_u64(SEEDS[seed_num]);
+    let mut server_random_bytes = random_bytes_by_size(&mut rng, &payload.server);
+    let mut client_random_bytes = random_bytes_by_size(&mut rng, &payload.client);
 
-    let mut rng = rand::rng();
-    rng.fill_bytes(&mut server_random_bytes.small);
-    rng.fill_bytes(&mut server_random_bytes.medium);
-    rng.fill_bytes(&mut server_random_bytes.large);
-    rng.fill_bytes(&mut client_random_bytes.small);
-    rng.fill_bytes(&mut client_random_bytes.medium);
-    rng.fill_bytes(&mut client_random_bytes.large);
+    let mut server_thread = tokio::spawn(run_server(payload.server.clone(), server_random_bytes.clone()));
+    block_on(tokio::time::sleep(Duration::from_micros(10)));
 
-    let server_thread = tokio::spawn(run_server(server_random_bytes));
+    bencher
+        .with_inputs(|| {
+            if iter_num > 0 && iter_num % (SAMPLE_COUNT / SEEDS.len() as u32) == 0 {
+                seed_num += 1;
 
-    // wait for server to come online
-    block_on(tokio::time::sleep(Duration::from_secs(1)));
+                server_thread.abort();
+                block_on(tokio::time::sleep(Duration::from_micros(10)));
 
-    let client = (
-        TraceLayer::new_for_http(),
-        DecompressionLayer::new(),
-        AddRequiredRequestHeadersLayer::default()
-            .with_user_agent_header_value(HeaderValue::from_static("chrome")),
-        SetRequestHeaderLayer::if_not_present(
-            HeaderName::from_static("req-header"),
-            HeaderValue::from_static("req-bar"),
-        ),
-    )
-        .into_layer(EasyHttpWebClient::default());
+                rng = ChaCha12Rng::seed_from_u64(SEEDS[seed_num]);
+                server_random_bytes = random_bytes_by_size(&mut rng, &payload.server);
+                client_random_bytes = random_bytes_by_size(&mut rng, &payload.client);
 
-    let body_content = match payload.client {
-        Size::Empty => client_random_bytes.empty.to_vec(),
-        Size::Small => client_random_bytes.small.to_vec(),
-        Size::Medium => client_random_bytes.medium.to_vec(),
-        Size::Large => client_random_bytes.large.to_vec(),
-    };
-    b.bench_local(|| {
-        block_on(request_payload(
-            client.clone(),
-            payload,
-            body_content.clone(),
-        ))
-    });
+                server_thread = tokio::spawn(run_server(payload.server.clone(), server_random_bytes.clone()));
+                block_on(tokio::time::sleep(Duration::from_micros(10)));
+            }
+            iter_num += 1;
+
+            let client = (
+                TraceLayer::new_for_http(),
+                DecompressionLayer::new(),
+                AddRequiredRequestHeadersLayer::default()
+                    .with_user_agent_header_value(HeaderValue::from_static("chrome")),
+                SetRequestHeaderLayer::if_not_present(
+                    HeaderName::from_static("req-header"),
+                    HeaderValue::from_static("req-bar"),
+                ),
+            )
+                .into_layer(EasyHttpWebClient::default());
+
+            (client, client_random_bytes.clone())
+        })
+        .bench_local_values(|(client, body_content)| {
+            block_on(request_payload(
+                client,
+                &payload,
+                body_content,
+            ))
+        });
 
     server_thread.abort();
 }
