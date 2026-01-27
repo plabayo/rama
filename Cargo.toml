@@ -201,6 +201,7 @@ rama-unix = { version = "0.3.0-rc1", path = "./rama-unix" }
 rama-utils = { version = "0.3.0-rc1", path = "./rama-utils" }
 rama-ws = { version = "0.3.0-rc1", path = "./rama-ws" }
 rand = "0.9"
+rand_chacha = "0.9"
 ratatui = "0.30"
 rawzip = { version = "0.4" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
@@ -433,11 +434,14 @@ rama-ua = { workspace = true, optional = true }
 rama-udp = { workspace = true, optional = true }
 rama-utils = { workspace = true }
 rama-ws = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+rand_chacha = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tokio-util = { workspace = true }
+tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
 
 [target.'cfg(target_family = "unix")'.dependencies]
@@ -459,12 +463,15 @@ itoa = { workspace = true }
 libc = "0.2"
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
+tracing-appender = { workspace = true }
 turmoil = { workspace = true }
 
 [lints]
@@ -522,6 +529,12 @@ harness = false
 [[bench]]
 name = "http_core_server"
 path = "benches/http_core_server.rs"
+required-features = ["full"]
+harness = false
+
+[[bench]]
+name = "e2e_h1_client_server"
+path = "benches/e2e_h1_client_server.rs"
 required-features = ["full"]
 harness = false
 
