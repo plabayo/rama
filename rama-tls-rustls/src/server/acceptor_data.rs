@@ -1,13 +1,11 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use crate::dep::rcgen::{self, KeyPair};
-use crate::dep::rustls;
+use crate::dep::rcgen::{self, Issuer, KeyPair};
+use crate::dep::rustls::{self, ALL_VERSIONS};
 use crate::key_log::KeyLogFile;
-use ::rcgen::Issuer;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::Domain;
 use rama_net::tls::server::SelfSignedData;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
-use rustls::ALL_VERSIONS;
 use std::pin::Pin;
 use std::sync::Arc;
 

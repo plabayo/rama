@@ -3,6 +3,9 @@
 #[doc(inline)]
 pub use tracing::*;
 
+#[doc(inline)]
+pub use ::tracing_appender as appender;
+
 #[cfg(feature = "opentelemetry")]
 #[doc(inline)]
 pub use tracing_opentelemetry::*;

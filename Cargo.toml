@@ -494,6 +494,7 @@ incremental = false
 
 [[bench]]
 name = "ua_parse"
+required-features = ["ua"]
 harness = false
 
 [[bench]]
