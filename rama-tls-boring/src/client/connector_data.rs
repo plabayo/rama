@@ -511,7 +511,7 @@ impl TlsConnectorDataBuilder {
                                 &'a str,
                             )
                                 -> Result<schannel::cert_store::CertStore, std::io::Error>;
-                        const CERTIFICATE_OPENERS: &[(CertStoreOpenFn, &'static str)] = &[
+                        const CERTIFICATE_OPENERS: &[(CertStoreOpenFn, &str)] = &[
                             (
                                 schannel::cert_store::CertStore::open_current_user,
                                 "open_current_user",
