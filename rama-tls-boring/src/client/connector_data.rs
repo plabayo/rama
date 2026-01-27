@@ -506,7 +506,12 @@ impl TlsConnectorDataBuilder {
                         const PKIX_SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
                         const WINDOWS_STORE_NAMES: &[&str] = &["ROOT", "CA"];
 
-                        for (open_fn, open_fn_name) in [
+                        type CertStoreOpenFn =
+                            for<'a> fn(
+                                &'a str,
+                            )
+                                -> Result<schannel::cert_store::CertStore, std::io::Error>;
+                        const CERTIFICATE_OPENERS: &[(CertStoreOpenFn, &'static str)] = &[
                             (
                                 schannel::cert_store::CertStore::open_current_user,
                                 "open_current_user",
@@ -515,7 +520,9 @@ impl TlsConnectorDataBuilder {
                                 schannel::cert_store::CertStore::open_local_machine,
                                 "open_local_machine",
                             ),
-                        ] {
+                        ];
+
+                        for (open_fn, open_fn_name) in CERTIFICATE_OPENERS {
                             for windows_store_name in ["ROOT", "CA"] {
                                 match open_fn(windows_store_name) {
                                     Ok(cstore) => {
