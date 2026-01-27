@@ -46,6 +46,7 @@ tokio-graceful = { workspace = true }
 tokio-stream = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["codec", "io", "io-util"] }
 tracing = { workspace = true }
+tracing-appender = { workspace = true, features = ["parking_lot"] }
 tracing-opentelemetry = { workspace = true, optional = true }
 
 [dev-dependencies]
