@@ -43,13 +43,11 @@ extra-checks:
     {{justfile_directory()}}/scripts/extra-checks.sh
 
 doc:
-    cargo doc --all-features --no-deps --workspace
+    cargo doc --all-features --no-deps --workspace --exclude rama-cli
+    just doc-crate rama-cli
 
 doc-crate CRATE:
     cargo doc --all-features --no-deps -p {{CRATE}}
-
-doc-open:
-   cargo doc --all-features --no-deps --workspace --open
 
 hack:
     @cargo install cargo-hack
