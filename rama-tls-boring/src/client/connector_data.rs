@@ -500,45 +500,96 @@ impl TlsConnectorDataBuilder {
                         let mut builder = rama_boring::x509::store::X509StoreBuilder::new()
                             .context("build x509 store builder")?;
 
-                        let mut certs_added = false;
+                        let mut total_cert_count = 0;
+                        let mut total_added_cert_count = 0;
 
-                        macro_rules! try_load_certs {
-                            ($builder:ident, $certs_added:ident, $method:ident, $store:literal) => {{
-                                match schannel::cert_store::CertStore::$method($store) {
+                        const PKIX_SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
+                        const WINDOWS_STORE_NAMES: &[&str] = &["ROOT", "CA"];
+
+                        type CertStoreOpenFn =
+                            for<'a> fn(
+                                &'a str,
+                            )
+                                -> Result<schannel::cert_store::CertStore, std::io::Error>;
+                        const CERTIFICATE_OPENERS: &[(CertStoreOpenFn, &str)] = &[
+                            (
+                                schannel::cert_store::CertStore::open_current_user,
+                                "open_current_user",
+                            ),
+                            (
+                                schannel::cert_store::CertStore::open_local_machine,
+                                "open_local_machine",
+                            ),
+                        ];
+
+                        for (open_fn, open_fn_name) in CERTIFICATE_OPENERS {
+                            for windows_store_name in WINDOWS_STORE_NAMES {
+                                match open_fn(windows_store_name) {
                                     Ok(cstore) => {
+                                        let mut current_cert_count = 0;
+                                        let mut current_invalid_cert_count = 0;
+                                        let mut current_added_cert_count = 0;
+
                                         for cert in cstore.certs() {
+                                            current_cert_count += 1;
+                                            total_cert_count += 1;
+
+                                            if !cert.is_time_valid().unwrap_or_default()
+                                                || !cert
+                                                    .valid_uses()
+                                                    .map(|use_case| match use_case {
+                                                        schannel::cert_context::ValidUses::All => {
+                                                            true
+                                                        }
+                                                        schannel::cert_context::ValidUses::Oids(
+                                                            strs,
+                                                        ) => strs
+                                                            .iter()
+                                                            .any(|x| x == PKIX_SERVER_AUTH),
+                                                    })
+                                                    .unwrap_or_default()
+                                            {
+                                                current_invalid_cert_count += 1;
+                                                continue;
+                                            }
+
                                             // Convert the Windows cert to DER, then to BoringSSL X509
                                             match X509::from_der(cert.to_der()) {
                                                 Ok(x509) => {
                                                     if let Err(err) = builder.add_cert(x509) {
-                                                        debug!("failed to add x509 cert to windows: {err}");
+                                                        debug!(
+                                                            "failed to add x509 cert to windows: {err}"
+                                                        );
                                                     } else {
-                                                        $certs_added = true;
+                                                        current_added_cert_count += 1;
+                                                        total_added_cert_count += 1;
                                                     }
                                                 }
                                                 Err(err) => {
-                                                    debug!("failed to convert DER cert to x509: {err}");
+                                                    debug!(
+                                                        "failed to convert DER cert to x509: {err}"
+                                                    );
                                                 }
                                             }
                                         }
+                                        trace!(
+                                            "boring connector: windows: {open_fn_name}::{windows_store_name}: added {current_added_cert_count} certs of {current_cert_count} certs (invalid schannel certs: {current_invalid_cert_count})"
+                                        );
                                     }
                                     Err(err) => {
                                         debug!(
-                                            "failed to open {} cert store using schannel::cert_store::CertStore::{}; err = {err:?}",
-                                            $store,
-                                            stringify!($method),
+                                            "failed to open {windows_store_name} cert store using schannel::cert_store::CertStore::{open_fn_name}; err = {err:?}",
                                         );
                                     }
                                 }
-                            }};
+                            }
                         }
 
-                        try_load_certs!(builder, certs_added, open_current_user, "Root");
-                        try_load_certs!(builder, certs_added, open_current_user, "CA");
-                        try_load_certs!(builder, certs_added, open_local_machine, "Root");
-                        try_load_certs!(builder, certs_added, open_local_machine, "CA");
+                        trace!(
+                            "boring connector: windows: final result: added {total_added_cert_count} certs of {total_cert_count} certs"
+                        );
 
-                        if !certs_added {
+                        if total_added_cert_count == 0 {
                             return Err(OpaqueError::from_display(
                                 "failed to add windows certs from system (user/machine x Root/CA)",
                             ));
