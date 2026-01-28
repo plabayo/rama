@@ -11,7 +11,7 @@ use std::net::IpAddr;
 
 use super::VerboseLogs;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct TransportConnInfoLogger<C>(pub(super) C);
 
 impl<Input, C> Service<Input> for TransportConnInfoLogger<C>

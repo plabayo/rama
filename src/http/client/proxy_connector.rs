@@ -19,7 +19,6 @@ use pin_project_lite::pin_project;
 use std::{
     fmt::Debug,
     pin::Pin,
-    sync::Arc,
     task::{self, Poll},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -28,6 +27,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 ///
 /// Connector will look at [`ProxyAddress`] to determine which proxy
 /// connector to use if one is configured
+#[derive(Debug, Clone)]
 pub struct ProxyConnector<S> {
     inner: S,
     socks: Socks5ProxyConnector<S>,
@@ -35,16 +35,15 @@ pub struct ProxyConnector<S> {
     required: bool,
 }
 
-impl<S> ProxyConnector<S> {
+impl<S: Clone> ProxyConnector<S> {
     /// Creates a new [`ProxyConnector`].
     fn new(
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,
         required: bool,
-    ) -> ProxyConnector<Arc<S>> {
-        let inner = Arc::new(inner);
-        ProxyConnector {
+    ) -> Self {
+        Self {
             socks: socks_proxy_layer.into_layer(inner.clone()),
             http: http_proxy_layer.into_layer(inner.clone()),
             inner,
@@ -60,7 +59,7 @@ impl<S> ProxyConnector<S> {
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,
-    ) -> ProxyConnector<Arc<S>> {
+    ) -> Self {
         Self::new(inner, socks_proxy_layer, http_proxy_layer, true)
     }
 
@@ -72,7 +71,7 @@ impl<S> ProxyConnector<S> {
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,
-    ) -> ProxyConnector<Arc<S>> {
+    ) -> Self {
         Self::new(inner, socks_proxy_layer, http_proxy_layer, false)
     }
 }
@@ -327,8 +326,8 @@ impl ProxyConnectorLayer {
     }
 }
 
-impl<S> Layer<S> for ProxyConnectorLayer {
-    type Service = ProxyConnector<Arc<S>>;
+impl<S: Clone> Layer<S> for ProxyConnectorLayer {
+    type Service = ProxyConnector<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
         ProxyConnector::new(
