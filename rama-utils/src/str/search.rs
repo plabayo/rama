@@ -83,13 +83,19 @@ mod tests {
     #[test]
     fn test_starts_with_ignore_ascii_case() {
         assert!(starts_with_ignore_ascii_case("user-agent", "user"));
+        assert!(starts_with_ignore_ascii_case("User-Agent", "user"));
+        assert!(starts_with_ignore_ascii_case("USER-AGENT", "user"));
         assert!(!starts_with_ignore_ascii_case("user-agent", "agent"));
+        assert!(!starts_with_ignore_ascii_case("User-Agent", "agent"));
     }
 
     #[test]
     fn test_ends_with_ignore_ascii_case() {
         assert!(ends_with_ignore_ascii_case("user-agent", "agent"));
+        assert!(ends_with_ignore_ascii_case("User-Agent", "agent"));
+        assert!(ends_with_ignore_ascii_case("USER-AGENT", "agent"));
         assert!(!ends_with_ignore_ascii_case("user-agent", "user"));
+        assert!(!ends_with_ignore_ascii_case("User-Agent", "user"));
     }
 
     #[test]
