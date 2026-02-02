@@ -3,19 +3,18 @@ use std::{thread, time::Duration};
 use rama::{
     Layer, Service,
     http::{
-        Body, Request,
+        Body, HeaderName, HeaderValue, Request,
         client::EasyHttpWebClient,
         layer::{
             compression::CompressionLayer, decompression::DecompressionLayer, trace::TraceLayer,
         },
-        server::HttpServer,
-        service::web::WebService,
-        HeaderName, HeaderValue,
         layer::{
             cors::CorsLayer,
             required_header::{AddRequiredRequestHeadersLayer, AddRequiredResponseHeadersLayer},
             set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
         },
+        server::HttpServer,
+        service::web::WebService,
     },
     net::address::SocketAddress,
     rt::Executor,
@@ -124,7 +123,6 @@ async fn request_payload(client: impl Service<Request>, payload: &Payload, body_
     let _ = client.serve(req).await;
 }
 
-// make sure SAMPLE_COUNT is divisible by SEEDS.len()
 const SAMPLE_COUNT: u32 = 1000;
 
 #[divan::bench(sample_count = SAMPLE_COUNT, args = [
@@ -146,8 +144,7 @@ fn h1_client_server(bencher: divan::Bencher, payload: Payload) {
             let server_random_bytes = random_bytes_by_size(&mut rng, payload.server);
             let client_random_bytes = random_bytes_by_size(&mut rng, payload.client);
 
-            server_thread =
-                tokio::spawn(run_server(payload.server, server_random_bytes));
+            server_thread = tokio::spawn(run_server(payload.server, server_random_bytes));
             block_on(tokio::time::sleep(Duration::from_micros(5)));
 
             let client = (
