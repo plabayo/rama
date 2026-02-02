@@ -10,22 +10,18 @@ use rama::{
         },
         server::HttpServer,
         service::web::WebService,
+        HeaderName, HeaderValue,
+        layer::{
+            cors::CorsLayer,
+            required_header::{AddRequiredRequestHeadersLayer, AddRequiredResponseHeadersLayer},
+            set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
+        },
     },
     net::address::SocketAddress,
     rt::Executor,
 };
 
-use rama_http::{
-    HeaderName, HeaderValue,
-    layer::{
-        cors::CorsLayer,
-        required_header::{AddRequiredRequestHeadersLayer, AddRequiredResponseHeadersLayer},
-        set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
-    },
-};
-
-use rand::{RngCore, SeedableRng};
-use rand_chacha::ChaCha12Rng;
+use rand::prelude::*;
 use tokio_test::block_on;
 
 pub mod e2e_utils;
@@ -74,7 +70,7 @@ struct Payload {
     client: Size,
 }
 
-fn random_bytes_by_size(rng: &mut ChaCha12Rng, size: Size) -> Vec<u8> {
+fn random_bytes_by_size(rng: &mut ThreadRng, size: Size) -> Vec<u8> {
     match size {
         Size::Small => {
             let mut bytes = [0u8; 10_000];
@@ -129,8 +125,7 @@ async fn request_payload(client: impl Service<Request>, payload: &Payload, body_
 }
 
 // make sure SAMPLE_COUNT is divisible by SEEDS.len()
-const SAMPLE_COUNT: u32 = 10_000;
-const SEEDS: [u64; 5] = [42, 10191, 451, 73, 8128];
+const SAMPLE_COUNT: u32 = 1000;
 
 #[divan::bench(sample_count = SAMPLE_COUNT, args = [
     Payload { server: Size::Small, client: Size::Small },
@@ -139,33 +134,21 @@ const SEEDS: [u64; 5] = [42, 10191, 451, 73, 8128];
     Payload { server: Size::Large, client: Size::Large },
 ])]
 fn h1_client_server(bencher: divan::Bencher, payload: Payload) {
-    let mut iter_num = 0;
-    let mut seed_num = 0;
-
-    let mut rng = ChaCha12Rng::seed_from_u64(SEEDS[seed_num]);
-    let mut server_random_bytes = random_bytes_by_size(&mut rng, payload.server);
-    let mut client_random_bytes = random_bytes_by_size(&mut rng, payload.client);
-
-    let mut server_thread = tokio::spawn(run_server(payload.server, server_random_bytes.clone()));
-    block_on(tokio::time::sleep(Duration::from_micros(10)));
+    let mut server_thread = tokio::spawn(run_server(payload.server, vec![]));
+    block_on(tokio::time::sleep(Duration::from_micros(5)));
 
     bencher
         .with_inputs(|| {
-            if iter_num > 0 && iter_num % (SAMPLE_COUNT / SEEDS.len() as u32) == 0 {
-                seed_num += 1;
+            server_thread.abort();
+            block_on(tokio::time::sleep(Duration::from_micros(5)));
 
-                server_thread.abort();
-                block_on(tokio::time::sleep(Duration::from_micros(10)));
+            let mut rng = rand::rng();
+            let server_random_bytes = random_bytes_by_size(&mut rng, payload.server);
+            let client_random_bytes = random_bytes_by_size(&mut rng, payload.client);
 
-                rng = ChaCha12Rng::seed_from_u64(SEEDS[seed_num]);
-                server_random_bytes = random_bytes_by_size(&mut rng, payload.server);
-                client_random_bytes = random_bytes_by_size(&mut rng, payload.client);
-
-                server_thread =
-                    tokio::spawn(run_server(payload.server, server_random_bytes.clone()));
-                block_on(tokio::time::sleep(Duration::from_micros(10)));
-            }
-            iter_num += 1;
+            server_thread =
+                tokio::spawn(run_server(payload.server, server_random_bytes));
+            block_on(tokio::time::sleep(Duration::from_micros(5)));
 
             let client = (
                 TraceLayer::new_for_http(),
@@ -179,7 +162,7 @@ fn h1_client_server(bencher: divan::Bencher, payload: Payload) {
             )
                 .into_layer(EasyHttpWebClient::default());
 
-            (client, client_random_bytes.clone())
+            (client, client_random_bytes)
         })
         .bench_local_values(|(client, body_content)| {
             block_on(request_payload(client, &payload, body_content))
