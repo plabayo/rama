@@ -32,6 +32,17 @@ pub fn starts_with_ignore_ascii_case<T: AsRef<[u8]>>(s: T, sub: T) -> bool {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
+fn ends_with_ignore_ascii_case(path: &str, suffix: &str) -> bool {
+    if path.len() < suffix.len() {
+        return false;
+    }
+
+    let start = path.len() - suffix.len();
+    path.get(start..)
+        .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+}
+
 pub fn submatch_any_ignore_ascii_case<T: AsRef<[u8]>>(s: T, subs: &[T]) -> bool {
     contains_any_ignore_ascii_case(s, subs).is_some()
 }
@@ -72,7 +83,19 @@ mod tests {
     #[test]
     fn test_starts_with_ignore_ascii_case() {
         assert!(starts_with_ignore_ascii_case("user-agent", "user"));
+        assert!(starts_with_ignore_ascii_case("User-Agent", "user"));
+        assert!(starts_with_ignore_ascii_case("USER-AGENT", "user"));
         assert!(!starts_with_ignore_ascii_case("user-agent", "agent"));
+        assert!(!starts_with_ignore_ascii_case("User-Agent", "agent"));
+    }
+
+    #[test]
+    fn test_ends_with_ignore_ascii_case() {
+        assert!(ends_with_ignore_ascii_case("user-agent", "agent"));
+        assert!(ends_with_ignore_ascii_case("User-Agent", "agent"));
+        assert!(ends_with_ignore_ascii_case("USER-AGENT", "agent"));
+        assert!(!ends_with_ignore_ascii_case("user-agent", "user"));
+        assert!(!ends_with_ignore_ascii_case("User-Agent", "user"));
     }
 
     #[test]

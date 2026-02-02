@@ -97,8 +97,18 @@ impl<T, Stage> EasyHttpConnectorBuilder<T, Stage> {
     where
         L: Layer<T>,
     {
-        let connector = connector_layer.into_layer(self.connector);
+        self.map_connector(|c| connector_layer.into_layer(c))
+    }
 
+    /// Map the current connector using the given fn.
+    ///
+    /// Mapping a connector to a stage will not change the state
+    /// so this can be used to modify behaviour at a specific stage.
+    pub fn map_connector<T2>(
+        self,
+        map_fn: impl FnOnce(T) -> T2,
+    ) -> EasyHttpConnectorBuilder<T2, Stage> {
+        let connector = map_fn(self.connector);
         EasyHttpConnectorBuilder {
             connector,
             _phantom: PhantomData,
@@ -252,33 +262,6 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyTunnelStage> {
         }
     }
 
-    #[cfg(feature = "socks5")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
-    /// Add support for usage of a http(s) and socks5(h) [`ProxyAddress`] to this client
-    ///
-    /// Note that a tls proxy is not needed to make a https connection
-    /// to the final target. It only has an influence on the initial connection
-    /// to the proxy itself
-    ///
-    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
-    pub fn with_proxy_support(
-        self,
-    ) -> EasyHttpConnectorBuilder<ProxyConnector<std::sync::Arc<T>>, ProxyStage> {
-        use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
-        use rama_socks5::Socks5ProxyConnectorLayer;
-
-        let connector = ProxyConnector::optional(
-            self.connector,
-            Socks5ProxyConnectorLayer::required(),
-            HttpProxyConnectorLayer::required(),
-        );
-
-        EasyHttpConnectorBuilder {
-            connector,
-            _phantom: PhantomData,
-        }
-    }
-
     #[cfg(not(feature = "socks5"))]
     /// Add support for usage of a http(s) [`ProxyAddress`] to this client
     ///
@@ -331,6 +314,33 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyTunnelStage> {
     pub fn without_proxy_support(self) -> EasyHttpConnectorBuilder<T, ProxyStage> {
         EasyHttpConnectorBuilder {
             connector: self.connector,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: Clone> EasyHttpConnectorBuilder<T, ProxyTunnelStage> {
+    #[cfg(feature = "socks5")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
+    /// Add support for usage of a http(s) and socks5(h) [`ProxyAddress`] to this client
+    ///
+    /// Note that a tls proxy is not needed to make a https connection
+    /// to the final target. It only has an influence on the initial connection
+    /// to the proxy itself
+    ///
+    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    pub fn with_proxy_support(self) -> EasyHttpConnectorBuilder<ProxyConnector<T>, ProxyStage> {
+        use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
+        use rama_socks5::Socks5ProxyConnectorLayer;
+
+        let connector = ProxyConnector::optional(
+            self.connector,
+            Socks5ProxyConnectorLayer::required(),
+            HttpProxyConnectorLayer::required(),
+        );
+
+        EasyHttpConnectorBuilder {
+            connector,
             _phantom: PhantomData,
         }
     }

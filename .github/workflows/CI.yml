@@ -104,7 +104,8 @@ jobs:
           cargo fmt --all --check
       - name: doc
         run: |
-          cargo doc --all-features --no-deps --workspace
+          cargo doc --all-features --no-deps --workspace --exclude rama-cli
+          cargo doc --all-features --no-deps -p rama-cli
 
   test-rust-base:
     strategy:
