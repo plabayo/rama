@@ -18,3 +18,7 @@ mod router;
 pub use router::GrpcRouter;
 
 pub mod interceptor;
+
+#[cfg(feature = "opentelemetry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
+pub mod opentelemetry;

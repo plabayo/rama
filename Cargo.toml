@@ -149,6 +149,7 @@ opentelemetry-otlp = { version = "0.31", default-features = false, features = [
     "metrics",
     "trace",
 ] }
+opentelemetry-proto = { version = "0.31", default-features = false }
 opentelemetry-semantic-conventions = { version = "0.31", features = [
     "semconv_experimental",
 ] }
@@ -403,6 +404,7 @@ opentelemetry = [
     "rama-core/opentelemetry",
     "rama-http?/opentelemetry",
     "rama-net?/opentelemetry",
+    "rama-grpc?/opentelemetry",
     "dep:opentelemetry-otlp",
 ]
 
@@ -626,6 +628,10 @@ required-features = ["http-full"]
 [[example]]
 name = "http_telemetry"
 required-features = ["http-full", "opentelemetry"]
+
+[[example]]
+name = "grpc_example"
+required-features = ["http-full", "grpc", "opentelemetry"]
 
 [[example]]
 name = "http_user_agent_classifier"
