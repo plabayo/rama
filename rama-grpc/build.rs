@@ -11,6 +11,12 @@ fn main() {
         // tag: v1.5.0, commit: 2bd940b2b77c1ab57c27166af21384906da7bb2b
         let mut config = prost_build::Config::new();
         config.disable_comments(["."]);
+
+        // Use vendored protoc to avoid requiring system protoc installation
+        if let Ok(path) = protoc_bin_vendored::protoc_bin_path() {
+            config.protoc_executable(path);
+        }
+
         config
             .compile_protos(
                 &[

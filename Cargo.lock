@@ -2959,6 +2959,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
+ "protoc-bin-vendored",
  "quickcheck",
  "quickcheck_macros",
  "radix_trie",
