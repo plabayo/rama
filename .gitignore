@@ -8,3 +8,6 @@
 # IDEs
 .idea
 .vscode
+
+# log files produced by e2e benchmarks
+e2e-test-logs
