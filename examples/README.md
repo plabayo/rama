@@ -35,7 +35,6 @@ You can find these integration tests at [../tests/integration/examples](../tests
 
 ### gRPC
 
-- [`grpc_example.rs`](./grpc_example.rs) - Telemetry and monitoring via OTLP gRPC exporter
 See [the gRPC examples README at ./grpc/README.md](./grpc/README.md).
 
 ### Newline Delimited JSON (ndjson)
