@@ -20,7 +20,7 @@ Tools like [Jaeger](https://www.jaegertracing.io/) are used to visualize and ana
 
 ## Rama Telemetry
 
-Rama re-exports [OpenTelemetry](https://opentelemetry.io/) crates under [the `rama::opentelemtry` module](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html),
+Rama re-exports [OpenTelemetry](https://opentelemetry.io/) crates under [the `rama::opentelemetry` module](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html),
 and provides middlewares for collecting metrics on:
 
 - the http layer: <https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html>
@@ -30,14 +30,14 @@ Rama does not provide specific exporters or consumers of these metrics.
 Instead — similar to tracing — you'll have to add your own dependency for it.
 
 We recommend you to use <https://crates.io/crates/opentelemetry-otlp> as it
-plays nicely with the openetelemetry dependencies used by Rama as well as
+plays nicely with the OpenTelemetry dependencies used by Rama as well as
 popular ingestion tools such as [Prometheus](https://prometheus.io/).
 
 ### Rama Telemetry Example
 
 > Source Code: [/examples/http_telemetry.rs](https://github.com/plabayo/rama/tree/main/examples/http_telemetry.rs)
 >
-> Source Code (gRPC OTLP): [/examples/grpc_example.rs](https://github.com/plabayo/rama/tree/main/examples/grpc_example.rs)
+> Source Code (gRPC OTLP): [/examples/grpc/src/otel_exporter.rs](https://github.com/plabayo/rama/tree/main/examples/grpc/src/otel_exporter.rs)
 
 In this example you can see a web service which keeps track of a visitor counter as a custom opentelemetry counter metric. It also makes use of the rama provided [`RequestMetricsLayer`](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/struct.RequestMetricsLayer.html) and [`NetworkMetricsLayer`](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/struct.NetworkMetricsLayer.html) layers to also some insights in the traffic both on the network- and application (http) layers. These metrics are exported using the <https://crates.io/crates/opentelemetry-otlp> dependency.
 

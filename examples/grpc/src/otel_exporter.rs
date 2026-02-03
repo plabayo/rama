@@ -149,7 +149,7 @@ async fn main() {
 
         // service setup & go
         TcpListener::build(exec)
-            .bind("127.1:62013")
+            .bind_address("127.0.0.1:62013")
             .await
             .unwrap()
             .serve(
