@@ -8,7 +8,7 @@
 //! [`opentelemetry`]: https://opentelemetry.io/
 //! [`tracing`]: https://tracing.rs/
 //!
-//! This example will create a server that listens on `127.0.0.1:62013`.
+//! This example will create a server that listens on `127.0.0.1:62113`.
 //!
 //! It also expects you to run the OT collector, e.g.:
 //!
@@ -26,15 +26,15 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62013`. You can use `curl`:
+//! The server will start and listen on `:62113`. You can use `curl`:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62013
+//! curl -v http://127.0.0.1:62113
 //! ```
 //!
 //! With the response you should see a response with `HTTP/1.1 200` and a greeting.
 //!
-//! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4317 over GRPC.
+//! You can now use tools like Grafana to collect metrics from the collector running at 127.0.0.1:4317 over gRPC.
 
 use rama::{
     Layer,
@@ -149,7 +149,7 @@ async fn main() {
 
         // service setup & go
         TcpListener::build(exec)
-            .bind("127.1:62013")
+            .bind_address("127.0.0.1:62113")
             .await
             .unwrap()
             .serve(

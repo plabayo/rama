@@ -1,8 +1,7 @@
 //! Conversions from OpenTelemetry SDK types to OTLP protobuf types.
 //!
-//! This module replaces the `opentelemetry-proto` crate's transform layer,
-//! converting directly from `opentelemetry_sdk` data types to our vendored
-//! proto types.
+//! This module converts directly from Rama's OpenTelemetry re-exports and
+//! vendored proto types.
 
 use super::proto::{
     self, AnyValue, ArrayValue, ExponentialHistogramDataPoint, ExportMetricsServiceRequest,
@@ -11,19 +10,24 @@ use super::proto::{
     ProtoMetric, ProtoResource, ProtoResourceMetrics, ProtoScopeMetrics, ProtoSum, ResourceSpans,
     ScopeSpans, Span, Status,
 };
-use opentelemetry::{Array, Value, trace as otrace};
-use opentelemetry_sdk::{
-    Resource,
-    metrics::{
-        Temporality,
-        data::{
-            AggregatedMetrics, Exemplar as SdkExemplar,
-            ExponentialHistogram as SdkExponentialHistogram, Gauge as SdkGauge,
-            Histogram as SdkHistogram, Metric as SdkMetric, MetricData as SdkMetricData,
-            ResourceMetrics as SdkResourceMetrics, ScopeMetrics as SdkScopeMetrics, Sum as SdkSum,
+use rama_core::telemetry::opentelemetry;
+use rama_core::telemetry::opentelemetry::{
+    Array, Value,
+    sdk::{
+        Resource,
+        metrics::{
+            Temporality,
+            data::{
+                AggregatedMetrics, Exemplar as SdkExemplar,
+                ExponentialHistogram as SdkExponentialHistogram, Gauge as SdkGauge,
+                Histogram as SdkHistogram, Metric as SdkMetric, MetricData as SdkMetricData,
+                ResourceMetrics as SdkResourceMetrics, ScopeMetrics as SdkScopeMetrics,
+                Sum as SdkSum,
+            },
         },
+        trace::SpanData,
     },
-    trace::SpanData,
+    trace as otrace,
 };
 use std::{
     collections::HashMap,
@@ -35,33 +39,38 @@ use std::{
 // ──────────────────────────────────────────────
 
 fn to_nanos(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH)
+    let nanos = time
+        .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Duration::from_secs(0))
-        .as_nanos() as u64
+        .as_nanos();
+    u64::try_from(nanos).unwrap_or(u64::MAX)
 }
 
 // ──────────────────────────────────────────────
 // Common: attributes + values
 // ──────────────────────────────────────────────
 
-fn key_value_from(kv: ::opentelemetry::KeyValue) -> KeyValue {
+fn key_value_from(kv: opentelemetry::KeyValue) -> KeyValue {
     KeyValue {
         key: kv.key.as_str().to_owned(),
         value: Some(value_into_any(kv.value)),
+        ..Default::default()
     }
 }
 
-fn key_value_from_ref(key: &::opentelemetry::Key, value: &Value) -> KeyValue {
+fn key_value_from_ref(key: &opentelemetry::Key, value: &Value) -> KeyValue {
     KeyValue {
         key: key.as_str().to_owned(),
         value: Some(value_into_any(value.clone())),
+        ..Default::default()
     }
 }
 
-fn key_value_from_kv_ref(kv: &::opentelemetry::KeyValue) -> KeyValue {
+fn key_value_from_kv_ref(kv: &opentelemetry::KeyValue) -> KeyValue {
     KeyValue {
         key: kv.key.as_str().to_owned(),
         value: Some(value_into_any(kv.value.clone())),
+        ..Default::default()
     }
 }
 
@@ -95,21 +104,19 @@ where
     ArrayValue { values }
 }
 
-fn attributes_from_iter<I: IntoIterator<Item = ::opentelemetry::KeyValue>>(
-    kvs: I,
-) -> Vec<KeyValue> {
+fn attributes_from_iter<I: IntoIterator<Item = opentelemetry::KeyValue>>(kvs: I) -> Vec<KeyValue> {
     kvs.into_iter().map(key_value_from).collect()
 }
 
 fn resource_attributes(resource: &Resource) -> Vec<KeyValue> {
     resource
         .iter()
-        .map(|(k, v)| key_value_from(::opentelemetry::KeyValue::new(k.clone(), v.clone())))
+        .map(|(k, v)| key_value_from(opentelemetry::KeyValue::new(k.clone(), v.clone())))
         .collect()
 }
 
 fn instrumentation_scope_into(
-    scope: &::opentelemetry::InstrumentationScope,
+    scope: &opentelemetry::InstrumentationScope,
 ) -> ProtoInstrumentationScope {
     ProtoInstrumentationScope {
         name: scope.name().to_owned(),
@@ -134,7 +141,7 @@ impl From<&Resource> for ResourceAttributesWithSchema {
     fn from(resource: &Resource) -> Self {
         Self {
             attributes: resource_attributes(resource),
-            schema_url: resource.schema_url().map(ToString::to_string),
+            schema_url: resource.schema_url().map(str::to_owned),
         }
     }
 }
@@ -239,7 +246,7 @@ pub(crate) fn group_spans_by_resource_and_scope(
 ) -> Vec<ResourceSpans> {
     // Group spans by their instrumentation scope.
     let scope_map = spans.iter().fold(
-        HashMap::<&::opentelemetry::InstrumentationScope, Vec<&SpanData>>::new(),
+        HashMap::<&opentelemetry::InstrumentationScope, Vec<&SpanData>>::new(),
         |mut scope_map, span| {
             scope_map
                 .entry(&span.instrumentation_scope)
@@ -252,7 +259,7 @@ pub(crate) fn group_spans_by_resource_and_scope(
     let scope_spans: Vec<ScopeSpans> = scope_map
         .into_iter()
         .map(
-            |(scope, span_records): (&::opentelemetry::InstrumentationScope, Vec<&SpanData>)| {
+            |(scope, span_records): (&opentelemetry::InstrumentationScope, Vec<&SpanData>)| {
                 ScopeSpans {
                     scope: Some(instrumentation_scope_into(scope)),
                     schema_url: scope
@@ -272,6 +279,7 @@ pub(crate) fn group_spans_by_resource_and_scope(
         resource: Some(ProtoResource {
             attributes: resource.attributes.clone(),
             dropped_attributes_count: 0,
+            ..Default::default()
         }),
         scope_spans,
         schema_url: resource.schema_url.clone().unwrap_or_default(),
@@ -303,6 +311,7 @@ fn sdk_resource_into(resource: &Resource) -> ProtoResource {
             .map(|(k, v)| key_value_from_ref(k, v))
             .collect(),
         dropped_attributes_count: 0,
+        ..Default::default()
     }
 }
 
@@ -402,7 +411,7 @@ fn gauge_into<T: Numeric>(gauge: &SdkGauge<T>) -> ProtoGauge {
                 start_time_unix_nano: gauge.start_time().map(to_nanos).unwrap_or_default(),
                 time_unix_nano: to_nanos(gauge.time()),
                 exemplars: dp.exemplars().map(exemplar_into).collect(),
-                flags: proto::DataPointFlags::default() as u32,
+                flags: 0,
                 value: Some(dp.value().into_data_point_value()),
             })
             .collect(),
@@ -418,7 +427,7 @@ fn sum_into<T: Numeric>(sum: &SdkSum<T>) -> ProtoSum {
                 start_time_unix_nano: to_nanos(sum.start_time()),
                 time_unix_nano: to_nanos(sum.time()),
                 exemplars: dp.exemplars().map(exemplar_into).collect(),
-                flags: proto::DataPointFlags::default() as u32,
+                flags: 0,
                 value: Some(dp.value().into_data_point_value()),
             })
             .collect(),
@@ -440,7 +449,7 @@ fn histogram_into<T: Numeric>(hist: &SdkHistogram<T>) -> ProtoHistogram {
                 bucket_counts: dp.bucket_counts().collect(),
                 explicit_bounds: dp.bounds().collect(),
                 exemplars: dp.exemplars().map(exemplar_into).collect(),
-                flags: proto::DataPointFlags::default() as u32,
+                flags: 0,
                 min: dp.min().map(Numeric::into_f64),
                 max: dp.max().map(Numeric::into_f64),
             })
@@ -457,7 +466,7 @@ fn exp_histogram_into<T: Numeric>(hist: &SdkExponentialHistogram<T>) -> ProtoExp
                 attributes: dp.attributes().map(key_value_from_kv_ref).collect(),
                 start_time_unix_nano: to_nanos(hist.start_time()),
                 time_unix_nano: to_nanos(hist.time()),
-                count: dp.count() as u64,
+                count: u64::try_from(dp.count()).unwrap_or(u64::MAX),
                 sum: Some(dp.sum().into_f64()),
                 scale: dp.scale().into(),
                 zero_count: dp.zero_count(),
@@ -469,7 +478,7 @@ fn exp_histogram_into<T: Numeric>(hist: &SdkExponentialHistogram<T>) -> ProtoExp
                     offset: dp.negative_bucket().offset(),
                     bucket_counts: dp.negative_bucket().counts().collect(),
                 }),
-                flags: proto::DataPointFlags::default() as u32,
+                flags: 0,
                 exemplars: dp.exemplars().map(exemplar_into).collect(),
                 min: dp.min().map(Numeric::into_f64),
                 max: dp.max().map(Numeric::into_f64),

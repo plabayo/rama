@@ -5,14 +5,17 @@ use crate::{
     metadata::MetadataMap,
     protobuf::ProstCodec,
 };
-use opentelemetry::{otel_debug, otel_warn};
-use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
-use opentelemetry_sdk::{
-    error::{OTelSdkError, OTelSdkResult},
-    metrics::{Temporality, data::ResourceMetrics},
-    trace::{SpanData, SpanExporter},
-};
 use rama_core::error::BoxError;
+use rama_core::telemetry::opentelemetry::{
+    otel_debug, otel_warn,
+    sdk::{
+        self,
+        error::{OTelSdkError, OTelSdkResult},
+        metrics::exporter::PushMetricExporter,
+        metrics::{Temporality, data::ResourceMetrics},
+        trace::{SpanData, SpanExporter},
+    },
+};
 use rama_http::{
     Body, StreamingBody,
     uri::{PathAndQuery, Uri},
@@ -449,7 +452,7 @@ where
         Ok(())
     }
 
-    fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
+    fn set_resource(&mut self, resource: &sdk::Resource) {
         if let Ok(mut guard) = self.resource.write() {
             *guard = resource.into();
         }

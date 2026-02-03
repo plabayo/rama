@@ -134,10 +134,9 @@ mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 nom = "8.0.0"
-opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry = { version = "0.31", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry-http = { version = "0.31", default-features = false }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["internal-logs", "logs", "metrics", "trace"] }
-opentelemetry-proto = { version = "0.31", default-features = false }
 opentelemetry-semantic-conventions = { version = "0.31", features = ["semconv_experimental"] }
 opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
 parking_lot = "0.12"
