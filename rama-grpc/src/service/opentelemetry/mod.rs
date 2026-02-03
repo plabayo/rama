@@ -6,16 +6,6 @@ use crate::{
     protobuf::ProstCodec,
 };
 use opentelemetry::{otel_debug, otel_warn};
-use opentelemetry_proto::{
-    tonic::collector::{
-        metrics::v1::{ExportMetricsServiceRequest, ExportMetricsServiceResponse},
-        trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse},
-    },
-    transform::{
-        common::tonic::ResourceAttributesWithSchema,
-        trace::tonic::group_spans_by_resource_and_scope,
-    },
-};
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
 use opentelemetry_sdk::{
     error::{OTelSdkError, OTelSdkResult},
@@ -27,6 +17,7 @@ use rama_http::{
     Body, StreamingBody,
     uri::{PathAndQuery, Uri},
 };
+use rama_utils::macros::generate_set_and_with;
 use std::{
     fmt,
     str::FromStr,
@@ -36,6 +27,15 @@ use std::{
     },
     time::Duration,
 };
+
+pub(crate) mod proto;
+mod transform;
+
+use proto::{
+    ExportMetricsServiceRequest, ExportMetricsServiceResponse, ExportTraceServiceRequest,
+    ExportTraceServiceResponse,
+};
+use transform::{ResourceAttributesWithSchema, group_spans_by_resource_and_scope};
 
 const DEFAULT_OTLP_GRPC_ENDPOINT: &str = "http://localhost:4317";
 
@@ -144,83 +144,109 @@ impl<S> OtelExporter<S> {
         Ok(exporter)
     }
 
-    /// Override the base OTLP endpoint.
-    pub fn with_endpoint(mut self, endpoint: Uri) -> Self {
-        self.endpoint = endpoint;
-        self
-    }
+    generate_set_and_with!(
+        /// Override the base OTLP endpoint.
+        pub fn endpoint(mut self, endpoint: Uri) -> Self {
+            self.endpoint = endpoint;
+            self
+        }
+    );
 
-    /// Override the base OTLP timeout.
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
+    generate_set_and_with!(
+        /// Override the base OTLP timeout.
+        pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.timeout = timeout;
+            self
+        }
+    );
 
-    /// Override the base OTLP compression.
-    pub fn with_compression(mut self, compression: CompressionEncoding) -> Self {
-        self.compression = Some(compression);
-        self
-    }
+    generate_set_and_with!(
+        /// Override the base OTLP compression.
+        pub fn compression(mut self, compression: Option<CompressionEncoding>) -> Self {
+            self.compression = compression;
+            self
+        }
+    );
 
-    /// Override the base OTLP metadata.
-    pub fn with_metadata(mut self, metadata: MetadataMap) -> Self {
-        self.metadata = metadata;
-        self
-    }
+    generate_set_and_with!(
+        /// Override the base OTLP metadata.
+        pub fn metadata(mut self, metadata: MetadataMap) -> Self {
+            self.metadata = metadata;
+            self
+        }
+    );
 
-    /// Override the trace-specific endpoint.
-    pub fn with_traces_endpoint(mut self, endpoint: Uri) -> Self {
-        self.traces.endpoint = Some(endpoint);
-        self
-    }
+    generate_set_and_with!(
+        /// Override the trace-specific endpoint.
+        pub fn traces_endpoint(mut self, endpoint: Option<Uri>) -> Self {
+            self.traces.endpoint = endpoint;
+            self
+        }
+    );
 
-    /// Override the trace-specific timeout.
-    pub fn with_traces_timeout(mut self, timeout: Duration) -> Self {
-        self.traces.timeout = Some(timeout);
-        self
-    }
+    generate_set_and_with!(
+        /// Override the trace-specific timeout.
+        pub fn traces_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.traces.timeout = timeout;
+            self
+        }
+    );
 
-    /// Override the trace-specific compression.
-    pub fn with_traces_compression(mut self, compression: CompressionEncoding) -> Self {
-        self.traces.compression = Some(compression);
-        self
-    }
+    generate_set_and_with!(
+        /// Override the trace-specific compression.
+        pub fn traces_compression(mut self, compression: Option<CompressionEncoding>) -> Self {
+            self.traces.compression = compression;
+            self
+        }
+    );
 
-    /// Override the trace-specific metadata.
-    pub fn with_traces_metadata(mut self, metadata: MetadataMap) -> Self {
-        self.traces.metadata = metadata;
-        self
-    }
+    generate_set_and_with!(
+        /// Override the trace-specific metadata.
+        pub fn traces_metadata(mut self, metadata: MetadataMap) -> Self {
+            self.traces.metadata = metadata;
+            self
+        }
+    );
 
-    /// Override the metrics-specific endpoint.
-    pub fn with_metrics_endpoint(mut self, endpoint: Uri) -> Self {
-        self.metrics.endpoint = Some(endpoint);
-        self
-    }
+    generate_set_and_with!(
+        /// Override the metrics-specific endpoint.
+        pub fn metrics_endpoint(mut self, endpoint: Option<Uri>) -> Self {
+            self.metrics.endpoint = endpoint;
+            self
+        }
+    );
 
-    /// Override the metrics-specific timeout.
-    pub fn with_metrics_timeout(mut self, timeout: Duration) -> Self {
-        self.metrics.timeout = Some(timeout);
-        self
-    }
+    generate_set_and_with!(
+        /// Override the metrics-specific timeout.
+        pub fn metrics_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.metrics.timeout = timeout;
+            self
+        }
+    );
 
-    /// Override the metrics-specific compression.
-    pub fn with_metrics_compression(mut self, compression: CompressionEncoding) -> Self {
-        self.metrics.compression = Some(compression);
-        self
-    }
+    generate_set_and_with!(
+        /// Override the metrics-specific compression.
+        pub fn metrics_compression(mut self, compression: Option<CompressionEncoding>) -> Self {
+            self.metrics.compression = compression;
+            self
+        }
+    );
 
-    /// Override the metrics-specific metadata.
-    pub fn with_metrics_metadata(mut self, metadata: MetadataMap) -> Self {
-        self.metrics.metadata = metadata;
-        self
-    }
+    generate_set_and_with!(
+        /// Override the metrics-specific metadata.
+        pub fn metrics_metadata(mut self, metadata: MetadataMap) -> Self {
+            self.metrics.metadata = metadata;
+            self
+        }
+    );
 
-    /// Configure the metric temporality used by this exporter.
-    pub fn with_temporality(mut self, temporality: Temporality) -> Self {
-        self.temporality = temporality;
-        self
-    }
+    generate_set_and_with!(
+        /// Configure the metric temporality used by this exporter.
+        pub fn temporality(mut self, temporality: Temporality) -> Self {
+            self.temporality = temporality;
+            self
+        }
+    );
 
     fn apply_env(&mut self) -> Result<(), OtelExporterConfigError> {
         if let Some(endpoint) = env_endpoint(OTEL_EXPORTER_OTLP_ENDPOINT)? {
@@ -353,7 +379,7 @@ where
                     let guard = resource.read().map_err(|_| {
                         OTelSdkError::InternalFailure("resource lock poisoned".to_owned())
                     })?;
-                    group_spans_by_resource_and_scope(batch, &guard)
+                    group_spans_by_resource_and_scope(&batch, &guard)
                 };
 
                 let mut request = Request::new(ExportTraceServiceRequest { resource_spans });
@@ -444,7 +470,7 @@ where
         let handle = self.handle.clone();
         let config = self.metrics_config();
         let shutdown = self.shutdown.clone();
-        let request_body = ExportMetricsServiceRequest::from(metrics);
+        let request_body = transform::resource_metrics_to_request(metrics);
 
         // gRPC client futures are !Send, so run them on the runtime via a blocking task.
         let runtime = handle.clone();

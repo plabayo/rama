@@ -7,8 +7,18 @@ fn main() {
 
     #[cfg(feature = "opentelemetry")]
     {
-        println!("cargo::rerun-if-env-changed=OTEL_EXPORTER_OTLP_ENDPOINT");
-        println!("cargo::rerun-if-env-changed=OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-        println!("cargo::rerun-if-env-changed=OTEL_EXPORTER_OTLP_METRICS_ENDPOINT");
+        // Proto files vendored from https://github.com/open-telemetry/opentelemetry-proto
+        // tag: v1.5.0, commit: 2bd940b2b77c1ab57c27166af21384906da7bb2b
+        let mut config = prost_build::Config::new();
+        config.disable_comments(["."]);
+        config
+            .compile_protos(
+                &[
+                    "proto/opentelemetry/proto/collector/trace/v1/trace_service.proto",
+                    "proto/opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+                ],
+                &["proto/"],
+            )
+            .unwrap();
     }
 }

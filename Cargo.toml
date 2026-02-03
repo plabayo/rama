@@ -611,10 +611,6 @@ name = "http_telemetry"
 required-features = ["http-full", "opentelemetry"]
 
 [[example]]
-name = "grpc_example"
-required-features = ["http-full", "grpc", "opentelemetry"]
-
-[[example]]
 name = "http_user_agent_classifier"
 required-features = ["http-full"]
 

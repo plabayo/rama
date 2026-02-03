@@ -8,7 +8,7 @@
 //! [`opentelemetry`]: https://opentelemetry.io/
 //! [`tracing`]: https://tracing.rs/
 //!
-//! This example will create a server that listens on `127.0.0.1:62012.
+//! This example will create a server that listens on `127.0.0.1:62013`.
 //!
 //! It also expects you to run the OT collector, e.g.:
 //!
@@ -21,18 +21,18 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example grpc_example --features=http-full,grpc,opentelemetry
+//! cargo run -p rama-grpc-examples --bin otel-exporter
 //! ```
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62012`. You can use `curl`:
+//! The server will start and listen on `:62013`. You can use `curl`:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62012
+//! curl -v http://127.0.0.1:62013
 //! ```
 //!
-//! With the seecoresponse you should see a response with `HTTP/1.1 200` and a greeting.
+//! With the response you should see a response with `HTTP/1.1 200` and a greeting.
 //!
 //! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4317 over GRPC.
 
@@ -81,7 +81,7 @@ struct Metrics {
 impl Metrics {
     fn new() -> Self {
         let meter = opentelemetry::global::meter_with_scope(
-            InstrumentationScope::builder("example.grpc_example")
+            InstrumentationScope::builder("example.otel_exporter")
                 .with_version(env!("CARGO_PKG_VERSION"))
                 .with_schema_url(semantic_conventions::SCHEMA_URL)
                 .with_attributes(vec![
@@ -118,7 +118,7 @@ async fn main() {
         .build();
 
     let resource = Resource::builder()
-        .with_attribute(KeyValue::new(SERVICE_NAME, "grpc_example"))
+        .with_attribute(KeyValue::new(SERVICE_NAME, "otel_exporter"))
         .with_attribute(KeyValue::new(SERVICE_VERSION, rama::utils::info::VERSION))
         .build();
 
@@ -149,7 +149,7 @@ async fn main() {
 
         // service setup & go
         TcpListener::build(exec)
-            .bind("127.1:62012")
+            .bind("127.1:62013")
             .await
             .unwrap()
             .serve(
