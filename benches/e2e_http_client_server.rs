@@ -8,7 +8,8 @@ use std::{
 
 use rama::{
     Layer, Service,
-    error::BoxError,
+    error::{BoxError, OpaqueError},
+    extensions::ExtensionsMut,
     http::{
         Body, HeaderName, HeaderValue, Request, Response, Version,
         body::util::BodyExt,
@@ -28,13 +29,22 @@ use rama::{
             web::{WebService, response::IntoResponse as _},
         },
     },
-    net::address::SocketAddress,
+    net::{
+        address::SocketAddress,
+        tls::{
+            ApplicationProtocol,
+            server::{SelfSignedData, ServerAuth, ServerConfig},
+        },
+    },
     rt::Executor,
+    service::BoxService,
     tcp::server::TcpListener,
     telemetry::tracing,
+    tls::{boring, rustls},
 };
 
 use rand::prelude::*;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod e2e_utils;
 
@@ -59,8 +69,16 @@ enum HttpVersion {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum Tls {
+    None,
+    Rustls,
+    Boring,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct TestParameters {
     version: HttpVersion,
+    tls: Tls,
     server: Size,
     client: Size,
 }
@@ -87,7 +105,13 @@ fn get_endpoint_for_size(size: Size) -> &'static str {
     }
 }
 
-fn spawn_http_server(params: TestParameters, body_content: Vec<u8>) -> SocketAddress {
+fn get_http_service_boxed<Input>(
+    params: TestParameters,
+    body_content: Vec<u8>,
+) -> BoxService<Input, (), BoxError>
+where
+    Input: ExtensionsMut + AsyncRead + AsyncWrite + Send + 'static,
+{
     let body_content: &[u8] = body_content.leak();
     let handler = async move |req: Request| {
         if let Err(err) = req.into_body().collect().await {
@@ -109,6 +133,38 @@ fn spawn_http_server(params: TestParameters, body_content: Vec<u8>) -> SocketAdd
     )
         .layer(WebService::default().with_post(get_endpoint_for_size(params.server), handler));
 
+    match params.version {
+        HttpVersion::Http1 => HttpServer::http1(Executor::default())
+            .service(http_service)
+            .boxed(),
+        HttpVersion::Http2 => HttpServer::h2(Executor::default())
+            .service(http_service)
+            .boxed(),
+    }
+}
+
+fn get_rustls_acceptor_data() -> rustls::server::TlsAcceptorData {
+    rustls::server::TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
+        organisation_name: Some("Example Server Acceptor".to_owned()),
+        ..Default::default()
+    })
+    .unwrap()
+    .with_alpn_protocols_http_auto()
+    .build()
+}
+
+fn get_boring_acceptor_data() -> boring::server::TlsAcceptorData {
+    let tls_server_config = ServerConfig {
+        application_layer_protocol_negotiation: Some(vec![
+            ApplicationProtocol::HTTP_11,
+            ApplicationProtocol::HTTP_2,
+        ]),
+        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
+    };
+    boring::server::TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data")
+}
+
+fn spawn_http_server(params: TestParameters, body_content: Vec<u8>) -> SocketAddress {
     let listener = std::net::TcpListener::bind(SocketAddress::local_ipv4(0).into_std()).unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -132,16 +188,24 @@ fn spawn_http_server(params: TestParameters, body_content: Vec<u8>) -> SocketAdd
 
             ready_worker.store(true, Ordering::Release);
 
-            match params.version {
-                HttpVersion::Http1 => {
-                    async_listener
-                        .serve(HttpServer::http1(Executor::default()).service(http_service))
-                        .await
+            match params.tls {
+                Tls::None => {
+                    let server = get_http_service_boxed(params, body_content);
+                    async_listener.serve(server).await
                 }
-                HttpVersion::Http2 => {
-                    async_listener
-                        .serve(HttpServer::h2(Executor::default()).service(http_service))
-                        .await
+                Tls::Rustls => {
+                    let service = get_http_service_boxed(params, body_content);
+                    let tls_service =
+                        rustls::server::TlsAcceptorLayer::new(get_rustls_acceptor_data())
+                            .into_layer(service);
+                    async_listener.serve(tls_service).await
+                }
+                Tls::Boring => {
+                    let service = get_http_service_boxed(params, body_content);
+                    let tls_service =
+                        boring::server::TlsAcceptorLayer::new(get_boring_acceptor_data())
+                            .into_layer(service);
+                    async_listener.serve(tls_service).await
                 }
             }
         });
@@ -162,8 +226,13 @@ async fn request_payload(
 ) {
     let endpoint = get_endpoint_for_size(params.server);
 
+    let http_protocol = match params.tls {
+        Tls::None => "http",
+        _ => "https",
+    };
+
     let result = client
-        .post(format!("http://{address}/{endpoint}"))
+        .post(format!("{http_protocol}://{address}/{endpoint}"))
         .version(match params.version {
             HttpVersion::Http1 => Version::HTTP_11,
             HttpVersion::Http2 => Version::HTTP_2,
@@ -182,19 +251,71 @@ async fn request_payload(
     }
 }
 
+fn get_inner_client(tls: Tls) -> impl Service<Request, Output = Response, Error = OpaqueError> {
+    match tls {
+        Tls::None => EasyHttpWebClient::connector_builder()
+            .with_default_transport_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .build_client(),
+        Tls::Rustls => {
+            let tls_config = rustls::client::TlsConnectorData::try_new_http_auto()
+                .expect("connector data with http auto");
+
+            EasyHttpWebClient::connector_builder()
+                .with_default_transport_connector()
+                .without_tls_proxy_support()
+                .without_proxy_support()
+                .with_tls_support_using_rustls(Some(tls_config))
+                .with_default_http_connector(Executor::default())
+                .build_client()
+        }
+        Tls::Boring => {
+            let tls_config =
+                boring::client::TlsConnectorDataBuilder::new_http_auto().into_shared_builder();
+
+            EasyHttpWebClient::connector_builder()
+                .with_default_transport_connector()
+                .without_tls_proxy_support()
+                .without_proxy_support()
+                .with_tls_support_using_boringssl(Some(tls_config))
+                .with_default_http_connector(Executor::default())
+                .build_client()
+        }
+    }
+}
+
 const SAMPLE_COUNT: u32 = 1000;
 
 #[divan::bench(sample_count = SAMPLE_COUNT, args = [
     // http1
-    TestParameters { version: HttpVersion::Http1, server: Size::Small, client: Size::Small },
-    TestParameters { version: HttpVersion::Http1, server: Size::Large, client: Size::Small },
-    TestParameters { version: HttpVersion::Http1, server: Size::Small, client: Size::Large },
-    TestParameters { version: HttpVersion::Http1, server: Size::Large, client: Size::Large },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::None, server: Size::Small, client: Size::Small },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::None, server: Size::Large, client: Size::Small },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::None, server: Size::Small, client: Size::Large },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::None, server: Size::Large, client: Size::Large },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::Rustls, server: Size::Small, client: Size::Small },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::Rustls, server: Size::Large, client: Size::Small },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::Rustls, server: Size::Small, client: Size::Large },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::Rustls, server: Size::Large, client: Size::Large },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::Boring, server: Size::Small, client: Size::Small },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::Boring, server: Size::Large, client: Size::Small },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::Boring, server: Size::Small, client: Size::Large },
+    TestParameters { version: HttpVersion::Http1, tls: Tls::Boring, server: Size::Large, client: Size::Large },
     // http2 (h2)
-    TestParameters { version: HttpVersion::Http2, server: Size::Small, client: Size::Small },
-    TestParameters { version: HttpVersion::Http2, server: Size::Large, client: Size::Small },
-    TestParameters { version: HttpVersion::Http2, server: Size::Small, client: Size::Large },
-    TestParameters { version: HttpVersion::Http2, server: Size::Large, client: Size::Large },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::None, server: Size::Small, client: Size::Small },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::None, server: Size::Large, client: Size::Small },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::None, server: Size::Small, client: Size::Large },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::None, server: Size::Large, client: Size::Large },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::Rustls, server: Size::Small, client: Size::Small },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::Rustls, server: Size::Large, client: Size::Small },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::Rustls, server: Size::Small, client: Size::Large },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::Rustls, server: Size::Large, client: Size::Large },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::Boring, server: Size::Small, client: Size::Small },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::Boring, server: Size::Large, client: Size::Small },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::Boring, server: Size::Small, client: Size::Large },
+    TestParameters { version: HttpVersion::Http2, tls: Tls::Boring, server: Size::Large, client: Size::Large },
 ])]
 fn h1_client_server(bencher: divan::Bencher, params: TestParameters) {
     let mut rng = rand::rng();
@@ -216,7 +337,7 @@ fn h1_client_server(bencher: divan::Bencher, params: TestParameters) {
                     HeaderValue::from_static("req-bar"),
                 ),
             )
-                .into_layer(EasyHttpWebClient::default());
+                .into_layer(get_inner_client(params.tls));
 
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
