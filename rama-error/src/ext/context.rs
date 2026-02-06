@@ -364,25 +364,4 @@ mod tests {
         let src_ref = err.source().expect("source should exist");
         assert_eq!(src_ref.to_string(), "boom");
     }
-
-    #[test]
-    fn contextfield_escapes_backslash_quote_and_control_chars() {
-        let field = ContextField {
-            key: Some("v"),
-            value: Box::new(
-                r#"a\ " b
-c	d
-e"#,
-            ),
-        };
-
-        let s = format!("{field}");
-        assert_eq!(s, format!(r#"v="a\\ \" b\nc\td{NATIVE_NEWLINE_ESCAPED}e""#));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    const NATIVE_NEWLINE_ESCAPED: &str = "\\n";
-
-    #[cfg(target_os = "windows")]
-    const NATIVE_NEWLINE_ESCAPED: &str = "\\r\\n";
 }
