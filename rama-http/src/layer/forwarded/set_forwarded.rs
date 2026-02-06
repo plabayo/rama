@@ -3,7 +3,7 @@ use crate::headers::HeaderMapExt;
 use crate::headers::forwarded::{
     ForwardHeader, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::{Layer, Service};
 use rama_http_headers::forwarded::Forwarded;
@@ -343,7 +343,7 @@ where
             req.headers_mut().typed_insert(header);
         }
 
-        self.inner.serve(req).await.map_err(Into::into)
+        self.inner.serve(req).await.into_box_error()
     }
 }
 
@@ -355,12 +355,12 @@ mod tests {
         headers::forwarded::{TrueClientIp, XRealIp},
         service::web::response::IntoResponse,
     };
-    use rama_core::{Layer, error::OpaqueError, extensions::ExtensionsMut, service::service_fn};
+    use rama_core::{Layer, error::BoxError, extensions::ExtensionsMut, service::service_fn};
     use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<Request<()>>>(_: T) {}
 
-    async fn dummy_service_fn() -> Result<Response, OpaqueError> {
+    async fn dummy_service_fn() -> Result<Response, BoxError> {
         Ok(StatusCode::OK.into_response())
     }
 

@@ -1,6 +1,6 @@
 //! tls features provided from the http layer.
 
-use crate::error::{ErrorContext as _, OpaqueError};
+use crate::error::{BoxError, ErrorContext as _};
 use crate::http::{
     BodyExtractExt as _, Request, Response, StatusCode, Uri, client::EasyHttpWebClient,
     service::client::HttpClientExt as _,
@@ -18,6 +18,7 @@ use crate::{Service, combinators::Either, service::BoxService};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
+use rama_core::error::ErrorExt;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +43,7 @@ pub struct CertOrderOutput {
 pub struct CertIssuerHttpClient {
     endpoint: Uri,
     allow_list: Option<DomainTrie<DomainAllowMode>>,
-    http_client: BoxService<Request, Response, OpaqueError>,
+    http_client: BoxService<Request, Response, BoxError>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +63,7 @@ impl CertIssuerHttpClient {
 
     #[cfg(feature = "boring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
-    pub fn try_from_env(exec: Executor) -> Result<Self, OpaqueError> {
+    pub fn try_from_env(exec: Executor) -> Result<Self, BoxError> {
         use crate::{
             Layer as _,
             http::{headers::Authorization, layer::set_header::SetRequestHeaderLayer},
@@ -132,10 +133,7 @@ impl CertIssuerHttpClient {
     /// The custom http client allows you to add whatever layers and client implementation
     /// you wish, to allow for custom headers, behaviour and security measures
     /// such as authorization.
-    pub fn new_with_client(
-        endpoint: Uri,
-        client: BoxService<Request, Response, OpaqueError>,
-    ) -> Self {
+    pub fn new_with_client(endpoint: Uri, client: BoxService<Request, Response, BoxError>) -> Self {
         Self {
             endpoint,
             allow_list: None,
@@ -172,7 +170,7 @@ impl CertIssuerHttpClient {
     }
 
     /// Prefetch all certificates, useful to warm them up at startup time.
-    pub fn prefetch_certs_in_background(&self, exec: &Executor) {
+    pub fn prefetch_certs_in_background(&self) {
         if let Some(allow_list) = &self.allow_list {
             for (domain_key, mode) in allow_list.iter() {
                 let domain = match mode {
@@ -182,7 +180,7 @@ impl CertIssuerHttpClient {
                 };
                 let http_client = self.http_client.clone();
                 let uri = self.endpoint.clone();
-                exec.spawn_task(async move {
+                tokio::task::spawn_local(async move {
                     match fetch_certs(http_client, domain.clone(), uri).await {
                         Ok(_) => tracing::debug!("prefetched certificates for domain: {domain}"),
                         Err(err) => tracing::error!(
@@ -200,15 +198,16 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
         &self,
         client_hello: ClientHello,
         _server_name: Option<Domain>,
-    ) -> impl Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_ {
+    ) -> impl Future<Output = Result<ServerAuthData, BoxError>> + Send + '_ {
         let domain = match client_hello.ext_server_name() {
             Some(domain) => {
                 if let Some(ref allow_list) = self.allow_list {
                     match allow_list.match_parent(domain) {
                         None => {
-                            return Either::A(std::future::ready(Err(OpaqueError::from_display(
+                            return Either::A(std::future::ready(Err(BoxError::from(
                                 "sni found: unexpected unknown domain",
-                            ))));
+                            )
+                            .with_context_field("domain", || domain.clone()))));
                         }
                         Some(DomainParentMatch {
                             value: &DomainAllowMode::Exact,
@@ -218,9 +217,10 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                             if is_exact {
                                 domain.clone()
                             } else {
-                                return Either::A(std::future::ready(Err(
-                                    OpaqueError::from_display("sni found: unexpected child domain"),
-                                )));
+                                return Either::A(std::future::ready(Err(BoxError::from(
+                                    "sni found: unexpected child domain",
+                                )
+                                .with_context_field("domain", || domain.clone()))));
                             }
                         }
                         Some(DomainParentMatch {
@@ -233,9 +233,7 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                 }
             }
             None => {
-                return Either::A(std::future::ready(Err(OpaqueError::from_display(
-                    "no SNI found: failure",
-                ))));
+                return Either::A(std::future::ready(Err(BoxError::from("no SNI found"))));
             }
         };
 
@@ -243,7 +241,7 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
         let http_client = self.http_client.clone();
         let uri = self.endpoint.clone();
 
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             if let Err(err) = tx.send(fetch_certs(http_client, domain, uri).await) {
                 tracing::debug!("failed to send result back to callee: {err:?}");
             }
@@ -272,10 +270,10 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
 }
 
 async fn fetch_certs(
-    client: BoxService<Request, Response, OpaqueError>,
+    client: BoxService<Request, Response, BoxError>,
     domain: Domain,
     uri: Uri,
-) -> Result<ServerAuthData, OpaqueError> {
+) -> Result<ServerAuthData, BoxError> {
     let response = client
         .post(uri)
         .json(&CertOrderInput { domain })
@@ -285,9 +283,9 @@ async fn fetch_certs(
 
     let status = response.status();
     if status != StatusCode::OK {
-        return Err(OpaqueError::from_display(format!(
-            "unexpected dinocert order response status code: {status}"
-        )));
+        return Err(
+            BoxError::from("unexpected dinocert order response").context_field("status", status)
+        );
     }
 
     let CertOrderOutput {

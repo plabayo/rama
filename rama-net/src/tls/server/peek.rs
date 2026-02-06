@@ -74,9 +74,9 @@ where
         let stream = PeekStream::new(peek, stream);
 
         if is_tls {
-            self.tls_acceptor.serve(stream).await.map_err(Into::into)
+            self.tls_acceptor.serve(stream).await.into_box_error()
         } else {
-            self.fallback.serve(stream).await.map_err(Into::into)
+            self.fallback.serve(stream).await.into_box_error()
         }
     }
 }

@@ -1,5 +1,5 @@
 use rama::{
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     http::{
         BodyExtractExt, Request, Response, StatusCode, Version,
@@ -589,7 +589,7 @@ pub(super) async fn form(
 // endpoints: WS(S)
 //------------------------------------------
 
-pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), OpaqueError> {
+pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxError> {
     tracing::debug!("ws api called");
     let (mut ws, parts) = ws.into_parts();
 

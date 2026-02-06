@@ -8,10 +8,10 @@ use crate::{Body, Request, Response, StreamingBody};
 
 use chrono::{DateTime, Utc};
 
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
-use rama_core::{Service, bytes::Bytes, error::BoxError};
-use rama_error::{ErrorExt, OpaqueError};
+use rama_core::{Service, bytes::Bytes};
 use tokio::time::Instant;
 
 pub struct HARExportService<R, S, T> {
@@ -46,10 +46,7 @@ where
             let req_body_bytes = req_body
                 .collect()
                 .await
-                .map_err(|err| {
-                    OpaqueError::from_boxed(err.into())
-                        .context("collect request body for HAR recording and inner svc")
-                })?
+                .context("collect request body for HAR recording and inner svc")?
                 .to_bytes();
 
             let har_req_result = HarRequest::from_http_request_parts(&req_parts, &req_body_bytes);
@@ -85,10 +82,7 @@ where
                     let resp_body_bytes = resp_body
                         .collect()
                         .await
-                        .map_err(|err| {
-                            OpaqueError::from_boxed(err.into())
-                                .context("collect response body for HAR recording and return value")
-                        })?
+                        .context("collect response body for HAR recording and return value")?
                         .to_bytes();
 
                     let maybe_response = match HarResponse::from_http_response_parts(

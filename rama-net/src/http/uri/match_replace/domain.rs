@@ -1,7 +1,7 @@
 use super::UriMatchReplace;
 use crate::{address::Domain, http::uri::match_replace::UriMatchError};
 use rama_core::{
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     telemetry::tracing,
 };
 use rama_http_types::{Uri, uri::Authority};
@@ -88,11 +88,7 @@ impl UriMatchReplaceDomain {
         }
     }
 
-    fn write_new_uri(
-        &self,
-        domain: &Domain,
-        og_port: Option<u16>,
-    ) -> Result<Authority, OpaqueError> {
+    fn write_new_uri(&self, domain: &Domain, og_port: Option<u16>) -> Result<Authority, BoxError> {
         match self.port_mode {
             PortMode::Preserve => {
                 if let Some(port) = og_port {

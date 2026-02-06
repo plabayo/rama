@@ -3,7 +3,7 @@ use crate::BodyExtractExt;
 use crate::service::web::response::IntoResponse;
 use crate::{Request, Response};
 use parking_lot::Mutex;
-use rama_core::error::{OpaqueError, error};
+use rama_core::error::BoxError;
 use rama_core::{Layer, Service};
 use std::sync::{
     Arc,
@@ -20,7 +20,7 @@ async fn retry_errors() {
 
     impl Service<Request<RetryBody>> for Svc {
         type Output = Response;
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
@@ -29,7 +29,7 @@ async fn retry_errors() {
                 Ok("world".into_response())
             } else {
                 self.error_counter.fetch_add(1, Ordering::AcqRel);
-                Err(error!("retry me"))
+                Err(BoxError::from("retry me"))
             }
         }
     }
@@ -57,12 +57,12 @@ async fn retry_limit() {
 
     impl Service<Request<RetryBody>> for Svc {
         type Output = Response;
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             self.error_counter.fetch_add(1, Ordering::AcqRel);
-            Err(error!("error forever"))
+            Err(BoxError::from("error forever"))
         }
     }
 
@@ -85,14 +85,14 @@ async fn retry_error_inspection() {
 
     impl Service<Request<RetryBody>> for Svc {
         type Output = Response;
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             if self.errored.swap(true, Ordering::AcqRel) {
-                Err(error!("reject"))
+                Err(BoxError::from("reject"))
             } else {
-                Err(error!("retry me"))
+                Err(BoxError::from("retry me"))
             }
         }
     }
@@ -111,11 +111,11 @@ async fn retry_cannot_clone_request() {
 
     impl Service<Request<RetryBody>> for Svc {
         type Output = Response;
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
-            Err(error!("failed"))
+            Err(BoxError::from("failed"))
         }
     }
 
@@ -131,7 +131,7 @@ async fn success_with_cannot_clone() {
 
     impl Service<Request<RetryBody>> for Svc {
         type Output = Response;
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
@@ -154,7 +154,7 @@ async fn retry_mutating_policy() {
 
     impl Service<Request<RetryBody>> for Svc {
         type Output = Response;
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             self.response_counter.fetch_add(1, Ordering::AcqRel);
@@ -183,7 +183,7 @@ async fn retry_mutating_policy() {
 }
 
 type InnerError = &'static str;
-type Error = rama_core::error::OpaqueError;
+type Error = rama_core::error::BoxError;
 
 fn request(s: &'static str) -> Request<RetryBody> {
     Request::builder()
@@ -303,7 +303,7 @@ where
     ) -> PolicyResult<Response, Error> {
         let mut remaining = self.remaining.lock();
         if *remaining == 0 {
-            PolicyResult::Abort(Err(error!("out of retries")))
+            PolicyResult::Abort(Err(BoxError::from("out of retries")))
         } else {
             *remaining -= 1;
             PolicyResult::Retry {

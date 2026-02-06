@@ -3,8 +3,8 @@ use crate::sse::{
     Event, EventBuildError, EventDataLineReader, EventDataRead, EventDataWrite,
     datastar::EventType, parser::is_lf,
 };
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
-use rama_error::{ErrorContext, OpaqueError};
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 
 /// [`PatchElements`] patches HTML elements into the DOM.
@@ -116,7 +116,7 @@ impl<T> TryFrom<PatchElements> for super::DatastarEvent<T> {
 
 impl EventDataWrite for PatchElements {
     #[allow(clippy::write_with_newline)]
-    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
+    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError> {
         let mut sep = "";
 
         if let Some(selector) = &self.selector {
@@ -173,7 +173,7 @@ impl EventDataRead for PatchElements {
 impl EventDataLineReader for PatchElementsReader {
     type Data = PatchElements;
 
-    fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+    fn read_line(&mut self, line: &str) -> Result<(), BoxError> {
         let line = line.trim();
         if line.is_empty() {
             return Ok(());
@@ -219,7 +219,7 @@ impl EventDataLineReader for PatchElementsReader {
         Ok(())
     }
 
-    fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
+    fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, BoxError> {
         let Some(PatchElementsBuilder {
             elements,
             selector,
@@ -238,7 +238,7 @@ impl EventDataLineReader for PatchElementsReader {
             })
             .unwrap_or_default()
         {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "PatchElementsReader: unexpected event type: expected: datastar-patch-elements",
             ));
         }

@@ -1,6 +1,6 @@
 use crate::body::{Frame, StreamingBody};
 use pin_project_lite::pin_project;
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, ErrorContext as _};
 use std::{
     pin::Pin,
     task::{Context, Poll, ready},
@@ -105,7 +105,7 @@ where
         // A frame is ready. Reset the `Sleep`...
         this.sleep.set(None);
 
-        Poll::Ready(frame.transpose().map_err(Into::into).transpose())
+        Poll::Ready(frame.transpose().into_box_error().transpose())
     }
 }
 

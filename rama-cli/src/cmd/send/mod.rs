@@ -1,5 +1,5 @@
 use rama::{
-    error::{BoxError, OpaqueError},
+    error::{BoxError, ErrorExt},
     net::{address::ProxyAddress, user::Basic},
     utils::str::{NonEmptyStr, starts_with_ignore_ascii_case},
 };
@@ -14,7 +14,7 @@ mod layer;
 
 pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
     if cfg.uri.is_empty() {
-        return Err(OpaqueError::from_display("empty URI is not valid").into_boxed());
+        return Err(BoxError::from("empty URI is not valid"));
     }
 
     let uri_scheme_raw = cfg
@@ -30,10 +30,8 @@ pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
         let is_ws = starts_with_ignore_ascii_case(uri_scheme_raw.as_bytes(), b"ws");
         http::run(cfg, is_ws).await
     } else {
-        Err(
-            OpaqueError::from_display(format!("scheme '{uri_scheme_raw}' is not supported"))
-                .into_boxed(),
-        )
+        Err(BoxError::from("scheme is not supported")
+            .context_str_field("raw_value", uri_scheme_raw))
     }
 }
 

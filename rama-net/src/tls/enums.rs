@@ -3,7 +3,7 @@
 
 use rama_core::{
     bytes::{BufMut, Bytes, BytesMut},
-    error::OpaqueError,
+    error::BoxError,
 };
 use rama_utils::macros::enums::enum_builder;
 
@@ -751,7 +751,7 @@ impl ApplicationProtocol {
         if b.len() > 255 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                OpaqueError::from_display("application protocol is too large"),
+                BoxError::from("application protocol is too large"),
             ));
         }
 

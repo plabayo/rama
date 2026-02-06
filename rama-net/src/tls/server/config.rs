@@ -2,7 +2,7 @@ use crate::{
     address::Domain,
     tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion, client::ClientHello},
 };
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use serde::{Deserialize, Serialize};
 use std::{num::NonZeroU64, pin::Pin, sync::Arc};
 
@@ -167,7 +167,7 @@ impl DynamicIssuer {
         &self,
         client_hello: ClientHello,
         server_name: Option<Domain>,
-    ) -> Result<ServerAuthData, OpaqueError> {
+    ) -> Result<ServerAuthData, BoxError> {
         self.issuer.issue_cert(client_hello, server_name).await
     }
 
@@ -190,7 +190,7 @@ pub trait DynamicCertIssuer: Send + Sync + 'static {
         &self,
         client_hello: ClientHello,
         server_name: Option<Domain>,
-    ) -> impl Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_;
+    ) -> impl Future<Output = Result<ServerAuthData, BoxError>> + Send + '_;
 
     /// Can be used to return a normalized domain for purposes
     /// such as caching.
@@ -215,7 +215,7 @@ trait DynDynamicCertIssuer {
         &self,
         client_hello: ClientHello,
         server_name: Option<Domain>,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, BoxError>> + Send + '_>>;
 
     fn norm_cn(&self, _domain: &Domain) -> Option<&Domain> {
         None
@@ -230,7 +230,7 @@ where
         &self,
         client_hello: ClientHello,
         server_name: Option<Domain>,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, BoxError>> + Send + '_>> {
         Box::pin(self.issue_cert(client_hello, server_name))
     }
 

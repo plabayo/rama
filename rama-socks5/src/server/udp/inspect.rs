@@ -1,6 +1,7 @@
 use super::relay::{UdpRelayState, UdpSocketRelay};
 use crate::server::Error;
 use rama_core::bytes::Bytes;
+use rama_core::error::ErrorContext as _;
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::{Service, error::BoxError};
@@ -177,7 +178,7 @@ where
                         .0
                         .serve(request)
                         .await
-                        .map_err(Into::into)
+                        .into_box_error()
                         .inspect_err(|err| {
                             tracing::debug!(
                                 "relay request: south @ {server_address} -> north: failed: {err:?}"
@@ -217,7 +218,7 @@ where
                         .0
                         .serve(request)
                         .await
-                        .map_err(Into::into)
+                        .into_box_error()
                         .inspect_err(|err| {
                             tracing::debug!(
                                 "relay request: north -> south @ {server_address}: failed: {err:?}"
@@ -345,7 +346,7 @@ where
                             server_address,
                             relay.north_read_buf_slice(),
                         )
-                        .map_err(Into::into)
+                        .into_box_error()
                         .inspect_err(|err| {
                             tracing::debug!(
                                 "relay request: north -> south @ {server_address}: failed: {err:?}"
@@ -390,7 +391,7 @@ where
                             server_address,
                             relay.south_read_buf_slice(),
                         )
-                        .map_err(Into::into)
+                        .into_box_error()
                         .inspect_err(|err| {
                             tracing::debug!(
                                 "relay request: south @ {server_address} -> north: failed: {err:?}"

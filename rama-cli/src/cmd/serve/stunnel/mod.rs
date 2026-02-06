@@ -27,7 +27,7 @@
 
 use rama::{
     Layer,
-    error::{BoxError, ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     graceful::ShutdownGuard,
     net::{
         address::{HostWithPort, SocketAddress},
@@ -148,7 +148,6 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
 
     let tcp_listener = TcpListener::bind(cfg.bind.clone(), exec.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind stunnel exit node")?;
 
     let bind_address = tcp_listener
@@ -178,7 +177,6 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
     let exec = Executor::graceful(graceful);
     let tcp_listener = TcpListener::bind(cfg.bind.clone(), exec.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind stunnel entry node")?;
 
     let bind_address = tcp_listener

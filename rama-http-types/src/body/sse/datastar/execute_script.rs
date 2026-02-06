@@ -3,7 +3,7 @@ use crate::sse::{
     datastar::{ElementPatchMode, EventType},
 };
 use mime::Mime;
-use rama_error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::str::{NonEmptyStr, smol_str::SmolStr};
 
 /// [`ExecuteScript`] executes JavaScript in the browser
@@ -186,7 +186,7 @@ impl<T> TryFrom<ExecuteScript> for super::DatastarEvent<T> {
 
 impl EventDataWrite for ExecuteScript {
     #[allow(clippy::write_with_newline)]
-    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
+    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError> {
         let mut script_lines = self.script.lines();
         let mut next_script_line = script_lines
             .next()

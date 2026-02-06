@@ -1,4 +1,5 @@
-use crate::error::OpaqueError;
+use crate::error::BoxError;
+use rama_core::error::ErrorExt as _;
 use rama_utils::macros::match_ignore_ascii_case_str;
 use std::str::FromStr;
 
@@ -42,7 +43,7 @@ pub enum ForwardKind {
 }
 
 impl<'a> TryFrom<&'a str> for ForwardKind {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
         match_ignore_ascii_case_str! {
@@ -54,14 +55,14 @@ impl<'a> TryFrom<&'a str> for ForwardKind {
                 "cf-connecting-ip" => Ok(Self::CFConnectingIp),
                 "true-client-ip" => Ok(Self::TrueClientIp),
                 "haproxy" => Ok(Self::HaProxy),
-                _ => Err(OpaqueError::from_display(format!("unknown forward kind: {value})"))),
+                _ => Err(BoxError::from("unknown forward kind").context_str_field("str", value)),
             }
         }
     }
 }
 
 impl TryFrom<String> for ForwardKind {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         value.as_str().try_into()
@@ -69,7 +70,7 @@ impl TryFrom<String> for ForwardKind {
 }
 
 impl FromStr for ForwardKind {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.try_into()

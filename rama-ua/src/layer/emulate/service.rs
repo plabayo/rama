@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::{ChainableExtensions, ExtensionsMut, ExtensionsRef},
     telemetry::tracing,
 };
@@ -161,12 +161,11 @@ where
 
         let Some(profile) = self.provider.select_user_agent_profile(req.extensions()) else {
             return if self.optional {
-                Ok(self.inner.serve(req).await.map_err(Into::into)?)
+                Ok(self.inner.serve(req).await.into_box_error()?)
             } else {
-                Err(OpaqueError::from_display(
+                Err(BoxError::from(
                     "requirement not fulfilled: user agent profile could not be selected",
-                )
-                .into_boxed())
+                ))
             };
         };
 
@@ -251,7 +250,7 @@ where
             .insert(SelectedUserAgentProfile::from(profile));
 
         // serve emulated http(s) request via inner service
-        self.inner.serve(req).await.map_err(Into::into)
+        self.inner.serve(req).await.into_box_error()
     }
 }
 
@@ -284,7 +283,7 @@ where
         let EstablishedClientConnection {
             conn,
             input: mut req,
-        } = self.inner.connect(req).await.map_err(Into::into)?;
+        } = self.inner.connect(req).await.into_box_error()?;
 
         match (&conn, &req).get().cloned() {
             Some(http_profile) => {
@@ -458,7 +457,7 @@ where
             }
         }
 
-        let resp = self.inner.serve(req).await.map_err(Into::into)?;
+        let resp = self.inner.serve(req).await.into_box_error()?;
         Ok(resp)
     }
 }

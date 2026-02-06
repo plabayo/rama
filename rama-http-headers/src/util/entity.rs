@@ -1,7 +1,7 @@
 use std::{fmt, str::FromStr};
 
+use rama_core::error::BoxError;
 use rama_core::telemetry::tracing;
-use rama_error::OpaqueError;
 use rama_http_types::HeaderValue;
 use rama_utils::collections::NonEmptyVec;
 
@@ -293,7 +293,7 @@ impl super::TryFromValues for EntityTagRange {
 }
 
 impl TryFrom<&EntityTagRange> for HeaderValue {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(tag: &EntityTagRange) -> Result<Self, Self::Error> {
         match tag {

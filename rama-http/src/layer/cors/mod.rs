@@ -6,8 +6,8 @@ use crate::{
     HeaderMap, HeaderValue, Method, Request, Response,
     header::{self},
 };
+use rama_core::error::BoxError;
 use rama_core::{Layer, Service};
-use rama_error::OpaqueError;
 use rama_http_headers::{
     AccessControlAllowHeaders, AccessControlAllowMethods, AccessControlExposeHeaders,
     AccessControlMaxAge, HeaderMapExt, Vary, util::Seconds,
@@ -120,12 +120,12 @@ impl CorsLayer {
         /// support the wildcard value have been set to use it.
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Credentials
-        pub fn allow_credentials(mut self) -> Result<Self, OpaqueError> {
+        pub fn allow_credentials(mut self) -> Result<Self, BoxError> {
             if self.allow_headers.as_ref().map(|v| v.is_any()).unwrap_or_default()
                 || self.allow_methods.as_ref().map(|v| v.is_any()).unwrap_or_default()
                 || self.allow_origin.as_ref().map(|v| v.is_any()).unwrap_or_default()
                 || self.expose_headers.as_ref().map(|v| v.is_any()).unwrap_or_default() {
-                return Err(OpaqueError::from_display("CORS combo error: allow credentials is not allowed if some of the wildcard-abled headers are set to use the wildcard value"));
+                return Err(BoxError::from("CORS combo error: allow credentials is not allowed if some of the wildcard-abled headers are set to use the wildcard value"));
             }
             self.allow_credentials = Some(AllowCredentials::Const);
             Ok(self)
@@ -154,9 +154,9 @@ impl CorsLayer {
         /// contains the wildcard value (`*`).
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Headers
-        pub fn allow_headers(mut self, headers: AccessControlAllowHeaders) -> Result<Self, OpaqueError> {
+        pub fn allow_headers(mut self, headers: AccessControlAllowHeaders) -> Result<Self, BoxError> {
             if headers.is_any() && self.is_allow_credentials_any() {
-                return Err(OpaqueError::from_display("Invalid CORS configuration: Cannot combine `Access-Control-Allow-Credentials: true` with `Access-Control-Allow-Headers: *`"))
+                return Err(BoxError::from("Invalid CORS configuration: Cannot combine `Access-Control-Allow-Credentials: true` with `Access-Control-Allow-Headers: *`"))
             }
             self.allow_headers = Some(AllowHeaders::Const(headers));
             Ok(self)
@@ -208,9 +208,9 @@ impl CorsLayer {
         /// contains the wildcard value (`*`).
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Methods
-        pub fn allow_methods(mut self, methods: AccessControlAllowMethods) -> Result<Self, OpaqueError> {
+        pub fn allow_methods(mut self, methods: AccessControlAllowMethods) -> Result<Self, BoxError> {
             if methods.is_any() && self.is_allow_credentials_any() {
-                return Err(OpaqueError::from_display("Invalid CORS configuration: Cannot combine `Access-Control-Allow-Credentials: true` with `Access-Control-Allow-Methods: *`"))
+                return Err(BoxError::from("Invalid CORS configuration: Cannot combine `Access-Control-Allow-Credentials: true` with `Access-Control-Allow-Methods: *`"))
             }
             self.allow_methods = Some(AllowMethods::Const(methods));
             Ok(self)
@@ -225,9 +225,9 @@ impl CorsLayer {
         /// Errors in case credentials are allowed.
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
-        pub fn allow_origin_any(mut self) -> Result<Self, OpaqueError> {
+        pub fn allow_origin_any(mut self) -> Result<Self, BoxError> {
             if self.is_allow_credentials_any() {
-                return Err(OpaqueError::from_display("Invalid CORS configuration: Cannot combine `Access-Control-Allow-Credentials: true` with `Access-Control-Allow-Origin: *`"))
+                return Err(BoxError::from("Invalid CORS configuration: Cannot combine `Access-Control-Allow-Credentials: true` with `Access-Control-Allow-Origin: *`"))
             }
             self.allow_origin = Some(AllowOrigin::Any);
             Ok(self)
@@ -275,9 +275,9 @@ impl CorsLayer {
         /// contains the wildcard value (`*`).
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Expose-Headers
-        pub fn expose_headers(mut self, headers: AccessControlExposeHeaders) -> Result<Self, OpaqueError> {
+        pub fn expose_headers(mut self, headers: AccessControlExposeHeaders) -> Result<Self, BoxError> {
             if headers.is_any() && self.is_allow_credentials_any() {
-                return Err(OpaqueError::from_display("Invalid CORS configuration: Cannot combine `Access-Control-Allow-Credentials: true` with `Access-Control-Expose-Headers: *`"))
+                return Err(BoxError::from("Invalid CORS configuration: Cannot combine `Access-Control-Allow-Credentials: true` with `Access-Control-Expose-Headers: *`"))
             }
             self.expose_headers = Some(headers);
             Ok(self)
@@ -409,7 +409,7 @@ impl<S> Cors<S> {
         /// support the wildcard value have been set to use it.
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Credentials
-        pub fn allow_credentials(mut self) -> Result<Self, OpaqueError> {
+        pub fn allow_credentials(mut self) -> Result<Self, BoxError> {
             self.layer.try_set_allow_credentials()?;
             Ok(self)
         }
@@ -437,7 +437,7 @@ impl<S> Cors<S> {
         /// contains the wildcard value (`*`).
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Headers
-        pub fn allow_headers(mut self, headers: AccessControlAllowHeaders) -> Result<Self, OpaqueError> {
+        pub fn allow_headers(mut self, headers: AccessControlAllowHeaders) -> Result<Self, BoxError> {
             self.layer.try_set_allow_headers(headers)?;
             Ok(self)
         }
@@ -488,7 +488,7 @@ impl<S> Cors<S> {
         /// contains the wildcard value (`*`).
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Methods
-        pub fn allow_methods(mut self, methods: AccessControlAllowMethods) -> Result<Self, OpaqueError> {
+        pub fn allow_methods(mut self, methods: AccessControlAllowMethods) -> Result<Self, BoxError> {
             self.layer.try_set_allow_methods(methods)?;
             Ok(self)
         }
@@ -502,7 +502,7 @@ impl<S> Cors<S> {
         /// Errors in case credentials are allowed.
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
-        pub fn allow_origin_any(mut self) -> Result<Self, OpaqueError> {
+        pub fn allow_origin_any(mut self) -> Result<Self, BoxError> {
             self.layer.try_set_allow_origin_any()?;
             Ok(self)
         }
@@ -549,7 +549,7 @@ impl<S> Cors<S> {
         /// contains the wildcard value (`*`).
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Expose-Headers
-        pub fn expose_headers(mut self, headers: AccessControlExposeHeaders) -> Result<Self, OpaqueError> {
+        pub fn expose_headers(mut self, headers: AccessControlExposeHeaders) -> Result<Self, BoxError> {
             self.layer.try_set_expose_headers(headers)?;
             Ok(self)
         }

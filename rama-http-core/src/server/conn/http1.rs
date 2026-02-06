@@ -9,7 +9,7 @@ use std::time::Duration;
 use httparse::ParserConfig;
 use rama_core::Service;
 use rama_core::bytes::Bytes;
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsMut;
 use rama_http::io::upgrade::Upgraded;
 use rama_http::{Body, Request, Response};
@@ -375,9 +375,9 @@ impl Builder {
         /// # Error
         ///
         /// The minimum value allowed is 8192. This method errors if the passed `max` is less than the minimum.
-        pub fn max_buf_size(mut self, max: Option<usize>) -> Result<Self, OpaqueError> {
+        pub fn max_buf_size(mut self, max: Option<usize>) -> Result<Self, BoxError> {
             if max.map(|max| max < proto::h1::MINIMUM_MAX_BUFFER_SIZE).unwrap_or_default() {
-                return Err(OpaqueError::from_display("the max_buf_size cannot be smaller than the minimum that h1 specifies"));
+                return Err(BoxError::from("the max_buf_size cannot be smaller than the minimum that h1 specifies"));
             }
             self.max_buf_size = max;
             Ok(self)

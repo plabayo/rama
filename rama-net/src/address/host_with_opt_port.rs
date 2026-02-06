@@ -2,7 +2,7 @@ use crate::Protocol;
 use crate::address::HostWithPort;
 
 use super::{Domain, DomainAddress, Host, SocketAddress};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -420,7 +420,7 @@ impl fmt::Display for HostWithOptPort {
 }
 
 impl std::str::FromStr for HostWithOptPort {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
@@ -428,7 +428,7 @@ impl std::str::FromStr for HostWithOptPort {
 }
 
 impl TryFrom<String> for HostWithOptPort {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline(always)]
     fn try_from(s: String) -> Result<Self, Self::Error> {
@@ -437,7 +437,7 @@ impl TryFrom<String> for HostWithOptPort {
 }
 
 impl TryFrom<&str> for HostWithOptPort {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline(always)]
     fn try_from(s: &str) -> Result<Self, Self::Error> {
@@ -445,13 +445,11 @@ impl TryFrom<&str> for HostWithOptPort {
     }
 }
 
-fn try_from_maybe_borrowed_str(
-    maybe_borrowed: Cow<'_, str>,
-) -> Result<HostWithOptPort, OpaqueError> {
+fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithOptPort, BoxError> {
     let s = maybe_borrowed.as_ref();
 
     if s.is_empty() {
-        return Err(OpaqueError::from_display(
+        return Err(BoxError::from(
             "empty string is invalid host (with opt port)",
         ));
     }
@@ -522,7 +520,7 @@ fn try_from_maybe_borrowed_str(
 }
 
 impl TryFrom<Vec<u8>> for HostWithOptPort {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         let s = String::from_utf8(bytes).context("parse host-with-opt-port from bytes")?;
@@ -531,7 +529,7 @@ impl TryFrom<Vec<u8>> for HostWithOptPort {
 }
 
 impl TryFrom<&[u8]> for HostWithOptPort {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(bytes).context("parse host-with-opt-port from bytes")?;

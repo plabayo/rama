@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
+use rama_core::error::BoxError;
 use rama_core::telemetry::tracing;
-use rama_error::OpaqueError;
 use rama_http_types::HeaderValue;
 
 use crate::Error;
@@ -103,7 +103,7 @@ impl TryFromValues for After {
 }
 
 impl<'a> TryFrom<&'a After> for HeaderValue {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(after: &'a After) -> Result<Self, Self::Error> {
         match *after {

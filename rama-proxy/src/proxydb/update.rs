@@ -1,6 +1,6 @@
 use super::ProxyDB;
 use arc_swap::ArcSwap;
-use rama_core::error::{BoxError, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use std::{fmt, ops::Deref, sync::Arc};
 
 /// Create a new [`ProxyDB`] updater which allows you to have a (typically in-memory) [`ProxyDB`]
@@ -69,11 +69,10 @@ where
             Some(db) => db
                 .get_proxy_if(ctx, filter, predicate)
                 .await
-                .map_err(Into::into),
-            None => Err(OpaqueError::from_display(
+                .into_box_error(),
+            None => Err(BoxError::from(
                 "live proxy db: proxy db is None: get_proxy_if unable to proceed",
-            )
-            .into()),
+            )),
         }
     }
 
@@ -83,11 +82,10 @@ where
         filter: super::ProxyFilter,
     ) -> Result<super::Proxy, Self::Error> {
         match self.0.load().deref().deref() {
-            Some(db) => db.get_proxy(ctx, filter).await.map_err(Into::into),
-            None => Err(OpaqueError::from_display(
+            Some(db) => db.get_proxy(ctx, filter).await.into_box_error(),
+            None => Err(BoxError::from(
                 "live proxy db: proxy db is None: get_proxy unable to proceed",
-            )
-            .into()),
+            )),
         }
     }
 }

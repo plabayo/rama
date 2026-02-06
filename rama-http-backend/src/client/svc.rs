@@ -1,6 +1,6 @@
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef, InputExtensions},
     telemetry::tracing,
 };
@@ -48,14 +48,14 @@ where
         match (&self.sender, req.version()) {
             (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
             | (SendRequest::Http2(_), Version::HTTP_2) => (),
-            (SendRequest::Http1(_), version) => Err(OpaqueError::from_display(format!(
-                "Http1 connector cannot send request with version {version:?}"
-            ))
-            .into_boxed())?,
-            (SendRequest::Http2(_), version) => Err(OpaqueError::from_display(format!(
-                "Http2 connector cannot send request with version {version:?}"
-            ))
-            .into_boxed())?,
+            (SendRequest::Http1(_), version) => Err(BoxError::from(
+                "Http1 connector cannot send request with version",
+            )
+            .context_debug_field("version", version))?,
+            (SendRequest::Http2(_), version) => Err(BoxError::from(
+                "Http2 connector cannot send request with version",
+            )
+            .context_debug_field("version", version))?,
         }
 
         // sanitize subject line request uri
@@ -105,7 +105,7 @@ impl<B> ExtensionsMut for HttpClientService<B> {
 fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError> {
     // logic specific to this method
     if req.method() == Method::CONNECT && req.uri().host().is_none() {
-        return Err(OpaqueError::from_display("missing host in CONNECT request").into());
+        return Err(BoxError::from("missing host in CONNECT request"));
     }
 
     let uses_http_proxy = req

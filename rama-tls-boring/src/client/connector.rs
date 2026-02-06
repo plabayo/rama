@@ -1,6 +1,6 @@
 use rama_boring_tokio::SslStream;
 use rama_core::conversion::RamaTryInto;
-use rama_core::error::{BoxError, ErrorExt, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
@@ -198,12 +198,11 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { mut input, conn } =
-            self.inner.connect(input).await.map_err(Into::into)?;
+            self.inner.connect(input).await.into_box_error()?;
 
-        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .context("TlsConnector(auto): compute transport context")
-        })?;
+        let transport_ctx = input
+            .try_ref_into_transport_ctx()
+            .context("TlsConnector(auto): compute transport context")?;
 
         if !transport_ctx
             .app_protocol
@@ -260,12 +259,11 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { mut input, conn } =
-            self.inner.connect(input).await.map_err(Into::into)?;
+            self.inner.connect(input).await.into_box_error()?;
 
-        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .context("TlsConnector(auto): compute transport context")
-        })?;
+        let transport_ctx = input
+            .try_ref_into_transport_ctx()
+            .context("TlsConnector(auto): compute transport context")?;
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
             server.port = transport_ctx.authority.port,
@@ -301,7 +299,7 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { mut input, conn } =
-            self.inner.connect(input).await.map_err(Into::into)?;
+            self.inner.connect(input).await.into_box_error()?;
 
         let host = if let Some(host) = input
             .extensions()
@@ -343,15 +341,17 @@ fn set_target_http_version(
     request_extensions: &Extensions,
     conn_extensions: &mut Extensions,
     tls_params: &NegotiatedTlsParameters,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
         let neg_version: Version = proto.try_into()?;
         if let Some(target_version) = request_extensions.get::<TargetHttpVersion>()
             && target_version.0 != neg_version
         {
-            return Err(OpaqueError::from_display(format!(
-                "TargetHttpVersion was set to {target_version:?} but tls alpn negotiated {neg_version:?}"
-            )));
+            return Err(BoxError::from(
+                "target http version not compatible with negotiated tls alpn version",
+            )
+            .context_debug_field("target_version", *target_version)
+            .context_debug_field("negotiated_version", neg_version));
         }
 
         tracing::trace!(
@@ -364,7 +364,7 @@ fn set_target_http_version(
 }
 
 impl<S, K> TlsConnector<S, K> {
-    fn connector_data(&self, extensions: &mut Extensions) -> Result<TlsConnectorData, OpaqueError> {
+    fn connector_data(&self, extensions: &mut Extensions) -> Result<TlsConnectorData, BoxError> {
         #[cfg(feature = "http")]
         let target_version = extensions
             .get::<TargetHttpVersion>()
@@ -404,7 +404,7 @@ pub async fn tls_connect<T>(
     server_host: Host,
     stream: T,
     connector_data: Option<TlsConnectorData>,
-) -> Result<TlsStream<T>, OpaqueError>
+) -> Result<TlsStream<T>, BoxError>
 where
     T: Stream + Unpin + ExtensionsMut,
 {
@@ -420,17 +420,19 @@ where
             .map_err(|err| {
                 let maybe_ssl_code = err.code();
                 if let Some(io_err) = err.as_io_error() {
-                    OpaqueError::from_display(format!(
-                        "boring ssl connector: connect (code: {maybe_ssl_code:?}); domain = {server_host}; without io-error: {io_err}"
-                    )).into_boxed()
+                    BoxError::from(format!(
+                        "boring ssl connector (connect): with io error: {io_err}"
+                    ))
+                    .context_field("domain", server_host)
+                    .context_debug_field("code", maybe_ssl_code)
                 } else if let Some(err) = err.as_ssl_error_stack() {
-                    OpaqueError::from_std(err).context(format!(
-                        "boring ssl connector: connect (code: {maybe_ssl_code:?}); domain = {server_host}; with ssl-error info"
-                    )).into_boxed()
+                    err.context("boring ssl connector (connect): with ssl-error info")
+                        .context_field("domain", server_host)
+                        .context_debug_field("code", maybe_ssl_code)
                 } else {
-                    OpaqueError::from_display(format!(
-                        "boring ssl connector: connect (code: {maybe_ssl_code:?}); domain = {server_host}; without error info"
-                    )).into_boxed()
+                    BoxError::from("boring ssl connector (connect): without error info")
+                        .context_field("domain", server_host)
+                        .context_debug_field("code", maybe_ssl_code)
                 }
             })?;
     Ok(TlsStream::new(stream))
@@ -454,8 +456,8 @@ where
                 .protocol_version()
                 .rama_try_into()
                 .map_err(|v| {
-                    OpaqueError::from_display(format!("protocol version {v}"))
-                        .context("boring ssl connector: min proto version")
+                    BoxError::from("boring ssl connector: cast min proto version")
+                        .context_field("protocol_version", v)
                 })?;
             let application_layer_protocol = stream
                 .ssl()
@@ -480,10 +482,9 @@ where
             }
         }
         None => {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "boring ssl connector: failed to establish session...",
-            )
-            .into_boxed());
+            ));
         }
     };
 

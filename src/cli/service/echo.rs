@@ -9,7 +9,7 @@ use crate::{
     Layer, Service,
     cli::ForwardKind,
     combinators::{Either, Either3, Either7},
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     http::{
         Request, Response, Version,
@@ -43,6 +43,7 @@ use crate::{
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
 };
 
+use rama_core::error::ErrorExt as _;
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -287,8 +288,9 @@ where
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
                 Either3::B(HttpServer::http1(exec).service(http_service))
             }
-            Some(_) => {
-                return Err(OpaqueError::from_display("unsupported http version").into_boxed());
+            Some(version) => {
+                return Err(BoxError::from("unsupported http version")
+                    .context_debug_field("version", version));
             }
             None => Either3::C({
                 let mut http = HttpServer::auto(exec);

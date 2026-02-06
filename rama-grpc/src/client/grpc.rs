@@ -325,7 +325,7 @@ impl GrpcConfig {
         if let Some(header_value) = self
             .accept_compression_encodings
             .try_into_accept_encoding_header_value()
-            .map_err(|err| Status::from_error(err.into_boxed()))?
+            .map_err(Status::from_error)?
         {
             request.headers_mut().insert(
                 crate::codec::compression::ACCEPT_ENCODING_HEADER,

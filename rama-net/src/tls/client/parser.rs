@@ -17,23 +17,22 @@ use nom::{
     multi::{length_data, many0},
     number::streaming::{be_u8, be_u16},
 };
-use rama_core::error::OpaqueError;
+use rama_core::error::{BoxError, ErrorExt as _};
 use std::str;
 
 /// Parse a [`ClientHello`] from the raw "wire" bytes.
 ///
 /// This function is not infallible, it can return an error if the input is not a valid
 /// TLS ClientHello message or if there is unexpected trailing data.
-pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
+pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, BoxError> {
     match parse_client_hello_inner(i) {
-        Err(err) => Err(OpaqueError::from_display(format!(
-            "parse client hello handshake message: {err:?}"
-        ))),
+        Err(err) => Err(BoxError::from("parse client hello handshake message")
+            .context_debug_field("err", err.to_owned())),
         Ok((i, hello)) => {
             if i.is_empty() {
                 Ok(hello)
             } else {
-                Err(OpaqueError::from_display(
+                Err(BoxError::from(
                     "parse client hello handshake message: unexpected trailer content",
                 ))
             }
@@ -45,13 +44,12 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
 ///
 /// Same as [`extract_sni_from_client_hello_record`] but handles the full handshake bytes, meaning
 /// the client hello record itself and the handshake header bytes in front of it.
-pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain>, OpaqueError> {
+pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain>, BoxError> {
     parse_client_hello_handshake_sni_inner(i)
         .map(|(_, domain)| domain)
         .map_err(|err| {
-            OpaqueError::from_display(format!(
-                "parse client hello handshake message to find SNI: {err:?}"
-            ))
+            BoxError::from("parse client hello handshake message to find SNI")
+                .context_debug_field("err", err.to_owned())
         })
 }
 
@@ -64,13 +62,12 @@ pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain
 /// This function is not infallible, it can return an error if the input is not a valid
 /// TLS ClientHello message or if there is unexpected trailing data.
 /// It will return None on a value ClientHello without a SNI Host value.
-pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Option<Domain>, OpaqueError> {
+pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Option<Domain>, BoxError> {
     parse_client_hello_record_sni_inner(i)
         .map(|(_, domain)| domain)
         .map_err(|err| {
-            OpaqueError::from_display(format!(
-                "parse client hello record message to find SNI: {err:?}"
-            ))
+            BoxError::from("parse client hello record message to find SNI")
+                .context_debug_field("err", err.to_owned())
         })
 }
 

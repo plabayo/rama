@@ -4,7 +4,7 @@ use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
 use crate::key_log::KeyLogFile;
 use crate::verify::NoServerCertVerifier;
-use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_net::address::Host;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
 use rustls::client::danger::ServerCertVerifier;
@@ -42,7 +42,7 @@ impl TlsConnectorData {
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.
-    pub fn try_new_http_auto() -> Result<Self, OpaqueError> {
+    pub fn try_new_http_auto() -> Result<Self, BoxError> {
         Ok(TlsConnectorDataBuilder::new()
             .try_with_env_key_logger()?
             .with_alpn_protocols_http_auto()
@@ -51,7 +51,7 @@ impl TlsConnectorData {
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing http/1.1 connections.
-    pub fn try_new_http_1() -> Result<Self, OpaqueError> {
+    pub fn try_new_http_1() -> Result<Self, BoxError> {
         Ok(TlsConnectorDataBuilder::new()
             .try_with_env_key_logger()?
             .with_alpn_protocols(&[ApplicationProtocol::HTTP_11])
@@ -60,7 +60,7 @@ impl TlsConnectorData {
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing h2 connections.
-    pub fn try_new_http_2() -> Result<Self, OpaqueError> {
+    pub fn try_new_http_2() -> Result<Self, BoxError> {
         Ok(TlsConnectorDataBuilder::new()
             .try_with_env_key_logger()?
             .with_alpn_protocols(&[ApplicationProtocol::HTTP_2])
@@ -128,7 +128,7 @@ impl TlsConnectorDataBuilder {
     rama_utils::macros::generate_set_and_with! {
         /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
         /// and set it in the current config
-        pub fn env_key_logger(mut self) -> Result<Self, OpaqueError> {
+        pub fn env_key_logger(mut self) -> Result<Self, BoxError> {
             if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
                 let key_logger = Arc::new(KeyLogFile::try_new(path)?);
                 self.client_config.key_log = key_logger;
@@ -215,7 +215,7 @@ pub fn client_root_certs() -> Arc<RootCertStore> {
 }
 
 pub fn self_signed_client_auth()
--> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
+-> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     // Create a client end entity cert.
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
     let client_key_pair =

@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
+use rama_core::error::BoxError;
 use rama_core::telemetry::tracing;
-use rama_error::OpaqueError;
 use rama_http_types::HeaderValue;
 
 use super::{ETag, LastModified};
@@ -124,7 +124,7 @@ impl TryFromValues for IfRange_ {
 }
 
 impl<'a> TryFrom<&'a IfRange_> for HeaderValue {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(if_range: &'a IfRange_) -> Result<Self, Self::Error> {
         match *if_range {

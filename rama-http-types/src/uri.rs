@@ -1,4 +1,4 @@
-use rama_error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_utils::str::{smol_str::format_smolstr, starts_with_ignore_ascii_case};
 
 pub use crate::dep::hyperium::http::uri::*;
@@ -6,14 +6,12 @@ pub use crate::dep::hyperium::http::uri::*;
 pub fn try_to_strip_path_prefix_from_uri(
     uri: &Uri,
     prefix: impl AsRef<str>,
-) -> Result<Uri, OpaqueError> {
+) -> Result<Uri, BoxError> {
     let prefix = prefix.as_ref().trim_matches('/');
     let og_path = uri.path().trim_start_matches('/');
 
     if !starts_with_ignore_ascii_case(og_path, prefix) {
-        return Err(OpaqueError::from_display(
-            "URI's path does NOT contain prefix",
-        ));
+        return Err(BoxError::from("URI's path does NOT contain prefix"));
     }
 
     // SAFETY: above 'starts_with_ignore_ascii_case'

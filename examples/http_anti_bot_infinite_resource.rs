@@ -30,7 +30,7 @@
 use rama::{
     Layer, Service,
     conversion::FromRef,
-    error::{BoxError, OpaqueError},
+    error::{BoxError, ErrorContext as _, ErrorExt},
     extensions::ExtensionsRef,
     http::{
         InfiniteReader,
@@ -209,17 +209,16 @@ where
         let ip_addr = stream
             .extensions()
             .get::<SocketInfo>()
-            .ok_or_else(|| OpaqueError::from_display("no socket info found").into_boxed())?
+            .context("no socket info found")?
             .peer_addr()
             .ip_addr;
         let block_list = self.block_list.lock().await;
         if block_list.contains(&ip_addr) {
-            return Err(OpaqueError::from_display(format!(
-                "drop connection for blocked ip: {ip_addr}"
-            ))
-            .into_boxed());
+            return Err(
+                BoxError::from("drop connection for blocked ip").context_field("ip_addr", ip_addr)
+            );
         }
         std::mem::drop(block_list);
-        self.inner.serve(stream).await.map_err(Into::into)
+        self.inner.serve(stream).await.into_box_error()
     }
 }

@@ -1,6 +1,6 @@
 use super::common::Identifier;
 use base64::prelude::{BASE64_URL_SAFE_NO_PAD, Engine};
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_crypto::dep::aws_lc_rs::digest::{SHA256, digest};
 use rama_crypto::jose::JWK;
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,7 @@ pub struct KeyAuthorization(String);
 
 impl KeyAuthorization {
     /// Create [`KeyAuthorization`] for the given challenge and key
-    pub(crate) fn new(token: &str, jwk: &JWK) -> Result<Self, OpaqueError> {
+    pub(crate) fn new(token: &str, jwk: &JWK) -> Result<Self, BoxError> {
         let thumb = BASE64_URL_SAFE_NO_PAD.encode(jwk.thumb_sha256()?);
         Ok(Self(format!("{token}.{thumb}")))
     }

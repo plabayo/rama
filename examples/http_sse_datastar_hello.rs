@@ -155,11 +155,7 @@ impl Service<Request> for GracefulRouter {
 }
 
 pub mod handlers {
-    use rama::{
-        error::{ErrorExt as _, OpaqueError},
-        futures::StreamExt,
-        http::service::web::extract::State,
-    };
+    use rama::{error::ErrorExt as _, futures::StreamExt, http::service::web::extract::State};
 
     use super::*;
 
@@ -220,9 +216,7 @@ pub mod handlers {
                         Err(err) => {
                             tracing::trace!("send recv error");
                             yielder
-                                .yield_item(Err(
-                                    OpaqueError::from_boxed(err).context("stream recv error")
-                                ))
+                                .yield_item(Err(err.context("stream recv error")))
                                 .await;
                         }
                     };
@@ -236,7 +230,7 @@ pub mod handlers {
 pub mod controller {
     use super::*;
 
-    use rama::error::{BoxError, ErrorContext as _, OpaqueError};
+    use rama::error::{BoxError, ErrorContext as _};
     use rama::futures::Stream;
     use rama::http::sse::datastar::ExecuteScript;
     use rama::http::sse::datastar::{ElementPatchMode, PatchElements};
@@ -618,7 +612,6 @@ pub mod controller {
                         self.delay.store(delay, Ordering::Release);
                         if let Err(err) =
                             try_update_signal_element_message(UpdateSignals { delay: Some(delay) })
-                                .map_err(OpaqueError::from_boxed)
                                 .context("turn update signal element msg into datastar event")
                                 .and_then(|msg| {
                                     self.msg_tx
@@ -645,10 +638,8 @@ pub mod controller {
                             Ok(Message::Exit),
                         ];
                         for result in exit_events {
-                            if let Err(err) = result
-                                .map_err(OpaqueError::from_boxed)
-                                .context("build datastar event")
-                                .and_then(|event| {
+                            if let Err(err) =
+                                result.context("build datastar event").and_then(|event| {
                                     self.msg_tx.send(event).context("send datastar event")
                                 })
                             {
@@ -687,7 +678,6 @@ pub mod controller {
                         tracing::debug!(?delay, %anim_index, %progress, %text, "animation: play frame");
 
                         match try_data_animation_element_message(text, progress)
-                            .map_err(OpaqueError::from_boxed)
                             .context("convert data animion element into Datastar event")
                             .and_then(|msg| {
                                 self.msg_tx.send(msg).context("send msg over msg channel")

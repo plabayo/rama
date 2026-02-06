@@ -75,12 +75,12 @@ where
             .connector_factory
             .make_connector()
             .await
-            .map_err(Into::into)?;
+            .into_box_error()?;
 
         let mut conn = connector
             .connect(self.target.0.clone())
             .await
-            .map_err(Into::into)?;
+            .into_box_error()?;
 
         let info = ClientUnixSocketInfo(UnixSocketInfo::new(
             conn.stream
@@ -149,7 +149,7 @@ macro_rules! impl_stream_connector_either {
             ) -> Result<UnixStream, Self::Error> {
                 match self {
                     $(
-                        ::rama_core::combinators::$id::$param(s) => s.connect(path).await.map_err(Into::into),
+                        ::rama_core::combinators::$id::$param(s) => s.connect(path).await.into_box_error(),
                     )+
                 }
             }

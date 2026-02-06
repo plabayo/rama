@@ -33,7 +33,7 @@ impl UserAgentDatabase {
     /// This function is only available if the `embed-profiles` feature is enabled.
     #[cfg(feature = "embed-profiles")]
     #[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
-    pub fn try_embedded() -> Result<Self, rama_core::error::OpaqueError> {
+    pub fn try_embedded() -> Result<Self, rama_core::error::BoxError> {
         let profiles = crate::profile::try_load_embedded_profiles()?;
         Ok(Self::from_iter(profiles))
     }

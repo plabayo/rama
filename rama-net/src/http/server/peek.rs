@@ -137,10 +137,10 @@ where
         let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         if version.is_some() {
             tracing::trace!("http peek: serve[auto]: http acceptor; version = {version:?}");
-            self.http_acceptor.0.serve(stream).await.map_err(Into::into)
+            self.http_acceptor.0.serve(stream).await.into_box_error()
         } else {
             tracing::trace!("http peek: serve[auto]: fallback; version = {version:?}");
-            self.fallback.serve(stream).await.map_err(Into::into)
+            self.fallback.serve(stream).await.into_box_error()
         }
     }
 }
@@ -159,10 +159,10 @@ where
         let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::Http1x) {
             tracing::trace!("http peek: serve[http1]: http/1x acceptor; version = {version:?}");
-            self.http_acceptor.0.serve(stream).await.map_err(Into::into)
+            self.http_acceptor.0.serve(stream).await.into_box_error()
         } else {
             tracing::trace!("http peek: serve[http1]: fallback; version = {version:?}");
-            self.fallback.serve(stream).await.map_err(Into::into)
+            self.fallback.serve(stream).await.into_box_error()
         }
     }
 }
@@ -181,10 +181,10 @@ where
         let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::H2) {
             tracing::trace!("http peek: serve[h2]: http acceptor; version = {version:?}");
-            self.http_acceptor.0.serve(stream).await.map_err(Into::into)
+            self.http_acceptor.0.serve(stream).await.into_box_error()
         } else {
             tracing::trace!("http peek: serve[h2]: fallback; version = {version:?}");
-            self.fallback.serve(stream).await.map_err(Into::into)
+            self.fallback.serve(stream).await.into_box_error()
         }
     }
 }
@@ -205,11 +205,7 @@ where
         match version {
             Some(HttpPeekVersion::H2) => {
                 tracing::trace!("http peek: serve[dual]: h2 acceptor; version = {version:?}");
-                self.http_acceptor
-                    .h2
-                    .serve(stream)
-                    .await
-                    .map_err(Into::into)
+                self.http_acceptor.h2.serve(stream).await.into_box_error()
             }
             Some(HttpPeekVersion::Http1x) => {
                 tracing::trace!("http peek: serve[dual]: http/1x acceptor; version = {version:?}");
@@ -217,11 +213,11 @@ where
                     .http1
                     .serve(stream)
                     .await
-                    .map_err(Into::into)
+                    .into_box_error()
             }
             None => {
                 tracing::trace!("http peek: serve[dual]: fallback; version = {version:?}");
-                self.fallback.serve(stream).await.map_err(Into::into)
+                self.fallback.serve(stream).await.into_box_error()
             }
         }
     }

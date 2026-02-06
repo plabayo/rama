@@ -4,7 +4,7 @@ use std::fmt;
 use std::ops::{Deref, DerefMut};
 
 use rama_core::Service;
-use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::telemetry::tracing;
 use rama_http::conn::TargetHttpVersion;
@@ -156,8 +156,8 @@ pub enum ResponseValidateError {
 /// Client error which can be triggered in case the handshake phase failed.
 pub enum HandshakeError {
     ValidationError(ResponseValidateError),
-    HttpRequestError(OpaqueError),
-    HttpUpgradeError(OpaqueError),
+    HttpRequestError(BoxError),
+    HttpUpgradeError(BoxError),
 }
 
 impl fmt::Display for ResponseValidateError {
@@ -485,7 +485,7 @@ impl WebSocketRequestBuilder<request::Builder> {
 
     /// Build the handshake data
     /// to be used to initiate the WebSocket handshake using an http client.
-    pub fn build_handshake(self) -> Result<HandshakeRequest, OpaqueError> {
+    pub fn build_handshake(self) -> Result<HandshakeRequest, BoxError> {
         let builder = match self.protocols.as_ref() {
             Some(protocols) => self.inner.typed_header(protocols),
             None => self.inner,

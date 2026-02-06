@@ -1,6 +1,6 @@
 use rama::{
     bytes::Bytes,
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     extensions::ExtensionsMut,
     futures::{StreamExt, stream},
     http::{
@@ -16,12 +16,12 @@ use rama::{
 
 use super::SendCommand;
 
-pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, OpaqueError> {
+pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, BoxError> {
     let mut request = Request::new(Body::empty());
 
     let input = build_data_input(cfg).await?;
     if input.is_some() && is_ws {
-        return Err(OpaqueError::from_display("input not allowed in WS mode"));
+        return Err(BoxError::from("input not allowed in WS mode"));
     }
 
     let uri: Uri = expand_url(&cfg.uri)
@@ -42,7 +42,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Opa
         (false, false, false, true, false) => Some(Version::HTTP_2),
         (false, false, false, false, true) => Some(Version::HTTP_3),
         (false, false, false, false, false) => None,
-        _ => Err(OpaqueError::from_display(
+        _ => Err(BoxError::from(
             "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",
         ))?,
     } {
@@ -82,9 +82,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Opa
     }
 
     match (cfg.ipv4, cfg.ipv6) {
-        (true, true) => Err(OpaqueError::from_display(
-            "--ipv4, --ipv6 are mutually exclusive",
-        ))?,
+        (true, true) => Err(BoxError::from("--ipv4, --ipv6 are mutually exclusive"))?,
         (true, false) => {
             request
                 .extensions_mut()
@@ -108,14 +106,12 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Opa
     Ok(request)
 }
 
-async fn build_data_input(cfg: &SendCommand) -> Result<Option<(Body, ContentType)>, OpaqueError> {
+async fn build_data_input(cfg: &SendCommand) -> Result<Option<(Body, ContentType)>, BoxError> {
     let (ct, separator) = match (cfg.binary, cfg.json) {
         (true, false) => (ContentType::octet_stream(), None),
         (false, true) => (ContentType::json(), Some(NATIVE_NEWLINE)),
         (false, false) => (ContentType::form_url_encoded(), Some("&")),
-        _ => Err(OpaqueError::from_display(
-            "--binary, --json are mutually exclusive",
-        ))?,
+        _ => Err(BoxError::from("--binary, --json are mutually exclusive"))?,
     };
 
     let Some(data) = cfg.data.as_deref() else {

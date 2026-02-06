@@ -5,10 +5,10 @@ use super::utf8_stream::Utf8Stream;
 use super::{Event, EventBuildError, EventDataRead};
 
 use pin_project_lite::pin_project;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::futures::stream::Stream;
 use rama_core::futures::task::{Context, Poll};
 use rama_core::telemetry::tracing;
-use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_utils::str::smol_str::SmolStr;
 use std::fmt;
 use std::marker::PhantomData;
@@ -65,7 +65,7 @@ impl<T: EventDataRead> EventBuilder<T> {
     ///
     /// -> Otherwise
     ///    The field is ignored.
-    fn add(&mut self, line: &RawEventLine) -> Result<(), OpaqueError> {
+    fn add(&mut self, line: &RawEventLine) -> Result<(), BoxError> {
         match line {
             RawEventLine::Field(field, val) => match *field {
                 "event" => {
@@ -122,7 +122,7 @@ impl<T: EventDataRead> EventBuilder<T> {
     /// 7. Set the data buffer and the event type buffer to the empty string.
     /// 8. Queue a task which, if the readyState attribute is set to a value other than CLOSED,
     ///    dispatches the newly created event at the EventSource object.
-    fn try_dispatch(&mut self) -> Result<Event<T>, OpaqueError> {
+    fn try_dispatch(&mut self) -> Result<Event<T>, BoxError> {
         self.is_complete = false;
         let mut event = std::mem::take(&mut self.event);
         if let Some(data) = self.reader.data(event.event.as_deref())? {
@@ -176,12 +176,10 @@ impl<S, T: EventDataRead> EventStream<S, T> {
 
     /// Set the last event ID of the stream. Useful for initializing the stream with a previous
     /// last event ID
-    pub fn try_set_last_event_id(&mut self, id: impl Into<SmolStr>) -> Result<(), OpaqueError> {
+    pub fn try_set_last_event_id(&mut self, id: impl Into<SmolStr>) -> Result<(), BoxError> {
         let id = id.into();
         if id.contains(['\n', '\r', '\0']) {
-            return Err(OpaqueError::from_std(EventBuildError::invalid_characters(
-                id,
-            )));
+            return Err(EventBuildError::invalid_characters(id).into_box_error());
         }
         self.last_event_id = Some(id);
         Ok(())
@@ -196,7 +194,7 @@ impl<S, T: EventDataRead> EventStream<S, T> {
 fn parse_event<T: EventDataRead>(
     buffer: &mut String,
     builder: &mut EventBuilder<T>,
-) -> Result<Option<Event<T>>, OpaqueError> {
+) -> Result<Option<Event<T>>, BoxError> {
     if buffer.is_empty() {
         return Ok(None);
     }
@@ -215,7 +213,9 @@ fn parse_event<T: EventDataRead>(
                 return Ok(None);
             }
             Err(nom::Err::Error(err) | nom::Err::Failure(err)) => {
-                return Err(OpaqueError::from_display(format!("SSE parse error: {err}")));
+                return Err(BoxError::from("SSE parse error")
+                    .context_debug_field("code", err.code)
+                    .context_str_field("input", err.input));
             }
         }
     }
@@ -228,7 +228,7 @@ where
     B: AsRef<[u8]>,
     T: EventDataRead,
 {
-    type Item = Result<Event<T>, OpaqueError>;
+    type Item = Result<Event<T>, BoxError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
@@ -275,7 +275,7 @@ where
                     }
                 }
                 Poll::Ready(Some(Err(err))) => {
-                    return Poll::Ready(Some(Err(OpaqueError::from_boxed(err.into()))));
+                    return Poll::Ready(Some(Err(err)));
                 }
                 Poll::Ready(None) => {
                     *this.state = EventStreamState::Terminated;

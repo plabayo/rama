@@ -3,7 +3,7 @@
 //! See [`Limit`].
 
 use crate::Service;
-use crate::error::BoxError;
+use crate::error::{BoxError, ErrorContext as _};
 use into_output::{ErrorIntoOutput, ErrorIntoOutputFn};
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -82,7 +82,7 @@ where
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
                     let _ = guard;
-                    return self.inner.serve(input).await.map_err(Into::into);
+                    return self.inner.serve(input).await.into_box_error();
                 }
                 policy::PolicyOutput::Abort(err) => return Err(err.into()),
                 policy::PolicyOutput::Retry => (),

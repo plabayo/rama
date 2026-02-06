@@ -2,7 +2,7 @@ use super::IntoResponse;
 use crate::headers::ContentType;
 use crate::{Body, Response, StatusCode};
 use rama_core::bytes::{BufMut, BytesMut};
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;
 
@@ -92,7 +92,7 @@ impl<T> TryFrom<Json<T>> for Body
 where
     T: Serialize,
 {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(json: Json<T>) -> Result<Self, Self::Error> {
         // Use a small initial capacity of 128 bytes like serde_json::to_vec
@@ -100,7 +100,7 @@ where
         let mut buf = BytesMut::with_capacity(128).writer();
         match serde_json::to_writer(&mut buf, &json.0) {
             Ok(()) => Ok(buf.into_inner().freeze().into()),
-            Err(err) => Err(OpaqueError::from_std(err)),
+            Err(err) => Err(BoxError::from(err)),
         }
     }
 }

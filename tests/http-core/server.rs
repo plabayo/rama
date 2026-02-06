@@ -16,7 +16,7 @@ use std::time::Duration;
 use futures_channel::oneshot;
 use parking_lot::Mutex;
 use rama::ServiceInput;
-use rama::error::{BoxError, OpaqueError};
+use rama::error::BoxError;
 use rama::extensions::Extensions;
 use rama::extensions::ExtensionsMut;
 use rama::futures::future::{self, Either, FutureExt};
@@ -2903,11 +2903,11 @@ impl Serve {
         self.try_body().expect("body")
     }
 
-    fn body_err(&self) -> OpaqueError {
+    fn body_err(&self) -> BoxError {
         self.try_body().expect_err("body_err")
     }
 
-    fn try_body(&self) -> Result<Vec<u8>, OpaqueError> {
+    fn try_body(&self) -> Result<Vec<u8>, BoxError> {
         let mut buf = vec![];
         loop {
             match self.msg_rx.recv() {
@@ -3036,7 +3036,7 @@ enum Reply {
 #[derive(Debug)]
 enum Msg {
     Chunk(Vec<u8>),
-    Error(OpaqueError),
+    Error(BoxError),
     End,
 }
 

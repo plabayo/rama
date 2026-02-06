@@ -6,7 +6,7 @@ use std::{
 
 use rama_core::stream::Stream;
 use rama_core::{
-    error::OpaqueError,
+    error::BoxError,
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     futures::{self, SinkExt, StreamExt},
     telemetry::tracing::{debug, trace},
@@ -154,9 +154,7 @@ impl<S: Stream + Unpin> AsyncWebSocket<S> {
         self.next().await.ok_or_else(|| {
             ProtocolError::Io(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                OpaqueError::from_display(
-                    "Connection closed: no messages to be received any longer",
-                ),
+                BoxError::from("Connection closed: no messages to be received any longer"),
             ))
         })?
     }

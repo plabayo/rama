@@ -1,5 +1,5 @@
 use rama::{
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     http::{HeaderValue, proto::h1::Http1HeaderName},
 };
 
@@ -12,7 +12,7 @@ pub struct HttpHeader {
 }
 
 impl FromStr for HttpHeader {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (raw_name, raw_value) = s

@@ -1,7 +1,7 @@
 use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
     extensions::ExtensionsMut,
     stream::{HeapReader, PeekStream, Stream},
     telemetry::tracing,
@@ -122,7 +122,7 @@ where
 
                 let mem = HeapReader::new(peek_buf[..n].into());
                 let stream = PeekStream::new(mem, stream);
-                return self.inner.serve(stream).await.map_err(Into::into);
+                return self.inner.serve(stream).await.into_box_error();
             }
         } else {
             tracing::trace!("haproxy protocol enforced: skip peeking");
@@ -131,10 +131,7 @@ where
 
         let header = loop {
             if read >= buffer.len() {
-                return Err(
-                    OpaqueError::from_display("Buffer exhausted before parsing completed")
-                        .into_boxed(),
-                );
+                return Err(BoxError::from("Buffer exhausted before parsing completed"));
             }
 
             let n = stream.read(&mut buffer[read..]).await?;
@@ -147,8 +144,7 @@ where
 
             if n == 0 {
                 return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)
-                    .context("HaProxy header incomplete")
-                    .into_boxed());
+                    .context("HaProxy header incomplete"));
             }
 
             tracing::debug!("Incomplete header. Read {read} bytes so far.");
@@ -232,7 +228,7 @@ where
         let stream = PeekStream::new(mem, stream);
 
         // read the rest of the data
-        self.inner.serve(stream).await.map_err(Into::into)
+        self.inner.serve(stream).await.into_box_error()
     }
 }
 

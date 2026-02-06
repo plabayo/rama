@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt};
 
 use rama_core::{
     bytes::{Buf, BufMut, BytesMut},
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
 };
 
 #[cfg(feature = "compression")]
@@ -53,7 +53,7 @@ impl EnabledCompressionEncodings {
 
     pub(crate) fn try_into_accept_encoding_header_value(
         self,
-    ) -> Result<Option<rama_http_types::HeaderValue>, OpaqueError> {
+    ) -> Result<Option<rama_http_types::HeaderValue>, BoxError> {
         let mut value = BytesMut::new();
         for encoding in self.inner.into_iter().flatten() {
             value.put_slice(encoding.as_str().as_bytes());
@@ -163,7 +163,7 @@ impl CompressionEncoding {
 
                 let header_value = enabled_encodings
                     .try_into_accept_encoding_header_value()
-                    .map_err(|err| Status::from_error(err.into_boxed()))?
+                    .map_err(Status::from_error)?
                     .map(MetadataValue::unchecked_from_header_value)
                     .unwrap_or_else(|| MetadataValue::from_static("identity"));
                 status
@@ -196,7 +196,7 @@ impl CompressionEncoding {
 
         let header_value = enabled_encodings
             .try_into_accept_encoding_header_value()
-            .map_err(|err| Status::from_error(err.into_boxed()))?
+            .map_err(Status::from_error)?
             .map(MetadataValue::unchecked_from_header_value)
             .unwrap_or_else(|| MetadataValue::from_static("identity"));
         status

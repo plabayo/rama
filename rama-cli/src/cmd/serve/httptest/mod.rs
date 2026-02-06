@@ -3,7 +3,7 @@
 use rama::{
     Service,
     combinators::Either,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
     http::{
         HeaderName, HeaderValue, Request,
@@ -144,7 +144,6 @@ where
     let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind http test service")?;
 
     let bind_address = tcp_listener

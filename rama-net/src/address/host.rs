@@ -2,7 +2,7 @@ use super::{Domain, parse_utils};
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -237,7 +237,7 @@ impl fmt::Display for Host {
 }
 
 impl std::str::FromStr for Host {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
@@ -245,7 +245,7 @@ impl std::str::FromStr for Host {
 }
 
 impl TryFrom<String> for Host {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
         parse_utils::try_to_parse_str_to_ip(name.as_str())
@@ -256,7 +256,7 @@ impl TryFrom<String> for Host {
 }
 
 impl TryFrom<&str> for Host {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(name: &str) -> Result<Self, Self::Error> {
         parse_utils::try_to_parse_str_to_ip(name)
@@ -268,7 +268,7 @@ impl TryFrom<&str> for Host {
 
 #[cfg(feature = "http")]
 impl TryFrom<HeaderValue> for Host {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
         Self::try_from(&header)
@@ -277,7 +277,7 @@ impl TryFrom<HeaderValue> for Host {
 
 #[cfg(feature = "http")]
 impl TryFrom<&HeaderValue> for Host {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
         header.to_str().context("convert header to str")?.try_into()
@@ -285,7 +285,7 @@ impl TryFrom<&HeaderValue> for Host {
 }
 
 impl TryFrom<Vec<u8>> for Host {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
         try_to_parse_bytes_to_ip(name.as_slice())
@@ -296,7 +296,7 @@ impl TryFrom<Vec<u8>> for Host {
 }
 
 impl TryFrom<&[u8]> for Host {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(name: &[u8]) -> Result<Self, Self::Error> {
         try_to_parse_bytes_to_ip(name)

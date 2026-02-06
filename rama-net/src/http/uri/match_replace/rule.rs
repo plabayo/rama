@@ -1,4 +1,4 @@
-use rama_core::{error::OpaqueError, telemetry::tracing};
+use rama_core::{error::BoxError, telemetry::tracing};
 use rama_http_types::Uri;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::thirdparty::wildcard::Wildcard;
@@ -223,7 +223,7 @@ impl UriMatchReplaceRule {
     ///
     /// See the type-level docs ([`UriMatchReplaceRule`])
     /// for details on syntax, edge cases, and errors.
-    pub fn try_new(ptn: impl TryIntoPattern, fmt: impl TryIntoUriFmt) -> Result<Self, OpaqueError> {
+    pub fn try_new(ptn: impl TryIntoPattern, fmt: impl TryIntoUriFmt) -> Result<Self, BoxError> {
         let Pattern {
             wildcard: ptn,
             include_query: ptn_include_query,

@@ -1,4 +1,8 @@
-use rama_core::{Service, error::BoxError, stream::Stream};
+use rama_core::{
+    Service,
+    error::{BoxError, ErrorContext as _},
+    stream::Stream,
+};
 
 /// An async service which echoes the incoming bytes back on the same stream.
 ///
@@ -49,7 +53,7 @@ where
         let (mut reader, mut writer) = tokio::io::split(stream);
         tokio::io::copy(&mut reader, &mut writer)
             .await
-            .map_err(Into::into)
+            .into_box_error()
     }
 }
 

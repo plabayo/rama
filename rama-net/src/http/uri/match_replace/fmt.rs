@@ -1,6 +1,6 @@
 use std::{borrow::Cow, fmt};
 
-use rama_core::error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_http_types::Uri;
 
 #[derive(Clone)]
@@ -54,7 +54,7 @@ impl UriFormatter {
         self.include_query
     }
 
-    pub(super) fn try_new(template: Cow<'static, [u8]>) -> Result<Self, OpaqueError> {
+    pub(super) fn try_new(template: Cow<'static, [u8]>) -> Result<Self, BoxError> {
         #[derive(Debug, PartialEq, Eq)]
         enum State {
             Literal,
@@ -77,9 +77,10 @@ impl UriFormatter {
                         offset = index + 1;
                     } else if byte == b'?' {
                         if include_query {
-                            return Err(OpaqueError::from_display(
+                            return Err(BoxError::from(
                                 "uri can only contain a single '?': multiple found",
-                            ));
+                            )
+                            .context_field("index", index));
                         }
                         include_query = true;
                     } else {
@@ -113,7 +114,7 @@ impl UriFormatter {
         let literal_len =
             template.len() - captures.iter().map(|capture| capture.length).sum::<usize>();
         if literal_len + captures.len() >= MAX_URI_LEN {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "Uri Formatter potential length exceeds max URI length",
             ));
         }
@@ -126,7 +127,7 @@ impl UriFormatter {
         })
     }
 
-    pub(super) fn fmt_uri(&self, parts: &[&[u8]]) -> Result<Uri, OpaqueError> {
+    pub(super) fn fmt_uri(&self, parts: &[&[u8]]) -> Result<Uri, BoxError> {
         let uri_len = self.literal_len + parts.iter().map(|part| part.len()).sum::<usize>();
         let mut buffer = Vec::with_capacity(uri_len); // allocate on heap already, as Uri requires this anyway
 
@@ -153,12 +154,10 @@ fn try_rule_capture_from_byte_range(
     bytes: &[u8],
     offset: usize,
     index: usize,
-) -> Result<RuleCapture, OpaqueError> {
+) -> Result<RuleCapture, BoxError> {
     let length = index.saturating_sub(offset);
     if length == 0 || length > 2 {
-        return Err(OpaqueError::from_display(
-            "invalid capture raw byte length (OOR)",
-        ));
+        return Err(BoxError::from("invalid capture raw byte length (OOR)"));
     }
 
     let capture_index: usize = bytes[offset..offset + length]
@@ -171,7 +170,7 @@ fn try_rule_capture_from_byte_range(
         .sum();
 
     if capture_index == 0 || capture_index > 16 {
-        return Err(OpaqueError::from_display(
+        return Err(BoxError::from(
             "uri formatter is invalid: capture index has to be within inclusive range [1, 16]",
         ));
     }
@@ -192,7 +191,7 @@ mod tests_try_new {
 
     // ---------- helpers ----------
 
-    fn mk(template: &'static str) -> Result<UriFormatter, OpaqueError> {
+    fn mk(template: &'static str) -> Result<UriFormatter, BoxError> {
         UriFormatter::try_new(template.as_bytes().into())
     }
 
@@ -465,7 +464,7 @@ mod tests_fmt_uri {
     }
 
     /// Render using `fmt_uri`, returning its string form for easy assertions.
-    fn render(fmt: &UriFormatter, parts: &[&[u8]]) -> Result<String, OpaqueError> {
+    fn render(fmt: &UriFormatter, parts: &[&[u8]]) -> Result<String, BoxError> {
         let uri = fmt.fmt_uri(parts)?;
         Ok(uri.to_string())
     }

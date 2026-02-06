@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use rama::{
     Layer, Service,
-    error::ErrorContext,
     http::{
         Body, BodyExtractExt, Request, Version, client::EasyHttpWebClient,
         layer::trace::TraceLayer, server::HttpServer, service::web::WebService,
@@ -35,9 +34,7 @@ async fn start_server(
 ) -> Result<(), Box<dyn std::error::Error + 'static>> {
     let listener = turmoil::net::TcpListener::bind(address).await?;
 
-    let conn_result = tokio::time::timeout(Duration::from_secs(1), listener.accept())
-        .await
-        .context("accept timeout")?;
+    let conn_result = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await?;
 
     let (conn, _) = conn_result?;
     let conn = TcpStream::new(conn);
@@ -73,7 +70,8 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std
                 .body(Body::empty())
                 .unwrap(),
         )
-        .await?;
+        .await
+        .map_err(|err| err.to_string())?;
     assert!(resp.status().is_success());
     assert_eq!(resp.version(), Version::HTTP_11);
     let body = resp.try_into_string().await.unwrap();

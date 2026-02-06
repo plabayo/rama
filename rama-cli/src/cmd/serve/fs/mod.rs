@@ -2,7 +2,7 @@
 
 use rama::{
     cli::{ForwardKind, service::fs::FsServiceBuilder},
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
     http::service::fs::DirectoryServeMode,
     net::{socket::Interface, tls::ApplicationProtocol},
@@ -94,14 +94,12 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
         .maybe_with_content_path(cfg.path)
         .with_directory_serve_mode(cfg.dir_serve)
         .build(exec.clone())
-        .map_err(OpaqueError::from_boxed)
         .context("build serve service")?;
 
     tracing::info!("starting serve service on: bind interface = {}", cfg.bind);
     let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind serve service")?;
 
     let bind_address = tcp_listener

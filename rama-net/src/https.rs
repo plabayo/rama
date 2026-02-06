@@ -1,10 +1,10 @@
-use rama_core::error::OpaqueError;
+use rama_core::error::{BoxError, ErrorExt};
 use rama_http_types::Version;
 
 use crate::tls::ApplicationProtocol;
 
 impl TryFrom<Version> for ApplicationProtocol {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: Version) -> Result<Self, Self::Error> {
         let version = match value {
@@ -13,16 +13,14 @@ impl TryFrom<Version> for ApplicationProtocol {
             Version::HTTP_11 => Self::HTTP_11,
             Version::HTTP_2 => Self::HTTP_2,
             Version::HTTP_3 => Self::HTTP_3,
-            _ => Err(OpaqueError::from_display(
-                "received unexpected http version",
-            ))?,
+            _ => Err(BoxError::from("received unexpected http version"))?,
         };
         Ok(version)
     }
 }
 
 impl TryFrom<ApplicationProtocol> for Version {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: ApplicationProtocol) -> Result<Self, Self::Error> {
         (&value).try_into()
@@ -30,7 +28,7 @@ impl TryFrom<ApplicationProtocol> for Version {
 }
 
 impl TryFrom<&ApplicationProtocol> for Version {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &ApplicationProtocol) -> Result<Self, Self::Error> {
         let version = match value {
@@ -39,9 +37,10 @@ impl TryFrom<&ApplicationProtocol> for Version {
             ApplicationProtocol::HTTP_11 => Self::HTTP_11,
             ApplicationProtocol::HTTP_2 => Self::HTTP_2,
             ApplicationProtocol::HTTP_3 => Self::HTTP_3,
-            alpn => Err(OpaqueError::from_display(format!(
-                "cannot convert given alpn {alpn} to http version"
-            )))?,
+            alpn => Err(
+                BoxError::from("cannot convert given alpn {alpn} to http version")
+                    .context_field("alpn", alpn.clone()),
+            )?,
         };
         Ok(version)
     }

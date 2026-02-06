@@ -1,6 +1,6 @@
 use crate::metadata::{MetadataMap, MetadataValue};
 use rama_core::{
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     futures::Stream,
 };
@@ -213,7 +213,7 @@ impl<T> Request<T> {
     /// possible.
     ///
     /// [the spec]: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md
-    pub fn try_set_timeout(&mut self, deadline: Duration) -> Result<(), OpaqueError> {
+    pub fn try_set_timeout(&mut self, deadline: Duration) -> Result<(), BoxError> {
         let value: MetadataValue<_> = duration_to_grpc_timeout(deadline)
             .context("format duration as grpc timeout")?
             .parse()

@@ -10,7 +10,7 @@ use aws_lc_rs::{
     },
 };
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 
 use crate::jose::{JWA, Signer, jwk_utils::create_subject_public_key_info};
@@ -119,7 +119,7 @@ impl JWK {
     ///
     /// Warning: make sure to specify the correct algorithm.
     /// If `https://github.com/aws/aws-lc-rs/pull/834` gets merged this won't be needed anymore
-    fn try_new_from_escdsa_keypair(key: &EcdsaKeyPair) -> Result<Self, OpaqueError> {
+    fn try_new_from_escdsa_keypair(key: &EcdsaKeyPair) -> Result<Self, BoxError> {
         let alg = JWA::try_from(key.algorithm())?;
         let curve = alg.try_into()?;
         // 0x04 prefix + x + y
@@ -146,7 +146,7 @@ impl JWK {
     /// in [`rfc7638`] is url safe identifier for a [`JWK`]
     ///
     /// [`rfc7638`]: https://datatracker.ietf.org/doc/html/rfc7638
-    pub fn thumb_sha256(&self) -> Result<Digest, OpaqueError> {
+    pub fn thumb_sha256(&self) -> Result<Digest, BoxError> {
         Ok(digest(
             &SHA256,
             &serde_json::to_vec(&self.key_type).context("failed to serialise JWK")?,
@@ -156,9 +156,7 @@ impl JWK {
     /// Convert this [`JWK`] to an unparsed public key which can be used to verify signatures
     ///
     /// Warning no verification is done on this key until `.verify()` is called
-    pub fn unparsed_public_key(
-        &self,
-    ) -> Result<signature::UnparsedPublicKey<Vec<u8>>, OpaqueError> {
+    pub fn unparsed_public_key(&self) -> Result<signature::UnparsedPublicKey<Vec<u8>>, BoxError> {
         match &self.key_type {
             JWKType::RSA { n, e } => {
                 let n_bytes = BASE64_URL_SAFE_NO_PAD
@@ -175,7 +173,7 @@ impl JWK {
                     rsa_public_key_sequence,
                 ))
             }
-            JWKType::OCT { .. } => Err(OpaqueError::from_display(
+            JWKType::OCT { .. } => Err(BoxError::from(
                 "Symmetric key cannot be converted to public key",
             )),
             JWKType::EC { crv, x, y } => {
@@ -231,11 +229,7 @@ pub struct EcdsaKey {
 
 impl EcdsaKey {
     /// Create a new [`EcdsaKey`] from the given [`EcdsaKeyPair`]
-    pub fn try_new(
-        key_pair: EcdsaKeyPair,
-        alg: JWA,
-        rng: SystemRandom,
-    ) -> Result<Self, OpaqueError> {
+    pub fn try_new(key_pair: EcdsaKeyPair, alg: JWA, rng: SystemRandom) -> Result<Self, BoxError> {
         // Check if passed algorithm is a correct elliptic curve one
         let _curve = JWKEllipticCurves::try_from(alg)?;
         Ok(Self {
@@ -246,7 +240,7 @@ impl EcdsaKey {
     }
 
     /// Generate a new [`EcdsaKey`] from a newly generated [`EcdsaKeyPair`] using P-256 EC
-    pub fn generate() -> Result<Self, OpaqueError> {
+    pub fn generate() -> Result<Self, BoxError> {
         let key_pair = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING)
             .context("generate EcdsaKeyPair")?;
 
@@ -254,11 +248,7 @@ impl EcdsaKey {
     }
 
     /// Generate a new [`EcdsaKey`] from the given pkcs8 der
-    pub fn from_pkcs8_der(
-        alg: JWA,
-        pkcs8_der: &[u8],
-        rng: SystemRandom,
-    ) -> Result<Self, OpaqueError> {
+    pub fn from_pkcs8_der(alg: JWA, pkcs8_der: &[u8], rng: SystemRandom) -> Result<Self, BoxError> {
         let ec_alg: &'static EcdsaSigningAlgorithm = alg.try_into()?;
         let key_pair = EcdsaKeyPair::from_pkcs8(ec_alg, pkcs8_der)
             .context("create EcdsaKeyPair from pkcs8")?;
@@ -267,7 +257,7 @@ impl EcdsaKey {
     }
 
     /// Create pkcs8 der for the current [`EcdsaKeyPair`]
-    pub fn pkcs8_der(&self) -> Result<Document, OpaqueError> {
+    pub fn pkcs8_der(&self) -> Result<Document, BoxError> {
         let doc = self
             .inner
             .to_pkcs8v1()
@@ -304,7 +294,7 @@ struct SigningHeaders<'a> {
 
 impl Signer for EcdsaKey {
     type Signature = Signature;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn set_headers(
         &self,
@@ -337,7 +327,7 @@ pub struct RsaKey {
 
 impl RsaKey {
     /// Create a new [`RsaKey`] from the given [`RsaKeyPair`]
-    pub fn try_new(key_pair: RsaKeyPair, alg: JWA, rng: SystemRandom) -> Result<Self, OpaqueError> {
+    pub fn try_new(key_pair: RsaKeyPair, alg: JWA, rng: SystemRandom) -> Result<Self, BoxError> {
         Ok(Self {
             rng,
             alg,
@@ -346,25 +336,21 @@ impl RsaKey {
     }
 
     /// Generate a new [`RsaKey`] from a newly generated [`RsaKeyPair`]
-    pub fn generate(key_size: KeySize) -> Result<Self, OpaqueError> {
+    pub fn generate(key_size: KeySize) -> Result<Self, BoxError> {
         let key_pair = RsaKeyPair::generate(key_size).context("error generating rsa key pair")?;
 
         Self::try_new(key_pair, JWA::RS256, SystemRandom::new())
     }
 
     /// Generate a new [`RsaKey`] from the given pkcs8 der
-    pub fn from_pkcs8_der(
-        pkcs8_der: &[u8],
-        alg: JWA,
-        rng: SystemRandom,
-    ) -> Result<Self, OpaqueError> {
+    pub fn from_pkcs8_der(pkcs8_der: &[u8], alg: JWA, rng: SystemRandom) -> Result<Self, BoxError> {
         let key_pair = RsaKeyPair::from_pkcs8(pkcs8_der).context("create RSAKeyPair from pkcs8")?;
 
         Self::try_new(key_pair, alg, rng)
     }
 
     /// Create pkcs8 der for the current [`RsaKeyPair`]
-    pub fn pkcs8_der(&self) -> Result<(JWA, Pkcs8V1Der<'static>), OpaqueError> {
+    pub fn pkcs8_der(&self) -> Result<(JWA, Pkcs8V1Der<'static>), BoxError> {
         let doc = self
             .inner
             .as_der()
@@ -386,7 +372,7 @@ impl RsaKey {
 
 impl Signer for RsaKey {
     type Signature = Vec<u8>;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn set_headers(
         &self,

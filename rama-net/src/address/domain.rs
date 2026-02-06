@@ -1,4 +1,4 @@
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::str::smol_str::{SmolStr, format_smolstr};
 use std::{cmp::Ordering, fmt, iter::repeat};
 
@@ -148,10 +148,10 @@ impl Domain {
 
     /// Try to create a subdomain from the current [`Domain`] with the given
     /// subdomain prefixed to it
-    pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, OpaqueError> {
+    pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, BoxError> {
         let sub = format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
         if !is_valid_name(sub.as_bytes()) {
-            return Err(OpaqueError::from_display("invalid subdomain"));
+            return Err(BoxError::from("invalid subdomain"));
         }
         Ok(Self(sub))
     }
@@ -161,10 +161,10 @@ impl Domain {
     /// E.g. turn `example.com` in `*.example.com`.
     ///
     /// This can fail, e.g. because the domain becomes too long.
-    pub fn try_as_wildcard(&self) -> Result<Self, OpaqueError> {
+    pub fn try_as_wildcard(&self) -> Result<Self, BoxError> {
         let sub = format_smolstr!("*.{}", self.0);
         if !is_valid_name(sub.as_bytes()) {
-            return Err(OpaqueError::from_display("invalid subdomain"));
+            return Err(BoxError::from("invalid subdomain"));
         }
         Ok(Self(sub))
     }
@@ -290,7 +290,7 @@ impl fmt::Display for Domain {
 }
 
 impl std::str::FromStr for Domain {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s.to_owned())
@@ -298,19 +298,19 @@ impl std::str::FromStr for Domain {
 }
 
 impl TryFrom<String> for Domain {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
         if is_valid_name(name.as_bytes()) {
             Ok(Self(SmolStr::new(name)))
         } else {
-            Err(OpaqueError::from_display("invalid domain"))
+            Err(BoxError::from("invalid domain"))
         }
     }
 }
 
 impl<'a> TryFrom<&'a [u8]> for Domain {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
         if is_valid_name(name) {
@@ -318,13 +318,13 @@ impl<'a> TryFrom<&'a [u8]> for Domain {
                 std::str::from_utf8(name).context("convert domain bytes to utf-8 string")?,
             )))
         } else {
-            Err(OpaqueError::from_display("invalid domain"))
+            Err(BoxError::from("invalid domain"))
         }
     }
 }
 
 impl TryFrom<Vec<u8>> for Domain {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
         if is_valid_name(name.as_slice()) {
@@ -332,7 +332,7 @@ impl TryFrom<Vec<u8>> for Domain {
                 String::from_utf8(name).context("convert domain bytes to utf-8 string")?,
             )))
         } else {
-            Err(OpaqueError::from_display("invalid domain"))
+            Err(BoxError::from("invalid domain"))
         }
     }
 }

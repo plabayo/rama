@@ -4,7 +4,7 @@ use crate::{
 };
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext as _, ErrorExt},
     extensions::ExtensionsMut,
     stream::Stream,
     telemetry::tracing,
@@ -342,10 +342,9 @@ where
             .map(|p| p.is_socks5())
             .unwrap_or(true)
         {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "socks5 proxy connector can only serve socks5 protocol",
-            )
-            .into_boxed());
+            ));
         }
 
         #[cfg(feature = "dns")]
@@ -368,17 +367,13 @@ where
                 .connect(input)
                 .await
                 .map_err(|err| match address.as_ref() {
-                    Some(proxy_info) => OpaqueError::from_std(Socks5ProxyError::Transport(
-                        OpaqueError::from_boxed(err.into())
-                            .context(format!(
-                                "establish connection to proxy {} (protocol: {:?})",
-                                proxy_info.address, proxy_info.protocol,
-                            ))
-                            .into_boxed(),
-                    )),
-                    None => {
-                        OpaqueError::from_boxed(err.into()).context("establish connection target")
-                    }
+                    Some(proxy_info) => Socks5ProxyError::Transport(
+                        err.context("establish connection to proxy")
+                            .with_context_field("address", || proxy_info.address.clone())
+                            .with_context_debug_field("protocol", || proxy_info.protocol.clone()),
+                    )
+                    .into_box_error(),
+                    None => err.context("establish connection target"),
                 })?;
 
         // return early in case we did not use a proxy
@@ -396,10 +391,9 @@ where
 
         let EstablishedClientConnection { input, mut conn } = established_conn;
 
-        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .context("socks5 proxy connector: get transport context")
-        })?;
+        let transport_ctx = input
+            .try_ref_into_transport_ctx()
+            .context("socks5 proxy connector: get transport context")?;
 
         tracing::trace!(
             network.peer.address = %proxy_address.address.host,
@@ -423,10 +417,9 @@ where
                 client.set_auth(basic.clone());
             }
             Some(ProxyCredential::Bearer(_)) => {
-                return Err(OpaqueError::from_display(
+                return Err(BoxError::from(
                     "socks5proxy does not support auth with bearer credential",
-                )
-                .into_boxed());
+                ));
             }
             None => {
                 tracing::trace!(
@@ -441,9 +434,7 @@ where
 
         let Some(connect_authority) = transport_ctx.host_with_port() else {
             return Err(Box::new(Socks5ProxyError::Handshake(
-                HandshakeError::other(OpaqueError::from_display(
-                    "failed to get port from transport context",
-                )),
+                HandshakeError::other(BoxError::from("failed to get port from transport context")),
             )));
         };
 

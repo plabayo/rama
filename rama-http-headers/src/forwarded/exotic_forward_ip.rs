@@ -1,4 +1,5 @@
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::ErrorExt;
+use rama_core::error::{BoxError, ErrorContext};
 use rama_http_types::header::{
     CF_CONNECTING_IP, CLIENT_IP, TRUE_CLIENT_IP, X_CLIENT_IP, X_REAL_IP,
 };
@@ -27,7 +28,7 @@ impl fmt::Display for ClientAddr {
 }
 
 impl std::str::FromStr for ClientAddr {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Ok(ip) = s.parse() {
@@ -40,9 +41,11 @@ impl std::str::FromStr for ClientAddr {
         let ip = try_to_parse_str_to_ip(s).context("parse forwarded ip")?;
 
         match ip {
-            IpAddr::V6(_) if port.is_some() && !s.starts_with('[') => Err(
-                OpaqueError::from_display("missing brackets for IPv6 address with port"),
-            ),
+            IpAddr::V6(_) if port.is_some() && !s.starts_with('[') => Err(BoxError::from(
+                "missing brackets for IPv6 address with port",
+            )
+            .context_field("ip", ip)
+            .context_debug_field("port", port)),
             _ => Ok(Self { ip, port }),
         }
     }

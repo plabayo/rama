@@ -1,7 +1,7 @@
 use crate::Protocol;
 
 use super::{Domain, DomainAddress, Host, SocketAddress, parse_utils};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{
@@ -301,7 +301,7 @@ impl fmt::Display for HostWithPort {
 }
 
 impl std::str::FromStr for HostWithPort {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
@@ -309,7 +309,7 @@ impl std::str::FromStr for HostWithPort {
 }
 
 impl TryFrom<String> for HostWithPort {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         s.as_str().try_into()
@@ -317,13 +317,13 @@ impl TryFrom<String> for HostWithPort {
 }
 
 impl TryFrom<&str> for HostWithPort {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (host, port) = parse_utils::split_port_from_str(s)?;
         let host = Host::try_from(host).context("parse host from host-with-port")?;
         match host {
-            Host::Address(IpAddr::V6(_)) if !s.starts_with('[') => Err(OpaqueError::from_display(
+            Host::Address(IpAddr::V6(_)) if !s.starts_with('[') => Err(BoxError::from(
                 "missing brackets for IPv6 address with port (in host-with-port)",
             )),
             _ => Ok(Self { host, port }),
@@ -332,7 +332,7 @@ impl TryFrom<&str> for HostWithPort {
 }
 
 impl TryFrom<Vec<u8>> for HostWithPort {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         let s = String::from_utf8(bytes).context("parse host-with-port from bytes")?;
@@ -341,7 +341,7 @@ impl TryFrom<Vec<u8>> for HostWithPort {
 }
 
 impl TryFrom<&[u8]> for HostWithPort {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(bytes).context("parse host-with-port from bytes")?;

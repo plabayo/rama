@@ -32,7 +32,7 @@
 //! some other tool or directly into your clipboard or a file.
 
 use rama::{
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     futures::SinkExt,
     net::address::SocketAddress,
     rt::Executor,
@@ -49,16 +49,12 @@ use rama::{
 use serde::Serialize;
 use std::time::Duration;
 
-async fn serve_stream(stream: TcpStream) -> Result<(), OpaqueError> {
+async fn serve_stream(stream: TcpStream) -> Result<(), BoxError> {
     let mut writer = FramedWrite::new(stream, JsonEncoder::new());
     for (i, item) in SAMPLE_ORDERS.into_iter().enumerate() {
         tokio::time::sleep(Duration::from_millis(((i as u64) % 7) * 5)).await;
         tracing::info!("return item #{i}");
-        writer
-            .send(item)
-            .await
-            .map_err(OpaqueError::from_boxed)
-            .context("write item to stream")?;
+        writer.send(item).await.context("write item to stream")?;
         if i % 3 == 0 {
             tracing::info!("return extra item @ #{i}");
             writer
@@ -68,16 +64,11 @@ async fn serve_stream(stream: TcpStream) -> Result<(), OpaqueError> {
                     prepaid: i % 6 == 0,
                 })
                 .await
-                .map_err(OpaqueError::from_boxed)
                 .context("write extra item to stream")?;
         }
     }
 
-    writer
-        .close()
-        .await
-        .map_err(OpaqueError::from_boxed)
-        .context("close the writer")?;
+    writer.close().await.context("close the writer")?;
 
     Ok(())
 }

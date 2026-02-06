@@ -7,7 +7,7 @@ use std::{
 
 use rama_core::{
     Service,
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     matcher::Matcher,
     rt::Executor,
@@ -150,7 +150,7 @@ pub enum RequestValidateError {
     MissingConnectionUpgradeHeader,
     InvalidSecWebSocketVersionHeader,
     InvalidSecWebSocketKeyHeader,
-    InvalidSecWebSocketProtocolHeader(OpaqueError),
+    InvalidSecWebSocketProtocolHeader(BoxError),
 }
 
 impl fmt::Display for RequestValidateError {
@@ -875,7 +875,7 @@ impl WebSocketEchoService {
 
 impl Service<AsyncWebSocket> for WebSocketEchoService {
     type Output = ();
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(&self, mut socket: AsyncWebSocket) -> Result<Self::Output, Self::Error> {
         let protocol = socket
@@ -914,7 +914,7 @@ impl Service<AsyncWebSocket> for WebSocketEchoService {
 
 impl Service<ServerWebSocket> for WebSocketEchoService {
     type Output = ();
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(&self, socket: ServerWebSocket) -> Result<Self::Output, Self::Error> {
         let socket = socket.into_inner();
@@ -924,13 +924,13 @@ impl Service<ServerWebSocket> for WebSocketEchoService {
 
 impl Service<upgrade::Upgraded> for WebSocketEchoService {
     type Output = ();
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(&self, io: upgrade::Upgraded) -> Result<Self::Output, Self::Error> {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
             if let Some(Extension::PerMessageDeflate(_)) = io.extensions().get() {
-                return Err(OpaqueError::from_display(
+                return Err(BoxError::from(
                     "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension.",
                 ));
             }

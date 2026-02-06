@@ -9,9 +9,9 @@ use crate::request::Parts as ReqParts;
 use crate::response::Parts as RespParts;
 use crate::service::web::extract::Query;
 
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
-use rama_error::{ErrorContext, OpaqueError};
 use rama_http_headers::{
     ContentEncoding, ContentEncodingDirective, ContentType, Cookie as RamaCookie, HeaderMapExt,
     Location,
@@ -355,7 +355,7 @@ pub struct Request {
 }
 
 impl TryFrom<Request> for crate::Request {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(har_request: Request) -> Result<Self, Self::Error> {
         let body = if let Some(text) = har_request.post_data.and_then(|pd| pd.text) {
@@ -409,7 +409,7 @@ impl TryFrom<Request> for crate::Request {
 }
 
 impl Request {
-    pub fn from_http_request_parts(parts: &ReqParts, payload: &[u8]) -> Result<Self, OpaqueError> {
+    pub fn from_http_request_parts(parts: &ReqParts, payload: &[u8]) -> Result<Self, BoxError> {
         let post_data = if !payload.is_empty() {
             let mime_type = get_mime(&parts.headers);
             let params = if mime_type
@@ -525,7 +525,7 @@ pub struct Response {
 }
 
 impl TryFrom<Response> for crate::Response {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(har_response: Response) -> Result<Self, Self::Error> {
         let body = match har_response.content.text {
@@ -568,10 +568,7 @@ impl TryFrom<Response> for crate::Response {
 }
 
 impl Response {
-    pub fn from_http_response_parts(
-        parts: &RespParts,
-        payload: &[u8],
-    ) -> Result<Self, OpaqueError> {
+    pub fn from_http_response_parts(parts: &RespParts, payload: &[u8]) -> Result<Self, BoxError> {
         let content = Content {
             size: payload.len() as i64,
             compression: None,

@@ -1,5 +1,5 @@
 use rama::{
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     http::tls::CertIssuerHttpClient,
     net::{
         address::Host,
@@ -23,7 +23,7 @@ use base64::engine::general_purpose::STANDARD as ENGINE;
 pub fn try_new_server_config(
     alpn: Option<Vec<ApplicationProtocol>>,
     exec: Executor,
-) -> Result<ServerConfig, OpaqueError> {
+) -> Result<ServerConfig, BoxError> {
     match CertIssuerHttpClient::try_from_env(exec) {
         Ok(issuer) => {
             return Ok(ServerConfig {

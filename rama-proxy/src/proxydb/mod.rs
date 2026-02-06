@@ -1,4 +1,4 @@
-use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_net::asn::Asn;
 use rama_utils::str::NonEmptyStr;
 use serde::{Deserialize, Serialize};
@@ -151,7 +151,7 @@ pub trait ProxyDB: Send + Sync + 'static {
 }
 
 impl ProxyDB for () {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline]
     async fn get_proxy_if(
@@ -160,9 +160,7 @@ impl ProxyDB for () {
         _filter: ProxyFilter,
         _predicate: impl ProxyQueryPredicate,
     ) -> Result<Proxy, Self::Error> {
-        Err(OpaqueError::from_display(
-            "()::get_proxy_if: no ProxyDB defined",
-        ))
+        Err(BoxError::from("()::get_proxy_if: no ProxyDB defined"))
     }
 
     #[inline]
@@ -171,9 +169,7 @@ impl ProxyDB for () {
         _ctx: ProxyContext,
         _filter: ProxyFilter,
     ) -> Result<Proxy, Self::Error> {
-        Err(OpaqueError::from_display(
-            "()::get_proxy: no ProxyDB defined",
-        ))
+        Err(BoxError::from("()::get_proxy: no ProxyDB defined"))
     }
 }
 
@@ -181,7 +177,7 @@ impl<T> ProxyDB for Option<T>
 where
     T: ProxyDB<Error: Into<BoxError>>,
 {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline]
     async fn get_proxy_if(
@@ -194,11 +190,8 @@ where
             Some(db) => db
                 .get_proxy_if(ctx, filter, predicate)
                 .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()))
                 .context("Some::get_proxy_if"),
-            None => Err(OpaqueError::from_display(
-                "None::get_proxy_if: no ProxyDB defined",
-            )),
+            None => Err(BoxError::from("None::get_proxy_if: no ProxyDB defined")),
         }
     }
 
@@ -209,14 +202,8 @@ where
         filter: ProxyFilter,
     ) -> Result<Proxy, Self::Error> {
         match self {
-            Some(db) => db
-                .get_proxy(ctx, filter)
-                .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()))
-                .context("Some::get_proxy"),
-            None => Err(OpaqueError::from_display(
-                "None::get_proxy: no ProxyDB defined",
-            )),
+            Some(db) => db.get_proxy(ctx, filter).await.context("Some::get_proxy"),
+            None => Err(BoxError::from("None::get_proxy: no ProxyDB defined")),
         }
     }
 }
@@ -266,7 +253,7 @@ macro_rules! impl_proxydb_either {
         ) -> Result<Proxy, Self::Error> {
             match self {
                 $(
-                    rama_core::combinators::$id::$param(s) => s.get_proxy_if(ctx, filter, predicate).await.map_err(Into::into),
+                    rama_core::combinators::$id::$param(s) => s.get_proxy_if(ctx, filter, predicate).await.into_box_error(),
                 )+
             }
         }
@@ -279,7 +266,7 @@ macro_rules! impl_proxydb_either {
         ) -> Result<Proxy, Self::Error> {
             match self {
                 $(
-                    rama_core::combinators::$id::$param(s) => s.get_proxy(ctx, filter).await.map_err(Into::into),
+                    rama_core::combinators::$id::$param(s) => s.get_proxy(ctx, filter).await.into_box_error(),
                 )+
             }
         }
@@ -312,7 +299,7 @@ where
 }
 
 impl ProxyDB for Proxy {
-    type Error = rama_core::error::OpaqueError;
+    type Error = BoxError;
 
     async fn get_proxy_if(
         &self,
@@ -322,7 +309,7 @@ impl ProxyDB for Proxy {
     ) -> Result<Self, Self::Error> {
         (self.is_match(&ctx, &filter) && predicate.execute(self))
             .then(|| self.clone())
-            .ok_or_else(|| rama_core::error::OpaqueError::from_display("hardcoded proxy no match"))
+            .context("hardcoded proxy no match")
     }
 }
 

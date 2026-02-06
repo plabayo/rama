@@ -56,7 +56,7 @@
 use rama::{
     Layer,
     conversion::RamaFrom,
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     graceful::Shutdown,
     http::service::web::response::IntoResponse,
     http::{Request, Response, server::HttpServer},
@@ -191,7 +191,7 @@ impl ResolvesServerCert for DynamicIssuer {
     }
 }
 
-fn load_certificate(cert_chain: &[u8], private_key: &[u8]) -> Result<CertifiedKey, OpaqueError> {
+fn load_certificate(cert_chain: &[u8], private_key: &[u8]) -> Result<CertifiedKey, BoxError> {
     let cert_chain = CertificateDer::pem_slice_iter(cert_chain)
         .collect::<Result<Vec<_>, _>>()
         .context("collect cert chain")?;

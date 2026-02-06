@@ -1,7 +1,7 @@
 use super::{Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyQueryPredicate};
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
     extensions::ExtensionsMut,
 };
 use rama_net::{
@@ -146,7 +146,7 @@ where
         if self.preserve && input.extensions().contains::<ProxyAddress>() {
             // shortcut in case a proxy address is already set,
             // and we wish to preserve it
-            return self.inner.serve(input).await.map_err(Into::into);
+            return self.inner.serve(input).await.into_box_error();
         }
 
         let maybe_filter = match self.mode {
@@ -177,10 +177,9 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("proxydb: select proxy: get transport context")
-            })?;
+            let transport_ctx = input
+                .try_ref_into_transport_ctx()
+                .context("proxydb: select proxy: get transport context")?;
 
             let proxy_ctx = ProxyContext::from(transport_ctx);
 
@@ -191,10 +190,11 @@ where
                 .get_proxy_if(proxy_ctx, filter.clone(), self.predicate.clone())
                 .await
                 .map_err(|err| {
-                    OpaqueError::from_std(ProxySelectError {
+                    ProxySelectError {
                         inner: err.into(),
                         filter: filter.clone(),
-                    })
+                    }
+                    .into_box_error()
                 })?;
 
             let mut proxy_address = proxy.address.clone();
@@ -204,7 +204,7 @@ where
                 .credential
                 .take()
                 .map(|credential| {
-                    Ok::<_, OpaqueError>(match credential {
+                    Ok::<_, BoxError>(match credential {
                         ProxyCredential::Basic(ref basic) => {
                             match self.username_formatter.fmt_username(
                                 &proxy,
@@ -235,10 +235,9 @@ where
                         } else if proxy.socks5h {
                             Some(Protocol::SOCKS5H)
                         } else {
-                            return Err(OpaqueError::from_display(
+                            return Err(BoxError::from(
                                 "selected udp proxy does not have a valid protocol available (db bug?!)",
-                            )
-                            .into());
+                            ));
                         }
                     }
                     TransportProtocol::Tcp => match proxy_address.address.port {
@@ -257,10 +256,9 @@ where
                             } else if proxy.https {
                                 Some(Protocol::HTTPS)
                             } else {
-                                return Err(OpaqueError::from_display(
-                                "selected tcp proxy does not have a valid protocol available (db bug?!)",
-                            )
-                            .into());
+                                return Err(BoxError::from(
+                                    "selected tcp proxy does not have a valid protocol available (db bug?!)",
+                                ));
                             }
                         }
                     },
@@ -279,7 +277,7 @@ where
             input.extensions_mut().insert(proxy);
         }
 
-        self.inner.serve(input).await.map_err(Into::into)
+        self.inner.serve(input).await.into_box_error()
     }
 }
 

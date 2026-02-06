@@ -60,7 +60,7 @@ impl<T: Serialize> crate::stream::codec::Encoder<T> for JsonEncoder<T> {
         }
         let result = serde_json::to_writer(buf.writer(), &data)
             .context("serde-json write data to buffer")
-            .map_err(Into::into);
+            .into_box_error();
         self.written = true;
         result
     }

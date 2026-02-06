@@ -9,6 +9,7 @@ use crate::{
 };
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::opentelemetry::metrics::UpDownCounter;
 use rama_core::telemetry::opentelemetry::semantic_conventions::metric::{
@@ -20,7 +21,6 @@ use rama_core::telemetry::opentelemetry::{
     semantic_conventions,
 };
 use rama_core::{Layer, Service};
-use rama_error::BoxError;
 use rama_net::http::RequestContext;
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::atomic::{self, AtomicUsize};

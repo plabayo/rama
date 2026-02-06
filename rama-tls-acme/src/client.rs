@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use rama_core::{
     Service,
     bytes::Bytes,
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt as _},
     service::BoxService,
 };
 use rama_crypto::{
@@ -43,7 +43,7 @@ use tokio::time::sleep;
 #[derive(Debug)]
 /// Acme client that will used for all acme operations
 pub struct AcmeClient {
-    https_client: BoxService<Request, Response, OpaqueError>,
+    https_client: BoxService<Request, Response, BoxError>,
     directory: server::Directory,
     nonce: Mutex<Option<String>>,
     default_retry_duration: Duration,
@@ -55,9 +55,9 @@ impl AcmeClient {
     /// # Errors
     ///
     /// Fails in case the ACME `Directory` could not be fetched.
-    pub async fn try_new<S>(directory_url: &str, https_client: S) -> Result<Self, OpaqueError>
+    pub async fn try_new<S>(directory_url: &str, https_client: S) -> Result<Self, BoxError>
     where
-        S: Service<Request, Output = Response, Error = OpaqueError>,
+        S: Service<Request, Output = Response, Error = BoxError>,
     {
         let https_client = https_client.boxed();
 
@@ -80,9 +80,9 @@ impl AcmeClient {
     pub async fn new_for_provider<S>(
         provider: &AcmeProvider,
         https_client: S,
-    ) -> Result<Self, OpaqueError>
+    ) -> Result<Self, BoxError>
     where
-        S: Service<Request, Output = Response, Error = OpaqueError>,
+        S: Service<Request, Output = Response, Error = BoxError>,
     {
         Self::try_new(provider.as_directory_url(), https_client).await
     }
@@ -96,7 +96,7 @@ impl AcmeClient {
     }
 
     /// Fetch a nonce for making requests
-    pub async fn fetch_nonce(&self) -> Result<String, OpaqueError> {
+    pub async fn fetch_nonce(&self) -> Result<String, BoxError> {
         let response = self
             .https_client
             .head(&self.directory.new_nonce)
@@ -108,7 +108,7 @@ impl AcmeClient {
         Ok(nonce)
     }
 
-    fn get_nonce_from_response(response: &Response) -> Result<String, OpaqueError> {
+    fn get_nonce_from_response(response: &Response) -> Result<String, BoxError> {
         Ok(response
             .header_str(REPLAY_NONCE_HEADER)
             .context("get nonce from headers")?
@@ -179,7 +179,7 @@ impl AcmeClient {
                 .context("create account request")?;
 
             if mode == CreateAccountMode::Create && response.status() == 200 {
-                return Err(OpaqueError::from_display(
+                return Err(BoxError::from(
                     "Tried creating new account, but account already exists",
                 )
                 .into());
@@ -403,7 +403,7 @@ pub struct Order<'a> {
 
 impl Signer for AccountCredentials {
     type Signature = <EcdsaKey as Signer>::Signature;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn set_headers(
         &self,
@@ -560,9 +560,7 @@ impl<'a> Order<'a> {
                 server::ChallengeStatus::Pending | server::ChallengeStatus::Processing => (),
                 server::ChallengeStatus::Valid => return Ok(()),
                 server::ChallengeStatus::Invalid => {
-                    return Err(
-                        OpaqueError::from_display("challenge is detected as invalid").into(),
-                    );
+                    return Err(BoxError::from("challenge is detected as invalid").into());
                 }
             }
 
@@ -678,7 +676,7 @@ impl<'a> Order<'a> {
                 return Ok::<_, ClientError>(&self.inner);
             }
             if self.inner.status == server::OrderStatus::Invalid {
-                return Err(OpaqueError::from_display("Order is invalid state").into());
+                return Err(BoxError::from("Order is invalid state").into());
             }
 
             sleep(retry_wait.unwrap_or(self.account.client.default_retry_duration)).await;
@@ -689,7 +687,7 @@ impl<'a> Order<'a> {
     pub fn create_key_authorization(
         &self,
         challenge: &server::Challenge,
-    ) -> Result<KeyAuthorization, OpaqueError> {
+    ) -> Result<KeyAuthorization, BoxError> {
         KeyAuthorization::new(&challenge.token, &self.account.credentials.key.create_jwk())
     }
 
@@ -701,7 +699,7 @@ impl<'a> Order<'a> {
         &self,
         challenge: &server::Challenge,
         identifier: &common::Identifier,
-    ) -> Result<(PrivatePkcs8KeyDer<'_>, Certificate), OpaqueError> {
+    ) -> Result<(PrivatePkcs8KeyDer<'_>, Certificate), BoxError> {
         let key_authorization = self.create_key_authorization(challenge)?;
 
         let mut cert_params = rcgen::CertificateParams::new(vec![identifier.to_string()])
@@ -757,14 +755,14 @@ async fn bytes_into_error(response_parts: Parts, bytes: Bytes) -> ClientError {
     if let Ok(problem) = problem {
         problem.into()
     } else {
-        let body_str = bytes
-            .try_into_string()
-            .await
-            .unwrap_or_else(|err| format!("body collect err post-error: {err}"));
-        OpaqueError::from_display(format!(
-            "Unexpected problem response with status code {}: {}",
-            response_parts.status, body_str
-        ))
+        match bytes.try_into_string().await {
+            Ok(body_str) => BoxError::from("unexpected problem response")
+                .context_field("status", response_parts.status)
+                .context_str_field("body", body_str),
+            Err(err) => err
+                .context("body collect err post-error")
+                .context_field("status", response_parts.status),
+        }
         .into()
     }
 }
@@ -798,8 +796,8 @@ where
 pub enum ClientError {
     /// Error returned by the acme server
     Problem(Problem),
-    /// Normal [`OpaqueError`] like we use everywhere else
-    Other(OpaqueError),
+    /// Normal [`BoxError`] like we use everywhere else
+    Other(BoxError),
 }
 
 impl std::fmt::Debug for ClientError {
@@ -829,8 +827,8 @@ impl std::error::Error for ClientError {
     }
 }
 
-impl From<OpaqueError> for ClientError {
-    fn from(value: OpaqueError) -> Self {
+impl From<BoxError> for ClientError {
+    fn from(value: BoxError) -> Self {
         Self::Other(value)
     }
 }

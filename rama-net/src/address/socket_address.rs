@@ -1,14 +1,17 @@
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::str::FromStr;
+
+use rama_core::error::{BoxError, ErrorContext};
+use rama_utils::macros::generate_set_and_with;
+
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
 use crate::address::parse_utils::try_to_parse_str_to_ip;
-use rama_core::error::{ErrorContext, OpaqueError};
+
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
-use rama_utils::macros::generate_set_and_with;
-use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::str::FromStr;
 
 /// An [`IpAddr`] with an associated port (u16)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -299,7 +302,7 @@ impl fmt::Display for SocketAddress {
 }
 
 impl FromStr for SocketAddress {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
@@ -307,7 +310,7 @@ impl FromStr for SocketAddress {
 }
 
 impl TryFrom<String> for SocketAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         s.as_str().try_into()
@@ -315,7 +318,7 @@ impl TryFrom<String> for SocketAddress {
 }
 
 impl TryFrom<&String> for SocketAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &String) -> Result<Self, Self::Error> {
         value.as_str().try_into()
@@ -323,14 +326,14 @@ impl TryFrom<&String> for SocketAddress {
 }
 
 impl TryFrom<&str> for SocketAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (ip_addr, port) = crate::address::parse_utils::split_port_from_str(s)?;
         let ip_addr =
             try_to_parse_str_to_ip(ip_addr).context("parse ip address from socket address")?;
         match ip_addr {
-            IpAddr::V6(_) if !s.starts_with('[') => Err(OpaqueError::from_display(
+            IpAddr::V6(_) if !s.starts_with('[') => Err(BoxError::from(
                 "missing brackets for IPv6 address with port",
             )),
             _ => Ok(Self { ip_addr, port }),
@@ -340,7 +343,7 @@ impl TryFrom<&str> for SocketAddress {
 
 #[cfg(feature = "http")]
 impl TryFrom<HeaderValue> for SocketAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
         Self::try_from(&header)
@@ -349,7 +352,7 @@ impl TryFrom<HeaderValue> for SocketAddress {
 
 #[cfg(feature = "http")]
 impl TryFrom<&HeaderValue> for SocketAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
         header.to_str().context("convert header to str")?.try_into()
@@ -357,7 +360,7 @@ impl TryFrom<&HeaderValue> for SocketAddress {
 }
 
 impl TryFrom<Vec<u8>> for SocketAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         Self::try_from(bytes.as_slice())
@@ -365,7 +368,7 @@ impl TryFrom<Vec<u8>> for SocketAddress {
 }
 
 impl TryFrom<&[u8]> for SocketAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(bytes).context("parse sock address from bytes")?;

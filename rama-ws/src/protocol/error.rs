@@ -1,5 +1,5 @@
 use crate::protocol::{frame::coding::OpCodeData, message::Message};
-use rama_core::error::OpaqueError;
+use rama_core::error::{BoxError, ErrorExt};
 use rama_net::conn::is_connection_error;
 use rama_utils::str::utf8;
 use std::{error, fmt, io};
@@ -8,7 +8,7 @@ use std::{error, fmt, io};
 #[derive(Debug)]
 pub enum ProtocolError {
     /// a utf-8 decode error
-    Utf8(OpaqueError),
+    Utf8(BoxError),
     /// Input-output error.
     ///
     /// These are generally errors with the
@@ -54,7 +54,7 @@ pub enum ProtocolError {
     /// Type of data frame not recognised.
     UnknownDataFrameType(u8),
     /// Error while applying the deflate extension
-    DeflateError(OpaqueError),
+    DeflateError(BoxError),
 }
 
 impl ProtocolError {
@@ -71,13 +71,13 @@ impl ProtocolError {
 
 impl From<utf8::DecodeError<'_>> for ProtocolError {
     fn from(value: utf8::DecodeError<'_>) -> Self {
-        Self::Utf8(OpaqueError::from_display(value.to_string()))
+        Self::Utf8(BoxError::from(value.to_string()))
     }
 }
 
 impl From<std::str::Utf8Error> for ProtocolError {
     fn from(value: std::str::Utf8Error) -> Self {
-        Self::Utf8(OpaqueError::from_std(value))
+        Self::Utf8(value.into_box_error())
     }
 }
 
@@ -145,7 +145,7 @@ impl fmt::Display for ProtocolError {
 impl error::Error for ProtocolError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Self::Utf8(err) => Some(err as &(dyn error::Error + 'static)),
+            Self::Utf8(err) | Self::DeflateError(err) => Some(err.as_ref()),
             Self::Io(err) => Some(err as &(dyn std::error::Error + 'static)),
             Self::InvalidOpcode(_)
             | Self::InvalidCloseSequence
@@ -163,7 +163,6 @@ impl error::Error for ProtocolError {
             | Self::UnexpectedContinueFrame
             | Self::ExpectedFragment(_)
             | Self::UnknownDataFrameType(_) => None,
-            Self::DeflateError(err) => Some(err as &(dyn std::error::Error + 'static)),
         }
     }
 }

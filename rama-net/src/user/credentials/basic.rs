@@ -1,6 +1,6 @@
 use std::{fmt, str::FromStr};
 
-use rama_core::error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_utils::str::NonEmptyStr;
 
 use crate::user::authority::StaticAuthorizer;
@@ -134,13 +134,11 @@ impl std::hash::Hash for Basic {
 }
 
 impl TryFrom<&str> for Basic {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value.find(':') {
-            Some(0) => Err(OpaqueError::from_display(
-                "missing username in basic credential",
-            )),
+            Some(0) => Err(BoxError::from("missing username in basic credential")),
             Some(n) => Ok(Self {
                 username: NonEmptyStr::try_from(&value[..n])
                     .context("create username for secure basic credentials")?,
@@ -161,7 +159,7 @@ impl TryFrom<&str> for Basic {
 }
 
 impl FromStr for Basic {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {

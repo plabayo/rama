@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use rama_core::{
     Service,
     conversion::RamaTryInto,
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
     extensions::ExtensionsMut,
     stream::Stream,
     telemetry::tracing::{debug, trace},
@@ -100,14 +100,18 @@ where
         let mut acceptor_builder = tls_config
             .cert_source
             .clone()
-            .issue_certs(acceptor_builder, server_domain, maybe_client_hello.as_ref())
+            .issue_certs(
+                acceptor_builder,
+                server_domain.clone(),
+                maybe_client_hello.as_ref(),
+            )
             .await?;
 
         if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
             acceptor_builder
                 .set_min_proto_version(Some((*min_ver).rama_try_into().map_err(|v| {
-                    OpaqueError::from_display(format!("protocol version {v}"))
-                        .context("build boring ssl acceptor: min proto version")
+                    BoxError::from("build boring ssl acceptor: cast min proto version")
+                        .context_field("protocol_version", v)
                 })?))
                 .context("build boring ssl acceptor: set min proto version")?;
         }
@@ -115,8 +119,8 @@ where
         if let Some(max_ver) = tls_config.protocol_versions.iter().flatten().max() {
             acceptor_builder
                 .set_max_proto_version(Some((*max_ver).rama_try_into().map_err(|v| {
-                    OpaqueError::from_display(format!("protocol version {v}"))
-                        .context("build boring ssl acceptor: max proto version")
+                    BoxError::from("build boring ssl acceptor: cast max proto version")
+                        .context_field("protocol_version", v)
                 })?))
                 .context("build boring ssl acceptor: set max proto version")?;
         }
@@ -172,13 +176,23 @@ where
 
         let stream = rama_boring_tokio::accept(&acceptor, stream)
             .await
-            .map_err(|err| match err.as_io_error() {
-                Some(err) => OpaqueError::from_display(err.to_string())
-                    .context("boring ssl acceptor: accept"),
-                None => OpaqueError::from_display(format!(
-                    "boring ssl acceptor: accept ({:?})",
-                    err.code()
-                )),
+            .map_err(|err| {
+                let maybe_ssl_code = err.code();
+                if let Some(io_err) = err.as_io_error() {
+                    BoxError::from(format!(
+                        "boring ssl acceptor (accept): with io error: {io_err}"
+                    ))
+                    .context_debug_field("domain", server_domain)
+                    .context_debug_field("code", maybe_ssl_code)
+                } else if let Some(err) = err.as_ssl_error_stack() {
+                    err.context("boring ssl acceptor (accept): with ssl-error info")
+                        .context_debug_field("domain", server_domain)
+                        .context_debug_field("code", maybe_ssl_code)
+                } else {
+                    BoxError::from("boring ssl acceptor (accept): without error info")
+                        .context_debug_field("domain", server_domain)
+                        .context_debug_field("code", maybe_ssl_code)
+                }
             })?;
 
         let negotiated_tls_params = match stream.ssl().session() {
@@ -188,8 +202,8 @@ where
                         .protocol_version()
                         .rama_try_into()
                         .map_err(|v| {
-                            OpaqueError::from_display(format!("protocol version {v}"))
-                                .context("boring ssl acceptor: min proto version")
+                            BoxError::from("boring ssl acceptor: cast min proto version")
+                                .context_field("protocol_version", v)
                         })?;
                 let application_layer_protocol = stream
                     .ssl()
@@ -228,10 +242,9 @@ where
                 }
             }
             None => {
-                return Err(OpaqueError::from_display(
+                return Err(BoxError::from(
                     "boring ssl acceptor: failed to establish session...",
-                )
-                .into_boxed());
+                ));
             }
         };
 
@@ -245,10 +258,9 @@ where
         stream.extensions_mut().insert(secure_transport);
         stream.extensions_mut().insert(negotiated_tls_params);
 
-        self.inner.serve(stream).await.map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .context("boring acceptor: service error")
-                .into_boxed()
-        })
+        self.inner
+            .serve(stream)
+            .await
+            .context("boring acceptor: service error")
     }
 }

@@ -5,10 +5,10 @@
 use crate::body::util::BodyExt;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::error::BoxError;
 use rama_core::futures::TryStream;
 use rama_core::futures::stream::Stream;
 use rama_core::stream::json;
-use rama_error::{BoxError, OpaqueError};
 use rama_utils::str::arcstr::ArcStr;
 use serde::de::DeserializeOwned;
 use sse::{EventDataRead, EventStream};
@@ -282,16 +282,14 @@ body_from_impl!(Bytes);
 
 impl StreamingBody for Body {
     type Data = Bytes;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline]
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.0)
-            .poll_frame(cx)
-            .map_err(OpaqueError::from_boxed)
+        Pin::new(&mut self.0).poll_frame(cx)
     }
 
     #[inline]
@@ -340,7 +338,7 @@ impl StreamingBody for BodyDataStream {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.inner).poll_frame(cx).map_err(Into::into)
+        Pin::new(&mut self.inner).poll_frame(cx)
     }
 
     #[inline]

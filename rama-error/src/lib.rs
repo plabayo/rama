@@ -1,179 +1,165 @@
-//! Error utilities for rama and its users.
+//! Error utilities for Rama and its users.
 //!
-//! Crate used by the end-user `rama` crate and `rama` crate authors alike.
+//! This crate is used by the end user `rama` crate and by developers building on
+//! top of Rama.
 //!
-//! Learn more about `rama`:
+//! Learn more about Rama:
 //!
-//! - Github: <https://github.com/plabayo/rama>
+//! - GitHub: <https://github.com/plabayo/rama>
 //! - Book: <https://ramaproxy.org/book/>
 //!
-//! # Errors
+//! # Errors in Rust
 //!
-//! Errors in Rust are a bit ambiguous:
+//! Rust has two closely related concepts that are both often called errors:
 //!
-//! - the infamous `Result<T, E>` is a type that can either be `Ok(T)` or `Err(E)`, where `E` is
-//!   the error type in case something went wrong.
-//! - the [`std::error::Error`] trait is a trait that represents errors that can be displayed and
-//!   have a source (cause).
+//! - `Result<T, E>` is a control flow type that represents either success (`Ok(T)`)
+//!   or failure (`Err(E)`).
+//! - [`std::error::Error`] is a trait for values that can be displayed and can
+//!   reference a source error.
 //!
-//! The ambiguity comes from the fact that the [`std::error::Error`] trait is not required to be
-//! implemented for the error type `E` in the `Result<T, E>` type. This means that one can have
-//! a `Result<T, E>` where `E` is not an error type. A common example of something else it can be
-//! is that it has the same type as the `T` type, which is not an error type. E.g. in case of a web
-//! service middleware a firewall could return a 403 Http response as the `Err` variant of the
-//! `Result<T, Response>`. Where `T` is most likely also a `Response` type. In which
-//! case you might as well have `Result<Response, Infallible>`.
+//! `Result<T, E>` does not require `E` to implement [`std::error::Error`]. This
+//! means `Err(E)` is not always an error in the semantic sense.
 //!
-//! Within Web Services we usually do not want an error type, as it does not make any sense.
-//! This is because the server has to respond something (unless you simply want to kill the connection),
-//! and so it makes much more sense to enforce the code type-wise to always return a response.
+//! A common example is web middleware that uses `Result<Response, Response>`,
+//! where the `Err` value is an early response such as a 403, not a failure. In
+//! such cases, the `Err` value is not an error at all.
 //!
-//! The most tricky scenario, if you can call it that, is what to do for middleware services.
-//! These situations are tricky because they can wrap any generic `S` type, where `S` is the
-//! service type. This means that the error type can be anything, and so it is not possible to
-//! create values of that type for scenarios where the error comes from the middleware itself.
+//! In Rama we try to avoid that ambiguity. As a rule of thumb, if something is an
+//! error, it should behave like one. That becomes most relevant in generic
+//! middleware, where the wrapped service `S` can have any error type. Middleware
+//! needs a way to report its own failures even when it cannot construct values of
+//! the wrapped error type.
 //!
-//! There are several possibilities here and we'll go over them next. But before we do that,
-//! I do want to emphasise that while Rust's `Result<T, E>` does not enforce that `E` is an error
-//! type, it is still a good practice to use an error type for the `E` type. And that is also
-//! that as a rule of thumb we do in Rama.
+//! This crate provides the building blocks to handle those situations in a
+//! principled and ergonomic way.
 //!
-//! ## Type Erasure
+//! # Type erasure
 //!
-//! The [`BoxError`] type alias is a boxed Error trait object and can be used to represent any error that
-//! implements the [`std::error::Error`] trait and is used for cases where it is usually not
-//! that important what specific error type is returned, but rather that an error occurred.
-//! Boxed errors do allow to _downcast_ to check for concrete error types, but this checks
-//! only the top-level error and not the cause chain.
+//! The [`BoxError`] type alias is a boxed `std::error::Error` trait object.
 //!
-//! ## Error Extension
+//! It is used when the concrete error type is not important, only the fact that
+//! an error occurred. This is useful at abstraction boundaries such as middleware
+//! layers and public APIs.
 //!
-//! The [`ErrorExt`] trait provides a set of methods to work with errors. These methods are
-//! implemented for all types that implement the [`std::error::Error`] trait. The methods are
-//! used to add context to an error, add a backtrace to an error, and to convert an error into
-//! an opaque error.
+//! Boxed errors can be downcast to inspect their concrete type, but only at the
+//! top level. Downcasting does not walk the error source chain.
 //!
-//! ## Opaque Error
+//! # Error extension
 //!
-//! The [`OpaqueError`] type is a type-erased error that can be used to represent any error
-//! that implements the [`std::error::Error`] trait. Using the [`OpaqueError::from_display`]
-//! you can even create errors from a displayable type.
+//! The [`ErrorExt`] trait provides extension methods for working with errors.
+//! These methods are implemented for all types that can be converted into a
+//! [`BoxError`].
 //!
-//! The other advantage of [`OpaqueError`] over [`BoxError`]
-//! is that it is Sized and can be used in places where a `Sized`` type is required,
-//! while [`BoxError`] is `?Sized` and can give you a hard time in certain scenarios.
+//! The provided methods allow you to enrich errors with:
 //!
-//! ## `error` macro
+//! - additional context values via [`ErrorExt::context`]
+//! - structured key value context via [`ErrorExt::context_field`]
+//! - lazy variants to avoid computing context unless needed via
+//!   [`ErrorExt::with_context`] and [`ErrorExt::with_context_field`]
+//! - a captured backtrace via [`ErrorExt::backtrace`]
 //!
-//! The `error` macro is a convenient way to create an [`OpaqueError`]
-//! from an error, format string or displayable type.
+//! Context is stored as fields and rendered in a log friendly key value style.
+//! Values are always quoted and escaped to avoid ambiguity in logs, even if the
+//! value contains whitespace, commas, or newlines.
 //!
-//! ### `error` macro Example
+//! # Error context on `Result` and `Option`
 //!
-//! ```rust
-//! use rama_error::{error, ErrorExt, OpaqueError};
+//! The [`ErrorContext`] trait extends [`Result`] and [`Option`] with methods for
+//! attaching context at the call site.
 //!
-//! let error = error!("error").context("foo");
-//! assert_eq!(error.to_string(), "foo\r\n ↪ error");
+//! - For `Result<T, E>`, context is added to the error variant, producing
+//!   `Result<T, BoxError>`.
+//! - For `Option<T>`, `None` is converted into an error, also producing
+//!   `Result<T, BoxError>`.
 //!
-//! let error = error!("error {}", 404).context("foo");
-//! assert_eq!(error.to_string(), "foo\r\n ↪ error 404");
+//! Context can be added as an unkeyed value or as a keyed field, and it can be
+//! added eagerly or lazily.
 //!
-//! #[derive(Debug)]
-//! struct CustomError;
+//! This makes it easy to keep errors lightweight at the source while still
+//! attaching useful information at higher layers. It also enables idiomatic use
+//! of the `?` operator to short circuit with a context enriched error.
 //!
-//! impl std::fmt::Display for CustomError {
-//!   fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-//!      write!(f, "entity not found")
-//!   }
-//! }
+//! ## Error context examples
 //!
-//! impl std::error::Error for CustomError {}
-//!
-//! let error = error!(CustomError).context("foo");
-//!
-//! assert_eq!(error.to_string(), "foo\r\n ↪ entity not found");
-//! ```
-//!
-//! ## Error Context
-//!
-//! The [`ErrorContext`] allows you to add a context to [`Result`]
-//! and [`Option`] types:
-//!
-//! - For [`Result`] types, the context is added to the error variant,
-//!   turning `Result<T, E>` into `Result<T, OpaqueError>`;
-//! - For [`Option`] types, the context is used as a DisplayError when
-//!   the open is `None`, turning `Option<T>` into `Result<T, OpaqueError>`.
-//!
-//! This is useful when you want to add custom context.
-//! And can also be combined with other [`ErrorExt`] methods,
-//! such as [`ErrorExt::backtrace`] to add even more info to the error case,
-//! if there is one.
-//!
-//! It is also an easy way to turn an option value into the inner value,
-//! short-circuiting using `?` with the new context (Display) error
-//! when the option was `None`.
-//!
-//! ### Error Context Example
-//!
-//! Option Example:
+//! ### Option examples
 //!
 //! ```rust
 //! use rama_error::{ErrorContext, ErrorExt};
 //!
+//! # fn main() -> Result<(), rama_error::BoxError> {
 //! let value = Some(42);
-//! let value = match value.context("value is None") {
-//!    Ok(value) => assert_eq!(value, 42),
-//!    Err(error) => panic!("unexpected error: {error}"),
-//! };
+//! let value = value.context("value is None")?;
+//! assert_eq!(value, 42);
 //!
 //! let value: Option<usize> = None;
-//! let result = value.context("value is None");
-//! assert!(result.is_err());
+//! let err = value.context_field("missing", "answer").unwrap_err();
+//! assert!(format!("{err}").contains(r#"missing="answer""#));
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! Result Example:
+//! ### Result examples
 //!
 //! ```rust
-//! use rama_error::{ErrorContext, ErrorExt, OpaqueError};
+//! use rama_error::{ErrorContext, ErrorExt};
 //!
-//! let value: Result<_, OpaqueError> = Ok(42);
-//! let value = match value.context("get the answer") {
-//!   Ok(value) => assert_eq!(value, 42),
-//!   Err(error) => panic!("unexpected error: {error}"),
-//! };
+//! fn parse(input: &str) -> Result<usize, std::num::ParseIntError> {
+//!     input.parse()
+//! }
 //!
-//! let value: Result<usize, _> = Err(OpaqueError::from_display("error"));
-//! let result = value.context("get the answer");
-//! assert!(result.is_err());
+//! # fn main() -> Result<(), rama_error::BoxError> {
+//! let value = parse("42").context("parsing answer")?;
+//! assert_eq!(value, 42);
+//!
+//! let err = parse("nope")
+//!     .context_field("input", "nope")
+//!     .with_context(|| "expected a number")
+//!     .unwrap_err();
+//!
+//! let s = format!("{err}");
+//! assert!(s.contains(r#"input="nope""#));
+//! assert!(s.contains(r#""expected a number""#));
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! ## Error Composition
+//! # Backtraces
 //!
-//! Sometimes it can be useful to compose errors with more
-//! expressive error types. In such cases [`OpaqueError`] is... too opaque.
+//! [`ErrorExt::backtrace`] captures a [`std::backtrace::Backtrace`] at the point
+//! it is called and wraps the error with it.
 //!
-//! In an early design of Rama we considered adding a `compose_error` function macro
-//! that would allow to create error types in a similar manner as [the `thiserror` crate](https://docs.rs/thiserror),
-//! but we decided against it as it would be an abstraction too much.
+//! In normal formatting the error prints as the underlying error.
+//! In alternate formatting (`{:#}`) the backtrace is included.
 //!
-//! Rama was created to give developers the full power of the Rust language to develop
-//! proxies, and by extension also web services and http clients. In a similar line of thought
-//! it is also important that one has all tools available to create the error types for their purpose.
+//! ```rust
+//! use rama_error::ErrorExt;
 //!
-//! As such, if you want your own custom error types we recommend just creating them
-//! as you would any other type in Rust. The blog article <https://sabrinajewson.org/blog/errors>
-//! gives a good overview and background on this topic.
+//! let err = std::io::Error::other("boom")
+//!     .context_field("path", "/tmp/data")
+//!     .backtrace();
 //!
-//! You can declare your own `macro_rules` in case there are common patterns for the services
-//! and middlewares that you are writing for your project. For inspiration you can
-//! see the http rejection macros we borrowed and modified from
-//! [Axum's extract logic](https://github.com/tokio-rs/axum/blob/5201798d4e4d4759c208ef83e30ce85820c07baa/axum-core/src/macros.rs):
+//! assert_eq!(format!("{err}"), "boom | path=\"/tmp/data\"");
+//! let pretty = format!("{err:#}");
+//! assert!(pretty.contains("Backtrace:"));
+//! ```
+//!
+//! # Error composition
+//!
+//! In some cases it is useful to model failures using explicit, domain specific
+//! error types. Rama does not impose a specific strategy here.
+//!
+//! If you need custom error types, define them as regular Rust types and implement
+//! [`std::error::Error`] for them. The article <https://sabrinajewson.org/blog/errors>
+//! provides an excellent overview of modern error design in Rust.
+//!
+//! For repeated patterns, `macro_rules` macros can be a good fit. As inspiration,
+//! you can look at the HTTP rejection macros used in Rama, which are derived from
+//! Axum's extract logic:
+//!
 //! <https://github.com/plabayo/rama/blob/main/rama-http/src/utils/macros/http_error.rs>
 //!
-//! And of course... if you really want, against our advice in,
-//! you can use [the `thiserror` crate](https://docs.rs/thiserror),
-//! or even [the `anyhow` crate](https://docs.rs/anyhow). All is possible.
+//! You can also use crates like [`thiserror`](https://docs.rs/thiserror) or
+//! [`anyhow`](https://docs.rs/anyhow) if they fit your project.
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
@@ -191,46 +177,8 @@ use std::error::Error as StdError;
 
 /// Alias for a type-erased error type.
 ///
-/// See the [module level documentation](crate::error) for more information.
+/// See the [module level documentation](crate) for more information.
 pub type BoxError = Box<dyn StdError + Send + Sync>;
 
 mod ext;
-pub use ext::{ErrorContext, ErrorExt, OpaqueError};
-
-mod macros;
-#[doc(inline)]
-pub use macros::error;
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_macro_error_string() {
-        let error = error!("error").context("foo");
-        assert_eq!(error.to_string(), "foo\r\n ↪ error");
-    }
-
-    #[test]
-    fn test_macro_error_format_string() {
-        let error = error!("error {}", 404).context("foo");
-        assert_eq!(error.to_string(), "foo\r\n ↪ error 404");
-    }
-
-    #[derive(Debug)]
-    struct CustomError;
-
-    impl std::fmt::Display for CustomError {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "entity not found")
-        }
-    }
-
-    impl std::error::Error for CustomError {}
-
-    #[test]
-    fn test_macro_error_from_error() {
-        let error = error!(CustomError).context("foo");
-        assert_eq!(error.to_string(), "foo\r\n ↪ entity not found");
-    }
-}
+pub use ext::{ErrorContext, ErrorExt};

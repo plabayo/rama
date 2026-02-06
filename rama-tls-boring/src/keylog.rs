@@ -6,7 +6,7 @@
 
 use ahash::HashMap;
 use parking_lot::RwLock;
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use std::{
     collections::hash_map::Entry,
@@ -23,14 +23,16 @@ use std::{
 ///
 /// Paths are case-sensitive by default for rama, as utf-8 compatible.
 /// Normalize yourself prior to passing a path to this function if you're concerned.
-pub fn try_new_key_log_file_handle(path: &str) -> Result<KeyLogFileHandle, OpaqueError> {
+pub fn try_new_key_log_file_handle(path: &str) -> Result<KeyLogFileHandle, BoxError> {
     let path: PathBuf = path
         .parse()
-        .with_context(|| format!("parse path str as Path: {path}"))?;
+        .context("parse path str as Path")
+        .context_str_field("path", path)?;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("create parent dir(s) at {parent:?} for key log file"))?;
+            .context("create parent dir(s) for key log file")
+            .with_context_debug_field("parent", || parent.to_owned())?;
     }
 
     let path = normalize_path(&path);
@@ -80,7 +82,7 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     ret
 }
 
-fn try_init_key_log_file_handle(path: PathBuf) -> Result<KeyLogFileHandle, OpaqueError> {
+fn try_init_key_log_file_handle(path: PathBuf) -> Result<KeyLogFileHandle, BoxError> {
     tracing::trace!(
         file.path = ?path,
         "KeyLogFileHandle: try to create a new handle",
@@ -94,7 +96,8 @@ fn try_init_key_log_file_handle(path: PathBuf) -> Result<KeyLogFileHandle, Opaqu
         .append(true)
         .create(true)
         .open(&path)
-        .with_context(|| format!("create key log file {path:?}"))?;
+        .context("create key log file")
+        .with_context_debug_field("path", || path.clone())?;
 
     let (tx, rx) = flume::unbounded::<String>();
 

@@ -7,7 +7,7 @@ use rama_utils::str::utf8;
 use std::{fmt, result::Result as StdResult, str};
 
 mod string_collect {
-    use rama_core::error::OpaqueError;
+    use rama_core::error::BoxError;
 
     use super::*;
 
@@ -40,7 +40,7 @@ mod string_collect {
                     match result {
                         Ok(text) => self.data.push_str(text),
                         Err(result_bytes) => {
-                            return Err(ProtocolError::Utf8(OpaqueError::from_display(
+                            return Err(ProtocolError::Utf8(BoxError::from(
                                 String::from_utf8_lossy(result_bytes).to_string(),
                             )));
                         }
@@ -71,7 +71,7 @@ mod string_collect {
                         ..
                     }) => {
                         self.data.push_str(valid_prefix);
-                        Err(ProtocolError::Utf8(OpaqueError::from_display(
+                        Err(ProtocolError::Utf8(BoxError::from(
                             String::from_utf8_lossy(invalid_sequence).to_string(),
                         )))
                     }
@@ -83,7 +83,7 @@ mod string_collect {
 
         pub(super) fn into_string(self) -> Result<String, ProtocolError> {
             if let Some(incomplete) = self.incomplete {
-                Err(ProtocolError::Utf8(OpaqueError::from_display(format!(
+                Err(ProtocolError::Utf8(BoxError::from(format!(
                     "incomplete string: {incomplete:?}",
                 ))))
             } else {

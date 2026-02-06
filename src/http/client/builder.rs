@@ -4,7 +4,7 @@ use super::HttpConnector;
 use crate::{
     Layer, Service,
     dns::DnsResolver,
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     extensions::ExtensionsMut,
     http::{
         Request, StreamingBody, client::proxy::layer::HttpProxyConnector,
@@ -533,7 +533,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     pub fn try_with_connection_pool<C: ExtensionsMut>(
         self,
         config: HttpPooledConnectorConfig,
-    ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
+    ) -> Result<DefaultConnectionPoolBuilder<T, C>, BoxError> {
         let connector = config.build_connector(self.connector)?;
         let connector = RequestVersionAdapter::new(connector);
 
@@ -547,7 +547,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage> {
     /// Same as [`Self::try_with_connection_pool`] but using the default [`HttpPooledConnectorConfig`].
     pub fn try_with_default_connection_pool<C: ExtensionsMut>(
         self,
-    ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
+    ) -> Result<DefaultConnectionPoolBuilder<T, C>, BoxError> {
         self.try_with_connection_pool(Default::default())
     }
 

@@ -6,7 +6,7 @@ use rama::{
     Layer as _,
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
     combinators::Either,
-    error::{BoxError, ErrorContext, ErrorExt as _, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt as _},
     graceful::ShutdownGuard,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
@@ -119,7 +119,7 @@ impl fmt::Display for Mode {
 /// run the rama echo service
 pub async fn run(
     graceful: ShutdownGuard,
-    etx: Sender<OpaqueError>,
+    etx: Sender<BoxError>,
     cfg: CliCommandEcho,
 ) -> Result<(), BoxError> {
     let maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https)
@@ -158,7 +158,7 @@ async fn bind_echo_http_service(
     graceful: ShutdownGuard,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
     let tcp_service = EchoServiceBuilder::new()
         .with_concurrent(cfg.concurrent.unwrap_or_default())
@@ -169,7 +169,6 @@ async fn bind_echo_http_service(
         .maybe_with_tls_server_config(maybe_tls_config)
         .with_user_agent_database(Arc::new(UserAgentDatabase::try_embedded()?))
         .build(exec.clone())
-        .map_err(OpaqueError::from_boxed)
         .context("build http(s) echo service")?;
 
     tracing::info!(
@@ -179,7 +178,6 @@ async fn bind_echo_http_service(
     let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind tcp socker for http(s) echo service")?;
 
     let bind_address = tcp_listener
@@ -209,15 +207,15 @@ async fn bind_echo_tcp_service(
     graceful: ShutdownGuard,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
     if cfg.ws {
-        return Err(OpaqueError::from_display(
+        return Err(BoxError::from(
             "websocket support is only possible in http(s) mode",
         ));
     }
     if cfg.http_version != HttpVersion::Auto {
-        return Err(OpaqueError::from_display(
+        return Err(BoxError::from(
             "http version selection is only possible in http(s) mode",
         ));
     }
@@ -232,7 +230,7 @@ async fn bind_echo_tcp_service(
             | ForwardKind::CFConnectingIp
             | ForwardKind::TrueClientIp,
         ) => {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "forward http headers are only possible in http(s) mode",
             ));
         }
@@ -270,7 +268,6 @@ async fn bind_echo_tcp_service(
     let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind TCP echo service socket")?;
 
     let bind_address = tcp_listener
@@ -297,30 +294,28 @@ async fn bind_echo_udp_service(
     graceful: ShutdownGuard,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
-    etx: tokio::sync::mpsc::Sender<OpaqueError>,
-) -> Result<(), OpaqueError> {
+    etx: tokio::sync::mpsc::Sender<BoxError>,
+) -> Result<(), BoxError> {
     if cfg.ws {
-        return Err(OpaqueError::from_display(
+        return Err(BoxError::from(
             "websocket support is only possible in http(s) mode",
         ));
     }
     if cfg.http_version != HttpVersion::Auto {
-        return Err(OpaqueError::from_display(
+        return Err(BoxError::from(
             "http version selection is only possible in http(s) mode",
         ));
     }
     if maybe_tls_config.is_some() {
-        return Err(OpaqueError::from_display(
-            "TLS is not supported for UDP mode",
-        ));
+        return Err(BoxError::from("TLS is not supported for UDP mode"));
     }
     if cfg.forward.is_some() {
-        return Err(OpaqueError::from_display(
+        return Err(BoxError::from(
             "Forward info capabilities is not supported for UDP mode",
         ));
     }
     if cfg.timeout.is_some() {
-        return Err(OpaqueError::from_display(
+        return Err(BoxError::from(
             "connection timeout is not supported for UDP mode",
         ));
     }
@@ -328,7 +323,6 @@ async fn bind_echo_udp_service(
     tracing::info!("starting UDP echo service: bind interface = {:?}", cfg.bind);
     let udp_socket = bind_udp(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind UDP echo service socket")?;
 
     let bind_address = udp_socket
