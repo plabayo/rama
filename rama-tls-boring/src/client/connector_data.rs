@@ -598,7 +598,9 @@ impl TlsConnectorDataBuilder {
                         Ok(builder.build())
                     });
 
-                let store_ref = WINDOWS_ROOT_CA.as_ref().context("create windows root CA")?;
+                let store_ref = WINDOWS_ROOT_CA
+                    .as_ref()
+                    .map_err(|err| err.to_string().context("create windows root CA"))?;
                 cfg_builder.set_cert_store_ref(store_ref);
             }
             #[cfg(not(target_os = "windows"))]

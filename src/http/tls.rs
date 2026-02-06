@@ -1,9 +1,10 @@
 //! tls features provided from the http layer.
 
-use crate::error::{BoxError, ErrorContext as _};
+use crate::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use crate::http::{
-    BodyExtractExt as _, Request, Response, StatusCode, Uri, client::EasyHttpWebClient,
-    service::client::HttpClientExt as _,
+    Body, BodyExtractExt as _, Method, Request, Response, StatusCode, Uri,
+    client::EasyHttpWebClient,
+    headers::{ContentType, HeaderMapExt},
 };
 use crate::net::address::{AsDomainRef, Domain, DomainParentMatch, DomainTrie};
 use crate::net::tls::{
@@ -14,11 +15,10 @@ use crate::net::tls::{
 use crate::rt::Executor;
 use crate::telemetry::tracing;
 use crate::utils::str::NonEmptyStr;
-use crate::{Service, combinators::Either, service::BoxService};
+use crate::{Service, service::BoxService};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
-use rama_core::error::ErrorExt;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,7 +170,7 @@ impl CertIssuerHttpClient {
     }
 
     /// Prefetch all certificates, useful to warm them up at startup time.
-    pub fn prefetch_certs_in_background(&self) {
+    pub async fn prefetch_certs(&self) {
         if let Some(allow_list) = &self.allow_list {
             for (domain_key, mode) in allow_list.iter() {
                 let domain = match mode {
@@ -178,36 +178,82 @@ impl CertIssuerHttpClient {
                     DomainAllowMode::Exact => domain_key,
                     DomainAllowMode::Parent(domain) => domain.clone(),
                 };
-                let http_client = self.http_client.clone();
-                let uri = self.endpoint.clone();
-                tokio::task::spawn_local(async move {
-                    match fetch_certs(http_client, domain.clone(), uri).await {
-                        Ok(_) => tracing::debug!("prefetched certificates for domain: {domain}"),
-                        Err(err) => tracing::error!(
-                            "failed to prefetch certificates for domain '{domain}': {err}"
-                        ),
-                    }
-                });
+                match self.fetch_certs(domain.clone()).await {
+                    Ok(_) => tracing::debug!("prefetched certificates for domain: {domain}"),
+                    Err(err) => tracing::error!(
+                        "failed to prefetch certificates for domain '{domain}': {err}"
+                    ),
+                }
             }
         }
+    }
+
+    async fn fetch_certs(&self, domain: Domain) -> Result<ServerAuthData, BoxError> {
+        let body = Body::from(
+            serde_json::to_vec(&CertOrderInput { domain })
+                .context("serialize CertOrderInput json")?,
+        );
+
+        let mut req = Request::new(body);
+        *req.method_mut() = Method::POST;
+        *req.uri_mut() = self.endpoint.clone();
+        req.headers_mut().typed_insert(ContentType::json());
+
+        let response = self
+            .http_client
+            .serve(req)
+            .await
+            .context("send order request")?;
+
+        let status = response.status();
+        if status != StatusCode::OK {
+            return Err(BoxError::from("unexpected dinocert order response")
+                .context_field("status", status));
+        }
+
+        let CertOrderOutput {
+            crt_pem_base64,
+            key_pem_base64,
+        } = response
+            .into_body()
+            .try_into_json()
+            .await
+            .context("fetch json crt order response")?;
+
+        let crt = ENGINE.decode(crt_pem_base64).context("base64 decode crt")?;
+        let key = ENGINE.decode(key_pem_base64).context("base64 decode crt")?;
+
+        Ok(ServerAuthData {
+            cert_chain: DataEncoding::Pem(
+                NonEmptyStr::try_from(
+                    String::from_utf8(crt).context("concert crt pem to utf8 string")?,
+                )
+                .context("convert crt utf8 string to non-empty")?,
+            ),
+            private_key: DataEncoding::Pem(
+                NonEmptyStr::try_from(
+                    String::from_utf8(key).context("concert private key pem to utf8 string")?,
+                )
+                .context("convert privatek key pem utf8 string to non-empty")?,
+            ),
+            ocsp: None,
+        })
     }
 }
 
 impl DynamicCertIssuer for CertIssuerHttpClient {
-    fn issue_cert(
+    async fn issue_cert(
         &self,
         client_hello: ClientHello,
         _server_name: Option<Domain>,
-    ) -> impl Future<Output = Result<ServerAuthData, BoxError>> + Send + '_ {
+    ) -> Result<ServerAuthData, BoxError> {
         let domain = match client_hello.ext_server_name() {
             Some(domain) => {
                 if let Some(ref allow_list) = self.allow_list {
                     match allow_list.match_parent(domain) {
                         None => {
-                            return Either::A(std::future::ready(Err(BoxError::from(
-                                "sni found: unexpected unknown domain",
-                            )
-                            .with_context_field("domain", || domain.clone()))));
+                            return Err(BoxError::from("sni found: unexpected unknown domain")
+                                .with_context_field("domain", || domain.clone()));
                         }
                         Some(DomainParentMatch {
                             value: &DomainAllowMode::Exact,
@@ -217,10 +263,8 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                             if is_exact {
                                 domain.clone()
                             } else {
-                                return Either::A(std::future::ready(Err(BoxError::from(
-                                    "sni found: unexpected child domain",
-                                )
-                                .with_context_field("domain", || domain.clone()))));
+                                return Err(BoxError::from("sni found: unexpected child domain")
+                                    .with_context_field("domain", || domain.clone()));
                             }
                         }
                         Some(DomainParentMatch {
@@ -233,21 +277,11 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                 }
             }
             None => {
-                return Either::A(std::future::ready(Err(BoxError::from("no SNI found"))));
+                return Err(BoxError::from("no SNI found"));
             }
         };
 
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let http_client = self.http_client.clone();
-        let uri = self.endpoint.clone();
-
-        tokio::task::spawn_local(async move {
-            if let Err(err) = tx.send(fetch_certs(http_client, domain, uri).await) {
-                tracing::debug!("failed to send result back to callee: {err:?}");
-            }
-        });
-
-        Either::B(async move { rx.await.context("await crt order result")? })
+        self.fetch_certs(domain).await
     }
 
     fn norm_cn(&self, domain: &Domain) -> Option<&Domain> {
@@ -267,54 +301,6 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
             None
         }
     }
-}
-
-async fn fetch_certs(
-    client: BoxService<Request, Response, BoxError>,
-    domain: Domain,
-    uri: Uri,
-) -> Result<ServerAuthData, BoxError> {
-    let response = client
-        .post(uri)
-        .json(&CertOrderInput { domain })
-        .send()
-        .await
-        .context("send order request")?;
-
-    let status = response.status();
-    if status != StatusCode::OK {
-        return Err(
-            BoxError::from("unexpected dinocert order response").context_field("status", status)
-        );
-    }
-
-    let CertOrderOutput {
-        crt_pem_base64,
-        key_pem_base64,
-    } = response
-        .into_body()
-        .try_into_json()
-        .await
-        .context("fetch json crt order response")?;
-
-    let crt = ENGINE.decode(crt_pem_base64).context("base64 decode crt")?;
-    let key = ENGINE.decode(key_pem_base64).context("base64 decode crt")?;
-
-    Ok(ServerAuthData {
-        cert_chain: DataEncoding::Pem(
-            NonEmptyStr::try_from(
-                String::from_utf8(crt).context("concert crt pem to utf8 string")?,
-            )
-            .context("convert crt utf8 string to non-empty")?,
-        ),
-        private_key: DataEncoding::Pem(
-            NonEmptyStr::try_from(
-                String::from_utf8(key).context("concert private key pem to utf8 string")?,
-            )
-            .context("convert privatek key pem utf8 string to non-empty")?,
-        ),
-        ocsp: None,
-    })
 }
 
 #[cfg(test)]
