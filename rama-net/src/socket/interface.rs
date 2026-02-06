@@ -117,6 +117,8 @@ mod device {
         type Error = BoxError;
 
         fn try_from(s: &str) -> Result<Self, Self::Error> {
+            use rama_core::error::ErrorExt as _;
+
             if is_valid(s.as_bytes()) {
                 return Ok(Self(SmolStr::from(s)));
             }
