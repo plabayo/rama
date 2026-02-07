@@ -15,6 +15,10 @@ sort:
 
 lint: fmt sort
 
+deny:
+    @cargo install cargo-deny
+    cargo deny --workspace --all-features check
+
 check:
     cargo check --workspace --all-targets --all-features
 
@@ -87,7 +91,7 @@ test-loom:
 
 qq: lint check clippy doc extra-checks
 
-qa: qq test test-doc
+qa: qq test test-doc deny
 
 qa-crate CRATE:
     just check-crate {{CRATE}}
