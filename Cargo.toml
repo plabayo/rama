@@ -260,7 +260,7 @@ walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
 wildcard = "0.3"
-x509-parser = { version = "0.18", default-features = false  }
+x509-parser = { version = "0.18", default-features = false }
 zstd = "0.13"
 
 [workspace.lints.rust]
