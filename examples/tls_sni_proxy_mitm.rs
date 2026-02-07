@@ -91,7 +91,7 @@ use rama::{
     extensions::{ExtensionsMut, ExtensionsRef},
     graceful::Shutdown,
     http::{
-        Body, HeaderValue, Request, Response,
+        HeaderValue, Request, Response,
         client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
@@ -119,7 +119,7 @@ use rama::{
     stream::Stream,
     tcp::{client::service::Forwarder, server::TcpListener},
     telemetry::tracing::{
-        self, Level,
+        self,
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
@@ -210,8 +210,8 @@ async fn main() -> Result<(), BoxError> {
     // in terms of security, error scenario handling, protocol support, etc...
     let http_svc = Arc::new(
         (
-            ConsumeErrLayer::trace(Level::DEBUG),
-            MapResponseBodyLayer::new(Body::new),
+            ConsumeErrLayer::trace_as_debug(),
+            MapResponseBodyLayer::new_boxed_streaming_body(),
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::new(),
         )

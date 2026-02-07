@@ -46,7 +46,7 @@ impl<F, R: fmt::Debug> fmt::Debug for ConsumeErrLayer<F, R> {
 
 impl Default for ConsumeErrLayer<Trace> {
     fn default() -> Self {
-        Self::trace(tracing::Level::ERROR)
+        Self::trace_as(tracing::Level::ERROR)
     }
 }
 
@@ -77,9 +77,42 @@ impl<S, F> ConsumeErr<S, F, DefaultOutput> {
 }
 
 impl<S> ConsumeErr<S, Trace, DefaultOutput> {
-    /// Trace the error passed to this [`ConsumeErr`] service for the provided trace level.
-    pub const fn trace(inner: S, level: tracing::Level) -> Self {
+    /// Trace the error passed to this [`ConsumeErr`] service
+    /// for the provided [`tracing::Level`].
+    pub const fn trace_as(inner: S, level: tracing::Level) -> Self {
         Self::new(inner, Trace(level))
+    }
+
+    /// Creates a new [`ConsumeErr`] to trace the consumed error.
+    /// at level [`tracing::Level::DEBUG`].
+    #[must_use]
+    #[inline]
+    pub const fn trace_as_debug(inner: S) -> Self {
+        Self::new(inner, Trace(tracing::Level::DEBUG))
+    }
+
+    /// Creates a new [`ConsumeErr`] to trace the consumed error.
+    /// at level [`tracing::Level::INFO`].
+    #[must_use]
+    #[inline]
+    pub const fn trace_as_info(inner: S) -> Self {
+        Self::new(inner, Trace(tracing::Level::INFO))
+    }
+
+    /// Creates a new [`ConsumeErr`] to trace the consumed error.
+    /// at level [`tracing::Level::WARN`].
+    #[must_use]
+    #[inline]
+    pub const fn trace_as_warning(inner: S) -> Self {
+        Self::new(inner, Trace(tracing::Level::WARN))
+    }
+
+    /// Creates a new [`ConsumeErr`] to trace the consumed error.
+    /// at level [`tracing::Level::ERROR`].
+    #[must_use]
+    #[inline]
+    pub const fn trace_as_err(inner: S) -> Self {
+        Self::new(inner, Trace(tracing::Level::ERROR))
     }
 }
 
@@ -208,10 +241,44 @@ impl<F> ConsumeErrLayer<F> {
 }
 
 impl ConsumeErrLayer<Trace> {
-    /// Creates a new [`ConsumeErrLayer`] to trace the consumed error.
+    /// Creates a new [`ConsumeErrLayer`] to trace the consumed error
+    /// using the specified [`tracing::Level`].
     #[must_use]
-    pub const fn trace(level: tracing::Level) -> Self {
+    #[inline]
+    pub const fn trace_as(level: tracing::Level) -> Self {
         Self::new(Trace(level))
+    }
+
+    /// Creates a new [`ConsumeErrLayer`] to trace the consumed error.
+    /// at level [`tracing::Level::DEBUG`].
+    #[must_use]
+    #[inline]
+    pub const fn trace_as_debug() -> Self {
+        Self::new(Trace(tracing::Level::DEBUG))
+    }
+
+    /// Creates a new [`ConsumeErrLayer`] to trace the consumed error.
+    /// at level [`tracing::Level::INFO`].
+    #[must_use]
+    #[inline]
+    pub const fn trace_as_info() -> Self {
+        Self::new(Trace(tracing::Level::INFO))
+    }
+
+    /// Creates a new [`ConsumeErrLayer`] to trace the consumed error.
+    /// at level [`tracing::Level::WARN`].
+    #[must_use]
+    #[inline]
+    pub const fn trace_as_warning() -> Self {
+        Self::new(Trace(tracing::Level::WARN))
+    }
+
+    /// Creates a new [`ConsumeErrLayer`] to trace the consumed error.
+    /// at level [`tracing::Level::ERROR`].
+    #[must_use]
+    #[inline]
+    pub const fn trace_as_error() -> Self {
+        Self::new(Trace(tracing::Level::ERROR))
     }
 }
 

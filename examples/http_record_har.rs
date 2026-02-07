@@ -38,7 +38,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{
-        Body, HeaderValue, Request, Response, StatusCode,
+        HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             compression::CompressionLayer,
@@ -260,7 +260,7 @@ fn new_http_mitm_proxy(
     state: &State,
 ) -> impl Service<Request, Output = Response, Error = Infallible> {
     (
-        MapResponseBodyLayer::new(Body::new),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
         TraceLayer::new_for_http(),
         ConsumeErrLayer::default(),
         UserAgentEmulateLayer::new(state.ua_db.clone())
@@ -312,7 +312,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     let client = (
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
-        MapResponseBodyLayer::new(Body::new),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
         DecompressionLayer::new(),
         state.har_layer.clone(),
     )

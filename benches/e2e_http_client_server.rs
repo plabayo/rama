@@ -10,7 +10,7 @@ use rama::{
     Layer, Service,
     error::BoxError,
     http::{
-        Body, HeaderName, HeaderValue, Request, Response, Version,
+        HeaderName, HeaderValue, Request, Response, Version,
         body::util::BodyExt,
         client::EasyHttpWebClient,
         layer::{
@@ -207,7 +207,7 @@ fn h1_client_server(bencher: divan::Bencher, params: TestParameters) {
             let client_random_bytes = random_bytes_by_size(&mut rng, params.client);
 
             let client = (
-                MapResponseBodyLayer::new(Body::new),
+                MapResponseBodyLayer::new_boxed_streaming_body(),
                 TraceLayer::new_for_http(),
                 DecompressionLayer::new(),
                 AddRequiredRequestHeadersLayer::default(),

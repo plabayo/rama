@@ -338,7 +338,7 @@ impl<M> IpServiceBuilder<M> {
         };
 
         let tcp_service_builder = (
-            ConsumeErrLayer::trace(tracing::Level::DEBUG),
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             LimitLayer::new(if self.concurrent_limit > 0 {
                 Either::A(ConcurrentPolicy::max(self.concurrent_limit))
             } else {
@@ -404,7 +404,7 @@ impl<M> IpServiceBuilder<M> {
         });
 
         let tcp_service_builder = (
-            ConsumeErrLayer::trace(tracing::Level::DEBUG),
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             (self.concurrent_limit > 0)
                 .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
             (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),

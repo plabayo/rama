@@ -91,7 +91,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
     };
 
     let middleware = (
-        ConsumeErrLayer::trace(tracing::Level::DEBUG),
+        ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
         LimitLayer::new(if cfg.concurrent > 0 {
             Either::A(ConcurrentPolicy::max(cfg.concurrent))
         } else {

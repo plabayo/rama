@@ -12,15 +12,14 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     service::service_fn,
-    telemetry::tracing::Level,
 };
 use std::{convert::Infallible, time::Duration};
 
 pub(in crate::cmd::serve::httptest) fn service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
     (
-        ConsumeErrLayer::trace(Level::DEBUG),
-        MapResponseBodyLayer::new(Body::new),
+        ConsumeErrLayer::trace_as_debug(),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
         StreamCompressionLayer::new(),
     )
         .into_layer(service_fn(async || {

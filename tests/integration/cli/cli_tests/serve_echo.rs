@@ -370,7 +370,6 @@ async fn test_https_with_remote_tls_cert_issuer() {
         Layer as _,
         error::BoxError,
         http::{
-            Body,
             headers::StrictTransportSecurity,
             layer::{
                 compression::CompressionLayer, cors, map_response_body::MapResponseBodyLayer,
@@ -448,7 +447,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
     }
 
     let http_svc = (
-        MapResponseBodyLayer::new(Body::new),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
         cors::CorsLayer::permissive(),

@@ -108,7 +108,7 @@ fn new_http_mitm_proxy(
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
     Arc::new(
         (
-            MapResponseBodyLayer::new(Body::new),
+            MapResponseBodyLayer::new_boxed_streaming_body(),
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
             RemoveResponseHeaderLayer::hop_by_hop(),
@@ -172,7 +172,7 @@ impl Service<Request> for HttpMitmProxy {
             );
 
         let client = (
-            MapResponseBodyLayer::new(Body::new),
+            MapResponseBodyLayer::new_boxed_streaming_body(),
             DecompressionLayer::new(),
         )
             .into_layer(client);

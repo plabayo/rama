@@ -13,13 +13,12 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     service::service_fn,
-    telemetry::tracing::Level,
 };
 use std::{convert::Infallible, time::Duration};
 
 pub(in crate::cmd::serve::httptest) fn service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
-    ConsumeErrLayer::trace(Level::DEBUG).into_layer(service_fn(async |req: Request| {
+    ConsumeErrLayer::trace_as_debug().into_layer(service_fn(async |req: Request| {
         Ok::<_, Infallible>(
             if req
                 .headers()

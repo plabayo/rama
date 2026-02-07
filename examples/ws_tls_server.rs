@@ -28,7 +28,7 @@ use rama::{
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
-        self, Level, info,
+        self, info,
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
@@ -60,7 +60,7 @@ async fn main() {
         let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Arc::new(
             Router::new().with_get("/", Html(INDEX)).with_get(
                 "/echo",
-                ConsumeErrLayer::trace(Level::DEBUG)
+                ConsumeErrLayer::trace_as_debug()
                     .into_layer(WebSocketAcceptor::new().into_echo_service()),
             ),
         ));

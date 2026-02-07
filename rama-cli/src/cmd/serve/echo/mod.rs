@@ -248,7 +248,7 @@ async fn bind_echo_tcp_service(
     let timeout = cfg.timeout.unwrap_or(300);
 
     let middleware = (
-        ConsumeErrLayer::trace(tracing::Level::DEBUG),
+        ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
         LimitLayer::new(if concurrent > 0 {
             Either::A(ConcurrentPolicy::max(concurrent))
         } else {

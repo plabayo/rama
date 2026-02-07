@@ -255,7 +255,7 @@ fn new_http_mitm_proxy(
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
     Arc::new(
         (
-            MapResponseBodyLayer::new(Body::new),
+            MapResponseBodyLayer::new_boxed_streaming_body(),
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
             UserAgentEmulateLayer::new(state.ua_db.clone())
@@ -328,7 +328,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     let client = (
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
-        MapResponseBodyLayer::new(Body::new),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
         DecompressionLayer::new(),
     )
         .into_layer(client);

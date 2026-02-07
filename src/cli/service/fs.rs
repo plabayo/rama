@@ -248,7 +248,7 @@ where
         };
 
         let tcp_service_builder = (
-            ConsumeErrLayer::trace(tracing::Level::DEBUG),
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             LimitLayer::new(if self.concurrent_limit > 0 {
                 Either::A(ConcurrentPolicy::max(self.concurrent_limit))
             } else {

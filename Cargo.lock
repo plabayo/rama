@@ -2892,7 +2892,7 @@ version = "0.3.0-rc1"
 
 [[package]]
 name = "rama-fuzz"
-version = "0.0.0"
+version = "0.3.0-rc1"
 dependencies = [
  "h2-support",
  "libfuzzer-sys",
