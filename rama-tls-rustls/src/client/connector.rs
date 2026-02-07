@@ -2,8 +2,7 @@ use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
-use rama_core::error::ErrorContext;
-use rama_core::error::{BoxError, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
@@ -16,7 +15,7 @@ use rama_net::transport::TryRefIntoTransportContext;
 
 #[cfg(feature = "http")]
 use ::{
-    rama_core::extensions::Extensions,
+    rama_core::{error::ErrorExt, extensions::Extensions},
     rama_http_types::{Version, conn::TargetHttpVersion},
 };
 
