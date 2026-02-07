@@ -1,7 +1,7 @@
 use std::cmp::min;
 use std::str::FromStr;
 
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::str::eq_ignore_ascii_case;
 use rama_utils::str::smol_str::SmolStr;
 
@@ -352,9 +352,9 @@ impl std::fmt::Display for Protocol {
 
 pub(crate) fn try_to_extract_protocol_from_uri_scheme(
     s: &[u8],
-) -> Result<(Option<Protocol>, usize), OpaqueError> {
+) -> Result<(Option<Protocol>, usize), BoxError> {
     if s.is_empty() {
-        return Err(OpaqueError::from_display("empty uri contains no scheme"));
+        return Err(BoxError::from("empty uri contains no scheme"));
     }
 
     for i in 0..min(s.len(), 512) {

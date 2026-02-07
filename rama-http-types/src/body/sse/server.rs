@@ -3,8 +3,8 @@
 use crate::body::{Frame, StreamingBody};
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::futures::Stream;
-use rama_error::{BoxError, ErrorContext, OpaqueError};
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::smol_str::SmolStr;
 use std::{
@@ -97,7 +97,7 @@ impl<T: EventDataWrite> KeepAlive<T> {
         /// Customize the text of the keep-alive message.
         ///
         /// Default is an empty comment.
-        pub fn text(mut self, text: impl Into<SmolStr>) -> Result<Self, OpaqueError>
+        pub fn text(mut self, text: impl Into<SmolStr>) -> Result<Self, BoxError>
         {
             self.event = Event::default().try_with_comment(text).context("build default event with comment")?;
             Ok(self)

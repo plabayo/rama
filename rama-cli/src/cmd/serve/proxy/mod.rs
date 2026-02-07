@@ -4,7 +4,7 @@ use clap::Args;
 use rama::{
     Layer, Service,
     combinators::Either,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     graceful::ShutdownGuard,
     http::{
@@ -58,7 +58,6 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
     let tcp_service = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind proxy service")?;
 
     let bind_address = tcp_service

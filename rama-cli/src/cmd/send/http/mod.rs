@@ -1,6 +1,6 @@
 use rama::{
     Service,
-    error::{BoxError, ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _, ErrorExt},
     utils::collections::NonEmptySmallVec,
 };
 
@@ -29,7 +29,6 @@ pub async fn run(cfg: SendCommand, is_ws: bool) -> Result<(), BoxError> {
     } else {
         run_inner(&cfg, is_ws).await
     }
-    .map_err(OpaqueError::from_boxed)
     .context("send command")?;
 
     Ok(())
@@ -60,8 +59,7 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
             let code = resp.status();
             if code.is_client_error() || code.is_server_error() {
                 return Err(Box::new(ErrorWithExitCode {
-                    error: OpaqueError::from_display("http failure status code: {code:?}")
-                        .into_boxed(),
+                    error: BoxError::from("http failure status code").context_field("code", code),
                     code: 22,
                 }));
             }

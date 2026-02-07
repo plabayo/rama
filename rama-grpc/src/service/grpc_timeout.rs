@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use rama_core::{Layer, Service, error::BoxError, telemetry::tracing};
+use rama_core::{
+    Layer, Service,
+    error::{BoxError, ErrorContext as _},
+    telemetry::tracing,
+};
 use rama_http::{HeaderMap, HeaderValue, Request};
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -81,7 +85,7 @@ where
         } else {
             self.inner.serve(req).await
         }
-        .map_err(Into::into)
+        .into_box_error()
     }
 }
 

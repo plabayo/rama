@@ -2,7 +2,7 @@ use crate::address::{HostWithOptPort, HostWithPort};
 use crate::user::Basic;
 
 use super::{Domain, DomainAddress, Host, SocketAddress};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -440,7 +440,7 @@ impl fmt::Display for Authority {
 }
 
 impl std::str::FromStr for Authority {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
@@ -448,7 +448,7 @@ impl std::str::FromStr for Authority {
 }
 
 impl TryFrom<String> for Authority {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline(always)]
     fn try_from(s: String) -> Result<Self, Self::Error> {
@@ -457,7 +457,7 @@ impl TryFrom<String> for Authority {
 }
 
 impl TryFrom<&str> for Authority {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline(always)]
     fn try_from(s: &str) -> Result<Self, Self::Error> {
@@ -465,13 +465,11 @@ impl TryFrom<&str> for Authority {
     }
 }
 
-fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority, OpaqueError> {
+fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority, BoxError> {
     let mut s = maybe_borrowed.as_ref();
 
     if s.is_empty() {
-        return Err(OpaqueError::from_display(
-            "empty string is invalid authority",
-        ));
+        return Err(BoxError::from("empty string is invalid authority"));
     }
 
     let mut user_info = None;
@@ -558,7 +556,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
 }
 
 impl TryFrom<Vec<u8>> for Authority {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         let s = String::from_utf8(bytes).context("parse authority from bytes")?;
@@ -567,7 +565,7 @@ impl TryFrom<Vec<u8>> for Authority {
 }
 
 impl TryFrom<&[u8]> for Authority {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(bytes).context("parse authority from bytes")?;

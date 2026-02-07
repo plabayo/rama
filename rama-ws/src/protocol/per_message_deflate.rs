@@ -10,7 +10,7 @@ use flate2::{
     Compress, CompressError, Compression, Decompress, DecompressError, FlushCompress,
     FlushDecompress, Status,
 };
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use std::slice;
 
 #[derive(Debug)]
@@ -128,7 +128,7 @@ impl DeflateEncoder {
         }
     }
 
-    pub(super) fn encode(&mut self, input_data: &[u8]) -> Result<Vec<u8>, OpaqueError> {
+    pub(super) fn encode(&mut self, input_data: &[u8]) -> Result<Vec<u8>, BoxError> {
         if input_data.is_empty() {
             return Ok(vec![0x00]);
         }
@@ -192,7 +192,7 @@ impl DeflateDecoder {
         }
     }
 
-    pub(super) fn decode(&mut self, compressed_data: &[u8]) -> Result<Vec<u8>, OpaqueError> {
+    pub(super) fn decode(&mut self, compressed_data: &[u8]) -> Result<Vec<u8>, BoxError> {
         let mut buf = Vec::with_capacity((compressed_data.len() + DEFLATE_TRAILER.len()) * 2);
 
         for payload in [compressed_data, &DEFLATE_TRAILER] {

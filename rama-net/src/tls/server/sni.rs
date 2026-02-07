@@ -8,7 +8,7 @@ use std::{
 use pin_project_lite::pin_project;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     service::RejectService,
     stream::{HeapReader, PeekStream, StackReader},
@@ -93,7 +93,7 @@ where
             let stream = PeekStream::new(peek, stream);
 
             tracing::trace!("fallback to non-tls service");
-            return self.fallback.serve(stream).await.map_err(Into::into);
+            return self.fallback.serve(stream).await.into_box_error();
         }
 
         let n = ((peek_buf[3] as usize) << 8) | (peek_buf[4] as usize);
@@ -111,9 +111,7 @@ where
                 read_size,
                 "unexpected read size for client hello handshake data"
             );
-            return Err(
-                OpaqueError::from_display("missing client hello tls handshake data").into_boxed(),
-            );
+            return Err(BoxError::from("missing client hello tls handshake data"));
         }
         let sni = extract_sni_from_client_hello_handshake(&v)
             .context("parse client hello handshake bytes and extract SNI")?;
@@ -127,7 +125,7 @@ where
                 sni,
             })
             .await
-            .map_err(Into::into)
+            .into_box_error()
     }
 }
 

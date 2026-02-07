@@ -1,6 +1,6 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use rama_core::error::{BoxError, OpaqueError};
+use rama_core::error::BoxError;
 use rama_net::address::Domain;
 
 use crate::DnsResolver;
@@ -15,9 +15,7 @@ macro_rules! dns_resolver_chain_impl {
                     Err(err) => last_err = Some(err.into()),
                 }
             }
-            Err(last_err.unwrap_or_else(|| {
-                OpaqueError::from_display("unknown dns error (erorr missing)").into_boxed()
-            }))
+            Err(last_err.unwrap_or_else(|| BoxError::from("unknown dns error (erorr missing)")))
         }
 
         async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
@@ -28,9 +26,7 @@ macro_rules! dns_resolver_chain_impl {
                     Err(err) => last_err = Some(err.into()),
                 }
             }
-            Err(last_err.unwrap_or_else(|| {
-                OpaqueError::from_display("unknown dns error (erorr missing)").into_boxed()
-            }))
+            Err(last_err.unwrap_or_else(|| BoxError::from("unknown dns error (erorr missing)")))
         }
 
         async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
@@ -41,9 +37,7 @@ macro_rules! dns_resolver_chain_impl {
                     Err(err) => last_err = Some(err.into()),
                 }
             }
-            Err(last_err.unwrap_or_else(|| {
-                OpaqueError::from_display("unknown dns error (erorr missing)").into_boxed()
-            }))
+            Err(last_err.unwrap_or_else(|| BoxError::from("unknown dns error (erorr missing)")))
         }
     };
 }

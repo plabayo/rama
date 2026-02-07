@@ -1,6 +1,6 @@
 use super::{State, StorageAuthorized};
 use rama::{
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::Extensions,
     http::{
         self, HeaderMap, HeaderName, Request,
@@ -246,7 +246,7 @@ pub(super) async fn get_and_store_http_info(
     http_version: http::Version,
     ua: String,
     initiator: Initiator,
-) -> Result<HttpInfo, OpaqueError> {
+) -> Result<HttpInfo, BoxError> {
     let original_headers = Http1HeaderMap::new(headers, Some(ext));
 
     let h2_settings = match http_version {
@@ -428,7 +428,7 @@ pub(super) async fn get_tls_display_info_and_store(
     state: &State,
     extensions: &Extensions,
     ua: String,
-) -> Result<Option<TlsDisplayInfo>, OpaqueError> {
+) -> Result<Option<TlsDisplayInfo>, BoxError> {
     let hello: &ClientHello = match extensions
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())

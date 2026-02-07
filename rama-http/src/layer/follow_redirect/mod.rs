@@ -64,17 +64,17 @@
 //!     policy::{self, PolicyExt},
 //!     FollowRedirectLayer,
 //! };
-//! use rama_core::error::OpaqueError;
+//! use rama_core::error::BoxError;
 //!
 //! #[derive(Debug)]
 //! enum MyError {
 //!     TooManyRedirects,
-//!     Other(OpaqueError),
+//!     Other(BoxError),
 //! }
 //!
 //! impl MyError {
 //!     fn from_std(err: impl std::error::Error + Send + Sync + 'static) -> Self {
-//!         Self::Other(OpaqueError::from_std(err))
+//!         Self::Other(BoxError::from(err))
 //!     }
 //!
 //! }

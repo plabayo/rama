@@ -1,5 +1,5 @@
 use crate::address::{SocketAddress, parse_utils::try_to_parse_str_to_ip};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
@@ -87,7 +87,7 @@ mod device {
     }
 
     impl FromStr for DeviceName {
-        type Err = OpaqueError;
+        type Err = BoxError;
 
         #[inline]
         fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -96,7 +96,7 @@ mod device {
     }
 
     impl TryFrom<String> for DeviceName {
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         #[inline]
         fn try_from(s: String) -> Result<Self, Self::Error> {
@@ -105,7 +105,7 @@ mod device {
     }
 
     impl TryFrom<&String> for DeviceName {
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         #[inline]
         fn try_from(value: &String) -> Result<Self, Self::Error> {
@@ -114,19 +114,21 @@ mod device {
     }
 
     impl TryFrom<&str> for DeviceName {
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         fn try_from(s: &str) -> Result<Self, Self::Error> {
+            use rama_core::error::ErrorExt as _;
+
             if is_valid(s.as_bytes()) {
                 return Ok(Self(SmolStr::from(s)));
             }
 
-            Err(OpaqueError::from_display("invalid (interface) device name"))
+            Err(BoxError::from("invalid (interface) device name").context_str_field("str", s))
         }
     }
 
     impl TryFrom<Vec<u8>> for DeviceName {
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
             Self::try_from(bytes.as_slice())
@@ -134,7 +136,7 @@ mod device {
     }
 
     impl TryFrom<&[u8]> for DeviceName {
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
             let s =
@@ -439,7 +441,7 @@ impl fmt::Display for Interface {
 }
 
 impl FromStr for Interface {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -448,7 +450,7 @@ impl FromStr for Interface {
 }
 
 impl TryFrom<String> for Interface {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline]
     fn try_from(s: String) -> Result<Self, Self::Error> {
@@ -457,7 +459,7 @@ impl TryFrom<String> for Interface {
 }
 
 impl TryFrom<&String> for Interface {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline]
     fn try_from(value: &String) -> Result<Self, Self::Error> {
@@ -466,7 +468,7 @@ impl TryFrom<&String> for Interface {
 }
 
 impl TryFrom<&str> for Interface {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (ip_addr, port) = match crate::address::parse_utils::split_port_from_str(s) {
@@ -483,7 +485,7 @@ impl TryFrom<&str> for Interface {
 
         if let Some(ip_addr) = try_to_parse_str_to_ip(ip_addr) {
             match ip_addr {
-                IpAddr::V6(_) if !s.starts_with('[') => Err(OpaqueError::from_display(
+                IpAddr::V6(_) if !s.starts_with('[') => Err(BoxError::from(
                     "missing brackets for IPv6 address with port",
                 )),
                 _ => Ok(Self::new_address((ip_addr, port))),
@@ -494,13 +496,13 @@ impl TryFrom<&str> for Interface {
                 return Ok(Self::Device(name));
             }
 
-            Err(OpaqueError::from_display("invalid bind interface"))
+            Err(BoxError::from("invalid bind interface"))
         }
     }
 }
 
 impl TryFrom<Vec<u8>> for Interface {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         Self::try_from(bytes.as_slice())
@@ -508,7 +510,7 @@ impl TryFrom<Vec<u8>> for Interface {
 }
 
 impl TryFrom<&[u8]> for Interface {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(bytes).context("parse bind interface from bytes")?;

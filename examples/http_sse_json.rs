@@ -29,7 +29,7 @@
 
 use rama::{
     Layer,
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     futures::async_stream::stream_fn,
     http::{
         headers::LastEventId,
@@ -72,7 +72,7 @@ async fn api_events_endpoint(last_id: Option<TypedHeader<LastEventId>>) -> impl 
             .try_with_id(id_buffer.format(id))
             .context("set next event's id")?;
         id += 1;
-        Ok::<_, OpaqueError>(event)
+        Ok::<_, BoxError>(event)
     };
 
     Sse::new(KeepAliveStream::new(

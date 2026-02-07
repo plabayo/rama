@@ -2,7 +2,7 @@ use super::TcpConnector;
 use crate::client::Request as TcpRequest;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     extensions::ExtensionsMut,
     rt::Executor,
     stream::Stream,
@@ -80,26 +80,25 @@ where
                 .extensions()
                 .get::<ProxyTarget>()
                 .map(|f| f.0.clone())
-                .ok_or_else(|| {
-                    OpaqueError::from_display("missing forward authority").into_boxed()
-                })?,
+                .context("missing forward authority")?,
         };
 
         // Clone them here so we also have them on source still
         let extensions = source.extensions().clone();
         let req = TcpRequest::new_with_extensions(authority.clone(), extensions);
 
-        let EstablishedClientConnection { conn: target, .. } =
-            self.connector.connect(req).await.map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .with_context(|| format!("establish tcp connection to {authority}"))
-            })?;
+        let EstablishedClientConnection { conn: target, .. } = self
+            .connector
+            .connect(req)
+            .await
+            .context("establish tcp connection")
+            .context_field("authority", authority)?;
 
         let proxy_req = ProxyRequest { source, target };
 
         StreamForwardService::default()
             .serve(proxy_req)
             .await
-            .map_err(Into::into)
+            .into_box_error()
     }
 }

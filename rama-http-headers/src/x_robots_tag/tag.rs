@@ -1,7 +1,7 @@
 use crate::util::HeaderValueString;
 use crate::x_robots_tag::{CustomRule, DirectiveDateTime, MaxImagePreviewSetting};
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::telemetry::tracing;
-use rama_error::{ErrorContext as _, ErrorExt as _, OpaqueError};
 use rama_utils::macros::generate_set_and_with;
 use std::fmt::{self, Display, Formatter};
 
@@ -116,7 +116,7 @@ macro_rules! make_parse_value_fn {
             $property_name:ident
         )+
     ) => {
-        fn parse_value(value: &str, pair_key: &str, tag: &mut RobotsTag) -> Result<(), OpaqueError> {
+        fn parse_value(value: &str, pair_key: &str, tag: &mut RobotsTag) -> Result<(), BoxError> {
             tracing::debug!("parse value: {value} (key={pair_key}");
 
             $(
@@ -589,9 +589,7 @@ create_robots_tag! {
 
 /// Create an iterator to try to parse a byte slice
 /// as one or multiple [`RobotsTag`]s.
-pub fn robots_tag_parse_iter(
-    buffer: &[u8],
-) -> impl Iterator<Item = Result<RobotsTag, OpaqueError>> {
+pub fn robots_tag_parse_iter(buffer: &[u8]) -> impl Iterator<Item = Result<RobotsTag, BoxError>> {
     Parser::new(buffer)
 }
 
@@ -636,7 +634,7 @@ fn trim_space(buffer: &[u8]) -> &[u8] {
 }
 
 impl Iterator for Parser<'_> {
-    type Item = Result<RobotsTag, OpaqueError>;
+    type Item = Result<RobotsTag, BoxError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.buffer.is_empty() {
@@ -670,7 +668,7 @@ impl Iterator for Parser<'_> {
 
                         if tag.bot_name.is_some() {
                             self.buffer = &self.buffer[self.buffer.len()..];
-                            return Some(Err(OpaqueError::from_display(
+                            return Some(Err(BoxError::from(
                                 "unexpected bot name: one is already defined without any directives",
                             )));
                         } else {
@@ -741,9 +739,10 @@ impl Iterator for Parser<'_> {
                 if directive_count == 0 {
                     if let Some(bot_name) = tag.bot_name {
                         self.buffer = &self.buffer[self.buffer.len()..];
-                        return Some(Err(OpaqueError::from_display(format!(
-                            "tag with only a bot name '{bot_name}' is not allowed"
-                        ))));
+                        return Some(Err(BoxError::from(
+                            "tag with only a bot name is not allowed",
+                        )
+                        .context_field("bot_name", bot_name)));
                     }
                     return None;
                 } else {
@@ -753,7 +752,7 @@ impl Iterator for Parser<'_> {
         }
 
         self.buffer = &self.buffer[self.buffer.len()..];
-        Some(Err(OpaqueError::from_display("delimiter search overflow")))
+        Some(Err(BoxError::from("delimiter search overflow")))
     }
 }
 

@@ -2,7 +2,8 @@
 //!
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
+
 use std::fmt;
 use std::net::IpAddr;
 
@@ -164,7 +165,7 @@ impl fmt::Display for Forwarded {
 }
 
 impl std::str::FromStr for Forwarded {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (first, others) = element::parse_one_plus_forwarded_elements(s.as_bytes())?;
@@ -173,7 +174,7 @@ impl std::str::FromStr for Forwarded {
 }
 
 impl TryFrom<String> for Forwarded {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(s.as_bytes())?;
@@ -182,7 +183,7 @@ impl TryFrom<String> for Forwarded {
 }
 
 impl TryFrom<&str> for Forwarded {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(s.as_bytes())?;
@@ -192,7 +193,7 @@ impl TryFrom<&str> for Forwarded {
 
 #[cfg(feature = "http")]
 impl TryFrom<HeaderValue> for Forwarded {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(header.as_bytes())?;
@@ -202,7 +203,7 @@ impl TryFrom<HeaderValue> for Forwarded {
 
 #[cfg(feature = "http")]
 impl TryFrom<&HeaderValue> for Forwarded {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(header.as_bytes())?;
@@ -211,7 +212,7 @@ impl TryFrom<&HeaderValue> for Forwarded {
 }
 
 impl TryFrom<Vec<u8>> for Forwarded {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(bytes.as_ref())?;
@@ -220,7 +221,7 @@ impl TryFrom<Vec<u8>> for Forwarded {
 }
 
 impl TryFrom<&[u8]> for Forwarded {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(bytes)?;

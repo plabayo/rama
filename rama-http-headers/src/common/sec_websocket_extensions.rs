@@ -5,8 +5,8 @@
 
 use std::{fmt, str::FromStr};
 
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::telemetry::tracing;
-use rama_error::{ErrorExt, OpaqueError};
 use rama_utils::str::arcstr::ArcStr;
 
 derive_non_empty_flat_csv_header! {
@@ -207,13 +207,13 @@ impl From<PerMessageDeflateIdentifier> for PerMessageDeflateConfig {
 }
 
 impl FromStr for Extension {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut parts = s.split(';').map(|s| s.trim());
         let identifier = parts
             .next()
-            .ok_or_else(|| OpaqueError::from_display("empty WebSocket Extension is invalid"))?;
+            .context("empty WebSocket Extension is invalid")?;
         if let Some(identifier) = PerMessageDeflateIdentifier::strict_parse(identifier) {
             let mut config = PerMessageDeflateConfig {
                 identifier,
@@ -222,25 +222,25 @@ impl FromStr for Extension {
             for part in parts {
                 if part.eq_ignore_ascii_case("server_no_context_takeover") {
                     if std::mem::replace(&mut config.server_no_context_takeover, true) {
-                        return Err(OpaqueError::from_display(
+                        return Err(BoxError::from(
                             "duplicate extension param: server_no_context_takeover",
                         ));
                     }
                 } else if part.eq_ignore_ascii_case("client_no_context_takeover") {
                     if std::mem::replace(&mut config.client_no_context_takeover, true) {
-                        return Err(OpaqueError::from_display(
+                        return Err(BoxError::from(
                             "duplicate extension param: client_no_context_takeover",
                         ));
                     }
                 } else if part.eq_ignore_ascii_case("server_max_window_bits") {
                     if config.server_max_window_bits.replace(0).is_some() {
-                        return Err(OpaqueError::from_display(
+                        return Err(BoxError::from(
                             "duplicate extension param: server_max_window_bits",
                         ));
                     }
                 } else if part.eq_ignore_ascii_case("client_max_window_bits") {
                     if config.client_max_window_bits.replace(0).is_some() {
-                        return Err(OpaqueError::from_display(
+                        return Err(BoxError::from(
                             "duplicate extension param: client_max_window_bits",
                         ));
                     }
@@ -262,12 +262,13 @@ impl FromStr for Extension {
                                     tracing::debug!(
                                         "fail per-message-deflate config value for server max windows bits: {v} not in [8,15] range"
                                     );
-                                    return Err(OpaqueError::from_display(
+                                    return Err(BoxError::from(
                                         "invalid server max windows bits (OOB)",
-                                    ));
+                                    )
+                                    .context_field("value", v));
                                 }
                                 if config.server_max_window_bits.replace(v).is_some() {
-                                    return Err(OpaqueError::from_display(
+                                    return Err(BoxError::from(
                                         "duplicate extension param: server_max_window_bits",
                                     ));
                                 }
@@ -286,12 +287,13 @@ impl FromStr for Extension {
                                     tracing::debug!(
                                         "fail per-message-deflate config value for client max windows bits: {v} not in [8,15] range"
                                     );
-                                    return Err(OpaqueError::from_display(
+                                    return Err(BoxError::from(
                                         "invalid client max windows bits (OOB)",
-                                    ));
+                                    )
+                                    .context_field("value", v));
                                 }
                                 if config.client_max_window_bits.replace(v).is_some() {
-                                    return Err(OpaqueError::from_display(
+                                    return Err(BoxError::from(
                                         "duplicate extension param: client_max_window_bits",
                                     ));
                                 }
@@ -307,17 +309,18 @@ impl FromStr for Extension {
                         tracing::debug!(
                             "fail per-message-deflate config with unknown permessage-deflate config parameter: {k} = {v}"
                         );
-                        return Err(OpaqueError::from_display(
-                            "unexpected value not expected for given key",
-                        ));
+                        return Err(BoxError::from("value not expected for given key")
+                            .context_str_field("key", k)
+                            .context_str_field("value", v));
                     }
                 } else {
                     tracing::debug!(
                         "received unknown permessage-deflate config parameter part: {part}"
                     );
-                    return Err(OpaqueError::from_display(
-                        "unexpected key not expected for permessage-deflate config",
-                    ));
+                    return Err(
+                        BoxError::from("key not expected for permessage-deflate config")
+                            .context_str_field("key", part),
+                    );
                 }
             }
             Ok(Self::PerMessageDeflate(config))

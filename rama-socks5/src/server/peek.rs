@@ -86,9 +86,9 @@ where
         let stream = PeekStream::new(peek, stream);
 
         if is_socks5 {
-            self.socks5_acceptor.serve(stream).await.map_err(Into::into)
+            self.socks5_acceptor.serve(stream).await.into_box_error()
         } else {
-            self.fallback.serve(stream).await.map_err(Into::into)
+            self.fallback.serve(stream).await.into_box_error()
         }
     }
 }

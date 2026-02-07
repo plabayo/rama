@@ -1,7 +1,7 @@
 use super::AddressType;
 use byteorder::{BigEndian, ReadBytesExt};
 use rama_core::bytes::BufMut;
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_net::address::{Domain, Host, HostWithPort};
 use std::{io::Read, net::IpAddr};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -23,7 +23,7 @@ pub(super) fn authority_length(authority: &HostWithPort) -> usize {
 pub(super) enum ReadError {
     IO(std::io::Error),
     UnexpectedByte { pos: usize, byte: u8 },
-    Unexpected(OpaqueError),
+    Unexpected(BoxError),
 }
 
 impl From<std::io::Error> for ReadError {
@@ -31,8 +31,8 @@ impl From<std::io::Error> for ReadError {
         Self::IO(value)
     }
 }
-impl From<OpaqueError> for ReadError {
-    fn from(value: OpaqueError) -> Self {
+impl From<BoxError> for ReadError {
+    fn from(value: BoxError) -> Self {
         Self::Unexpected(value)
     }
 }

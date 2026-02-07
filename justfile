@@ -69,8 +69,7 @@ test-crate CRATE *ARGS:
     cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
 
 test-doc-crate CRATE *ARGS:
-    @cargo install cargo-nextest --locked
-    cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
+    cargo test --doc --all-features -p {{CRATE}} {{ARGS}}
 
 test-spec-h2 *ARGS:
     bash rama-http-core/ci/h2spec.sh {{ARGS}}
@@ -98,6 +97,7 @@ qa-crate CRATE:
     just clippy-crate {{CRATE}}
     just doc-crate {{CRATE}}
     just test-crate {{CRATE}}
+    just test-doc-crate {{CRATE}}
 
 qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 

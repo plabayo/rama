@@ -1,7 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use rama_core::bytes::Bytes;
-use rama_error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::HeaderValue;
 use sha1::{Digest, Sha1};
 
@@ -32,14 +32,14 @@ derive_header! {
 }
 
 impl TryFrom<SecWebSocketKey> for SecWebSocketAccept {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(key: SecWebSocketKey) -> Result<Self, Self::Error> {
         try_sign(key.0.as_bytes())
     }
 }
 
-fn try_sign(key: &[u8]) -> Result<SecWebSocketAccept, OpaqueError> {
+fn try_sign(key: &[u8]) -> Result<SecWebSocketAccept, BoxError> {
     let mut sha1 = Sha1::default();
     sha1.update(key);
     sha1.update(&b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"[..]);

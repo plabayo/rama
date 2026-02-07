@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::{
     Layer, Service,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::BoxError,
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
@@ -18,6 +18,7 @@ use crate::{
 
 #[doc(inline)]
 pub use ::rama_http_backend::client::*;
+use rama_core::error::ErrorExt as _;
 
 pub mod builder;
 #[doc(inline)]
@@ -186,7 +187,7 @@ where
         + 'static,
 {
     type Output = Response;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let uri = req.uri().clone();
@@ -206,12 +207,14 @@ where
 
         let result = http_connection.serve(req).await;
 
-        let resp = result
-            .map_err(OpaqueError::from_boxed)
-            .with_context(|| format!("http request failure for uri: {uri}"))?;
-
-        tracing::trace!(url.full = %uri, "response received from connector stack");
-
-        Ok(resp)
+        match result {
+            Ok(resp) => {
+                tracing::trace!(url.full = %uri, "response received from connector stack");
+                Ok(resp)
+            }
+            Err(err) => Err(err
+                .context("http request failure")
+                .context_field("uri", uri)),
+        }
     }
 }

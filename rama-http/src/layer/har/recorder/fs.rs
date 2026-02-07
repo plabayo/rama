@@ -1,8 +1,8 @@
 use super::Recorder;
 use crate::layer::har::spec;
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
-use rama_error::{ErrorContext, OpaqueError};
 use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -82,7 +82,7 @@ impl FileRecorderTask {
         }
 
         impl Storage {
-            async fn try_new(path: PathBuf) -> Result<Self, OpaqueError> {
+            async fn try_new(path: PathBuf) -> Result<Self, BoxError> {
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent)
                         .await

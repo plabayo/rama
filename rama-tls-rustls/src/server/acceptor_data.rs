@@ -2,7 +2,7 @@ use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::dep::rcgen::{self, Issuer, KeyPair};
 use crate::dep::rustls::{self, ALL_VERSIONS};
 use crate::key_log::KeyLogFile;
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_net::address::Domain;
 use rama_net::tls::server::SelfSignedData;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
@@ -73,7 +73,7 @@ pub trait DynamicConfigProvider: Send + Sync + 'static {
     fn get_config(
         &self,
         client_hello: rustls::server::ClientHello<'_>,
-    ) -> impl Future<Output = Result<Arc<rustls::ServerConfig>, OpaqueError>> + Send;
+    ) -> impl Future<Output = Result<Arc<rustls::ServerConfig>, BoxError>> + Send;
 }
 
 /// Internal trait to support dynamic dispatch of trait with async fn.
@@ -82,7 +82,7 @@ pub(super) trait DynDynamicConfigProvider {
     fn get_config<'a, 'b: 'a>(
         &'a self,
         client_hello: rustls::server::ClientHello<'b>,
-    ) -> Pin<Box<dyn Future<Output = Result<Arc<rustls::ServerConfig>, OpaqueError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<rustls::ServerConfig>, BoxError>> + Send + 'a>>;
 }
 
 impl<T> DynDynamicConfigProvider for T
@@ -92,7 +92,7 @@ where
     fn get_config<'a, 'b: 'a>(
         &'a self,
         client_hello: rustls::server::ClientHello<'b>,
-    ) -> Pin<Box<dyn Future<Output = Result<Arc<rustls::ServerConfig>, OpaqueError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<rustls::ServerConfig>, BoxError>> + Send + 'a>>
     {
         Box::pin(self.get_config(client_hello))
     }
@@ -120,7 +120,7 @@ impl TlsAcceptorDataBuilder {
     pub fn new(
         cert_chain: Vec<CertificateDer<'static>>,
         key_der: PrivateKeyDer<'static>,
-    ) -> Result<Self, OpaqueError> {
+    ) -> Result<Self, BoxError> {
         let config = rustls::ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_no_client_auth()
             .with_single_cert(cert_chain, key_der)
@@ -133,7 +133,7 @@ impl TlsAcceptorDataBuilder {
 
     /// Create a [`TlsAcceptorDataBuilder`] support all tls versions, using no client auth, and a self
     /// generated certificate chain and private key
-    pub fn try_new_self_signed(data: SelfSignedData) -> Result<Self, OpaqueError> {
+    pub fn try_new_self_signed(data: SelfSignedData) -> Result<Self, BoxError> {
         let (cert_chain, key_der) = self_signed_server_auth(data)?;
         let config = rustls::ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_no_client_auth()
@@ -148,7 +148,7 @@ impl TlsAcceptorDataBuilder {
     rama_utils::macros::generate_set_and_with! {
         /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
         /// and set it in the current config
-        pub fn env_key_logger(mut self) -> Result<Self, OpaqueError> {
+        pub fn env_key_logger(mut self) -> Result<Self, BoxError> {
             if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
                 let key_logger = Arc::new(KeyLogFile::try_new(path)?);
                 self.server_config.key_log = key_logger;
@@ -196,7 +196,7 @@ impl TlsAcceptorDataBuilder {
 
 pub fn self_signed_server_auth(
     data: SelfSignedData,
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     // Create an issuer CA cert.
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
     let ca_key_pair = KeyPair::generate_for(alg).context("self-signed: generate ca key pair")?;

@@ -1,4 +1,5 @@
 use crate::DnsResolver;
+use rama_core::error::ErrorContext as _;
 use rama_net::address::Domain;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -18,7 +19,7 @@ macro_rules! impl_dns_resolver_either_either {
                     $(
                         ::rama_core::combinators::$id::$param(d) => d.txt_lookup(domain)
                             .await
-                            .map_err(Into::into),
+                            .into_box_error(),
                     )+
                 }
             }
@@ -31,7 +32,7 @@ macro_rules! impl_dns_resolver_either_either {
                     $(
                         ::rama_core::combinators::$id::$param(d) => d.ipv4_lookup(domain)
                             .await
-                            .map_err(Into::into),
+                            .into_box_error(),
                     )+
                 }
             }
@@ -44,7 +45,7 @@ macro_rules! impl_dns_resolver_either_either {
                     $(
                         ::rama_core::combinators::$id::$param(d) => d.ipv6_lookup(domain)
                             .await
-                            .map_err(Into::into),
+                            .into_box_error(),
                     )+
                 }
             }

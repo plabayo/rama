@@ -1,5 +1,5 @@
 use rama_core::bytes::{BufMut, BytesMut};
-use rama_core::error::{BoxError, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::futures::Sink;
 use rama_core::futures::Stream;
 use rama_core::stream::codec::{Decoder, Encoder};
@@ -144,7 +144,7 @@ impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelay<S> {
         b: &[u8],
         addr: A,
     ) -> Result<usize, BoxError> {
-        let socket_addr: SocketAddress = addr.try_into().map_err(Into::into)?;
+        let socket_addr: SocketAddress = addr.try_into().into_box_error()?;
         let header = UdpHeader {
             fragment_number: 0,
             destination: socket_addr.into(),
@@ -165,7 +165,7 @@ impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelay<S> {
         b: &[u8],
         addr: A,
     ) -> Poll<Result<usize, BoxError>> {
-        let socket_addr: SocketAddress = addr.try_into().map_err(Into::into)?;
+        let socket_addr: SocketAddress = addr.try_into().into_box_error()?;
         let header = UdpHeader {
             fragment_number: 0,
             destination: socket_addr.into(),
@@ -244,21 +244,21 @@ impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelay<S> {
 
 fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxError> {
     if header.fragment_number != 0 {
-        return Err(OpaqueError::from_display(
-            "UdpSocketRelay: fragment number != 0 is not supported",
-        )
-        .into_boxed());
+        return Err(
+            BoxError::from("UdpSocketRelay: fragment number != 0 is not supported")
+                .context_field("fragment_number", header.fragment_number),
+        );
     }
 
     let header_offset = header.serialized_len() - 1;
 
     let HostWithPort { host, port } = header.destination;
     let from: SocketAddress = match host {
-        rama_net::address::Host::Name(_) => {
-            return Err(OpaqueError::from_display(
+        rama_net::address::Host::Name(domain) => {
+            return Err(BoxError::from(
                 "server responded with named address: incompatible for udp bind",
             )
-            .into_boxed());
+            .context_field("domain", domain));
         }
         rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
     };
@@ -367,7 +367,7 @@ where
         loop {
             // Are there still bytes left in the read buffer to decode?
             if let Some(current_addr) = pin.current_addr {
-                if let Some(frame) = pin.codec.decode_eof(&mut pin.rd).map_err(Into::into)? {
+                if let Some(frame) = pin.codec.decode_eof(&mut pin.rd).into_box_error()? {
                     return Poll::Ready(Some(Ok((frame, current_addr))));
                 }
 
@@ -424,7 +424,7 @@ where
 
         let pin = self.get_mut();
 
-        pin.codec.encode(frame, &mut pin.wr).map_err(Into::into)?;
+        pin.codec.encode(frame, &mut pin.wr).into_box_error()?;
         pin.out_addr = out_addr.into();
         pin.flushed = false;
 

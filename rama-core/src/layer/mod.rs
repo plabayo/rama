@@ -990,7 +990,7 @@ crate::combinators::impl_either!(impl_layer_either);
 
 #[cfg(test)]
 mod tests {
-    use rama_error::OpaqueError;
+    use rama_error::BoxError;
 
     use crate::{ServiceInput, service::service_fn};
 
@@ -999,7 +999,7 @@ mod tests {
     #[tokio::test]
     async fn simple_input_layer() {
         let svc = (GetInputExtensionLayer::new(async |_: String| {}))
-            .into_layer(service_fn(async || Ok::<_, OpaqueError>(())));
+            .into_layer(service_fn(async || Ok::<_, BoxError>(())));
 
         svc.serve(ServiceInput::new(())).await.unwrap();
     }
@@ -1008,7 +1008,7 @@ mod tests {
     async fn simple_optional_input_layer() {
         let maybe_layer = Some(GetInputExtensionLayer::new(async |_: String| {}));
 
-        let svc = (maybe_layer).into_layer(service_fn(async || Ok::<_, OpaqueError>(())));
+        let svc = (maybe_layer).into_layer(service_fn(async || Ok::<_, BoxError>(())));
 
         svc.serve(ServiceInput::new(())).await.unwrap();
     }
@@ -1016,7 +1016,7 @@ mod tests {
     #[tokio::test]
     async fn simple_output_layer() {
         let svc = (GetOutputExtensionLayer::new(async |_: String| {})).into_layer(service_fn(
-            async || Ok::<_, OpaqueError>(ServiceInput::new(())),
+            async || Ok::<_, BoxError>(ServiceInput::new(())),
         ));
 
         svc.serve(ServiceInput::new(())).await.unwrap();
@@ -1027,7 +1027,7 @@ mod tests {
         let maybe_layer = Some(GetOutputExtensionLayer::new(async |_: String| {}));
 
         let svc = (maybe_layer).into_layer(service_fn(async || {
-            Ok::<_, OpaqueError>(ServiceInput::new(()))
+            Ok::<_, BoxError>(ServiceInput::new(()))
         }));
 
         svc.serve(ServiceInput::new(())).await.unwrap();

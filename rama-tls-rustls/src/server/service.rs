@@ -7,7 +7,7 @@ use crate::types::SecureTransport;
 use rama_core::{
     Service,
     conversion::RamaInto,
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     stream::Stream,
 };
@@ -85,10 +85,9 @@ where
         stream.extensions_mut().insert(negotiated_tls_params);
         stream.extensions_mut().insert(secure_transport);
 
-        self.inner.serve(stream).await.map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .context("rustls acceptor: service error")
-                .into_boxed()
-        })
+        self.inner
+            .serve(stream)
+            .await
+            .context("rustls acceptor: service error")
     }
 }

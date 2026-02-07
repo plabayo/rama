@@ -5,7 +5,7 @@
 use crate::Protocol;
 use crate::address::{HostWithOptPort, HostWithPort};
 use crate::http::RequestContext;
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_http_types::request::Parts;
 use rama_http_types::{Request, Version};
@@ -71,7 +71,7 @@ pub trait TryRefIntoTransportContext {
 }
 
 impl TryFrom<&Parts> for TransportContext {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(parts: &Parts) -> Result<Self, Self::Error> {
         Ok(
@@ -86,7 +86,7 @@ impl TryFrom<&Parts> for TransportContext {
 }
 
 impl<Body> TryFrom<&Request<Body>> for TransportContext {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(req: &Request<Body>) -> Result<Self, Self::Error> {
         Ok(

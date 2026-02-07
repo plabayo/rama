@@ -50,7 +50,7 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
-use rama_core::error::{BoxError, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_net::address::Domain;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
@@ -121,28 +121,22 @@ impl<R: DnsResolver> DnsResolver for Option<R> {
 
     async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
         match self {
-            Some(d) => d.txt_lookup(domain).await.map_err(Into::into),
-            None => Err(
-                OpaqueError::from_display("None resolve cannot resolve TXT record").into_boxed(),
-            ),
+            Some(d) => d.txt_lookup(domain).await.into_box_error(),
+            None => Err(BoxError::from("None resolve cannot resolve TXT record")),
         }
     }
 
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         match self {
-            Some(d) => d.ipv4_lookup(domain).await.map_err(Into::into),
-            None => {
-                Err(OpaqueError::from_display("None resolve cannot resolve A record").into_boxed())
-            }
+            Some(d) => d.ipv4_lookup(domain).await.into_box_error(),
+            None => Err(BoxError::from("None resolve cannot resolve A record")),
         }
     }
 
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
         match self {
-            Some(d) => d.ipv6_lookup(domain).await.map_err(Into::into),
-            None => Err(
-                OpaqueError::from_display("None resolve cannot resolve AAAA record").into_boxed(),
-            ),
+            Some(d) => d.ipv6_lookup(domain).await.into_box_error(),
+            None => Err(BoxError::from("None resolve cannot resolve AAAA record")),
         }
     }
 }

@@ -1,6 +1,6 @@
 use rama::{
     Service,
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     http::{
         Request, Response, StatusCode, body::util::BodyExt as _, convert::curl,
         service::web::response::IntoResponse as _,
@@ -17,14 +17,13 @@ pub(super) struct CurlWriter {
 }
 
 impl Service<Request> for CurlWriter {
-    type Error = OpaqueError;
+    type Error = BoxError;
     type Output = Response;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let req = UserAgentEmulateHttpRequestModifier::new(MirrorService::new())
             .serve(req)
             .await
-            .map_err(OpaqueError::from_boxed)
             .context("rama: (curl-writer) emulate UA")?;
 
         let (parts, body) = req.into_parts();

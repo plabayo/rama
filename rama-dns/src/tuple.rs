@@ -1,4 +1,4 @@
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
@@ -15,7 +15,7 @@ macro_rules! dns_resolve_tuple_impl {
                 $ty: DnsResolver,
             )+
         {
-            type Error = OpaqueError;
+            type Error = BoxError;
 
             async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
                 let ($($ty,)+) = self;
@@ -30,7 +30,7 @@ macro_rules! dns_resolve_tuple_impl {
                     }
                 )+
 
-                Err(OpaqueError::from_display("none of the resolvers were able to resolve TXT"))
+                Err(BoxError::from("none of the resolvers were able to resolve TXT"))
             }
 
             async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
@@ -46,7 +46,7 @@ macro_rules! dns_resolve_tuple_impl {
                     }
                 )+
 
-                Err(OpaqueError::from_display("none of the resolvers were able to resolve A"))
+                Err(BoxError::from("none of the resolvers were able to resolve A"))
             }
 
             async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
@@ -62,7 +62,7 @@ macro_rules! dns_resolve_tuple_impl {
                     }
                 )+
 
-                Err(OpaqueError::from_display("none of the resolvers were able to resolve AAAA"))
+                Err(BoxError::from("none of the resolvers were able to resolve AAAA"))
             }
         }
     };

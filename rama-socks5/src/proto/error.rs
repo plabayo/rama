@@ -1,4 +1,4 @@
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 
 use super::common::ReadError;
 use std::{fmt, str::Utf8Error};
@@ -10,7 +10,7 @@ pub enum ProtocolError {
     /// Unexpected byte at tbe paired position
     UnexpectedByte { pos: usize, byte: u8 },
     /// Unexpected error happened
-    Unexpected(OpaqueError),
+    Unexpected(BoxError),
     /// Utf-8 error in case something went wrong during bytes to utf-8 conversion
     Utf8(Utf8Error),
 }
@@ -47,10 +47,7 @@ impl std::error::Error for ProtocolError {
         match self {
             Self::IO(err) => Some(err as &(dyn std::error::Error + 'static)),
             Self::UnexpectedByte { .. } => None,
-            Self::Unexpected(err) => Some(
-                err.source()
-                    .unwrap_or(err as &(dyn std::error::Error + 'static)),
-            ),
+            Self::Unexpected(err) => Some(err.source().unwrap_or(err.as_ref())),
             Self::Utf8(err) => Some(err as &(dyn std::error::Error + 'static)),
         }
     }
@@ -62,8 +59,8 @@ impl From<std::io::Error> for ProtocolError {
     }
 }
 
-impl From<OpaqueError> for ProtocolError {
-    fn from(value: OpaqueError) -> Self {
+impl From<BoxError> for ProtocolError {
+    fn from(value: BoxError) -> Self {
         Self::Unexpected(value)
     }
 }

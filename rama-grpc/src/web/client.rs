@@ -1,4 +1,4 @@
-use rama_core::error::{BoxError, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::{Layer, Service};
 use rama_http::HeaderValue;
 use rama_http::layer::version_adapter::adapt_request_version;
@@ -51,7 +51,7 @@ where
     B2: Send + 'static,
 {
     type Output = Response<GrpcWebCall<B2>>;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(&self, mut req: Request<B1>) -> Result<Self::Output, Self::Error> {
         adapt_request_version(&mut req, Version::HTTP_11)?;
@@ -61,11 +61,7 @@ where
 
         let req = req.map(GrpcWebCall::client_request);
 
-        let resp = self
-            .inner
-            .serve(req)
-            .await
-            .map_err(|err| OpaqueError::from_boxed(err.into()))?;
+        let resp = self.inner.serve(req).await.into_box_error()?;
         Ok(resp.map(GrpcWebCall::client_response))
     }
 }

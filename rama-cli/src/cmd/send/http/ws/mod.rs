@@ -49,7 +49,7 @@ where
 
     shutdown.spawn_task_fn(async move |guard| {
         let mut app = app;
-        let result = app.run(guard).await.map_err(|err| err.into_boxed());
+        let result = app.run(guard).await;
         let _ = tx.send(result);
     });
 

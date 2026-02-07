@@ -10,7 +10,6 @@ use rama_core::bytes::{Buf, Bytes, BytesMut, buf::Chain};
 use rama_core::error::BoxError;
 use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::telemetry::tracing;
-use rama_error::OpaqueError;
 use rama_http_headers::{ContentDisposition, ContentLength, ContentType, HeaderMapExt};
 use rama_http_types::InfiniteReader;
 use rama_http_types::mime;
@@ -68,7 +67,7 @@ impl IntoResponse for Infallible {
     }
 }
 
-impl IntoResponse for OpaqueError {
+impl IntoResponse for BoxError {
     // do not expose error in response for security reasons
     fn into_response(self) -> Response {
         tracing::debug!("unexpected error in HTTP handler: {self}; return 500 status code");

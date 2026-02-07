@@ -6,7 +6,7 @@
 use crate::{HeaderName, Request, utils::HeaderValueGetter};
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext as _, ErrorExt},
     extensions::{Extension, ExtensionsMut},
     telemetry::tracing,
 };
@@ -99,11 +99,9 @@ where
                 if str_value == "1" || str_value.eq_ignore_ascii_case("true") {
                     request.extensions_mut().insert(T::default());
                 } else if str_value != "0" && !str_value.eq_ignore_ascii_case("false") {
-                    return Err(OpaqueError::from_display(format!(
-                        "invalid '{}' header option: '{}'",
-                        self.header_name, str_value
-                    ))
-                    .into_boxed());
+                    return Err(BoxError::from("invalid header option")
+                        .context_field("header_name", self.header_name.clone())
+                        .context_str_field("header_value", str_value));
                 }
             }
             Err(err) => {
@@ -112,15 +110,15 @@ where
                         http.header.name  = %self.header_name,
                         "failed to determine header option: {err:?}",
                     );
-                    return self.inner.serve(request).await.map_err(Into::into);
+                    return self.inner.serve(request).await.into_box_error();
                 } else {
                     return Err(err
-                        .with_context(|| format!("determine '{}' header option", self.header_name))
-                        .into_boxed());
+                        .context("determine header option")
+                        .context_field("header_name", self.header_name.clone()));
                 }
             }
         };
-        self.inner.serve(request).await.map_err(Into::into)
+        self.inner.serve(request).await.into_box_error()
     }
 }
 

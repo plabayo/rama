@@ -41,6 +41,7 @@ use crate::{
     Request,
     utils::{HeaderValueErr, HeaderValueGetter},
 };
+use rama_core::error::ErrorContext as _;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
@@ -161,7 +162,7 @@ where
                                 "" => None,
                                 y => Some(y),
                             })
-                            .map(|x| x.parse::<T>().map_err(Into::into))
+                            .map(|x| x.parse::<T>().into_box_error())
                     })
                 })
                 .peekable();
@@ -177,7 +178,7 @@ where
         } else {
             match request.header_str(&self.header_name) {
                 Ok(s) => {
-                    let cfg: T = s.parse().map_err(Into::into)?;
+                    let cfg: T = s.parse().into_box_error()?;
                     request.extensions_mut().insert(cfg);
                 }
                 Err(HeaderValueErr::HeaderMissing(_)) if self.optional => (),
@@ -187,7 +188,7 @@ where
             }
         }
 
-        self.inner.serve(request).await.map_err(Into::into)
+        self.inner.serve(request).await.into_box_error()
     }
 }
 

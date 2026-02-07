@@ -1,7 +1,7 @@
 use std::io::ErrorKind;
 
 use rama_core::bytes::{Bytes, BytesMut};
-use rama_core::error::{BoxError, ErrorExt, OpaqueError};
+use rama_core::error::{BoxError, ErrorExt};
 use rama_core::telemetry::tracing;
 use rama_net::address::{Host, HostWithPort, SocketAddress};
 use rama_udp::UdpSocket;
@@ -161,7 +161,7 @@ impl UdpSocketRelay {
                     }
 
                     Err(err) => {
-                        Err(err.context("north socket: fatal error").into_boxed())
+                        Err(err.context("north socket: fatal error"))
                     }
                 }
             }
@@ -182,7 +182,7 @@ impl UdpSocketRelay {
                     }
 
                     Err(err) => {
-                        Err(err.context("south socket: fatal error").into_boxed())
+                        Err(err.context("south socket: fatal error"))
                     }
                 }
             }
@@ -248,9 +248,7 @@ impl UdpSocketRelay {
             Err(err) => match err.downcast::<std::io::Error>() {
                 Ok(err) if is_fatal_io_error(&err) => {
                     tracing::debug!(?err, "south socket: fatal I/O write error: {err:?}");
-                    Err(err
-                        .context("south socket fatal I/O write error")
-                        .into_boxed())
+                    Err(err.context("south socket fatal I/O write error"))
                 }
                 Ok(err) => {
                     tracing::debug!(
@@ -260,9 +258,7 @@ impl UdpSocketRelay {
                 }
                 Err(err) => {
                     tracing::debug!("south socket: fatal unknown write error: {err:?}");
-                    Err(OpaqueError::from_std(err)
-                        .context("south socket fatal unknown write error")
-                        .into_boxed())
+                    Err(err.context("south socket fatal unknown write error"))
                 }
             },
         }
@@ -341,9 +337,7 @@ impl UdpSocketRelay {
             Err(err) => match err.downcast::<std::io::Error>() {
                 Ok(err) if is_fatal_io_error(&err) => {
                     tracing::debug!("north socket: fatal I/O write error: {err:?}");
-                    Err(err
-                        .context("north socket fatal I/O write error")
-                        .into_boxed())
+                    Err(err.context("north socket fatal I/O write error"))
                 }
                 Ok(err) => {
                     tracing::debug!(
@@ -353,9 +347,7 @@ impl UdpSocketRelay {
                 }
                 Err(err) => {
                     tracing::debug!("north socket: fatal unknown write error: {err:?}");
-                    Err(OpaqueError::from_std(err)
-                        .context("north socket fatal unknown write error")
-                        .into_boxed())
+                    Err(err.context("north socket fatal unknown write error"))
                 }
             },
         }
@@ -383,11 +375,11 @@ impl UdpSocketRelay {
     ) -> Result<SocketAddress, BoxError> {
         let HostWithPort { host, port } = authority;
         let ip_addr = match host {
-            Host::Name(_) => {
-                return Err(OpaqueError::from_display(
+            Host::Name(domain) => {
+                return Err(BoxError::from(
                     "dns names as target not supported: no dns server defined",
                 )
-                .into());
+                .context_field("domain", domain));
             }
             Host::Address(ip_addr) => ip_addr,
         };
@@ -426,7 +418,6 @@ impl UdpSocketRelay {
                         let ips = dns_resolver
                             .ipv4_lookup(domain.clone())
                             .await
-                            .map_err(OpaqueError::from_boxed)
                             .context("failed to lookup ipv4 addresses")?;
                         ips.into_iter()
                             .choose(&mut rand::rng())
@@ -437,7 +428,6 @@ impl UdpSocketRelay {
                         let ips = dns_resolver
                             .ipv6_lookup(domain.clone())
                             .await
-                            .map_err(OpaqueError::from_boxed)
                             .context("failed to lookup ipv6 addresses")?;
                         ips.into_iter()
                             .choose(&mut rand::rng())

@@ -1,6 +1,6 @@
 use crate::Protocol;
 use crate::address::{Domain, parse_utils};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 use std::str::FromStr;
@@ -113,14 +113,14 @@ impl fmt::Display for DomainAddress {
 }
 
 impl FromStr for DomainAddress {
-    type Err = OpaqueError;
+    type Err = BoxError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
     }
 }
 
 impl TryFrom<&str> for DomainAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (domain, port) = parse_utils::split_port_from_str(s)?;
@@ -130,7 +130,7 @@ impl TryFrom<&str> for DomainAddress {
 }
 
 impl TryFrom<String> for DomainAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         let (domain, port) = parse_utils::split_port_from_str(&s)?;
@@ -139,7 +139,7 @@ impl TryFrom<String> for DomainAddress {
     }
 }
 impl TryFrom<Vec<u8>> for DomainAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         let s = String::from_utf8(bytes).context("parse domain_address from bytes")?;
@@ -148,7 +148,7 @@ impl TryFrom<Vec<u8>> for DomainAddress {
 }
 
 impl TryFrom<&[u8]> for DomainAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(bytes).context("parse domain_address from bytes")?;

@@ -4,7 +4,7 @@ use crate::protocol::{v1, v2};
 use rama_core::{
     Layer, Service,
     bytes::Bytes,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::{ChainableExtensions, ExtensionsRef},
     stream::Stream,
 };
@@ -214,7 +214,7 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, mut conn } =
-            self.inner.connect(input).await.map_err(Into::into)?;
+            self.inner.connect(input).await.into_box_error()?;
 
         let src = {
             let ext_chain = (&conn, &input);
@@ -222,9 +222,7 @@ where
                 .get::<Forwarded>()
                 .and_then(|f| f.client_socket_addr())
                 .or_else(|| ext_chain.get::<SocketInfo>().map(|info| info.peer_addr()))
-                .ok_or_else(|| {
-                    OpaqueError::from_display("PROXY client (v1): missing src socket address")
-                })?
+                .ok_or_else(|| BoxError::from("PROXY client (v1): missing src socket address"))?
         };
 
         let peer_addr = conn.peer_addr()?;
@@ -236,10 +234,9 @@ where
                 v1::Addresses::new_tcp6(src_ip, dst_ip, src.port, peer_addr.port)
             }
             (_, _) => {
-                return Err(OpaqueError::from_display(
+                return Err(BoxError::from(
                     "PROXY client (v1): IP version mismatch between src and dest",
-                )
-                .into());
+                ));
             }
         };
 
@@ -262,7 +259,7 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, mut conn } =
-            self.inner.connect(input).await.map_err(Into::into)?;
+            self.inner.connect(input).await.into_box_error()?;
 
         let src = {
             let ext_chain = (&conn, &input);
@@ -270,9 +267,7 @@ where
                 .get::<Forwarded>()
                 .and_then(|f| f.client_socket_addr())
                 .or_else(|| ext_chain.get::<SocketInfo>().map(|info| info.peer_addr()))
-                .ok_or_else(|| {
-                    OpaqueError::from_display("PROXY client (v2): missing src socket address")
-                })?
+                .ok_or_else(|| BoxError::from("PROXY client (v2): missing src socket address"))?
         };
 
         let peer_addr = conn.peer_addr()?;
@@ -288,10 +283,9 @@ where
                 v2::IPv6::new(src_ip, dst_ip, src.port, peer_addr.port),
             ),
             (_, _) => {
-                return Err(OpaqueError::from_display(
+                return Err(BoxError::from(
                     "PROXY client (v2): IP version mismatch between src and dest",
-                )
-                .into());
+                ));
             }
         };
 

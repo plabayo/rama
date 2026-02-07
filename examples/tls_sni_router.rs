@@ -44,7 +44,7 @@
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     Layer, Service,
-    error::OpaqueError,
+    error::BoxError,
     extensions::ExtensionsMut,
     graceful::{Shutdown, ShutdownGuard},
     http::{layer::trace::TraceLayer, server::HttpServer, service::web::Router},
@@ -127,7 +127,7 @@ where
     S: Stream + ExtensionsMut + Unpin,
 {
     type Output = ();
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(
         &self,
@@ -147,7 +147,7 @@ where
                         server.address = %sni,
                         "block connection for unknown destination",
                     );
-                    return Err(OpaqueError::from_display("unknown destination"));
+                    return Err(BoxError::from("unknown destination"));
                 }
             }
         };
@@ -162,7 +162,6 @@ where
         Forwarder::new(self.exec.clone(), fwd_interface)
             .serve(stream)
             .await
-            .map_err(OpaqueError::from_boxed)
     }
 }
 

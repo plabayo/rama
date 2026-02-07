@@ -6,9 +6,9 @@ use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::{Extension, ExtensionsMut, ExtensionsRef};
 use rama_core::{Layer, Service};
-use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_http_types::body::OptionalBody;
 use rama_net::user::UserId;
 use rama_utils::macros::define_inner_service_accessors;
@@ -172,7 +172,7 @@ where
     ResBody: Send + 'static,
 {
     type Output = Response<OptionalBody<ResBody>>;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let Some(credentials) = req
@@ -187,7 +187,7 @@ where
                     .inner
                     .serve(req)
                     .await
-                    .map_err(|err| OpaqueError::from_boxed(err.into()))?
+                    .into_box_error()?
                     .map(OptionalBody::some))
             } else {
                 Ok(Response::builder()
@@ -202,7 +202,7 @@ where
                 .inner
                 .serve(req)
                 .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()))?
+                .into_box_error()?
                 .map(OptionalBody::some))
         } else {
             Ok(Response::builder()

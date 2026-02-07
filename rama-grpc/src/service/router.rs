@@ -2,7 +2,7 @@ use std::convert::Infallible;
 
 use radix_trie::Trie;
 
-use rama_core::{Service, error::OpaqueError, service::BoxService};
+use rama_core::{Service, error::ErrorContext, service::BoxService};
 use rama_http::{Body, Request, Response, service::web::response::IntoResponse};
 use rama_utils::str::arcstr::arcstr;
 
@@ -52,7 +52,7 @@ impl Service<Request> for GrpcRouter {
             return Ok(
                 Status::unimplemented(arcstr!("service name not found in uri path"))
                     .try_into_http::<Body>()
-                    .map_err(OpaqueError::from_std)
+                    .into_box_error()
                     .into_response(),
             );
         };
@@ -62,7 +62,7 @@ impl Service<Request> for GrpcRouter {
                 "no gRPC service found for name '{svc_name}'"
             ))
             .try_into_http::<Body>()
-            .map_err(OpaqueError::from_std)
+            .into_box_error()
             .into_response());
         };
 

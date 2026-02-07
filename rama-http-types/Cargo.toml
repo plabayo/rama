@@ -35,7 +35,6 @@ mime_guess = { workspace = true }
 nom = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
-rama-error = { workspace = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 rand = { workspace = true }

@@ -2,7 +2,7 @@ use super::WriterMode;
 use crate::io::write_http_request;
 use crate::{Body, Request, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
-use rama_core::error::{BoxError, ErrorExt, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
@@ -195,17 +195,14 @@ where
             let body_bytes = body
                 .collect()
                 .await
-                .map_err(|err| {
-                    OpaqueError::from_boxed(err.into())
-                        .context("printer prepare: collect request body")
-                })?
+                .context("printer prepare: collect request body")?
                 .to_bytes();
             let req = Request::from_parts(parts.clone(), Body::from(body_bytes.clone()));
             self.writer.write_request(req).await;
             Request::from_parts(parts, Body::from(body_bytes))
         };
 
-        self.inner.serve(req).await.map_err(Into::into)
+        self.inner.serve(req).await.into_box_error()
     }
 }
 

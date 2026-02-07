@@ -6,7 +6,7 @@ use crate::{
     Protocol,
     address::{Domain, Host},
 };
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_http_types::request::Parts;
@@ -65,7 +65,7 @@ impl RequestContext {
 }
 
 impl TryFrom<&Parts> for RequestContext {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(parts: &Parts) -> Result<Self, Self::Error> {
         try_request_ctx_from_http_parts(parts)
@@ -73,7 +73,7 @@ impl TryFrom<&Parts> for RequestContext {
 }
 
 impl<Body> TryFrom<&Request<Body>> for RequestContext {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(req: &Request<Body>) -> Result<Self, Self::Error> {
         try_request_ctx_from_http_parts(req)
@@ -82,7 +82,7 @@ impl<Body> TryFrom<&Request<Body>> for RequestContext {
 
 pub fn try_request_ctx_from_http_parts(
     parts: impl HttpRequestParts,
-) -> Result<RequestContext, OpaqueError> {
+) -> Result<RequestContext, BoxError> {
     let uri = parts.uri();
 
     let protocol = protocol_from_uri_or_extensions(parts.extensions(), uri);
@@ -143,7 +143,7 @@ pub fn try_request_ctx_from_http_parts(
                 })
         })
         .ok_or_else(|| {
-            OpaqueError::from_display("RequestContext: no authourity found in http::Request")
+            BoxError::from("RequestContext: no authourity found in http::Request")
         })?;
 
     tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
@@ -235,7 +235,7 @@ impl From<&RequestContext> for TransportContext {
 }
 
 impl<Body> TryRefIntoTransportContext for rama_http_types::Request<Body> {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
         self.try_into()
@@ -243,7 +243,7 @@ impl<Body> TryRefIntoTransportContext for rama_http_types::Request<Body> {
 }
 
 impl TryRefIntoTransportContext for rama_http_types::request::Parts {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
         self.try_into()

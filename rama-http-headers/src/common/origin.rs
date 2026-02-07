@@ -2,8 +2,8 @@ use std::convert::TryFrom;
 use std::fmt;
 
 use rama_core::bytes::Bytes;
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::telemetry::tracing;
-use rama_error::{ErrorContext as _, OpaqueError};
 use rama_http_types::HeaderValue;
 use rama_http_types::uri::{self, Authority, Scheme, Uri};
 
@@ -187,7 +187,7 @@ impl TryFromValues for OriginOrNull {
 }
 
 impl<'a> TryFrom<&'a OriginOrNull> for HeaderValue {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(origin: &'a OriginOrNull) -> Result<Self, Self::Error> {
         match origin {

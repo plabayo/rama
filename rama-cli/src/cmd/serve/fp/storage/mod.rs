@@ -1,6 +1,6 @@
 use chrono::Utc;
 use rama::{
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     http::proto::h1::Http1HeaderMap,
     net::tls::client::ClientHello,
     telemetry::tracing,
@@ -20,7 +20,7 @@ pub(super) struct Storage {
 }
 
 impl Storage {
-    pub(super) async fn try_new(pg_url: String) -> Result<Self, OpaqueError> {
+    pub(super) async fn try_new(pg_url: String) -> Result<Self, BoxError> {
         tracing::debug!(
             url.full = %pg_url,
             "create new PG storage",
@@ -46,7 +46,7 @@ impl Storage {
         ua: String,
         auth: bool,
         settings: Http1Settings,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h1 settings for UA: {settings:?}",
@@ -78,7 +78,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h1 navigateheaders for UA: {headers:?}",
@@ -110,7 +110,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h1 fetch headers for UA: {headers:?}",
@@ -142,7 +142,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h1 xhr headers for UA: {headers:?}",
@@ -174,7 +174,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h1 form headers for UA: {headers:?}",
@@ -206,7 +206,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h1 ws headers for UA: {headers:?}",
@@ -238,7 +238,7 @@ impl Storage {
         ua: String,
         auth: bool,
         settings: Http2Settings,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h2 settings for UA: {settings:?}",
@@ -270,7 +270,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h2 navigate headers for UA: {headers:?}",
@@ -302,7 +302,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h2 fetch headers for UA: {headers:?}",
@@ -334,7 +334,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h2 xhr headers for UA: {headers:?}",
@@ -366,7 +366,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h2 form headers for UA: {headers:?}",
@@ -398,7 +398,7 @@ impl Storage {
         ua: String,
         auth: bool,
         headers: Http1HeaderMap,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store h2 ws headers for UA: {headers:?}",
@@ -430,7 +430,7 @@ impl Storage {
         ua: String,
         auth: bool,
         tls_client_hello: ClientHello,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store tls client hello for UA: {tls_client_hello:?}",
@@ -462,7 +462,7 @@ impl Storage {
         ua: String,
         auth: bool,
         tls_client_hello: ClientHello,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store tls ws client config overwritesfor UA: {tls_client_hello:?}",
@@ -498,7 +498,7 @@ impl Storage {
         ua: String,
         auth: bool,
         js_web_apis: JsProfileWebApis,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store js web apis for UA: {js_web_apis:?}",
@@ -530,7 +530,7 @@ impl Storage {
         ua: String,
         auth: bool,
         source_info: UserAgentSourceInfo,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), BoxError> {
         tracing::debug!(
             user_agent.original = %ua,
             "store source info for UA: {source_info:?}",

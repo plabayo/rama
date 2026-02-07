@@ -1,6 +1,6 @@
 use crate::{HeaderDecode, HeaderEncode, TypedHeader, util};
 use rama_core::{
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     telemetry::tracing,
 };
 use rama_http_types::{HeaderName, HeaderValue, header};
@@ -147,7 +147,7 @@ impl Iterator for ViaIterator {
 }
 
 impl std::str::FromStr for ViaElement {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut bytes = s.as_bytes();
@@ -163,7 +163,7 @@ impl std::str::FromStr for ViaElement {
                         .context("parse via utf-8 protocol as protocol")?;
                     bytes = &bytes[index + 1..];
                     let index = bytes.iter().position(|b| *b == b' ').ok_or_else(|| {
-                        OpaqueError::from_display("via str: missing space after protocol separator")
+                        BoxError::from("via str: missing space after protocol separator")
                     })?;
                     let version =
                         ForwardedVersion::try_from(&bytes[..index]).context("parse via version")?;
@@ -179,7 +179,7 @@ impl std::str::FromStr for ViaElement {
                 _ => unreachable!(),
             },
             None => {
-                return Err(OpaqueError::from_display("via str: missing version"));
+                return Err(BoxError::from("via str: missing version"));
             }
         };
 

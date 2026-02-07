@@ -1,7 +1,7 @@
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
 use crate::{Request, Response};
+use rama_core::error::BoxError;
 use rama_core::{Layer, Service};
-use rama_error::OpaqueError;
 use rama_http_types::mime::Mime;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -22,7 +22,7 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
     /// # Errors
     ///
     /// Errors if `header_value` is not in the form: `type/subtype`, such as `application/json`
-    pub fn try_accept_for_str(value: &str) -> Result<Self, OpaqueError> {
+    pub fn try_accept_for_str(value: &str) -> Result<Self, BoxError> {
         Ok(Self::custom(AcceptHeader::try_new(value)?))
     }
 
@@ -93,7 +93,7 @@ impl<S, ResBody> ValidateRequestHeader<S, AcceptHeader<ResBody>> {
     /// # Errors
     ///
     /// Errors if `header_value` is not in the form: `type/subtype`, such as `application/json`
-    pub fn try_accept_for_str(inner: S, value: &str) -> Result<Self, OpaqueError> {
+    pub fn try_accept_for_str(inner: S, value: &str) -> Result<Self, BoxError> {
         Ok(Self::custom(inner, AcceptHeader::try_new(value)?))
     }
 

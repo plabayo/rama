@@ -1,12 +1,11 @@
 use rama_core::Layer;
 use rama_core::Service;
 use rama_core::bytes::BytesMut;
+use rama_core::error::BoxError;
+use rama_core::error::ErrorContext;
 use rama_core::extensions::ChainableExtensions;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
-use rama_error::BoxError;
-use rama_error::ErrorContext;
-use rama_error::OpaqueError;
 use rama_http_headers::HeaderMapExt;
 use rama_http_headers::Upgrade;
 use rama_http_types::HeaderValue;
@@ -59,7 +58,7 @@ where
         let EstablishedClientConnection {
             mut conn,
             input: mut req,
-        } = self.inner.connect(req).await.map_err(Into::into)?;
+        } = self.inner.connect(req).await.into_box_error()?;
 
         let ext_chain = (&conn, &req);
         let version = ext_chain
@@ -141,7 +140,7 @@ impl<S> Layer<S> for RequestVersionAdapterLayer {
 pub fn adapt_request_version<Body>(
     request: &mut Request<Body>,
     target_version: Version,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     let request_version = request.version();
     if request_version == target_version {
         tracing::trace!(
@@ -178,7 +177,7 @@ pub fn adapt_request_version<Body>(
 
 /// Merge multiple cookie headers into a single Cookie header for HTTP/1.x compliance
 /// per RFC 6265 §5.4: "the user agent MUST NOT attach more than one Cookie header field"
-fn merge_cookie_headers_for_http1<Body>(request: &mut Request<Body>) -> Result<(), OpaqueError> {
+fn merge_cookie_headers_for_http1<Body>(request: &mut Request<Body>) -> Result<(), BoxError> {
     if let Entry::Occupied(cookie_headers) = request.headers_mut().entry(COOKIE) {
         let Some((bytes_count, header_count)) = cookie_headers
             .iter()

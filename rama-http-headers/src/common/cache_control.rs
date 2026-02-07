@@ -3,7 +3,7 @@ use std::iter::FromIterator;
 use std::str::FromStr;
 use std::time::Duration;
 
-use rama_error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::util::{self, Seconds, csv};
@@ -266,7 +266,7 @@ impl CacheControl {
 
     rama_utils::macros::generate_set_and_with! {
         /// Try to set the `max-age` directive.
-        pub fn max_age_duration(mut self, dur: Duration) -> Result<Self, OpaqueError> {
+        pub fn max_age_duration(mut self, dur: Duration) -> Result<Self, BoxError> {
             self.max_age = Some(Seconds::try_from_duration(dur).context("duration contains sub nano seconds")?);
             Ok(self)
         }
@@ -290,7 +290,7 @@ impl CacheControl {
 
     rama_utils::macros::generate_set_and_with! {
         /// Try to set the `max-stale` directive.
-        pub fn max_stale_duration(mut self, dur: Duration) -> Result<Self, OpaqueError> {
+        pub fn max_stale_duration(mut self, dur: Duration) -> Result<Self, BoxError> {
             self.max_stale = Some(Seconds::try_from_duration(dur).context("duration contains sub nano seconds")?);
             Ok(self)
         }
@@ -314,7 +314,7 @@ impl CacheControl {
 
     rama_utils::macros::generate_set_and_with! {
         /// Try to set the `min-fresh` directive.
-        pub fn min_fresh_duration(mut self, dur: Duration) -> Result<Self, OpaqueError> {
+        pub fn min_fresh_duration(mut self, dur: Duration) -> Result<Self, BoxError> {
             self.min_fresh = Some(Seconds::try_from_duration(dur).context("duration contains sub nano seconds")?);
             Ok(self)
         }
@@ -338,7 +338,7 @@ impl CacheControl {
 
     rama_utils::macros::generate_set_and_with! {
         /// Try to set the `s-maxage` directive.
-        pub fn s_max_age_duration(mut self, dur: Duration) -> Result<Self, OpaqueError> {
+        pub fn s_max_age_duration(mut self, dur: Duration) -> Result<Self, BoxError> {
             self.s_max_age = Some(Seconds::try_from_duration(dur).context("duration contains sub nano seconds")?);
             Ok(self)
         }

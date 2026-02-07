@@ -1,5 +1,8 @@
 use crate::{Body, Response, StreamingBody, body::util::BodyExt};
-use rama_core::{bytes::Bytes, error::BoxError};
+use rama_core::{
+    bytes::Bytes,
+    error::{BoxError, ErrorContext as _},
+};
 use rama_http_types::proto::{
     h1::Http1HeaderMap,
     h2::{PseudoHeader, PseudoHeaderOrder},
@@ -86,7 +89,7 @@ where
     }
 
     let body = if write_body {
-        let body = body.collect().await.map_err(Into::into)?.to_bytes();
+        let body = body.collect().await.into_box_error()?.to_bytes();
         w.write_all(b"\r\n").await?;
         if !body.is_empty() {
             w.write_all(body.as_ref()).await?;

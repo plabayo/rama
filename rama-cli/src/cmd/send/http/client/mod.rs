@@ -1,6 +1,6 @@
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     http::{
         Request, Response, StreamingBody,
         client::{
@@ -70,7 +70,7 @@ pub(super) async fn new(
         }),
         cfg.emulate
             .then(|| {
-                Ok::<_, OpaqueError>((
+                Ok::<_, BoxError>((
                     UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::try_embedded()?))
                         .with_try_auto_detect_user_agent(true)
                         .with_select_fallback(UserAgentSelectFallback::Random),
@@ -98,7 +98,7 @@ pub(super) async fn new(
                         .context("parse password as non-empty-str")?;
                     basic.set_password(password);
                 }
-                Ok::<_, OpaqueError>(AddAuthorizationLayer::new(basic).with_sensitive(true))
+                Ok::<_, BoxError>(AddAuthorizationLayer::new(basic).with_sensitive(true))
             })
             .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),
@@ -125,7 +125,7 @@ pub(super) async fn new(
 
 fn new_inner_client(
     cfg: &SendCommand,
-) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
+) -> Result<impl Service<Request, Output = Response, Error = BoxError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate {
         TlsConnectorDataBuilder::new()
     } else {
@@ -142,7 +142,7 @@ fn new_inner_client(
         (false, false, true, false) => Some(SslVersion::TLS1_2),
         (false, false, false, true) => Some(SslVersion::TLS1_3),
         (false, false, false, false) => None,
-        _ => Err(OpaqueError::from_display(
+        _ => Err(BoxError::from(
             "--tlsv1.0, --tlsv1.1, --tlsv1.2, --tlsv1.3 are mutually exclusive",
         ))?,
     } {

@@ -182,7 +182,7 @@ where
             );
         }
 
-        self.inner.serve(req).await.map_err(Into::into)
+        self.inner.serve(req).await.into_box_error()
     }
 }
 

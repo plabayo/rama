@@ -2,8 +2,7 @@ use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
-use rama_core::error::ErrorContext;
-use rama_core::error::{BoxError, ErrorExt, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
@@ -16,7 +15,7 @@ use rama_net::transport::TryRefIntoTransportContext;
 
 #[cfg(feature = "http")]
 use ::{
-    rama_core::extensions::Extensions,
+    rama_core::{error::ErrorExt, extensions::Extensions},
     rama_http_types::{Version, conn::TargetHttpVersion},
 };
 
@@ -181,12 +180,11 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.map_err(Into::into)?;
+            self.inner.connect(input).await.into_box_error()?;
 
-        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .context("TlsConnector(auto): compute transport context")
-        })?;
+        let transport_ctx = input
+            .try_ref_into_transport_ctx()
+            .context("TlsConnector(auto): compute transport context")?;
 
         if !transport_ctx
             .app_protocol
@@ -252,12 +250,11 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.map_err(Into::into)?;
+            self.inner.connect(input).await.into_box_error()?;
 
-        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .context("TlsConnector(auto): compute transport context")
-        })?;
+        let transport_ctx = input
+            .try_ref_into_transport_ctx()
+            .context("TlsConnector(auto): compute transport context")?;
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
             server.port = transport_ctx.authority.port,
@@ -294,7 +291,7 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } =
-            self.inner.connect(input).await.map_err(Into::into)?;
+            self.inner.connect(input).await.into_box_error()?;
 
         let server_host = if let Some(host) = input
             .extensions()
@@ -383,15 +380,17 @@ fn set_target_http_version(
     request_extensions: &Extensions,
     conn_extensions: &mut Extensions,
     tls_params: &NegotiatedTlsParameters,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
         let neg_version: Version = proto.try_into()?;
         if let Some(target_version) = request_extensions.get::<TargetHttpVersion>()
             && target_version.0 != neg_version
         {
-            return Err(OpaqueError::from_display(format!(
-                "TargetHttpVersion was set to {target_version:?} but tls alpn negotiated {neg_version:?}"
-            )));
+            return Err(BoxError::from(
+                "TargetHTTPVersion incompatible with tls ALPN negotiated version",
+            )
+            .context_debug_field("target_version", *target_version)
+            .context_debug_field("negotiated_version", neg_version));
         }
 
         tracing::trace!(

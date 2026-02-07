@@ -368,7 +368,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
     use ::base64::Engine;
     use ::rama::{
         Layer as _,
-        error::OpaqueError,
+        error::BoxError,
         http::{
             Body,
             headers::StrictTransportSecurity,
@@ -490,7 +490,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
                     let key_pem_base64 =
                         BASE64.encode(key.private_key_to_pem_pkcs8().context("key to pem pkcs8")?);
 
-                    Ok::<_, OpaqueError>(Json(CertOrderOutput {
+                    Ok::<_, BoxError>(Json(CertOrderOutput {
                         crt_pem_base64,
                         key_pem_base64,
                     }))

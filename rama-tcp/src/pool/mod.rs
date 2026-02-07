@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rand::RngCore;
 
 use crate::{TcpStream, client::TcpStreamConnector};
@@ -67,13 +67,13 @@ impl<C: TcpStreamConnector> TcpStreamConnectorPool<C> {
 
 impl<C: TcpStreamConnector> TcpStreamConnector for TcpStreamConnectorPool<C>
 where
-    <C as TcpStreamConnector>::Error: From<OpaqueError>,
+    <C as TcpStreamConnector>::Error: From<BoxError>,
 {
     type Error = <C as TcpStreamConnector>::Error;
 
     async fn connect(&self, addr: std::net::SocketAddr) -> Result<TcpStream, Self::Error> {
         let connector = self.selector.next(&self.connectors).ok_or_else(|| {
-            OpaqueError::from_display("TcpStreamConnectorPool has empty connectors collection")
+            BoxError::from("TcpStreamConnectorPool has empty connectors collection")
         })?;
         connector.connect(addr).await
     }

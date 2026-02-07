@@ -44,7 +44,7 @@ where
 
         // spawn actual work to ensure we run it within the tokio runtime
         let handle = self.handle.spawn(async move {
-            let resp = svc.serve(request).await.map_err(Into::into)?;
+            let resp = svc.serve(request).await.into_box_error()?;
             let (parts, body) = resp.into_parts();
             let body = body.collect().await?.to_bytes();
             Ok(http::Response::from_parts(parts.into(), body))

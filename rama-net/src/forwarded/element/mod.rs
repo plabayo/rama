@@ -2,7 +2,7 @@ use super::{ForwardedProtocol, ForwardedVersion, NodeId};
 use crate::address::{Domain, HostWithOptPort};
 use crate::address::{Host, HostWithPort, SocketAddress};
 use ahash::HashMap;
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::net::{Ipv6Addr, SocketAddr};
@@ -374,7 +374,7 @@ impl fmt::Display for ForwardedElement {
 }
 
 impl std::str::FromStr for ForwardedElement {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_single_forwarded_element(s.as_bytes())
@@ -382,7 +382,7 @@ impl std::str::FromStr for ForwardedElement {
 }
 
 impl TryFrom<String> for ForwardedElement {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         parse_single_forwarded_element(s.as_bytes())
@@ -390,7 +390,7 @@ impl TryFrom<String> for ForwardedElement {
 }
 
 impl TryFrom<&str> for ForwardedElement {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         parse_single_forwarded_element(s.as_bytes())
@@ -399,7 +399,7 @@ impl TryFrom<&str> for ForwardedElement {
 
 #[cfg(feature = "http")]
 impl TryFrom<HeaderValue> for ForwardedElement {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
         parse_single_forwarded_element(header.as_bytes())
@@ -408,7 +408,7 @@ impl TryFrom<HeaderValue> for ForwardedElement {
 
 #[cfg(feature = "http")]
 impl TryFrom<&HeaderValue> for ForwardedElement {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
         parse_single_forwarded_element(header.as_bytes())
@@ -416,7 +416,7 @@ impl TryFrom<&HeaderValue> for ForwardedElement {
 }
 
 impl TryFrom<Vec<u8>> for ForwardedElement {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         parse_single_forwarded_element(bytes.as_ref())
@@ -424,7 +424,7 @@ impl TryFrom<Vec<u8>> for ForwardedElement {
 }
 
 impl TryFrom<&[u8]> for ForwardedElement {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         parse_single_forwarded_element(bytes)
@@ -432,7 +432,7 @@ impl TryFrom<&[u8]> for ForwardedElement {
 }
 
 impl std::str::FromStr for ForwardedAuthority {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let address = HostWithOptPort::from_str(s)?;

@@ -1,5 +1,6 @@
 use super::{LruDropPool, PooledConnector, ReqToConnID};
-use crate::{Protocol, address::HostWithOptPort, client::pool::OpaqueError, http::RequestContext};
+use crate::{Protocol, address::HostWithOptPort, http::RequestContext};
+use rama_core::error::BoxError;
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_http_types::Request;
 use std::time::Duration;
@@ -25,7 +26,7 @@ impl super::ConnID for BasicHttpConId {
 impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
     type ID = BasicHttpConId;
 
-    fn id(&self, req: &Request<Body>) -> Result<Self::ID, OpaqueError> {
+    fn id(&self, req: &Request<Body>) -> Result<Self::ID, BoxError> {
         let req_ctx = match req.extensions().get::<RequestContext>() {
             Some(ctx) => ctx,
             None => &RequestContext::try_from(req)?,
@@ -74,10 +75,8 @@ impl HttpPooledConnectorConfig {
     pub fn build_connector<C: ExtensionsMut, S>(
         self,
         inner: S,
-    ) -> Result<
-        PooledConnector<S, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
-        OpaqueError,
-    > {
+    ) -> Result<PooledConnector<S, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>, BoxError>
+    {
         let pool = LruDropPool::try_new(self.max_active, self.max_total)?
             .maybe_with_idle_timeout(self.idle_timeout);
 

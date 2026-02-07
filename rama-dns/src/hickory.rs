@@ -13,7 +13,7 @@ use hickory_resolver::{
     proto::rr::rdata::{A, AAAA},
 };
 
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
@@ -108,7 +108,7 @@ impl HickoryDns {
     /// Construct a new [`HickoryDns`] with the system configuration.
     ///
     /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
-    pub fn try_new_system() -> Result<Self, OpaqueError> {
+    pub fn try_new_system() -> Result<Self, BoxError> {
         tracing::trace!("try to create HickoryDns resolver using system config");
         Ok(TokioResolver::builder_tokio()
             .context("build async dns resolver with system conf")
@@ -169,7 +169,7 @@ impl HickoryDnsBuilder {
 }
 
 impl DnsResolver for HickoryDns {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
         let name = name_from_domain(domain)?;
@@ -214,7 +214,7 @@ impl DnsResolver for HickoryDns {
     }
 }
 
-fn name_from_domain(domain: Domain) -> Result<Name, OpaqueError> {
+fn name_from_domain(domain: Domain) -> Result<Name, BoxError> {
     let is_fqdn = domain.is_fqdn();
     let mut name = Name::from_utf8(domain).context("try to consume a Domain as a Dns Name")?;
     name.set_fqdn(is_fqdn);

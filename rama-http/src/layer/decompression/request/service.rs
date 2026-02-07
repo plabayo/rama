@@ -8,7 +8,7 @@ use crate::layer::{
 use crate::{HeaderValue, Request, Response, StatusCode, header};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::Body;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -82,7 +82,7 @@ where
             .serve(req)
             .await
             .map(|res| res.map(Body::new))
-            .map_err(Into::into)
+            .into_box_error()
     }
 }
 

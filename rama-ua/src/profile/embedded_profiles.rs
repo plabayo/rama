@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rama_core::error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http::proto::h1::Http1HeaderMap;
 use serde::Deserialize;
 
@@ -10,7 +10,7 @@ use crate::*;
 /// Load the profiles embedded with the rama-ua crate.
 ///
 /// This function is only available if the `embed-profiles` feature is enabled.
-pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProfile>, OpaqueError> {
+pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProfile>, BoxError> {
     let profiles: Vec<UserAgentProfileRow> =
         serde_json::from_str(include_str!("embed_profiles.json"))
             .context("deserialize embedded profiles")?;

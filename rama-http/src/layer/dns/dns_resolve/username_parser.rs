@@ -1,7 +1,7 @@
 use super::DnsResolveMode;
 use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 use rama_core::{
-    error::{ErrorContext, OpaqueError, error},
+    error::{BoxError, ErrorContext},
     extensions::Extensions,
     telemetry::tracing,
 };
@@ -27,7 +27,7 @@ impl DnsResolveModeUsernameParser {
 }
 
 impl UsernameLabelParser for DnsResolveModeUsernameParser {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn parse_label(&mut self, label: &str) -> UsernameLabelState {
         if self.key_found {
@@ -53,7 +53,7 @@ impl UsernameLabelParser for DnsResolveModeUsernameParser {
 
     fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
         if self.key_found {
-            return Err(error!("unused dns resolve mode username key: dns"));
+            return Err(BoxError::from("unused dns resolve mode username key: dns"));
         }
         ext.insert(self.mode);
         Ok(())

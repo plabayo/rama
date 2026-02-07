@@ -53,7 +53,7 @@ use rama::{
         },
         jose::EcdsaKey,
     },
-    error::OpaqueError,
+    error::BoxError,
     graceful,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
@@ -278,7 +278,7 @@ impl DynamicCertIssuer for TlsAcmeIssue {
         &self,
         _client_hello: ClientHello,
         _server_name: Option<Domain>,
-    ) -> Result<ServerAuthData, OpaqueError> {
+    ) -> Result<ServerAuthData, BoxError> {
         Ok(self.0.clone())
     }
 }

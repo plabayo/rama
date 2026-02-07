@@ -16,7 +16,7 @@ use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
     bytes::Bytes,
     conversion::RamaTryInto,
-    error::{ErrorContext, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
 };
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
@@ -338,7 +338,7 @@ impl TlsConnectorDataBuilder {
         pub fn rama_alpn_protos(
             mut self,
             protos: Option<&[ApplicationProtocol]>,
-        ) -> Result<Self, OpaqueError> {
+        ) -> Result<Self, BoxError> {
             self.alpn_protos = protos
                 .map(|protos| {
                     ApplicationProtocol::encode_alpns(protos)
@@ -480,7 +480,7 @@ impl TlsConnectorDataBuilder {
     ///
     /// [`TlsConnector`]: super::TlsConnector
     /// [`tls_connect`]: super::tls_connect
-    pub fn build(&self) -> Result<TlsConnectorData, OpaqueError> {
+    pub fn build(&self) -> Result<TlsConnectorData, BoxError> {
         let mut cfg_builder =
             rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
@@ -493,7 +493,7 @@ impl TlsConnectorDataBuilder {
             {
                 // on windows it seems to have no root CA by default when using boringssl
                 // this code path is there to set it anyway
-                static WINDOWS_ROOT_CA: std::sync::LazyLock<Result<X509Store, OpaqueError>> =
+                static WINDOWS_ROOT_CA: std::sync::LazyLock<Result<X509Store, BoxError>> =
                     std::sync::LazyLock::new(|| {
                         trace!("boring connector: windows: load system certs");
 
@@ -590,7 +590,7 @@ impl TlsConnectorDataBuilder {
                         );
 
                         if total_added_cert_count == 0 {
-                            return Err(OpaqueError::from_display(
+                            return Err(BoxError::from(
                                 "failed to add windows certs from system (user/machine x Root/CA)",
                             ));
                         }
@@ -598,7 +598,9 @@ impl TlsConnectorDataBuilder {
                         Ok(builder.build())
                     });
 
-                let store_ref = WINDOWS_ROOT_CA.as_ref().context("create windows root CA")?;
+                let store_ref = WINDOWS_ROOT_CA
+                    .as_ref()
+                    .map_err(|err| err.to_string().context("create windows root CA"))?;
                 cfg_builder.set_cert_store_ref(store_ref);
             }
             #[cfg(not(target_os = "windows"))]
@@ -726,7 +728,7 @@ impl TlsConnectorDataBuilder {
                 .set_private_key(auth.private_key.as_ref())
                 .context("build (boring) ssl connector: set private key")?;
             if auth.cert_chain.is_empty() {
-                return Err(OpaqueError::from_display(
+                return Err(BoxError::from(
                     "build (boring) ssl connector: cert chain is empty",
                 ));
             }
@@ -864,7 +866,7 @@ impl std::fmt::Debug for TlsConnectorDataBuilder {
 impl TlsConnectorDataBuilder {
     pub fn try_from_multiple_client_configs<'a>(
         cfg_it: impl Iterator<Item = &'a rama_net::tls::client::ClientConfig>,
-    ) -> Result<Self, OpaqueError> {
+    ) -> Result<Self, BoxError> {
         let mut keylog_intent = None;
         let mut extension_order = None;
         let mut cipher_suites = None;
@@ -978,8 +980,8 @@ impl TlsConnectorDataBuilder {
                                 min_ver
                             );
                             min_ssl_version = Some((*min_ver).rama_try_into().map_err(|v| {
-                                OpaqueError::from_display(format!("protocol version {v}"))
-                                    .context("build boring ssl connector: min proto version")
+                                BoxError::from("build boring ssl connector: cast min proto version")
+                                    .context_field("protocol_version", v)
                             })?);
                         }
 
@@ -1000,8 +1002,8 @@ impl TlsConnectorDataBuilder {
                                 max_ver
                             );
                             max_ssl_version = Some((*max_ver).rama_try_into().map_err(|v| {
-                                OpaqueError::from_display(format!("protocol version {v}"))
-                                    .context("build boring ssl connector: max proto version")
+                                BoxError::from("build boring ssl connector: cast max proto version")
+                                    .context_field("protocol_version", v)
                             })?);
                         }
                     }
@@ -1128,7 +1130,7 @@ impl TlsConnectorDataBuilder {
 }
 
 impl TryFrom<&rama_net::tls::client::ClientConfig> for TlsConnectorDataBuilder {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
         Self::try_from_multiple_client_configs(std::iter::once(value))
@@ -1136,7 +1138,7 @@ impl TryFrom<&rama_net::tls::client::ClientConfig> for TlsConnectorDataBuilder {
 }
 
 impl TryFrom<&Arc<rama_net::tls::client::ClientConfig>> for TlsConnectorDataBuilder {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &Arc<rama_net::tls::client::ClientConfig>) -> Result<Self, Self::Error> {
         Self::try_from_multiple_client_configs(std::iter::once(value.as_ref()))
@@ -1144,7 +1146,7 @@ impl TryFrom<&Arc<rama_net::tls::client::ClientConfig>> for TlsConnectorDataBuil
 }
 
 impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: ClientHello) -> Result<Self, Self::Error> {
         let client_config = rama_net::tls::client::ClientConfig::from(value);
@@ -1153,7 +1155,7 @@ impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
 }
 
 impl TryFrom<ClientAuth> for ConnectorConfigClientAuth {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(auth: ClientAuth) -> Result<Self, Self::Error> {
         match auth {
@@ -1210,7 +1212,7 @@ impl TryFrom<ClientAuth> for ConnectorConfigClientAuth {
     }
 }
 
-fn self_signed_client_auth() -> Result<(Vec<X509>, PKey<Private>), OpaqueError> {
+fn self_signed_client_auth() -> Result<(Vec<X509>, PKey<Private>), BoxError> {
     let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
     let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
 

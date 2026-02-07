@@ -4,7 +4,7 @@ use rama::{
     Service,
     cli::ForwardKind,
     combinators::{Either, Either7},
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     graceful::ShutdownGuard,
     http::{
@@ -262,7 +262,6 @@ where
     let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind fp service")?;
 
     let bind_address = tcp_listener

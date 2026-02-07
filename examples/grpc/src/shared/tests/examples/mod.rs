@@ -1,6 +1,6 @@
 use rama::{
     Service,
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     http::{self, Body, client::EasyHttpWebClient},
     net::test_utils::client::{MockConnectorService, MockSocket},
     rt::Executor,
@@ -10,7 +10,7 @@ use rama::{
 mod health;
 mod helloworld;
 
-pub(super) type WebClient = BoxService<http::Request, http::Response, OpaqueError>;
+pub(super) type WebClient = BoxService<http::Request, http::Response, BoxError>;
 
 // TODO: might make sense in future to turn this into a general utility,
 // for testing or generic one-time stuff. Be it perhaps with an actual error

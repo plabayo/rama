@@ -1,6 +1,6 @@
 use pin_project_lite::pin_project;
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::futures::stream::Stream;
-use rama_error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -29,7 +29,7 @@ where
     B: AsRef<[u8]>,
     E: Into<BoxError>,
 {
-    type Item = Result<String, OpaqueError>;
+    type Item = Result<String, BoxError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         let this = self.project();
@@ -51,10 +51,7 @@ where
                     }
                 }
             }
-            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(OpaqueError::from_boxed(
-                err.into(),
-            )
-            .context("utf8 error")))),
+            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err.context("utf8 error")))),
             Poll::Ready(None) => {
                 *this.terminated = true;
                 if this.buffer.is_empty() {

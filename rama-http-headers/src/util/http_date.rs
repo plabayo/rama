@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::time::SystemTime;
 
 use rama_core::bytes::Bytes;
-use rama_error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::header::HeaderValue;
 
 use super::IterExt;
@@ -53,7 +53,7 @@ impl super::TryFromValues for HttpDate {
 }
 
 impl TryFrom<HttpDate> for HeaderValue {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(date: HttpDate) -> Result<Self, Self::Error> {
         (&date).try_into()
@@ -61,7 +61,7 @@ impl TryFrom<HttpDate> for HeaderValue {
 }
 
 impl TryFrom<&HttpDate> for HeaderValue {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(date: &HttpDate) -> Result<Self, Self::Error> {
         let s = date.to_string();
@@ -71,11 +71,10 @@ impl TryFrom<&HttpDate> for HeaderValue {
 }
 
 impl FromStr for HttpDate {
-    type Err = OpaqueError;
-    fn from_str(s: &str) -> Result<Self, OpaqueError> {
-        Ok(Self(s.parse().map_err(|_| {
-            OpaqueError::from_display("invalid http date")
-        })?))
+    type Err = BoxError;
+
+    fn from_str(s: &str) -> Result<Self, BoxError> {
+        Ok(Self(s.parse().context("invalid http date")?))
     }
 }
 

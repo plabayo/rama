@@ -87,7 +87,7 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::{ExtensionsMut, ExtensionsRef},
     graceful::Shutdown,
     http::{
@@ -169,8 +169,8 @@ async fn main() -> Result<(), BoxError> {
     tracing::info!("bind SNI MITM proxy to {INTERFACE}");
     let tcp_listener = TcpListener::bind(INTERFACE, exec.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
-        .with_context(|| format!("bind tcp proxy to {INTERFACE}"))?;
+        .context("bind tcp proxy")
+        .context_field("interface", INTERFACE)?;
 
     let https_client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
@@ -198,7 +198,7 @@ async fn main() -> Result<(), BoxError> {
                     .parse()
                     .context("parse raw addr as SocketAddress")?;
                 let connect_target = ConnectorTarget(addr.into());
-                Ok::<_, OpaqueError>(AddInputExtensionLayer::new(connect_target))
+                Ok::<_, BoxError>(AddInputExtensionLayer::new(connect_target))
             })
             .transpose()
             .context(
@@ -257,7 +257,7 @@ where
     T: Service<SniPeekStream<S>, Output = (), Error: Into<BoxError>>,
 {
     type Output = ();
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(
         &self,
@@ -273,7 +273,6 @@ where
                 .https_svc
                 .serve(stream)
                 .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()))
                 .context("MITM proxy https data for stream without SNI");
         };
 
@@ -286,8 +285,8 @@ where
             self.https_svc
                 .serve(stream)
                 .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()))
-                .with_context(|| format!("MITM proxy https data for {sni}"))?;
+                .context("MITM proxy https data")
+                .context_field("sni", sni)?;
         } else {
             // preserve traffic as is, no MITM even
             Forwarder::new(
@@ -299,8 +298,8 @@ where
             )
             .serve(stream)
             .await
-            .map_err(OpaqueError::from_boxed)
-            .with_context(|| format!("forward data for {sni}"))?;
+            .context("forward data")
+            .context_field("sni", sni)?;
         }
 
         Ok(())
@@ -318,10 +317,10 @@ struct HttpsMITMService<C> {
 
 impl<C> Service<Request> for HttpsMITMService<C>
 where
-    C: Service<Request, Output = Response, Error = OpaqueError>,
+    C: Service<Request, Output = Response, Error = BoxError>,
 {
     type Output = Response;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
         let Some(domain) = req
@@ -360,9 +359,12 @@ where
 
             tracing::info!("modify ramaproxy.org req/resp headers");
             req.headers_mut().insert("x-proxy-via", PROXY_HEADER);
-            let mut resp = self.https_client.serve(req).await.with_context(|| {
-                format!("forward HTTPS request for ramaproxy.org domain: {domain}")
-            })?;
+            let mut resp = self
+                .https_client
+                .serve(req)
+                .await
+                .context("forward HTTPS request for ramaproxy.org domain")
+                .context_field("domain", domain)?;
             resp.headers_mut().insert("x-proxy-via", PROXY_HEADER);
             return Ok(resp);
         }
@@ -371,7 +373,8 @@ where
         self.https_client
             .serve(req)
             .await
-            .with_context(|| format!("forward HTTPS request for domain: {domain}"))
+            .context("forward HTTPS request for domain")
+            .context_field("domain", domain)
     }
 }
 

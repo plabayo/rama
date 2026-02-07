@@ -12,7 +12,7 @@ use pin_project_lite::pin_project;
 use rama::{
     Service,
     bytes::{Buf, Bytes},
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     http::{
         self, Body, StreamingBody,
         body::{Frame, SizeHint, util::BodyExt as _},
@@ -139,7 +139,7 @@ pub(super) fn measure_request_body_size_layer(
     })
 }
 
-pub(super) type WebClient = BoxService<http::Request, http::Response, OpaqueError>;
+pub(super) type WebClient = BoxService<http::Request, http::Response, BoxError>;
 
 pub(super) fn mock_io_client<F, Server>(make_server: F) -> WebClient
 where

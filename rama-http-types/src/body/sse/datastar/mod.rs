@@ -31,8 +31,8 @@ pub use patch_signals::{PatchSignals, PatchSignalsReader};
 use crate::sse::{
     Event, EventBuildError, EventDataLineReader, EventDataMultiLineReader, EventDataRead,
 };
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
-use rama_error::{ErrorContext, OpaqueError};
 use std::marker::PhantomData;
 
 pub type DatastarEvent<T = String> = Event<EventData<T>>;
@@ -111,7 +111,7 @@ impl<T> EventData<T> {
 }
 
 impl<T: crate::sse::EventDataWrite> crate::sse::EventDataWrite for EventData<T> {
-    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
+    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError> {
         match self {
             Self::PatchElements(patch_elements) => patch_elements.write_data(w),
             Self::ExecuteScript(exec_script) => exec_script.write_data(w),
@@ -141,11 +141,11 @@ impl<T: EventDataRead> EventDataRead for EventData<T> {
 impl<T: EventDataRead> EventDataLineReader for EventDataReader<T> {
     type Data = EventData<T>;
 
-    fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+    fn read_line(&mut self, line: &str) -> Result<(), BoxError> {
         self.reader.read_line(line)
     }
 
-    fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
+    fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, BoxError> {
         let Some(lines) = self.reader.data(None)? else {
             return Ok(None);
         };

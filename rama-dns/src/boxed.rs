@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_net::address::Domain;
 
 use crate::DnsResolver;
@@ -129,17 +129,17 @@ where
 
     #[inline]
     async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
-        self.0.txt_lookup(domain).await.map_err(Into::into)
+        self.0.txt_lookup(domain).await.into_box_error()
     }
 
     #[inline]
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
-        self.0.ipv4_lookup(domain).await.map_err(Into::into)
+        self.0.ipv4_lookup(domain).await.into_box_error()
     }
 
     #[inline]
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
-        self.0.ipv6_lookup(domain).await.map_err(Into::into)
+        self.0.ipv6_lookup(domain).await.into_box_error()
     }
 
     fn boxed(self) -> BoxDnsResolver {

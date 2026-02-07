@@ -3,7 +3,7 @@ use crate::{Body, Response, StatusCode};
 use csv;
 use rama_core::bytes::buf::Writer;
 use rama_core::bytes::{BufMut, BytesMut};
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_http_headers::ContentType;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;
@@ -130,7 +130,7 @@ impl<T> TryFrom<Csv<T>> for Body
 where
     T: IntoIterator<Item: Serialize>,
 {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(csv: Csv<T>) -> Result<Self, Self::Error> {
         // Use a small initial capacity of 128 bytes like serde_json::to_vec
@@ -140,10 +140,10 @@ where
             let mut wtr = csv::Writer::from_writer(&mut buf);
             let res: Result<Vec<_>, _> = csv.0.into_iter().map(|rec| wtr.serialize(rec)).collect();
             if let Err(err) = res {
-                return Err(OpaqueError::from_std(err));
+                return Err(BoxError::from(err));
             }
             if let Err(err) = wtr.flush() {
-                return Err(OpaqueError::from_std(err));
+                return Err(BoxError::from(err));
             }
         }
 

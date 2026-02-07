@@ -1,6 +1,6 @@
 use super::{ObfNode, ObfPort};
 use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use std::{
     fmt,
     net::{IpAddr, Ipv6Addr, SocketAddr},
@@ -40,12 +40,12 @@ enum NodePort {
 
 impl NodeId {
     /// Try to convert a vector of bytes to a [`NodeId`].
-    pub fn try_from_bytes(vec: Vec<u8>) -> Result<Self, OpaqueError> {
+    pub fn try_from_bytes(vec: Vec<u8>) -> Result<Self, BoxError> {
         vec.try_into()
     }
 
     /// Try to convert a string slice to a [`NodeId`].
-    pub fn try_from_str(s: &str) -> Result<Self, OpaqueError> {
+    pub fn try_from_str(s: &str) -> Result<Self, BoxError> {
         s.to_owned().try_into()
     }
 
@@ -278,7 +278,7 @@ impl fmt::Display for NodePort {
 }
 
 impl std::str::FromStr for NodeId {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
@@ -286,7 +286,7 @@ impl std::str::FromStr for NodeId {
 }
 
 impl TryFrom<String> for NodeId {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         s.as_str().try_into()
@@ -294,7 +294,7 @@ impl TryFrom<String> for NodeId {
 }
 
 impl TryFrom<&str> for NodeId {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         if s.eq_ignore_ascii_case(UNKNOWN_STR) {
@@ -321,14 +321,14 @@ impl TryFrom<&str> for NodeId {
 
         match name {
             NodeName::Ip(IpAddr::V6(_)) if port.is_some() && !s.starts_with('[') => Err(
-                OpaqueError::from_display("missing brackets for node IPv6 address with port"),
+                BoxError::from("missing brackets for node IPv6 address with port"),
             ),
             _ => Ok(Self { name, port }),
         }
     }
 }
 
-fn try_to_parse_str_to_ip(value: &str) -> Result<IpAddr, OpaqueError> {
+fn try_to_parse_str_to_ip(value: &str) -> Result<IpAddr, BoxError> {
     if value.starts_with('[') || value.ends_with(']') {
         let value = value
             .strip_prefix('[')
@@ -343,7 +343,7 @@ fn try_to_parse_str_to_ip(value: &str) -> Result<IpAddr, OpaqueError> {
 }
 
 impl TryFrom<Vec<u8>> for NodeId {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         let s = String::from_utf8(bytes).context("parse node from bytes")?;
@@ -352,7 +352,7 @@ impl TryFrom<Vec<u8>> for NodeId {
 }
 
 impl TryFrom<&[u8]> for NodeId {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(bytes).context("parse node from bytes")?;
@@ -382,7 +382,7 @@ fn try_to_split_node_port_lossy_from_str(s: &str) -> (&str, Option<NodePort>) {
 }
 
 impl std::str::FromStr for NodePort {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.parse::<u16>()

@@ -2,6 +2,7 @@ use super::service_ready::Ready;
 use crate::core::Layer as TowerLayer;
 use crate::core::Service as TowerService;
 use rama_core::error::BoxError;
+use rama_core::error::ErrorContext as _;
 use std::{fmt, pin::Pin};
 
 /// Adapter to use a [`tower::Layer`]-[`tower::Service`] as a [`rama::Layer`]-[`rama::Service`].
@@ -131,7 +132,7 @@ where
 
     fn call(&mut self, input: Input) -> Self::Future {
         let svc = self.inner.clone();
-        Box::pin(async move { svc.serve(input).await.map_err(Into::into) })
+        Box::pin(async move { svc.serve(input).await.into_box_error() })
     }
 }
 

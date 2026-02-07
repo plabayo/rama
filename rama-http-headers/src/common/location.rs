@@ -1,4 +1,4 @@
-use rama_error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::{HeaderValue, Uri, header::ToStrError};
 
 /// `Location` header, defined in
@@ -40,7 +40,7 @@ impl Location {
 }
 
 impl TryFrom<Uri> for Location {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline]
     fn try_from(value: Uri) -> Result<Self, Self::Error> {
@@ -49,7 +49,7 @@ impl TryFrom<Uri> for Location {
 }
 
 impl TryFrom<&Uri> for Location {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &Uri) -> Result<Self, Self::Error> {
         Ok(Self(

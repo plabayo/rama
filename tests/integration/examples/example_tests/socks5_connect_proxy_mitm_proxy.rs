@@ -5,7 +5,7 @@ use crate::examples::example_tests::utils::ExampleRunner;
 use super::utils;
 
 use rama::{
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     http::{BodyExtractExt, server::HttpServer, service::web::Router},
     net::{
         Protocol,
@@ -142,7 +142,7 @@ async fn spawn_https_server() -> SocketAddress {
     bind_addr
 }
 
-fn try_new_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+fn try_new_tls_service_data() -> Result<TlsAcceptorData, BoxError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
             ApplicationProtocol::HTTP_2,
