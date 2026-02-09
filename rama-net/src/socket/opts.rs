@@ -1070,17 +1070,6 @@ impl SocketOptions {
             self.protocol.map(Into::into),
         )?;
 
-        if let Some(addr) = self.address {
-            let std_addr: SocketAddr = addr.into();
-            let socket_addr: SockAddr = std_addr.into();
-            socket.bind(&socket_addr)?;
-        }
-
-        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-        if let Some(ref device) = self.device {
-            socket.bind_device(Some(device.as_bytes()))?;
-        }
-
         if let Some(broadcast) = self.broadcast {
             socket.set_broadcast(broadcast)?;
         }
@@ -1321,6 +1310,17 @@ impl SocketOptions {
             if let Some(txqlen) = self.dccp_qpolicy_txqlen {
                 socket.set_dccp_qpolicy_txqlen(txqlen)?;
             }
+        }
+
+        if let Some(addr) = self.address {
+            let std_addr: SocketAddr = addr.into();
+            let socket_addr: SockAddr = std_addr.into();
+            socket.bind(&socket_addr)?;
+        }
+
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        if let Some(ref device) = self.device {
+            socket.bind_device(Some(device.as_bytes()))?;
         }
 
         Ok(socket)
