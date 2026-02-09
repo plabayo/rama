@@ -139,7 +139,7 @@ fn normalize_path<'a>(root: &Path, path: &'a Path) -> &'a str {
         .expect("path must be valid UTF-8; open a PR in rama if you know how to accept non UTF-8 in const contexts")
 }
 
-fn read_dir(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+fn read_dir(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error + Send + Sync + 'static>> {
     if !dir.is_dir() {
         panic!("\"{}\" is not a directory", dir.display());
     }
@@ -166,7 +166,7 @@ fn read_file(path: &Path) -> Vec<u8> {
 fn resolve_path_from_callee(
     raw: &str,
     get_env: impl Fn(&str) -> Option<String>,
-) -> Result<PathBuf, Box<dyn Error>> {
+) -> Result<PathBuf, Box<dyn Error + Send + Sync + 'static>> {
     let resolved = resolve_path(raw, get_env)?;
 
     #[cfg(target_os = "windows")]
@@ -192,7 +192,7 @@ fn resolve_path_from_callee(
 fn resolve_path(
     raw: &str,
     get_env: impl Fn(&str) -> Option<String>,
-) -> Result<String, Box<dyn Error>> {
+) -> Result<String, Box<dyn Error + Send + Sync + 'static>> {
     let mut unprocessed = raw;
     let mut resolved = String::new();
 

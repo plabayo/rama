@@ -89,7 +89,7 @@ impl<F> MapErrLayer<F> {
     }
 }
 
-impl<Error> MapErrLayer<fn(Error) -> BoxError>
+impl<Error: std::error::Error + Send + Sync + 'static> MapErrLayer<fn(Error) -> BoxError>
 where
     BoxError: From<Error>,
 {

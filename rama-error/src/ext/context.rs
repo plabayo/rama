@@ -75,14 +75,30 @@ pub(super) struct DebugContextValue<T: fmt::Debug + Send + Sync + 'static>(pub(s
 impl<T: fmt::Debug + Send + Sync + 'static> fmt::Debug for DebugContextValue<T> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        fmt::Debug::fmt(&self.0, f)
     }
 }
 
 impl<T: fmt::Debug + Send + Sync + 'static> fmt::Display for DebugContextValue<T> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+pub(super) struct HexContextValue<T: fmt::Debug + Send + Sync + 'static>(pub(super) T);
+
+impl<T: fmt::Debug + Send + Sync + 'static> fmt::Debug for HexContextValue<T> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:x?}", &self.0)
+    }
+}
+
+impl<T: fmt::Debug + Send + Sync + 'static> fmt::Display for HexContextValue<T> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
     }
 }
 

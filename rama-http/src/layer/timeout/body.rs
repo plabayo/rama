@@ -75,7 +75,7 @@ where
     B::Error: Into<BoxError>,
 {
     type Data = B::Data;
-    type Error = Box<dyn std::error::Error + Send + Sync>;
+    type Error = BoxError;
 
     fn poll_frame(
         self: Pin<&mut Self>,

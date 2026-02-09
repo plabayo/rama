@@ -21,6 +21,12 @@ pub trait ErrorContext: private::SealedErrorContext {
         M: fmt::Debug + fmt::Display + Send + Sync + 'static;
 
     /// Add context to the contained error,
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    fn context_hex<M>(self, value: M) -> Self::Context
+    where
+        M: fmt::Debug + Send + Sync + 'static;
+
+    /// Add context to the contained error,
     /// using [`fmt::Debug`] as `[fmt::Display`].
     fn context_debug<M>(self, value: M) -> Self::Context
     where
@@ -39,6 +45,12 @@ pub trait ErrorContext: private::SealedErrorContext {
         M: Into<String>;
 
     /// Add keyed context to the contained error
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    fn context_hex_field<M>(self, key: &'static str, value: M) -> Self::Context
+    where
+        M: fmt::Debug + Send + Sync + 'static;
+
+    /// Add keyed context to the contained error
     /// using [`fmt::Debug`] as `[fmt::Display`].
     fn context_debug_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
@@ -48,6 +60,13 @@ pub trait ErrorContext: private::SealedErrorContext {
     fn with_context<C, F>(self, cb: F) -> Self::Context
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
+        F: FnOnce() -> C;
+
+    /// Lazily add a context to the contained error, if it exists.
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    fn with_context_hex<C, F>(self, cb: F) -> Self::Context
+    where
+        C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily add a context to the contained error, if it exists.
@@ -69,6 +88,13 @@ pub trait ErrorContext: private::SealedErrorContext {
     fn with_context_str_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: Into<String>,
+        F: FnOnce() -> C;
+
+    /// Lazily add keyed context to the contained error, if it exists
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
+    where
+        C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily add keyed context to the contained error, if it exists
@@ -96,6 +122,14 @@ impl<T, E: Into<BoxError>> ErrorContext for Result<T, E> {
     }
 
     #[inline(always)]
+    fn context_hex<M>(self, value: M) -> Self::Context
+    where
+        M: fmt::Debug + Send + Sync + 'static,
+    {
+        self.map_err(|error| error.context_hex(value))
+    }
+
+    #[inline(always)]
     fn context_debug<M>(self, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -120,6 +154,14 @@ impl<T, E: Into<BoxError>> ErrorContext for Result<T, E> {
     }
 
     #[inline(always)]
+    fn context_hex_field<M>(self, key: &'static str, value: M) -> Self::Context
+    where
+        M: fmt::Debug + Send + Sync + 'static,
+    {
+        self.map_err(|error| error.context_hex_field(key, value))
+    }
+
+    #[inline(always)]
     fn context_debug_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -134,6 +176,15 @@ impl<T, E: Into<BoxError>> ErrorContext for Result<T, E> {
         F: FnOnce() -> C,
     {
         self.map_err(|error| error.with_context(cb))
+    }
+
+    #[inline(always)]
+    fn with_context_hex<C, F>(self, cb: F) -> Self::Context
+    where
+        C: fmt::Debug + Send + Sync + 'static,
+        F: FnOnce() -> C,
+    {
+        self.map_err(|error| error.with_context_hex(cb))
     }
 
     #[inline(always)]
@@ -161,6 +212,15 @@ impl<T, E: Into<BoxError>> ErrorContext for Result<T, E> {
         F: FnOnce() -> C,
     {
         self.map_err(|error| error.with_context_str_field(key, cb))
+    }
+
+    #[inline(always)]
+    fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
+    where
+        C: fmt::Debug + Send + Sync + 'static,
+        F: FnOnce() -> C,
+    {
+        self.map_err(|error| error.with_context_hex_field(key, cb))
     }
 
     #[inline(always)]
@@ -193,6 +253,18 @@ impl<T> ErrorContext for Option<T> {
             None => Err(BoxError::from("Option is None")
                 .context_debug_field("type", std::any::type_name::<Self>())
                 .context(value)),
+        }
+    }
+
+    fn context_hex<M>(self, value: M) -> Self::Context
+    where
+        M: fmt::Debug + Send + Sync + 'static,
+    {
+        match self {
+            Some(value) => Ok(value),
+            None => Err(BoxError::from("Option is None")
+                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_hex(value)),
         }
     }
 
@@ -232,6 +304,18 @@ impl<T> ErrorContext for Option<T> {
         }
     }
 
+    fn context_hex_field<M>(self, key: &'static str, value: M) -> Self::Context
+    where
+        M: fmt::Debug + Send + Sync + 'static,
+    {
+        match self {
+            Some(value) => Ok(value),
+            None => Err(BoxError::from("Option is None")
+                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_hex_field(key, value)),
+        }
+    }
+
     fn context_debug_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -254,6 +338,19 @@ impl<T> ErrorContext for Option<T> {
             None => Err(BoxError::from("Option is None")
                 .context_debug_field("type", std::any::type_name::<Self>())
                 .with_context(cb)),
+        }
+    }
+
+    fn with_context_hex<C, F>(self, cb: F) -> Self::Context
+    where
+        C: fmt::Debug + Send + Sync + 'static,
+        F: FnOnce() -> C,
+    {
+        match self {
+            Some(value) => Ok(value),
+            None => Err(BoxError::from("Option is None")
+                .context_debug_field("type", std::any::type_name::<Self>())
+                .with_context_hex(cb)),
         }
     }
 
@@ -294,6 +391,17 @@ impl<T> ErrorContext for Option<T> {
         }
     }
 
+    fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
+    where
+        C: fmt::Debug + Send + Sync + 'static,
+        F: FnOnce() -> C,
+    {
+        match self {
+            Some(value) => Ok(value),
+            None => Err(BoxError::from("Option is None").with_context_hex_field(key, cb)),
+        }
+    }
+
     fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -319,6 +427,12 @@ pub trait ErrorExt: private::SealedErrorExt {
         M: fmt::Debug + fmt::Display + Send + Sync + 'static;
 
     /// Wrap the error in a context,
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    fn context_hex<M>(self, value: M) -> BoxError
+    where
+        M: fmt::Debug + Send + Sync + 'static;
+
+    /// Wrap the error in a context,
     /// using [`fmt::Debug`] as `[fmt::Display`].
     fn context_debug<M>(self, value: M) -> BoxError
     where
@@ -337,6 +451,12 @@ pub trait ErrorExt: private::SealedErrorExt {
         M: Into<String>;
 
     /// Wrap the error in a keyed context,
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    fn context_hex_field<M>(self, key: &'static str, value: M) -> BoxError
+    where
+        M: fmt::Debug + Send + Sync + 'static;
+
+    /// Wrap the error in a keyed context,
     /// using [`fmt::Debug`] as `[fmt::Display`].
     fn context_debug_field<M>(self, key: &'static str, value: M) -> BoxError
     where
@@ -346,6 +466,13 @@ pub trait ErrorExt: private::SealedErrorExt {
     fn with_context<C, F>(self, cb: F) -> BoxError
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
+        F: FnOnce() -> C;
+
+    /// Lazily wrap the error with a context,
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    fn with_context_hex<C, F>(self, cb: F) -> BoxError
+    where
+        C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily wrap the error with a context,
@@ -367,6 +494,13 @@ pub trait ErrorExt: private::SealedErrorExt {
     fn with_context_str_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: Into<String>,
+        F: FnOnce() -> C;
+
+    /// Lazily wrap the error with keyed context
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> BoxError
+    where
+        C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily wrap the error with keyed context
@@ -400,6 +534,14 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         let mut wrapped = self::context::ErrorWithContext::new(err);
         wrapped.insert_value(value);
         Box::new(wrapped)
+    }
+
+    #[inline(always)]
+    fn context_hex<M>(self, value: M) -> BoxError
+    where
+        M: fmt::Debug + Send + Sync + 'static,
+    {
+        self.context(self::context::HexContextValue(value))
     }
 
     #[inline(always)]
@@ -443,6 +585,14 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    fn context_hex_field<M>(self, key: &'static str, value: M) -> BoxError
+    where
+        M: fmt::Debug + Send + Sync + 'static,
+    {
+        self.context_field(key, self::context::HexContextValue(value))
+    }
+
+    #[inline(always)]
     fn context_debug_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -457,6 +607,15 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         F: FnOnce() -> C,
     {
         self.context(cb())
+    }
+
+    #[inline(always)]
+    fn with_context_hex<C, F>(self, cb: F) -> BoxError
+    where
+        C: fmt::Debug + Send + Sync + 'static,
+        F: FnOnce() -> C,
+    {
+        self.context(self::context::HexContextValue(cb()))
     }
 
     #[inline(always)]
@@ -484,6 +643,15 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         F: FnOnce() -> C,
     {
         self.context_str_field(key, cb())
+    }
+
+    #[inline(always)]
+    fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> BoxError
+    where
+        C: fmt::Debug + Send + Sync + 'static,
+        F: FnOnce() -> C,
+    {
+        self.context_field(key, self::context::HexContextValue(cb()))
     }
 
     #[inline(always)]

@@ -17,7 +17,7 @@ In Rama, we aim for clarity: **If it is an error, it should behave like one.** T
 When the specific concrete type of an error matters less than the fact that a failure occurred, Rama uses **`BoxError`**.
 
 ```rust
-pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 ```
 
 This is a type-erased trait object used at abstraction boundaries. While you can *downcast* a `BoxError` to check for a specific type, keep in mind that standard downcasting only inspects the top-level wrapper, not the entire cause chain.

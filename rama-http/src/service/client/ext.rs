@@ -926,7 +926,7 @@ impl<S: RequestServiceHandle> RequestBuilder<S> {
 
         match self.http_client_service.svc_ref().serve(request).await {
             Ok(response) => Ok(response),
-            Err(err) => Err(err.into().context("send request").context_field("uri", uri)),
+            Err(err) => Err(err.context("send request").context_field("uri", uri)),
         }
     }
 }

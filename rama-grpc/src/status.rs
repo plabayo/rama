@@ -1,7 +1,7 @@
 use std::{borrow::Cow, error::Error, fmt, sync::Arc};
 
 use base64::Engine as _;
-use rama_core::telemetry::tracing;
+use rama_core::{error::BoxError, telemetry::tracing};
 use rama_utils::str::arcstr::ArcStr;
 
 use ::{
@@ -327,9 +327,7 @@ impl Status {
         Self::new(Code::Unauthenticated, message)
     }
 
-    pub(crate) fn from_error_generic(
-        err: impl Into<Box<dyn Error + Send + Sync + 'static>>,
-    ) -> Self {
+    pub(crate) fn from_error_generic(err: impl Into<BoxError>) -> Self {
         Self::from_error(err.into())
     }
 
@@ -338,7 +336,7 @@ impl Status {
     /// Inspects the error source chain for recognizable errors, including statuses and
     /// `rama-http-core`, and attempts to maps them to a `Status`, or else returns an Unknown `Status`.
     #[must_use]
-    pub fn from_error(err: Box<dyn Error + Send + Sync + 'static>) -> Self {
+    pub fn from_error(err: BoxError) -> Self {
         Self::try_from_error(err).unwrap_or_else(|err| {
             let mut status = Self::new(Code::Unknown, err.to_string());
             status.0.source = Some(err.into());
@@ -353,9 +351,7 @@ impl Status {
     /// # Downcast stability
     /// This function does not provide any stability guarantees around how it will downcast errors into
     /// status codes.
-    pub fn try_from_error(
-        err: Box<dyn Error + Send + Sync + 'static>,
-    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+    pub fn try_from_error(err: BoxError) -> Result<Self, BoxError> {
         let err = match err.downcast::<Self>() {
             Ok(status) => {
                 return Ok(*status);
@@ -463,10 +459,9 @@ impl Status {
 
     pub(crate) fn map_error<E>(err: E) -> Self
     where
-        E: Into<Box<dyn Error + Send + Sync>>,
+        E: Into<BoxError>,
     {
-        let err: Box<dyn Error + Send + Sync> = err.into();
-        Self::from_error(err)
+        Self::from_error(err.into())
     }
 
     /// Extract a [`Status`] from a [`rama_http_types::HeaderMap`].
@@ -1096,7 +1091,7 @@ impl std::error::Error for TimeoutExpired {}
 /// Wrapper type to indicate that an error occurs during the connection
 /// process, so that the appropriate gRPC Status can be inferred.
 #[derive(Debug)]
-pub struct ConnectError(pub Box<dyn std::error::Error + Send + Sync>);
+pub struct ConnectError(pub BoxError);
 
 impl fmt::Display for ConnectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

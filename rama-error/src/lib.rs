@@ -178,7 +178,7 @@ use std::error::Error as StdError;
 /// Alias for a type-erased error type.
 ///
 /// See the [module level documentation](crate) for more information.
-pub type BoxError = Box<dyn StdError + Send + Sync>;
+pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
 
 mod ext;
 pub use ext::{ErrorContext, ErrorExt};
