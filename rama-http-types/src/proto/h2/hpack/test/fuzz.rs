@@ -6,7 +6,7 @@ use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 use rama_core::bytes::BytesMut;
 use rand::distr::slice::Choose;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng, rng};
+use rand::{RngExt as _, SeedableRng, rng};
 
 use std::io::Cursor;
 

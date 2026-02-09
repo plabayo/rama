@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use rama_core::error::BoxError;
-use rand::RngCore;
+use rand::Rng as _;
 
 use crate::{TcpStream, client::TcpStreamConnector};
 

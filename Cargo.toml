@@ -200,7 +200,7 @@ rama-udp = { version = "0.3.0-rc1", path = "./rama-udp" }
 rama-unix = { version = "0.3.0-rc1", path = "./rama-unix" }
 rama-utils = { version = "0.3.0-rc1", path = "./rama-utils" }
 rama-ws = { version = "0.3.0-rc1", path = "./rama-ws" }
-rand = "0.9"
+rand = "0.10"
 ratatui = "0.30"
 rawzip = { version = "0.4" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
