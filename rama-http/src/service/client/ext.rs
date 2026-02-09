@@ -149,7 +149,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
 
     /// Build a request builder from an already constructed [`Request`], using an owned `Service`.
     ///
-    /// Same as [`build_from_request`] but returns a builder backed by an owned `Service`,
+    /// Same as [`Self::build_from_request`] but returns a builder backed by an owned `Service`,
     /// so it can be moved into spawned tasks.
     fn into_build_from_request(self, request: Request) -> RequestBuilder<RQOwnedService<Self>>;
 }

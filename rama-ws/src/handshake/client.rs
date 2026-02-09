@@ -153,7 +153,7 @@ where
     service.build_from_request(request.map(Into::into))
 }
 
-fn new_ws_request_builder_from_request_with_owned_service<'a, S, RequestBody, ResponseBody>(
+fn new_ws_request_builder_from_request_with_owned_service<S, RequestBody, ResponseBody>(
     service: S,
     mut request: Request<RequestBody>,
 ) -> RequestBuilder<ext::RQOwnedService<S>>
