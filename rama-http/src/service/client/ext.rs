@@ -891,6 +891,12 @@ impl<S, Body> RequestBuilder<RQOwnedService<S>>
 where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
+    #[inline(always)]
+    /// Cancels the [`Request`] building and returns the inner [`Service`].
+    pub fn into_service(self) -> S {
+        self.http_client_service.0
+    }
+
     /// Constructs the [`Request`] and return it together with the inner [`Service`].
     ///
     /// # Errors
