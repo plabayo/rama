@@ -15,7 +15,7 @@ use rama_http::headers::{
     SecWebSocketProtocol,
 };
 use rama_http::proto::h2::ext::Protocol;
-use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
+use rama_http::service::client::ext::{self, IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
 use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
 use rama_http::{request, response};
@@ -42,23 +42,14 @@ pub struct HandshakeRequest {
     pub key: Option<SecWebSocketKey>,
 }
 
+#[derive(Debug)]
 /// [`WebSocketRequestBuilder`] inner wrapper type used for a builder,
 /// which includes a service, and thus is there to actually send the request as well and
 /// even follow up.
-pub struct WithService<'a, S, Body> {
-    builder: RequestBuilder<'a, S, Response<Body>>,
+pub struct WithService<S> {
+    builder: RequestBuilder<S>,
     config: Option<WebSocketConfig>,
     is_h2: bool,
-}
-
-impl<S: fmt::Debug, Body> fmt::Debug for WithService<'_, S, Body> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WithService")
-            .field("builder", &self.builder)
-            .field("config", &self.config)
-            .field("is_h2", &self.is_h2)
-            .finish()
-    }
 }
 
 fn new_ws_request_builder_from_uri<T>(uri: T, version: Version) -> request::Builder
@@ -81,11 +72,11 @@ where
     }
 }
 
-fn new_ws_request_builder_from_uri_with_service<'a, S, Body, T>(
+fn new_ws_request_builder_from_uri_with_borrowed_service<'a, S, Body, T>(
     service: &'a S,
     uri: T,
     version: Version,
-) -> RequestBuilder<'a, S, Response<Body>>
+) -> RequestBuilder<ext::RQBorrowedService<'a, S>>
 where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
     T: IntoUrl,
@@ -103,12 +94,34 @@ where
     builder.typed_header(headers::SecWebSocketVersion::V13)
 }
 
-fn new_ws_request_builder_from_request<'a, S, Body, RequestBody>(
-    service: &'a S,
-    mut request: Request<RequestBody>,
-) -> RequestBuilder<'a, S, Response<Body>>
+fn new_ws_request_builder_from_uri_with_owned_service<S, Body, T>(
+    service: S,
+    uri: T,
+    version: Version,
+) -> RequestBuilder<ext::RQOwnedService<S>>
 where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+    T: IntoUrl,
+{
+    let builder = match version {
+        version @ (Version::HTTP_10 | Version::HTTP_11) => service
+            .into_get(uri)
+            .version(version)
+            .typed_header(headers::Upgrade::websocket())
+            .typed_header(headers::Connection::upgrade()),
+        Version::HTTP_2 => service.into_connect(uri).version(Version::HTTP_2),
+        _ => unreachable!("bug"),
+    };
+
+    builder.typed_header(headers::SecWebSocketVersion::V13)
+}
+
+fn new_ws_request_builder_from_request_with_borrowed_service<'a, S, ResponseBody, RequestBody>(
+    service: &'a S,
+    mut request: Request<RequestBody>,
+) -> RequestBuilder<ext::RQBorrowedService<'a, S>>
+where
+    S: Service<Request, Output = Response<ResponseBody>, Error: Into<BoxError>>,
     RequestBody: Into<rama_http::Body>,
 {
     if !request
@@ -137,7 +150,44 @@ where
         // - else: this will error downstream due to invalid version
         _ => (),
     }
-    service.build_from_request(request)
+    service.build_from_request(request.map(Into::into))
+}
+
+fn new_ws_request_builder_from_request_with_owned_service<S, RequestBody, ResponseBody>(
+    service: S,
+    mut request: Request<RequestBody>,
+) -> RequestBuilder<ext::RQOwnedService<S>>
+where
+    S: Service<Request, Output = Response<ResponseBody>, Error: Into<BoxError>>,
+    RequestBody: Into<rama_http::Body>,
+{
+    if !request
+        .headers()
+        .contains_key(header::SEC_WEBSOCKET_VERSION)
+    {
+        request
+            .headers_mut()
+            .typed_insert(headers::SecWebSocketVersion::V13);
+    }
+
+    match request.version() {
+        Version::HTTP_10 | Version::HTTP_11 => {
+            if request.headers().get(header::UPGRADE).is_none() {
+                request
+                    .headers_mut()
+                    .typed_insert(headers::Upgrade::websocket());
+            }
+            if request.headers().get(header::CONNECTION).is_none() {
+                request
+                    .headers_mut()
+                    .typed_insert(headers::Connection::upgrade());
+            }
+        }
+        // - for h2: nothing to do
+        // - else: this will error downstream due to invalid version
+        _ => (),
+    }
+    service.into_build_from_request(request.map(Into::into))
 }
 
 #[derive(Debug)]
@@ -521,7 +571,7 @@ impl WebSocketRequestBuilder<request::Builder> {
     }
 }
 
-impl<'a, S, Body> WebSocketRequestBuilder<WithService<'a, S, Body>>
+impl<'a, Body, S> WebSocketRequestBuilder<WithService<ext::RQBorrowedService<'a, S>>>
 where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
@@ -547,7 +597,9 @@ where
     {
         Self {
             inner: WithService {
-                builder: new_ws_request_builder_from_uri_with_service(service, uri, version),
+                builder: new_ws_request_builder_from_uri_with_borrowed_service(
+                    service, uri, version,
+                ),
                 config: Default::default(),
                 is_h2: version == Version::HTTP_2,
             },
@@ -572,7 +624,9 @@ where
 
         Self {
             inner: WithService {
-                builder: new_ws_request_builder_from_request(service, request),
+                builder: new_ws_request_builder_from_request_with_borrowed_service(
+                    service, request,
+                ),
                 config: Default::default(),
                 is_h2,
             },
@@ -581,7 +635,77 @@ where
             key,
         }
     }
+}
 
+impl<S, Body> WebSocketRequestBuilder<WithService<ext::RQOwnedService<S>>>
+where
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+{
+    /// Create a new `http/1.1` WebSocket [`Request`] builder.
+    pub fn new_with_owned_service<T>(service: S, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_with_owned_service_and_version(service, Version::HTTP_11, uri)
+    }
+
+    /// Create a new `h2` WebSocket [`Request`] builder.
+    pub fn new_h2_with_owned_service<T>(service: S, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_with_owned_service_and_version(service, Version::HTTP_2, uri)
+    }
+
+    fn new_with_owned_service_and_version<T>(service: S, version: Version, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self {
+            inner: WithService {
+                builder: new_ws_request_builder_from_uri_with_owned_service(service, uri, version),
+                config: Default::default(),
+                is_h2: version == Version::HTTP_2,
+            },
+            protocols: Default::default(),
+            extensions: Default::default(),
+            key: Default::default(),
+        }
+    }
+
+    /// Create a new WebSocket [`Request`] builder for the given [`Request`]
+    pub fn new_with_owned_service_and_request<RequestBody>(
+        service: S,
+        request: Request<RequestBody>,
+    ) -> Self
+    where
+        RequestBody: Into<rama_http::Body>,
+    {
+        let key = request.headers().typed_get();
+        let is_h2 = request.version() == Version::HTTP_2;
+        let protocols = request.headers().typed_get();
+        let extensions = request.headers().typed_get();
+
+        Self {
+            inner: WithService {
+                builder: new_ws_request_builder_from_request_with_owned_service(service, request),
+                config: Default::default(),
+                is_h2,
+            },
+            protocols,
+            extensions,
+            key,
+        }
+    }
+}
+
+impl<S, Body> WebSocketRequestBuilder<WithService<S>>
+where
+    S: ext::RequestServiceHandle<
+            Svc: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+            Body = Body,
+        >,
+{
     /// Set a custom http header
     #[must_use]
     pub fn with_header<K, V>(self, name: K, value: V) -> Self
@@ -962,17 +1086,32 @@ impl ClientWebSocket {
 }
 
 /// Extends an Http Client with high level features WebSocket features.
-pub trait HttpClientWebSocketExt<Body>:
-    private::HttpClientWebSocketExtSealed<Body> + Sized + Send + Sync + 'static
+pub trait HttpClientWebSocketExt:
+    private::HttpClientWebSocketExtSealed + Sized + Send + Sync + 'static
 {
     /// Create a new [`WebSocketRequestBuilder`]] to be used to establish a WebSocket connection over http/1.1.
-    fn websocket(&self, url: impl IntoUrl) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
+    fn websocket(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<ext::RQBorrowedService<'_, Self>>>;
+
+    /// Create a new [`WebSocketRequestBuilder`]] to be used to establish a WebSocket connection over http/1.1.
+    fn into_websocket(
+        self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<ext::RQOwnedService<Self>>>;
 
     /// Create a new [`WebSocketRequestBuilder`] to be used to establish a WebSocket connection over h2.
     fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
+    ) -> WebSocketRequestBuilder<WithService<ext::RQBorrowedService<'_, Self>>>;
+
+    /// Create a new [`WebSocketRequestBuilder`] to be used to establish a WebSocket connection over h2.
+    fn into_websocket_h2(
+        self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<ext::RQOwnedService<Self>>>;
 
     /// Create a new [`WebSocketRequestBuilder`] starting from the given request.
     ///
@@ -981,38 +1120,71 @@ pub trait HttpClientWebSocketExt<Body>:
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
         req: Request<RequestBody>,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
+    ) -> WebSocketRequestBuilder<WithService<ext::RQBorrowedService<'_, Self>>>;
+
+    /// Create a new [`WebSocketRequestBuilder`] starting from the given request.
+    ///
+    /// This is useful in cases where you already have a request that you wish to use,
+    /// for example in the case of a proxied reuqest.
+    fn into_websocket_with_request<RequestBody: Into<rama_http::Body>>(
+        self,
+        req: Request<RequestBody>,
+    ) -> WebSocketRequestBuilder<WithService<ext::RQOwnedService<Self>>>;
 }
 
-impl<S, Body> HttpClientWebSocketExt<Body> for S
+impl<S, Body> HttpClientWebSocketExt for S
 where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
-    fn websocket(&self, url: impl IntoUrl) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
+    fn websocket(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<ext::RQBorrowedService<'_, S>>> {
         WebSocketRequestBuilder::new_with_service(self, url)
+    }
+
+    fn into_websocket(
+        self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<ext::RQOwnedService<S>>> {
+        WebSocketRequestBuilder::new_with_owned_service(self, url)
     }
 
     fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
+    ) -> WebSocketRequestBuilder<WithService<ext::RQBorrowedService<'_, Self>>> {
         WebSocketRequestBuilder::new_h2_with_service(self, url)
+    }
+
+    fn into_websocket_h2(
+        self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<ext::RQOwnedService<Self>>> {
+        WebSocketRequestBuilder::new_h2_with_owned_service(self, url)
     }
 
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
         req: Request<RequestBody>,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
+    ) -> WebSocketRequestBuilder<WithService<ext::RQBorrowedService<'_, Self>>> {
         WebSocketRequestBuilder::new_with_service_and_request(self, req)
+    }
+
+    fn into_websocket_with_request<RequestBody: Into<rama_http::Body>>(
+        self,
+        req: Request<RequestBody>,
+    ) -> WebSocketRequestBuilder<WithService<ext::RQOwnedService<Self>>> {
+        WebSocketRequestBuilder::new_with_owned_service_and_request(self, req)
     }
 }
 
 mod private {
     use super::*;
 
-    pub trait HttpClientWebSocketExtSealed<Body> {}
+    pub trait HttpClientWebSocketExtSealed {}
 
-    impl<S, Body> HttpClientWebSocketExtSealed<Body> for S where
+    impl<S, Body> HttpClientWebSocketExtSealed for S where
         S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>
     {
     }
