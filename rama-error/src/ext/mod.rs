@@ -2,8 +2,9 @@ use std::fmt;
 
 mod backtrace;
 mod context;
+pub(super) mod opaque;
 
-use crate::BoxError;
+use crate::{BoxError, extra::OpaqueError};
 
 /// Extends the `Result` and `Option` types with methods for adding context to errors.
 ///
@@ -12,8 +13,14 @@ pub trait ErrorContext: private::SealedErrorContext {
     /// The resulting contexct type after adding context to the contained error.
     type Context;
 
+    /// The resulting contexct type after turning the error into an opaque error
+    type OpaqueContext;
+
     /// Return a err variant for [`Self::Context`] as [`BoxError`].
     fn into_box_error(self) -> Self::Context;
+
+    /// Return a err variant for [`Self::OpaqueContext`] as [`OpaqueError`].
+    fn into_opaque_error(self) -> Self::OpaqueContext;
 
     /// Add context to the contained error.
     fn context<M>(self, value: M) -> Self::Context
@@ -107,10 +114,16 @@ pub trait ErrorContext: private::SealedErrorContext {
 
 impl<T, E: Into<BoxError>> ErrorContext for Result<T, E> {
     type Context = Result<T, BoxError>;
+    type OpaqueContext = Result<T, OpaqueError>;
 
     #[inline(always)]
     fn into_box_error(self) -> Self::Context {
         self.map_err(Into::into)
+    }
+
+    #[inline(always)]
+    fn into_opaque_error(self) -> Self::OpaqueContext {
+        self.map_err(OpaqueError::from_box_error)
     }
 
     #[inline(always)]
@@ -235,6 +248,7 @@ impl<T, E: Into<BoxError>> ErrorContext for Result<T, E> {
 
 impl<T> ErrorContext for Option<T> {
     type Context = Result<T, BoxError>;
+    type OpaqueContext = Result<T, OpaqueError>;
 
     fn into_box_error(self) -> Self::Context {
         match self {
@@ -242,6 +256,11 @@ impl<T> ErrorContext for Option<T> {
             None => Err(BoxError::from("Option is None")
                 .context_debug_field("type", std::any::type_name::<Self>())),
         }
+    }
+
+    #[inline(always)]
+    fn into_opaque_error(self) -> Self::OpaqueContext {
+        self.into_box_error().into_opaque_error()
     }
 
     fn context<M>(self, value: M) -> Self::Context
@@ -421,6 +440,13 @@ pub trait ErrorExt: private::SealedErrorExt {
     /// Return self as [`BoxError`] without additional context.
     fn into_box_error(self) -> BoxError;
 
+    /// Return self as [`OpaqueError`] without additional context.
+    ///
+    /// Pretty much always you'll want [`Self::into_box_error`] instead,
+    /// but [`OpaqueError`] can be useful as a last-resort, should you
+    /// run into higher-rank lifetime issues while spawning (tokio) tasks...
+    fn into_opaque_error(self) -> OpaqueError;
+
     /// Wrap the error in a context.
     fn context<M>(self, value: M) -> BoxError
     where
@@ -518,6 +544,11 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     #[inline(always)]
     fn into_box_error(self) -> BoxError {
         self.into()
+    }
+
+    #[inline(always)]
+    fn into_opaque_error(self) -> OpaqueError {
+        OpaqueError::from_box_error(self)
     }
 
     fn context<M>(self, value: M) -> BoxError

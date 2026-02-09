@@ -182,3 +182,10 @@ pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
 
 mod ext;
 pub use ext::{ErrorContext, ErrorExt};
+
+pub mod extra {
+    //! extra types for edge cases
+
+    #[doc(inline)]
+    pub use crate::ext::opaque::OpaqueError;
+}
