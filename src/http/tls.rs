@@ -2,9 +2,8 @@
 
 use crate::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use crate::http::{
-    Body, BodyExtractExt as _, Method, Request, Response, StatusCode, Uri,
-    client::EasyHttpWebClient,
-    headers::{ContentType, HeaderMapExt},
+    BodyExtractExt as _, Request, Response, StatusCode, Uri, client::EasyHttpWebClient,
+    service::client::HttpClientExt as _,
 };
 use crate::net::address::{AsDomainRef, Domain, DomainParentMatch, DomainTrie};
 use crate::net::tls::{
@@ -189,15 +188,12 @@ impl CertIssuerHttpClient {
     }
 
     async fn fetch_certs(&self, domain: Domain) -> Result<ServerAuthData, BoxError> {
-        let body = Body::from(
-            serde_json::to_vec(&CertOrderInput { domain })
-                .context("serialize CertOrderInput json")?,
-        );
-
-        let mut req = Request::new(body);
-        *req.method_mut() = Method::POST;
-        *req.uri_mut() = self.endpoint.clone();
-        req.headers_mut().typed_insert(ContentType::json());
+        let req = self
+            .http_client
+            .post(self.endpoint.clone())
+            .json(&CertOrderInput { domain })
+            .try_into_request()
+            .context("builld request")?;
 
         let response = self
             .http_client
