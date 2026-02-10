@@ -112,6 +112,22 @@ where
         .is_some_and(|tail| tail.eq_ignore_ascii_case(sub))
 }
 
+/// Returns `true` if `s` ends with any suffix from `sub_iter`,
+/// using ASCII case insensitive comparison.
+///
+/// If any suffix is empty, this returns `true`.
+/// Iteration order does not matter for the result, only for the amount of work performed.
+pub fn any_ends_with_ignore_ascii_case<T, I>(s: T, sub_iter: I) -> bool
+where
+    T: AsRef<[u8]>,
+    I: IntoIterator<Item: AsRef<[u8]>>,
+{
+    let search_space = s.as_ref();
+    sub_iter
+        .into_iter()
+        .any(|suffix| ends_with_ignore_ascii_case(search_space, suffix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +196,41 @@ mod tests {
     fn test_ends_with_ignore_ascii_case_empty_sub() {
         assert!(ends_with_ignore_ascii_case("foo", ""));
         assert!(ends_with_ignore_ascii_case("", ""));
+    }
+
+    #[test]
+    fn test_any_ends_with_ignore_ascii_case() {
+        assert!(any_ends_with_ignore_ascii_case(
+            "User-Agent",
+            ["agent", "host"]
+        ));
+        assert!(any_ends_with_ignore_ascii_case(
+            "User-Agent",
+            ["HOST", "AGENT"]
+        ));
+        assert!(!any_ends_with_ignore_ascii_case(
+            "User-Agent",
+            ["host", "accept"]
+        ));
+    }
+
+    #[test]
+    fn test_any_ends_with_ignore_ascii_case_empty_iter() {
+        let empty: [&str; 0] = [];
+        assert!(!any_ends_with_ignore_ascii_case("foo", empty));
+        assert!(!any_ends_with_ignore_ascii_case("", empty));
+    }
+
+    #[test]
+    fn test_any_ends_with_ignore_ascii_case_empty_sub_present() {
+        assert!(any_ends_with_ignore_ascii_case("foo", [""]));
+        assert!(any_ends_with_ignore_ascii_case("", [""]));
+    }
+
+    #[test]
+    fn test_any_ends_with_ignore_ascii_case_prefers_truth_over_order() {
+        assert!(any_ends_with_ignore_ascii_case("abc", ["@", "bc"]));
+        assert!(any_ends_with_ignore_ascii_case("abc", ["bc", "@"]));
     }
 
     #[test]
