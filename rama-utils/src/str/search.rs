@@ -1,8 +1,24 @@
-pub fn submatch_ignore_ascii_case<T: AsRef<[u8]>>(s: T, sub: T) -> bool {
+pub fn submatch_ignore_ascii_case<T1, T2>(s: T1, sub: T2) -> bool
+where
+    T1: AsRef<[u8]>,
+    T2: AsRef<[u8]>,
+{
     contains_ignore_ascii_case(s, sub).is_some()
 }
 
-pub fn contains_ignore_ascii_case<T: AsRef<[u8]>>(s: T, sub: T) -> Option<usize> {
+pub fn any_submatch_ignore_ascii_case<T, I>(s: T, sub_iter: I) -> bool
+where
+    T: AsRef<[u8]>,
+    I: IntoIterator<Item: AsRef<[u8]>>,
+{
+    any_contains_ignore_ascii_case(s, sub_iter).is_some()
+}
+
+pub fn contains_ignore_ascii_case<T1, T2>(s: T1, sub: T2) -> Option<usize>
+where
+    T1: AsRef<[u8]>,
+    T2: AsRef<[u8]>,
+{
     let s = s.as_ref();
     let sub = sub.as_ref();
 
@@ -18,7 +34,23 @@ pub fn contains_ignore_ascii_case<T: AsRef<[u8]>>(s: T, sub: T) -> Option<usize>
     })
 }
 
-pub fn starts_with_ignore_ascii_case<T: AsRef<[u8]>>(s: T, sub: T) -> bool {
+#[inline(always)]
+pub fn any_contains_ignore_ascii_case<T, I>(s: T, sub_iter: I) -> Option<usize>
+where
+    T: AsRef<[u8]>,
+    I: IntoIterator<Item: AsRef<[u8]>>,
+{
+    let haystack = s.as_ref();
+    sub_iter
+        .into_iter()
+        .find_map(|sub| contains_ignore_ascii_case(haystack, sub))
+}
+
+pub fn starts_with_ignore_ascii_case<T1, T2>(s: T1, sub: T2) -> bool
+where
+    T1: AsRef<[u8]>,
+    T2: AsRef<[u8]>,
+{
     let s = s.as_ref();
     let sub = sub.as_ref();
 
@@ -32,48 +64,32 @@ pub fn starts_with_ignore_ascii_case<T: AsRef<[u8]>>(s: T, sub: T) -> bool {
         .unwrap_or_default()
 }
 
-#[allow(dead_code)]
-fn ends_with_ignore_ascii_case(path: &str, suffix: &str) -> bool {
-    if path.len() < suffix.len() {
+pub fn any_starts_with_ignore_ascii_case<T, I>(s: T, sub_iter: I) -> bool
+where
+    T: AsRef<[u8]>,
+    I: IntoIterator<Item: AsRef<[u8]>>,
+{
+    let search_space = s.as_ref();
+    sub_iter
+        .into_iter()
+        .any(|prefix| starts_with_ignore_ascii_case(search_space, prefix))
+}
+
+pub fn ends_with_ignore_ascii_case<T1, T2>(s: T1, sub: T2) -> bool
+where
+    T1: AsRef<[u8]>,
+    T2: AsRef<[u8]>,
+{
+    let s = s.as_ref();
+    let sub = sub.as_ref();
+
+    if s.len() < sub.len() {
         return false;
     }
 
-    let start = path.len() - suffix.len();
-    path.get(start..)
-        .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
-}
-
-pub fn submatch_any_ignore_ascii_case<T: AsRef<[u8]>>(s: T, subs: &[T]) -> bool {
-    contains_any_ignore_ascii_case(s, subs).is_some()
-}
-
-pub fn contains_any_ignore_ascii_case<T: AsRef<[u8]>>(s: T, subs: &[T]) -> Option<usize> {
-    let s = s.as_ref();
-
-    let max = s.len();
-    let smallest_length = subs.iter().map(|s| s.as_ref().len()).min().unwrap_or(0);
-    if smallest_length == 0 {
-        return Some(0);
-    } else if smallest_length > max {
-        return None;
-    }
-
-    for i in 0..=(s.len() - smallest_length) {
-        for sub in subs.iter().map(AsRef::as_ref) {
-            let n = sub.len();
-            if i + n > max {
-                continue;
-            }
-            if s.get(i..i + n)
-                .map(|s| s.eq_ignore_ascii_case(sub))
-                .unwrap_or_default()
-            {
-                return Some(i);
-            }
-        }
-    }
-
-    None
+    let start = s.len() - sub.len();
+    s.get(start..)
+        .is_some_and(|tail| tail.eq_ignore_ascii_case(sub))
 }
 
 #[cfg(test)]
@@ -181,7 +197,7 @@ mod tests {
             ("speculaas", "loos"),
         ] {
             assert!(
-                !super::submatch_any_ignore_ascii_case(s, &[sub]),
+                !super::any_submatch_ignore_ascii_case(s, &[sub]),
                 "'{sub}' in '{s}'",
             );
         }
@@ -189,8 +205,16 @@ mod tests {
 
     #[test]
     fn test_contains_any_ignore_ascii_case_empty_subs() {
-        assert_eq!(super::contains_any_ignore_ascii_case("foo", &[]), Some(0));
-        assert_eq!(super::contains_any_ignore_ascii_case("", &[]), Some(0));
+        const EMPTY_SLICE: &[&str] = &[];
+
+        assert_eq!(
+            super::any_contains_ignore_ascii_case("foo", EMPTY_SLICE),
+            Some(0)
+        );
+        assert_eq!(
+            super::any_contains_ignore_ascii_case("", EMPTY_SLICE),
+            Some(0)
+        );
     }
 
     #[test]
@@ -213,7 +237,7 @@ mod tests {
             ("balloon", vec!["@", "n"], 6),
         ] {
             assert_eq!(
-                super::contains_any_ignore_ascii_case(s, &subs[..]),
+                super::any_contains_ignore_ascii_case(s, &subs[..]),
                 Some(index),
                 "any_of({subs:?}) in '{s}'",
             );
@@ -229,7 +253,7 @@ mod tests {
             ("Ho-HaHa-Hi", "hi", 8),
         ] {
             assert_eq!(
-                super::contains_any_ignore_ascii_case(s, &[sub]),
+                super::any_contains_ignore_ascii_case(s, &[sub]),
                 Some(index),
                 "'{sub}' in '{s}'",
             );
