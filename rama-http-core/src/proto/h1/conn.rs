@@ -9,7 +9,7 @@ use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::telemetry::tracing::{debug, error, trace, warn};
+use rama_core::telemetry::tracing::{debug, error, trace};
 use rama_http::io::upgrade;
 use rama_http_types::body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
@@ -232,7 +232,7 @@ where
                 {
                     self.state.h1_header_read_timeout_running = false;
 
-                    warn!("read header from client timeout");
+                    debug!("read header from client timeout");
                     return Poll::Ready(Some(Err(crate::Error::new_header_timeout())));
                 }
 
