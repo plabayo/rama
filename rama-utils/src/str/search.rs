@@ -1,3 +1,7 @@
+/// Returns `true` if `sub` occurs within `s`,
+/// using ASCII case insensitive comparison.
+///
+/// This is a convenience wrapper around [`contains_ignore_ascii_case`].
 pub fn submatch_ignore_ascii_case<T1, T2>(s: T1, sub: T2) -> bool
 where
     T1: AsRef<[u8]>,
@@ -6,6 +10,10 @@ where
     contains_ignore_ascii_case(s, sub).is_some()
 }
 
+/// Returns `true` if any item produced by `sub_iter` occurs within `s`,
+/// using ASCII case insensitive comparison.
+///
+/// This is a convenience wrapper around [`any_contains_ignore_ascii_case`].
 pub fn any_submatch_ignore_ascii_case<T, I>(s: T, sub_iter: I) -> bool
 where
     T: AsRef<[u8]>,
@@ -14,6 +22,11 @@ where
     any_contains_ignore_ascii_case(s, sub_iter).is_some()
 }
 
+/// Finds the first occurrence of `sub` within `s`,
+/// using ASCII case insensitive comparison.
+///
+/// The returned index is a byte offset into `s`.
+/// If `sub` is empty, this returns `Some(0)`.
 pub fn contains_ignore_ascii_case<T1, T2>(s: T1, sub: T2) -> Option<usize>
 where
     T1: AsRef<[u8]>,
@@ -34,6 +47,11 @@ where
     })
 }
 
+/// Finds the first match of any substring from `sub_iter` within `s`,
+/// using ASCII case insensitive comparison.
+///
+/// The returned index is a byte offset into `s`.
+/// Iteration order decides which candidate is considered first.
 #[inline(always)]
 pub fn any_contains_ignore_ascii_case<T, I>(s: T, sub_iter: I) -> Option<usize>
 where
@@ -46,6 +64,9 @@ where
         .find_map(|sub| contains_ignore_ascii_case(haystack, sub))
 }
 
+/// Returns `true` if `s` starts with `sub`, using ASCII case insensitive comparison.
+///
+/// If `sub` is empty, this returns `true`.
 pub fn starts_with_ignore_ascii_case<T1, T2>(s: T1, sub: T2) -> bool
 where
     T1: AsRef<[u8]>,
@@ -64,6 +85,10 @@ where
         .unwrap_or_default()
 }
 
+/// Returns `true` if `s` starts with any prefix from `sub_iter`,
+/// using ASCII case insensitive comparison.
+///
+/// Iteration order does not matter for the result, only for the amount of work performed.
 pub fn any_starts_with_ignore_ascii_case<T, I>(s: T, sub_iter: I) -> bool
 where
     T: AsRef<[u8]>,
@@ -75,6 +100,9 @@ where
         .any(|prefix| starts_with_ignore_ascii_case(search_space, prefix))
 }
 
+/// Returns `true` if `s` ends with `sub`, using ASCII case insensitive comparison.
+///
+/// If `sub` is empty, this returns `true`.
 pub fn ends_with_ignore_ascii_case<T1, T2>(s: T1, sub: T2) -> bool
 where
     T1: AsRef<[u8]>,
@@ -96,6 +124,19 @@ where
 mod tests {
     use super::*;
 
+    fn assert_contains_cases(s: &str, sub: &str, expected: Option<usize>) {
+        assert_eq!(
+            super::contains_ignore_ascii_case(s, sub),
+            expected,
+            "contains_ignore_ascii_case({s:?}, {sub:?})",
+        );
+        assert_eq!(
+            super::submatch_ignore_ascii_case(s, sub),
+            expected.is_some(),
+            "submatch_ignore_ascii_case({s:?}, {sub:?})",
+        );
+    }
+
     #[test]
     fn test_starts_with_ignore_ascii_case() {
         assert!(starts_with_ignore_ascii_case("user-agent", "user"));
@@ -103,6 +144,35 @@ mod tests {
         assert!(starts_with_ignore_ascii_case("USER-AGENT", "user"));
         assert!(!starts_with_ignore_ascii_case("user-agent", "agent"));
         assert!(!starts_with_ignore_ascii_case("User-Agent", "agent"));
+    }
+
+    #[test]
+    fn test_starts_with_ignore_ascii_case_empty_sub() {
+        assert!(starts_with_ignore_ascii_case("foo", ""));
+        assert!(starts_with_ignore_ascii_case("", ""));
+    }
+
+    #[test]
+    fn test_any_starts_with_ignore_ascii_case() {
+        assert!(any_starts_with_ignore_ascii_case(
+            "User-Agent",
+            ["user", "host"]
+        ));
+        assert!(any_starts_with_ignore_ascii_case(
+            "User-Agent",
+            ["HOST", "USER"]
+        ));
+        assert!(!any_starts_with_ignore_ascii_case(
+            "User-Agent",
+            ["host", "accept"]
+        ));
+    }
+
+    #[test]
+    fn test_any_starts_with_ignore_ascii_case_empty_iter() {
+        let empty: [&str; 0] = [];
+        assert!(!any_starts_with_ignore_ascii_case("foo", empty));
+        assert!(!any_starts_with_ignore_ascii_case("", empty));
     }
 
     #[test]
@@ -115,9 +185,15 @@ mod tests {
     }
 
     #[test]
+    fn test_ends_with_ignore_ascii_case_empty_sub() {
+        assert!(ends_with_ignore_ascii_case("foo", ""));
+        assert!(ends_with_ignore_ascii_case("", ""));
+    }
+
+    #[test]
     fn test_contains_ignore_ascii_case_empty_sub() {
-        assert_eq!(super::contains_ignore_ascii_case("foo", ""), Some(0));
-        assert_eq!(super::contains_ignore_ascii_case("", ""), Some(0));
+        assert_contains_cases("foo", "", Some(0));
+        assert_contains_cases("", "", Some(0));
     }
 
     #[test]
@@ -128,10 +204,7 @@ mod tests {
             ("pit", "pot"),
             ("speculaas", "loos"),
         ] {
-            assert!(
-                !super::submatch_ignore_ascii_case(s, sub),
-                "'{sub}' in '{s}'",
-            );
+            assert_contains_cases(s, sub, None);
         }
     }
 
@@ -144,11 +217,7 @@ mod tests {
             ("balloon", "on", 5),
             ("balloon", "n", 6),
         ] {
-            assert_eq!(
-                super::contains_ignore_ascii_case(s, sub),
-                Some(index),
-                "'{sub}' in '{s}'",
-            );
+            assert_contains_cases(s, sub, Some(index));
         }
     }
 
@@ -164,11 +233,7 @@ mod tests {
             ("balloon", "oN", 5),
             ("balloon", "N", 6),
         ] {
-            assert_eq!(
-                super::contains_ignore_ascii_case(s, sub),
-                Some(index),
-                "'{sub}' in '{s}'",
-            );
+            assert_contains_cases(s, sub, Some(index));
         }
     }
 
@@ -180,16 +245,25 @@ mod tests {
             ("Ho-HaHa-Hi", "ha-", 5),
             ("Ho-HaHa-Hi", "hi", 8),
         ] {
-            assert_eq!(
-                super::contains_ignore_ascii_case(s, sub),
-                Some(index),
-                "'{sub}' in '{s}'",
-            );
+            assert_contains_cases(s, sub, Some(index));
         }
     }
 
     #[test]
-    fn test_contains_any_ignore_ascii_case_common_failures() {
+    fn test_contains_ignore_ascii_case_non_ascii_bytes_are_not_case_folded() {
+        let haystack = b"\xC3\xA9"; // UTF8 for é
+        assert_eq!(
+            super::contains_ignore_ascii_case(haystack.as_slice(), b"\xC3\xA9"),
+            Some(0)
+        );
+        assert_eq!(
+            super::contains_ignore_ascii_case(haystack.as_slice(), b"\xC3\x89"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_any_contains_ignore_ascii_case_common_failures() {
         for (s, sub) in [
             ("", "foo"),
             ("a", "ab"),
@@ -198,27 +272,30 @@ mod tests {
         ] {
             assert!(
                 !super::any_submatch_ignore_ascii_case(s, &[sub]),
-                "'{sub}' in '{s}'",
+                "{sub:?} in {s:?}",
             );
         }
     }
 
     #[test]
-    fn test_contains_any_ignore_ascii_case_empty_subs() {
-        const EMPTY_SLICE: &[&str] = &[];
-
-        assert_eq!(
-            super::any_contains_ignore_ascii_case("foo", EMPTY_SLICE),
-            Some(0)
-        );
-        assert_eq!(
-            super::any_contains_ignore_ascii_case("", EMPTY_SLICE),
-            Some(0)
-        );
+    fn test_any_contains_ignore_ascii_case_empty_iter_yields_none() {
+        let empty: [&str; 0] = [];
+        assert_eq!(super::any_contains_ignore_ascii_case("foo", empty), None);
+        assert_eq!(super::any_contains_ignore_ascii_case("", empty), None);
+        assert!(!super::any_submatch_ignore_ascii_case("foo", empty));
+        assert!(!super::any_submatch_ignore_ascii_case("", empty));
     }
 
     #[test]
-    fn test_contains_any_ignore_ascii_case_start_middle_end() {
+    fn test_any_contains_ignore_ascii_case_empty_sub_present() {
+        assert_eq!(super::any_contains_ignore_ascii_case("foo", [""]), Some(0));
+        assert_eq!(super::any_contains_ignore_ascii_case("", [""]), Some(0));
+        assert!(super::any_submatch_ignore_ascii_case("foo", [""]));
+        assert!(super::any_submatch_ignore_ascii_case("", [""]));
+    }
+
+    #[test]
+    fn test_any_contains_ignore_ascii_case_start_middle_end() {
         for (s, subs, index) in [
             ("balloon", vec!["b"], 0),
             ("balloon", vec!["b", "@"], 0),
@@ -239,13 +316,29 @@ mod tests {
             assert_eq!(
                 super::any_contains_ignore_ascii_case(s, &subs[..]),
                 Some(index),
-                "any_of({subs:?}) in '{s}'",
+                "any_of({subs:?}) in {s:?}",
+            );
+            assert!(
+                super::any_submatch_ignore_ascii_case(s, &subs[..]),
+                "any_submatch({subs:?}) in {s:?}",
             );
         }
     }
 
     #[test]
-    fn test_contains_any_ignore_ascii_case_success_first_match() {
+    fn test_any_contains_ignore_ascii_case_success_first_match_in_iterator_order() {
+        assert_eq!(
+            super::any_contains_ignore_ascii_case("abc", ["bc", "ab"]),
+            Some(1),
+        );
+        assert_eq!(
+            super::any_contains_ignore_ascii_case("abc", ["ab", "bc"]),
+            Some(0),
+        );
+    }
+
+    #[test]
+    fn test_any_contains_ignore_ascii_case_success_single_item() {
         for (s, sub, index) in [
             ("Ho-HaHa-Hi", "ho", 0),
             ("Ho-HaHa-Hi", "ha", 3),
@@ -255,7 +348,11 @@ mod tests {
             assert_eq!(
                 super::any_contains_ignore_ascii_case(s, &[sub]),
                 Some(index),
-                "'{sub}' in '{s}'",
+                "{sub:?} in {s:?}",
+            );
+            assert!(
+                super::any_submatch_ignore_ascii_case(s, &[sub]),
+                "{sub:?} in {s:?}",
             );
         }
     }
