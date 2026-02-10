@@ -36,15 +36,13 @@ where
     let sub = sub.as_ref();
 
     let n = sub.len();
-    if n > s.len() {
-        return None;
+
+    if n == 0 {
+        return Some(0);
     }
 
-    (0..=(s.len() - n)).find(|&i| {
-        s.get(i..i + n)
-            .map(|s| s.eq_ignore_ascii_case(sub))
-            .unwrap_or_default()
-    })
+    s.windows(n)
+        .position(|window| window.eq_ignore_ascii_case(sub))
 }
 
 /// Finds the first match of any substring from `sub_iter` within `s`,
@@ -76,13 +74,9 @@ where
     let sub = sub.as_ref();
 
     let n = sub.len();
-    if n > s.len() {
-        return false;
-    }
 
     s.get(..n)
-        .map(|s| s.eq_ignore_ascii_case(sub))
-        .unwrap_or_default()
+        .is_some_and(|start| start.eq_ignore_ascii_case(sub))
 }
 
 /// Returns `true` if `s` starts with any prefix from `sub_iter`,
@@ -110,13 +104,11 @@ where
 {
     let s = s.as_ref();
     let sub = sub.as_ref();
+    let n = sub.len();
 
-    if s.len() < sub.len() {
-        return false;
-    }
-
-    let start = s.len() - sub.len();
-    s.get(start..)
+    let start_index = s.len().checked_sub(n);
+    start_index
+        .and_then(|i| s.get(i..))
         .is_some_and(|tail| tail.eq_ignore_ascii_case(sub))
 }
 
