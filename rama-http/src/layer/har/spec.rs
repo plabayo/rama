@@ -22,7 +22,6 @@ use rama_http_types::mime::Mime;
 use rama_http_types::proto::h1::Http1HeaderName;
 use rama_http_types::proto::h1::ext::ReasonPhrase;
 use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1HeaderMap};
-use rama_net::address::SocketAddress;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;

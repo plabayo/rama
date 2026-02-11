@@ -127,7 +127,7 @@ where
                 // TODO: when used as server middleware it is SocketInfo local addr,
                 //       but when used via client middleware it is supposed to be the resolved address,
                 //       which I am not sure is already exposed (TODO^2)
-                server_address: None,
+                server_ip_address: None,
                 connection: None, // TODO
                 comment: None,
             };
