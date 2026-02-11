@@ -145,7 +145,7 @@ async fn test_http_record_har() {
     // ...... not yet supported
     assert!(log.entries[0].comment.is_none());
     assert!(log.entries[0].connection.is_none());
-    assert!(log.entries[0].server_address.is_none());
+    assert!(log.entries[0].server_ip_address.is_none());
     assert!(log.entries[0].page_ref.is_none());
     // ...... request
     assert!(log.entries[0].request.comment.is_none());
@@ -157,7 +157,7 @@ async fn test_http_record_har() {
     // ...... not yet supported
     assert!(log.entries[1].comment.is_none());
     assert!(log.entries[1].connection.is_none());
-    assert!(log.entries[1].server_address.is_none());
+    assert!(log.entries[1].server_ip_address.is_none());
     assert!(log.entries[1].page_ref.is_none());
     // ...... request
     assert!(log.entries[0].request.comment.is_none());
