@@ -1,6 +1,7 @@
 // NOTE: spec can be found in ./spec.md
 
 use std::fmt::Debug;
+use std::net::IpAddr;
 use std::str::FromStr;
 
 use crate::layer::har::extensions::RequestComment;
@@ -303,7 +304,7 @@ pub struct Entry {
     ///
     /// (result of DNS resolution).
     #[serde(rename = "serverIPAddress")]
-    pub server_address: Option<SocketAddress>, // TODO: be able to provide for client middleware
+    pub server_ip_address: Option<IpAddr>, // TODO: be able to provide for client middleware
     /// Unique ID of the parent TCP/IP connection,
     /// can be the client or server port number.
     ///
