@@ -87,11 +87,11 @@ mod chrono_serializer {
 rama_utils::macros::enums::enum_builder! {
     @String
     pub enum HttpVersion {
-        Http09 => "0.9" | "HTTP/0.9",
-        Http10 => "1.0" | "HTTP/1" | "HTTP/1.0",
-        Http11 => "1.1" | "HTTP/1.1",
-        Http2 => "2" | "HTTP/2" | "h2",
-        Http3 => "3" | "HTTP/3" | "h3",
+        Http09 => "HTTP/0.9" | "0.9",
+        Http10 => "HTTP/1.0" | "1.0" | "HTTP/1",
+        Http11 => "HTTP/1.1" | "1.1",
+        Http2 => "HTTP/2" | "2" | "h2",
+        Http3 => "HTTP/3" | "3" | "h3",
     }
 }
 
@@ -282,7 +282,7 @@ pub struct Entry {
     /// Reference to the parent page.
     ///
     /// Leave out this field if the application does not support grouping by pages.
-    #[serde(rename = "pageRef")]
+    #[serde(rename = "pageref")]
     pub page_ref: Option<ArcStr>,
     /// Date and time stamp of the request start (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
     #[serde(with = "chrono_serializer", rename = "startedDateTime")]
@@ -302,7 +302,7 @@ pub struct Entry {
     /// IP address of the server that was connected
     ///
     /// (result of DNS resolution).
-    #[serde(rename = "serverAddress")]
+    #[serde(rename = "serverIPAddress")]
     pub server_address: Option<SocketAddress>, // TODO: be able to provide for client middleware
     /// Unique ID of the parent TCP/IP connection,
     /// can be the client or server port number.
@@ -501,7 +501,7 @@ pub struct Response {
     /// Details about the response body.
     pub content: Content,
     /// Redirection target URL from the Location response header.
-    #[serde(rename = "redirectUrl")]
+    #[serde(rename = "redirectURL")]
     pub redirect_url: Option<ArcStr>,
     /// Total number of bytes from the start of the HTTP response message
     ///
