@@ -60,8 +60,8 @@ enum Size {
 impl Size {
     fn bytes(self) -> usize {
         match self {
-            Size::Small => 1_000,
-            Size::Large => 500_000,
+            Self::Small => 1_000,
+            Self::Large => 500_000,
         }
     }
 }
