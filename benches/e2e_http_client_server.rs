@@ -206,6 +206,9 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddre
             match params.tls {
                 Tls::None => {
                     let service = get_http_service_boxed(params, body_content);
+
+                    ready_worker.store(true, Ordering::Release);
+
                     async_listener.serve(service).await
                 }
                 Tls::Rustls => {
