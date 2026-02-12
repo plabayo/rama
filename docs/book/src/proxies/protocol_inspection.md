@@ -139,17 +139,12 @@ Some rama examples that built on top of protocol inspection:
   is not about protocool inspection but does leverage socks5 and http protocol inspections for various purposes,
   including to hijack very specific http data without forcing all socks5 proxy traffic to be http.
 
-## Best Practices
+When writing technical docs, it’s easy to fall into that "instruction manual" trap where everything is a sterile list. If you want to sound more like a peer sharing advice over coffee, the trick is to weave those best practices into a narrative flow using a conversational tone.
 
-1. **Efficient Detection**:
-   - Use minimal bytes for initial protocol detection
-   - Implement fast-path for common protocols
+Here is a more human-led version of those best practices:
 
-2. **Security Considerations**:
-   - Validate protocol signatures
-   - Handle malformed traffic gracefully
+## Getting it Right: Performance and Security
 
-3. **Performance Optimization**:
-   - Minimize protocol detection overhead
-   - Use appropriate buffering strategies
-   - Implement protocol-specific optimizations
+When you're building out your proxy logic, the real goal is to keep things moving as fast as possible without leaving the door open for trouble. You’ll want to be efficient with how you detect protocols; try to identify what you're looking at using the absolute minimum number of bytes. It's often best to set up a "fast-path" for the protocols you expect to see most often, so the bulk of your traffic isn't stuck in a heavy detection loop.
+
+Of course, speed doesn't matter if the system isn't secure. You should always validate protocol signatures and make sure your code can gracefully handle malformed traffic—because "garbage in" shouldn't mean "crash out." From a performance standpoint, keep an eye on your buffering strategies. Excessive buffering can lead to latency spikes, so it’s worth tailoring your memory usage to the specific protocol you're handling. Ultimately, a bit of intentionality in how you structure these early handshakes goes a long way in making the whole system feel snappier and more resilient.

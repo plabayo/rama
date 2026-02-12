@@ -137,3 +137,6 @@ to the IP of the (SNI) proxy. The proxy on its turn will establish a connection
 based on the Server Name as discussed previously and onwards it goes.
 
 A proxy without a proxy protocol. That is also what a SNI proxy can be.
+
+In the next chapter you'll learn about [transparent proxies](./transparent.md).
+SNI proxies as defined here are just one way on how to do transparent proxies.

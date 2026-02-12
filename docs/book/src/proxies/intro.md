@@ -33,6 +33,11 @@ In specifically we'll discuss:
 
 ---
 
+Once you are comfortable with these intro topics in proxies,
+please read also the [the proxy operation chapters](./operate/intro.md)
+and learn how your proxies can be integrated into computer boxes
+from servers, to middle boxes and end user devices.
+
 <br>
 
 <div class="book-article-image-center">
