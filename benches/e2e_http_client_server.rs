@@ -8,7 +8,7 @@ use std::{
 
 use rama::{
     Layer, Service,
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     extensions::ExtensionsMut,
     http::{
         HeaderName, HeaderValue, Request, Response, Version,
@@ -251,7 +251,7 @@ async fn request_payload(
     }
 }
 
-fn get_inner_client(tls: Tls) -> impl Service<Request, Output = Response, Error = OpaqueError> {
+fn get_inner_client(tls: Tls) -> impl Service<Request, Output = Response, Error = BoxError> {
     match tls {
         Tls::None => EasyHttpWebClient::connector_builder()
             .with_default_transport_connector()
