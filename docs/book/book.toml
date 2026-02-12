@@ -10,6 +10,7 @@ edit-url-template = "https://github.com/plabayo/rama/edit/main/docs/book/{path}"
 additional-css = ["custom.css"]
 site-url = "/book/"
 cname = "ramaproxy.org"
+admonitions = true
 
 [output.html.print]
 enable = false
