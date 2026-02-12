@@ -153,12 +153,9 @@ fn get_rustls_acceptor_data() -> rustls::server::TlsAcceptorData {
     .build()
 }
 
-fn get_boring_acceptor_data() -> boring::server::TlsAcceptorData {
+fn get_boring_acceptor_data(app_protocol: ApplicationProtocol) -> boring::server::TlsAcceptorData {
     let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_11,
-            ApplicationProtocol::HTTP_2,
-        ]),
+        application_layer_protocol_negotiation: Some(vec![app_protocol]),
         ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
     };
     boring::server::TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data")
@@ -202,9 +199,13 @@ fn spawn_http_server(params: TestParameters, body_content: Vec<u8>) -> SocketAdd
                 }
                 Tls::Boring => {
                     let service = get_http_service_boxed(params, body_content);
-                    let tls_service =
-                        boring::server::TlsAcceptorLayer::new(get_boring_acceptor_data())
-                            .into_layer(service);
+                    let tls_service = boring::server::TlsAcceptorLayer::new(
+                        get_boring_acceptor_data(match params.version {
+                            HttpVersion::Http1 => ApplicationProtocol::HTTP_11,
+                            HttpVersion::Http2 => ApplicationProtocol::HTTP_2,
+                        }),
+                    )
+                    .into_layer(service);
                     async_listener.serve(tls_service).await
                 }
             }
@@ -228,7 +229,7 @@ async fn request_payload(
 
     let http_protocol = match params.tls {
         Tls::None => "http",
-        _ => "https",
+        Tls::Boring | Tls::Rustls => "https",
     };
 
     let result = client
