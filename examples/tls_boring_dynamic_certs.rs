@@ -55,7 +55,7 @@
 
 use rama::{
     Layer,
-    error::OpaqueError,
+    error::BoxError,
     graceful::Shutdown,
     http::server::HttpServer,
     http::service::web::response::IntoResponse,
@@ -150,7 +150,7 @@ impl DynamicCertIssuer for DynamicIssuer {
         &self,
         client_hello: ClientHello,
         _server_name: Option<Domain>,
-    ) -> Result<ServerAuthData, OpaqueError> {
+    ) -> Result<ServerAuthData, BoxError> {
         match client_hello.ext_server_name() {
             Some(domain) => {
                 if domain == "example" {
@@ -165,7 +165,7 @@ impl DynamicCertIssuer for DynamicIssuer {
     }
 }
 
-pub fn example_self_signed_auth() -> Result<ServerAuthData, OpaqueError> {
+pub fn example_self_signed_auth() -> Result<ServerAuthData, BoxError> {
     Ok(ServerAuthData {
         private_key: DataEncoding::Pem(
             std::str::from_utf8(include_bytes!("./assets/example.com.key"))
@@ -183,7 +183,7 @@ pub fn example_self_signed_auth() -> Result<ServerAuthData, OpaqueError> {
     })
 }
 
-pub fn second_example_self_signed_auth() -> Result<ServerAuthData, OpaqueError> {
+pub fn second_example_self_signed_auth() -> Result<ServerAuthData, BoxError> {
     Ok(ServerAuthData {
         private_key: DataEncoding::Pem(
             include_str!("./assets/second_example.com.key")

@@ -15,6 +15,10 @@ sort:
 
 lint: fmt sort
 
+deny:
+    @cargo install cargo-deny
+    cargo deny --workspace --all-features check
+
 check:
     cargo check --workspace --all-targets --all-features
 
@@ -65,8 +69,7 @@ test-crate CRATE *ARGS:
     cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
 
 test-doc-crate CRATE *ARGS:
-    @cargo install cargo-nextest --locked
-    cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
+    cargo test --doc --all-features -p {{CRATE}} {{ARGS}}
 
 test-spec-h2 *ARGS:
     bash rama-http-core/ci/h2spec.sh {{ARGS}}
@@ -87,13 +90,14 @@ test-loom:
 
 qq: lint check clippy doc extra-checks
 
-qa: qq test test-doc
+qa: qq test test-doc deny
 
 qa-crate CRATE:
     just check-crate {{CRATE}}
     just clippy-crate {{CRATE}}
     just doc-crate {{CRATE}}
     just test-crate {{CRATE}}
+    just test-doc-crate {{CRATE}}
 
 qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 

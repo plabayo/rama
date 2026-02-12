@@ -1,6 +1,6 @@
 use clap::ValueEnum;
 use rama::{
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _, ErrorExt as _},
     net::address::Domain,
 };
 use std::{fmt, net::IpAddr, str::FromStr};
@@ -45,7 +45,7 @@ pub(super) struct ResolveArg {
 }
 
 impl FromStr for ResolveArg {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut arg = Self {
@@ -62,9 +62,10 @@ impl FromStr for ResolveArg {
                 .map(|suffix| suffix.chars().all(|c| c.is_alphabetic() || c == '.'))
                 .unwrap_or_default()
             {
-                return Err(OpaqueError::from_display(format!(
-                    "invalid domain (suffix not found or invalid): {host}"
-                )));
+                return Err(
+                    BoxError::from("invalid domain (suffix not found or invalid)")
+                        .context_field("host", host),
+                );
             }
             arg.host = Some(host);
         }
@@ -80,7 +81,7 @@ impl FromStr for ResolveArg {
         }
 
         if arg.addresses.is_empty() {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "no addresses found while at least one is required",
             ));
         }

@@ -69,7 +69,7 @@ use rama_core::{
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::smol_str::ToSmolStr as _;
 
-use rand::Rng;
+use rand::RngExt as _;
 use uuid::Uuid;
 
 /// cfr: <https://www.rfc-editor.org/rfc/rfc6648>

@@ -47,6 +47,7 @@ use crate::{
     Request,
     utils::{HeaderValueErr, HeaderValueGetter},
 };
+use rama_core::error::ErrorContext as _;
 use rama_core::extensions::{Extension, ExtensionsMut};
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service, error::BoxError};
@@ -153,14 +154,14 @@ where
             Err(err) => {
                 if self.optional && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_)) {
                     tracing::debug!("failed to extract header config: {err:?}");
-                    return self.inner.serve(request).await.map_err(Into::into);
+                    return self.inner.serve(request).await.into_box_error();
                 } else {
                     return Err(err.into());
                 }
             }
         };
         request.extensions_mut().insert(config);
-        self.inner.serve(request).await.map_err(Into::into)
+        self.inner.serve(request).await.into_box_error()
     }
 }
 

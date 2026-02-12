@@ -1,5 +1,5 @@
 use rama::{
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     graceful,
     telemetry::tracing::{self, subscriber::filter::LevelFilter},
 };
@@ -25,7 +25,7 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
 
     let graceful_timeout = (cfg.graceful > 0.).then(|| Duration::from_secs_f64(cfg.graceful));
 
-    let (etx, mut erx) = tokio::sync::mpsc::channel::<OpaqueError>(1);
+    let (etx, mut erx) = tokio::sync::mpsc::channel::<BoxError>(1);
     let graceful = graceful::Shutdown::new(async move {
         let mut signal = Box::pin(graceful::default_signal());
         tokio::select! {

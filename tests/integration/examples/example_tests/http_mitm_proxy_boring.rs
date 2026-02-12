@@ -27,7 +27,6 @@ use rama::{
     net::{address::ProxyAddress, tls::ApplicationProtocol, tls::server::SelfSignedData},
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::Level,
     tls::boring::client::TlsConnectorDataBuilder,
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
@@ -49,7 +48,7 @@ async fn test_http_mitm_proxy() {
                         .with_match_route(
                             "/echo",
                             HttpMatcher::custom(WebSocketMatcher::new()),
-                            ConsumeErrLayer::trace(Level::DEBUG)
+                            ConsumeErrLayer::trace_as_debug()
                                 .into_layer(WebSocketAcceptor::new().into_echo_service()),
                         )
                         .with_get("/{*any}", async |req: Request| {
@@ -138,7 +137,7 @@ async fn test_http_mitm_proxy() {
                 .with_match_route(
                     "/echo",
                     HttpMatcher::custom(WebSocketMatcher::new()),
-                    ConsumeErrLayer::trace(Level::DEBUG).into_layer(
+                    ConsumeErrLayer::trace_as_debug().into_layer(
                         WebSocketAcceptor::new()
                             .with_per_message_deflate_overwrite_extensions()
                             .into_echo_service(),

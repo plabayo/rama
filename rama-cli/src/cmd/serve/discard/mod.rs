@@ -6,7 +6,7 @@
 use rama::{
     Layer, Service, ServiceInput,
     combinators::Either,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     futures::TryStreamExt,
     graceful::ShutdownGuard,
     layer::{
@@ -91,7 +91,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
     };
 
     let middleware = (
-        ConsumeErrLayer::trace(tracing::Level::DEBUG),
+        ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
         LimitLayer::new(if cfg.concurrent > 0 {
             Either::A(ConcurrentPolicy::max(cfg.concurrent))
         } else {
@@ -115,7 +115,6 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
             let tcp_listener = TcpListener::build(exec.clone())
                 .bind(cfg.bind.clone())
                 .await
-                .map_err(OpaqueError::from_boxed)
                 .context("bind TCP discard service socket")?;
 
             let bind_address = tcp_listener
@@ -145,7 +144,6 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
             );
             let udp_socket = bind_udp(cfg.bind.clone())
                 .await
-                .map_err(OpaqueError::from_boxed)
                 .context("bind UDP discard service socket")?;
 
             let bind_address = udp_socket

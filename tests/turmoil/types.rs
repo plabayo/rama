@@ -22,7 +22,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let transport_context = input.try_ref_into_transport_ctx().map_err(Into::into)?;
+        let transport_context = input.try_ref_into_transport_ctx().into_box_error()?;
         let address = transport_context
             .host_with_port()
             .context("convert to host with port")?

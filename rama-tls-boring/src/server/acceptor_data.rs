@@ -18,7 +18,7 @@ use rama_boring::{
 };
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::conversion::RamaTryFrom;
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use rama_net::{
     address::Domain,
@@ -92,7 +92,7 @@ impl TlsCertSource {
         mut builder: SslAcceptorBuilder,
         server_name: Option<Domain>,
         maybe_client_hello: Option<&Arc<Mutex<Option<RamaClientHello>>>>,
-    ) -> Result<SslAcceptorBuilder, OpaqueError> {
+    ) -> Result<SslAcceptorBuilder, BoxError> {
         match self.kind {
             TlsCertSourceKind::InMemory(issued_cert) => {
                 for (i, ca_cert) in issued_cert.cert_chain.iter().enumerate() {
@@ -172,7 +172,6 @@ impl TlsCertSource {
                             .try_get_with(domain.clone(), || {
                                 issue_cert_for_ca(&domain, &ca_cert, &ca_key)
                             })
-                            .context("fresh issue of cert + insert")
                             .map_err(|err| {
                                 tracing::error!(
                                     "boring: select certificate callback: issue failed: {err:?}"
@@ -263,7 +262,7 @@ impl TlsCertSource {
 }
 
 impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: rama_net::tls::server::ServerConfig) -> Result<Self, Self::Error> {
         let client_cert_chain = match value.client_verify_mode {
@@ -366,13 +365,13 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
     }
 }
 
-fn to_domain(ssl_ref: &SslRef, server_name: Option<&Domain>) -> Result<Domain, OpaqueError> {
+fn to_domain(ssl_ref: &SslRef, server_name: Option<&Domain>) -> Result<Domain, BoxError> {
     let host = match (ssl_ref.servername(NameType::HOST_NAME), server_name) {
         (Some(sni), _) => {
             tracing::trace!("boring: server_name to host: use client SNI: {sni}");
-            sni.parse().map_err(|err| {
+            sni.parse().map_err(|err: BoxError| {
                 tracing::warn!("boring: invalid servername received in callback: {err:?}");
-                OpaqueError::from_display("sni parse failed")
+                err.context("sni parse failed")
             })? // from client (e.g. only possibility for SNI proxy)
         }
         (_, Some(host)) => {
@@ -393,7 +392,7 @@ fn to_domain(ssl_ref: &SslRef, server_name: Option<&Domain>) -> Result<Domain, O
 
 fn server_auth_data_to_private_key_and_ca_chain(
     data: &ServerAuthData,
-) -> Result<IssuedCert, OpaqueError> {
+) -> Result<IssuedCert, BoxError> {
     // server TLS key
     let private_key = match &data.private_key {
         DataEncoding::Der(raw_data) => PKey::private_key_from_der(&raw_data[..])
@@ -434,7 +433,7 @@ fn issue_cert_for_ca(
     domain: &Domain,
     ca_cert: &X509,
     ca_key: &PKey<Private>,
-) -> Result<IssuedCert, OpaqueError> {
+) -> Result<IssuedCert, BoxError> {
     tracing::trace!("generate certs for host {domain} using in-memory ca cert");
     let (cert, key) = self_signed_server_auth_gen_cert(
         &SelfSignedData {
@@ -453,7 +452,8 @@ fn issue_cert_for_ca(
         ca_cert,
         ca_key,
     )
-    .with_context(|| format!("issue certs in memory for: {domain:?}"))?;
+    .context("issue certs in memory")
+    .context_field("domain", domain.clone())?;
 
     Ok(IssuedCert {
         cert_chain: vec![cert, ca_cert.clone()],
@@ -465,7 +465,7 @@ fn add_issued_cert_to_ssl_ref(
     domain: &Domain,
     issued_cert: &IssuedCert,
     builder: &mut SslRef,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     tracing::trace!("add issued cert for host {domain} to (boring) SslAcceptorBuilder");
 
     for (i, ca_cert) in issued_cert.cert_chain.iter().enumerate() {
@@ -490,7 +490,7 @@ fn add_issued_cert_to_ssl_ref(
     Ok(())
 }
 
-fn self_signed_server_auth(data: &SelfSignedData) -> Result<IssuedCert, OpaqueError> {
+fn self_signed_server_auth(data: &SelfSignedData) -> Result<IssuedCert, BoxError> {
     let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(data).context("self-signed CA")?;
     let (cert, privkey) = self_signed_server_auth_gen_cert(data, &ca_cert, &ca_privkey)
         .context("self-signed cert using self-signed CA")?;
@@ -504,7 +504,7 @@ fn self_signed_server_auth(data: &SelfSignedData) -> Result<IssuedCert, OpaqueEr
 /// Generate a self-signed server CA from the given [`SelfSignedData`].
 ///
 /// This should not be used in production but mostly for experimental / testing purposes.
-pub fn self_signed_server_ca(data: &SelfSignedData) -> Result<(X509, PKey<Private>), OpaqueError> {
+pub fn self_signed_server_ca(data: &SelfSignedData) -> Result<(X509, PKey<Private>), BoxError> {
     self_signed_server_auth_gen_ca(data)
 }
 
@@ -516,7 +516,7 @@ pub fn self_signed_server_auth_gen_cert(
     data: &SelfSignedData,
     ca_cert: &X509,
     ca_privkey: &PKey<Private>,
-) -> Result<(X509, PKey<Private>), OpaqueError> {
+) -> Result<(X509, PKey<Private>), BoxError> {
     let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
     let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
 
@@ -639,7 +639,7 @@ pub fn self_signed_server_auth_gen_cert(
 
 fn self_signed_server_auth_gen_ca(
     data: &SelfSignedData,
-) -> Result<(X509, PKey<Private>), OpaqueError> {
+) -> Result<(X509, PKey<Private>), BoxError> {
     let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
     let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
 

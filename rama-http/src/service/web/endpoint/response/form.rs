@@ -3,7 +3,7 @@ use crate::Body;
 use crate::Response;
 use crate::StatusCode;
 use crate::headers::ContentType;
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_core::telemetry::tracing;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;
@@ -97,12 +97,12 @@ impl<T> TryFrom<Form<T>> for Body
 where
     T: Serialize,
 {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(form: Form<T>) -> Result<Self, Self::Error> {
         match serde_html_form::to_string(&form.0) {
             Ok(body) => Ok(body.into()),
-            Err(err) => Err(OpaqueError::from_std(err)),
+            Err(err) => Err(BoxError::from(err)),
         }
     }
 }

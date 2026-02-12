@@ -34,11 +34,11 @@ ahash = { workspace = true }
 quickcheck = { workspace = true }
 serde_json = { workspace = true }
 serde_test = { workspace = true }
+tokio = { workspace = true, features = ["time", "macros", "sync", "rt-multi-thread"] }
 trybuild = { workspace = true }
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = "0.7"
-tokio = { workspace = true, features = ["time", "macros", "sync", "rt-multi-thread"] }
 
 [lints]
 workspace = true

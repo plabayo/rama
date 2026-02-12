@@ -1,6 +1,6 @@
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     rt::Executor,
     telemetry::tracing,
@@ -106,7 +106,7 @@ where
             .connector_factory
             .make_connector()
             .await
-            .map_err(Into::into)?;
+            .into_box_error()?;
 
         if let Some(proxy) = input.extensions().get::<ProxyAddress>() {
             let (mut conn, addr) = crate::client::tcp_connect(
@@ -161,19 +161,17 @@ where
             return Ok(EstablishedClientConnection { input, conn });
         }
 
-        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .context("tcp connecter: compute transport context to get authority")
-        })?;
+        let transport_ctx = input
+            .try_ref_into_transport_ctx()
+            .context("tcp connecter: compute transport context to get authority")?;
 
         match transport_ctx.protocol {
             TransportProtocol::Tcp => (), // a-ok :)
             TransportProtocol::Udp => {
                 // sanity check, shouldn't happen, but in case someone makes a weird stack, it can
-                return Err(OpaqueError::from_display(
+                return Err(BoxError::from(
                     "Tcp Connector Service cannot establish a UDP transport",
-                )
-                .into());
+                ));
             }
         }
 

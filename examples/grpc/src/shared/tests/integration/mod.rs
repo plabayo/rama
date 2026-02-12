@@ -1,6 +1,6 @@
 use rama::{
     Service,
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     http::{self, Body, client::EasyHttpWebClient},
     net::test_utils::client::{MockConnectorService, MockSocket},
     rt::Executor,
@@ -18,7 +18,7 @@ mod http2_max_header_list_size;
 mod max_message_size;
 mod timeout;
 
-pub(super) type WebClient = BoxService<http::Request, http::Response, OpaqueError>;
+pub(super) type WebClient = BoxService<http::Request, http::Response, BoxError>;
 
 pub(super) fn mock_io_client<F, Server>(make_server: F) -> WebClient
 where

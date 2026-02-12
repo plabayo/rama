@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use rama_utils::str::{
-    arcstr::ArcStr, contains_any_ignore_ascii_case, contains_ignore_ascii_case,
-    submatch_any_ignore_ascii_case, submatch_ignore_ascii_case,
+    any_contains_ignore_ascii_case, any_submatch_ignore_ascii_case, arcstr::ArcStr,
+    contains_ignore_ascii_case, submatch_ignore_ascii_case,
 };
 
 use super::{
@@ -61,7 +61,7 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<ArcStr>) -> UserAge
                 let kind = UserAgentKind::Chromium;
                 let kind_version = parse_ua_version_firefox_and_chromium(&ua[chrome_loc..]);
                 (Some(kind), kind_version, Some(PlatformKind::IOS))
-            } else if let Some(chromium_loc) = contains_any_ignore_ascii_case(ua, &["Opera"]) {
+            } else if let Some(chromium_loc) = any_contains_ignore_ascii_case(ua, &["Opera"]) {
                 let kind = UserAgentKind::Chromium;
                 let kind_version = parse_ua_version_firefox_and_chromium(&ua[chromium_loc..]);
                 (Some(kind), kind_version, None)
@@ -90,12 +90,12 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<ArcStr>) -> UserAge
                     (Some(PlatformKind::Android), None)
                 }
             } else if submatch_ignore_ascii_case(ua, "Linux") {
-                if submatch_any_ignore_ascii_case(ua, &["Mobile", "UCW"]) {
+                if any_submatch_ignore_ascii_case(ua, &["Mobile", "UCW"]) {
                     (Some(PlatformKind::Android), None)
                 } else {
                     (Some(PlatformKind::Linux), None)
                 }
-            } else if submatch_any_ignore_ascii_case(ua, &["iOS", "iPad", "iPod", "iPhone"]) {
+            } else if any_submatch_ignore_ascii_case(ua, &["iOS", "iPad", "iPod", "iPhone"]) {
                 (Some(PlatformKind::IOS), None)
             } else if submatch_ignore_ascii_case(ua, "Mac") {
                 (Some(PlatformKind::MacOS), None)
@@ -105,7 +105,7 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<ArcStr>) -> UserAge
                 } else {
                     (Some(PlatformKind::IOS), None)
                 }
-            } else if submatch_any_ignore_ascii_case(ua, &["Mobile", "Phone", "Tablet", "Zune"]) {
+            } else if any_submatch_ignore_ascii_case(ua, &["Mobile", "Phone", "Tablet", "Zune"]) {
                 (None, Some(DeviceKind::Mobile))
             } else if submatch_ignore_ascii_case(ua, "Desktop") {
                 (None, Some(DeviceKind::Desktop))

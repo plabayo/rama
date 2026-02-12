@@ -1,14 +1,14 @@
 use crate::RamaTlsBoringCrateMarker;
 use itertools::Itertools;
 use rama_core::conversion::RamaTryFrom;
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing::trace;
 use rama_net::tls::client::{ClientHello, parse_client_hello};
 
 impl<'ssl> RamaTryFrom<rama_boring::ssl::ClientHello<'ssl>, RamaTlsBoringCrateMarker>
     for ClientHello
 {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn rama_try_from(value: rama_boring::ssl::ClientHello<'ssl>) -> Result<Self, Self::Error> {
         parse_client_hello(value.as_bytes()).context("parse boring ssl ClientHello")
@@ -18,7 +18,7 @@ impl<'ssl> RamaTryFrom<rama_boring::ssl::ClientHello<'ssl>, RamaTlsBoringCrateMa
 impl<'ssl> RamaTryFrom<&rama_boring::ssl::ClientHello<'ssl>, RamaTlsBoringCrateMarker>
     for ClientHello
 {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn rama_try_from(value: &rama_boring::ssl::ClientHello<'ssl>) -> Result<Self, Self::Error> {
         parse_client_hello(value.as_bytes()).context("parse boring ssl ClientHello")
@@ -105,7 +105,7 @@ try_from_mapping! {
 impl RamaTryFrom<&rama_boring::x509::X509, RamaTlsBoringCrateMarker>
     for rama_net::tls::DataEncoding
 {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn rama_try_from(value: &rama_boring::x509::X509) -> Result<Self, Self::Error> {
         let der = value.to_der().context("boring X509 to Der DataEncoding")?;
@@ -116,7 +116,7 @@ impl RamaTryFrom<&rama_boring::x509::X509, RamaTlsBoringCrateMarker>
 impl RamaTryFrom<&rama_boring::stack::StackRef<rama_boring::x509::X509>, RamaTlsBoringCrateMarker>
     for rama_net::tls::DataEncoding
 {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn rama_try_from(
         value: &rama_boring::stack::StackRef<rama_boring::x509::X509>,

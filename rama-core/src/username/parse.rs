@@ -1,6 +1,7 @@
 use super::DEFAULT_USERNAME_LABEL_SEPARATOR;
-use crate::error::{BoxError, OpaqueError};
+use crate::error::BoxError;
 use crate::extensions::Extensions;
+use rama_error::{ErrorContext as _, ErrorExt};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::convert::Infallible;
 
@@ -11,7 +12,7 @@ pub fn parse_username<P>(
     ext: &mut Extensions,
     parser: P,
     username_ref: impl AsRef<str>,
-) -> Result<String, OpaqueError>
+) -> Result<String, BoxError>
 where
     P: UsernameLabelParser<Error: Into<BoxError>>,
 {
@@ -25,7 +26,7 @@ pub fn parse_username_with_separator<P>(
     mut parser: P,
     username_ref: impl AsRef<str>,
     separator: char,
-) -> Result<String, OpaqueError>
+) -> Result<String, BoxError>
 where
     P: UsernameLabelParser<Error: Into<BoxError>>,
 {
@@ -35,33 +36,31 @@ where
     let username = match label_it.next() {
         Some(username) => {
             if username.is_empty() {
-                return Err(OpaqueError::from_display("empty username"));
+                return Err(BoxError::from("empty username"));
             } else {
                 username
             }
         }
-        None => return Err(OpaqueError::from_display("missing username")),
+        None => return Err(BoxError::from("missing username")),
     };
 
     for (index, label) in label_it.enumerate() {
         match parser.parse_label(label) {
             UsernameLabelState::Used => (), // optimistic smiley
             UsernameLabelState::Ignored => {
-                return Err(OpaqueError::from_display(format!(
-                    "ignored username label #{index}: {label}",
-                )));
+                return Err(BoxError::from("ignored username label")
+                    .context_field("index", index)
+                    .context_str_field("label", label));
             }
             UsernameLabelState::Abort => {
-                return Err(OpaqueError::from_display(format!(
-                    "invalid username label #{index}: {label}",
-                )));
+                return Err(BoxError::from("invalid username label")
+                    .context_field("index", index)
+                    .context_str_field("label", label));
             }
         }
     }
 
-    parser
-        .build(ext)
-        .map_err(|err| OpaqueError::from_boxed(err.into()))?;
+    parser.build(ext).into_box_error()?;
 
     Ok(username.to_owned())
 }
@@ -121,7 +120,7 @@ macro_rules! username_label_parser_tuple_impl {
                 $T: UsernameLabelParser<Error: Into<BoxError>>,
             )+
         {
-            type Error = OpaqueError;
+            type Error = BoxError;
 
             fn parse_label(&mut self, label: &str) -> UsernameLabelState {
                 let ($($T,)+) = self;
@@ -139,7 +138,7 @@ macro_rules! username_label_parser_tuple_impl {
             fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
                 let ($($T,)+) = self;
                 $(
-                    $T.build(ext).map_err(|err| OpaqueError::from_boxed(err.into()))?;
+                    $T.build(ext).into_box_error()?;
                 )+
                 Ok(())
             }
@@ -158,7 +157,7 @@ macro_rules! username_label_parser_tuple_exclusive_labels_impl {
                 $T: UsernameLabelParser<Error: Into<BoxError>>,
             )+
         {
-            type Error = OpaqueError;
+            type Error = BoxError;
 
             fn parse_label(&mut self, label: &str) -> UsernameLabelState {
                 let ($(ref mut $T,)+) = self.0;
@@ -175,7 +174,7 @@ macro_rules! username_label_parser_tuple_exclusive_labels_impl {
             fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
                 let ($($T,)+) = self.0;
                 $(
-                    $T.build(ext).map_err(|err| OpaqueError::from_boxed(err.into()))?;
+                    $T.build(ext).into_box_error()?;
                 )+
                 Ok(())
             }

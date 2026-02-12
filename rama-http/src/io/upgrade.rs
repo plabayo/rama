@@ -44,7 +44,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;
 
 use rama_core::bytes::Bytes;
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
@@ -70,7 +70,7 @@ pub struct Upgraded {
 /// If no upgrade was available, or it doesn't succeed, yields an `Error`.
 #[derive(Clone)]
 pub struct OnUpgrade {
-    rx: Arc<Mutex<oneshot::Receiver<Result<Upgraded, OpaqueError>>>>,
+    rx: Arc<Mutex<oneshot::Receiver<Result<Upgraded, BoxError>>>>,
 }
 
 /// The deconstructed parts of an [`Upgraded`] type.
@@ -106,19 +106,17 @@ pub struct Parts<T> {
 /// - `&rama_http::Response<B>`
 pub fn handle_upgrade<T: ExtensionsRef>(
     msg: T,
-) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+) -> impl Future<Output = Result<Upgraded, BoxError>> + 'static {
     let on_upgrade = match msg.extensions().get::<OnUpgrade>().cloned() {
         Some(on_upgrade) => {
             trace!("upgrading this: {:?}", on_upgrade);
             if on_upgrade.has_handled_upgrade() {
-                Err(OpaqueError::from_display(
-                    "upgraded has already been handled",
-                ))
+                Err(BoxError::from("upgraded has already been handled"))
             } else {
                 Ok(on_upgrade)
             }
         }
-        None => Err(OpaqueError::from_display("no pending update found")),
+        None => Err(BoxError::from("no pending update found")),
     };
 
     async {
@@ -131,7 +129,7 @@ pub fn handle_upgrade<T: ExtensionsRef>(
 
 /// A pending upgrade, created with [`pending`].
 pub struct Pending {
-    tx: oneshot::Sender<Result<Upgraded, OpaqueError>>,
+    tx: oneshot::Sender<Result<Upgraded, BoxError>>,
 }
 
 /// Initiate an upgrade.
@@ -285,7 +283,7 @@ impl OnUpgrade {
 }
 
 impl Future for OnUpgrade {
-    type Output = Result<Upgraded, OpaqueError>;
+    type Output = Result<Upgraded, BoxError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Pin::new(&mut *self.rx.lock())
@@ -293,7 +291,7 @@ impl Future for OnUpgrade {
             .map(|res| match res {
                 Ok(Ok(upgraded)) => Ok(upgraded),
                 Ok(Err(err)) => Err(err),
-                Err(_oneshot_canceled) => Err(OpaqueError::from_display(
+                Err(_oneshot_canceled) => Err(BoxError::from(
                     "OnUpgrade: cancelled while expecting upgrade",
                 )),
             })
@@ -319,9 +317,9 @@ impl Pending {
     /// upgrades are handled manually.
     pub fn manual(self) {
         trace!("pending upgrade handled manually");
-        let _ = self.tx.send(Err(OpaqueError::from_display(
-            "OnUpgrade: manual upgrade failed",
-        )));
+        let _ = self
+            .tx
+            .send(Err(BoxError::from("OnUpgrade: manual upgrade failed")));
     }
 }
 

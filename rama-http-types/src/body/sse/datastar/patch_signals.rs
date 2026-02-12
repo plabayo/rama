@@ -1,8 +1,8 @@
 use crate::sse::{
     Event, EventBuildError, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType,
 };
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
-use rama_error::{ErrorContext, OpaqueError};
 
 /// [`PatchSignals`] patches signals into the signal store
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -73,7 +73,7 @@ impl<T> TryFrom<PatchSignals<T>> for super::DatastarEvent<T> {
 }
 
 impl<T: EventDataWrite> EventDataWrite for PatchSignals<T> {
-    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
+    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError> {
         w.write_all(b"signals ")
             .context("PatchSignals: write signals keyword")?;
         self.signals
@@ -129,7 +129,7 @@ impl<T: EventDataRead> EventDataRead for PatchSignals<T> {
 impl<R: EventDataLineReader> EventDataLineReader for PatchSignalsReader<R> {
     type Data = PatchSignals<R::Data>;
 
-    fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+    fn read_line(&mut self, line: &str) -> Result<(), BoxError> {
         let line = line.trim();
         if line.is_empty() {
             return Ok(());
@@ -157,7 +157,7 @@ impl<R: EventDataLineReader> EventDataLineReader for PatchSignalsReader<R> {
         Ok(())
     }
 
-    fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
+    fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, BoxError> {
         let Some(signals) = self.signals.data(None)? else {
             return Ok(None);
         };
@@ -170,7 +170,7 @@ impl<R: EventDataLineReader> EventDataLineReader for PatchSignalsReader<R> {
             })
             .unwrap_or_default()
         {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "PatchSignalsReader: unexpected event type: expected: datastar-patch-signals",
             ));
         }

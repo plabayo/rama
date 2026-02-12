@@ -3,7 +3,7 @@
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::{
-    error::OpaqueError,
+    error::BoxError,
     telemetry::tracing::{debug, trace},
 };
 use std::{
@@ -688,7 +688,7 @@ impl WebSocketContext {
                 self.state = WebSocketState::Terminated;
                 return Err(ProtocolError::Io(io::Error::new(
                     io::ErrorKind::ConnectionAborted,
-                    OpaqueError::from_display("Connection closed normally by me-the-server"),
+                    BoxError::from("Connection closed normally by me-the-server"),
                 )));
             }
 
@@ -848,7 +848,7 @@ impl WebSocketContext {
             self.state = WebSocketState::Terminated;
             Err(ProtocolError::Io(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                OpaqueError::from_display("Connection closed normally by me-the-server (EOF)"),
+                BoxError::from("Connection closed normally by me-the-server (EOF)"),
             )))
         } else {
             Ok(should_flush)
@@ -893,7 +893,7 @@ impl WebSocketContext {
                 WebSocketState::ClosedByPeer | WebSocketState::CloseAcknowledged => {
                     Err(ProtocolError::Io(io::Error::new(
                         io::ErrorKind::ConnectionAborted,
-                        OpaqueError::from_display("Connection closed normally by peer"),
+                        BoxError::from("Connection closed normally by peer"),
                     )))
                 }
                 WebSocketState::Active
@@ -1237,7 +1237,7 @@ impl WebSocketState {
         match self {
             Self::Terminated => Err(ProtocolError::Io(io::Error::new(
                 io::ErrorKind::NotConnected,
-                OpaqueError::from_display("Trying to work with closed connection"),
+                BoxError::from("Trying to work with closed connection"),
             ))),
             Self::Active | Self::CloseAcknowledged | Self::ClosedByPeer | Self::ClosedByUs => {
                 Ok(())

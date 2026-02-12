@@ -3,7 +3,7 @@
 use rama::{
     Service,
     combinators::Either,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
     http::{
         HeaderName, HeaderValue, Request,
@@ -74,7 +74,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
             HeaderName::from_static("x-sponsored-by"),
             HeaderValue::from_static("fly.io"),
         ),
-        ConsumeErrLayer::trace(tracing::Level::WARN),
+        ConsumeErrLayer::trace_as(tracing::Level::WARN),
     );
 
     let router = Router::new()
@@ -144,7 +144,6 @@ where
     let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind http test service")?;
 
     let bind_address = tcp_listener
@@ -152,7 +151,7 @@ where
         .context("get local addr of tcp listener")?;
 
     let tcp_service_builder = (
-        ConsumeErrLayer::trace(tracing::Level::WARN),
+        ConsumeErrLayer::trace_as(tracing::Level::WARN),
         if cfg.timeout > 0. {
             TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
         } else {

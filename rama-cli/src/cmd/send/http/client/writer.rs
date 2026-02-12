@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rama::{
     combinators::Either,
-    error::{ErrorContext as _, OpaqueError},
+    error::{BoxError, ErrorContext as _},
 };
 use tokio::{
     fs::{File, OpenOptions},
@@ -23,7 +23,7 @@ impl Writer {
     }
 }
 
-pub(super) async fn try_new(cfg: &SendCommand) -> Result<Writer, OpaqueError> {
+pub(super) async fn try_new(cfg: &SendCommand) -> Result<Writer, BoxError> {
     let writer = if let Some(path) = cfg.output.as_deref() {
         Either::A(
             OpenOptions::new()

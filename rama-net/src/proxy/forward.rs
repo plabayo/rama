@@ -1,7 +1,7 @@
 use rama_core::telemetry::tracing;
 use rama_core::{
     Service,
-    error::{ErrorExt, OpaqueError},
+    error::{BoxError, ErrorExt},
 };
 
 use rama_core::stream::Stream;
@@ -30,7 +30,7 @@ where
     T: Stream + Unpin,
 {
     type Output = ();
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(
         &self,

@@ -12,8 +12,9 @@ pub use ::smol_str;
 mod search;
 #[doc(inline)]
 pub use search::{
-    contains_any_ignore_ascii_case, contains_ignore_ascii_case, starts_with_ignore_ascii_case,
-    submatch_any_ignore_ascii_case, submatch_ignore_ascii_case,
+    any_contains_ignore_ascii_case, any_ends_with_ignore_ascii_case,
+    any_starts_with_ignore_ascii_case, any_submatch_ignore_ascii_case, contains_ignore_ascii_case,
+    ends_with_ignore_ascii_case, starts_with_ignore_ascii_case, submatch_ignore_ascii_case,
 };
 
 pub mod arcstr;

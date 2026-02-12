@@ -1,6 +1,6 @@
 use crate::RamaTlsRustlsCrateMarker;
 use rama_core::conversion::{RamaFrom, RamaTryFrom};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_net::{
     address::{Domain, Host},
     tls::{
@@ -46,7 +46,7 @@ impl RamaTryFrom<ProtocolVersion, RamaTlsRustlsCrateMarker> for &rustls::Support
 }
 
 impl<'a> RamaTryFrom<rustls::pki_types::ServerName<'a>, RamaTlsRustlsCrateMarker> for Host {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn rama_try_from(value: rustls::pki_types::ServerName<'a>) -> Result<Self, Self::Error> {
         match value {
@@ -54,14 +54,13 @@ impl<'a> RamaTryFrom<rustls::pki_types::ServerName<'a>, RamaTlsRustlsCrateMarker
                 Ok(Domain::try_from(name.as_ref().to_owned())?.into())
             }
             rustls::pki_types::ServerName::IpAddress(ip) => Ok(Self::from(IpAddr::from(ip))),
-            _ => Err(OpaqueError::from_display(format!(
-                "urecognised rustls (PKI) server name: {value:?}",
-            ))),
+            _ => Err(BoxError::from("unrecognised rustls (PKI) server name")
+                .with_context_debug_field("server_name", || value.to_owned())),
         }
     }
 }
 impl RamaTryFrom<Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::ServerName<'_> {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn rama_try_from(value: Host) -> Result<Self, Self::Error> {
         match value {
@@ -75,7 +74,7 @@ impl RamaTryFrom<Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::ServerNa
 }
 
 impl<'a> RamaTryFrom<&rustls::pki_types::ServerName<'a>, RamaTlsRustlsCrateMarker> for Host {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn rama_try_from(value: &rustls::pki_types::ServerName<'a>) -> Result<Self, Self::Error> {
         match value {
@@ -83,15 +82,14 @@ impl<'a> RamaTryFrom<&rustls::pki_types::ServerName<'a>, RamaTlsRustlsCrateMarke
                 Ok(Domain::try_from(name.as_ref().to_owned())?.into())
             }
             rustls::pki_types::ServerName::IpAddress(ip) => Ok(Self::from(IpAddr::from(*ip))),
-            _ => Err(OpaqueError::from_display(format!(
-                "urecognised rustls (PKI) server name: {value:?}",
-            ))),
+            _ => Err(BoxError::from("urecognised rustls (PKI) server name")
+                .with_context_debug_field("value", || value.to_owned())),
         }
     }
 }
 
 impl<'a> RamaTryFrom<&'a Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::ServerName<'a> {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn rama_try_from(value: &'a Host) -> Result<Self, Self::Error> {
         match value {

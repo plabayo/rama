@@ -4,7 +4,7 @@ use super::utils;
 
 use rama::{
     Service,
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     http::{
         Body, BodyExtractExt, Request, client::EasyHttpWebClient, server::HttpServer,
@@ -192,7 +192,7 @@ async fn spawn_https_server() -> SocketAddress {
     bind_addr
 }
 
-fn try_new_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+fn try_new_tls_service_data() -> Result<TlsAcceptorData, BoxError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
             ApplicationProtocol::HTTP_2,

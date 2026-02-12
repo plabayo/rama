@@ -368,9 +368,8 @@ async fn test_https_with_remote_tls_cert_issuer() {
     use ::base64::Engine;
     use ::rama::{
         Layer as _,
-        error::OpaqueError,
+        error::BoxError,
         http::{
-            Body,
             headers::StrictTransportSecurity,
             layer::{
                 compression::CompressionLayer, cors, map_response_body::MapResponseBodyLayer,
@@ -448,7 +447,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
     }
 
     let http_svc = (
-        MapResponseBodyLayer::new(Body::new),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
         cors::CorsLayer::permissive(),
@@ -490,7 +489,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
                     let key_pem_base64 =
                         BASE64.encode(key.private_key_to_pem_pkcs8().context("key to pem pkcs8")?);
 
-                    Ok::<_, OpaqueError>(Json(CertOrderOutput {
+                    Ok::<_, BoxError>(Json(CertOrderOutput {
                         crt_pem_base64,
                         key_pem_base64,
                     }))

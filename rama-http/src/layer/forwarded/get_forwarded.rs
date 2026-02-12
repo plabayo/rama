@@ -293,14 +293,14 @@ where
 mod tests {
     use super::*;
     use crate::{Response, StatusCode, service::web::response::IntoResponse};
-    use rama_core::{Layer, error::OpaqueError, extensions::ExtensionsRef, service::service_fn};
+    use rama_core::{Layer, error::BoxError, extensions::ExtensionsRef, service::service_fn};
     use rama_http_headers::forwarded::{TrueClientIp, XRealIp};
     use rama_net::forwarded::{ForwardedProtocol, ForwardedVersion};
     use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<Request<()>>>(_: T) {}
 
-    async fn dummy_service_fn() -> Result<Response, OpaqueError> {
+    async fn dummy_service_fn() -> Result<Response, BoxError> {
         Ok(StatusCode::OK.into_response())
     }
 

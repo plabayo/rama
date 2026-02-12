@@ -2,7 +2,7 @@ use std::{io::Write as _, sync::Arc};
 
 use rama::{
     Layer as _, Service,
-    error::OpaqueError,
+    error::BoxError,
     futures::StreamExt as _,
     http::{
         Body, BodyExtractExt, Method, Request, Response, StatusCode, Version,
@@ -62,7 +62,7 @@ async fn run_http_tests(base_uri: &'static str) {
 }
 
 async fn run_http_test_endpoint_method(
-    client: BoxService<Request, Response, OpaqueError>,
+    client: BoxService<Request, Response, BoxError>,
     base_uri: &'static str,
     http_version: Version,
 ) {
@@ -100,7 +100,7 @@ async fn run_http_test_endpoint_method(
 }
 
 async fn run_http_test_endpoint_request_compression(
-    client: BoxService<Request, Response, OpaqueError>,
+    client: BoxService<Request, Response, BoxError>,
     base_uri: &'static str,
     http_version: Version,
 ) {
@@ -126,7 +126,7 @@ async fn run_http_test_endpoint_request_compression(
 }
 
 async fn run_http_test_endpoint_response_compression(
-    client: BoxService<Request, Response, OpaqueError>,
+    client: BoxService<Request, Response, BoxError>,
     base_uri: &'static str,
     http_version: Version,
 ) {
@@ -169,7 +169,7 @@ async fn run_http_test_endpoint_response_compression(
 }
 
 async fn run_http_test_endpoint_response_stream(
-    client: BoxService<Request, Response, OpaqueError>,
+    client: BoxService<Request, Response, BoxError>,
     base_uri: &'static str,
     http_version: Version,
 ) {
@@ -191,7 +191,7 @@ async fn run_http_test_endpoint_response_stream(
 }
 
 async fn run_http_test_endpoint_response_stream_compression(
-    client: BoxService<Request, Response, OpaqueError>,
+    client: BoxService<Request, Response, BoxError>,
     base_uri: &'static str,
     http_version: Version,
 ) {
@@ -236,7 +236,7 @@ async fn run_http_test_endpoint_response_stream_compression(
 }
 
 async fn run_http_test_endpoint_sse(
-    client: BoxService<Request, Response, OpaqueError>,
+    client: BoxService<Request, Response, BoxError>,
     base_uri: &'static str,
     http_version: Version,
 ) {

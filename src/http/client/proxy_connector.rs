@@ -1,6 +1,6 @@
 use crate::{
     Layer, Service,
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     http::client::proxy::layer::{
         HttpProxyConnector, HttpProxyConnectorLayer, MaybeHttpProxiedConnection,
@@ -16,6 +16,7 @@ use crate::{
     telemetry::tracing,
 };
 use pin_project_lite::pin_project;
+use rama_core::error::{ErrorContext as _, ErrorExt as _};
 use std::{
     fmt::Debug,
     pin::Pin,
@@ -97,7 +98,7 @@ where
                 }
                 tracing::trace!("no proxy detected in ctx, using inner connector");
                 let EstablishedClientConnection { input, conn } =
-                    self.inner.connect(input).await.map_err(Into::into)?;
+                    self.inner.connect(input).await.into_box_error()?;
 
                 let conn = MaybeProxiedConnection::direct(conn);
                 Ok(EstablishedClientConnection { input, conn })
@@ -126,10 +127,8 @@ where
                     let conn = MaybeProxiedConnection::http(conn);
                     Ok(EstablishedClientConnection { input, conn })
                 } else {
-                    Err(OpaqueError::from_display(format!(
-                        "received unsupport proxy protocol {protocol:?}"
-                    ))
-                    .into_boxed())
+                    Err(BoxError::from("received unsupport proxy protocol")
+                        .with_context_debug_field("protocol", || protocol.clone()))
                 }
             }
         }

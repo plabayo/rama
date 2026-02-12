@@ -1,6 +1,6 @@
 use crate::DnsResolver;
 use ahash::{HashMap, HashMapExt as _};
-use rama_core::error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_net::address::{AsDomainRef, Domain, DomainTrie};
 use serde::{Deserialize, Serialize, de};
 
@@ -37,7 +37,7 @@ impl<'de> Deserialize<'de> for DnsOverwrite {
             {
                 DnsOverwriteKind::Ips(Arc::new(ip_addrs))
             } else {
-                let result: Result<DomainTrie<Vec<IpAddr>>, OpaqueError> = map
+                let result: Result<DomainTrie<Vec<IpAddr>>, BoxError> = map
                     .into_iter()
                     .map(|(s, ips)| s.parse().map(|d: Domain| (d, ips)))
                     .collect();
@@ -158,12 +158,12 @@ impl InMemoryDns {
 }
 
 impl DnsResolver for DnsOverwrite {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
         match &self.0 {
             DnsOverwriteKind::Trie(in_memory_dns) => in_memory_dns.txt_lookup(domain).await,
-            DnsOverwriteKind::Ips(_) => Err(OpaqueError::from_display(
+            DnsOverwriteKind::Ips(_) => Err(BoxError::from(
                 "no txt record in ip-hardcoded dns overwrite",
             )),
         }
@@ -203,7 +203,7 @@ impl DnsResolver for DnsOverwrite {
 }
 
 impl DnsResolver for InMemoryDns {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
         self.txt_trie
@@ -223,7 +223,7 @@ impl DnsResolver for InMemoryDns {
                     })
                     .collect()
             })
-            .ok_or_else(|| OpaqueError::from_display("no A records found for domain in memory"))
+            .ok_or_else(|| BoxError::from("no A records found for domain in memory"))
     }
 
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
@@ -237,7 +237,7 @@ impl DnsResolver for InMemoryDns {
                     })
                     .collect()
             })
-            .ok_or_else(|| OpaqueError::from_display("no AAAA records found for domain in memory"))
+            .ok_or_else(|| BoxError::from("no AAAA records found for domain in memory"))
     }
 }
 

@@ -1,4 +1,4 @@
-use rama_error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_http_types::body::OptionalBody;
 
 use super::ValidateRequest;
@@ -28,7 +28,7 @@ impl<ResBody> AcceptHeader<ResBody> {
     /// # Errors
     ///
     /// Errors if `header_value` is not in the form: `type/subtype`, such as `application/json`
-    pub(super) fn try_new(header_value: &str) -> Result<Self, OpaqueError> {
+    pub(super) fn try_new(header_value: &str) -> Result<Self, BoxError> {
         Ok(Self {
             header_value: Arc::new(
                 header_value

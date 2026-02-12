@@ -7,7 +7,7 @@ use crate::{
     cli::ForwardKind,
     combinators::Either,
     combinators::Either7,
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Request, Response, StatusCode,
@@ -51,6 +51,7 @@ type TlsConfig = ServerConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 type TlsConfig = TlsAcceptorData;
 
+use rama_core::error::ErrorExt as _;
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
 use tokio::io::AsyncWriteExt;
 
@@ -331,15 +332,13 @@ impl<M> IpServiceBuilder<M> {
             None => None,
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             Some(other) => {
-                return Err(OpaqueError::from_display(format!(
-                    "invalid forward kind for Transport mode: {other:?}"
-                ))
-                .into());
+                return Err(BoxError::from("invalid forward kind for Transport mode")
+                    .with_context_debug_field("kind", || other.clone()));
             }
         };
 
         let tcp_service_builder = (
-            ConsumeErrLayer::trace(tracing::Level::DEBUG),
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             LimitLayer::new(if self.concurrent_limit > 0 {
                 Either::A(ConcurrentPolicy::max(self.concurrent_limit))
             } else {
@@ -405,7 +404,7 @@ impl<M> IpServiceBuilder<M> {
         });
 
         let tcp_service_builder = (
-            ConsumeErrLayer::trace(tracing::Level::DEBUG),
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             (self.concurrent_limit > 0)
                 .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
             (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),

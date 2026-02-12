@@ -53,7 +53,7 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
     futures::SinkExt,
@@ -255,7 +255,7 @@ fn new_http_mitm_proxy(
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
     Arc::new(
         (
-            MapResponseBodyLayer::new(Body::new),
+            MapResponseBodyLayer::new_boxed_streaming_body(),
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
             UserAgentEmulateLayer::new(state.ua_db.clone())
@@ -328,7 +328,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     let client = (
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
-        MapResponseBodyLayer::new(Body::new),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
         DecompressionLayer::new(),
     )
         .into_layer(client);
@@ -345,7 +345,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-fn try_new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+fn try_new_mitm_tls_service_data() -> Result<TlsAcceptorData, BoxError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
             ApplicationProtocol::HTTP_2,

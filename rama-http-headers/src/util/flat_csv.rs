@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::str::FromStr;
 
-use rama_error::{BoxError, ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::HeaderValue;
 use rama_utils::collections::{NonEmptySmallVec, NonEmptyVec};
 
@@ -41,7 +41,7 @@ impl FlatCsvSeparator {
 pub(crate) fn try_decode_flat_csv_header_values_as_non_empty_vec<'a, T>(
     values: impl IntoIterator<Item = &'a HeaderValue>,
     sep: FlatCsvSeparator,
-) -> Result<NonEmptyVec<T>, OpaqueError>
+) -> Result<NonEmptyVec<T>, BoxError>
 where
     T: FromStr<Err: Into<BoxError>>,
 {
@@ -53,7 +53,7 @@ where
             let s = v
                 .to_str()
                 .context("header value is not a valid utf-8 str")?;
-            Ok::<_, OpaqueError>(s.split(move |c| {
+            Ok::<_, BoxError>(s.split(move |c| {
                 #[allow(clippy::collapsible_else_if)]
                 if in_quotes {
                     if c == '"' {
@@ -78,15 +78,10 @@ where
     let mut vec = NonEmptyVec::new(
         iter.next()
             .context("header value is an empty (CSV?)")?
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("parse header value CSV colum from str")?,
     );
     for result in iter {
-        vec.push(
-            result
-                .map_err(|err| OpaqueError::from_boxed(err.into()))
-                .context("parse header value CSV colum from str")?,
-        );
+        vec.push(result.context("parse header value CSV colum from str")?);
     }
     Ok(vec)
 }
@@ -94,7 +89,7 @@ where
 pub(crate) fn try_encode_non_empty_vec_as_flat_csv_header_value<T>(
     values: &NonEmptyVec<T>,
     sep: FlatCsvSeparator,
-) -> Result<HeaderValue, OpaqueError>
+) -> Result<HeaderValue, BoxError>
 where
     T: Display,
 {
@@ -118,7 +113,7 @@ where
 pub(crate) fn try_encode_non_empty_vec_of_bytes_as_flat_csv_header_value<T>(
     values: &NonEmptyVec<T>,
     sep: FlatCsvSeparator,
-) -> Result<HeaderValue, OpaqueError>
+) -> Result<HeaderValue, BoxError>
 where
     T: AsRef<[u8]>,
 {
@@ -146,7 +141,7 @@ where
 pub(crate) fn try_decode_flat_csv_header_values_as_non_empty_smallvec<'a, const N: usize, T>(
     values: impl IntoIterator<Item = &'a HeaderValue>,
     sep: FlatCsvSeparator,
-) -> Result<NonEmptySmallVec<N, T>, OpaqueError>
+) -> Result<NonEmptySmallVec<N, T>, BoxError>
 where
     T: FromStr<Err: Into<BoxError>>,
 {
@@ -158,7 +153,7 @@ where
             let s = v
                 .to_str()
                 .context("header value is not a valid utf-8 str")?;
-            Ok::<_, OpaqueError>(s.split(move |c| {
+            Ok::<_, BoxError>(s.split(move |c| {
                 #[allow(clippy::collapsible_else_if)]
                 if in_quotes {
                     if c == '"' {
@@ -183,15 +178,10 @@ where
     let mut vec = NonEmptySmallVec::new(
         iter.next()
             .context("header value is an empty (CSV?)")?
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("parse header value CSV colum from str")?,
     );
     for result in iter {
-        vec.push(
-            result
-                .map_err(|err| OpaqueError::from_boxed(err.into()))
-                .context("parse header value CSV colum from str")?,
-        );
+        vec.push(result.context("parse header value CSV colum from str")?);
     }
     Ok(vec)
 }
@@ -199,7 +189,7 @@ where
 pub(crate) fn try_encode_non_empty_smallvec_as_flat_csv_header_value<const N: usize, T>(
     values: &NonEmptySmallVec<N, T>,
     sep: FlatCsvSeparator,
-) -> Result<HeaderValue, OpaqueError>
+) -> Result<HeaderValue, BoxError>
 where
     T: Display,
 {

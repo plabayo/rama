@@ -1,5 +1,5 @@
+use rama_core::error::BoxError;
 use rama_core::telemetry::tracing;
-use rama_error::OpaqueError;
 use rama_http_types::{HeaderName, HeaderValue, header};
 use rama_utils::collections::{NonEmptyVec, non_empty_vec};
 
@@ -44,7 +44,7 @@ enum Directive {
 }
 
 impl TryFrom<&Directive> for HeaderValue {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &Directive) -> Result<Self, Self::Error> {
         match value {

@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
-use rama_error::{BoxError, ErrorContext as _, OpaqueError};
+use rama_error::{BoxError, ErrorContext as _};
 use serde::Deserialize;
 
 use crate::futures::{Stream, ready};
@@ -51,7 +51,7 @@ where
     S: Stream<Item = Result<B, E>>,
     B: AsRef<[u8]>,
 {
-    type Item = Result<T, OpaqueError>;
+    type Item = Result<T, BoxError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
@@ -66,7 +66,7 @@ where
             match bytes {
                 Some(Ok(bytes)) => this.engine.input(bytes),
                 Some(Err(err)) => {
-                    let err = OpaqueError::from_boxed(err.into());
+                    let err = err.into();
                     return Poll::Ready(Some(Err(err)));
                 }
                 None => {
@@ -107,7 +107,7 @@ mod tests {
     }
 
     impl Iterator for SingleThenPanicIter {
-        type Item = Result<String, OpaqueError>;
+        type Item = Result<String, BoxError>;
 
         fn next(&mut self) -> Option<Self::Item> {
             Some(Ok(self.data.take().expect("iterator queried twice")))
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn pending_stream_results_in_pending_item() {
         let mut ndjson_stream: JsonReadStream<(), _> =
-            JsonReadStream::new(stream::pending::<Result<&str, OpaqueError>>());
+            JsonReadStream::new(stream::pending::<Result<&str, BoxError>>());
 
         let mut next = task::spawn(ndjson_stream.next());
 
@@ -127,8 +127,8 @@ mod tests {
     #[test]
     fn empty_stream_results_in_empty_results() {
         let collected = tokio_test::block_on(
-            JsonReadStream::<_, _>::new(stream::empty::<Result<&[u8], OpaqueError>>())
-                .collect::<Vec<Result<(), OpaqueError>>>(),
+            JsonReadStream::<_, _>::new(stream::empty::<Result<&[u8], BoxError>>())
+                .collect::<Vec<Result<(), BoxError>>>(),
         );
         assert!(collected.is_empty());
     }
@@ -138,7 +138,7 @@ mod tests {
         let stream = stream::once(async { Ok::<_, Infallible>("{\"key\":1,\"value\":2}\n") });
 
         let collected = tokio_test::block_on(
-            JsonReadStream::<_, _>::new(stream).collect::<Vec<Result<TestStruct, OpaqueError>>>(),
+            JsonReadStream::<_, _>::new(stream).collect::<Vec<Result<TestStruct, BoxError>>>(),
         );
 
         let mut result = collected.into_iter();
@@ -159,7 +159,7 @@ mod tests {
         ]);
 
         let collected = tokio_test::block_on(
-            JsonReadStream::<_, _>::new(stream).collect::<Vec<Result<TestStruct, OpaqueError>>>(),
+            JsonReadStream::<_, _>::new(stream).collect::<Vec<Result<TestStruct, BoxError>>>(),
         );
 
         let mut result = collected.into_iter();
@@ -248,10 +248,10 @@ mod tests {
     #[test]
     fn fallible_stream_operates_correctly_with_interspersed_errors() {
         let data_vec = vec![
-            Err(OpaqueError::from_display("test message 1")),
+            Err(BoxError::from("test message 1")),
             Ok("invalid json\n{\"key\":11,\"val"),
             Ok("ue\":22}\n{\"key\":33,\"value\":44}\ninvalid json\n"),
-            Err(OpaqueError::from_display("test message 2")),
+            Err(BoxError::from("test message 2")),
             Ok("{\"key\":55,\"value\":66}\n"),
         ];
         let data_stream = stream::iter(data_vec);

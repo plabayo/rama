@@ -1,7 +1,7 @@
 use super::TlsConnectorDataBuilder;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     telemetry::tracing,
 };
@@ -53,10 +53,9 @@ where
             let mut domain_overwrite = None;
             let mut emulate_config = Cow::Borrowed(profile.client_config.as_ref());
 
-            let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("UA TLS Emulator: compute transport context to get authority")
-            })?;
+            let transport_ctx = input
+                .try_ref_into_transport_ctx()
+                .context("UA TLS Emulator: compute transport context to get authority")?;
 
             if profile
                 .client_config
@@ -95,9 +94,8 @@ where
 
             // TODO dont always create this once we have moved away from ClientConfig
             // We can do that using something like `Arc::as_ptr` or adding something like a hash key to `TlsProfile`, or ...
-            let emulate_builder = TlsConnectorDataBuilder::try_from(&profile.client_config)
-                .map_err(Into::<BoxError>::into)?
-                .into_shared_builder();
+            let emulate_builder =
+                TlsConnectorDataBuilder::try_from(&profile.client_config)?.into_shared_builder();
 
             let mut ws_overwrite = None;
             if transport_ctx
@@ -141,7 +139,7 @@ where
             input.extensions_mut().insert(builder);
         }
 
-        self.inner.serve(input).await.map_err(Into::into)
+        self.inner.serve(input).await.into_box_error()
     }
 }
 

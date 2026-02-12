@@ -3,7 +3,7 @@
 use rama::{
     cli::{ForwardKind, service::ip::IpServiceBuilder},
     combinators::Either,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
     net::{socket::Interface, tls::ApplicationProtocol},
     rt::Executor,
@@ -80,7 +80,6 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
                 .maybe_with_forward(cfg.forward)
                 .maybe_with_tls_server_config(maybe_tls_server_config)
                 .build()
-                .map_err(OpaqueError::from_boxed)
                 .context("build ip TCP service")?,
         )
     } else {
@@ -91,7 +90,6 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
                 .maybe_with_forward(cfg.forward)
                 .maybe_with_tls_server_config(maybe_tls_server_config)
                 .build(exec.clone())
-                .map_err(OpaqueError::from_boxed)
                 .context("build ip HTTP service")?,
         )
     };
@@ -100,7 +98,6 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
     let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind ip service")?;
 
     let bind_address = tcp_listener

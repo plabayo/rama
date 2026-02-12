@@ -1,9 +1,9 @@
 use crate::service::web::response::IntoResponse;
 use flate2::write::DeflateEncoder;
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::stream::io::{ReaderStream, SyncIoBridge};
 use rama_core::telemetry::tracing;
 use rama_core::{bytes::Bytes, futures::Stream};
-use rama_error::{ErrorContext, OpaqueError};
 use rama_http_types::{Body, HeaderValue, Response};
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::arcstr::{ArcStr, arcstr};
@@ -222,7 +222,7 @@ fn write_nested_zip_file<W: io::Write>(
     filename: &str,
     zip: &mut ZipArchiveWriter<W>,
     data: &[u8],
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     let (mut file, builder) = zip
         .new_file(&format!("{filename}_batch_{index}.zip"))
         .compression_method(CompressionMethod::Deflate)
@@ -241,7 +241,7 @@ fn write_fake_binary_data<W: io::Write>(
     filename: &str,
     zip: &mut ZipArchiveWriter<W>,
     file_size: usize,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     tracing::trace!("generate fake binary data for {filename}: file_size={file_size}");
     let (mut file, builder) = zip
         .new_file(&format!("{filename}.enc.bin"))

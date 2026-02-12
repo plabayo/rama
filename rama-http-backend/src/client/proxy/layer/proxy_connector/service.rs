@@ -4,7 +4,7 @@ use super::InnerHttpProxyConnector;
 use pin_project_lite::pin_project;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext as _, ErrorExt},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     stream::Stream,
     telemetry::tracing,
@@ -120,16 +120,14 @@ where
             .map(|p| p.is_http())
             .unwrap_or(true)
         {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "http proxy connector can only serve http protocol",
-            )
-            .into_boxed());
+            ));
         }
 
-        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .context("http proxy connector: get transport context")
-        })?;
+        let transport_ctx = input
+            .try_ref_into_transport_ctx()
+            .context("http proxy connector: get transport context")?;
 
         #[cfg(feature = "tls")]
         let mut input = input;
@@ -158,17 +156,12 @@ where
                 .connect(input)
                 .await
                 .map_err(|err| match proxy_info.as_ref() {
-                    Some(proxy_info) => OpaqueError::from_std(HttpProxyError::Transport(
-                        OpaqueError::from_boxed(err.into())
-                            .context(format!(
-                                "establish connection to proxy {} (protocol: {:?})",
-                                proxy_info.address, proxy_info.protocol,
-                            ))
-                            .into_boxed(),
+                    Some(proxy_info) => Box::new(HttpProxyError::Transport(
+                        err.context("establish connection to proxy")
+                            .context_field("address", proxy_info.address.clone())
+                            .context_debug_field("protocol", proxy_info.protocol.clone()),
                     )),
-                    None => {
-                        OpaqueError::from_boxed(err.into()).context("establish connection target")
-                    }
+                    None => err.context("establish connection target"),
                 })?;
 
         // return early in case we did not use a proxy
@@ -243,7 +236,7 @@ where
         let (headers, conn) = connector
             .handshake(conn)
             .await
-            .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
+            .context("http proxy handshake")?;
 
         let mut conn = MaybeHttpProxiedConnection::upgraded_proxy(conn);
 

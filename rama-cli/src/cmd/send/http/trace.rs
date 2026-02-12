@@ -1,5 +1,5 @@
 use rama::{
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     telemetry::tracing::{
         self, Level,
         subscriber::{Layer, filter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
@@ -12,7 +12,7 @@ use tui_logger::TuiTracingSubscriberLayer;
 pub(super) fn init_logger(
     log_file_path: Option<PathBuf>,
     use_tui: bool,
-) -> Result<Option<PathBuf>, OpaqueError> {
+) -> Result<Option<PathBuf>, BoxError> {
     if let Some(log_file_path) = log_file_path.as_deref() {
         let log_file = OpenOptions::new()
             .append(true)

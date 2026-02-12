@@ -6,7 +6,7 @@ use crate::{
     user::ProxyCredential,
 };
 use rama_core::{
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     telemetry::tracing,
 };
 use std::{fmt::Display, str::FromStr};
@@ -27,7 +27,7 @@ pub struct ProxyAddress {
 }
 
 impl TryFrom<&str> for ProxyAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let slice = value.as_bytes();
@@ -57,7 +57,7 @@ impl TryFrom<&str> for ProxyAddress {
 }
 
 impl TryFrom<String> for ProxyAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         value.as_str().try_into()
@@ -65,7 +65,7 @@ impl TryFrom<String> for ProxyAddress {
 }
 
 impl FromStr for ProxyAddress {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.try_into()

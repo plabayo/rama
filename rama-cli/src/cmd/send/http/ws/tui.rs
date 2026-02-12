@@ -1,6 +1,6 @@
 use rama::{
     Service,
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
     futures::{FutureExt, StreamExt},
     graceful::ShutdownGuard,
     http::{
@@ -101,7 +101,7 @@ impl App {
         req: Request,
         client: C,
         protocols: Option<NonEmptySmallVec<3, NonEmptyStr>>,
-    ) -> Result<Self, OpaqueError>
+    ) -> Result<Self, BoxError>
     where
         C: Service<Request, Output = Response, Error = BoxError>,
     {
@@ -123,14 +123,14 @@ impl App {
         })
     }
 
-    async fn cleanup(&mut self) -> Result<(), OpaqueError> {
+    async fn cleanup(&mut self) -> Result<(), BoxError> {
         self.socket
             .close(None)
             .await
             .context("send close WS message")
     }
 
-    pub(super) async fn run(&mut self, guard: ShutdownGuard) -> Result<(), OpaqueError> {
+    pub(super) async fn run(&mut self, guard: ShutdownGuard) -> Result<(), BoxError> {
         loop {
             self.render()?;
 
@@ -153,7 +153,7 @@ impl App {
         }
     }
 
-    fn render(&mut self) -> Result<(), OpaqueError> {
+    fn render(&mut self) -> Result<(), BoxError> {
         let main_block =
             Block::bordered()
                 .title(self.title.as_str())
@@ -229,16 +229,16 @@ impl App {
         Ok(())
     }
 
-    async fn update(&mut self) -> Result<bool, OpaqueError> {
+    async fn update(&mut self) -> Result<bool, BoxError> {
         while let Some(result) = self.socket.next().now_or_never().unwrap_or_default() {
             match result {
                 Ok(Message::Text(text)) => {
                     self.history.push_server_message(text);
                 }
                 Ok(Message::Close(close)) => {
-                    return Err(OpaqueError::from_display(format!(
-                        "recv close msg, frame: {close:?}"
-                    )));
+                    return Err(
+                        BoxError::from("recv close msg").context_debug_field("frame", close)
+                    );
                 }
                 Ok(message) => {
                     tracing::info!("received non-text message: {message}");

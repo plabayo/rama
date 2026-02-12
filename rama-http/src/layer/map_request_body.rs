@@ -56,7 +56,8 @@
 //! ```
 
 use crate::{Request, Response};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, bytes::Bytes, error::BoxError};
+use rama_http_types::StreamingBody;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -74,6 +75,30 @@ impl<F> MapRequestBodyLayer<F> {
     /// `F` is expected to be a function that takes a body and returns another body.
     pub const fn new(f: F) -> Self {
         Self { f }
+    }
+}
+
+impl<Body> MapRequestBodyLayer<fn(Body) -> crate::Body>
+where
+    Body: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+{
+    /// Turn the [`StreamingBody`] into a [`crate::Body`] using [`crate::Body::new`].
+    ///
+    /// This is shorthand for `MapRequestBodyLayer::new(Body::new)`.
+    pub const fn new_boxed_streaming_body() -> Self {
+        Self::new(crate::Body::new)
+    }
+}
+
+impl<Body> MapRequestBodyLayer<fn(Body) -> crate::Body>
+where
+    crate::Body: From<Body>,
+{
+    /// Turn the body into a [`crate::Body`] using [`crate::Body::from`].
+    ///
+    /// This is shorthand for `MapRequestBodyLayer::new(Body::from)`.
+    pub const fn into_boxed_streaming_body() -> Self {
+        Self::new(crate::Body::from)
     }
 }
 
@@ -118,6 +143,30 @@ impl<S, F> MapRequestBody<S, F> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<S, Body> MapRequestBody<S, fn(Body) -> crate::Body>
+where
+    Body: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+{
+    /// Turn the [`StreamingBody`] into a [`crate::Body`] using [`crate::Body::new`].
+    ///
+    /// This is shorthand for `MapRequestBody::new(..., Body::new)`.
+    pub const fn new_boxed_streaming_body(inner: S) -> Self {
+        Self::new(inner, crate::Body::new)
+    }
+}
+
+impl<S, Body> MapRequestBody<S, fn(Body) -> crate::Body>
+where
+    crate::Body: From<Body>,
+{
+    /// Turn the body into a [`crate::Body`] using [`crate::Body::from`].
+    ///
+    /// This is shorthand for `MapRequestBody::new(..., Body::from)`.
+    pub const fn into_boxed_streaming_body(inner: S) -> Self {
+        Self::new(inner, crate::Body::from)
+    }
 }
 
 impl<F, S, ReqBody, ResBody, NewReqBody> Service<Request<ReqBody>> for MapRequestBody<S, F>

@@ -1,6 +1,6 @@
 use ahash::HashMap;
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
@@ -27,14 +27,14 @@ impl DirectiveDateTime {
         hour: u32,
         min: u32,
         sec: u32,
-    ) -> Result<Self, OpaqueError> {
+    ) -> Result<Self, BoxError> {
         Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
             .single()
             .context("invalid date-time input")
             .map(Into::into)
     }
 
-    pub fn try_new_ymd(year: i32, month: u32, day: u32) -> Result<Self, OpaqueError> {
+    pub fn try_new_ymd(year: i32, month: u32, day: u32) -> Result<Self, BoxError> {
         Self::try_new_ymd_and_hms(year, month, day, 0, 0, 0)
     }
 
@@ -99,7 +99,7 @@ impl AsRef<DateTime<Utc>> for DirectiveDateTime {
 }
 
 impl FromStr for DirectiveDateTime {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
@@ -121,7 +121,7 @@ impl FromStr for DirectiveDateTime {
             });
         }
         tracing::debug!("failed to parse datetime value: {s}");
-        Err(OpaqueError::from_display("invalid datetime value"))
+        Err(BoxError::from("invalid datetime value"))
     }
 }
 
@@ -135,9 +135,10 @@ impl Display for DirectiveDateTime {
     }
 }
 
-fn datetime_from_rfc_850(s: &str) -> Result<DateTime<FixedOffset>, OpaqueError> {
+fn datetime_from_rfc_850(s: &str) -> Result<DateTime<FixedOffset>, BoxError> {
     let (naive_date_time, remainder) = NaiveDateTime::parse_and_remainder(s, "%A, %d-%b-%y %T")
-        .with_context(|| "failed to parse naive datetime")?;
+        .context("failed to parse naive datetime")
+        .context_str_field("str", s)?;
 
     let fixed_offset = offset_from_abbreviation(remainder)?;
 
@@ -147,12 +148,17 @@ fn datetime_from_rfc_850(s: &str) -> Result<DateTime<FixedOffset>, OpaqueError> 
     ))
 }
 
-fn offset_from_abbreviation(remainder: &str) -> Result<FixedOffset, OpaqueError> {
-    get_timezone_map()
+fn offset_from_abbreviation(remainder: &str) -> Result<FixedOffset, BoxError> {
+    let abbreviation = get_timezone_map()
         .get(remainder.trim())
-        .ok_or_else(|| OpaqueError::from_display(format!("invalid abbreviation: {remainder}",)))?
+        .context("invalid abbreviation")
+        .context_str_field("remainder", remainder)?;
+
+    abbreviation
         .parse()
-        .with_context(|| "failed to parse timezone abbreviation")
+        .context("failed to parse timezone abbreviation")
+        .context_str_field("abbreviation", *abbreviation)
+        .context_str_field("remainder", remainder)
 }
 
 static TIMEZONE_MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();

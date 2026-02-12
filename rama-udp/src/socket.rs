@@ -18,7 +18,7 @@ pub use tokio::net::UdpSocket;
 pub async fn bind_udp_with_address<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
     addr: A,
 ) -> Result<UdpSocket, BoxError> {
-    let socket_addr = addr.try_into().map_err(Into::into)?;
+    let socket_addr = addr.try_into().into_box_error()?;
     let tokio_socket_addr: SocketAddr = socket_addr.into();
     let socket = UdpSocket::bind(tokio_socket_addr)
         .await

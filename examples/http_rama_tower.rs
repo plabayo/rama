@@ -18,7 +18,7 @@
 /// rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer as _,
-    error::{BoxError, OpaqueError},
+    error::{BoxError, ErrorContext as _},
     http::{
         HeaderValue, Request,
         layer::trace::TraceLayer,
@@ -171,7 +171,7 @@ where
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.inner.poll_ready(cx) {
             std::task::Poll::Pending => std::task::Poll::Pending,
-            std::task::Poll::Ready(r) => std::task::Poll::Ready(r.map_err(Into::into)),
+            std::task::Poll::Ready(r) => std::task::Poll::Ready(r.into_box_error()),
         }
     }
 
@@ -197,16 +197,14 @@ where
 
         // First, try polling the future
         match this.response.poll(cx) {
-            std::task::Poll::Ready(v) => return std::task::Poll::Ready(v.map_err(Into::into)),
+            std::task::Poll::Ready(v) => return std::task::Poll::Ready(v.into_box_error()),
             std::task::Poll::Pending => {}
         }
 
         // Now check the sleep
         match this.sleep.poll(cx) {
             std::task::Poll::Pending => std::task::Poll::Pending,
-            std::task::Poll::Ready(_) => {
-                std::task::Poll::Ready(Err(OpaqueError::from_display("Elapses").into_boxed()))
-            }
+            std::task::Poll::Ready(_) => std::task::Poll::Ready(Err(BoxError::from("Elapses"))),
         }
     }
 }

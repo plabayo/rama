@@ -1,6 +1,6 @@
 use rama_core::{
     Layer, Service,
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::{ExtensionsMut, ExtensionsRef},
     telemetry::tracing,
 };
@@ -42,13 +42,13 @@ impl HttpProxyAddressLayer {
 
     /// Try to create a new [`HttpProxyAddressLayer`] which will establish
     /// a proxy connection over the environment variable `HTTP_PROXY`.
-    pub fn try_from_env_default() -> Result<Self, OpaqueError> {
+    pub fn try_from_env_default() -> Result<Self, BoxError> {
         Self::try_from_env("HTTP_PROXY")
     }
 
     /// Try to create a new [`HttpProxyAddressLayer`] which will establish
     /// a proxy connection over the given environment variable.
-    pub fn try_from_env(key: impl AsRef<str>) -> Result<Self, OpaqueError> {
+    pub fn try_from_env(key: impl AsRef<str>) -> Result<Self, BoxError> {
         let env_result = std::env::var(key.as_ref()).ok();
         let env_result_mapped = env_result.as_ref().and_then(|v| {
             let v = v.trim();
@@ -117,13 +117,13 @@ impl<S> HttpProxyAddressService<S> {
 
     /// Try to create a new [`HttpProxyAddressService`] which will establish
     /// a proxy connection over the environment variable `HTTP_PROXY`.
-    pub fn try_from_env_default(inner: S) -> Result<Self, OpaqueError> {
+    pub fn try_from_env_default(inner: S) -> Result<Self, BoxError> {
         Self::try_from_env(inner, "HTTP_PROXY")
     }
 
     /// Try to create a new [`HttpProxyAddressService`] which will establish
     /// a proxy connection over the given environment variable.
-    pub fn try_from_env(inner: S, key: impl AsRef<str>) -> Result<Self, OpaqueError> {
+    pub fn try_from_env(inner: S, key: impl AsRef<str>) -> Result<Self, BoxError> {
         let env_result = std::env::var(key.as_ref()).ok();
         let env_result_mapped = env_result.as_ref().and_then(|v| {
             let v = v.trim();

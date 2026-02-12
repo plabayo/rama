@@ -1,5 +1,5 @@
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
-use rama_error::OpaqueError;
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::smol_str::SmolStr;
 use std::{fmt, time::Duration};
@@ -67,7 +67,7 @@ impl<T> Event<T> {
 }
 
 impl<T: EventDataWrite> Event<T> {
-    pub(super) fn serialize(&self) -> Result<Bytes, OpaqueError> {
+    pub(super) fn serialize(&self) -> Result<Bytes, BoxError> {
         let mut buffer = BytesMut::new();
 
         let mut serialize = |name, value| {
@@ -283,10 +283,10 @@ impl Event {
     generate_set_and_with! {
         /// Use [`JsonEventData`] as a shortcut to serialize it directly
         /// into a [`String`] using [`Self::data`].
-        pub fn json_data(mut self, data: impl serde::Serialize) -> Result<Self, OpaqueError> {
+        pub fn json_data(mut self, data: impl serde::Serialize) -> Result<Self, BoxError> {
             let mut v = Vec::new();
             JsonEventData(data).write_data(&mut v)?;
-            self.data = Some(String::from_utf8(v).map_err(|_| OpaqueError::from_display("utf8 error"))?);
+            self.data = Some(String::from_utf8(v).context("utf8 error")?);
             Ok(self)
         }
     }

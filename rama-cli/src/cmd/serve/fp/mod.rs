@@ -4,7 +4,7 @@ use rama::{
     Service,
     cli::ForwardKind,
     combinators::{Either, Either7},
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     graceful::ShutdownGuard,
     http::{
@@ -191,7 +191,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         ),
         SetResponseHeaderLayer::if_not_present(HeaderName::from_static("vary"), ch_headers),
         UserAgentClassifierLayer::new(),
-        ConsumeErrLayer::trace(tracing::Level::WARN),
+        ConsumeErrLayer::trace_as(tracing::Level::WARN),
         http_forwarded_layer,
     );
 
@@ -262,7 +262,6 @@ where
     let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
-        .map_err(OpaqueError::from_boxed)
         .context("bind fp service")?;
 
     let bind_address = tcp_listener
@@ -270,7 +269,7 @@ where
         .context("get local addr of tcp listener")?;
 
     let tcp_service_builder = (
-        ConsumeErrLayer::trace(tracing::Level::WARN),
+        ConsumeErrLayer::trace_as(tracing::Level::WARN),
         maybe_ha_proxy_layer,
         if cfg.timeout > 0. {
             TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))

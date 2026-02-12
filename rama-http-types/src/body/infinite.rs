@@ -1,7 +1,7 @@
 use rama_core::stream::io::ReaderStream;
 use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
-use rand::{Rng, RngCore as _, rng};
+use rand::{Rng, RngExt as _, rng};
 use std::{
     io,
     pin::Pin,

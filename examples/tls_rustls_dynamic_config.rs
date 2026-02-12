@@ -51,7 +51,7 @@
 
 use rama::{
     Layer,
-    error::{ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
@@ -65,8 +65,7 @@ use rama::{
     },
     tls::rustls::{
         dep::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
-        server::DynamicConfigProvider,
-        server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+        server::{DynamicConfigProvider, TlsAcceptorDataBuilder, TlsAcceptorLayer},
     },
 };
 
@@ -120,19 +119,19 @@ impl DynamicConfigProvider for DynamicConfig {
     async fn get_config(
         &self,
         client_hello: rama::tls::rustls::dep::rustls::server::ClientHello<'_>,
-    ) -> Result<Arc<rama::tls::rustls::dep::rustls::ServerConfig>, OpaqueError> {
-        let (cert_chain, key_der) = match client_hello.server_name() {
-            Some(name) => match name {
-                "example" => load_example_certificate().await,
-                "second.example" => load_second_example_certificate().await,
-                name => Err(OpaqueError::from_display(format!(
-                    "server name {name} not recognized",
-                ))),
-            },
-            _ => Err(OpaqueError::from_display(
-                "server name required for this server to work",
-            )),
-        }?;
+    ) -> Result<Arc<rama::tls::rustls::dep::rustls::ServerConfig>, BoxError> {
+        let (cert_chain, key_der) =
+            match client_hello.server_name() {
+                Some(name) => match name {
+                    "example" => load_example_certificate().await,
+                    "second.example" => load_second_example_certificate().await,
+                    name => Err(BoxError::from("server name not recognised")
+                        .context_str_field("name", name)),
+                },
+                _ => Err(BoxError::from(
+                    "server name required for this server to work",
+                )),
+            }?;
 
         let config = TlsAcceptorDataBuilder::new(cert_chain, key_der)
             .unwrap()
@@ -146,7 +145,7 @@ impl DynamicConfigProvider for DynamicConfig {
 }
 
 async fn load_example_certificate()
--> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
+-> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     // Fake io delay
     sleep(Duration::from_millis(10)).await;
     parse_certificate(
@@ -156,7 +155,7 @@ async fn load_example_certificate()
 }
 
 async fn load_second_example_certificate()
--> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
+-> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     // Fake io delay
     sleep(Duration::from_millis(10)).await;
     parse_certificate(
@@ -168,7 +167,7 @@ async fn load_second_example_certificate()
 fn parse_certificate(
     cert_chain: &[u8],
     private_key: &[u8],
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     let cert_chain = CertificateDer::pem_slice_iter(cert_chain)
         .collect::<Result<Vec<_>, _>>()
         .context("collect cert chain")?;

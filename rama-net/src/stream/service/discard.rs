@@ -1,4 +1,8 @@
-use rama_core::{Service, error::BoxError, stream::Stream};
+use rama_core::{
+    Service,
+    error::{BoxError, ErrorContext as _},
+    stream::Stream,
+};
 
 /// An async service which discard all the incoming bytes,
 /// and sents no response back.
@@ -53,7 +57,7 @@ where
         let mut writer = tokio::io::empty();
         tokio::io::copy(&mut reader, &mut writer)
             .await
-            .map_err(Into::into)
+            .into_box_error()
     }
 }
 

@@ -1,5 +1,5 @@
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
-use rama_core::error::{BoxError, ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_utils::macros::generate_set_and_with;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -43,7 +43,7 @@ impl Headers {
             mut self,
             name: String,
             value: impl Serialize,
-        ) -> Result<Self, OpaqueError> {
+        ) -> Result<Self, BoxError> {
             let headers = self.0.get_or_insert_default();
             let value = serde_json::to_value(value).context("convert to value")?;
             headers.insert(name, value);
@@ -57,13 +57,13 @@ impl Headers {
         /// Warning: this function will replace already existing headers
         /// If more control is needed, use `.header_map()` or `.header_map_raw()`
         /// to get access to the underlying header map
-        pub fn headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
+        pub fn headers(mut self, headers: impl Serialize) -> Result<Self, BoxError> {
             let headers =
                 serde_json::to_value(headers).context("convert headers to serde json value")?;
 
             let mut headers = match headers {
                 Value::Object(map) => map,
-                _ => Err(OpaqueError::from_display(
+                _ => Err(BoxError::from(
                     "Can only set multiple headers if input is key value object",
                 ))?,
             };
@@ -78,7 +78,7 @@ impl Headers {
     }
 
     /// Encode headers to a base64 url safe representation
-    fn as_encoded_string(&self) -> Result<String, OpaqueError> {
+    fn as_encoded_string(&self) -> Result<String, BoxError> {
         let encoded = match &self.0 {
             Some(headers) => {
                 let headers = serde_json::to_vec(headers).context("convert to bytes")?;
@@ -98,13 +98,13 @@ impl Headers {
     }
 
     /// Try decode headers to the provided `T`
-    pub fn decode<'de, 'a: 'de, T>(&'a self) -> Result<T, OpaqueError>
+    pub fn decode<'de, 'a: 'de, T>(&'a self) -> Result<T, BoxError>
     where
         T: Deserialize<'de>,
     {
         match &self.0 {
             Some(headers) => Ok(T::deserialize(headers).context("deserialize headers into T")?),
-            None => Err(OpaqueError::from_display(
+            None => Err(BoxError::from(
                 "headers are None, deserialize not supported",
             )),
         }
@@ -146,7 +146,7 @@ impl JWSBuilder {
             mut self,
             name: String,
             value: impl Serialize,
-        ) -> Result<Self, OpaqueError> {
+        ) -> Result<Self, BoxError> {
             self.protected_headers.try_set_header(name, value)?;
             Ok(self)
         }
@@ -158,7 +158,7 @@ impl JWSBuilder {
         /// Warning: this function will replace already existing headers
         /// If more control is needed, use[`Self::protected_headers_mut]` to get access
         /// to the underlying header store
-        pub fn protected_headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
+        pub fn protected_headers(mut self, headers: impl Serialize) -> Result<Self, BoxError> {
             self.protected_headers.try_set_headers(headers)?;
             Ok(self)
         }
@@ -181,7 +181,7 @@ impl JWSBuilder {
             mut self,
             name: String,
             value: impl Serialize,
-        ) -> Result<Self, OpaqueError> {
+        ) -> Result<Self, BoxError> {
             self.unprotected_headers.try_set_header(name, value)?;
             Ok(self)
         }
@@ -193,7 +193,7 @@ impl JWSBuilder {
         /// Warning: this function will replace already existing headers
         /// If more control is needed, use [`Self::unprotected_headers_mut`] to get access
         /// to the underlying header store
-        pub fn unprotected_headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
+        pub fn unprotected_headers(mut self, headers: impl Serialize) -> Result<Self, BoxError> {
             self.unprotected_headers.try_set_headers(headers)?;
             Ok(self)
         }
@@ -209,23 +209,21 @@ impl JWSBuilder {
     /// Generate compact serialization of this `JWS`
     ///
     /// This only available if there is no unprotected header set
-    pub fn build_compact(mut self, signer: &impl Signer) -> Result<JWSCompact, OpaqueError> {
+    pub fn build_compact(mut self, signer: &impl Signer) -> Result<JWSCompact, BoxError> {
         if self.unprotected_headers.is_some() {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "Compact jws does not support unprotected headers",
             ));
         }
 
         signer
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer set headers")?;
         let protected = self.protected_headers.as_encoded_string()?;
         let signing_input = format!("{}.{}", protected, self.payload);
 
         let signature = signer
             .sign(&signing_input)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer sign protected data")?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
 
@@ -233,10 +231,9 @@ impl JWSBuilder {
     }
 
     /// Build a [`JWSFlattened`]
-    pub fn build_flattened(mut self, signer: &impl Signer) -> Result<JWSFlattened, OpaqueError> {
+    pub fn build_flattened(mut self, signer: &impl Signer) -> Result<JWSFlattened, BoxError> {
         signer
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer set headers")?;
 
         let protected = self.protected_headers.as_encoded_string()?;
@@ -244,7 +241,6 @@ impl JWSBuilder {
 
         let signature = signer
             .sign(&signing_input)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer sign protected data")?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
 
@@ -260,10 +256,9 @@ impl JWSBuilder {
     }
 
     /// Build a [`JWS`]
-    pub fn build_jws(mut self, signer: &impl Signer) -> Result<JWS, OpaqueError> {
+    pub fn build_jws(mut self, signer: &impl Signer) -> Result<JWS, BoxError> {
         signer
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer set headers")?;
 
         let protected = self.protected_headers.as_encoded_string()?;
@@ -271,7 +266,6 @@ impl JWSBuilder {
 
         let signature = signer
             .sign(&signing_input)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer sign protected data")?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
 
@@ -289,10 +283,9 @@ impl JWSBuilder {
 
     /// Create a [`ChainedJWSBuilder`] with the same payload but that can add a new set of headers
     /// and which will be signed again. This is needed to create a [`JWS`] with multiple signatures.
-    pub fn add_signature(mut self, signer: &impl Signer) -> Result<ChainedJWSBuilder, OpaqueError> {
+    pub fn add_signature(mut self, signer: &impl Signer) -> Result<ChainedJWSBuilder, BoxError> {
         signer
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer set headers")?;
 
         let protected = self.protected_headers.as_encoded_string()?;
@@ -300,7 +293,6 @@ impl JWSBuilder {
 
         let signature = signer
             .sign(&signing_input)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer sign protected data")?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
 
@@ -330,7 +322,7 @@ impl ChainedJWSBuilder {
             mut self,
             name: String,
             value: impl Serialize,
-        ) -> Result<Self, OpaqueError> {
+        ) -> Result<Self, BoxError> {
             self.protected_headers.try_set_header(name, value)?;
             Ok(self)
         }
@@ -342,7 +334,7 @@ impl ChainedJWSBuilder {
         /// Warning: this function will replace already existing headers
         /// If more control is use `.protected_headers_mut()` to get access
         /// to the underlying header store
-        pub fn protected_headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
+        pub fn protected_headers(mut self, headers: impl Serialize) -> Result<Self, BoxError> {
             self.protected_headers.try_set_headers(headers)?;
             Ok(self)
         }
@@ -365,7 +357,7 @@ impl ChainedJWSBuilder {
             mut self,
             name: String,
             value: impl Serialize,
-        ) -> Result<Self, OpaqueError> {
+        ) -> Result<Self, BoxError> {
             self.unprotected_headers.try_set_header(name, value)?;
             Ok(self)
         }
@@ -380,7 +372,7 @@ impl ChainedJWSBuilder {
         pub fn with_unprotected_headers(
             mut self,
             headers: impl Serialize,
-        ) -> Result<Self, OpaqueError> {
+        ) -> Result<Self, BoxError> {
             self.unprotected_headers.try_set_headers(headers)?;
             Ok(self)
         }
@@ -394,17 +386,15 @@ impl ChainedJWSBuilder {
     }
 
     /// Create a new [`ChainedJWSBuilder`] so we can add another signature
-    pub fn add_signature(mut self, signer: &impl Signer) -> Result<Self, OpaqueError> {
+    pub fn add_signature(mut self, signer: &impl Signer) -> Result<Self, BoxError> {
         signer
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer set headers")?;
         let protected = self.protected_headers.as_encoded_string()?;
         let signing_input = format!("{}.{}", protected, self.payload);
 
         let signature = signer
             .sign(&signing_input)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer sign protected data")?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
 
@@ -425,17 +415,15 @@ impl ChainedJWSBuilder {
     }
 
     /// Build the final [`JWS] containing all provided signatures
-    pub fn build(mut self, signer: &impl Signer) -> Result<JWS, OpaqueError> {
+    pub fn build(mut self, signer: &impl Signer) -> Result<JWS, BoxError> {
         signer
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer set headers")?;
         let protected = self.protected_headers.as_encoded_string()?;
         let signing_input = format!("{}.{}", protected, self.payload);
 
         let signature = signer
             .sign(&signing_input)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer sign protected data")?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
 
@@ -519,7 +507,7 @@ impl JWS {
 
     /// Decode this [`JWS`] to a [`DecodedJWS`] by decoding all values and checking with [`Verifier`]
     /// if all signatures are correct
-    pub fn decode<V: Verifier>(self, verifier: &V) -> Result<(DecodedJWS, V::Output), OpaqueError> {
+    pub fn decode<V: Verifier>(self, verifier: &V) -> Result<(DecodedJWS, V::Output), BoxError> {
         let mut signatures = Vec::with_capacity(self.signatures.len());
 
         for signature in self.signatures.into_iter() {
@@ -553,7 +541,6 @@ impl JWS {
 
         let verifier_output = verifier
             .verify(&payload, &signatures)
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer verify signatures")?;
 
         let signatures = signatures
@@ -592,9 +579,9 @@ impl JWSFlattened {
     }
 
     /// Create a [`JWSCompact`] from this [`JWSFlattened`]
-    pub fn as_compact(&self) -> Result<String, OpaqueError> {
+    pub fn as_compact(&self) -> Result<String, BoxError> {
         if self.signature.unprotected.is_some() {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "JWSCompact does not support unprotected headers",
             ));
         };
@@ -610,7 +597,7 @@ impl JWSFlattened {
     pub fn decode<V: Verifier>(
         self,
         verifier: &V,
-    ) -> Result<(DecodedJWSFlattened, V::Output), OpaqueError> {
+    ) -> Result<(DecodedJWSFlattened, V::Output), BoxError> {
         let protected = BASE64_URL_SAFE_NO_PAD
             .decode(&self.signature.protected)
             .context("decode protected header")?;
@@ -639,7 +626,6 @@ impl JWSFlattened {
 
         let verify_output = verifier
             .verify(&payload, std::slice::from_ref(&to_verify))
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer verify signature")?;
 
         let signature = to_verify.decoded_signature;
@@ -714,7 +700,7 @@ impl DecodedSignature {
     /// Trying decoding the protected headers to the provided `T`
     pub fn decode_protected_headers<'de, 'a: 'de, T: Deserialize<'de>>(
         &'a self,
-    ) -> Result<T, OpaqueError> {
+    ) -> Result<T, BoxError> {
         self.protected.decode()
     }
 
@@ -727,7 +713,7 @@ impl DecodedSignature {
     /// Trying decoding the unprotected headers to the provided `T`
     pub fn decode_unprotected_headers<'de, 'a: 'de, T: Deserialize<'de>>(
         &'a self,
-    ) -> Result<T, OpaqueError> {
+    ) -> Result<T, BoxError> {
         self.unprotected.decode()
     }
 
@@ -762,7 +748,7 @@ impl DecodedJWSFlattened {
     /// Trying decoding the protected headers to the provided `T`
     pub fn decode_protected_headers<'de, 'a: 'de, T: Deserialize<'de>>(
         &'a self,
-    ) -> Result<T, OpaqueError> {
+    ) -> Result<T, BoxError> {
         self.signature.decode_protected_headers()
     }
 
@@ -775,7 +761,7 @@ impl DecodedJWSFlattened {
     /// Trying decoding the unprotected headers to the provided `T`
     pub fn decode_unprotected_headers<'de, 'a: 'de, T: Deserialize<'de>>(
         &'a self,
-    ) -> Result<T, OpaqueError> {
+    ) -> Result<T, BoxError> {
         self.signature.decode_unprotected_headers()
     }
 
@@ -832,9 +818,9 @@ mod tests {
 
     impl Signer for DummyKey {
         type Signature = Vec<u8>;
-        type Error = OpaqueError;
+        type Error = BoxError;
 
-        fn sign(&self, data: &str) -> Result<Self::Signature, OpaqueError> {
+        fn sign(&self, data: &str) -> Result<Self::Signature, BoxError> {
             let mut out = data.as_bytes().to_vec();
             out.push(33);
             Ok(out)
@@ -844,36 +830,34 @@ mod tests {
             &self,
             protected_headers: &mut Headers,
             _unprotected_headers: &mut Headers,
-        ) -> Result<(), OpaqueError> {
+        ) -> Result<(), BoxError> {
             protected_headers.try_set_header("alg".to_owned(), "test_algo".to_owned())?;
             Ok(())
         }
     }
 
     impl Verifier for DummyKey {
-        type Error = OpaqueError;
+        type Error = BoxError;
         type Output = ();
 
         fn verify(
             &self,
             _payload: &[u8],
             to_verify_sigs: &[ToVerifySignature],
-        ) -> Result<(), OpaqueError> {
+        ) -> Result<(), BoxError> {
             let to_verify = &to_verify_sigs[0];
             let original = to_verify.signed_data.as_bytes();
 
             let signature = to_verify.decoded_signature.signature();
 
             if original.len() + 1 != signature.len() {
-                Err(OpaqueError::from_display(
+                Err(BoxError::from(
                     "signature should add single u8 to original slice",
                 ))
             } else if original[..] != signature[..original.len()] {
-                Err(OpaqueError::from_display("original data should be equal"))
+                Err(BoxError::from("original data should be equal"))
             } else if signature[signature.len() - 1] != 33 {
-                Err(OpaqueError::from_display(
-                    "last element in signature should be 33",
-                ))
+                Err(BoxError::from("last element in signature should be 33"))
             } else {
                 Ok(())
             }
@@ -986,7 +970,7 @@ mod tests {
             let received =
                 serde_json::from_str::<JWSFlattened>(&serialized).context("decode jws")?;
             let _decoded = received.decode(&signer_and_verifier)?;
-            Ok::<_, OpaqueError>(())
+            Ok::<_, BoxError>(())
         };
 
         for i in 0..serialized.len() - 1 {
@@ -1049,9 +1033,9 @@ mod tests {
 
         impl Signer for SecondSigner {
             type Signature = Vec<u8>;
-            type Error = OpaqueError;
+            type Error = BoxError;
 
-            fn sign(&self, data: &str) -> Result<Self::Signature, OpaqueError> {
+            fn sign(&self, data: &str) -> Result<Self::Signature, BoxError> {
                 Ok(data.as_bytes().to_owned())
             }
 
@@ -1059,7 +1043,7 @@ mod tests {
                 &self,
                 protected_headers: &mut Headers,
                 _unprotected_headers: &mut Headers,
-            ) -> Result<(), OpaqueError> {
+            ) -> Result<(), BoxError> {
                 protected_headers.try_set_header("data".to_owned(), "very protected")?;
                 Ok(())
             }
@@ -1089,13 +1073,13 @@ mod tests {
         }
 
         impl Verifier for MultiVerifier {
-            type Error = OpaqueError;
+            type Error = BoxError;
             type Output = ();
             fn verify(
                 &self,
                 payload: &[u8],
                 to_verify_sigs: &[ToVerifySignature],
-            ) -> Result<(), OpaqueError> {
+            ) -> Result<(), BoxError> {
                 self.dummy_verifier.verify(payload, to_verify_sigs)?;
                 let second = &to_verify_sigs[1];
                 let protected_header = second
@@ -1105,7 +1089,7 @@ mod tests {
                 if protected_header.data.as_str() == "very protected" {
                     Ok(())
                 } else {
-                    Err(OpaqueError::from_display(
+                    Err(BoxError::from(
                         "received unexpected second protected header",
                     ))
                 }

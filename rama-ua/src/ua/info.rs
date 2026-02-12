@@ -1,5 +1,5 @@
 use super::parse_http_user_agent_header;
-use rama_core::error::OpaqueError;
+use rama_core::error::{BoxError, ErrorExt};
 use rama_utils::{macros::match_ignore_ascii_case_str, str::arcstr::ArcStr};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{convert::Infallible, fmt, str::FromStr};
@@ -231,7 +231,7 @@ impl fmt::Display for UserAgentKind {
 }
 
 impl FromStr for UserAgentKind {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match_ignore_ascii_case_str! {
@@ -239,7 +239,7 @@ impl FromStr for UserAgentKind {
                 "chromium" => Ok(Self::Chromium),
                 "firefox" => Ok(Self::Firefox),
                 "safari" => Ok(Self::Safari),
-                _ => Err(OpaqueError::from_display(format!("invalid user agent kind: {s}"))),
+                _ => Err(BoxError::from("invalid user agent kind").context_str_field("str", s)),
             }
         }
     }
@@ -284,14 +284,14 @@ impl DeviceKind {
 }
 
 impl FromStr for DeviceKind {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match_ignore_ascii_case_str! {
             match (s) {
                 "desktop" => Ok(Self::Desktop),
                 "mobile" => Ok(Self::Mobile),
-                _ => Err(OpaqueError::from_display(format!("invalid device: {s}"))),
+                _ => Err(BoxError::from("invalid device").context_str_field("str", s)),
             }
         }
     }
@@ -359,7 +359,7 @@ impl PlatformKind {
 }
 
 impl FromStr for PlatformKind {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match_ignore_ascii_case_str! {
@@ -369,7 +369,7 @@ impl FromStr for PlatformKind {
                 "linux" => Ok(Self::Linux),
                 "android" => Ok(Self::Android),
                 "ios" => Ok(Self::IOS),
-                _ => Err(OpaqueError::from_display(format!("invalid platform: {s}"))),
+                _ => Err(BoxError::from("invalid platform").context_str_field("str", s)),
             }
         }
     }
@@ -454,7 +454,7 @@ impl<'de> Deserialize<'de> for HttpAgent {
 }
 
 impl FromStr for HttpAgent {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match_ignore_ascii_case_str! {
@@ -463,7 +463,7 @@ impl FromStr for HttpAgent {
                 "Firefox" => Ok(Self::Firefox),
                 "Safari" => Ok(Self::Safari),
                 "preserve" => Ok(Self::Preserve),
-                _ => Err(OpaqueError::from_display(format!("invalid http agent: {s}"))),
+                _ => Err(BoxError::from("invalid http agent").context_str_field("str", s)),
             }
         }
     }
@@ -525,7 +525,7 @@ impl<'de> Deserialize<'de> for TlsAgent {
 }
 
 impl FromStr for TlsAgent {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match_ignore_ascii_case_str! {
@@ -534,7 +534,7 @@ impl FromStr for TlsAgent {
                 "boring" | "boringssl" => Ok(Self::Boringssl),
                 "nss" => Ok(Self::Nss),
                 "preserve" => Ok(Self::Preserve),
-                _ => Err(OpaqueError::from_display(format!("invalid tls agent: {s}"))),
+                _ => Err(BoxError::from("invalid tls agent").context_str_field("str", s)),
             }
         }
     }

@@ -34,10 +34,18 @@
     - [🌐 HTTP(S) proxies](./proxies/http.md)
     - [🧦 SOCKS5 proxies](./proxies/socks5.md)
     - [🔓 SNI proxies](./proxies/sni.md)
+    - [🔌 Network proxies](./proxies/network.md)
+    - [⛶ Transparent proxies](./proxies/transparent.md)
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
     - [🧭 HaProxy (PROXY protocol)](./proxies/haproxy.md)
 - [🔍 Protocol Inspection](./proxies/protocol_inspection.md)
+- [Operate Proxies](./proxies/operate/intro.md)
+  - [Application Proxies](./proxies/operate/app.md)
+  - [System Proxies](./proxies/operate/system.md)
+  - [🔀 Proxy Auto Configuration](./proxies/operate/pac.md)
+  - [⛶ Transparent Proxies](./proxies/operate/transparent.md)
+  - [Proxies and VPNs](./proxies/operate/proxies_and_vpns.md)
 
 # Intro to HTTP
 

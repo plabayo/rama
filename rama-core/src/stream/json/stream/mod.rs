@@ -5,7 +5,7 @@ pub(super) mod write;
 mod tests {
     use crate::futures::StreamExt as _;
     use crate::futures::stream;
-    use rama_error::OpaqueError;
+    use rama_error::BoxError;
     use std::convert::Infallible;
     use tokio_test::{assert_pending, block_on, task};
 
@@ -14,10 +14,9 @@ mod tests {
 
     #[test]
     fn write_read_pending() {
-        let mut ndjson_stream: JsonReadStream<u32, _> =
-            JsonReadStream::new(JsonWriteStream::new(stream::pending::<
-                Result<u32, OpaqueError>,
-            >()));
+        let mut ndjson_stream: JsonReadStream<u32, _> = JsonReadStream::new(JsonWriteStream::new(
+            stream::pending::<Result<u32, BoxError>>(),
+        ));
 
         let mut next = task::spawn(ndjson_stream.next());
 
@@ -26,11 +25,11 @@ mod tests {
 
     #[test]
     fn write_read_pending_empty() {
-        let collected: Vec<Result<u32, OpaqueError>> = block_on(
-            JsonReadStream::new(JsonWriteStream::new(stream::empty::<
-                Result<u32, OpaqueError>,
-            >()))
-            .collect::<Vec<Result<u32, OpaqueError>>>(),
+        let collected: Vec<Result<u32, BoxError>> = block_on(
+            JsonReadStream::new(JsonWriteStream::new(
+                stream::empty::<Result<u32, BoxError>>(),
+            ))
+            .collect::<Vec<Result<u32, BoxError>>>(),
         );
         assert!(collected.is_empty());
     }
@@ -41,7 +40,7 @@ mod tests {
 
         let collected = tokio_test::block_on(
             JsonReadStream::new(JsonWriteStream::new(stream))
-                .collect::<Vec<Result<u32, OpaqueError>>>(),
+                .collect::<Vec<Result<u32, BoxError>>>(),
         );
 
         let mut result = collected.into_iter();
@@ -55,7 +54,7 @@ mod tests {
 
         let collected = tokio_test::block_on(
             JsonReadStream::new(JsonWriteStream::new(stream))
-                .collect::<Vec<Result<u32, OpaqueError>>>(),
+                .collect::<Vec<Result<u32, BoxError>>>(),
         );
 
         let mut result = collected.into_iter();

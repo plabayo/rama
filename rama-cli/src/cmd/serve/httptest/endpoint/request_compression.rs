@@ -1,7 +1,7 @@
 use rama::{
     Layer as _, Service,
     http::{
-        Body, Request, Response, StatusCode,
+        Request, Response, StatusCode,
         body::util::BodyExt,
         layer::{
             body_limit::BodyLimitLayer, decompression::RequestDecompressionLayer,
@@ -11,17 +11,16 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     service::service_fn,
-    telemetry::tracing::Level,
 };
 use std::convert::Infallible;
 
 pub(in crate::cmd::serve::httptest) fn service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
     (
-        ConsumeErrLayer::trace(Level::DEBUG),
+        ConsumeErrLayer::trace_as_debug(),
         BodyLimitLayer::new(8 * 1024 * 1024), // EMS 3.2 4life
         RequestDecompressionLayer::new(),
-        MapRequestBodyLayer::new(Body::new),
+        MapRequestBodyLayer::new_boxed_streaming_body(),
     )
         .into_layer(service_fn(async |req: Request| {
             match req.into_body().collect().await.map(|c| c.to_bytes()) {

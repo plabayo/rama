@@ -1,7 +1,6 @@
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
-use rama_error::BoxError;
-use rama_error::OpaqueError;
 use rama_http_types::Version;
 use rama_http_types::{Request, Response};
 
@@ -31,7 +30,7 @@ where
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let original_req_version = req.version();
 
-        let mut resp = self.inner.serve(req).await.map_err(Into::into)?;
+        let mut resp = self.inner.serve(req).await.into_box_error()?;
         let response_version = resp.version();
 
         if original_req_version == response_version {
@@ -69,7 +68,7 @@ impl<S> Layer<S> for ResponseVersionAdapterLayer {
 pub fn adapt_response_version<Body>(
     response: &mut Response<Body>,
     target_version: Version,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     let resp_version = response.version();
     if resp_version == target_version {
         tracing::trace!(

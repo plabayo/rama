@@ -1,4 +1,4 @@
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::str::smol_str::SmolStr;
 use std::fmt;
 
@@ -26,12 +26,12 @@ macro_rules! create_obf_type {
             }
 
             #[doc = concat!("Try to convert a vector of bytes to a [`", stringify!($name), "`].")]
-            pub fn try_from_bytes(vec: Vec<u8>) -> Result<Self, OpaqueError> {
+            pub fn try_from_bytes(vec: Vec<u8>) -> Result<Self, BoxError> {
                 vec.try_into()
             }
 
             #[doc = concat!("Try to convert a string slice to a [`", stringify!($name), "`].")]
-            pub fn try_from_str(s: &str) -> Result<Self, OpaqueError> {
+            pub fn try_from_str(s: &str) -> Result<Self, BoxError> {
                 s.to_owned().try_into()
             }
 
@@ -84,7 +84,7 @@ macro_rules! create_obf_type {
         }
 
         impl std::str::FromStr for $name {
-            type Err = OpaqueError;
+            type Err = BoxError;
 
             fn from_str(s: &str) -> Result<Self, Self::Err> {
                 $name::try_from(s.to_owned())
@@ -92,19 +92,19 @@ macro_rules! create_obf_type {
         }
 
         impl TryFrom<String> for $name {
-            type Error = OpaqueError;
+            type Error = BoxError;
 
             fn try_from(s: String) -> Result<Self, Self::Error> {
                 if $val_fn(s.as_bytes()) {
                     Ok(Self(SmolStr::new(s)))
                 } else {
-                    Err(OpaqueError::from_display(concat!("invalid ", stringify!($name))))
+                    Err(BoxError::from(concat!("invalid ", stringify!($name))))
                 }
             }
         }
 
         impl TryFrom<Vec<u8>> for $name {
-            type Error = OpaqueError;
+            type Error = BoxError;
 
             fn try_from(s: Vec<u8>) -> Result<Self, Self::Error> {
                 if $val_fn(s.as_slice()) {
@@ -112,7 +112,7 @@ macro_rules! create_obf_type {
                         String::from_utf8(s).context(concat!("convert ", stringify!($name), "bytes to utf-8 string"))?,
                     )))
                 } else {
-                    Err(OpaqueError::from_display(concat!("invalid ", stringify!($name))))
+                    Err(BoxError::from(concat!("invalid ", stringify!($name))))
                 }
             }
         }

@@ -1,4 +1,5 @@
 use crate::{Layer, Service};
+use rama_error::{BoxError, ErrorExt, extra::OpaqueError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -51,6 +52,34 @@ impl<S, F> MapErr<S, F> {
     define_inner_service_accessors!();
 }
 
+impl<S, Error> MapErr<S, fn(Error) -> BoxError>
+where
+    Error: std::error::Error + Send + Sync + 'static,
+    BoxError: From<Error>,
+{
+    /// Turn the error into a [`BoxError`].
+    ///
+    /// This is shorthand for `MapErr::new(..., BoxError::from)`.
+    pub const fn into_box_error(inner: S) -> Self {
+        Self::new(inner, BoxError::from)
+    }
+}
+
+impl<S, Error> MapErr<S, fn(Error) -> OpaqueError>
+where
+    Error: std::error::Error + Send + Sync + 'static,
+    BoxError: From<Error>,
+{
+    /// Turn the error into a [`OpaqueError`].
+    ///
+    /// Usually you'll want a custom map function or [`Self::into_box_error`],
+    /// but this method can come in handy if you need to deal with higher-rank
+    /// lifetime issues.
+    pub const fn into_opaque_error(inner: S) -> Self {
+        Self::new(inner, |err| err.into_opaque_error())
+    }
+}
+
 impl<S, F, Input, Error> Service<Input> for MapErr<S, F>
 where
     S: Service<Input>,
@@ -73,6 +102,34 @@ impl<F> MapErrLayer<F> {
     /// Creates a new [`MapErrLayer`].
     pub const fn new(f: F) -> Self {
         Self { f }
+    }
+}
+
+impl<Error: std::error::Error + Send + Sync + 'static> MapErrLayer<fn(Error) -> BoxError>
+where
+    Error: std::error::Error + Send + Sync + 'static,
+    BoxError: From<Error>,
+{
+    /// Turn the error into a [`BoxError`].
+    ///
+    /// This is shorthand for `MapErrLayer::new(BoxError::from)`.
+    pub const fn into_box_error() -> Self {
+        Self::new(BoxError::from)
+    }
+}
+
+impl<Error> MapErrLayer<fn(Error) -> OpaqueError>
+where
+    Error: std::error::Error + Send + Sync + 'static,
+    BoxError: From<Error>,
+{
+    /// Turn the error into a [`OpaqueError`].
+    ///
+    /// Usually you'll want a custom map function or [`Self::into_box_error`],
+    /// but this method can come in handy if you need to deal with higher-rank
+    /// lifetime issues.
+    pub const fn into_opaque_error() -> Self {
+        Self::new(|err| err.into_opaque_error())
     }
 }
 

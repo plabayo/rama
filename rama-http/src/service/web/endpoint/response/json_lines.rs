@@ -1,6 +1,6 @@
+use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 use rama_core::stream::json::JsonWriteStream;
-use rama_error::BoxError;
 use serde::Serialize;
 
 use crate::headers::ContentType;

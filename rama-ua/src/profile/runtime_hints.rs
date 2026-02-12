@@ -1,4 +1,4 @@
-use rama_core::error::OpaqueError;
+use rama_core::error::{BoxError, ErrorExt as _};
 use rama_http::headers::ClientHint;
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -98,7 +98,7 @@ impl<'de> Deserialize<'de> for RequestInitiator {
 }
 
 impl FromStr for RequestInitiator {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match_ignore_ascii_case_str! {
@@ -107,7 +107,7 @@ impl FromStr for RequestInitiator {
                 "form" => Ok(Self::Form),
                 "xhr" => Ok(Self::Xhr),
                 "fetch" => Ok(Self::Fetch),
-                _ => Err(OpaqueError::from_display(format!("invalid request initiator: {s}"))),
+                _ => Err(BoxError::from("invalid request initiator").context_str_field("str", s)),
             }
         }
     }

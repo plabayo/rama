@@ -1,4 +1,4 @@
-use rama_core::error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 use std::{fmt, str::FromStr};
 
@@ -64,9 +64,9 @@ impl Bearer {
     /// Try to create a [`Bearer`] from a [`NonEmptyStr`].
     ///
     /// Returns an error in case the token contains non-visible ASCII chars.
-    pub fn try_new(s: NonEmptyStr) -> Result<Self, OpaqueError> {
+    pub fn try_new(s: NonEmptyStr) -> Result<Self, BoxError> {
         if s.as_bytes().iter().any(|b| *b < 32 || *b >= 127) {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "string contains non visible ASCII characters",
             ));
         }
@@ -90,7 +90,7 @@ impl Bearer {
 }
 
 impl TryFrom<&str> for Bearer {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline(always)]
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -103,7 +103,7 @@ impl TryFrom<&str> for Bearer {
 }
 
 impl TryFrom<String> for Bearer {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline(always)]
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -112,7 +112,7 @@ impl TryFrom<String> for Bearer {
 }
 
 impl TryFrom<ArcStr> for Bearer {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline(always)]
     fn try_from(value: ArcStr) -> Result<Self, Self::Error> {
@@ -125,7 +125,7 @@ impl TryFrom<ArcStr> for Bearer {
 }
 
 impl TryFrom<NonEmptyStr> for Bearer {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     #[inline(always)]
     fn try_from(value: NonEmptyStr) -> Result<Self, Self::Error> {
@@ -134,7 +134,7 @@ impl TryFrom<NonEmptyStr> for Bearer {
 }
 
 impl FromStr for Bearer {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {

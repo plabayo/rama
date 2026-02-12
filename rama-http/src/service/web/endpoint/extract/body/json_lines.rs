@@ -42,7 +42,6 @@ mod tests {
     use http::StatusCode;
     use rama_core::stream::StreamExt as _;
     use serde::{Deserialize, Serialize};
-    use std::error::Error;
 
     #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
     struct User {

@@ -1,165 +1,246 @@
-use crate::{Method, Request, Response, Uri};
+use crate::{Method, Request, Uri};
 use rama_core::{
     Service,
-    error::{BoxError, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorExt},
     extensions::{Extension, Extensions, ExtensionsMut},
 };
 use rama_http_headers::authorization::Credentials;
+use rama_http_types::Response;
 
-/// Extends an Http Client with high level features,
-/// to facilitate the creation and sending of http requests,
-/// in a more ergonomic way.
+/// Convenience extension methods to build HTTP requests using a `Service`.
+///
+/// Pattern:
+/// - `method(&self, ..)` returns a builder backed by a borrowed service handle
+/// - `into_method(self, ..)` returns a builder backed by an owned service handle
 pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 'static {
-    /// The response type returned by the `execute` method.
-    type ExecuteResponse;
-    /// The error type returned by the `execute` method.
-    type ExecuteError;
-
-    /// Convenience method to make a `GET` request to a URL.
+    /// Convenience method to make a `GET` request to a URL, from a borrowed `Service`.
     ///
     /// # Errors
-    ///
-    /// This method fails whenever the supplied [`Url`] cannot be parsed.
-    ///
-    /// [`Url`]: crate::Uri
-    fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
-
-    /// Convenience method to make a `POST` request to a URL.
-    ///
-    /// # Errors
-    ///
-    /// This method fails whenever the supplied [`Url`] cannot be parsed.
-    ///
-    /// [`Url`]: crate::Uri
-    fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
-
-    /// Convenience method to make a `PUT` request to a URL.
-    ///
-    /// # Errors
-    ///
-    /// This method fails whenever the supplied [`Url`] cannot be parsed.
-    ///
-    /// [`Url`]: crate::Uri
-    fn put(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
-
-    /// Convenience method to make a `PATCH` request to a URL.
-    ///
-    /// # Errors
-    ///
-    /// This method fails whenever the supplied [`Url`] cannot be parsed.
-    ///
-    /// [`Url`]: crate::Uri
-    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
-
-    /// Convenience method to make a `DELETE` request to a URL.
-    ///
-    /// # Errors
-    ///
-    /// This method fails whenever the supplied [`Url`] cannot be parsed.
-    ///
-    /// [`Url`]: crate::Uri
-    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
-
-    /// Convenience method to make a `HEAD` request to a URL.
-    ///
-    /// # Errors
-    ///
     /// This method fails whenever the supplied `Url` cannot be parsed.
-    fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
+    fn get(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>>;
 
-    /// Convenience method to make a `CONNECT` request to a URL.
+    /// Convenience method to make a `GET` request to a URL, from an owned `Service`.
     ///
     /// # Errors
-    ///
     /// This method fails whenever the supplied `Url` cannot be parsed.
-    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
+    fn into_get(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>>;
 
-    /// Start building a [`Request`] with the [`Method`] and [`Url`].
-    ///
-    /// Returns a [`RequestBuilder`], which will allow setting headers and
-    /// the request body before sending.
-    ///
-    /// [`Request`]: crate::Request
-    /// [`Method`]: crate::Method
-    /// [`Url`]: crate::Uri
+    /// Convenience method to make a `POST` request to a URL, from a borrowed `Service`.
     ///
     /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn post(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>>;
+
+    /// Convenience method to make a `POST` request to a URL, from an owned `Service`.
     ///
-    /// This method fails whenever the supplied [`Url`] cannot be parsed.
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn into_post(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>>;
+
+    /// Convenience method to make a `PUT` request to a URL, from a borrowed `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn put(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>>;
+
+    /// Convenience method to make a `PUT` request to a URL, from an owned `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn into_put(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>>;
+
+    /// Convenience method to make a `DELETE` request to a URL, from a borrowed `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>>;
+
+    /// Convenience method to make a `DELETE` request to a URL, from an owned `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn into_delete(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>>;
+
+    /// Convenience method to make a `PATCH` request to a URL, from a borrowed `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>>;
+
+    /// Convenience method to make a `PATCH` request to a URL, from an owned `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn into_patch(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>>;
+
+    /// Convenience method to make a `HEAD` request to a URL, from a borrowed `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn head(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>>;
+
+    /// Convenience method to make a `HEAD` request to a URL, from an owned `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn into_head(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>>;
+
+    /// Convenience method to make an `OPTIONS` request to a URL, from a borrowed `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn options(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>>;
+
+    /// Convenience method to make an `OPTIONS` request to a URL, from an owned `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn into_options(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>>;
+
+    /// Convenience method to make a `TRACE` request to a URL, from a borrowed `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn trace(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>>;
+
+    /// Convenience method to make a `TRACE` request to a URL, from an owned `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn into_trace(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>>;
+
+    /// Convenience method to make a `CONNECT` request to a URL, from a borrowed `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>>;
+
+    /// Convenience method to make a `CONNECT` request to a URL, from an owned `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn into_connect(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>>;
+
+    /// General purpose request builder using an explicit `Method`, from a borrowed `Service`.
+    ///
+    /// # Errors
+    /// This method fails whenever the supplied `Url` cannot be parsed.
     fn request(
         &self,
-        method: Method,
+        method: crate::Method,
         url: impl IntoUrl,
-    ) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
+    ) -> RequestBuilder<RQBorrowedService<'_, Self>>;
 
-    /// Start building a [`Request`], using the given [`Request`].
-    ///
-    /// Returns a [`RequestBuilder`], which will allow setting headers and
-    /// the request body before sending.
-    fn build_from_request<Body: Into<crate::Body>>(
-        &self,
-        request: Request<Body>,
-    ) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
-
-    /// Executes a `Request`.
+    /// General purpose request builder using an explicit `Method`, from an owned `Service`.
     ///
     /// # Errors
-    ///
-    /// This method fails if there was an error while sending request.
-    fn execute(
-        &self,
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn into_request(
+        self,
+        method: crate::Method,
+        url: impl IntoUrl,
+    ) -> RequestBuilder<RQOwnedService<Self>>;
 
-        request: Request,
-    ) -> impl Future<Output = Result<Self::ExecuteResponse, Self::ExecuteError>>;
+    /// Build a request builder from an already constructed [`Request`], using a borrowed `Service`.
+    ///
+    /// This is useful if you created a `Request` elsewhere (or received one) and still want
+    /// to use the fluent `RequestBuilder` API to mutate headers, body, extensions, etc.
+    fn build_from_request(&self, request: Request) -> RequestBuilder<RQBorrowedService<'_, Self>>;
+
+    /// Build a request builder from an already constructed [`Request`], using an owned `Service`.
+    ///
+    /// Same as [`Self::build_from_request`] but returns a builder backed by an owned `Service`,
+    /// so it can be moved into spawned tasks.
+    fn into_build_from_request(self, request: Request) -> RequestBuilder<RQOwnedService<Self>>;
 }
 
 impl<S, Body> HttpClientExt for S
 where
     S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
-    type ExecuteResponse = Response<Body>;
-    type ExecuteError = S::Error;
-
-    fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+    fn get(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>> {
         self.request(Method::GET, url)
     }
 
-    fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+    fn into_get(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>> {
+        self.into_request(Method::GET, url)
+    }
+
+    fn post(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>> {
         self.request(Method::POST, url)
     }
 
-    fn put(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+    fn into_post(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>> {
+        self.into_request(Method::POST, url)
+    }
+
+    fn put(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>> {
         self.request(Method::PUT, url)
     }
 
-    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+    fn into_put(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>> {
+        self.into_request(Method::PUT, url)
+    }
+
+    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>> {
         self.request(Method::PATCH, url)
     }
 
-    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+    fn into_patch(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>> {
+        self.into_request(Method::PATCH, url)
+    }
+
+    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>> {
         self.request(Method::DELETE, url)
     }
 
-    fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+    fn into_delete(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>> {
+        self.into_request(Method::DELETE, url)
+    }
+
+    fn head(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>> {
         self.request(Method::HEAD, url)
     }
 
-    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+    fn into_head(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>> {
+        self.into_request(Method::HEAD, url)
+    }
+
+    fn options(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>> {
+        self.request(Method::OPTIONS, url)
+    }
+
+    fn into_options(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>> {
+        self.into_request(Method::OPTIONS, url)
+    }
+
+    fn trace(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>> {
+        self.request(Method::TRACE, url)
+    }
+
+    fn into_trace(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>> {
+        self.into_request(Method::TRACE, url)
+    }
+
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<RQBorrowedService<'_, Self>> {
         self.request(Method::CONNECT, url)
+    }
+
+    fn into_connect(self, url: impl IntoUrl) -> RequestBuilder<RQOwnedService<Self>> {
+        self.into_request(Method::CONNECT, url)
     }
 
     fn request(
         &self,
         method: Method,
         url: impl IntoUrl,
-    ) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+    ) -> RequestBuilder<RQBorrowedService<'_, Self>> {
         let uri = match url.into_url() {
             Ok(uri) => uri,
             Err(err) => {
                 return RequestBuilder {
-                    http_client_service: self,
+                    http_client_service: RQBorrowedService(self),
                     state: RequestBuilderState::Error(err),
-                    _phantom: std::marker::PhantomData,
                 };
             }
         };
@@ -167,29 +248,46 @@ where
         let builder = crate::request::Builder::new().method(method).uri(uri);
 
         RequestBuilder {
-            http_client_service: self,
+            http_client_service: RQBorrowedService(self),
             state: RequestBuilderState::PreBody(builder),
-            _phantom: std::marker::PhantomData,
         }
     }
 
-    fn build_from_request<RequestBody: Into<crate::Body>>(
-        &self,
-        request: Request<RequestBody>,
-    ) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
+    fn into_request(
+        self,
+        method: Method,
+        url: impl IntoUrl,
+    ) -> RequestBuilder<RQOwnedService<Self>> {
+        let uri = match url.into_url() {
+            Ok(uri) => uri,
+            Err(err) => {
+                return RequestBuilder {
+                    http_client_service: RQOwnedService(self),
+                    state: RequestBuilderState::Error(err),
+                };
+            }
+        };
+
+        let builder = crate::request::Builder::new().method(method).uri(uri);
+
         RequestBuilder {
-            http_client_service: self,
-            state: RequestBuilderState::PostBody(request.map(Into::into)),
-            _phantom: std::marker::PhantomData,
+            http_client_service: RQOwnedService(self),
+            state: RequestBuilderState::PreBody(builder),
         }
     }
 
-    fn execute(
-        &self,
+    fn build_from_request(&self, request: Request) -> RequestBuilder<RQBorrowedService<'_, Self>> {
+        RequestBuilder {
+            http_client_service: RQBorrowedService(self),
+            state: RequestBuilderState::PostBody(request),
+        }
+    }
 
-        request: Request,
-    ) -> impl Future<Output = Result<Self::ExecuteResponse, Self::ExecuteError>> {
-        Service::serve(self, request)
+    fn into_build_from_request(self, request: Request) -> RequestBuilder<RQOwnedService<Self>> {
+        RequestBuilder {
+            http_client_service: RQOwnedService(self),
+            state: RequestBuilderState::PostBody(request),
+        }
     }
 }
 
@@ -239,134 +337,129 @@ mod private {
     use super::*;
 
     pub trait IntoUrlSealed {
-        fn into_url(self) -> Result<Uri, OpaqueError>;
+        fn into_url(self) -> Result<Uri, BoxError>;
     }
 
     impl IntoUrlSealed for Uri {
-        fn into_url(self) -> Result<Uri, OpaqueError> {
+        fn into_url(self) -> Result<Uri, BoxError> {
             let protocol: Option<Protocol> = self.scheme().map(Into::into);
             match protocol {
                 Some(protocol) => {
                     if protocol.is_http() || protocol.is_ws() {
                         Ok(self)
                     } else {
-                        Err(OpaqueError::from_display(format!(
-                            "Unsupported protocol: {protocol}"
-                        )))
+                        Err(BoxError::from("unsupported protocol")
+                            .context_field("protocol", protocol))
                     }
                 }
-                None => Err(OpaqueError::from_display("Missing scheme in URI")),
+                None => Err(BoxError::from("Missing scheme in URI")),
             }
         }
     }
 
     impl IntoUrlSealed for &str {
-        fn into_url(self) -> Result<Uri, OpaqueError> {
+        fn into_url(self) -> Result<Uri, BoxError> {
             match self.parse::<Uri>() {
                 Ok(uri) => uri.into_url(),
-                Err(_) => Err(OpaqueError::from_display(format!("Invalid URL: {self}"))),
+                Err(_) => Err(BoxError::from("invalid url").context_str_field("raw_str", self)),
             }
         }
     }
 
     impl IntoUrlSealed for String {
         #[inline(always)]
-        fn into_url(self) -> Result<Uri, OpaqueError> {
+        fn into_url(self) -> Result<Uri, BoxError> {
             self.as_str().into_url()
         }
     }
 
     impl IntoUrlSealed for &String {
         #[inline(always)]
-        fn into_url(self) -> Result<Uri, OpaqueError> {
+        fn into_url(self) -> Result<Uri, BoxError> {
             self.as_str().into_url()
         }
     }
 
     pub trait IntoHeaderNameSealed {
-        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError>;
+        fn into_header_name(self) -> Result<crate::HeaderName, BoxError>;
     }
 
     impl IntoHeaderNameSealed for HeaderName {
-        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, BoxError> {
             Ok(self)
         }
     }
 
     impl IntoHeaderNameSealed for Option<HeaderName> {
-        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, BoxError> {
             match self {
                 Some(name) => Ok(name),
-                None => Err(OpaqueError::from_display("Header name is required")),
+                None => Err(BoxError::from("Header name is required")),
             }
         }
     }
 
     impl IntoHeaderNameSealed for &str {
-        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
-            let name = self
-                .parse::<crate::HeaderName>()
-                .map_err(OpaqueError::from_std)?;
+        fn into_header_name(self) -> Result<crate::HeaderName, BoxError> {
+            let name = self.parse::<crate::HeaderName>()?;
             Ok(name)
         }
     }
 
     impl IntoHeaderNameSealed for String {
         #[inline(always)]
-        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, BoxError> {
             self.as_str().into_header_name()
         }
     }
 
     impl IntoHeaderNameSealed for &String {
         #[inline(always)]
-        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, BoxError> {
             self.as_str().into_header_name()
         }
     }
 
     impl IntoHeaderNameSealed for &[u8] {
-        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
-            let name = crate::HeaderName::from_bytes(self).map_err(OpaqueError::from_std)?;
+        fn into_header_name(self) -> Result<crate::HeaderName, BoxError> {
+            let name = crate::HeaderName::from_bytes(self)?;
             Ok(name)
         }
     }
 
     pub trait IntoHeaderValueSealed {
-        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError>;
+        fn into_header_value(self) -> Result<crate::HeaderValue, BoxError>;
     }
 
     impl IntoHeaderValueSealed for crate::HeaderValue {
-        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, BoxError> {
             Ok(self)
         }
     }
 
     impl IntoHeaderValueSealed for &str {
-        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
-            let value = self
-                .parse::<crate::HeaderValue>()
-                .map_err(OpaqueError::from_std)?;
+        fn into_header_value(self) -> Result<crate::HeaderValue, BoxError> {
+            let value = self.parse::<crate::HeaderValue>()?;
             Ok(value)
         }
     }
 
     impl IntoHeaderValueSealed for String {
-        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, BoxError> {
             self.as_str().into_header_value()
         }
     }
 
     impl IntoHeaderValueSealed for &String {
         #[inline(always)]
-        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, BoxError> {
             self.as_str().into_header_value()
         }
     }
 
     impl IntoHeaderValueSealed for &[u8] {
-        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
-            let value = crate::HeaderValue::from_bytes(self).map_err(OpaqueError::from_std)?;
+        fn into_header_value(self) -> Result<crate::HeaderValue, BoxError> {
+            let value = crate::HeaderValue::from_bytes(self)?;
             Ok(value)
         }
     }
@@ -379,24 +472,53 @@ mod private {
     }
 }
 
+#[derive(Debug)]
 /// A builder to construct the properties of a [`Request`].
 ///
 /// Constructed using [`HttpClientExt`].
-pub struct RequestBuilder<'a, S, Response> {
-    http_client_service: &'a S,
+pub struct RequestBuilder<S> {
+    http_client_service: S,
     state: RequestBuilderState,
-    _phantom: std::marker::PhantomData<fn(Response) -> ()>,
+}
+#[derive(Debug)]
+pub struct RQOwnedService<S>(S);
+#[derive(Debug)]
+pub struct RQBorrowedService<'a, S>(&'a S);
+
+/// Internal trait that is implemented for all `S` variants of `RequestBuilder`.
+///
+/// You never need to implement this trait yourself, but you might need to trait bound it,
+/// if you have generic code over a [`RequestBuilder`].
+pub trait RequestServiceHandle {
+    type Body;
+    type Svc: Service<Request, Output = Response<Self::Body>, Error: Into<BoxError>>;
+
+    fn svc_ref(&self) -> &Self::Svc;
 }
 
-impl<S, Response> std::fmt::Debug for RequestBuilder<'_, S, Response>
+impl<'a, S, Body> RequestServiceHandle for RQBorrowedService<'a, S>
 where
-    S: std::fmt::Debug,
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RequestBuilder")
-            .field("http_client_service", &self.http_client_service)
-            .field("state", &self.state)
-            .finish()
+    type Body = Body;
+    type Svc = S;
+
+    #[inline]
+    fn svc_ref(&self) -> &S {
+        self.0
+    }
+}
+
+impl<S, Body> RequestServiceHandle for RQOwnedService<S>
+where
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+{
+    type Body = Body;
+    type Svc = S;
+
+    #[inline]
+    fn svc_ref(&self) -> &S {
+        &self.0
     }
 }
 
@@ -404,13 +526,10 @@ where
 enum RequestBuilderState {
     PreBody(crate::request::Builder),
     PostBody(crate::Request),
-    Error(OpaqueError),
+    Error(BoxError),
 }
 
-impl<S, Body> RequestBuilder<'_, S, Response<Body>>
-where
-    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
-{
+impl<S> RequestBuilder<S> {
     /// Add a `Header` to this [`Request`].
     #[must_use]
     pub fn header<K, V>(mut self, key: K, value: V) -> Self
@@ -616,16 +735,16 @@ where
             RequestBuilderState::PreBody(builder) => match body.try_into() {
                 Ok(body) => match builder.body(body) {
                     Ok(req) => RequestBuilderState::PostBody(req),
-                    Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
+                    Err(err) => RequestBuilderState::Error(BoxError::from(err)),
                 },
-                Err(err) => RequestBuilderState::Error(OpaqueError::from_boxed(err.into())),
+                Err(err) => RequestBuilderState::Error(err.into()),
             },
             RequestBuilderState::PostBody(mut req) => match body.try_into() {
                 Ok(body) => {
                     *req.body_mut() = body;
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(OpaqueError::from_boxed(err.into())),
+                Err(err) => RequestBuilderState::Error(BoxError::from(err.into())),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -659,10 +778,10 @@ where
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
-                        Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
+                        Err(err) => RequestBuilderState::Error(BoxError::from(err)),
                     }
                 }
-                Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
+                Err(err) => RequestBuilderState::Error(BoxError::from(err)),
             },
             RequestBuilderState::PostBody(mut req) => match serde_html_form::to_string(form) {
                 Ok(body) => {
@@ -675,7 +794,7 @@ where
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
+                Err(err) => RequestBuilderState::Error(BoxError::from(err)),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -707,10 +826,10 @@ where
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
-                        Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
+                        Err(err) => RequestBuilderState::Error(BoxError::from(err)),
                     }
                 }
-                Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
+                Err(err) => RequestBuilderState::Error(BoxError::from(err)),
             },
             RequestBuilderState::PostBody(mut req) => match serde_json::to_vec(json) {
                 Ok(body) => {
@@ -723,7 +842,7 @@ where
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
+                Err(err) => RequestBuilderState::Error(BoxError::from(err)),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -751,34 +870,77 @@ where
             }
         }
     }
+}
 
-    /// Constructs the [`Request`] and sends it to the target [`Uri`], returning a future [`Response`].
+impl<S> RequestBuilder<S> {
+    /// Constructs the [`Request`].
     ///
     /// # Errors
     ///
-    /// This method fails if there was an error while sending [`Request`].
-    pub async fn send(self) -> Result<Response<Body>, OpaqueError> {
+    /// This method fails if there was an error while building the [`Request`].
+    pub fn try_into_request(self) -> Result<Request, BoxError> {
+        Ok(match self.state {
+            RequestBuilderState::PreBody(builder) => builder.body(crate::Body::empty())?,
+            RequestBuilderState::PostBody(request) => request,
+            RequestBuilderState::Error(err) => return Err(err),
+        })
+    }
+}
+
+impl<S, Body> RequestBuilder<RQOwnedService<S>>
+where
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
+{
+    #[inline(always)]
+    /// Cancels the [`Request`] building and returns the inner [`Service`].
+    pub fn into_service(self) -> S {
+        self.http_client_service.0
+    }
+
+    /// Constructs the [`Request`] and return it together with the inner [`Service`].
+    ///
+    /// # Errors
+    ///
+    /// This method fails if there was an error while building the [`Request`].
+    pub fn try_into_parts(self) -> Result<(Request, S), BoxError> {
         let request = match self.state {
-            RequestBuilderState::PreBody(builder) => builder
-                .body(crate::Body::empty())
-                .map_err(OpaqueError::from_std)?,
+            RequestBuilderState::PreBody(builder) => builder.body(crate::Body::empty())?,
+            RequestBuilderState::PostBody(request) => request,
+            RequestBuilderState::Error(err) => return Err(err),
+        };
+
+        Ok((request, self.http_client_service.0))
+    }
+}
+
+impl<S: RequestServiceHandle> RequestBuilder<S> {
+    /// Constructs the [`Request`] and sends it to the target [`Uri`],
+    /// returning the [`Service`]'s result.
+    ///
+    /// # Errors
+    ///
+    /// This method fails if there was an error while building the [`Request`]
+    /// or processing it using the inner [`Service`].
+    pub async fn send(self) -> Result<Response<S::Body>, BoxError> {
+        let request = match self.state {
+            RequestBuilderState::PreBody(builder) => builder.body(crate::Body::empty())?,
             RequestBuilderState::PostBody(request) => request,
             RequestBuilderState::Error(err) => return Err(err),
         };
 
         let uri = request.uri().clone();
-        match self.http_client_service.serve(request).await {
+
+        match self.http_client_service.svc_ref().serve(request).await {
             Ok(response) => Ok(response),
-            Err(err) => Err(OpaqueError::from_boxed(err.into()).context(uri.to_string())),
+            Err(err) => Err(err.context("send request").context_field("uri", uri)),
         }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use rama_http_types::StatusCode;
-
     use super::*;
+
     use crate::{
         StreamingBody,
         layer::{
@@ -788,11 +950,14 @@ mod test {
         },
         service::web::response::IntoResponse,
     };
+
     use rama_core::{
         layer::{Layer, MapResultLayer},
         service::{BoxService, service_fn},
     };
+    use rama_http_types::{Response, StatusCode};
     use rama_utils::backoff::ExponentialBackoff;
+
     use std::convert::Infallible;
 
     async fn fake_client_fn<Body>(request: Request<Body>) -> Result<Response, Infallible>
@@ -824,8 +989,7 @@ mod test {
         }
     }
 
-    type OpaqueError = rama_core::error::BoxError;
-    type HttpClient = BoxService<Request, Response, OpaqueError>;
+    type HttpClient = BoxService<Request, Response, BoxError>;
 
     fn client() -> HttpClient {
         let builder = (

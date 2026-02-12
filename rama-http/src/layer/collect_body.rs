@@ -3,7 +3,7 @@
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
 };
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -60,7 +60,6 @@ where
             .inner
             .serve(req)
             .await
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("CollectBody::inner:serve")?;
         let (parts, body) = resp.into_parts();
         let bytes = body.collect().await.context("collect body")?.to_bytes();

@@ -1,6 +1,6 @@
 use rama::{
     Service,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     http::{Request, Response, StreamingBody, body::util::BodyExt},
 };
 
@@ -20,21 +20,16 @@ where
         + Send
         + 'static,
 {
-    type Error = OpaqueError;
+    type Error = BoxError;
     type Output = Response;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let res = self
-            .inner
-            .serve(req)
-            .await
-            .map_err(|err| OpaqueError::from_boxed(err.into()))?;
+        let res = self.inner.serve(req).await.into_box_error()?;
 
         let (parts, body) = res.into_parts();
         let bytes = body
             .collect()
             .await
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("collect res body as bytes")?
             .to_bytes();
 

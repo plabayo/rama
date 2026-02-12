@@ -78,23 +78,15 @@ macro_rules! __define_http_rejection {
     ) => {
         $(#[$m])*
         #[derive(Debug)]
-        pub struct $name(pub(crate) rama_core::error::OpaqueError);
+        pub struct $name(pub(crate) rama_core::error::BoxError);
 
         impl $name {
             #[allow(dead_code)]
             pub(crate) fn from_err<E>(err: E) -> Self
             where
-                E: std::error::Error + Send + Sync + 'static,
+                E: Into<::rama_core::error::BoxError>,
             {
-                Self(::rama_core::error::OpaqueError::from_std(err))
-            }
-
-            #[allow(dead_code)]
-            pub(crate) fn from_display<C>(msg: C) -> Self
-            where
-                C: std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
-            {
-                Self(::rama_core::error::OpaqueError::from_display(msg))
+                Self(err.into())
             }
         }
 
@@ -129,7 +121,7 @@ macro_rules! __define_http_rejection {
 
         impl std::error::Error for $name {
             fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                Some(&self.0)
+                Some(self.0.as_ref())
             }
         }
     };

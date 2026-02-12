@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, sync::Arc};
 
-use rama_core::error::OpaqueError;
+use rama_core::error::BoxError;
 use rama_http_types::Uri;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::thirdparty::wildcard::Wildcard;
@@ -125,7 +125,7 @@ pub enum UriMatchError<'a> {
     NoMatch(Cow<'a, Uri>),
     /// An unexpected error occurred and the input
     /// [`Uri`] has been lost in progress.
-    Unexpected(OpaqueError),
+    Unexpected(BoxError),
 }
 
 impl std::fmt::Display for UriMatchError<'_> {
@@ -253,22 +253,22 @@ impl TryIntoUriFmt for Vec<u8> {}
 
 mod private_ptn {
     use super::*;
-    use rama_core::error::{ErrorContext as _, OpaqueError};
+    use rama_core::error::{BoxError, ErrorContext as _};
     use rama_utils::{str::submatch_ignore_ascii_case, thirdparty::wildcard::WildcardBuilder};
 
     pub(super) trait TryIntoPatternPriv {
-        fn try_into_wildcard(self) -> Result<Pattern, OpaqueError>;
+        fn try_into_wildcard(self) -> Result<Pattern, BoxError>;
     }
 
     impl TryIntoPatternPriv for &'static str {
         #[inline(always)]
-        fn try_into_wildcard(self) -> Result<Pattern, OpaqueError> {
+        fn try_into_wildcard(self) -> Result<Pattern, BoxError> {
             self.as_bytes().try_into_wildcard()
         }
     }
 
     impl TryIntoPatternPriv for &'static [u8] {
-        fn try_into_wildcard(self) -> Result<Pattern, OpaqueError> {
+        fn try_into_wildcard(self) -> Result<Pattern, BoxError> {
             let wildcard = WildcardBuilder::new(self)
                 .case_insensitive(true)
                 .build()
@@ -283,14 +283,14 @@ mod private_ptn {
 
     impl TryIntoPatternPriv for String {
         #[inline]
-        fn try_into_wildcard(self) -> Result<Pattern, OpaqueError> {
+        fn try_into_wildcard(self) -> Result<Pattern, BoxError> {
             self.into_bytes().try_into_wildcard()
         }
     }
 
     impl TryIntoPatternPriv for Vec<u8> {
         #[inline]
-        fn try_into_wildcard(self) -> Result<Pattern, OpaqueError> {
+        fn try_into_wildcard(self) -> Result<Pattern, BoxError> {
             let wildcard = WildcardBuilder::from_owned(self)
                 .case_insensitive(true)
                 .build()
@@ -306,36 +306,36 @@ mod private_ptn {
 
 mod private_fmt {
     use super::*;
-    use rama_core::error::OpaqueError;
+    use rama_core::error::BoxError;
 
     pub(super) trait TryIntoUriFmtPriv {
-        fn try_into_fmt(self) -> Result<fmt::UriFormatter, OpaqueError>;
+        fn try_into_fmt(self) -> Result<fmt::UriFormatter, BoxError>;
     }
 
     impl TryIntoUriFmtPriv for &'static str {
         #[inline(always)]
-        fn try_into_fmt(self) -> Result<fmt::UriFormatter, OpaqueError> {
+        fn try_into_fmt(self) -> Result<fmt::UriFormatter, BoxError> {
             self.as_bytes().try_into_fmt()
         }
     }
 
     impl TryIntoUriFmtPriv for &'static [u8] {
         #[inline(always)]
-        fn try_into_fmt(self) -> Result<fmt::UriFormatter, OpaqueError> {
+        fn try_into_fmt(self) -> Result<fmt::UriFormatter, BoxError> {
             fmt::UriFormatter::try_new(self.into())
         }
     }
 
     impl TryIntoUriFmtPriv for String {
         #[inline(always)]
-        fn try_into_fmt(self) -> Result<fmt::UriFormatter, OpaqueError> {
+        fn try_into_fmt(self) -> Result<fmt::UriFormatter, BoxError> {
             self.into_bytes().try_into_fmt()
         }
     }
 
     impl TryIntoUriFmtPriv for Vec<u8> {
         #[inline(always)]
-        fn try_into_fmt(self) -> Result<fmt::UriFormatter, OpaqueError> {
+        fn try_into_fmt(self) -> Result<fmt::UriFormatter, BoxError> {
             fmt::UriFormatter::try_new(self.into())
         }
     }

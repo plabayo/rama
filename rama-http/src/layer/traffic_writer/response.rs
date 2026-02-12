@@ -2,7 +2,7 @@ use super::WriterMode;
 use crate::io::write_http_response;
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
-use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
@@ -282,7 +282,7 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let do_not_print_response: Option<DoNotWriteResponse> = req.extensions().get().cloned();
-        let resp = self.inner.serve(req).await.map_err(Into::into)?;
+        let resp = self.inner.serve(req).await.into_box_error()?;
         let resp = if do_not_print_response.is_some() {
             resp.map(Body::new)
         } else {
@@ -290,7 +290,6 @@ where
             let body_bytes = body
                 .collect()
                 .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()))
                 .context("printer prepare: collect response body")?
                 .to_bytes();
             let resp: rama_http_types::Response<Body> =

@@ -1,8 +1,9 @@
+use rama_core::error::ErrorExt as _;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{
     combinators::Either,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext},
     rt::Executor,
 };
 use rama_dns::{DnsOverwrite, DnsResolver, GlobalDnsResolver};
@@ -12,6 +13,7 @@ use rama_net::{
     mode::{ConnectIpMode, DnsResolveIpMode},
     socket::SocketOptions,
 };
+use std::sync::atomic::AtomicUsize;
 use std::{
     net::{IpAddr, SocketAddr},
     sync::{
@@ -61,7 +63,7 @@ impl<T: TcpStreamConnector> TcpStreamConnector for Arc<T> {
 }
 
 impl TcpStreamConnector for Arc<SocketOptions> {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let opts = self.clone();
@@ -72,7 +74,7 @@ impl TcpStreamConnector for Arc<SocketOptions> {
 }
 
 impl TcpStreamConnector for SocketAddress {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let bind_addr = *self;
@@ -94,7 +96,7 @@ impl TcpStreamConnector for SocketAddress {
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 impl TcpStreamConnector for rama_net::socket::DeviceName {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let bind_interface = self.clone();
@@ -115,7 +117,7 @@ impl TcpStreamConnector for rama_net::socket::DeviceName {
 fn tcp_connect_with_socket_opts(
     opts: &SocketOptions,
     addr: SocketAddr,
-) -> Result<TcpStream, OpaqueError> {
+) -> Result<TcpStream, BoxError> {
     let socket = opts
         .try_build_socket()
         .context("try to build TCP socket's underlying OS socket")?;
@@ -163,7 +165,7 @@ macro_rules! impl_stream_connector_either {
             ) -> Result<TcpStream, Self::Error> {
                 match self {
                     $(
-                        ::rama_core::combinators::$id::$param(s) => s.connect(addr).await.map_err(Into::into),
+                        ::rama_core::combinators::$id::$param(s) => s.connect(addr).await.into_box_error(),
                     )+
                 }
             }
@@ -183,7 +185,7 @@ pub async fn default_tcp_connect(
     extensions: &Extensions,
     address: HostWithPort,
     exec: Executor,
-) -> Result<(TcpStream, SocketAddr), OpaqueError>
+) -> Result<(TcpStream, SocketAddr), BoxError>
 where
 {
     tcp_connect(extensions, address, GlobalDnsResolver::default(), (), exec).await
@@ -196,7 +198,7 @@ pub async fn tcp_connect<Dns, Connector>(
     dns: Dns,
     connector: Connector,
     exec: Executor,
-) -> Result<(TcpStream, SocketAddr), OpaqueError>
+) -> Result<(TcpStream, SocketAddr), BoxError>
 where
     Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
@@ -211,10 +213,10 @@ where
             //check if IP Version is allowed
             match (ip, ip_mode) {
                 (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-                    return Err(OpaqueError::from_display("IPv4 address is not allowed"));
+                    return Err(BoxError::from("IPv4 address is not allowed"));
                 }
                 (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-                    return Err(OpaqueError::from_display("IPv6 address is not allowed"));
+                    return Err(BoxError::from("IPv6 address is not allowed"));
                 }
                 _ => (),
             }
@@ -224,7 +226,6 @@ where
             let stream = connector
                 .connect(addr)
                 .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()))
                 .context("establish tcp client connection")?;
             return Ok((stream, addr));
         }
@@ -254,12 +255,13 @@ async fn tcp_connect_inner<Dns, Connector>(
     connector: Connector,
     connect_mode: ConnectIpMode,
     exec: Executor,
-) -> Result<(TcpStream, SocketAddr), OpaqueError>
+) -> Result<(TcpStream, SocketAddr), BoxError>
 where
     Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let (tx, mut rx) = channel(1);
+    let resolved_count = Arc::new(AtomicUsize::new(0));
     let connected = Arc::new(AtomicBool::new(false));
     let sem = Arc::new(Semaphore::new(3));
 
@@ -275,6 +277,7 @@ where
                 port,
                 tx.clone(),
                 connected.clone(),
+                resolved_count.clone(),
                 sem.clone(),
             )
             .instrument(tracing::trace_span!(
@@ -297,6 +300,7 @@ where
                 port,
                 tx.clone(),
                 connected.clone(),
+                resolved_count.clone(),
                 sem.clone(),
             )
             .instrument(tracing::trace_span!(
@@ -313,9 +317,19 @@ where
         return Ok((stream, addr));
     }
 
-    Err(OpaqueError::from_display(format!(
-        "failed to connect to any resolved IP address for {domain} (port {port})"
-    )))
+    let resolve_count = resolved_count.load(Ordering::Acquire);
+    if resolve_count > 0 {
+        Err(
+            BoxError::from("failed to connect to any resolved IP address")
+                .context_field("domain", domain)
+                .context_field("port", port)
+                .context_field("resolved_addr_count", resolve_count),
+        )
+    } else {
+        Err(BoxError::from("failed to resolve into any IP address")
+            .context_field("domain", domain)
+            .context_field("port", port))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -335,6 +349,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     port: u16,
     tx: Sender<(TcpStream, SocketAddr)>,
     connected: Arc<AtomicBool>,
+    resolved_count: Arc<AtomicUsize>,
     sem: Arc<Semaphore>,
 ) where
     Dns: DnsResolver + Clone,
@@ -344,7 +359,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
         IpKind::Ipv4 => match dns.ipv4_lookup(domain.clone()).await {
             Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
             Err(err) => {
-                let err = OpaqueError::from_boxed(err.into());
+                let err = err.into_box_error();
                 tracing::trace!(
                     "[{ip_kind:?}] failed to resolve domain to IPv4 addresses: {err:?}"
                 );
@@ -354,7 +369,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
         IpKind::Ipv6 => match dns.ipv6_lookup(domain.clone()).await {
             Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
-                let err = OpaqueError::from_boxed(err.into());
+                let err = err.into_box_error();
                 tracing::trace!(
                     "[{ip_kind:?}] failed to resolve domain to IPv6 addresses: {err:?}"
                 );
@@ -369,6 +384,8 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     };
     for (index, ip) in ip_it.enumerate() {
         let addr = (ip, port).into();
+
+        resolved_count.fetch_add(1, Ordering::AcqRel);
 
         let sem = match (ip.is_ipv4(), connect_mode) {
             (true, ConnectIpMode::Ipv6) => {
@@ -435,7 +452,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                     }
                 }
                 Err(err) => {
-                    let err = OpaqueError::from_boxed(err.into());
+                    let err = err.into_box_error();
                     tracing::trace!("[{ip_kind:?}] #{index}: tcp connector failed to connect to {addr}: {err:?}");
                 }
             };

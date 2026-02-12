@@ -3,7 +3,7 @@ use crate::address::SocketAddress;
 use crate::conn::{ConnectionHealth, ConnectionHealthStatus};
 use crate::stream::Socket;
 use parking_lot::Mutex;
-use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Layer, Service};
@@ -41,7 +41,7 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
         &self,
         id: &ID,
     ) -> impl Future<
-        Output = Result<ConnectionResult<Self::Connection, Self::CreatePermit>, OpaqueError>,
+        Output = Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError>,
     > + Send;
 
     /// Create/add a new connection to the pool
@@ -94,7 +94,7 @@ where
     async fn get_conn(
         &self,
         _id: &ID,
-    ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, OpaqueError> {
+    ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         Ok(ConnectionResult::CreatePermit(()))
     }
 
@@ -227,16 +227,20 @@ impl<C, ID> Clone for LruDropPool<C, ID> {
 }
 
 impl<C, ID> LruDropPool<C, ID> {
-    pub fn try_new(max_active: usize, max_total: usize) -> Result<Self, OpaqueError> {
+    pub fn try_new(max_active: usize, max_total: usize) -> Result<Self, BoxError> {
         if max_active == 0 || max_total == 0 {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "max_active or max_total of 0 will make this pool unusable",
-            ));
+            )
+            .context_field("max_active", max_active)
+            .context_field("max_total", max_total));
         }
         if max_active > max_total {
-            return Err(OpaqueError::from_display(
-                "max_active should be smaller or equal to max_total",
-            ));
+            return Err(
+                BoxError::from("max_active should be smaller or equal to max_total")
+                    .context_field("max_active", max_active)
+                    .context_field("max_total", max_total),
+            );
         }
         let storage = Arc::new(Mutex::new(VecDeque::with_capacity(max_total)));
         let weak_storage = Arc::downgrade(&storage);
@@ -292,7 +296,7 @@ where
     async fn get_conn(
         &self,
         id: &ID,
-    ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, OpaqueError> {
+    ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         #[cfg(feature = "opentelemetry")]
         let metrics = self
             .metrics
@@ -661,7 +665,7 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
 pub trait ReqToConnID<Input: ExtensionsRef>: Sized + Clone + Send + Sync + 'static {
     type ID: ConnID;
 
-    fn id(&self, input: &Input) -> Result<Self::ID, OpaqueError>;
+    fn id(&self, input: &Input) -> Result<Self::ID, BoxError>;
 }
 
 /// [`ConnID`] is used to identify a connection in a connection pool. These IDs
@@ -679,13 +683,13 @@ pub trait ConnID: Send + Sync + PartialEq + Clone + Debug + 'static {
 
 impl<Input, ID, F> ReqToConnID<Input> for F
 where
-    F: Fn(&Input) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
+    F: Fn(&Input) -> Result<ID, BoxError> + Clone + Send + Sync + 'static,
     ID: ConnID,
     Input: ExtensionsRef,
 {
     type ID = ID;
 
-    fn id(&self, request: &Input) -> Result<Self::ID, OpaqueError> {
+    fn id(&self, request: &Input) -> Result<Self::ID, BoxError> {
         self(request)
     }
 }
@@ -746,9 +750,8 @@ where
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
             timeout(duration, pool.get_conn(&conn_id))
                     .await
-                    .map_err(|err|{
-                        trace!("pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
-                        OpaqueError::from_std(err)
+                    .inspect_err(|err|{
+                        trace!(%err, "pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
                     })?
         } else {
             pool.get_conn(&conn_id).await
@@ -767,7 +770,7 @@ where
                     "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
                 );
                 let EstablishedClientConnection { input, conn } =
-                    self.inner.connect(input).await.map_err(Into::into)?;
+                    self.inner.connect(input).await.into_box_error()?;
 
                 trace!(
                     "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
@@ -913,7 +916,7 @@ mod tests {
     impl ReqToConnID<ServiceInput<String>> for StringInputLengthID {
         type ID = usize;
 
-        fn id(&self, input: &ServiceInput<String>) -> Result<Self::ID, OpaqueError> {
+        fn id(&self, input: &ServiceInput<String>) -> Result<Self::ID, BoxError> {
             Ok(input.input.chars().count())
         }
     }
@@ -1061,7 +1064,7 @@ mod tests {
 
     impl Service<bool> for InnerService {
         type Output = ();
-        type Error = OpaqueError;
+        type Error = BoxError;
 
         async fn serve(&self, should_error: bool) -> Result<Self::Output, Self::Error> {
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
@@ -1074,7 +1077,7 @@ mod tests {
             }
 
             if self.should_error.load(Ordering::Relaxed) {
-                Err(OpaqueError::from_display("service is in broken state"))
+                Err(BoxError::from("service is in broken state"))
             } else {
                 Ok(())
             }
