@@ -169,7 +169,9 @@ class BenchRun:
     cases: List[BenchCase]
 
 
-def run_command_streaming(cmd: str, show_progress: bool) -> Tuple[int, str]:
+def run_command_streaming(
+    cmd: str, debug: bool, show_progress: bool
+) -> Tuple[int, str]:
     if show_progress:
         status_line("Phase: starting command")
 
@@ -188,12 +190,12 @@ def run_command_streaming(cmd: str, show_progress: bool) -> Tuple[int, str]:
     collected: List[str] = []
 
     phase = "starting"
-    compiled = False
     running = False
 
     for line in proc.stdout:
-        sys.stdout.write(line)
-        sys.stdout.flush()
+        if debug:
+            sys.stdout.write(line)
+            sys.stdout.flush()
         collected.append(line)
 
         if not show_progress:
@@ -207,7 +209,6 @@ def run_command_streaming(cmd: str, show_progress: bool) -> Tuple[int, str]:
                 phase = "compiling"
                 status_line("Phase: compiling")
         elif "Finished `bench` profile" in s or s.startswith("Finished `bench`"):
-            compiled = True
             phase = "compiled"
             status_line("Phase: compile finished, preparing to run benches")
         elif s.startswith("Running benches/") or s.startswith("Running "):
@@ -553,7 +554,9 @@ def main() -> int:
     args = ap.parse_args()
 
     show_progress = (not args.no_progress) and args.debug
-    rc, out = run_command_streaming(args.cmd, show_progress=show_progress)
+    rc, out = run_command_streaming(
+        args.cmd, debug=args.debug, show_progress=show_progress
+    )
 
     if rc != 0 and not args.allow_nonzero:
         if show_progress:
