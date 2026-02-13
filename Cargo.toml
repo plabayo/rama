@@ -129,6 +129,7 @@ iri-string = "0.7"
 itertools = "0.14"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
+libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
 matchit = "0.9"

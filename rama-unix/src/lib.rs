@@ -28,3 +28,6 @@ mod unix;
 #[cfg_attr(docsrs, doc(cfg(target_family = "unix")))]
 #[doc(inline)]
 pub use unix::*;
+
+#[cfg(target_family = "unix")]
+pub mod utils;
