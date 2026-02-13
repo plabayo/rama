@@ -25,6 +25,8 @@ UNITS_BYTES = {
     "TB": 1024.0**4,
 }
 
+HEADER_KEYS = ["fastest", "slowest", "median", "mean", "samples", "iters"]
+
 
 def strip_ansi(s: str) -> str:
     return ANSI_RE.sub("", s)
@@ -122,6 +124,23 @@ def fmt_bytes(b: float) -> str:
     return f"{tb:.3g} TB"
 
 
+def pct_change(new: float, old: float) -> Optional[float]:
+    if old == 0:
+        return None
+    return ((new - old) / old) * 100.0
+
+
+def status_line(msg: str) -> None:
+    # stderr so it does not mix with streamed stdout output
+    sys.stderr.write("\r" + msg[:120].ljust(120))
+    sys.stderr.flush()
+
+
+def status_done() -> None:
+    sys.stderr.write("\r" + (" " * 120) + "\r")
+    sys.stderr.flush()
+
+
 @dataclass
 class StatRow:
     fastest: Optional[float] = None
@@ -150,48 +169,97 @@ class BenchRun:
     cases: List[BenchCase]
 
 
-def run_command(cmd: str) -> Tuple[int, str]:
-    proc = subprocess.run(
+def run_command_streaming(cmd: str, show_progress: bool) -> Tuple[int, str]:
+    if show_progress:
+        status_line("Phase: starting command")
+
+    proc = subprocess.Popen(
         cmd,
         shell=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        bufsize=1,
+        universal_newlines=True,
         env=os.environ.copy(),
     )
-    return proc.returncode, proc.stdout
+
+    assert proc.stdout is not None
+    collected: List[str] = []
+
+    phase = "starting"
+    compiled = False
+    running = False
+
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        collected.append(line)
+
+        if not show_progress:
+            continue
+
+        s = strip_ansi(line).strip()
+
+        # Very light heuristics, safe and useful
+        if s.startswith("Compiling ") or s.startswith("Building "):
+            if phase != "compiling":
+                phase = "compiling"
+                status_line("Phase: compiling")
+        elif "Finished `bench` profile" in s or s.startswith("Finished `bench`"):
+            compiled = True
+            phase = "compiled"
+            status_line("Phase: compile finished, preparing to run benches")
+        elif s.startswith("Running benches/") or s.startswith("Running "):
+            running = True
+            phase = "running"
+            status_line("Phase: running benches")
+        elif any(k in s.lower() for k in ["timer precision", "tracing will be piped"]):
+            if running:
+                status_line("Phase: running benches, collecting results")
+        elif all(
+            k in s.lower()
+            for k in ["fastest", "slowest", "median", "mean", "samples", "iters"]
+        ):
+            status_line("Phase: benchmark table detected")
+
+    proc.wait()
+
+    if show_progress:
+        if proc.returncode == 0:
+            status_line("Phase: command finished, parsing output")
+        else:
+            status_line(
+                f"Phase: command finished with exit code {proc.returncode}, parsing output"
+            )
+
+    return proc.returncode, "".join(collected)
 
 
 def find_header_starts(line: str) -> Optional[Dict[str, int]]:
     lowered = line.lower()
-    needed = ["fastest", "slowest", "median", "mean", "samples", "iters"]
-    if not all(k in lowered for k in needed):
+    if not all(k in lowered for k in HEADER_KEYS):
         return None
 
     starts: Dict[str, int] = {}
-    for k in needed:
+    for k in HEADER_KEYS:
         idx = lowered.find(k)
         if idx < 0:
             return None
         starts[k] = idx
 
-    # ensure order makes sense
-    order = [starts[k] for k in needed]
+    order = [starts[k] for k in HEADER_KEYS]
     if order != sorted(order):
-        # if something odd happened, still reject
         return None
-
     return starts
 
 
 def slice_row(line: str, starts: Dict[str, int]) -> Tuple[str, Dict[str, str]]:
-    # Create ordered boundaries
-    keys = ["fastest", "slowest", "median", "mean", "samples", "iters"]
-    bounds = [starts[k] for k in keys]
+    bounds = [starts[k] for k in HEADER_KEYS]
     label = line[: bounds[0]].strip()
 
     fields: Dict[str, str] = {}
-    for i, k in enumerate(keys):
+    for i, k in enumerate(HEADER_KEYS):
         start = bounds[i]
         end = bounds[i + 1] if i + 1 < len(bounds) else len(line)
         fields[k] = line[start:end].strip(" │|").strip()
@@ -241,16 +309,14 @@ def parse_bench_output(text: str, cmd: str, cwd: str, debug: bool) -> BenchRun:
             if maybe:
                 starts = maybe
                 if debug:
-                    sys.stderr.write(f"Detected header starts: {starts}\n")
+                    sys.stderr.write(f"\nDetected header starts: {starts}\n")
                     sys.stderr.write(f"Header line: {line}\n")
             continue
 
-        # group line, eg "╰─ bench_http_transport"
         if line.strip().startswith(("╰─", "├─")) and "bench_" in line:
             group_name = line.strip().lstrip("╰─").lstrip("├─").strip()
             continue
 
-        # case line
         if "TestParameters" in line and line.strip().startswith(("├─", "╰─")):
             label, fields = slice_row(line, starts)
             if parse_time_to_seconds(fields.get("fastest", "")) is not None:
@@ -266,7 +332,6 @@ def parse_bench_output(text: str, cmd: str, cwd: str, debug: bool) -> BenchRun:
                 expecting_metric_rows = 0
             continue
 
-        # throughput line
         if current_case and re.search(r"[KMGTP]?B/s", line):
             _, fields = slice_row(line, starts)
             tp = parse_stat_from_fields(fields, parse_throughput)
@@ -276,7 +341,6 @@ def parse_bench_output(text: str, cmd: str, cwd: str, debug: bool) -> BenchRun:
                 expecting_metric_rows = 0
             continue
 
-        # metric section label
         if current_case:
             m = re.match(r"^\s*[│| ]*\s*([a-zA-Z ]+):\s*$", line)
             if m:
@@ -284,7 +348,6 @@ def parse_bench_output(text: str, cmd: str, cwd: str, debug: bool) -> BenchRun:
                 expecting_metric_rows = 2
                 continue
 
-        # metric rows (count then bytes usually)
         if current_case and current_metric_section and expecting_metric_rows > 0:
             _, fields = slice_row(line, starts)
             fastest_cell = fields.get("fastest", "").strip()
@@ -307,7 +370,7 @@ def parse_bench_output(text: str, cmd: str, cwd: str, debug: bool) -> BenchRun:
                 current_metric_section = None
 
     if debug:
-        sys.stderr.write(f"Parsed cases: {len(cases)}\n")
+        sys.stderr.write(f"\nParsed cases: {len(cases)}\n")
 
     return BenchRun(
         cmd=cmd,
@@ -319,8 +382,6 @@ def parse_bench_output(text: str, cmd: str, cwd: str, debug: bool) -> BenchRun:
 
 
 def payload_bucket(case_name: str) -> str:
-    # Expected substring inside case_name:
-    # "server: Large, client: Small" etc
     m_server = re.search(r"\bserver:\s*(Small|Large)\b", case_name)
     m_client = re.search(r"\bclient:\s*(Small|Large)\b", case_name)
     if not m_server or not m_client:
@@ -336,36 +397,90 @@ def payload_bucket(case_name: str) -> str:
     return "mixed"
 
 
-def print_group_charts(title: str, cases: List["BenchCase"]) -> None:
+def case_key(case_name: str) -> str:
+    return re.sub(r"\s+", " ", case_name).strip()
+
+
+def load_baseline(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def baseline_index(baseline_json: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    cases = baseline_json.get("cases", [])
+    out: Dict[str, Dict[str, Any]] = {}
+    for c in cases:
+        name = case_key(str(c.get("name", "")))
+        if name:
+            out[name] = c
+    return out
+
+
+def pct_fmt(delta: Optional[float]) -> str:
+    if delta is None:
+        return "n/a"
+    return f"{delta:+.2f}%"
+
+
+def print_group_charts(
+    title: str,
+    cases: List[BenchCase],
+    baseline_map: Optional[Dict[str, Dict[str, Any]]],
+) -> None:
     if not cases:
         return
 
-    # Mean time
-    time_means = [(c, c.time_s.mean) for c in cases if c.time_s.mean is not None]
-    if time_means:
-        max_time = max(v for _, v in time_means if v is not None)
-        print(f"\n{title}\n")
+    print(f"\n{title}\n")
+
+    time_rows: List[Tuple[BenchCase, float, Optional[float]]] = []
+    for c in cases:
+        if c.time_s.mean is None:
+            continue
+        old = None
+        if baseline_map:
+            bc = baseline_map.get(case_key(c.name))
+            if bc:
+                old = bc.get("time_s", {}).get("mean", None)
+        time_rows.append((c, c.time_s.mean, old))
+
+    if time_rows:
+        max_time = max(v for _, v, _ in time_rows)
         print("Mean time (lower is better)\n")
-        for c, v in sorted(time_means, key=lambda x: x[1]):
-            bar = human_bar(v, max_time, width=32)
-            print(f"{fmt_seconds(v):>10}  {bar}  {c.name}")
+        for c, new_v, old_v in sorted(time_rows, key=lambda x: x[1]):
+            bar = human_bar(new_v, max_time, width=28)
+            if old_v is not None:
+                delta = pct_change(new_v, old_v)
+                print(f"{fmt_seconds(new_v):>10}  {bar}  {pct_fmt(delta):>9}  {c.name}")
+            else:
+                print(f"{fmt_seconds(new_v):>10}  {bar}  {'':>9}  {c.name}")
 
-    # Mean throughput
-    tp_means = [
-        (c, c.throughput_bps.mean) for c in cases if c.throughput_bps.mean is not None
-    ]
-    if tp_means:
-        max_tp = max(v for _, v in tp_means if v is not None)
+    tp_rows: List[Tuple[BenchCase, float, Optional[float]]] = []
+    for c in cases:
+        if c.throughput_bps.mean is None:
+            continue
+        old = None
+        if baseline_map:
+            bc = baseline_map.get(case_key(c.name))
+            if bc:
+                old = bc.get("throughput_bps", {}).get("mean", None)
+        tp_rows.append((c, c.throughput_bps.mean, old))
+
+    if tp_rows:
+        max_tp = max(v for _, v, _ in tp_rows)
         print("\nMean throughput (higher is better)\n")
-        for c, v in sorted(tp_means, key=lambda x: x[1], reverse=True):
-            bar = human_bar(v, max_tp, width=32)
-            print(f"{fmt_bytes(v):>10}/s  {bar}  {c.name}")
+        for c, new_v, old_v in sorted(tp_rows, key=lambda x: x[1], reverse=True):
+            bar = human_bar(new_v, max_tp, width=28)
+            if old_v is not None:
+                delta = pct_change(new_v, old_v)
+                print(f"{fmt_bytes(new_v):>10}/s  {bar}  {pct_fmt(delta):>9}  {c.name}")
+            else:
+                print(f"{fmt_bytes(new_v):>10}/s  {bar}  {'':>9}  {c.name}")
 
 
-def print_ascii_charts(run: BenchRun) -> None:
-    if not run.cases:
-        print("No benchmark cases parsed.")
-        return
+def print_ascii_charts(run: BenchRun, baseline_json_path: Optional[str]) -> None:
+    baseline_map: Optional[Dict[str, Dict[str, Any]]] = None
+    if baseline_json_path:
+        baseline_map = baseline_index(load_baseline(baseline_json_path))
 
     buckets: Dict[str, List[BenchCase]] = {
         "small/small": [],
@@ -373,18 +488,19 @@ def print_ascii_charts(run: BenchRun) -> None:
         "big/big": [],
         "unknown": [],
     }
-
     for c in run.cases:
         buckets[payload_bucket(c.name)].append(c)
 
-    # Print in your requested order
-    print_group_charts("Payload group: small / small", buckets["small/small"])
-    print_group_charts("Payload group: small / big or big / small", buckets["mixed"])
-    print_group_charts("Payload group: big / big", buckets["big/big"])
+    print_group_charts(
+        "Payload group: small / small", buckets["small/small"], baseline_map
+    )
+    print_group_charts(
+        "Payload group: small / big or big / small", buckets["mixed"], baseline_map
+    )
+    print_group_charts("Payload group: big / big", buckets["big/big"], baseline_map)
 
-    # If anything did not match expected patterns, still show it
     if buckets["unknown"]:
-        print_group_charts("Payload group: unknown", buckets["unknown"])
+        print_group_charts("Payload group: unknown", buckets["unknown"], baseline_map)
 
 
 def run_to_jsonable(run: BenchRun) -> Dict[str, Any]:
@@ -419,29 +535,59 @@ def run_to_jsonable(run: BenchRun) -> Dict[str, Any]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cmd", default=DEFAULT_CMD)
-    ap.add_argument("--json-out", default=None)
+    ap.add_argument(
+        "--json-out",
+        default=None,
+        help="Write parsed JSON to this path instead of printing charts",
+    )
+    ap.add_argument(
+        "--compare-to",
+        default=None,
+        help="Path to baseline JSON file to compare against",
+    )
     ap.add_argument("--allow-nonzero", action="store_true")
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument(
+        "--no-progress", action="store_true", help="Disable progress status line"
+    )
     args = ap.parse_args()
 
-    rc, out = run_command(args.cmd)
+    show_progress = (not args.no_progress) and args.debug
+    rc, out = run_command_streaming(args.cmd, show_progress=show_progress)
+
     if rc != 0 and not args.allow_nonzero:
+        if show_progress:
+            status_done()
         sys.stderr.write(out)
         sys.stderr.write(f"\nCommand failed with exit code {rc}\n")
         sys.stderr.write("Use --allow-nonzero to still attempt parsing.\n")
         return rc
 
+    if show_progress:
+        status_line("Phase: parsing output")
     run = parse_bench_output(out, cmd=args.cmd, cwd=os.getcwd(), debug=args.debug)
 
     if args.json_out:
+        if show_progress:
+            status_line("Phase: writing JSON snapshot")
         payload = run_to_jsonable(run)
         os.makedirs(os.path.dirname(os.path.abspath(args.json_out)), exist_ok=True)
         with open(args.json_out, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
+        if show_progress:
+            status_done()
         print(args.json_out)
         return 0
 
-    print_ascii_charts(run)
+    if show_progress:
+        status_line("Phase: printing charts")
+        status_done()
+
+    if not run.cases:
+        print("No benchmark cases parsed.")
+        return 0
+
+    print_ascii_charts(run, baseline_json_path=args.compare_to)
     return 0
 
 

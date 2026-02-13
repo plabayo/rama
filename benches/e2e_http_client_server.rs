@@ -309,7 +309,7 @@ fn get_inner_client(
     }
 }
 
-#[divan::bench(args = TEST_MATRIX)]
+#[divan::bench(args = TEST_MATRIX, sample_count = 200)]
 fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
