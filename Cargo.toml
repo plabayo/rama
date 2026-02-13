@@ -530,9 +530,9 @@ required-features = ["http-full"]
 harness = false
 
 [[bench]]
-name = "e2e_h1_client_server"
+name = "e2e_http_client_server"
 path = "benches/e2e_http_client_server.rs"
-required-features = ["http-full"]
+required-features = ["http-full", "rustls", "boring"]
 harness = false
 
 [[example]]

@@ -101,6 +101,9 @@ qa-crate CRATE:
 
 qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
+bench-e2e-http-client-server *ARGS:
+    ./scripts/bench/e2e_http_client_server.py {{ARGS}}
+
 clean:
     cargo clean
 
