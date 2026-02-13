@@ -77,7 +77,7 @@ jobs:
             echo "Running benchmark: $base"
 
             if [ "$is_main" = "true" ]; then
-              python3 "$script" --no-stream --no-progress --json-out "$baseline_repo_path"
+              python3 "$script" --json-out "$baseline_repo_path"
               continue
             fi
 
@@ -89,9 +89,9 @@ jobs:
             fi
 
             if [ "$have_baseline" = "true" ]; then
-              python3 "$script" --no-stream --no-progress --compare-to "$baseline_tmp_path" > "$report_path"
+              python3 "$script" --compare-to "$baseline_tmp_path" > "$report_path"
             else
-              python3 "$script" --no-stream --no-progress > "$report_path"
+              python3 "$script" > "$report_path"
             fi
           done
 
