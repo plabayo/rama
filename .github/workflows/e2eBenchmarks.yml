@@ -83,7 +83,7 @@ jobs:
             base="$(basename "$script" .py)"
             cur_baseline="$RUN_DIR/baselines/${base}.json"
             report_path="/tmp/benchmarks/out/${base}.report.txt"
-            base_baseline="$BASELINE_DIR/baselines/${base}.json"
+            base_baseline="$BASELINE_DIR/${base}.json"
 
             echo
             echo "Running benchmark: $base"
@@ -93,6 +93,7 @@ jobs:
               continue
             fi
 
+            echo "Looking for baseline: $base_baseline"
             if [ -f "$base_baseline" ]; then
               python3 "$script" --compare-to "$base_baseline" > "$report_path"
             else
