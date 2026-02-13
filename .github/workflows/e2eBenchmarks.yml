@@ -13,9 +13,15 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
   actions: read
+
+env:
+  BASELINE_ARTIFACT_NAME: benchmarks-baselines
+  BASELINE_DIR: /tmp/benchmarks/baselines
+  RUN_DIR: /tmp/benchmarks/run
+  WORKFLOW_FILE: e2eBenchmarks.yml
 
 jobs:
   bench:
@@ -39,19 +45,27 @@ jobs:
 
       - name: Prepare dirs
         run: |
-          mkdir -p benchmarks/baselines
+          mkdir -p "$RUN_DIR/baselines"
           mkdir -p /tmp/benchmarks/out
 
-      - name: Fetch main for PR baseline reads
+      - name: Download baselines from latest successful main run
         if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git fetch origin main:refs/remotes/origin/main
+          set -euo pipefail
+          mkdir -p "$BASELINE_DIR"
+          python3 .github/scripts/download_bench_baselines.py \
+            --repo "${{ github.repository }}" \
+            --workflow "$WORKFLOW_FILE" \
+            --artifact "$BASELINE_ARTIFACT_NAME" \
+            --out "$BASELINE_DIR" \
+            --branch "main"
 
       - name: Run all benchmark scripts
         shell: bash
         run: |
           set -euo pipefail
-
           shopt -s nullglob
           scripts=(scripts/bench/*.py)
 
@@ -67,51 +81,24 @@ jobs:
 
           for script in "${scripts[@]}"; do
             base="$(basename "$script" .py)"
-            baseline_repo_path="benchmarks/baselines/${base}.json"
-            baseline_tmp_path="/tmp/benchmarks/out/${base}.baseline.json"
+            cur_baseline="$RUN_DIR/baselines/${base}.json"
             report_path="/tmp/benchmarks/out/${base}.report.txt"
+            base_baseline="$BASELINE_DIR/baselines/${base}.json"
 
             echo
             echo "Running benchmark: $base"
 
             if [ "$is_main" = "true" ]; then
-              python3 "$script" --json-out "$baseline_repo_path"
+              python3 "$script" --json-out "$cur_baseline"
               continue
             fi
 
-            have_baseline="false"
-            if git cat-file -e "origin/main:${baseline_repo_path}" 2>/dev/null; then
-              git show "origin/main:${baseline_repo_path}" > "$baseline_tmp_path"
-              have_baseline="true"
-            fi
-
-            if [ "$have_baseline" = "true" ]; then
-              python3 "$script" --compare-to "$baseline_tmp_path" > "$report_path"
+            if [ -f "$base_baseline" ]; then
+              python3 "$script" --compare-to "$base_baseline" > "$report_path"
             else
               python3 "$script" > "$report_path"
             fi
           done
-
-      - name: Commit updated baselines on main
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Stage anything that changed or was created under baselines
-          git add -A benchmarks/baselines
-
-          # If nothing staged, exit cleanly
-          if git diff --cached --quiet; then
-            echo "No baseline changes to commit"
-            exit 0
-          fi
-
-          git commit -m "chore: update benchmark baselines"
-          git push
 
       - name: Build combined PR comment
         if: github.event_name == 'pull_request'
@@ -129,7 +116,7 @@ jobs:
             echo
             echo "Updated on every push to this PR."
             echo
-            echo "Baselines are read from main under benchmarks/baselines when available."
+            echo "Baselines are downloaded from the latest successful main workflow run artifact."
             echo
           } > "$out"
 
@@ -146,14 +133,6 @@ jobs:
             base="$(basename "$report" .report.txt)"
             {
               echo "### ${base}"
-              echo
-              echo "Script"
-              echo
-              echo '```'
-              echo "python3 scripts/bench/${base}.py"
-              echo '```'
-              echo
-              echo "Output"
               echo
               echo '```'
               cat "$report"
@@ -177,24 +156,32 @@ jobs:
           header: benchmarks
           path: /tmp/bench_comment.md
 
+      - name: Upload baselines artifact (main runs only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BASELINE_ARTIFACT_NAME }}
+          path: ${{ env.RUN_DIR }}/baselines
+          if-no-files-found: error
+          retention-days: 30
+
   comment_fork:
     if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
 
     permissions:
       pull-requests: write
-      contents: read
       actions: read
 
     steps:
-      - name: Download PR artifact from pull_request run via API
+      - name: Download PR comment artifact from pull_request run via API
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          WORKFLOW_FILE: e2eBenchmarks.yml
+          WORKFLOW_FILE: ${{ env.WORKFLOW_FILE }}
         run: |
           set -euo pipefail
 
@@ -210,10 +197,9 @@ jobs:
 
             run_id="$(echo "$runs_json" | python3 -c "import sys, json; d=json.load(sys.stdin); w=d.get('workflow_runs', []); print(w[0]['id'] if w else '')")"
             run_status="$(echo "$runs_json" | python3 -c "import sys, json; d=json.load(sys.stdin); w=d.get('workflow_runs', []); print(w[0].get('status','') if w else '')")"
-            run_conclusion="$(echo "$runs_json" | python3 -c "import sys, json; d=json.load(sys.stdin); w=d.get('workflow_runs', []); print(w[0].get('conclusion','') if w else '')")"
 
             if [ -n "$run_id" ] && [ "$run_status" = "completed" ]; then
-              echo "Found completed pull_request run_id=${run_id} conclusion=${run_conclusion}"
+              echo "Found completed pull_request run_id=${run_id}"
               break
             fi
 
@@ -227,7 +213,6 @@ jobs:
           fi
 
           artifacts_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${REPO}/actions/runs/${run_id}/artifacts")"
-
           artifact_id="$(echo "$artifacts_json" | python3 -c "import sys, json; d=json.load(sys.stdin); name=sys.argv[1]; arts=d.get('artifacts', []); m=[a for a in arts if a.get('name')==name]; print(m[0]['id'] if m else '')" "$artifact_name")"
 
           if [ -z "$artifact_id" ]; then
@@ -241,12 +226,6 @@ jobs:
             "/repos/${REPO}/actions/artifacts/${artifact_id}/zip" > /tmp/bench_artifact/artifact.zip
 
           unzip -o /tmp/bench_artifact/artifact.zip -d /tmp/bench_artifact
-
-          if [ ! -f /tmp/bench_artifact/bench_comment.md ]; then
-            echo "bench_comment.md not found in artifact"
-            ls -la /tmp/bench_artifact
-            exit 1
-          fi
 
       - name: Post or update PR comment (fork PRs)
         uses: marocchino/sticky-pull-request-comment@v2
