@@ -2,13 +2,14 @@ name: benchmarks
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
+    branches: [main]
   pull_request_target:
+    branches: [main]
 
 concurrency:
-  group: benchmarks-${{ github.event.pull_request.number || github.ref }}
+  group: benchmarks-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -190,7 +191,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          WORKFLOW_FILE: benchmarks.yml
+          WORKFLOW_FILE: e2eBenchmarks.yml
         run: |
           set -euo pipefail
 
