@@ -1,7 +1,3 @@
-//! ```sh
-//! cargo bench --bench e2e_http_client_server --features http-full,rustls,boring
-//! ```
-
 use std::{
     fs::{create_dir_all, exists, remove_file},
     path::Path,
