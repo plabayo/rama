@@ -1,3 +1,7 @@
+//! ```sh
+//! cargo bench --bench e2e_http_client_server --features http-full,rustls,boring
+//! ```
+
 use std::{
     convert::Infallible,
     sync::{
@@ -34,6 +38,7 @@ use rama::{
         address::SocketAddress,
         tls::{
             ApplicationProtocol,
+            client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
     },
@@ -43,7 +48,7 @@ use rama::{
     tls::{boring, rustls},
 };
 
-use rama_net::tls::client::ServerVerifyMode;
+use rand::prelude::*;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod e2e_utils;
@@ -58,10 +63,19 @@ enum Size {
 }
 
 impl Size {
-    fn bytes(self) -> usize {
+    fn rnd_bytes(self) -> Bytes {
+        let mut rng = rand::rng();
         match self {
-            Self::Small => 1_000,
-            Self::Large => 500_000,
+            Self::Small => {
+                let mut bytes = [0u8; 5_000];
+                rng.fill_bytes(&mut bytes);
+                Bytes::from(bytes.to_vec())
+            }
+            Self::Large => {
+                let mut bytes = [0u8; 1_000_000];
+                rng.fill_bytes(&mut bytes);
+                Bytes::from(bytes.to_vec())
+            }
         }
     }
 }
@@ -301,8 +315,12 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
         .enable_all()
         .build()
         .unwrap();
-    let server_bytes = Bytes::from(vec![0u8; params.server.bytes()]);
-    let client_payload = Bytes::from(vec![0u8; params.client.bytes()]);
+
+    let server_bytes = params.server.rnd_bytes();
+    let server_bytes_count = server_bytes.len();
+
+    let client_bytes = params.client.rnd_bytes();
+    let client_bytes_count = client_bytes.len();
 
     let address = spawn_http_server(params, server_bytes);
     let scheme = if matches!(params.tls, Tls::None) {
@@ -326,10 +344,10 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
                 AddRequiredRequestHeadersLayer::default(),
             )
                 .into_layer(get_inner_client(params.version, params.tls));
-            (client, client_payload.clone())
+            (client, client_bytes.clone())
         })
         .input_counter(move |_| {
-            divan::counter::BytesCount::new(params.client.bytes() + params.server.bytes())
+            divan::counter::BytesCount::new(client_bytes_count + server_bytes_count)
         })
         .bench_local_values(|(client, body)| {
             rt.block_on(async {
