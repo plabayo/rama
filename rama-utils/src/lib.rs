@@ -38,6 +38,7 @@ pub mod latency;
 pub mod octets;
 pub mod rng;
 pub mod str;
+pub mod time;
 
 #[doc(hidden)]
 pub mod test_helpers;

@@ -2,7 +2,8 @@
 
 use std::fmt;
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use rama_utils::time::now_unix_ms;
 
 use crate::util::HeaderValueString;
 
@@ -88,11 +89,7 @@ impl XClacksOverhead {
     /// The name changes once per day (UTC).
     #[must_use]
     pub fn new() -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self::new_with_index(now as usize)
+        Self::new_with_index(now_unix_ms().wrapping_abs() as usize)
     }
 
     #[inline(always)]
