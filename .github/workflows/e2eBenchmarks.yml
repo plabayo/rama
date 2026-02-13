@@ -98,15 +98,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- benchmarks/baselines; then
-            echo "No baseline changes"
-            exit 0
-          fi
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add benchmarks/baselines
+          # Stage anything that changed or was created under baselines
+          git add -A benchmarks/baselines
+
+          # If nothing staged, exit cleanly
+          if git diff --cached --quiet; then
+            echo "No baseline changes to commit"
+            exit 0
+          fi
+
           git commit -m "chore: update benchmark baselines"
           git push
 
