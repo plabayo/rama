@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Frequency at which we resync the cached wall clock with the system clock.
 const RESYNC_EVERY_MS: u64 = 60 * 60 * 1000;
@@ -32,7 +32,7 @@ impl State {
 
     #[inline]
     fn elapsed_ms_now(&self) -> u64 {
-        duration_as_millis_u64(self.start_instant.elapsed())
+        self.start_instant.elapsed().as_millis() as u64
     }
 
     fn maybe_resync(&self, elapsed_now_ms: u64) {
@@ -43,7 +43,7 @@ impl State {
 
         let new_next = elapsed_now_ms.saturating_add(RESYNC_EVERY_MS);
 
-        // Best effort. If multiple threads race, only one wins.
+        // Best effort. If multiple threads race, only one wins the right to resync.
         if self
             .next_resync_elapsed_ms
             .compare_exchange(next, new_next, Ordering::Relaxed, Ordering::Relaxed)
@@ -66,38 +66,19 @@ impl State {
     }
 }
 
-#[inline]
-fn duration_as_millis_u64(d: Duration) -> u64 {
-    let ms = d.as_millis();
-    if ms > u64::MAX as u128 {
-        u64::MAX
-    } else {
-        ms as u64
-    }
-}
-
-#[inline]
-fn duration_as_millis_i64_sat(d: Duration) -> i64 {
-    let ms = d.as_millis();
-    if ms > i64::MAX as u128 {
-        i64::MAX
-    } else {
-        ms as i64
-    }
-}
-
 #[inline(always)]
 /// Returns the current unix timestamp in milliseconds by reading the system clock.
-///
-/// The value is negative only if the system clock is before the unix epoch.
 pub fn unix_timestamp_millis() -> i64 {
     unix_timestamp_millis_slow()
 }
 
 fn unix_timestamp_millis_slow() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => duration_as_millis_i64_sat(d),
-        Err(e) => -duration_as_millis_i64_sat(e.duration()),
+        Ok(d) => d.as_millis().try_into().unwrap_or(i64::MAX),
+        Err(e) => {
+            let ms: i64 = e.duration().as_millis().try_into().unwrap_or(i64::MAX);
+            -ms
+        }
     }
 }
 
@@ -111,16 +92,12 @@ pub fn now_unix_ms() -> i64 {
 }
 
 /// Returns a rotating index in range `0..len` derived from current unix ms time.
-///
-/// Notes:
-/// - If `len == 0`, returns 0.
-/// - Not suitable for cryptographic or high quality randomness.
 pub fn time_modulo_index(len: usize) -> usize {
     if len == 0 {
         return 0;
     }
 
-    // Cast to u64 makes pre-epoch values wrap in a stable way.
+    // Cast to u64 makes pre-epoch values wrap in a stable way for modulo.
     (now_unix_ms() as u64 % len as u64) as usize
 }
 
