@@ -91,7 +91,8 @@ Axum had similar issues at the past and they solved it as far as we know by:
 
 For `rama` we try to box as little as possible, and we do not provide such `debug` macros.
 
-> 💡 You can learn more about about [Dynamic- vs Static dispatch here](./intro/dynamic_dispatch.md).
+> [!NOTE]
+> You can learn more about about [Dynamic- vs Static dispatch here](./intro/dynamic_dispatch.md).
 
 Most commonly you might get this error, especially the difficult ones, for high level http service handlers. In which case the problem is usually on of these:
 
@@ -146,3 +147,32 @@ You can find all user agent profiles embedded with rama at: <https://github.com/
 It is not within the scope of rama to provide an exhaustive database (embedded or not) of all possible
 user-agents found in the while. You can however easily build this yourself by stacking the appropriate
 rama layer services in your own rama-based network stacks.
+
+## My proxy build with Rama fails with "Too many open files". What should I do?
+
+If your Rama based proxy fails with "Too many open files", it means the process
+has hit the per process file descriptor limit. Each connection consumes at least one file descriptor,
+and high concurrency proxies can exhaust this limit quickly.
+
+You should raise the soft file descriptor limit at startup using
+[`rama::unix::utils::raise_nofile`](https://ramaproxy.org/docs/rama/unix/utils/raise_nofile.html).
+
+A practical default for proxies is `65_535`.
+The function will automatically clamp the requested value to the system hard limit.
+
+Example:
+
+```rust,norun
+use rama::unix::utils::raise_nofile;
+
+fn main() -> std::io::Result<()> {
+    raise_nofile(65_535)?;
+    // start your proxy
+    Ok(())
+}
+````
+
+If raising the limit fails or has no effect, your system hard limit may be too low.
+In that case, increase it via your service manager or OS configuration,
+for example by setting `LimitNOFILE=65535` in a systemd unit or adjusting `ulimit -n`
+before launching the process.
