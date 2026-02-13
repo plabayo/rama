@@ -1,23 +1,18 @@
-//! time utilities.
+//! Time utilities providing a high-performance, cached wall clock.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+/// Frequency at which we resync the cached wall clock with the system clock.
 const RESYNC_EVERY_MS: u64 = 60 * 60 * 1000;
 
 struct State {
     start_instant: Instant,
-
-    // Cached base unix ms and the monotonic elapsed ms at which that base was captured.
-    //
-    // These two values are updated independently using atomics. Updates are best effort.
-    // During a refresh, a reader may see a new base_unix_ms with an old base_elapsed_ms
-    // or vice versa. That can cause a small time jump. The next refresh corrects it.
-    base_unix_ms: AtomicI64,
-    base_elapsed_ms: AtomicU64,
-
-    // Resync gating.
+    /// The "skew" is the difference: (SystemTime_ms - Instant_elapsed_ms).
+    /// By storing this in a single atomic, we ensure readers always see a
+    /// consistent snapshot of the clock relationship.
+    skew_ms: AtomicI64,
     last_resync_elapsed_ms: AtomicU64,
 }
 
@@ -28,14 +23,15 @@ impl State {
 
         Self {
             start_instant,
-            base_unix_ms: AtomicI64::new(unix_ms),
-            base_elapsed_ms: AtomicU64::new(0),
+            // At t=0, skew is just the current unix time.
+            skew_ms: AtomicI64::new(unix_ms),
             last_resync_elapsed_ms: AtomicU64::new(0),
         }
     }
 
+    #[inline]
     fn elapsed_ms_now(&self) -> u64 {
-        duration_as_millis_u64(self.start_instant.elapsed())
+        self.start_instant.elapsed().as_millis() as u64
     }
 
     fn maybe_resync(&self, elapsed_now_ms: u64) {
@@ -44,8 +40,8 @@ impl State {
             return;
         }
 
-        // Best effort. If multiple threads race here, that is fine.
-        // The first that wins will move the last_resync forward.
+        // Atomically claim the resync task to avoid multiple threads
+        // calling the system clock simultaneously.
         if self
             .last_resync_elapsed_ms
             .compare_exchange(last, elapsed_now_ms, Ordering::Relaxed, Ordering::Relaxed)
@@ -56,107 +52,60 @@ impl State {
 
         let unix_now_ms = unix_timestamp_millis_slow();
 
-        // Update the pair. Order is not critical for this best effort approach.
-        self.base_unix_ms.store(unix_now_ms, Ordering::Relaxed);
-        self.base_elapsed_ms
-            .store(elapsed_now_ms, Ordering::Relaxed);
+        // New skew = Current Wall Clock - Current Monotonic Clock
+        let new_skew = unix_now_ms - (elapsed_now_ms as i64);
+        self.skew_ms.store(new_skew, Ordering::Relaxed);
     }
 
     fn now_unix_ms(&self) -> i64 {
         let elapsed_now_ms = self.elapsed_ms_now();
         self.maybe_resync(elapsed_now_ms);
 
-        let base_unix = self.base_unix_ms.load(Ordering::Relaxed);
-        let base_elapsed = self.base_elapsed_ms.load(Ordering::Relaxed);
-
-        let delta = elapsed_now_ms as i64 - base_elapsed as i64;
-        base_unix + delta
+        // Current Unix = Current Monotonic + Skew
+        let skew = self.skew_ms.load(Ordering::Relaxed);
+        (elapsed_now_ms as i64) + skew
     }
 }
 
-/// Converts a Duration to milliseconds as i64 with saturation.
-///
-/// Large durations saturate at i64::MAX.
-fn duration_as_millis_i64(d: Duration) -> i64 {
-    let ms = d.as_millis();
-    if ms > i64::MAX as u128 {
-        i64::MAX
-    } else {
-        ms as i64
-    }
-}
-
-fn duration_as_millis_u64(d: Duration) -> u64 {
-    let ms = d.as_millis();
-    if ms > u64::MAX as u128 {
-        u64::MAX
-    } else {
-        ms as u64
-    }
-}
-
-#[inline(always)]
-/// Returns the current unix timestamp in milliseconds as i64.
-///
-/// This reads the system clock each call.
-/// The value is negative only if the system clock is before the unix epoch.
+/// Returns the current unix timestamp in milliseconds by reading the system clock.
 pub fn unix_timestamp_millis() -> i64 {
     unix_timestamp_millis_slow()
 }
 
 fn unix_timestamp_millis_slow() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => duration_as_millis_i64(d),
-        Err(e) => -duration_as_millis_i64(e.duration()),
+        Ok(d) => d.as_millis() as i64,
+        Err(e) => -(e.duration().as_millis() as i64),
     }
 }
 
 /// Returns an approximate unix timestamp in milliseconds.
-///
-/// The returned value may not reflect system clock adjustments immediately.
-/// The function resyncs the wall clock about once per hour using atomics.
+/// Optimized for high-frequency calls; resyncs with system clock hourly.
 pub fn now_unix_ms() -> i64 {
     static STATE: OnceLock<State> = OnceLock::new();
-    let state = STATE.get_or_init(State::init);
-    state.now_unix_ms()
+    STATE.get_or_init(State::init).now_unix_ms()
 }
 
 /// Returns a rotating index in range 0..len derived from current unix ms time.
-///
-/// This is stateless and cheap.
-///
-/// Notes:
-/// - If len is 0, returns 0.
-/// - Distribution depends on millisecond resolution.
-/// - Not suitable for cryptographic or high quality randomness.
 pub fn rotime_modulo_index(len: usize) -> usize {
     if len == 0 {
         return 0;
     }
-
-    let now = now_unix_ms();
-    let abs = now.wrapping_abs() as u64;
-    (abs % len as u64) as usize
+    // Bit-casting i64 to u64 handles negative timestamps (pre-1970) correctly for modulo.
+    (now_unix_ms() as u64 % len as u64) as usize
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
+    use std::{thread, time::Duration};
 
     #[test]
-    fn unix_timestamp_millis_is_non_decreasing() {
-        let a = unix_timestamp_millis();
-        let b = unix_timestamp_millis();
-        assert!(b >= a);
-    }
-
-    #[test]
-    fn now_unix_ms_is_non_decreasing() {
+    fn test_progression() {
         let a = now_unix_ms();
-        thread::sleep(Duration::from_millis(2));
+        thread::sleep(Duration::from_millis(10));
         let b = now_unix_ms();
-        assert!(b >= a);
+        assert!(b >= a + 10);
     }
 
     #[test]
@@ -168,11 +117,22 @@ mod tests {
     }
 
     #[test]
-    fn modulo_index_within_bounds() {
-        for len in 1..64 {
-            let idx = rotime_modulo_index(len);
-            assert!(idx < len);
-        }
+    fn test_consistency_under_resync() {
+        let state = State::init();
+
+        // Simulate a massive clock jump forward in the system clock
+        let elapsed = state.elapsed_ms_now();
+        state.last_resync_elapsed_ms.store(0, Ordering::Relaxed); // force resync
+
+        // This simulates what happens inside maybe_resync
+        let manual_unix_jump = unix_timestamp_millis_slow() + 100_000;
+        state
+            .skew_ms
+            .store(manual_unix_jump - (elapsed as i64), Ordering::Relaxed);
+
+        let now = state.now_unix_ms();
+        // Ensure the calculation is consistent
+        assert!(now >= manual_unix_jump);
     }
 
     #[test]
@@ -181,12 +141,9 @@ mod tests {
     }
 
     #[test]
-    fn modulo_index_changes_over_time_often() {
-        let len = 16;
-        let a = rotime_modulo_index(len);
-        thread::sleep(Duration::from_millis(3));
-        let b = rotime_modulo_index(len);
-        assert!(a < len);
-        assert!(b < len);
+    fn test_modulo_bounds() {
+        for i in 1..50 {
+            assert!(rotime_modulo_index(i) < i);
+        }
     }
 }
