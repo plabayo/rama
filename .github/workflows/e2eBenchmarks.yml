@@ -1,0 +1,172 @@
+name: benchmarks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=stable"
+
+      - name: Prepare dirs
+        run: |
+          mkdir -p benchmarks/baselines
+          mkdir -p /tmp/benchmarks/out
+
+      - name: Fetch main for PR baseline reads
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+
+      - name: Run all benchmark scripts
+        id: run_benches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          scripts=(scripts/bench/*.py)
+
+          if [ ${#scripts[@]} -eq 0 ]; then
+            echo "No benchmark scripts found in scripts/bench/*.py"
+            exit 0
+          fi
+
+          echo "Found ${#scripts[@]} benchmark script(s)"
+          for s in "${scripts[@]}"; do
+            echo " - $s"
+          done
+
+          is_main="false"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            is_main="true"
+          fi
+
+          for script in "${scripts[@]}"; do
+            base="$(basename "$script" .py)"
+            baseline_repo_path="benchmarks/baselines/${base}.json"
+            baseline_tmp_path="/tmp/benchmarks/out/${base}.baseline.json"
+            report_path="/tmp/benchmarks/out/${base}.report.txt"
+
+            echo
+            echo "Running benchmark: $base"
+
+            if [ "$is_main" = "true" ]; then
+              python3 "$script" --no-stream --no-progress --json-out "$baseline_repo_path"
+              continue
+            fi
+
+            # PR path: try to get baseline from origin/main
+            have_baseline="false"
+            if git cat-file -e "origin/main:${baseline_repo_path}" 2>/dev/null; then
+              git show "origin/main:${baseline_repo_path}" > "$baseline_tmp_path"
+              have_baseline="true"
+            fi
+
+            if [ "$have_baseline" = "true" ]; then
+              python3 "$script" --no-stream --no-progress --compare-to "$baseline_tmp_path" > "$report_path"
+            else
+              python3 "$script" --no-stream --no-progress > "$report_path"
+            fi
+          done
+
+      - name: Commit updated baselines on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- benchmarks/baselines; then
+            echo "No baseline changes"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add benchmarks/baselines
+          git commit -m "chore: update benchmark baselines"
+          git push
+
+      - name: Build combined PR comment
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          reports=(/tmp/benchmarks/out/*.report.txt)
+
+          {
+            echo "## Benchmarks"
+            echo
+            echo "This comment is updated on every push to the PR."
+            echo
+          } > /tmp/bench_comment.md
+
+          if [ ${#reports[@]} -eq 0 ]; then
+            {
+              echo "No benchmark reports were produced."
+              echo
+              echo "Expected scripts in scripts/bench/*.py"
+            } >> /tmp/bench_comment.md
+            exit 0
+          fi
+
+          for report in "${reports[@]}"; do
+            base="$(basename "$report" .report.txt)"
+            baseline_repo_path="benchmarks/baselines/${base}.json"
+
+            {
+              echo "### ${base}"
+              echo
+              echo "Script"
+              echo
+              echo '```'
+              echo "python3 scripts/bench/${base}.py"
+              echo '```'
+              echo
+              echo "Baseline"
+              echo
+              echo "benchmarks/baselines/${base}.json on main, if present"
+              echo
+              echo "Output"
+              echo
+              echo '```'
+              cat "$report"
+              echo '```'
+              echo
+            } >> /tmp/bench_comment.md
+          done
+
+      - name: Post or update PR comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmarks
+          path: /tmp/bench_comment.md
