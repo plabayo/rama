@@ -6,6 +6,8 @@ import io
 import json
 import os
 import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -23,17 +25,57 @@ def api_get(url: str, token: str):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def api_get_bytes(url: str, token: str) -> bytes:
-    req = urllib.request.Request(
+def api_request(url: str, token: str) -> urllib.request.Request:
+    return urllib.request.Request(
         url,
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "bench-baseline-downloader",
         },
     )
-    with urllib.request.urlopen(req) as resp:
-        return resp.read()
+
+
+def download_artifact_zip(zip_api_url: str, token: str) -> bytes:
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirect)
+
+    req = urllib.request.Request(
+        zip_api_url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "bench-baseline-downloader",
+        },
+    )
+
+    try:
+        with opener.open(req) as resp:
+            # Some setups might actually return the bytes directly without redirect
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        # We expect a redirect. urllib raises HTTPError for 30x when redirects are disabled.
+        if e.code not in (301, 302, 303, 307, 308):
+            raise
+
+        location = e.headers.get("Location") or e.headers.get("location")
+        if not location:
+            raise RuntimeError(f"Redirect without Location header, status={e.code}")
+
+        print(f"Redirect location: {location}", file=sys.stderr)
+
+        # Follow redirect manually without auth header
+        req2 = urllib.request.Request(
+            location,
+            headers={"User-Agent": "bench-baseline-downloader"},
+        )
+        with urllib.request.urlopen(req2) as resp2:
+            return resp2.read()
 
 
 def main() -> int:
@@ -80,7 +122,7 @@ def main() -> int:
     zip_url = (
         f"https://api.github.com/repos/{args.repo}/actions/artifacts/{artifact_id}/zip"
     )
-    data = api_get_bytes(zip_url, token)
+    data = download_artifact_zip(zip_url, token)
 
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         z.extractall(args.out)
