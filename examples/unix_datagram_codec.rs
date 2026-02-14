@@ -40,12 +40,10 @@ mod unix_example {
             subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
         },
         unix::{UnixDatagram, UnixDatagramFramed, UnixSocketAddress},
+        utils::time::now_unix_ms,
     };
 
-    use std::{
-        io, process,
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    };
+    use std::{io, process, time::Duration};
     use tokio::time;
 
     pub(super) async fn run() {
@@ -130,12 +128,7 @@ mod unix_example {
 
     fn random_tmp_path(prefix: &str) -> String {
         let pid = process::id();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-
-        format!("/tmp/{prefix}_{pid}_{nanos}")
+        format!("/tmp/{prefix}_{pid}_{}", now_unix_ms())
     }
 }
 

@@ -32,7 +32,7 @@ use rama_http::{
     service::client::HttpClientExt,
     utils::HeaderValueGetter,
 };
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, time::now_system_time};
 use serde::Serialize;
 use std::{
     borrow::Cow,
@@ -773,7 +773,7 @@ fn get_retry_after_duration(response: &Response) -> Option<Duration> {
         .typed_get::<RetryAfter>()
         .and_then(|after| match after.after() {
             rama_http::headers::After::DateTime(http_date) => SystemTime::from(http_date)
-                .duration_since(SystemTime::now())
+                .duration_since(now_system_time())
                 .ok(),
             rama_http::headers::After::Delay(seconds) => Some(Duration::from(seconds)),
         })

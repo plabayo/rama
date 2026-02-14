@@ -19,11 +19,11 @@ use crate::util::{HttpDate, Seconds, TryFromValues};
 ///
 /// # Examples
 /// ```
-/// use std::time::{SystemTime};
 /// use rama_http_headers::{RetryAfter, util::Seconds};
+/// use rama_utils::time::now_system_time;
 ///
 /// let delay = RetryAfter::delay(Seconds::new(300));
-/// let date = RetryAfter::date(SystemTime::now());
+/// let date = RetryAfter::date(now_system_time());
 /// ```
 ///
 /// Retry-After header, defined in [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-7.1.3)

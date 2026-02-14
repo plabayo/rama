@@ -3,11 +3,11 @@ use crate::layer::har::spec;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
+use rama_utils::time::now_unix;
 use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
@@ -56,7 +56,7 @@ struct FileRecorderTask {
     dir: PathBuf,
     prefix: String,
     start: Instant,
-    start_epoch: u64,
+    start_epoch: i64,
 }
 
 impl FileRecorderTask {
@@ -66,10 +66,7 @@ impl FileRecorderTask {
             dir,
             prefix,
             start: Instant::now(),
-            start_epoch: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            start_epoch: now_unix(),
         }
     }
 
