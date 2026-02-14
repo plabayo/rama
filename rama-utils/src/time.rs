@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Frequency at which we resync the cached wall clock with the system clock.
 const RESYNC_EVERY_MS: u64 = 60 * 60 * 1000;
@@ -89,6 +89,32 @@ fn unix_timestamp_millis_slow() -> i64 {
 pub fn now_unix_ms() -> i64 {
     static STATE: OnceLock<State> = OnceLock::new();
     STATE.get_or_init(State::init).now_unix_ms()
+}
+
+#[inline]
+/// Returns an approximate unix timestamp in seconds.
+///
+/// Optimized for high-frequency calls. The underlying wall clock skew is refreshed
+/// roughly once per hour.
+pub fn now_unix() -> i64 {
+    let ms = now_unix_ms();
+    (ms + (1000 - 1)) / 1000
+}
+
+#[inline]
+/// Returns an approximate system time using approximate unix timestamp.
+///
+/// Optimized for high-frequency calls. The underlying wall clock skew is refreshed
+/// roughly once per hour.
+pub fn now_system_time() -> SystemTime {
+    let ms = now_unix_ms();
+    let epoch = SystemTime::UNIX_EPOCH;
+    let elapsed_since_epoch = Duration::from_millis(ms.wrapping_abs() as u64);
+    if ms >= 0 {
+        epoch + elapsed_since_epoch
+    } else {
+        epoch - elapsed_since_epoch
+    }
 }
 
 /// Returns a rotating index in range `0..len` derived from current unix ms time.

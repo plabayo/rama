@@ -24,9 +24,9 @@ use crate::util::HttpDate;
 ///
 /// ```
 /// use rama_http_headers::Date;
-/// use std::time::SystemTime;
+/// use rama_utils::time::now_system_time;
 ///
-/// let date = Date::from(SystemTime::now());
+/// let date = Date::from(now_system_time());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Date(HttpDate);

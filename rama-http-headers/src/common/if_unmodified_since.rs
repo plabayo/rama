@@ -27,9 +27,10 @@ use std::time::SystemTime;
 ///
 /// ```
 /// use rama_http_headers::IfUnmodifiedSince;
-/// use std::time::{SystemTime, Duration};
+/// use std::time::Duration;
+/// use rama_utils::time::now_system_time;
 ///
-/// let time = SystemTime::now() - Duration::from_hours(24);
+/// let time = now_system_time() - Duration::from_hours(24);
 /// let if_unmod = IfUnmodifiedSince::from(time);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,12 +84,14 @@ impl From<IfUnmodifiedSince> for SystemTime {
 
 #[cfg(test)]
 mod tests {
+    use rama_utils::time::now_system_time;
+
     use super::*;
     use std::time::Duration;
 
     #[test]
     fn precondition_passes() {
-        let newer = SystemTime::now();
+        let newer = now_system_time();
         let exact = newer - Duration::from_secs(2);
         let older = newer - Duration::from_secs(4);
 

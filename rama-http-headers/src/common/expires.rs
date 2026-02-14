@@ -27,9 +27,10 @@ use crate::util::HttpDate;
 ///
 /// ```
 /// use rama_http_headers::Expires;
-/// use std::time::{SystemTime, Duration};
+/// use rama_utils::time::now_system_time;
+/// use std::time::Duration;
 ///
-/// let time = SystemTime::now() + Duration::from_hours(24);
+/// let time = now_system_time() + Duration::from_hours(24);
 /// let expires = Expires::from(time);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -63,8 +63,8 @@ use {Header, HttpDate, Raw};
 /// ```
 ///
 /// ```
-/// use std::time::SystemTime;
 /// use rama_http_headers::{Headers, Warning};
+/// use rama_utils::time::now_system_time;
 ///
 /// let mut headers = Headers::new();
 /// headers.set(
@@ -72,7 +72,7 @@ use {Header, HttpDate, Raw};
 ///         code: 199,
 ///         agent: "api.rama.rs".to_owned(),
 ///         text: "Deprecated".to_owned(),
-///         date: Some(SystemTime::now().into())
+///         date: Some(now_system_time().into())
 ///     }
 /// );
 /// ```

@@ -18,7 +18,8 @@ use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 use std::net::IpAddr;
-use std::{sync::Arc, time::SystemTime};
+use std::sync::Arc;
+use tokio::time::Instant;
 
 const NETWORK_CONNECTION_DURATION: &str = "network.server.connection_duration";
 const NETWORK_SERVER_TOTAL_CONNECTIONS: &str = "network.server.total_connections";
@@ -203,16 +204,15 @@ where
         self.metrics.network_total_connections.add(1, &attributes);
 
         // used to compute the duration of the connection
-        let timer = SystemTime::now();
+        let timer = Instant::now();
 
         let result = self.inner.serve(stream).await;
 
         match result {
             Ok(res) => {
-                self.metrics.network_connection_duration.record(
-                    timer.elapsed().map(|t| t.as_secs_f64()).unwrap_or_default(),
-                    &attributes,
-                );
+                self.metrics
+                    .network_connection_duration
+                    .record(timer.elapsed().as_secs_f64(), &attributes);
                 Ok(res)
             }
             Err(err) => Err(err),

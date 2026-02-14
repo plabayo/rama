@@ -8,8 +8,8 @@ use crate::{
     headers::{Date, HeaderMapExt},
 };
 use rama_core::{Layer, Service};
-use rama_utils::macros::define_inner_service_accessors;
-use std::{fmt, time::SystemTime};
+use rama_utils::{macros::define_inner_service_accessors, time::now_system_time};
+use std::fmt;
 
 /// Layer that applies [`AddRequiredResponseHeaders`] which adds a request header.
 ///
@@ -157,7 +157,7 @@ where
 
         if self.overwrite || !resp.headers().contains_key(DATE) {
             resp.headers_mut()
-                .typed_insert(Date::from(SystemTime::now()));
+                .typed_insert(Date::from(now_system_time()));
         }
 
         Ok(resp)

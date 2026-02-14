@@ -24,7 +24,8 @@ use rama_core::{Layer, Service};
 use rama_net::http::RequestContext;
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::atomic::{self, AtomicUsize};
-use std::{borrow::Cow, fmt, sync::Arc, time::SystemTime};
+use std::{borrow::Cow, fmt, sync::Arc};
+use tokio::time::Instant;
 
 // Follows the experimental semantic conventions for HTTP metrics:
 // https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/semantic_conventions/http-metrics.md
@@ -279,7 +280,7 @@ where
         self.metrics.http_server_active_requests.add(1, &attributes);
 
         // used to compute the duration of the request
-        let timer = SystemTime::now();
+        let timer = Instant::now();
 
         let polled_body_size: Arc<AtomicUsize> = Default::default();
         let req = req.map(|body| {
@@ -309,10 +310,9 @@ where
                 ));
 
                 self.metrics.http_server_total_responses.add(1, &attributes);
-                self.metrics.http_server_duration.record(
-                    timer.elapsed().map(|t| t.as_secs_f64()).unwrap_or_default(),
-                    &attributes,
-                );
+                self.metrics
+                    .http_server_duration
+                    .record(timer.elapsed().as_secs_f64(), &attributes);
 
                 Ok(res)
             }

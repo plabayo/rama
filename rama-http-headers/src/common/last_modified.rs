@@ -26,10 +26,11 @@ use std::time::SystemTime;
 ///
 /// ```
 /// use rama_http_headers::LastModified;
-/// use std::time::{Duration, SystemTime};
+/// use std::time::Duration;
+/// use rama_utils::time::now_system_time;
 ///
 /// let modified = LastModified::from(
-///     SystemTime::now() - Duration::from_secs(60 * 60 * 24)
+///     now_system_time() - Duration::from_secs(60 * 60 * 24)
 /// );
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
