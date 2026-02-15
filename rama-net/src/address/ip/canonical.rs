@@ -1,27 +1,21 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 use crate::address::{Authority, Host, HostWithOptPort, HostWithPort, ProxyAddress, SocketAddress};
 
-/// Trait to convert an IP address into its canonical form
+/// Converts an IP address into a canonical representation.
+///
+/// Canonical means:
+/// - IPv4 stays IPv4.
+/// - IPv6 stays IPv6, except when the IPv6 address is an IPv4 mapped address.
+///   In that cases we convert it to the embedded IPv4 address.
 pub trait IntoCanonicalIpAddr {
     fn into_canonical_ip_addr(self) -> Self;
 }
 
 impl IntoCanonicalIpAddr for IpAddr {
+    #[inline(always)]
     fn into_canonical_ip_addr(self) -> Self {
-        match self {
-            IpAddr::V4(_) => self,
-            IpAddr::V6(v6) => match v6.to_ipv4() {
-                Some(mapped) => {
-                    if mapped == Ipv4Addr::new(0, 0, 0, 1) {
-                        self
-                    } else {
-                        IpAddr::V4(mapped)
-                    }
-                }
-                None => self,
-            },
-        }
+        self.to_canonical()
     }
 }
 
@@ -96,35 +90,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ipv4_loopback_to_canonical() {
-        let socket = SocketAddress::local_ipv4(8080);
-        assert_eq!(socket.into_canonical_ip_addr(), socket);
+    fn ipv4_loopback_is_unchanged() {
+        let socket_addr = SocketAddress::local_ipv4(8080);
+        assert_eq!(socket_addr.into_canonical_ip_addr(), socket_addr);
     }
 
     #[test]
-    fn ipv6_loopback_to_canonical() {
-        let socket = SocketAddress::local_ipv6(8080);
-        assert_eq!(socket.into_canonical_ip_addr(), socket);
+    fn ipv6_loopback_is_unchanged() {
+        let socket_addr = SocketAddress::local_ipv6(8080);
+        assert_eq!(socket_addr.into_canonical_ip_addr(), socket_addr);
     }
 
     #[test]
-    fn ipv4_to_canonical() {
-        let socket = SocketAddress::from(([192, 168, 1, 1], 8080));
-        assert_eq!(socket.into_canonical_ip_addr(), socket);
+    fn ipv4_is_unchanged() {
+        let socket_addr = SocketAddress::from(([192, 168, 1, 1], 8080));
+        assert_eq!(socket_addr.into_canonical_ip_addr(), socket_addr);
     }
 
     #[test]
-    fn ipv6_to_canonical() {
-        let socket = SocketAddress::from(([0x2001, 0x0db8, 0, 0, 0, 0, 0xdead, 0xbeef], 8080));
-        assert_eq!(socket.into_canonical_ip_addr(), socket);
+    fn ipv6_is_unchanged() {
+        let socket_addr = SocketAddress::from(([0x2001, 0x0db8, 0, 0, 0, 0, 0xdead, 0xbeef], 8080));
+        assert_eq!(socket_addr.into_canonical_ip_addr(), socket_addr);
     }
 
     #[test]
-    fn ipv4_mapped_to_ipv6_to_canonical() {
-        let socket = SocketAddress::from(([0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x2ff], 8080));
+    fn ipv4_mapped_ipv6_is_converted_to_ipv4() {
+        // ::ffff:192.10.2.255
+        let socket_addr = SocketAddress::from(([0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x02ff], 8080));
         assert_eq!(
-            socket.into_canonical_ip_addr(),
+            socket_addr.into_canonical_ip_addr(),
             SocketAddress::from(([192, 10, 2, 255], 8080))
+        );
+    }
+
+    #[test]
+    fn ipv4_mapped_loopback_ipv6_is_converted_to_ipv4() {
+        // ::ffff:127.0.0.1
+        let socket_addr = SocketAddress::from(([0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001], 8080));
+        assert_eq!(
+            socket_addr.into_canonical_ip_addr(),
+            SocketAddress::from(([127, 0, 0, 1], 8080))
+        );
+    }
+
+    #[test]
+    fn ipv4_compatible_ipv6_is_not_converted_to_ipv4() {
+        // ::192.0.2.33, represented as 0:0:0:0:0:0:c000:0221
+        let socket_addr = SocketAddress::from(([0, 0, 0, 0, 0, 0, 0xc000, 0x0221], 8080));
+        assert_eq!(socket_addr.into_canonical_ip_addr(), socket_addr);
+    }
+
+    #[test]
+    fn ipv4_mapped_zero_zero_zero_one_is_converted_to_ipv4() {
+        // ::ffff:0.0.0.1
+        let socket_addr = SocketAddress::from(([0, 0, 0, 0, 0, 0xffff, 0x0000, 0x0001], 8080));
+        assert_eq!(
+            socket_addr.into_canonical_ip_addr(),
+            SocketAddress::from(([0, 0, 0, 1], 8080))
         );
     }
 }
