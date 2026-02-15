@@ -930,6 +930,8 @@ mod consume_err;
 #[doc(inline)]
 pub use consume_err::{ConsumeErr, ConsumeErrLayer};
 
+mod count_input;
+
 mod trace_err;
 #[doc(inline)]
 pub use trace_err::{TraceErr, TraceErrLayer};
