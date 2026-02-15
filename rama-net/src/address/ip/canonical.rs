@@ -9,6 +9,7 @@ use crate::address::{Authority, Host, HostWithOptPort, HostWithPort, ProxyAddres
 /// - IPv6 stays IPv6, except when the IPv6 address is an IPv4 mapped address.
 ///   In that cases we convert it to the embedded IPv4 address.
 pub trait IntoCanonicalIpAddr {
+    #[must_use]
     fn into_canonical_ip_addr(self) -> Self;
 }
 
