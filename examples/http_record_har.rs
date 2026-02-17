@@ -171,7 +171,7 @@ async fn main() -> Result<(), BoxError> {
                             tracing::debug!(
                                 "force a stop recording so the file immediately flushes (DX etc)"
                             );
-                            state.har_layer.recorder.stop_record().await;
+                            state.har_layer.recorder().stop_record().await;
                         }
                         StatusCode::OK
                     })),
