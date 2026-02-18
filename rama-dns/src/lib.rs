@@ -57,6 +57,8 @@ use std::{
     sync::Arc,
 };
 
+pub mod client;
+
 /// A resolver of domains and other dns data.
 pub trait DnsResolver: Sized + Send + Sync + 'static {
     /// Error returned by the [`DnsResolver`]
