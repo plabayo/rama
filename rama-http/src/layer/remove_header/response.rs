@@ -46,6 +46,7 @@ enum RemoveResponseHeaderMode {
     Prefix(SmolStr),
     Exact(HeaderName),
     Hop,
+    Sensitive,
 }
 
 impl RemoveResponseHeaderLayer {
@@ -75,6 +76,16 @@ impl RemoveResponseHeaderLayer {
     pub fn hop_by_hop() -> Self {
         Self {
             mode: RemoveResponseHeaderMode::Hop,
+        }
+    }
+
+    /// Create a new [`RemoveResponseHeaderLayer`].
+    ///
+    /// Removes all sensitive response headers.
+    #[must_use]
+    pub fn sensitive() -> Self {
+        Self {
+            mode: RemoveResponseHeaderMode::Sensitive,
         }
     }
 }
@@ -127,6 +138,13 @@ impl<S> RemoveResponseHeader<S> {
         RemoveResponseHeaderLayer::hop_by_hop().into_layer(inner)
     }
 
+    /// Create a new [`RemoveResponseHeader`].
+    ///
+    /// Removes all sensitive response headers.
+    pub fn sensitive(inner: S) -> Self {
+        RemoveResponseHeaderLayer::sensitive().into_layer(inner)
+    }
+
     define_inner_service_accessors!();
 }
 
@@ -144,6 +162,9 @@ where
         match &self.mode {
             RemoveResponseHeaderMode::Hop => {
                 super::remove_hop_by_hop_response_headers(resp.headers_mut())
+            }
+            RemoveResponseHeaderMode::Sensitive => {
+                super::remove_sensitive_response_headers(resp.headers_mut())
             }
             RemoveResponseHeaderMode::Prefix(prefix) => {
                 super::remove_headers_by_prefix(resp.headers_mut(), prefix)

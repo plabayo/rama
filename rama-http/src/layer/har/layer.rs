@@ -5,13 +5,35 @@ use rama_core::Layer;
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct HARExportLayer<R, T> {
-    pub recorder: R,
-    pub toggle: T,
+    recorder: R,
+    toggle: T,
+
+    preserve_sensitive: bool,
 }
 
 impl<R, T> HARExportLayer<R, T> {
     pub fn new(recorder: R, toggle: T) -> Self {
-        Self { recorder, toggle }
+        Self {
+            recorder,
+            toggle,
+            preserve_sensitive: false,
+        }
+    }
+
+    pub fn recorder(&self) -> &R {
+        &self.recorder
+    }
+
+    pub fn toggle(&self) -> &T {
+        &self.toggle
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to preserve sensitive headers (false by default).
+        pub fn preserve_sensitive(mut self) -> Self {
+            self.preserve_sensitive = true;
+            self
+        }
     }
 }
 
@@ -27,6 +49,7 @@ where
             service,
             toggle: self.toggle.clone(),
             recorder: self.recorder.clone(),
+            preserve_sensitive: self.preserve_sensitive,
         }
     }
 
@@ -35,6 +58,7 @@ where
             service,
             toggle: self.toggle,
             recorder: self.recorder,
+            preserve_sensitive: self.preserve_sensitive,
         }
     }
 }
@@ -80,10 +104,7 @@ mod tests {
 
     impl<T: Toggle> HARExportLayer<InMemoryRecorder, T> {
         pub fn new_test(toggle: T) -> Self {
-            Self {
-                recorder: InMemoryRecorder::new(),
-                toggle,
-            }
+            Self::new(InMemoryRecorder::new(), toggle)
         }
     }
 
