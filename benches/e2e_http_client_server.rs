@@ -65,8 +65,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod e2e_utils;
 
-// #[global_allocator]
-// static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+#[global_allocator]
+static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Size {
@@ -123,7 +123,7 @@ struct TestParameters {
 
 const VERSIONS: [HttpVersion; 2] = [HttpVersion::Http1, HttpVersion::Http2];
 const TLSES: [Tls; 3] = [Tls::None, Tls::Rustls, Tls::Boring];
-const PROXIES: [Proxy; 3] = [Proxy::None, Proxy::Http(false), Proxy::Http(true)];
+const PROXIES: [Proxy; 5] = [Proxy::None, Proxy::Http(false), Proxy::Http(true), Proxy::Socks5(false), Proxy::Socks5(true)];
 const SIZES: [Size; 2] = [Size::Small, Size::Large];
 
 const N: usize = VERSIONS.len() * TLSES.len() * PROXIES.len() * SIZES.len() * SIZES.len();
@@ -377,6 +377,9 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
             let async_listener =
                 TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
 
+            let socks5_acceptor_base = Socks5Acceptor::new(Executor::default())
+                .with_authorizer(basic!("john", "secret").into_authorizer());
+
             match params.tls {
                 Tls::None => {
                     let service = if is_proxy {
@@ -387,18 +390,10 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
 
                     ready_worker.store(true, Ordering::Release);
 
-                    if let Proxy::Socks5(_) = params.proxy
-                        && is_proxy
-                    {
-                        let socks5_acceptor_base = Socks5Acceptor::new(Executor::default())
-                            .with_authorizer(basic!("john", "secret").into_authorizer());
-                        async_listener
-                            .serve(
-                                socks5_acceptor_base
-                                    .clone()
-                                    .with_connector(LazyConnector::new(service)),
-                            )
-                            .await
+                    if let Proxy::Socks5(_) = params.proxy && is_proxy {
+                        let socks5_acceptor =
+                            socks5_acceptor_base.with_connector(LazyConnector::new(service));
+                        async_listener.serve(socks5_acceptor).await
                     } else {
                         async_listener.serve(service).await
                     }
@@ -412,21 +407,13 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
 
                     let data = get_rustls_tls_data(params);
                     ready_worker.store(true, Ordering::Release);
+                    let tls_acceptor = rustls::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    if let Proxy::Socks5(_) = params.proxy
-                        && is_proxy
-                    {
-                        let socks5_acceptor_base = Socks5Acceptor::new(Executor::default())
-                            .with_authorizer(basic!("john", "secret").into_authorizer());
+                    if let Proxy::Socks5(_) = params.proxy && is_proxy {
                         let socks5_acceptor = socks5_acceptor_base
-                            .clone()
-                            .with_connector(LazyConnector::new(service));
-                        let secure_socks5 =
-                            rustls::server::TlsAcceptorService::new(data, socks5_acceptor, false);
-                        async_listener.serve(secure_socks5).await
+                            .with_connector(LazyConnector::new(tls_acceptor));
+                        async_listener.serve(socks5_acceptor).await
                     } else {
-                        let tls_acceptor =
-                            rustls::server::TlsAcceptorLayer::new(data).into_layer(service);
                         async_listener.serve(tls_acceptor).await
                     }
                 }
@@ -439,21 +426,13 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
 
                     let data = get_boring_tls_data(params);
                     ready_worker.store(true, Ordering::Release);
+                    let tls_acceptor = boring::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    if let Proxy::Socks5(_) = params.proxy
-                        && is_proxy
-                    {
-                        let socks5_acceptor_base = Socks5Acceptor::new(Executor::default())
-                            .with_authorizer(basic!("john", "secret").into_authorizer());
+                    if let Proxy::Socks5(_) = params.proxy && is_proxy {
                         let socks5_acceptor = socks5_acceptor_base
-                            .clone()
-                            .with_connector(LazyConnector::new(service));
-                        let secure_socks5 =
-                            boring::server::TlsAcceptorService::new(data, socks5_acceptor, false);
-                        async_listener.serve(secure_socks5).await
+                            .with_connector(LazyConnector::new(tls_acceptor));
+                        async_listener.serve(socks5_acceptor).await
                     } else {
-                        let tls_acceptor =
-                            boring::server::TlsAcceptorLayer::new(data).into_layer(service);
                         async_listener.serve(tls_acceptor).await
                     }
                 }
@@ -526,7 +505,7 @@ fn get_inner_client(
     }
 }
 
-#[divan::bench(args = TEST_MATRIX, sample_count = 1)]
+#[divan::bench(args = TEST_MATRIX, sample_count = 50)]
 fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
