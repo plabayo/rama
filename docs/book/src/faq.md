@@ -155,7 +155,7 @@ has hit the per process file descriptor limit. Each connection consumes at least
 and high concurrency proxies can exhaust this limit quickly.
 
 You should raise the soft file descriptor limit at startup using
-[`rama::unix::utils::raise_nofile`](https://ramaproxy.org/docs/rama/unix/utils/raise_nofile.html).
+[`rama::unix::utils::raise_nofile`](https://ramaproxy.org/docs/rama/unix/utils/fn.raise_nofile.html).
 
 A practical default for proxies is `65_535`.
 The function will automatically clamp the requested value to the system hard limit.

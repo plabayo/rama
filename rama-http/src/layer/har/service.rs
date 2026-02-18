@@ -18,6 +18,26 @@ pub struct HARExportService<R, S, T> {
     pub(super) recorder: R,
     pub(super) service: S,
     pub(super) toggle: T,
+
+    pub(super) preserve_sensitive: bool,
+}
+
+impl<R, S, T> HARExportService<R, S, T> {
+    pub fn recorder(&self) -> &R {
+        &self.recorder
+    }
+
+    pub fn toggle(&self) -> &T {
+        &self.toggle
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to preserve sensitive headers (false by default).
+        pub fn preserve_sensitive(mut self) -> Self {
+            self.preserve_sensitive = true;
+            self
+        }
+    }
 }
 
 impl<R, S, W, ReqBody, ResBody> Service<Request<ReqBody>> for HARExportService<R, S, W>
@@ -49,7 +69,11 @@ where
                 .context("collect request body for HAR recording and inner svc")?
                 .to_bytes();
 
-            let har_req_result = HarRequest::from_http_request_parts(&req_parts, &req_body_bytes);
+            let har_req_result = HarRequest::from_http_request_parts(
+                &req_parts,
+                &req_body_bytes,
+                self.preserve_sensitive,
+            );
             let request = Request::from_parts(req_parts, Body::from(req_body_bytes));
 
             match har_req_result {
@@ -88,6 +112,7 @@ where
                     let maybe_response = match HarResponse::from_http_response_parts(
                         &resp_parts,
                         &resp_body_bytes,
+                        self.preserve_sensitive,
                     ) {
                         Err(err) => {
                             tracing::debug!(

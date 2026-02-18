@@ -2,6 +2,9 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+mod canonical;
+pub use canonical::IntoCanonicalIpAddr;
+
 /// An IPv4 address with the address pointing to localhost: `127.0.0.1`
 pub const IPV4_LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
