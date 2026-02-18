@@ -4,6 +4,7 @@
 
 use std::{
     convert::Infallible,
+    slice,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -123,7 +124,13 @@ struct TestParameters {
 
 const VERSIONS: [HttpVersion; 2] = [HttpVersion::Http1, HttpVersion::Http2];
 const TLSES: [Tls; 3] = [Tls::None, Tls::Rustls, Tls::Boring];
-const PROXIES: [Proxy; 5] = [Proxy::None, Proxy::Http(false), Proxy::Http(true), Proxy::Socks5(false), Proxy::Socks5(true)];
+const PROXIES: [Proxy; 5] = [
+    Proxy::None,
+    Proxy::Http(false),
+    Proxy::Http(true),
+    Proxy::Socks5(false),
+    Proxy::Socks5(true),
+];
 const SIZES: [Size; 2] = [Size::Small, Size::Large];
 
 const N: usize = VERSIONS.len() * TLSES.len() * PROXIES.len() * SIZES.len() * SIZES.len();
@@ -271,68 +278,57 @@ fn get_http_proxy_service_boxed<Input>(params: TestParameters) -> BoxService<Inp
 where
     Input: ExtensionsMut + AsyncRead + AsyncWrite + Send + 'static,
 {
-    let handler = move |req: Request| {
-        let params = params.clone();
-        async move {
-            let client = get_inner_client(params.version, params.tls);
-            match client.serve(req).await {
-                Ok(resp) => {
-                    tracing::info!(status_code = %resp.status(), "proxy received response");
-                    Ok(resp)
-                }
-                Err(err) => {
-                    tracing::error!("error in client request: {err:?}");
-                    Ok(Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::empty())
-                        .unwrap())
-                }
+    let handler = move |req: Request| async move {
+        let client = get_inner_client(params.version, params.tls);
+        match client.serve(req).await {
+            Ok(resp) => {
+                tracing::info!(status_code = %resp.status(), "proxy received response");
+                Ok(resp)
+            }
+            Err(err) => {
+                tracing::error!("error in client request: {err:?}");
+                Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())
+                    .unwrap())
             }
         }
     };
 
-    let new_http_proxy = move || {
-        let handler = handler.clone();
-        async move {
-            (
-                MapResponseBodyLayer::new_boxed_streaming_body(),
-                TraceLayer::new_for_http(),
-                ConsumeErrLayer::default(),
-                RemoveResponseHeaderLayer::hop_by_hop(),
-                RemoveRequestHeaderLayer::hop_by_hop(),
-                CompressionLayer::new(),
-                AddRequiredRequestHeadersLayer::new(),
-            )
-                .into_layer(service_fn(handler))
-        }
+    let new_http_proxy = move || async move {
+        (
+            MapResponseBodyLayer::new_boxed_streaming_body(),
+            TraceLayer::new_for_http(),
+            ConsumeErrLayer::default(),
+            RemoveResponseHeaderLayer::hop_by_hop(),
+            RemoveRequestHeaderLayer::hop_by_hop(),
+            CompressionLayer::new(),
+            AddRequiredRequestHeadersLayer::new(),
+        )
+            .into_layer(service_fn(handler))
     };
 
-    let connect_proxy = move |upgraded: Upgraded| {
-        let new_http_proxy = new_http_proxy.clone();
-        let params = params.clone();
-        async move {
-            let http_service = new_http_proxy().await;
-            let http_transport_service =
-                HttpServer::auto(Executor::default()).service(http_service);
+    let connect_proxy = move |upgraded: Upgraded| async move {
+        let http_service = new_http_proxy().await;
+        let http_transport_service = HttpServer::auto(Executor::default()).service(http_service);
 
-            match params.tls {
-                Tls::Rustls => {
-                    let data = get_rustls_tls_data(params);
-                    let https_service = rustls::server::TlsAcceptorLayer::new(data)
-                        .into_layer(http_transport_service);
-                    https_service.serve(upgraded).await.expect("infallible");
-                }
-                Tls::Boring => {
-                    let data = get_boring_tls_data(params);
-                    let https_service = boring::server::TlsAcceptorLayer::new(data)
-                        .into_layer(http_transport_service);
-                    https_service.serve(upgraded).await.expect("infallible");
-                }
-                Tls::None => panic!("Cannot be called with TLS none"),
-            };
+        match params.tls {
+            Tls::Rustls => {
+                let data = get_rustls_tls_data(params);
+                let https_service =
+                    rustls::server::TlsAcceptorLayer::new(data).into_layer(http_transport_service);
+                https_service.serve(upgraded).await.expect("infallible");
+            }
+            Tls::Boring => {
+                let data = get_boring_tls_data(params);
+                let https_service =
+                    boring::server::TlsAcceptorLayer::new(data).into_layer(http_transport_service);
+                https_service.serve(upgraded).await.expect("infallible");
+            }
+            Tls::None => panic!("Cannot be called with TLS none"),
+        };
 
-            Ok::<(), Infallible>(())
-        }
+        Ok::<(), Infallible>(())
     };
 
     let http_service = (
@@ -390,7 +386,9 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
 
                     ready_worker.store(true, Ordering::Release);
 
-                    if let Proxy::Socks5(_) = params.proxy && is_proxy {
+                    if let Proxy::Socks5(_) = params.proxy
+                        && is_proxy
+                    {
                         let socks5_acceptor =
                             socks5_acceptor_base.with_connector(LazyConnector::new(service));
                         async_listener.serve(socks5_acceptor).await
@@ -407,11 +405,14 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
 
                     let data = get_rustls_tls_data(params);
                     ready_worker.store(true, Ordering::Release);
-                    let tls_acceptor = rustls::server::TlsAcceptorLayer::new(data).into_layer(service);
+                    let tls_acceptor =
+                        rustls::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    if let Proxy::Socks5(_) = params.proxy && is_proxy {
-                        let socks5_acceptor = socks5_acceptor_base
-                            .with_connector(LazyConnector::new(tls_acceptor));
+                    if let Proxy::Socks5(_) = params.proxy
+                        && is_proxy
+                    {
+                        let socks5_acceptor =
+                            socks5_acceptor_base.with_connector(LazyConnector::new(tls_acceptor));
                         async_listener.serve(socks5_acceptor).await
                     } else {
                         async_listener.serve(tls_acceptor).await
@@ -426,11 +427,14 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
 
                     let data = get_boring_tls_data(params);
                     ready_worker.store(true, Ordering::Release);
-                    let tls_acceptor = boring::server::TlsAcceptorLayer::new(data).into_layer(service);
+                    let tls_acceptor =
+                        boring::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    if let Proxy::Socks5(_) = params.proxy && is_proxy {
-                        let socks5_acceptor = socks5_acceptor_base
-                            .with_connector(LazyConnector::new(tls_acceptor));
+                    if let Proxy::Socks5(_) = params.proxy
+                        && is_proxy
+                    {
+                        let socks5_acceptor =
+                            socks5_acceptor_base.with_connector(LazyConnector::new(tls_acceptor));
                         async_listener.serve(socks5_acceptor).await
                     } else {
                         async_listener.serve(tls_acceptor).await
@@ -468,7 +472,7 @@ fn get_inner_client(
             let tls_config = rustls::client::TlsConnectorDataBuilder::new()
                 .try_with_env_key_logger()
                 .unwrap()
-                .with_alpn_protocols(&[proto.clone()])
+                .with_alpn_protocols(slice::from_ref(&proto))
                 .with_no_cert_verifier()
                 .with_store_server_certificate_chain(true)
                 .build();
@@ -486,7 +490,7 @@ fn get_inner_client(
         }
         Tls::Boring => {
             let tls_config = boring::client::TlsConnectorDataBuilder::new()
-                .try_with_rama_alpn_protos(&[proto.clone()])
+                .try_with_rama_alpn_protos(slice::from_ref(&proto))
                 .unwrap()
                 .with_server_verify_mode(ServerVerifyMode::Disable)
                 .with_store_server_certificate_chain(true)
