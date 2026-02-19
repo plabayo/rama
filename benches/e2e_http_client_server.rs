@@ -1,5 +1,5 @@
 //! ```sh
-//! cargo bench --bench e2e_http_client_server --features http-full,rustls,boring
+//! cargo bench --bench e2e_http_client_server --features http-full,rustls,boring,socks5
 //! ```
 
 use std::{
@@ -52,6 +52,7 @@ use rama::{
         },
         user::credentials::{ProxyCredential, basic},
     },
+    proxy::socks5::{Socks5Acceptor, server::LazyConnector},
     rt::Executor,
     service::{BoxService, service_fn},
     tcp::client::service::Forwarder,
@@ -60,7 +61,6 @@ use rama::{
     tls::{boring, rustls},
 };
 
-use rama_socks5::{Socks5Acceptor, server::LazyConnector};
 use rand::prelude::*;
 use tokio::io::{AsyncRead, AsyncWrite};
 
