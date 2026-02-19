@@ -1,11 +1,11 @@
-use std::{pin::Pin, sync::Arc};
+use std::{convert::Infallible, pin::Pin, sync::Arc};
 
 use rama_core::{
     bytes::Bytes,
     error::BoxError,
-    futures::{Stream, TryStreamExt},
+    futures::{Stream, StreamExt as _, TryStreamExt, stream},
 };
-use rama_net::address::Domain;
+use rama_net::address::{Domain, DomainTrie};
 
 /// A resolver of Domains into TXT records.
 pub trait DnsTxtResolver: Sized + Send + Sync + 'static {
@@ -24,34 +24,74 @@ pub trait DnsTxtResolver: Sized + Send + Sync + 'static {
     }
 }
 
+impl<R: DnsTxtResolver> DnsTxtResolver for Arc<R> {
+    type Error = R::Error;
+
+    #[inline(always)]
+    fn lookup_txt(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+        self.as_ref().lookup_txt(domain)
+    }
+}
+
+impl<R: DnsTxtResolver> DnsTxtResolver for Option<R> {
+    type Error = R::Error;
+
+    #[inline(always)]
+    fn lookup_txt(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+        stream::iter(self.as_ref().map(|resolver| resolver.lookup_txt(domain))).flatten()
+    }
+}
+
+impl DnsTxtResolver for Bytes {
+    type Error = Infallible;
+
+    fn lookup_txt(&self, _: Domain) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+        stream::once(std::future::ready(Ok(self.clone())))
+    }
+}
+
+impl<R: DnsTxtResolver> DnsTxtResolver for DomainTrie<R> {
+    type Error = R::Error;
+
+    fn lookup_txt(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+        stream::iter(self.match_exact(domain.clone()))
+            .flat_map(move |resolver| resolver.lookup_txt(domain.clone()))
+    }
+}
+
 /// Internal trait for dynamic dispatch of Async Traits,
 /// implemented according to the pioneers of this Design Pattern
 /// found at <https://rust-lang.github.io/async-fundamentals-initiative/evaluation/case-studies/builder-provider-api.html#dynamic-dispatch-behind-the-api>
 /// and widely published at <https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html>.
 trait DynDnsTxtResolver {
-    type Error: Into<BoxError> + Send + 'static;
-
     fn dyn_lookup_txt(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, Self::Error>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, BoxError>> + Send + '_>>;
 }
 
 impl<T: DnsTxtResolver> DynDnsTxtResolver for T {
-    type Error = T::Error;
-
     fn dyn_lookup_txt(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, Self::Error>> + Send + '_>> {
-        Box::pin(self.lookup_txt(domain))
+    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, BoxError>> + Send + '_>> {
+        Box::pin(self.lookup_txt(domain).map_err(Into::into))
     }
 }
 
 /// A boxed [`DnsTxtResolver`], to resolve dns TXT records,
 /// for where you require dynamic dispatch.
 pub struct BoxDnsTxtResolver {
-    inner: Arc<dyn DynDnsTxtResolver<Error = BoxError> + Send + Sync + 'static>,
+    inner: Arc<dyn DynDnsTxtResolver + Send + Sync + 'static>,
 }
 
 impl Clone for BoxDnsTxtResolver {

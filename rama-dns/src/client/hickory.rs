@@ -193,8 +193,7 @@ impl DnsAddressResolver for HickoryDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, BoxError>> + Send + '_ {
-        let resolver = self.0.clone();
-        stream_fn(|mut yielder| async move {
+        stream_fn(async |mut yielder| {
             let name = try_or_yield!(
                 yielder,
                 name_from_domain(domain),
@@ -202,7 +201,7 @@ impl DnsAddressResolver for HickoryDnsResolver {
             );
             let lookup = try_or_yield!(
                 yielder,
-                resolver.ipv4_lookup(name.clone()).await,
+                self.0.ipv4_lookup(name.clone()).await,
                 "resolve A record(s) for name",
                 "name" = name
             );
@@ -216,8 +215,7 @@ impl DnsAddressResolver for HickoryDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, BoxError>> + Send + '_ {
-        let resolver = self.0.clone();
-        stream_fn(|mut yielder| async move {
+        stream_fn(async |mut yielder| {
             let name = try_or_yield!(
                 yielder,
                 name_from_domain(domain),
@@ -225,7 +223,7 @@ impl DnsAddressResolver for HickoryDnsResolver {
             );
             let lookup = try_or_yield!(
                 yielder,
-                resolver.ipv6_lookup(name.clone()).await,
+                self.0.ipv6_lookup(name.clone()).await,
                 "resolve AAAA record(s) for name",
                 "name" = name
             );
@@ -243,8 +241,7 @@ impl DnsTxtResolver for HickoryDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<rama_core::bytes::Bytes, Self::Error>> + Send + '_ {
-        let resolver = self.0.clone();
-        stream_fn(|mut yielder| async move {
+        stream_fn(async |mut yielder| {
             let name = try_or_yield!(
                 yielder,
                 name_from_domain(domain),
@@ -252,7 +249,7 @@ impl DnsTxtResolver for HickoryDnsResolver {
             );
             let lookup = try_or_yield!(
                 yielder,
-                resolver.txt_lookup(name.clone()).await,
+                self.0.txt_lookup(name.clone()).await,
                 "resolve TXT record(s) for name",
                 "name" = name
             );
@@ -272,4 +269,14 @@ fn name_from_domain(domain: Domain) -> Result<Name, BoxError> {
     let mut name = Name::from_utf8(domain).context("try to consume a Domain as a Dns Name")?;
     name.set_fqdn(is_fqdn);
     Ok(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_box_hickory_dns_resolver() {
+        let _ = HickoryDnsResolver::default().into_box_dns_resolver();
+    }
 }

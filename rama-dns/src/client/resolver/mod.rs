@@ -22,6 +22,9 @@ pub trait DnsResolver: DnsAddressResolver + DnsTxtResolver {
     }
 }
 
+impl<R: DnsResolver> DnsResolver for Arc<R> {}
+impl<R: DnsResolver> DnsResolver for Option<R> {}
+
 trait DynDnsResolver {
     fn dyn_lookup_ipv4(
         &self,
