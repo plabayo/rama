@@ -51,7 +51,7 @@ impl<R: DnsTxtResolver> DnsTxtResolver for Option<R> {
 impl DnsTxtResolver for Bytes {
     type Error = Infallible;
 
-    fn lookup_txt(&self, _: Domain) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    fn lookup_txt(&self, _: Domain) -> impl Stream<Item = Result<Self, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Ok(self.clone())))
     }
 }

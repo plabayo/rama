@@ -81,36 +81,27 @@ impl DnsAddressResolver for IpAddr {
         &self,
         _: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-        stream::iter(
-            match self {
-                IpAddr::V4(ipv4_addr) => Some(Ok(*ipv4_addr)),
-                IpAddr::V6(_) => None,
-            }
-            .into_iter(),
-        )
+        stream::iter(match self {
+            Self::V4(ipv4_addr) => Some(Ok(*ipv4_addr)),
+            Self::V6(_) => None,
+        })
     }
 
     fn lookup_ipv6(
         &self,
         _: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-        stream::iter(
-            match self {
-                IpAddr::V4(_) => None,
-                IpAddr::V6(ipv6_addr) => Some(Ok(*ipv6_addr)),
-            }
-            .into_iter(),
-        )
+        stream::iter(match self {
+            Self::V4(_) => None,
+            Self::V6(ipv6_addr) => Some(Ok(*ipv6_addr)),
+        })
     }
 }
 
 impl DnsAddressResolver for Ipv4Addr {
     type Error = Infallible;
 
-    fn lookup_ipv4(
-        &self,
-        _: Domain,
-    ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+    fn lookup_ipv4(&self, _: Domain) -> impl Stream<Item = Result<Self, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Ok(*self)))
     }
 
@@ -132,10 +123,7 @@ impl DnsAddressResolver for Ipv6Addr {
         stream::empty()
     }
 
-    fn lookup_ipv6(
-        &self,
-        _: Domain,
-    ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+    fn lookup_ipv6(&self, _: Domain) -> impl Stream<Item = Result<Self, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Ok(*self)))
     }
 }
