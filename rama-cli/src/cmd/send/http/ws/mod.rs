@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rama::{
     Service,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     graceful::{self, Shutdown},
     http::{Request, Response},
     utils::{collections::NonEmptySmallVec, str::NonEmptyStr},
@@ -20,7 +20,7 @@ pub(super) async fn run<C>(
     protocols: Option<NonEmptySmallVec<3, NonEmptyStr>>,
 ) -> Result<(), BoxError>
 where
-    C: Service<Request, Output = Response, Error = BoxError>,
+    C: Service<Request, Output = Response, Error = OpaqueError>,
 {
     let app = tui::App::new(req, client, protocols)
         .await

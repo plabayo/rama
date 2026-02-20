@@ -1,6 +1,6 @@
 use rama::{
     Service,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     extensions::Extensions,
     http::{
         Request, Response,
@@ -16,7 +16,7 @@ pub(super) async fn connect<C>(
     protocols: Option<NonEmptySmallVec<3, NonEmptyStr>>,
 ) -> Result<ClientWebSocket, BoxError>
 where
-    C: Service<Request, Output = Response, Error = BoxError>,
+    C: Service<Request, Output = Response, Error = OpaqueError>,
 {
     client
         .websocket_with_request(req)

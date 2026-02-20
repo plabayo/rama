@@ -18,7 +18,7 @@ use crate::{
 
 #[doc(inline)]
 pub use ::rama_http_backend::client::*;
-use rama_core::error::ErrorExt as _;
+use rama_core::error::{ErrorContext, ErrorExt as _, extra::OpaqueError};
 
 pub mod builder;
 #[doc(inline)]
@@ -187,7 +187,7 @@ where
         + 'static,
 {
     type Output = Response;
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let uri = req.uri().clone();
@@ -195,7 +195,7 @@ where
         let EstablishedClientConnection {
             input: mut req,
             conn: http_connection,
-        } = self.connector.serve(req).await?;
+        } = self.connector.serve(req).await.into_opaque_error()?;
 
         req.extensions_mut()
             .extend(http_connection.extensions().clone());
@@ -214,7 +214,8 @@ where
             }
             Err(err) => Err(err
                 .context("http request failure")
-                .context_field("uri", uri)),
+                .context_field("uri", uri)
+                .into_opaque_error()),
         }
     }
 }

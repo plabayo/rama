@@ -1,6 +1,6 @@
 use rama::{
     Service,
-    error::{BoxError, ErrorContext, ErrorExt},
+    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     futures::{FutureExt, StreamExt},
     graceful::ShutdownGuard,
     http::{
@@ -103,7 +103,7 @@ impl App {
         protocols: Option<NonEmptySmallVec<3, NonEmptyStr>>,
     ) -> Result<Self, BoxError>
     where
-        C: Service<Request, Output = Response, Error = BoxError>,
+        C: Service<Request, Output = Response, Error = OpaqueError>,
     {
         let title = format!("  rama-ws @ {}", req.uri());
 

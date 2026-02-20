@@ -13,7 +13,7 @@ use std::{
 use rama::{
     Layer, Service,
     bytes::Bytes,
-    error::BoxError,
+    error::{BoxError, extra::OpaqueError},
     extensions::ExtensionsMut,
     http::{
         HeaderName, HeaderValue, Request, Response, Version,
@@ -269,7 +269,7 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddre
 fn get_inner_client(
     http: HttpVersion,
     tls: Tls,
-) -> impl Service<Request, Output = Response, Error = BoxError> {
+) -> impl Service<Request, Output = Response, Error = OpaqueError> {
     let b = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
