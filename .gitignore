@@ -8,3 +8,4 @@
 # IDEs
 .idea
 .vscode
+e2e-test-logs
