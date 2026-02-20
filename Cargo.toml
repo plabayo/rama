@@ -404,6 +404,7 @@ opentelemetry = [
     "rama-core/opentelemetry",
     "rama-http?/opentelemetry",
     "rama-net?/opentelemetry",
+    "rama-grpc?/opentelemetry",
     "dep:opentelemetry-otlp",
 ]
 
