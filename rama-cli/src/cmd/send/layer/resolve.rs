@@ -1,8 +1,8 @@
 use rama::{
     Layer, Service,
-    dns::{DnsOverwrite, InMemoryDns},
+    dns::client::resolver::DnsAddresssResolverOverwrite,
     extensions::ExtensionsMut,
-    net::transport::TryRefIntoTransportContext,
+    net::{address::DomainTrie, transport::TryRefIntoTransportContext},
     telemetry::tracing,
 };
 
@@ -66,13 +66,14 @@ where
                 .map(|hwp| info.port == Some(hwp.port))
                 .unwrap_or_default()
         {
-            let overwrite: DnsOverwrite = match info.host.clone() {
+            let addresses = info.addresses.clone();
+            let overwrite = match info.host.clone() {
                 Some(domain) => {
-                    let mut dns = InMemoryDns::new();
-                    dns.insert(domain, info.addresses.clone());
-                    dns.into()
+                    let mut trie = DomainTrie::new();
+                    trie.insert_domain(domain, addresses);
+                    DnsAddresssResolverOverwrite::new(trie)
                 }
-                None => info.addresses.clone().into(),
+                None => DnsAddresssResolverOverwrite::new(addresses),
             };
             input.extensions_mut().insert(overwrite);
         }

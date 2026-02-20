@@ -12,15 +12,19 @@ use rama::{
             trace::TracerProvider,
         },
         tracing::{
-            self, layer,
+            self, Level, layer,
             subscriber::{
-                EnvFilter, filter::Directive, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+                EnvFilter, Layer as _,
+                filter::{self, Directive},
+                fmt,
+                layer::SubscriberExt,
+                util::SubscriberInitExt,
             },
         },
     },
 };
 
-use std::io::IsTerminal as _;
+use std::{fs::OpenOptions, io::IsTerminal as _, path::Path};
 
 pub fn init_tracing(default_directive: impl Into<Directive>) -> Result<(), BoxError> {
     if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
@@ -97,6 +101,31 @@ fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxErr
         )
         .try_init()
         .context("try init (structured) tracing subscriber")?;
+
+    Ok(())
+}
+
+pub fn init_tracing_file(path: &Path) -> Result<(), BoxError> {
+    if let Some(parent_dir) = path.parent() {
+        std::fs::create_dir_all(parent_dir)
+            .context("create dirs for tracing file")
+            .with_context_debug_field("path", || path.to_owned())?;
+    }
+
+    let log_file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .context("open log file")?;
+
+    tracing::subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_ansi(false)
+                .with_writer(log_file)
+                .with_filter(filter::LevelFilter::from_level(Level::TRACE)),
+        )
+        .init();
 
     Ok(())
 }

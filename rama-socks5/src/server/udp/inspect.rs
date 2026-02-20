@@ -9,7 +9,7 @@ use rama_net::address::SocketAddress;
 use rama_udp::UdpSocket;
 
 #[cfg(feature = "dns")]
-use ::rama_dns::BoxDnsResolver;
+use ::rama_dns::client::resolver::BoxDnsAddressResolver;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) trait UdpPacketProxy: Send + Sync + 'static {
@@ -22,7 +22,7 @@ pub(super) trait UdpPacketProxy: Send + Sync + 'static {
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
+        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsAddressResolver>,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
@@ -40,7 +40,7 @@ impl UdpPacketProxy for DirectUdpRelay {
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
+        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsAddressResolver>,
     ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -147,7 +147,7 @@ where
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
+        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsAddressResolver>,
     ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -319,7 +319,7 @@ where
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
+        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsAddressResolver>,
     ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,

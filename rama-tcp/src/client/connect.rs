@@ -1,12 +1,14 @@
 use rama_core::error::ErrorExt as _;
 use rama_core::extensions::Extensions;
+use rama_core::futures::{Stream, TryStreamExt};
+use rama_core::stream::StreamExt;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{
-    combinators::Either,
     error::{BoxError, ErrorContext},
     rt::Executor,
 };
-use rama_dns::{DnsOverwrite, DnsResolver, GlobalDnsResolver};
+use rama_dns::client::resolver::DnsAddressResolver;
+use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddresssResolverOverwrite};
 use rama_net::address::HostWithPort;
 use rama_net::{
     address::{Domain, Host, SocketAddress},
@@ -200,7 +202,7 @@ pub async fn tcp_connect<Dns, Connector>(
     exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), BoxError>
 where
-    Dns: DnsResolver + Clone,
+    Dns: DnsAddressResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let ip_mode = extensions.get().copied().unwrap_or_default();
@@ -231,20 +233,17 @@ where
         }
     };
 
-    if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>().cloned() {
-        tcp_connect_inner(
-            domain.clone(),
-            port,
-            dns_mode,
-            (dns_overwrite, dns),
-            connector.clone(),
-            ip_mode,
-            exec,
-        )
-        .await
-    } else {
-        tcp_connect_inner(domain, port, dns_mode, dns, connector, ip_mode, exec).await
-    }
+    let maybe_dns_overwrite = extensions.get::<DnsAddresssResolverOverwrite>().cloned();
+    tcp_connect_inner(
+        domain.clone(),
+        port,
+        dns_mode,
+        (maybe_dns_overwrite, dns),
+        connector.clone(),
+        ip_mode,
+        exec,
+    )
+    .await
 }
 
 async fn tcp_connect_inner<Dns, Connector>(
@@ -257,7 +256,7 @@ async fn tcp_connect_inner<Dns, Connector>(
     exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), BoxError>
 where
-    Dns: DnsResolver + Clone,
+    Dns: DnsAddressResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let (tx, mut rx) = channel(1);
@@ -352,37 +351,85 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     resolved_count: Arc<AtomicUsize>,
     sem: Arc<Semaphore>,
 ) where
-    Dns: DnsResolver + Clone,
+    Dns: DnsAddressResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
-    let ip_it = match ip_kind {
-        IpKind::Ipv4 => match dns.ipv4_lookup(domain.clone()).await {
-            Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
-            Err(err) => {
-                let err = err.into_box_error();
-                tracing::trace!(
-                    "[{ip_kind:?}] failed to resolve domain to IPv4 addresses: {err:?}"
-                );
-                return;
-            }
-        },
-        IpKind::Ipv6 => match dns.ipv6_lookup(domain.clone()).await {
-            Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
-            Err(err) => {
-                let err = err.into_box_error();
-                tracing::trace!(
-                    "[{ip_kind:?}] failed to resolve domain to IPv6 addresses: {err:?}"
-                );
-                return;
-            }
-        },
+    match ip_kind {
+        IpKind::Ipv4 => {
+            let ip_stream = dns.lookup_ipv4(domain.clone()).map_ok(IpAddr::V4);
+            tcp_connect_inner_branch_with_stream(
+                dns_mode,
+                connect_mode,
+                connector,
+                ip_kind,
+                ip_stream,
+                domain,
+                port,
+                tx,
+                connected,
+                resolved_count,
+                sem,
+            )
+            .await;
+        }
+        IpKind::Ipv6 => {
+            let ip_stream = dns.lookup_ipv6(domain.clone()).map_ok(IpAddr::V6);
+            tcp_connect_inner_branch_with_stream(
+                dns_mode,
+                connect_mode,
+                connector,
+                ip_kind,
+                ip_stream,
+                domain,
+                port,
+                tx,
+                connected,
+                resolved_count,
+                sem,
+            )
+            .await;
+        }
     };
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn tcp_connect_inner_branch_with_stream<Connector, E>(
+    dns_mode: DnsResolveIpMode,
+    connect_mode: ConnectIpMode,
+    connector: Connector,
+    ip_kind: IpKind,
+    ip_stream: impl Stream<Item = Result<IpAddr, E>>,
+    domain: Domain,
+    port: u16,
+    tx: Sender<(TcpStream, SocketAddr)>,
+    connected: Arc<AtomicBool>,
+    resolved_count: Arc<AtomicUsize>,
+    sem: Arc<Semaphore>,
+) where
+    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
+    E: Into<BoxError> + Send + 'static,
+{
+    let mut ip_stream = std::pin::pin!(ip_stream);
 
     let (ipv4_delay_scalar, ipv6_delay_scalar) = match dns_mode {
         DnsResolveIpMode::DualPreferIpV4 | DnsResolveIpMode::SingleIpV4 => (15 * 2, 21 * 2),
         _ => (21 * 2, 15 * 2),
     };
-    for (index, ip) in ip_it.enumerate() {
+
+    let mut index = 0;
+    while let Some(ip_result) = ip_stream.next().await {
+        index += 1;
+        let ip = match ip_result {
+            Ok(ip) => ip,
+            Err(err) => {
+                tracing::debug!(
+                    "[{ip_kind:?}] #{index}: result contained err: {}",
+                    err.into(),
+                );
+                continue;
+            }
+        };
+
         let addr = (ip, port).into();
 
         resolved_count.fetch_add(1, Ordering::AcqRel);

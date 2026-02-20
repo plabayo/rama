@@ -11,9 +11,8 @@ use crate::proto::udp::UdpHeader;
 #[cfg(feature = "dns")]
 use ::{
     rama_core::{error::ErrorContext, extensions::Extensions},
-    rama_dns::{BoxDnsResolver, DnsResolver},
+    rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver},
     rama_net::mode::DnsResolveIpMode,
-    rand::seq::IteratorRandom,
     std::net::IpAddr,
     tokio::sync::mpsc,
 };
@@ -35,7 +34,7 @@ pub(super) struct UdpSocketRelay {
     #[cfg(feature = "dns")]
     dns_resolve_mode: DnsResolveIpMode,
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver>,
+    dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -392,7 +391,7 @@ impl UdpSocketRelay {
     pub(super) fn maybe_with_dns_resolver(
         mut self,
         extensions: &Extensions,
-        resolver: Option<BoxDnsResolver>,
+        resolver: Option<BoxDnsAddressResolver>,
     ) -> Self {
         self.dns_resolver = resolver;
         if let Some(mode) = extensions.get().copied() {
@@ -414,26 +413,20 @@ impl UdpSocketRelay {
                     .context("domain cannot be resolved: no dns resolver defined")?;
 
                 match self.dns_resolve_mode {
-                    DnsResolveIpMode::SingleIpV4 => {
-                        let ips = dns_resolver
-                            .ipv4_lookup(domain.clone())
+                    DnsResolveIpMode::SingleIpV4 => IpAddr::V4(
+                        dns_resolver
+                            .lookup_ipv4_rand(domain.clone())
                             .await
-                            .context("failed to lookup ipv4 addresses")?;
-                        ips.into_iter()
-                            .choose(&mut rand::rng())
-                            .map(IpAddr::V4)
-                            .context("select ipv4 address for resolved domain")?
-                    }
-                    DnsResolveIpMode::SingleIpV6 => {
-                        let ips = dns_resolver
-                            .ipv6_lookup(domain.clone())
+                            .context("no ipv4 addresses found during DNS lookup")?
+                            .context("ipv4 dns lookup")?,
+                    ),
+                    DnsResolveIpMode::SingleIpV6 => IpAddr::V6(
+                        dns_resolver
+                            .lookup_ipv6_rand(domain.clone())
                             .await
-                            .context("failed to lookup ipv6 addresses")?;
-                        ips.into_iter()
-                            .choose(&mut rand::rng())
-                            .map(IpAddr::V6)
-                            .context("select ipv6 address for resolved domain")?
-                    }
+                            .context("no ipv6 addresses found during DNS lookup")?
+                            .context("ipv6 dns lookup")?,
+                    ),
                     DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
                         use tracing::{Instrument, trace_span};
 
@@ -445,19 +438,24 @@ impl UdpSocketRelay {
                                 let domain = domain.clone();
                                 let dns_resolver = dns_resolver.clone();
                                 async move {
-                                    match dns_resolver.ipv4_lookup(domain).await {
-                                        Ok(ips) => {
-                                            if let Some(ip) =
-                                                ips.into_iter().choose(&mut rand::rng())
-                                                && let Err(err) = tx.send(IpAddr::V4(ip)) {
-                                                    tracing::trace!(
-                                                        "failed to send ipv4 lookup result for {ip}: {err:?}"
-                                                    )
-                                                }
+                                    match dns_resolver.lookup_ipv4_rand(domain.clone()).await {
+                                        Some(Ok(addr)) => {
+                                            if let Err(err) = tx.send(IpAddr::V4(addr)) {
+                                                tracing::debug!(
+                                                    "failed to send ipv4 lookup result for ip: {addr}; err = {err:?}"
+                                                )
+                                            }
+                                        },
+                                        Some(Err(err)) => {
+                                            tracing::debug!(
+                                                "failed to lookup ipv4 addresses for domain: {err:?}"
+                                            );
                                         }
-                                        Err(err) => tracing::debug!(
-                                            "failed to lookup ipv4 addresses for domain: {err:?}"
-                                        ),
+                                        None => {
+                                            tracing::debug!(
+                                                "failed to lookup ipv4 addresses for domain: no addresses found"
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -467,19 +465,24 @@ impl UdpSocketRelay {
                         tokio::spawn(
                             {
                                 async move {
-                                    match dns_resolver.ipv6_lookup(domain).await {
-                                        Ok(ips) => {
-                                            if let Some(ip) =
-                                                ips.into_iter().choose(&mut rand::rng())
-                                                && let Err(err) = tx.send(IpAddr::V6(ip)) {
-                                                    tracing::trace!(
-                                                        "failed to send ipv6 lookup result for ip {ip}: {err:?}"
-                                                    )
-                                                }
+                                    match dns_resolver.lookup_ipv6_rand(domain.clone()).await {
+                                        Some(Ok(addr)) => {
+                                            if let Err(err) = tx.send(IpAddr::V6(addr)) {
+                                                tracing::debug!(
+                                                    "failed to send ipv6 lookup result for ip: {addr}; err = {err:?}"
+                                                )
+                                            }
+                                        },
+                                        Some(Err(err)) => {
+                                            tracing::debug!(
+                                                "failed to lookup ipv6 addresses for domain: {err:?}"
+                                            );
                                         }
-                                        Err(err) => tracing::debug!(
-                                            "failed to lookup ipv6 addresses for domain: {err:?}"
-                                        ),
+                                        None => {
+                                            tracing::debug!(
+                                                "failed to lookup ipv6 addresses for domain: no addresses found"
+                                            );
+                                        }
                                     }
                                 }
                             }

@@ -5,7 +5,7 @@ use rama_core::{
     rt::Executor,
     telemetry::tracing,
 };
-use rama_dns::{DnsResolver, GlobalDnsResolver};
+use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddressResolver};
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorTarget, EstablishedClientConnection},
@@ -44,10 +44,11 @@ impl TcpConnector {
 }
 
 impl<Dns, ConnectorFactory> TcpConnector<Dns, ConnectorFactory> {
-    /// Consume `self` to attach the given `dns` (a [`DnsResolver`]) as a new [`TcpConnector`].
+    /// Consume `self` to attach the given `dns`
+    /// (a [`DnsAddressResolver`]) as a new [`TcpConnector`].
     pub fn with_dns<OtherDns>(self, dns: OtherDns) -> TcpConnector<OtherDns, ConnectorFactory>
     where
-        OtherDns: DnsResolver + Clone,
+        OtherDns: DnsAddressResolver + Clone,
     {
         TcpConnector {
             dns,
@@ -92,7 +93,7 @@ impl<Input, Dns, ConnectorFactory> Service<Input> for TcpConnector<Dns, Connecto
 where
     Input: TryRefIntoTransportContext + Send + ExtensionsMut + 'static,
     Input::Error: Into<BoxError> + Send + Sync + 'static,
-    Dns: DnsResolver + Clone,
+    Dns: DnsAddressResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
             Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
             Error: Into<BoxError> + Send + 'static,

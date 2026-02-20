@@ -12,7 +12,7 @@ use rama_udp::{UdpSocket, bind_udp};
 use rama_utils::macros::generate_set_and_with;
 
 #[cfg(feature = "dns")]
-use ::rama_dns::{BoxDnsResolver, DnsResolver};
+use ::rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver};
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
@@ -111,7 +111,7 @@ pub struct UdpRelay<B, I> {
     inspector: I,
 
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver>,
+    dns_resolver: Option<BoxDnsAddressResolver>,
 
     bind_north_interface: Interface,
     bind_south_interface: Interface,
@@ -275,8 +275,8 @@ impl<B, I> UdpRelay<B, I> {
         /// It will be used to best-effort resolve the domain name,
         /// in case a domain name is passed to forward to the target server.
         #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-        pub fn dns_resolver(mut self, resolver: impl DnsResolver<Error = BoxError>) -> Self {
-            self.dns_resolver = Some(resolver.boxed());
+        pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
+            self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
             self
         }
     }
