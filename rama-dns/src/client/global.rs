@@ -1,4 +1,4 @@
-use rama_core::{bytes::Bytes, error::BoxError, futures::Stream};
+use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream};
 use rama_net::address::Domain;
 
 use crate::client::{
@@ -17,7 +17,7 @@ static GLOBAL_DNS_RESOLVER: OnceLock<BoxDnsResolver> = OnceLock::new();
 pub struct GlobalDnsResolver;
 
 impl GlobalDnsResolver {
-    #[inline]
+    #[inline(always)]
     /// Create a new [`GlobalDnsResolver`].
     ///
     /// This has no cost.
@@ -28,8 +28,9 @@ impl GlobalDnsResolver {
 }
 
 impl DnsAddressResolver for GlobalDnsResolver {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
+    #[inline(always)]
     fn lookup_ipv4(
         &self,
         domain: Domain,
@@ -38,6 +39,23 @@ impl DnsAddressResolver for GlobalDnsResolver {
         resolver.lookup_ipv4(domain)
     }
 
+    fn lookup_ipv4_first(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv4Addr, Self::Error>>> + Send + '_ {
+        let resolver = global_dns_resolver();
+        resolver.lookup_ipv4_first(domain)
+    }
+
+    fn lookup_ipv4_rand(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv4Addr, Self::Error>>> + Send + '_ {
+        let resolver = global_dns_resolver();
+        resolver.lookup_ipv4_rand(domain)
+    }
+
+    #[inline(always)]
     fn lookup_ipv6(
         &self,
         domain: Domain,
@@ -45,11 +63,28 @@ impl DnsAddressResolver for GlobalDnsResolver {
         let resolver = global_dns_resolver();
         resolver.lookup_ipv6(domain)
     }
+
+    fn lookup_ipv6_first(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv6Addr, Self::Error>>> + Send + '_ {
+        let resolver = global_dns_resolver();
+        resolver.lookup_ipv6_first(domain)
+    }
+
+    fn lookup_ipv6_rand(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv6Addr, Self::Error>>> + Send + '_ {
+        let resolver = global_dns_resolver();
+        resolver.lookup_ipv6_rand(domain)
+    }
 }
 
 impl DnsTxtResolver for GlobalDnsResolver {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
+    #[inline(always)]
     fn lookup_txt(
         &self,
         domain: Domain,

@@ -1,9 +1,9 @@
 use super::utils;
 use rama::{
-    dns::{DnsOverwrite, InMemoryDns},
-    http::BodyExtractExt,
+    dns::client::resolver::DnsAddresssResolverOverwrite, http::BodyExtractExt,
+    net::address::DomainTrie,
 };
-use std::net::IpAddr;
+use std::net::Ipv4Addr;
 
 #[tokio::test]
 #[ignore]
@@ -12,9 +12,10 @@ async fn test_tls_sni_router() {
 
     let runner = utils::ExampleRunner::interactive("tls_sni_router", Some("boring"));
 
-    let mut mem_dns = InMemoryDns::new();
-    mem_dns.insert_address("foo.local", IpAddr::V4([127, 0, 0, 1].into()));
-    mem_dns.insert_address("bar.local", IpAddr::V4([127, 0, 0, 1].into()));
+    let mut overwrite_dns_trie = DomainTrie::new();
+    overwrite_dns_trie.insert_domain("foo.local", Ipv4Addr::new(127, 0, 0, 1));
+    overwrite_dns_trie.insert_domain("bar.local", Ipv4Addr::new(127, 0, 0, 1));
+    let overwrite_dns = DnsAddresssResolverOverwrite::new(overwrite_dns_trie);
 
     for (uri, expected_response) in [
         ("https://127.0.0.1:63804", "foo"),
@@ -25,7 +26,7 @@ async fn test_tls_sni_router() {
     ] {
         let response = runner
             .get(uri)
-            .extension(DnsOverwrite::from(mem_dns.clone()))
+            .extension(overwrite_dns.clone())
             .send()
             .await
             .unwrap()

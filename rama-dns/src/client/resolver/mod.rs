@@ -4,11 +4,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use rama_core::bytes::Bytes;
-use rama_core::error::BoxError;
-use rama_core::futures::{Stream, TryStreamExt as _};
+use rama_core::error::ErrorExt;
+use rama_core::error::extra::OpaqueError;
+use rama_core::futures::{FutureExt as _, Stream, TryStreamExt as _};
 use rama_net::address::Domain;
 
-pub use self::address::{BoxDnsAddressResolver, DnsAddressResolver};
+pub use self::address::{BoxDnsAddressResolver, DnsAddressResolver, DnsAddresssResolverOverwrite};
 
 mod txt;
 pub use self::txt::{BoxDnsTxtResolver, DnsTxtResolver};
@@ -29,46 +30,119 @@ trait DynDnsResolver {
     fn dyn_lookup_ipv4(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Ipv4Addr, BoxError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<Ipv4Addr, OpaqueError>> + Send + '_>>;
+
+    fn dyn_lookup_ipv4_first(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<Ipv4Addr, OpaqueError>>> + Send + '_>>;
+
+    fn dyn_lookup_ipv4_rand(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<Ipv4Addr, OpaqueError>>> + Send + '_>>;
 
     fn dyn_lookup_ipv6(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Ipv6Addr, BoxError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<Ipv6Addr, OpaqueError>> + Send + '_>>;
+
+    fn dyn_lookup_ipv6_first(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<Ipv6Addr, OpaqueError>>> + Send + '_>>;
+
+    fn dyn_lookup_ipv6_rand(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<Ipv6Addr, OpaqueError>>> + Send + '_>>;
 
     fn dyn_lookup_txt(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, BoxError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, OpaqueError>> + Send + '_>>;
 }
 
 impl<T> DynDnsResolver for T
 where
     T: DnsResolver,
 {
+    #[inline(always)]
     fn dyn_lookup_ipv4(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Ipv4Addr, BoxError>> + Send + '_>> {
-        Box::pin(self.lookup_ipv4(domain).map_err(Into::into))
+    ) -> Pin<Box<dyn Stream<Item = Result<Ipv4Addr, OpaqueError>> + Send + '_>> {
+        Box::pin(
+            self.lookup_ipv4(domain)
+                .map_err(ErrorExt::into_opaque_error),
+        )
     }
 
+    #[inline(always)]
+    fn dyn_lookup_ipv4_first(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<Ipv4Addr, OpaqueError>>> + Send + '_>> {
+        Box::pin(
+            self.lookup_ipv4_first(domain)
+                .map(|output| output.map(|result| result.map_err(ErrorExt::into_opaque_error))),
+        )
+    }
+
+    #[inline(always)]
+    fn dyn_lookup_ipv4_rand(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<Ipv4Addr, OpaqueError>>> + Send + '_>> {
+        Box::pin(
+            self.lookup_ipv4_rand(domain)
+                .map(|output| output.map(|result| result.map_err(ErrorExt::into_opaque_error))),
+        )
+    }
+
+    #[inline(always)]
     fn dyn_lookup_ipv6(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Ipv6Addr, BoxError>> + Send + '_>> {
-        Box::pin(self.lookup_ipv6(domain).map_err(Into::into))
+    ) -> Pin<Box<dyn Stream<Item = Result<Ipv6Addr, OpaqueError>> + Send + '_>> {
+        Box::pin(
+            self.lookup_ipv6(domain)
+                .map_err(ErrorExt::into_opaque_error),
+        )
     }
 
+    #[inline(always)]
+    fn dyn_lookup_ipv6_first(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<Ipv6Addr, OpaqueError>>> + Send + '_>> {
+        Box::pin(
+            self.lookup_ipv6_first(domain)
+                .map(|output| output.map(|result| result.map_err(ErrorExt::into_opaque_error))),
+        )
+    }
+
+    #[inline(always)]
+    fn dyn_lookup_ipv6_rand(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<Ipv6Addr, OpaqueError>>> + Send + '_>> {
+        Box::pin(
+            self.lookup_ipv6_rand(domain)
+                .map(|output| output.map(|result| result.map_err(ErrorExt::into_opaque_error))),
+        )
+    }
+
+    #[inline(always)]
     fn dyn_lookup_txt(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, BoxError>> + Send + '_>> {
-        Box::pin(self.lookup_txt(domain).map_err(Into::into))
+    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, OpaqueError>> + Send + '_>> {
+        Box::pin(self.lookup_txt(domain).map_err(ErrorExt::into_opaque_error))
     }
 }
 
-/// A boxed [`DnsResolver`], mapping its error into [`BoxError`].
+/// A boxed [`DnsResolver`], mapping its error into [`OpaqueError`].
 pub struct BoxDnsResolver {
     inner: Arc<dyn DynDnsResolver + Send + Sync + 'static>,
 }
@@ -100,8 +174,9 @@ impl std::fmt::Debug for BoxDnsResolver {
 }
 
 impl DnsAddressResolver for BoxDnsResolver {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
+    #[inline(always)]
     fn lookup_ipv4(
         &self,
         domain: Domain,
@@ -109,6 +184,23 @@ impl DnsAddressResolver for BoxDnsResolver {
         self.inner.dyn_lookup_ipv4(domain)
     }
 
+    #[inline(always)]
+    fn lookup_ipv4_first(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv4Addr, Self::Error>>> + Send + '_ {
+        self.inner.dyn_lookup_ipv4_first(domain)
+    }
+
+    #[inline(always)]
+    fn lookup_ipv4_rand(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv4Addr, Self::Error>>> + Send + '_ {
+        self.inner.dyn_lookup_ipv4_rand(domain)
+    }
+
+    #[inline(always)]
     fn lookup_ipv6(
         &self,
         domain: Domain,
@@ -116,14 +208,32 @@ impl DnsAddressResolver for BoxDnsResolver {
         self.inner.dyn_lookup_ipv6(domain)
     }
 
+    #[inline(always)]
+    fn lookup_ipv6_first(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv6Addr, Self::Error>>> + Send + '_ {
+        self.inner.dyn_lookup_ipv6_first(domain)
+    }
+
+    #[inline(always)]
+    fn lookup_ipv6_rand(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv6Addr, Self::Error>>> + Send + '_ {
+        self.inner.dyn_lookup_ipv6_rand(domain)
+    }
+
+    #[inline(always)]
     fn into_box_dns_address_resolver(self) -> BoxDnsAddressResolver {
         BoxDnsAddressResolver::new(self)
     }
 }
 
 impl DnsTxtResolver for BoxDnsResolver {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
+    #[inline(always)]
     fn lookup_txt(
         &self,
         domain: Domain,
@@ -131,6 +241,7 @@ impl DnsTxtResolver for BoxDnsResolver {
         self.inner.dyn_lookup_txt(domain)
     }
 
+    #[inline(always)]
     fn into_box_dns_txt_resolver(self) -> BoxDnsTxtResolver {
         BoxDnsTxtResolver::new(self)
     }

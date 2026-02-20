@@ -16,7 +16,7 @@ use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
 pub struct DenyAllDnsResolver;
 
 impl DenyAllDnsResolver {
-    #[inline]
+    #[inline(always)]
     /// Create a new [`Default`] [`DenyAllDnsResolver`].
     #[must_use]
     pub fn new() -> Self {
@@ -32,6 +32,7 @@ static_str_error! {
 impl DnsAddressResolver for DenyAllDnsResolver {
     type Error = DnsDeniedError;
 
+    #[inline(always)]
     fn lookup_ipv4(
         &self,
         _: Domain,
@@ -39,11 +40,44 @@ impl DnsAddressResolver for DenyAllDnsResolver {
         stream::once(std::future::ready(Err(DnsDeniedError)))
     }
 
+    #[inline(always)]
+    fn lookup_ipv4_first(
+        &self,
+        _: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv4Addr, Self::Error>>> + Send + '_ {
+        std::future::ready(Some(Err(DnsDeniedError)))
+    }
+
+    #[inline(always)]
+    fn lookup_ipv4_rand(
+        &self,
+        _: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv4Addr, Self::Error>>> + Send + '_ {
+        std::future::ready(Some(Err(DnsDeniedError)))
+    }
+
+    #[inline(always)]
     fn lookup_ipv6(
         &self,
         _: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Err(DnsDeniedError)))
+    }
+
+    #[inline(always)]
+    fn lookup_ipv6_first(
+        &self,
+        _: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv6Addr, Self::Error>>> + Send + '_ {
+        std::future::ready(Some(Err(DnsDeniedError)))
+    }
+
+    #[inline(always)]
+    fn lookup_ipv6_rand(
+        &self,
+        _: Domain,
+    ) -> impl Future<Output = Option<Result<Ipv6Addr, Self::Error>>> + Send + '_ {
+        std::future::ready(Some(Err(DnsDeniedError)))
     }
 }
 
@@ -76,14 +110,42 @@ mod tests {
         };
     }
 
+    macro_rules! impl_deny_test_single_item {
+        ($fn:ident) => {
+            let resolver = DenyAllDnsResolver;
+            let result = resolver.$fn(Domain::example()).await.unwrap();
+            assert_eq!(DnsDeniedError, result.unwrap_err());
+        };
+    }
+
     #[tokio::test]
     async fn test_deny_all_lookup_ipv4() {
         impl_deny_test_body!(lookup_ipv4);
     }
 
     #[tokio::test]
+    async fn test_deny_all_lookup_ipv4_first() {
+        impl_deny_test_single_item!(lookup_ipv4_first);
+    }
+
+    #[tokio::test]
+    async fn test_deny_all_lookup_ipv4_rand() {
+        impl_deny_test_single_item!(lookup_ipv4_rand);
+    }
+
+    #[tokio::test]
     async fn test_deny_all_lookup_ipv6() {
         impl_deny_test_body!(lookup_ipv6);
+    }
+
+    #[tokio::test]
+    async fn test_deny_all_lookup_ipv6_first() {
+        impl_deny_test_single_item!(lookup_ipv6_first);
+    }
+
+    #[tokio::test]
+    async fn test_deny_all_lookup_ipv6_rand() {
+        impl_deny_test_single_item!(lookup_ipv6_rand);
     }
 
     #[tokio::test]

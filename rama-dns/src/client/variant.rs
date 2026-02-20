@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
     bytes::Bytes,
-    error::BoxError,
+    error::{ErrorExt, extra::OpaqueError},
     futures::{Stream, StreamExt as _, async_stream::stream_fn},
 };
 use rama_net::address::Domain;
@@ -15,19 +15,19 @@ macro_rules! impl_dns_resolver_either {
         where
             $($param: DnsAddressResolver),+,
         {
-            type Error = BoxError;
+            type Error = OpaqueError;
 
             fn lookup_ipv4(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<Ipv4Addr, BoxError>> + Send + '_ {
+            ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     match self {
                         $(
                             ::rama_core::combinators::$id::$param(d) => {
-                                let mut stream = std::pin::pin!(d.lookup_ipv4(domain.clone()));
+                                let mut stream = std::pin::pin!(d.lookup_ipv4(domain));
                                 while let Some(result) = stream.next().await {
-                                    yielder.yield_item(result.map_err(Into::into)).await;
+                                    yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
                                 }
                             },
                         )+
@@ -35,22 +35,74 @@ macro_rules! impl_dns_resolver_either {
                 })
             }
 
+            async fn lookup_ipv4_first(
+                &self,
+                domain: Domain,
+            ) -> Option<Result<Ipv4Addr, Self::Error>> {
+                match self {
+                    $(
+                        ::rama_core::combinators::$id::$param(d) =>
+                            d.lookup_ipv4_first(domain).await.map(|result|
+                                result.map_err(ErrorExt::into_opaque_error)),
+                    )+
+                }
+            }
+
+            async fn lookup_ipv4_rand(
+                &self,
+                domain: Domain,
+            ) -> Option<Result<Ipv4Addr, Self::Error>> {
+                match self {
+                    $(
+                        ::rama_core::combinators::$id::$param(d) =>
+                            d.lookup_ipv4_rand(domain).await.map(|result|
+                                result.map_err(ErrorExt::into_opaque_error)),
+                    )+
+                }
+            }
+
             fn lookup_ipv6(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<Ipv6Addr, BoxError>> + Send + '_ {
+            ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     match self {
                         $(
                             ::rama_core::combinators::$id::$param(d) => {
-                                let mut stream = std::pin::pin!(d.lookup_ipv6(domain.clone()));
+                                let mut stream = std::pin::pin!(d.lookup_ipv6(domain));
                                 while let Some(result) = stream.next().await {
-                                    yielder.yield_item(result.map_err(Into::into)).await;
+                                    yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
                                 }
                             },
                         )+
                     }
                 })
+            }
+
+            async fn lookup_ipv6_first(
+                &self,
+                domain: Domain,
+            ) -> Option<Result<Ipv6Addr, Self::Error>> {
+                match self {
+                    $(
+                        ::rama_core::combinators::$id::$param(d) =>
+                            d.lookup_ipv6_first(domain).await.map(|result|
+                                result.map_err(ErrorExt::into_opaque_error)),
+                    )+
+                }
+            }
+
+            async fn lookup_ipv6_rand(
+                &self,
+                domain: Domain,
+            ) -> Option<Result<Ipv6Addr, Self::Error>> {
+                match self {
+                    $(
+                        ::rama_core::combinators::$id::$param(d) =>
+                            d.lookup_ipv6_rand(domain).await.map(|result|
+                                result.map_err(ErrorExt::into_opaque_error)),
+                    )+
+                }
             }
         }
 
@@ -58,19 +110,19 @@ macro_rules! impl_dns_resolver_either {
         where
             $($param: DnsTxtResolver),+,
         {
-            type Error = BoxError;
+            type Error = OpaqueError;
 
             fn lookup_txt(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<Bytes, BoxError>> + Send + '_ {
+            ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     match self {
                         $(
                             ::rama_core::combinators::$id::$param(d) => {
-                                let mut stream = std::pin::pin!(d.lookup_txt(domain.clone()));
+                                let mut stream = std::pin::pin!(d.lookup_txt(domain));
                                 while let Some(result) = stream.next().await {
-                                    yielder.yield_item(result.map_err(Into::into)).await;
+                                    yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
                                 }
                             },
                         )+

@@ -19,7 +19,10 @@ use rama_utils::macros::define_inner_service_accessors;
 
 #[cfg(feature = "dns")]
 use ::{
-    rama_dns::{BoxDnsResolver, DnsResolver},
+    rama_dns::client::{
+        GlobalDnsResolver,
+        resolver::{BoxDnsAddressResolver, DnsAddressResolver},
+    },
     rama_net::{Protocol, address::Host, mode::DnsResolveIpMode},
     rama_utils::macros::generate_set_and_with,
     std::net::IpAddr,
@@ -33,7 +36,7 @@ use ::{
 pub struct Socks5ProxyConnectorLayer {
     required: bool,
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver>,
+    dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
 impl Socks5ProxyConnectorLayer {
@@ -80,7 +83,7 @@ impl Socks5ProxyConnectorLayer {
         /// will anyway use the domain instead of the ip.
         #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn default_dns_resolver(mut self) -> Self {
-            self.dns_resolver = Some(rama_dns::global_dns_resolver());
+            self.dns_resolver = Some(GlobalDnsResolver::new().into_box_dns_address_resolver());
             self
         }
     }
@@ -94,8 +97,8 @@ impl Socks5ProxyConnectorLayer {
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
         #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-        pub fn dns_resolver(mut self, resolver: impl DnsResolver) -> Self {
-            self.dns_resolver = Some(resolver.boxed());
+        pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
+            self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
             self
         }
     }
@@ -134,7 +137,7 @@ pub struct Socks5ProxyConnector<S> {
     inner: S,
     required: bool,
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver>,
+    dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
 impl<S> Socks5ProxyConnector<S> {
@@ -175,7 +178,7 @@ impl<S> Socks5ProxyConnector<S> {
         /// will anyway use the domain instead of the ip.
         #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn default_dns_resolver(mut self) -> Self {
-            self.dns_resolver = Some(rama_dns::global_dns_resolver());
+            self.dns_resolver = Some(GlobalDnsResolver::default().into_box_dns_address_resolver());
             self
         }
     }
@@ -189,8 +192,8 @@ impl<S> Socks5ProxyConnector<S> {
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
         #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
-        pub fn dns_resolver(mut self, resolver: impl DnsResolver) -> Self {
-            self.dns_resolver = Some(resolver.boxed());
+        pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
+            self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
             self
         }
     }
@@ -203,8 +206,6 @@ impl<S> Socks5ProxyConnector<S> {
         dns_mode: DnsResolveIpMode,
         addr: ProxyAddress,
     ) -> ProxyAddress {
-        use rand::prelude::*;
-
         if let Some(dns_resolver) = self.dns_resolver.as_ref()
             && addr.protocol == Some(Protocol::SOCKS5)
         {
@@ -219,30 +220,34 @@ impl<S> Socks5ProxyConnector<S> {
             let host = match host {
                 Host::Name(domain) => match dns_mode {
                     DnsResolveIpMode::SingleIpV4 => {
-                        match dns_resolver.ipv4_lookup(domain.clone()).await {
-                            Ok(ips) => ips
-                                .into_iter()
-                                .choose(&mut rand::rng())
-                                .map(|addr| Host::Address(IpAddr::V4(addr)))
-                                .unwrap_or(Host::Name(domain)),
-                            Err(err) => {
+                        match dns_resolver.lookup_ipv4_rand(domain.clone()).await {
+                            Some(Ok(addr)) => Host::Address(IpAddr::V4(addr)),
+                            Some(Err(err)) => {
                                 tracing::debug!(
                                     "failed to lookup ipv4 addresses for domain: {err:?}"
+                                );
+                                Host::Name(domain)
+                            }
+                            None => {
+                                tracing::debug!(
+                                    "failed to lookup ipv4 addresses for domain: no addresses found"
                                 );
                                 Host::Name(domain)
                             }
                         }
                     }
                     DnsResolveIpMode::SingleIpV6 => {
-                        match dns_resolver.ipv6_lookup(domain.clone()).await {
-                            Ok(ips) => ips
-                                .into_iter()
-                                .choose(&mut rand::rng())
-                                .map(|addr| Host::Address(IpAddr::V6(addr)))
-                                .unwrap_or(Host::Name(domain)),
-                            Err(err) => {
+                        match dns_resolver.lookup_ipv6_rand(domain.clone()).await {
+                            Some(Ok(addr)) => Host::Address(IpAddr::V6(addr)),
+                            Some(Err(err)) => {
                                 tracing::debug!(
                                     "failed to lookup ipv6 addresses for domain: {err:?}"
+                                );
+                                Host::Name(domain)
+                            }
+                            None => {
+                                tracing::debug!(
+                                    "failed to lookup ipv6 addresses for domain: no addresses found"
                                 );
                                 Host::Name(domain)
                             }
@@ -254,53 +259,63 @@ impl<S> Socks5ProxyConnector<S> {
                         let (tx, mut rx) = mpsc::unbounded_channel();
 
                         tokio::spawn(
-                                {
-                                    let tx = tx.clone();
-                                    let domain = domain.clone();
-                                    let dns_resolver = dns_resolver.clone();
-                                    async move {
-                                        match dns_resolver.ipv4_lookup(domain).await {
-                                            Ok(ips) => {
-                                                if let Some(ip) =
-                                                    ips.into_iter().choose(&mut rand::rng())
-                                                    && let Err(err) = tx.send(IpAddr::V4(ip)) {
-                                                        tracing::trace!(
-                                                            "failed to send ipv4 lookup result for ip: {ip}; err = {err:?}"
-                                                        )
-                                                    }
+                            {
+                                let tx = tx.clone();
+                                let domain = domain.clone();
+                                let dns_resolver = dns_resolver.clone();
+                                async move {
+                                    match dns_resolver.lookup_ipv4_rand(domain.clone()).await {
+                                        Some(Ok(addr)) => {
+                                            if let Err(err) = tx.send(IpAddr::V4(addr)) {
+                                                tracing::debug!(
+                                                    "failed to send ipv4 lookup result for ip: {addr}; err = {err:?}"
+                                                )
                                             }
-                                            Err(err) => tracing::debug!(
+                                        },
+                                        Some(Err(err)) => {
+                                            tracing::debug!(
                                                 "failed to lookup ipv4 addresses for domain: {err:?}"
-                                            ),
+                                            );
+                                        }
+                                        None => {
+                                            tracing::debug!(
+                                                "failed to lookup ipv4 addresses for domain: no addresses found"
+                                            );
                                         }
                                     }
                                 }
-                                .instrument(trace_span!("dns::ipv4_lookup")),
-                            );
+                            }
+                            .instrument(trace_span!("dns::ipv4_lookup")),
+                        );
 
                         tokio::spawn(
-                                {
-                                    let domain = domain.clone();
-                                    let dns_resolver = dns_resolver.clone();
-                                    async move {
-                                        match dns_resolver.ipv6_lookup(domain).await {
-                                            Ok(ips) => {
-                                                if let Some(ip) =
-                                                    ips.into_iter().choose(&mut rand::rng())
-                                                    && let Err(err) = tx.send(IpAddr::V6(ip)) {
-                                                        tracing::trace!(
-                                                            "failed to send ipv6 lookup result for ip {ip}: {err:?}"
-                                                        )
-                                                    }
+                            {
+                                let domain = domain.clone();
+                                let dns_resolver = dns_resolver.clone();
+                                async move {
+                                    match dns_resolver.lookup_ipv6_rand(domain.clone()).await {
+                                        Some(Ok(addr)) => {
+                                            if let Err(err) = tx.send(IpAddr::V6(addr)) {
+                                                tracing::debug!(
+                                                    "failed to send ipv6 lookup result for ip: {addr}; err = {err:?}"
+                                                )
                                             }
-                                            Err(err) => tracing::debug!(
+                                        },
+                                        Some(Err(err)) => {
+                                            tracing::debug!(
                                                 "failed to lookup ipv6 addresses for domain: {err:?}"
-                                            ),
+                                            );
+                                        }
+                                        None => {
+                                            tracing::debug!(
+                                                "failed to lookup ipv6 addresses for domain: no addresses found"
+                                            );
                                         }
                                     }
                                 }
-                                .instrument(trace_span!("dns::ipv6_lookup")),
-                            );
+                            }
+                            .instrument(trace_span!("dns::ipv6_lookup")),
+                        );
 
                         rx.recv()
                             .await

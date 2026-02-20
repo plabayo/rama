@@ -2,7 +2,7 @@ use std::{convert::Infallible, pin::Pin, sync::Arc};
 
 use rama_core::{
     bytes::Bytes,
-    error::BoxError,
+    error::{BoxError, ErrorExt, extra::OpaqueError},
     futures::{Stream, StreamExt as _, TryStreamExt, stream},
 };
 use rama_net::address::{Domain, DomainTrie};
@@ -76,15 +76,15 @@ trait DynDnsTxtResolver {
     fn dyn_lookup_txt(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, BoxError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, OpaqueError>> + Send + '_>>;
 }
 
 impl<T: DnsTxtResolver> DynDnsTxtResolver for T {
     fn dyn_lookup_txt(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, BoxError>> + Send + '_>> {
-        Box::pin(self.lookup_txt(domain).map_err(Into::into))
+    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, OpaqueError>> + Send + '_>> {
+        Box::pin(self.lookup_txt(domain).map_err(ErrorExt::into_opaque_error))
     }
 }
 
@@ -135,7 +135,7 @@ impl std::fmt::Debug for BoxDnsTxtResolver {
 }
 
 impl DnsTxtResolver for BoxDnsTxtResolver {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     #[inline]
     fn lookup_txt(
