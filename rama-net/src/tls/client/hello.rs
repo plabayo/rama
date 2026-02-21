@@ -296,7 +296,13 @@ impl ClientHelloExtension {
             Self::ApplicationLayerProtocolNegotiation(_) => {
                 ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
             }
-            Self::ApplicationSettings { .. } => ExtensionId::APPLICATION_SETTINGS,
+            Self::ApplicationSettings { new_codepoint, .. } => {
+                if *new_codepoint {
+                    ExtensionId::APPLICATION_SETTINGS
+                } else {
+                    ExtensionId::OLD_APPLICATION_SETTINGS
+                }
+            }
             Self::SupportedVersions(_) => ExtensionId::SUPPORTED_VERSIONS,
             Self::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
             Self::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,
