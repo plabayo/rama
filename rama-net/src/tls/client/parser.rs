@@ -409,12 +409,7 @@ fn parse_tls_extension_application_settings_content(
     i: &[u8],
     new_codepoint: bool,
 ) -> IResult<&[u8], ClientHelloExtension> {
-    let (n, alps) = map_parser(
-        length_data(be_u16),
-        parse_protocol_name_list,
-        
-    )
-    .parse(i)?;
+    let (n, alps) = map_parser(length_data(be_u16), parse_protocol_name_list).parse(i)?;
 
     let application_settings = ClientHelloExtension::ApplicationSettings {
         protocols: alps,

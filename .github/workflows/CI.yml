@@ -41,13 +41,6 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
@@ -89,13 +82,6 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: clippy
         run: |
           cargo clippy --workspace --all-targets --all-features
@@ -142,13 +128,6 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: Run tests (cargo test)
         run: cargo nextest run --all-features --workspace
       - name: Run doc tests (cargo test)
@@ -415,13 +394,6 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: Run tests (--ignored)
         run: |
           cargo nextest run --all-features --workspace --run-ignored=only
@@ -454,13 +426,6 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: Run tests in release mode (--ignored)
         run: |
           cargo nextest run --all-features --release --workspace --run-ignored=only

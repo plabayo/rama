@@ -765,7 +765,6 @@ impl TlsConnectorDataBuilder {
             }
         }
 
-
         if let Some(limit) = self.record_size_limit() {
             trace!("boring connector: setting record size limit");
             cfg.set_record_size_limit(limit)
@@ -1081,7 +1080,10 @@ impl TlsConnectorDataBuilder {
                         );
                         encrypted_client_hello = Some(true);
                     }
-                    ClientHelloExtension::ApplicationSettings{protocols, new_codepoint} => {
+                    ClientHelloExtension::ApplicationSettings {
+                        protocols,
+                        new_codepoint,
+                    } => {
                         trace!(
                             "TlsConnectorData: builder: from std client config: application settings (ALPS): {:?}",
                             protocols

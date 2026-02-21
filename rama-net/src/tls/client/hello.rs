@@ -143,7 +143,7 @@ impl ClientHello {
     #[must_use]
     pub fn ext_alps(&self) -> Option<&[ApplicationProtocol]> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::ApplicationSettings{ protocols, .. } = ext {
+            if let ClientHelloExtension::ApplicationSettings { protocols, .. } = ext {
                 return Some(&protocols[..]);
             }
         }
