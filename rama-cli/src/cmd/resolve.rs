@@ -28,7 +28,7 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
 
     let resolver = GlobalDnsResolver::default();
     let rt = cfg.record_type.unwrap_or_default();
-    println!("Resolving {rt:?} for domain: {}...", cfg.domain);
+    println!("Resolving {rt:?} for domain: {}", cfg.domain);
 
     match rt {
         RecordType::A => {
