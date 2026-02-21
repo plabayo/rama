@@ -194,16 +194,11 @@ impl CertIssuerHttpClient {
     }
 
     async fn fetch_certs(&self, domain: Domain) -> Result<ServerAuthData, BoxError> {
-        let req = self
+        let response = self
             .http_client
             .post(self.endpoint.clone())
             .json(&CertOrderInput { domain })
-            .try_into_request()
-            .context("builld request")?;
-
-        let response = self
-            .http_client
-            .serve(req)
+            .send()
             .await
             .context("send order request")?;
 
