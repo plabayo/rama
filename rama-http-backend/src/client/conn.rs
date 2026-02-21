@@ -1,7 +1,7 @@
 use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorExt as _},
+    error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     rt::Executor,
     stream::Stream,
@@ -62,13 +62,18 @@ where
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Output = EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>;
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection {
             input: req,
             mut conn,
-        } = self.inner.connect(req).await.map_err(Into::into)?;
+        } = self
+            .inner
+            .connect(req)
+            .await
+            .map_err(Into::into)
+            .into_opaque_error()?;
 
         // TODO this is way to tricky, this needs to be here on the io extensions
         // Not the ones we clone, ideally the exentions should all just use the same store
@@ -144,7 +149,7 @@ where
                     builder.set_headers_pseudo_order(pseudo_order);
                 }
 
-                let (sender, conn) = builder.handshake(io).await?;
+                let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
 
                 let conn_span = tracing::trace_root_span!(
                     "h2::conn::serve",
@@ -186,7 +191,7 @@ where
                 if let Some(params) = req.extensions().get::<Http1ClientContextParams>() {
                     builder.set_title_case_headers(params.title_header_case);
                 }
-                let (sender, conn) = builder.handshake(io).await?;
+                let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
                 let conn = conn.with_upgrades();
 
                 let conn_span = tracing::trace_root_span!(
@@ -223,10 +228,9 @@ where
                     conn: svc,
                 })
             }
-            version => {
-                Err(BoxError::from("unsupported Http version")
-                    .context_debug_field("version", version))
-            }
+            version => Err(BoxError::from("unsupported Http version")
+                .context_debug_field("version", version)
+                .into_opaque_error()),
         }
     }
 }

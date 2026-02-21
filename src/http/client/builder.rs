@@ -590,11 +590,11 @@ impl<T, S> EasyHttpConnectorBuilder<T, S> {
         T: Service<
                 Request<Body>,
                 Output = EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>,
-                Error = BoxError,
+                Error: Into<BoxError>,
             >,
         ConnResponse: ExtensionsMut,
     {
-        super::EasyHttpWebClient::new(self.connector.boxed())
+        super::EasyHttpWebClient::new(self.connector)
     }
 
     /// Build a connector from the currently configured setup
