@@ -5,6 +5,9 @@ use crate::BoxError;
 /// Rarely will you need [`OpaqueError`],
 /// it can however be a useful last-resort in case you
 /// get weird higher-rank Lifetime issues...
+///
+/// Such lifetime issues often arise when using [`BoxError`]
+/// directly as the error for a `BoxService`.
 pub struct OpaqueError(BoxError);
 
 impl OpaqueError {

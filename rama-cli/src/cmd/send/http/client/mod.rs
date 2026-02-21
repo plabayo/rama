@@ -1,6 +1,6 @@
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     http::{
         Request, Response, StreamingBody,
         client::{
@@ -15,7 +15,7 @@ use rama::{
             required_header::AddRequiredRequestHeadersLayer,
         },
     },
-    layer::{HijackLayer, MapResultLayer, TimeoutLayer, layer_fn},
+    layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
         tls::client::ServerVerifyMode,
         user::{Basic, ProxyCredential},
@@ -53,7 +53,7 @@ mod writer;
 
 pub(super) async fn new(
     cfg: &SendCommand,
-) -> Result<impl Service<Request, Output = Response, Error = BoxError>, BoxError> {
+) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
     let writer = writer::try_new(cfg).await?;
 
     let inner_client = new_inner_client(cfg)?;
@@ -114,6 +114,7 @@ pub(super) async fn new(
         },
         SetProxyAuthHttpHeaderLayer::default(),
         HijackLayer::new(cfg.curl, curl_writer::CurlWriter { writer }),
+        MapErrLayer::into_box_error(),
         layer_fn(move |svc| logger_headers_res::ResponseHeaderLogger {
             inner: svc,
             show_headers,
@@ -125,7 +126,7 @@ pub(super) async fn new(
 
 fn new_inner_client(
     cfg: &SendCommand,
-) -> Result<impl Service<Request, Output = Response, Error = BoxError> + Clone, BoxError> {
+) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate {
         TlsConnectorDataBuilder::new()
     } else {
@@ -209,13 +210,13 @@ pub(super) struct VerboseLogs;
 
 fn map_internal_client_error<E, Body>(
     result: Result<Response<Body>, E>,
-) -> Result<Response, BoxError>
+) -> Result<Response, OpaqueError>
 where
     E: Into<BoxError>,
     Body: StreamingBody<Data = rama::bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     match result {
         Ok(response) => Ok(response.map(rama::http::Body::new)),
-        Err(err) => Err(err.into()),
+        Err(err) => Err(err.into_opaque_error()),
     }
 }

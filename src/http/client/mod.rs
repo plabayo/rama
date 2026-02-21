@@ -18,7 +18,10 @@ use crate::{
 
 #[doc(inline)]
 pub use ::rama_http_backend::client::*;
-use rama_core::error::ErrorExt as _;
+use rama_core::{
+    error::{ErrorContext, ErrorExt as _, extra::OpaqueError},
+    layer::MapErr,
+};
 
 pub mod builder;
 #[doc(inline)]
@@ -43,7 +46,7 @@ pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnector
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
 pub struct EasyHttpWebClient<BodyIn, ConnResponse, L> {
-    connector: BoxService<Request<BodyIn>, ConnResponse, BoxError>,
+    connector: BoxService<Request<BodyIn>, ConnResponse, OpaqueError>,
     jit_layers: L,
 }
 
@@ -130,12 +133,18 @@ where
     }
 }
 
-impl<BodyIn, ConnResponse> EasyHttpWebClient<BodyIn, ConnResponse, ()> {
+impl<BodyIn, ConnResponse> EasyHttpWebClient<BodyIn, ConnResponse, ()>
+where
+    BodyIn: Send + 'static,
+{
     /// Create a new [`EasyHttpWebClient`] using the provided connector
     #[must_use]
-    pub fn new(connector: BoxService<Request<BodyIn>, ConnResponse, BoxError>) -> Self {
+    pub fn new<S>(connector: S) -> Self
+    where
+        S: Service<Request<BodyIn>, Output = ConnResponse, Error: Into<BoxError>>,
+    {
         Self {
-            connector,
+            connector: MapErr::into_opaque_error(connector).boxed(),
             jit_layers: (),
         }
     }
@@ -144,12 +153,16 @@ impl<BodyIn, ConnResponse> EasyHttpWebClient<BodyIn, ConnResponse, ()> {
 impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
     /// Set the connector that this [`EasyHttpWebClient`] will use
     #[must_use]
-    pub fn with_connector<BodyInNew, ConnResponseNew>(
+    pub fn with_connector<S, BodyInNew, ConnResponseNew>(
         self,
-        connector: BoxService<Request<BodyInNew>, ConnResponseNew, BoxError>,
-    ) -> EasyHttpWebClient<BodyInNew, ConnResponseNew, L> {
+        connector: S,
+    ) -> EasyHttpWebClient<BodyInNew, ConnResponseNew, L>
+    where
+        S: Service<Request<BodyInNew>, Output = ConnResponseNew, Error: Into<BoxError>>,
+        BodyInNew: Send + 'static,
+    {
         EasyHttpWebClient {
-            connector,
+            connector: MapErr::into_opaque_error(connector).boxed(),
             jit_layers: self.jit_layers,
         }
     }
@@ -187,7 +200,7 @@ where
         + 'static,
 {
     type Output = Response;
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let uri = req.uri().clone();
@@ -195,7 +208,7 @@ where
         let EstablishedClientConnection {
             input: mut req,
             conn: http_connection,
-        } = self.connector.serve(req).await?;
+        } = self.connector.serve(req).await.into_opaque_error()?;
 
         req.extensions_mut()
             .extend(http_connection.extensions().clone());
@@ -214,7 +227,8 @@ where
             }
             Err(err) => Err(err
                 .context("http request failure")
-                .context_field("uri", uri)),
+                .context_field("uri", uri)
+                .into_opaque_error()),
         }
     }
 }
