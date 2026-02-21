@@ -454,6 +454,18 @@ impl RamaService {
         Self::run(args)
     }
 
+    /// Run the resolve command
+    pub(super) fn resolve(
+        domain: &'static str,
+        record_type: Option<&'static str>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let mut args = vec!["resolve", domain];
+        if let Some(rt) = record_type {
+            args.push(rt);
+        }
+        Self::run(args)
+    }
+
     /// Start the rama serve service with the given port and content path.
     pub(super) fn serve_fs(port: u16, path: Option<PathBuf>) -> Self {
         let secure = true;

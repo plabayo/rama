@@ -5,6 +5,7 @@
 
 use super::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
 use crate::Service;
+use rama_error::{BoxError, ErrorContext, ErrorExt};
 use rama_utils::macros::define_inner_service_accessors;
 use std::time::Duration;
 
@@ -99,19 +100,19 @@ impl<T, F, Input, E> Service<Input> for Timeout<T, F>
 where
     Input: Send + 'static,
     F: MakeLayerError<Error = E>,
-    E: Into<T::Error> + Send + 'static,
-    T: Service<Input>,
+    E: Into<BoxError> + Send + 'static,
+    T: Service<Input, Error: Into<BoxError>>,
 {
     type Output = T::Output;
-    type Error = T::Error;
+    type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         match self.timeout {
             Some(duration) => tokio::select! {
-                res = self.inner.serve(input) => res,
-                _ = tokio::time::sleep(duration) => Err(self.into_error.make_layer_error().into()),
+                res = self.inner.serve(input) => res.into_box_error(),
+                _ = tokio::time::sleep(duration) => Err(self.into_error.make_layer_error().into_box_error()),
             },
-            None => self.inner.serve(input).await,
+            None => self.inner.serve(input).await.into_box_error(),
         }
     }
 }

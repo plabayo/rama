@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+#[cfg(feature = "http-full")]
+use rama::http::Body;
 use rama::telemetry::tracing::{
     self,
     level_filters::LevelFilter,
@@ -19,7 +21,7 @@ use rama::{
     error::BoxError,
     http::StreamingBody,
     http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
-    http::service::client::{HttpClientExt, IntoUrl, RequestBuilder, ext as http_ext},
+    http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::ws::handshake::client::{HttpClientWebSocketExt, WebSocketRequestBuilder, WithService},
     http::{
         Request, Response,
@@ -217,37 +219,25 @@ impl ExampleRunner {
 
     #[cfg(feature = "http-full")]
     /// Create a `GET` http request to be sent to the child server.
-    pub(super) fn get(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<http_ext::RQBorrowedService<'_, ClientService>> {
+    pub(super) fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.get(url)
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `HEAD` http request to be sent to the child server.
-    pub(super) fn head(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<http_ext::RQBorrowedService<'_, ClientService>> {
+    pub(super) fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.head(url)
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `POST` http request to be sent to the child server.
-    pub(super) fn post(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<http_ext::RQBorrowedService<'_, ClientService>> {
+    pub(super) fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.post(url)
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `DELETE` http request to be sent to the child server.
-    pub(super) fn delete(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<http_ext::RQBorrowedService<'_, ClientService>> {
+    pub(super) fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.delete(url)
     }
 
@@ -256,7 +246,7 @@ impl ExampleRunner {
     pub(super) fn websocket(
         &self,
         url: impl IntoUrl,
-    ) -> WebSocketRequestBuilder<WithService<http_ext::RQBorrowedService<'_, ClientService>>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, ClientService, Body>> {
         self.client.websocket(url)
     }
 
@@ -265,7 +255,7 @@ impl ExampleRunner {
     pub(super) fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebSocketRequestBuilder<WithService<http_ext::RQBorrowedService<'_, ClientService>>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, ClientService, Body>> {
         self.client.websocket_h2(url)
     }
 }

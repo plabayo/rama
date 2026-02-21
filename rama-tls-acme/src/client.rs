@@ -12,7 +12,8 @@ use parking_lot::Mutex;
 use rama_core::{
     Service,
     bytes::Bytes,
-    error::{BoxError, ErrorContext, ErrorExt as _},
+    error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
+    layer::MapErr,
     service::BoxService,
 };
 use rama_crypto::{
@@ -43,7 +44,7 @@ use tokio::time::sleep;
 #[derive(Debug)]
 /// Acme client that will used for all acme operations
 pub struct AcmeClient {
-    https_client: BoxService<Request, Response, BoxError>,
+    https_client: BoxService<Request, Response, OpaqueError>,
     directory: server::Directory,
     nonce: Mutex<Option<String>>,
     default_retry_duration: Duration,
@@ -57,9 +58,9 @@ impl AcmeClient {
     /// Fails in case the ACME `Directory` could not be fetched.
     pub async fn try_new<S>(directory_url: &str, https_client: S) -> Result<Self, BoxError>
     where
-        S: Service<Request, Output = Response, Error = BoxError>,
+        S: Service<Request, Output = Response, Error: std::error::Error + Send + Sync + 'static>,
     {
-        let https_client = https_client.boxed();
+        let https_client = MapErr::into_opaque_error(https_client).boxed();
 
         let directory = https_client
             .get(directory_url)
@@ -82,7 +83,7 @@ impl AcmeClient {
         https_client: S,
     ) -> Result<Self, BoxError>
     where
-        S: Service<Request, Output = Response, Error = BoxError>,
+        S: Service<Request, Output = Response, Error: std::error::Error + Send + Sync + 'static>,
     {
         Self::try_new(provider.as_directory_url(), https_client).await
     }

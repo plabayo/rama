@@ -18,6 +18,8 @@ use crate::{Service, service::BoxService};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
+use rama_core::error::extra::OpaqueError;
+use rama_core::layer::MapErr;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +44,7 @@ pub struct CertOrderOutput {
 pub struct CertIssuerHttpClient {
     endpoint: Uri,
     allow_list: Option<DomainTrie<DomainAllowMode>>,
-    http_client: BoxService<Request, Response, BoxError>,
+    http_client: BoxService<Request, Response, OpaqueError>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,10 +56,7 @@ enum DomainAllowMode {
 impl CertIssuerHttpClient {
     /// Create a new [`CertIssuerHttpClient`] using the default [`EasyHttpWebClient`].
     pub fn new(exec: Executor, endpoint: Uri) -> Self {
-        Self::new_with_client(
-            endpoint,
-            EasyHttpWebClient::default_with_executor(exec).boxed(),
-        )
+        Self::new_with_client(endpoint, EasyHttpWebClient::default_with_executor(exec))
     }
 
     #[cfg(feature = "boring")]
@@ -110,11 +109,10 @@ impl CertIssuerHttpClient {
                     Bearer::try_from(auth_raw)
                         .context("try to create Bearer using RAMA_TLS_REMOTE_AUTH")?,
                 ))
-                .into_layer(client)
-                .boxed(),
+                .into_layer(client),
             )
         } else {
-            Self::new_with_client(uri, client.boxed())
+            Self::new_with_client(uri, client)
         };
 
         if let Ok(allow_cn_csv_raw) = std::env::var("RAMA_TLS_REMOTE_CN_CSV") {
@@ -132,11 +130,19 @@ impl CertIssuerHttpClient {
     /// The custom http client allows you to add whatever layers and client implementation
     /// you wish, to allow for custom headers, behaviour and security measures
     /// such as authorization.
-    pub fn new_with_client(endpoint: Uri, client: BoxService<Request, Response, BoxError>) -> Self {
+    pub fn new_with_client(
+        endpoint: Uri,
+        client: impl Service<
+            Request,
+            Output = Response,
+            Error: std::error::Error + Send + Sync + 'static,
+        >,
+    ) -> Self {
+        let http_client = MapErr::into_opaque_error(client).boxed();
         Self {
             endpoint,
             allow_list: None,
-            http_client: client,
+            http_client,
         }
     }
 
@@ -188,16 +194,11 @@ impl CertIssuerHttpClient {
     }
 
     async fn fetch_certs(&self, domain: Domain) -> Result<ServerAuthData, BoxError> {
-        let req = self
+        let response = self
             .http_client
             .post(self.endpoint.clone())
             .json(&CertOrderInput { domain })
-            .try_into_request()
-            .context("builld request")?;
-
-        let response = self
-            .http_client
-            .serve(req)
+            .send()
             .await
             .context("send order request")?;
 
