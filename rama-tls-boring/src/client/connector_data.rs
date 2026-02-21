@@ -1086,7 +1086,7 @@ impl TlsConnectorDataBuilder {
                             "TlsConnectorData: builder: from std client config: application settings (ALPS): {:?}",
                             protocols
                         );
-                        alps = Some((protocols.clone(), new_codepoint.clone()));
+                        alps = Some((protocols.clone(), *new_codepoint));
                     }
                     other => match other.id() {
                         ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
