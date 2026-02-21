@@ -747,6 +747,19 @@ where
         }
     }
 
+    /// Constructs the [`Request`].
+    ///
+    /// # Errors
+    ///
+    /// This method fails if there was an error while constructing the [`Request`].
+    pub async fn try_into_request(self) -> Result<Request, BoxError> {
+        Ok(match self.state {
+            RequestBuilderState::PreBody(builder) => builder.body(crate::Body::empty())?,
+            RequestBuilderState::PostBody(request) => request,
+            RequestBuilderState::Error(err) => return Err(err),
+        })
+    }
+
     /// Constructs the [`Request`] and sends it to the target [`Uri`], returning a future [`Response`].
     ///
     /// # Errors
