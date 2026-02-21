@@ -285,7 +285,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.rust }}"
-          key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
+          key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}-rama-boring-0.5.11
       - run: rustup target add ${{ matrix.target }}
       - name: Setup Android NDK
         if: endsWith(matrix.thing, '-android')
