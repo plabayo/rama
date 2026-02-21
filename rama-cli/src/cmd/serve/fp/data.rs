@@ -503,10 +503,10 @@ pub(super) async fn get_tls_display_info_and_store(
                         )),
                     }
                 }
-                ClientHelloExtension::ApplicationSettings(v) => TlsDisplayInfoExtension {
+                ClientHelloExtension::ApplicationSettings { protocols, .. } => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
                     data: Some(TlsDisplayInfoExtensionData::Multi(
-                        v.iter().map(|s| s.to_string()).collect(),
+                        protocols.iter().map(|s| s.to_string()).collect(),
                     )),
                 },
                 ClientHelloExtension::SupportedGroups(v) => TlsDisplayInfoExtension {
