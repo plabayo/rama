@@ -223,8 +223,11 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
             let (i, ech) = parse_ech_client_hello(ext_data)?;
             Ok((i, ClientHelloExtension::EncryptedClientHello(ech)))
         }
-        ExtensionId::APPLICATION_SETTINGS | ExtensionId::OLD_APPLICATION_SETTINGS => {
-            parse_tls_extension_application_settings_content(ext_data)
+        ExtensionId::APPLICATION_SETTINGS => {
+            parse_tls_extension_application_settings_content(ext_data, true)
+        }
+        ExtensionId::OLD_APPLICATION_SETTINGS => {
+            parse_tls_extension_application_settings_content(ext_data, false)
         }
         _ => Ok((
             i,
@@ -404,15 +407,21 @@ fn parse_protocol_name(i: &[u8]) -> IResult<&[u8], ApplicationProtocol> {
 
 fn parse_tls_extension_application_settings_content(
     i: &[u8],
+    new_codepoint: bool,
 ) -> IResult<&[u8], ClientHelloExtension> {
-    map_parser(
+    let (n, alps) = map_parser(
         length_data(be_u16),
-        map(
-            parse_protocol_name_list,
-            ClientHelloExtension::ApplicationSettings,
-        ),
+        parse_protocol_name_list,
+        
     )
-    .parse(i)
+    .parse(i)?;
+
+    let application_settings = ClientHelloExtension::ApplicationSettings {
+        protocols: alps,
+        new_codepoint,
+    };
+
+    Ok((n, application_settings))
 }
 
 fn parse_u8_type<T: From<u8>>(i: &[u8]) -> IResult<&[u8], Vec<T>> {
