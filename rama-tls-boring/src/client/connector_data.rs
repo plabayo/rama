@@ -757,7 +757,7 @@ impl TlsConnectorDataBuilder {
             .context("create ssl connector configuration")?;
 
         if let Some((alps_list, new_codepoint)) = self.alps() {
-            trace!("boring connector: set APLS config");
+            trace!("boring connector: set ALPS config");
             cfg.set_alps_use_new_codepoint(*new_codepoint);
             for app_proto in alps_list {
                 cfg.add_application_settings(app_proto.as_bytes())
