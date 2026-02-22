@@ -287,9 +287,39 @@ jobs:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.rust }}"
           key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
       - run: rustup target add ${{ matrix.target }}
-      - name: Set Android Linker path
+      - name: Configure Android toolchain env
         if: endsWith(matrix.thing, '-android')
-        run: echo "CARGO_TARGET_$(echo ${{ matrix.target }} | tr \\-a-z _A-Z)_LINKER=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/$(echo ${{ matrix.target }} | sed s/armv7/armv7a/)21-clang++" >> "$GITHUB_ENV"
+        shell: bash
+        run: |
+          ANDROID_API=21
+
+          # Normalize NDK env vars
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-$ANDROID_NDK}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=${ANDROID_NDK:-$ANDROID_NDK_HOME}" >> "$GITHUB_ENV"
+
+          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "${TOOLCHAIN}" >> "$GITHUB_PATH"
+
+          TRIPLE="${{ matrix.target }}"
+          TARGET_UPPER="$(echo "${TRIPLE}" | tr '[:lower:]-' '[:upper:]_')"
+          TARGET_LOWER_UNDERSCORES="$(echo "${TRIPLE}" | tr '-' '_' | tr '[:upper:]' '[:lower:]')"
+          NDK_TRIPLE="$(echo "${TRIPLE}" | sed 's/^armv7/armv7a/')"
+
+          CC_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang"
+          CXX_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++"
+          AR_PATH="${TOOLCHAIN}/llvm-ar"
+
+          echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${CXX_PATH}" >> "$GITHUB_ENV"
+
+          # Target specific for cc-rs style
+          echo "CC_${TARGET_LOWER_UNDERSCORES}=${CC_PATH}" >> "$GITHUB_ENV"
+          echo "CXX_${TARGET_LOWER_UNDERSCORES}=${CXX_PATH}" >> "$GITHUB_ENV"
+          echo "AR_${TARGET_LOWER_UNDERSCORES}=${AR_PATH}" >> "$GITHUB_ENV"
+
+          # Also set generic vars in case your Config only reads CC/CXX/AR
+          echo "CC=${CC_PATH}" >> "$GITHUB_ENV"
+          echo "CXX=${CXX_PATH}" >> "$GITHUB_ENV"
+          echo "AR=${AR_PATH}" >> "$GITHUB_ENV"
       - name: check
         env: ${{ matrix.custom_env }}
         run: |
