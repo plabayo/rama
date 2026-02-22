@@ -61,19 +61,19 @@ but still directly in function of Rama.
 
 - <https://github.com/cloudflare/boring/tree/e71b24328f1cd787f64036d8208a4470ae58e200>
   - boring:
-    - Fork: <https://github.com/plabayo/rama-boring/tree/7b3fb171483c6250dc607520cd7cc71c85843ee1/boring>
+    - Fork: <https://github.com/plabayo/rama-boring/tree/master/boring>
     - License:
       - Original: <https://github.com/cloudflare/boring/blob/e71b24328f1cd787f64036d8208a4470ae58e200/boring/LICENSE>
       - Type: Apache 2.0
       - Copy: [./licenses/boring](./licenses/boring)
   - boring-sys:
-    - Fork: <https://github.com/plabayo/rama-boring/tree/7b3fb171483c6250dc607520cd7cc71c85843ee1/boring-sys>
+    - Fork: <https://github.com/plabayo/rama-boring/tree/master/boring-sys>
     - License:
       - Original: <https://github.com/cloudflare/boring/blob/e71b24328f1cd787f64036d8208a4470ae58e200/boring-sys/LICENSE-MIT>
       - Type: MIT
       - Copy: [./licenses/boring-sys](./licenses/boring-sys)
   - tokio-boring:
-    - Fork: <https://github.com/plabayo/rama-boring/tree/7b3fb171483c6250dc607520cd7cc71c85843ee1/tokio-boring>
+    - Fork: <https://github.com/plabayo/rama-boring/tree/master/tokio-boring>
     - License:
       - Original: <https://github.com/cloudflare/boring/blob/e71b24328f1cd787f64036d8208a4470ae58e200/tokio-boring/LICENSE-MIT>
       - Type: MIT
