@@ -6,6 +6,7 @@ use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
+use rama_http::HeaderName;
 use rama_http::proto::h1::ext::ReasonPhrase;
 use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
 use rama_http_types::header::Entry;
@@ -129,7 +130,11 @@ impl Http1Transaction for Server {
             trace!("Request.parse: bytes = {}", buf.len());
             let mut req = httparse::Request::new(&mut []);
             let bytes = buf.as_ref();
-            match req.parse_with_uninit_headers(bytes, &mut headers) {
+            match ctx.h1_parser_config.parse_request_with_uninit_headers(
+                &mut req,
+                bytes,
+                &mut headers,
+            ) {
                 Ok(httparse::Status::Complete(parsed_len)) => {
                     trace!("Request.parse Complete({parsed_len})");
                     len = parsed_len;
@@ -518,7 +523,7 @@ impl Server {
         };
 
         let mut encoder = Encoder::length(0);
-        let mut allowed_trailer_fields: Option<Vec<HeaderValue>> = None;
+        let mut allowed_trailer_fields: Option<Vec<HeaderName>> = None;
         let mut wrote_date = false;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
@@ -704,12 +709,22 @@ impl Server {
                         extend(dst, value.as_bytes());
                     }
 
-                    match allowed_trailer_fields {
-                        Some(ref mut allowed_trailer_fields) => {
-                            allowed_trailer_fields.push(value);
-                        }
-                        None => {
-                            allowed_trailer_fields = Some(vec![value]);
+                    // Parse the Trailer header value into HeaderNames.
+                    // The value may contain comma-separated names.
+                    // HeaderName normalizes to lowercase for case-insensitive matching.
+                    if let Ok(value_str) = value.to_str() {
+                        let names: Vec<HeaderName> = value_str
+                            .split(',')
+                            .filter_map(|s| HeaderName::from_bytes(s.trim().as_bytes()).ok())
+                            .collect();
+
+                        match allowed_trailer_fields {
+                            Some(ref mut fields) => {
+                                fields.extend(names);
+                            }
+                            None => {
+                                allowed_trailer_fields = Some(names);
+                            }
                         }
                     }
 
@@ -1200,8 +1215,16 @@ impl Client {
 
         let encoder = encoder.map(|enc| {
             if enc.is_chunked() {
-                let allowed_trailer_fields: Vec<HeaderValue> =
-                    headers.get_all(header::TRAILER).iter().cloned().collect();
+                // Parse Trailer header values into HeaderNames.
+                // Each Trailer header value may contain comma-separated names.
+                // HeaderName normalizes to lowercase, enabling case-insensitive matching.
+                let allowed_trailer_fields: Vec<HeaderName> = headers
+                    .get_all(header::TRAILER)
+                    .iter()
+                    .filter_map(|hv| hv.to_str().ok())
+                    .flat_map(|s| s.split(','))
+                    .filter_map(|s| HeaderName::from_bytes(s.trim().as_bytes()).ok())
+                    .collect();
 
                 if !allowed_trailer_fields.is_empty() {
                     return enc.into_chunked_with_trailing_fields(allowed_trailer_fields);
@@ -1438,6 +1461,7 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use httparse::ParserConfig;
     use rama_core::bytes::BytesMut;
     use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 
@@ -1575,6 +1599,47 @@ mod tests {
             extensions: &mut Some(Extensions::default()),
         };
         Client::parse(&mut raw, ctx).unwrap_err();
+    }
+
+    const REQUEST_WITH_MULTIPLE_SPACES_IN_REQUEST_LINE: &str =
+        "GET  /echo  HTTP/1.1\r\nHost: hyper.rs\r\n\r\n";
+
+    #[test]
+    fn test_parse_allow_request_with_multiple_spaces_in_request_line() {
+        let mut raw = BytesMut::from(REQUEST_WITH_MULTIPLE_SPACES_IN_REQUEST_LINE);
+        let mut h1_parser_config = ParserConfig::default();
+        h1_parser_config.allow_multiple_spaces_in_request_line_delimiters(true);
+        let mut method = None;
+        let ctx = ParseContext {
+            req_method: &mut method,
+            h1_parser_config,
+            h1_max_headers: None,
+            h09_responses: false,
+            on_informational: &mut None,
+            extensions: &mut Some(Extensions::default()),
+        };
+        let msg = Server::parse(&mut raw, ctx).unwrap().unwrap();
+        assert_eq!(raw.len(), 0);
+        assert_eq!(msg.head.subject.0, Method::GET);
+        assert_eq!(msg.head.subject.1, "/echo");
+        assert_eq!(msg.head.version, Version::HTTP_11);
+        assert_eq!(msg.head.headers.len(), 1);
+        assert_eq!(msg.head.headers["Host"], "hyper.rs");
+        assert_eq!(method, Some(Method::GET));
+    }
+
+    #[test]
+    fn test_parse_reject_request_with_multiple_spaces_in_request_line() {
+        let mut raw = BytesMut::from(REQUEST_WITH_MULTIPLE_SPACES_IN_REQUEST_LINE);
+        let ctx = ParseContext {
+            req_method: &mut None,
+            h1_parser_config: Default::default(),
+            h1_max_headers: None,
+            h09_responses: false,
+            on_informational: &mut None,
+            extensions: &mut Some(Extensions::default()),
+        };
+        Server::parse(&mut raw, ctx).unwrap_err();
     }
 
     #[test]

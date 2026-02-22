@@ -80,6 +80,7 @@ pub(crate) struct Config {
     pub(crate) max_concurrent_reset_streams: Option<usize>,
     pub(crate) max_send_buffer_size: u32,
     pub(crate) max_pending_accept_reset_streams: Option<usize>,
+    pub(crate) max_local_error_reset_streams: Option<usize>,
     pub(crate) header_table_size: Option<u32>,
     pub(crate) max_concurrent_streams: Option<u32>,
     pub(crate) enable_push: bool,
@@ -103,6 +104,7 @@ impl Default for Config {
             max_concurrent_reset_streams: None,
             max_send_buffer_size: DEFAULT_MAX_SEND_BUF_SIZE,
             max_pending_accept_reset_streams: None,
+            max_local_error_reset_streams: Some(1024),
             header_table_size: None,
             max_concurrent_streams: None,
             enable_push: false,
@@ -120,6 +122,7 @@ pub(crate) fn new_builder(config: &Config) -> Builder {
         .with_initial_connection_window_size(config.initial_conn_window_size)
         .with_max_header_list_size(config.max_header_list_size)
         .with_max_send_buffer_size(config.max_send_buffer_size)
+        .maybe_with_max_local_error_reset_streams(config.max_local_error_reset_streams)
         .with_enable_push(config.enable_push);
 
     if let Some(max) = config.max_frame_size {

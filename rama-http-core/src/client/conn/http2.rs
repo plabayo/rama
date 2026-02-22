@@ -370,7 +370,7 @@ impl Builder {
         /// table used to encode header blocks, in octets. The encoder may select any value
         /// equal to or less than the header table size specified by the sender.
         ///
-        /// The default value of crate `h2` is 4,096.
+        /// The default value is 4,096.
         pub fn header_table_size(mut self, size: impl Into<Option<u32>>) -> Self {
             self.h2_builder.header_table_size = size.into();
             self
@@ -395,7 +395,7 @@ impl Builder {
         /// setting.
         ///
         /// Also note that if the remote *does* exceed the value set here, it is not
-        /// a protocol level error. Instead, the `h2` library will immediately reset
+        /// a protocol level error. Instead, the `h2` code will immediately reset
         /// the stream.
         ///
         /// See [Section 5.1.2] in the HTTP/2 spec for more details.
@@ -451,12 +451,10 @@ impl Builder {
     rama_utils::macros::generate_set_and_with! {
         /// Sets the maximum number of HTTP2 concurrent locally reset streams.
         ///
-        /// See the documentation of [`h2::client::Builder::max_concurrent_reset_streams`] for more
+        /// See the documentation of [`crate::h2::client::Builder::with_max_concurrent_reset_streams`] for more
         /// details.
         ///
-        /// The default value is determined by the `h2` crate.
-        ///
-        /// [`h2::client::Builder::max_concurrent_reset_streams`]: https://docs.rs/h2/client/struct.Builder.html#method.max_concurrent_reset_streams
+        /// The default value is determined by the `h2` code.
         pub fn max_concurrent_reset_streams(mut self, max: usize) -> Self {
             self.h2_builder.max_concurrent_reset_streams = Some(max);
             self
@@ -521,6 +519,19 @@ impl Builder {
     rama_utils::macros::generate_set_and_with! {
         pub fn early_frames(mut self, frames: Vec<EarlyFrame>) -> Self {
             self.early_frames = Some(frames);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Configures the maximum number of local resets due to protocol errors made by the remote end.
+        ///
+        /// See the documentation of [`crate::h2::client::Builder::with_max_local_error_reset_streams`] for more
+        /// details.
+        ///
+        /// The default value is 1024.
+        pub fn max_local_error_reset_streams(mut self, max: impl Into<Option<usize>>) -> Self {
+            self.h2_builder.max_local_error_reset_streams = max.into();
             self
         }
     }
