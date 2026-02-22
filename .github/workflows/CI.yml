@@ -285,36 +285,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.rust }}"
-          key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}-rama-boring-0.5.11
+          key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
       - run: rustup target add ${{ matrix.target }}
-      - name: Setup Android NDK
+      - name: Set Android Linker path
         if: endsWith(matrix.thing, '-android')
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26d
-      - name: Configure Android toolchain env
-        if: endsWith(matrix.thing, '-android')
-        shell: bash
-        run: |
-          ANDROID_API=21
-          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          echo "${TOOLCHAIN}" >> "$GITHUB_PATH"
-
-          TRIPLE="${{ matrix.target }}"
-
-          # What Cargo expects for the linker env var name
-          TARGET_UPPER="$(echo "${TRIPLE}" | tr '[:lower:]-' '[:upper:]_')"
-
-          # What cc-rs expects for CC_*/CXX_* env var names
-          TARGET_LOWER_UNDERSCORES="$(echo "${TRIPLE}" | tr '-' '_' | tr '[:upper:]' '[:lower:]')"
-
-          # What the NDK clang wrapper is called
-          NDK_TRIPLE="$(echo "${TRIPLE}" | sed 's/^armv7/armv7a/')"
-
-          echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
-          echo "CC_${TARGET_LOWER_UNDERSCORES}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang" >> "$GITHUB_ENV"
-          echo "CXX_${TARGET_LOWER_UNDERSCORES}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
-          echo "AR_${TARGET_LOWER_UNDERSCORES}=${TOOLCHAIN}/llvm-ar" >> "$GITHUB_ENV"
+        run: echo "CARGO_TARGET_$(echo ${{ matrix.target }} | tr \\-a-z _A-Z)_LINKER=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/$(echo ${{ matrix.target }} | sed s/armv7/armv7a/)21-clang++" >> "$GITHUB_ENV"
       - name: check
         env: ${{ matrix.custom_env }}
         run: |
