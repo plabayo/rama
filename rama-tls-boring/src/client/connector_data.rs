@@ -82,6 +82,7 @@ pub struct TlsConnectorDataBuilder {
     server_verify_cert_store: Option<Arc<X509Store>>,
     store_server_certificate_chain: Option<bool>,
     alpn_protos: Option<Bytes>,
+    alps: Option<(Vec<ApplicationProtocol>, bool)>,
     min_ssl_version: Option<SslVersion>,
     max_ssl_version: Option<SslVersion>,
     record_size_limit: Option<u16>,
@@ -179,6 +180,7 @@ impl TlsConnectorDataBuilder {
         cipher_list: Option<Vec<u16>>,
         extension_order: Option<Vec<u16>>,
         alpn_protos: Option<Bytes>,
+        alps: Option<(Vec<ApplicationProtocol>, bool)>,
         curves: Option<Vec<SslCurve>>,
         verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
         client_auth: Option<ConnectorConfigClientAuth>,
@@ -754,6 +756,15 @@ impl TlsConnectorDataBuilder {
             .configure()
             .context("create ssl connector configuration")?;
 
+        if let Some((alps_list, new_codepoint)) = self.alps() {
+            trace!("boring connector: set ALPS config");
+            cfg.set_alps_use_new_codepoint(*new_codepoint);
+            for app_proto in alps_list {
+                cfg.add_application_settings(app_proto.as_bytes())
+                    .context("set alps application settings")?;
+            }
+        }
+
         if let Some(limit) = self.record_size_limit() {
             trace!("boring connector: setting record size limit");
             cfg.set_record_size_limit(limit)
@@ -872,6 +883,7 @@ impl TlsConnectorDataBuilder {
         let mut cipher_suites = None;
         let mut server_name = None;
         let mut alpn_protos = None;
+        let mut alps = None;
         let mut curves = None;
         let mut min_ssl_version = None;
         let mut max_ssl_version = None;
@@ -1068,6 +1080,16 @@ impl TlsConnectorDataBuilder {
                         );
                         encrypted_client_hello = Some(true);
                     }
+                    ClientHelloExtension::ApplicationSettings {
+                        protocols,
+                        new_codepoint,
+                    } => {
+                        trace!(
+                            "TlsConnectorData: builder: from std client config: application settings (ALPS): {:?}",
+                            protocols
+                        );
+                        alps = Some((protocols.clone(), *new_codepoint));
+                    }
                     other => match other.id() {
                         ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
                             trace!(
@@ -1109,6 +1131,7 @@ impl TlsConnectorDataBuilder {
             extension_order,
             cipher_list,
             alpn_protos,
+            alps,
             curves,
             min_ssl_version,
             max_ssl_version,

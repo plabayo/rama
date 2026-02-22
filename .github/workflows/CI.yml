@@ -41,13 +41,6 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
@@ -89,13 +82,6 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: clippy
         run: |
           cargo clippy --workspace --all-targets --all-features
@@ -142,13 +128,6 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: Run tests (cargo test)
         run: cargo nextest run --all-features --workspace
       - name: Run doc tests (cargo test)
@@ -308,34 +287,39 @@ jobs:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.rust }}"
           key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
       - run: rustup target add ${{ matrix.target }}
-      - name: Setup Android NDK
-        if: endsWith(matrix.thing, '-android')
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26d
       - name: Configure Android toolchain env
         if: endsWith(matrix.thing, '-android')
         shell: bash
         run: |
           ANDROID_API=21
+
+          # Normalize NDK env vars
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-$ANDROID_NDK}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=${ANDROID_NDK:-$ANDROID_NDK_HOME}" >> "$GITHUB_ENV"
+
           TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
           echo "${TOOLCHAIN}" >> "$GITHUB_PATH"
 
           TRIPLE="${{ matrix.target }}"
-
-          # What Cargo expects for the linker env var name
           TARGET_UPPER="$(echo "${TRIPLE}" | tr '[:lower:]-' '[:upper:]_')"
-
-          # What cc-rs expects for CC_*/CXX_* env var names
           TARGET_LOWER_UNDERSCORES="$(echo "${TRIPLE}" | tr '-' '_' | tr '[:upper:]' '[:lower:]')"
-
-          # What the NDK clang wrapper is called
           NDK_TRIPLE="$(echo "${TRIPLE}" | sed 's/^armv7/armv7a/')"
 
-          echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
-          echo "CC_${TARGET_LOWER_UNDERSCORES}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang" >> "$GITHUB_ENV"
-          echo "CXX_${TARGET_LOWER_UNDERSCORES}=${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
-          echo "AR_${TARGET_LOWER_UNDERSCORES}=${TOOLCHAIN}/llvm-ar" >> "$GITHUB_ENV"
+          CC_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang"
+          CXX_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++"
+          AR_PATH="${TOOLCHAIN}/llvm-ar"
+
+          echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${CXX_PATH}" >> "$GITHUB_ENV"
+
+          # Target specific for cc-rs style
+          echo "CC_${TARGET_LOWER_UNDERSCORES}=${CC_PATH}" >> "$GITHUB_ENV"
+          echo "CXX_${TARGET_LOWER_UNDERSCORES}=${CXX_PATH}" >> "$GITHUB_ENV"
+          echo "AR_${TARGET_LOWER_UNDERSCORES}=${AR_PATH}" >> "$GITHUB_ENV"
+
+          # Also set generic vars in case your Config only reads CC/CXX/AR
+          echo "CC=${CC_PATH}" >> "$GITHUB_ENV"
+          echo "CXX=${CXX_PATH}" >> "$GITHUB_ENV"
+          echo "AR=${AR_PATH}" >> "$GITHUB_ENV"
       - name: check
         env: ${{ matrix.custom_env }}
         run: |
@@ -415,13 +399,6 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: Run tests (--ignored)
         run: |
           cargo nextest run --all-features --workspace --run-ignored=only
@@ -454,13 +431,6 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-        # https://github.com/rust-lang/cmake-rs/pull/259 breaks handling of long Windows paths
-        # https://github.com/cloudflare/boring/issues/414
-        # https://github.com/0x676e67/boring/commit/efacedb5bf409d0d773e8ce4f5080cb4b4c10f54
-      - name: Pin some dependencies, temporary patch for cmake breakage
-        if: startsWith(matrix.os, 'windows')
-        run: |
-          cargo update --package cmake --precise 0.1.54
       - name: Run tests in release mode (--ignored)
         run: |
           cargo nextest run --all-features --release --workspace --run-ignored=only
