@@ -100,7 +100,6 @@ trait DynService<Input> {
     #[allow(clippy::type_complexity)]
     fn serve_box(
         &self,
-
         input: Input,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send + '_>>;
 }
@@ -114,7 +113,6 @@ where
 
     fn serve_box(
         &self,
-
         input: Input,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send + '_>> {
         Box::pin(self.serve(input))

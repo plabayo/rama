@@ -366,6 +366,12 @@ fn resolve_uri(relative: &str, base: &Uri) -> Option<Uri> {
     Uri::try_from(uri).ok()
 }
 
+/* // ^TODO replace w/ something similar to
+let base_url = Url::parse(&base.to_string()).ok()?;
+let resolved = base_url.join(relative).ok()?;
+Uri::try_from(String::from(resolved)).ok()
+*/
+
 #[cfg(test)]
 mod tests {
     use super::{policy::*, *};
@@ -432,4 +438,31 @@ mod tests {
         }
         Ok::<_, Infallible>(res.body(n).unwrap())
     }
+
+    // TOOD: adapt + enable once we did Uri rework
+    // #[tokio::test]
+    // async fn test_resolve_uri_unicode() {
+    //     let base = Uri::from_static("https://example.com/api");
+    //     // Case 1: Unicode in path
+    //     let relative = "/café";
+    //     let resolved = resolve_uri(relative, &base);
+    //     assert!(resolved.is_some(), "Should resolve URI with unicode path");
+    //     assert_eq!(
+    //         resolved.unwrap().to_string(),
+    //         "https://example.com/caf%C3%A9"
+    //     );
+
+    //     // Case 2: IDNA (Unicode in domain)
+    //     let relative_domain = "https://münchen.com/";
+    //     let resolved_domain = resolve_uri(relative_domain, &base);
+    //     assert!(
+    //         resolved_domain.is_some(),
+    //         "Should resolve URI with unicode domain"
+    //     );
+    //     // München is encoded as punycode: xn--mnchen-3ya
+    //     assert_eq!(
+    //         resolved_domain.unwrap().to_string(),
+    //         "https://xn--mnchen-3ya.com/"
+    //     );
+    // }
 }

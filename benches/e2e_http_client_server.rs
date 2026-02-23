@@ -14,7 +14,7 @@ use std::{
 use rama::{
     Layer, Service,
     bytes::Bytes,
-    error::BoxError,
+    error::{BoxError, extra::OpaqueError},
     extensions::ExtensionsMut,
     http::{
         Body, HeaderName, HeaderValue, Request, Response, StatusCode, Version,

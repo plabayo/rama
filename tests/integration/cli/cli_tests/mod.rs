@@ -13,3 +13,4 @@ mod serve_proxy;
 mod serve_stunnel;
 
 mod probe;
+mod resolve;

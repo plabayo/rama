@@ -143,8 +143,8 @@ impl ClientHello {
     #[must_use]
     pub fn ext_alps(&self) -> Option<&[ApplicationProtocol]> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::ApplicationSettings(alpns) = ext {
-                return Some(&alpns[..]);
+            if let ClientHelloExtension::ApplicationSettings { protocols, .. } = ext {
+                return Some(&protocols[..]);
             }
         }
         None
@@ -239,7 +239,12 @@ pub enum ClientHelloExtension {
     /// # Reference
     ///
     /// - <https://www.ietf.org/archive/id/draft-vvv-tls-alps-01.html>
-    ApplicationSettings(Vec<ApplicationProtocol>),
+    ApplicationSettings {
+        /// application protocols supported for settings negotiation
+        protocols: Vec<ApplicationProtocol>,
+        /// whether to use the new ALPS extension codepoint (0x44cd) or the old one (0x4469)
+        new_codepoint: bool,
+    },
     /// used by the client to indicate which versions of TLS it supports
     ///
     /// # Reference
@@ -291,7 +296,13 @@ impl ClientHelloExtension {
             Self::ApplicationLayerProtocolNegotiation(_) => {
                 ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
             }
-            Self::ApplicationSettings(_) => ExtensionId::APPLICATION_SETTINGS,
+            Self::ApplicationSettings { new_codepoint, .. } => {
+                if *new_codepoint {
+                    ExtensionId::APPLICATION_SETTINGS
+                } else {
+                    ExtensionId::OLD_APPLICATION_SETTINGS
+                }
+            }
             Self::SupportedVersions(_) => ExtensionId::SUPPORTED_VERSIONS,
             Self::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
             Self::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,

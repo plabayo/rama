@@ -9,14 +9,14 @@ as a distant relative.
 
 ### hyperium
 
-- h2: <https://github.com/hyperium/h2/tree/e38678b1e2c465965f3ce5ec8d3040458415b376>
+- h2: <https://github.com/hyperium/h2/tree/5634dddea8ff9ed4e8df327a64765738f3e997d8>
   - License:
-    - Original: <https://github.com/hyperium/h2/blob/e38678b1e2c465965f3ce5ec8d3040458415b376/LICENSE>
+    - Original: <https://github.com/hyperium/h2/blob/5634dddea8ff9ed4e8df327a64765738f3e997d8/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/32b76f4742df62f4419b9f87ef464bc0b1c21e72>
+- hyper: <https://github.com/hyperium/hyper/tree/8ba900853b0f619b165e8530fc8c310bc13e056b>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/32b76f4742df62f4419b9f87ef464bc0b1c21e72/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/8ba900853b0f619b165e8530fc8c310bc13e056b/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
@@ -44,13 +44,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/1992ebd196467deffe193d5a073db655492ce168/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/1a55dd83ab9e2268453018877a74ce2171f4701a>
+- <https://github.com/tower-rs/tower-http/tree/2237ed67b0acb48d7e7cee13e73c33e7054f6ae4>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/1a55dd83ab9e2268453018877a74ce2171f4701a/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/2237ed67b0acb48d7e7cee13e73c33e7054f6ae4/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
@@ -59,23 +59,23 @@ as a distant relative.
 These are forks made within other code repositories,
 but still directly in function of Rama.
 
-- <https://github.com/cloudflare/boring/tree/47c33f64284a905bd1c26dc59c5eec6f5f38bf8b>
+- <https://github.com/cloudflare/boring/tree/e71b24328f1cd787f64036d8208a4470ae58e200>
   - boring:
-    - Fork: <https://github.com/plabayo/rama-boring/tree/7b3fb171483c6250dc607520cd7cc71c85843ee1/boring>
+    - Fork: <https://github.com/plabayo/rama-boring/tree/master/boring>
     - License:
-      - Original: <https://github.com/cloudflare/boring/blob/47c33f64284a905bd1c26dc59c5eec6f5f38bf8b/boring/LICENSE>
+      - Original: <https://github.com/cloudflare/boring/blob/e71b24328f1cd787f64036d8208a4470ae58e200/boring/LICENSE>
       - Type: Apache 2.0
       - Copy: [./licenses/boring](./licenses/boring)
   - boring-sys:
-    - Fork: <https://github.com/plabayo/rama-boring/tree/7b3fb171483c6250dc607520cd7cc71c85843ee1/boring-sys>
+    - Fork: <https://github.com/plabayo/rama-boring/tree/master/boring-sys>
     - License:
-      - Original: <https://github.com/cloudflare/boring/blob/47c33f64284a905bd1c26dc59c5eec6f5f38bf8b/boring-sys/LICENSE-MIT>
+      - Original: <https://github.com/cloudflare/boring/blob/e71b24328f1cd787f64036d8208a4470ae58e200/boring-sys/LICENSE-MIT>
       - Type: MIT
       - Copy: [./licenses/boring-sys](./licenses/boring-sys)
   - tokio-boring:
-    - Fork: <https://github.com/plabayo/rama-boring/tree/7b3fb171483c6250dc607520cd7cc71c85843ee1/tokio-boring>
+    - Fork: <https://github.com/plabayo/rama-boring/tree/master/tokio-boring>
     - License:
-      - Original: <https://github.com/cloudflare/boring/blob/47c33f64284a905bd1c26dc59c5eec6f5f38bf8b/tokio-boring/LICENSE-MIT>
+      - Original: <https://github.com/cloudflare/boring/blob/e71b24328f1cd787f64036d8208a4470ae58e200/tokio-boring/LICENSE-MIT>
       - Type: MIT
       - Copy: [./licenses/tokio-boring](./licenses/tokio-boring)
 
@@ -102,16 +102,16 @@ but still directly in function of Rama.
     - Original: <https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/rust-utf8](./licenses/rust-utf8)
-- <https://github.com/snapview/tungstenite-rs/tree/2d4abe8dba23b283c1a3d2f4f4937c2f9a8d91e7>
+- <https://github.com/snapview/tungstenite-rs/tree/59bee6404f3c126af71e33b3cf02627df0cae50a>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tungstenite-rs/blob/2d4abe8dba23b283c1a3d2f4f4937c2f9a8d91e7/LICENSE-MIT>
+    - Original: <https://github.com/snapview/tungstenite-rs/blob/59bee6404f3c126af71e33b3cf02627df0cae50a/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
-- <https://github.com/snapview/tokio-tungstenite/tree/35d110c24c9d030d1608ec964d70c789dfb27452>
+- <https://github.com/snapview/tokio-tungstenite/tree/38d04656fe28be0000920201d6a49bf5ec3d537b>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tokio-tungstenite/blob/35d110c24c9d030d1608ec964d70c789dfb27452/LICENSE>
+    - Original: <https://github.com/snapview/tokio-tungstenite/blob/38d04656fe28be0000920201d6a49bf5ec3d537b/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tokio-tungstenite](./licenses/tokio-tungstenite)
 - <https://github.com/Michael-F-Bryan/include_dir/tree/d742c6fffce99ee89da91b934e7ce6fb2a82680c>

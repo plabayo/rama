@@ -54,21 +54,17 @@ impl<S, F> MapErr<S, F> {
 
 impl<S, Error> MapErr<S, fn(Error) -> BoxError>
 where
-    Error: std::error::Error + Send + Sync + 'static,
-    BoxError: From<Error>,
+    Error: Into<BoxError>,
 {
     /// Turn the error into a [`BoxError`].
-    ///
-    /// This is shorthand for `MapErr::new(..., BoxError::from)`.
     pub const fn into_box_error(inner: S) -> Self {
-        Self::new(inner, BoxError::from)
+        Self::new(inner, ErrorExt::into_box_error)
     }
 }
 
 impl<S, Error> MapErr<S, fn(Error) -> OpaqueError>
 where
-    Error: std::error::Error + Send + Sync + 'static,
-    BoxError: From<Error>,
+    Error: Into<BoxError>,
 {
     /// Turn the error into a [`OpaqueError`].
     ///
@@ -76,7 +72,7 @@ where
     /// but this method can come in handy if you need to deal with higher-rank
     /// lifetime issues.
     pub const fn into_opaque_error(inner: S) -> Self {
-        Self::new(inner, |err| err.into_opaque_error())
+        Self::new(inner, ErrorExt::into_opaque_error)
     }
 }
 

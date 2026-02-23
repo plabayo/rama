@@ -45,6 +45,7 @@ struct CliDefault {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum CliCommands {
+    Resolve(cmd::resolve::ResolveCommand),
     Send(cmd::send::SendCommand),
     Serve(cmd::serve::ServeCommand),
     Probe(cmd::probe::ProbeCommand),
@@ -93,6 +94,7 @@ async fn main() {
 
     #[allow(clippy::exit)]
     if let Err(err) = match cli.cmds {
+        CliCommands::Resolve(cfg) => cmd::resolve::run(cfg).await,
         CliCommands::Send(cfg) => cmd::send::run(cfg).await,
         CliCommands::Serve(cfg) => cmd::serve::run(cfg).await,
         CliCommands::Probe(cfg) => cmd::probe::run(cfg).await,

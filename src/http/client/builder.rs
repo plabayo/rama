@@ -3,7 +3,7 @@ use rama_core::rt::Executor;
 use super::HttpConnector;
 use crate::{
     Layer, Service,
-    dns::DnsResolver,
+    dns::client::resolver::DnsAddressResolver,
     error::BoxError,
     extensions::ExtensionsMut,
     http::{
@@ -117,8 +117,9 @@ impl<T, Stage> EasyHttpConnectorBuilder<T, Stage> {
 }
 
 impl EasyHttpConnectorBuilder<TcpConnector, TransportStage> {
-    /// Add a custom [`DnsResolver`] that will be used by this client
-    pub fn with_dns_resolver<T: DnsResolver + Clone>(
+    /// Add a custom [`DnsAddressResolver`] that will be
+    /// used by this client for address resolution.
+    pub fn with_dns_address_resolver<T: DnsAddressResolver + Clone>(
         self,
         resolver: T,
     ) -> EasyHttpConnectorBuilder<TcpConnector<T>, TransportStage> {
@@ -589,11 +590,11 @@ impl<T, S> EasyHttpConnectorBuilder<T, S> {
         T: Service<
                 Request<Body>,
                 Output = EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>,
-                Error = BoxError,
+                Error: Into<BoxError>,
             >,
         ConnResponse: ExtensionsMut,
     {
-        super::EasyHttpWebClient::new(self.connector.boxed())
+        super::EasyHttpWebClient::new(self.connector)
     }
 
     /// Build a connector from the currently configured setup

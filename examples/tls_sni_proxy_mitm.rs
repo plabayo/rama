@@ -87,7 +87,7 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     graceful::Shutdown,
     http::{
@@ -317,7 +317,7 @@ struct HttpsMITMService<C> {
 
 impl<C> Service<Request> for HttpsMITMService<C>
 where
-    C: Service<Request, Output = Response, Error = BoxError>,
+    C: Service<Request, Output = Response, Error = OpaqueError>,
 {
     type Output = Response;
     type Error = BoxError;
