@@ -332,20 +332,20 @@ where
     let http_service = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
-        match params.proxy {
-            Proxy::HttpMitm | Proxy::Socks5Mitm => UpgradeLayer::new(
+        if matches!(params.proxy, Proxy::HttpMitm | Proxy::Socks5Mitm) {
+            UpgradeLayer::new(
                 Executor::default(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
                 service_fn(connect_proxy),
-            ),
-            Proxy::Http | Proxy::Socks5 => UpgradeLayer::new(
+            )
+        } else {
+            UpgradeLayer::new(
                 Executor::default(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
                 ConsumeErrLayer::default().into_layer(Forwarder::ctx(Executor::default())),
-            ),
-            Proxy::None => panic!("Cannot be called for Tls::None"),
+            )
         },
     )
         .layer(service_fn(handler));
@@ -355,7 +355,7 @@ where
         .boxed()
 }
 
-fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool) -> SocketAddress {
+fn spawn_http_proxy(params: TestParameters) -> SocketAddress {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let ready = Arc::new(AtomicBool::new(false));
@@ -376,17 +376,11 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
 
             match params.tls {
                 Tls::None => {
-                    let service = if is_proxy {
-                        get_http_proxy_service_boxed(params)
-                    } else {
-                        get_http_service_boxed(params, body_content)
-                    };
+                    let service = get_http_proxy_service_boxed(params);
 
                     ready_worker.store(true, Ordering::Release);
 
-                    if matches!(params.proxy, Proxy::Socks5 | Proxy::Socks5Mitm)
-                        && is_proxy
-                    {
+                    if matches!(params.proxy, Proxy::Socks5 | Proxy::Socks5Mitm) {
                         let socks5_acceptor =
                             socks5_acceptor_base.with_connector(LazyConnector::new(service));
                         async_listener.serve(socks5_acceptor).await
@@ -395,20 +389,14 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
                     }
                 }
                 Tls::Rustls => {
-                    let service = if is_proxy {
-                        get_http_proxy_service_boxed(params)
-                    } else {
-                        get_http_service_boxed(params, body_content)
-                    };
+                    let service = get_http_proxy_service_boxed(params);
 
                     let data = get_rustls_tls_data(params);
                     ready_worker.store(true, Ordering::Release);
                     let tls_acceptor =
                         rustls::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    if matches!(params.proxy, Proxy::Socks5 | Proxy::Socks5Mitm)
-                        && is_proxy
-                    {
+                    if matches!(params.proxy, Proxy::Socks5 | Proxy::Socks5Mitm) {
                         let socks5_acceptor =
                             socks5_acceptor_base.with_connector(LazyConnector::new(tls_acceptor));
                         async_listener.serve(socks5_acceptor).await
@@ -417,20 +405,14 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
                     }
                 }
                 Tls::Boring => {
-                    let service = if is_proxy {
-                        get_http_proxy_service_boxed(params)
-                    } else {
-                        get_http_service_boxed(params, body_content)
-                    };
+                    let service = get_http_proxy_service_boxed(params);
 
                     let data = get_boring_tls_data(params);
                     ready_worker.store(true, Ordering::Release);
                     let tls_acceptor =
                         boring::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    if matches!(params.proxy, Proxy::Socks5 | Proxy::Socks5Mitm)
-                        && is_proxy
-                    {
+                    if matches!(params.proxy, Proxy::Socks5 | Proxy::Socks5Mitm) {
                         let socks5_acceptor =
                             socks5_acceptor_base.with_connector(LazyConnector::new(tls_acceptor));
                         async_listener.serve(socks5_acceptor).await
@@ -448,10 +430,64 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
     addr.into()
 }
 
+fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddress {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let ready = Arc::new(AtomicBool::new(false));
+    let ready_worker = ready.clone();
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let async_listener =
+                TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
+
+            match params.tls {
+                Tls::None => {
+                    let service = get_http_service_boxed(params, body_content);
+
+                    ready_worker.store(true, Ordering::Release);
+
+                    async_listener.serve(service).await
+                }
+                Tls::Rustls => {
+                    let service = get_http_service_boxed(params, body_content);
+
+                    let data = get_rustls_tls_data(params);
+                    ready_worker.store(true, Ordering::Release);
+                    let tls_acceptor =
+                        rustls::server::TlsAcceptorLayer::new(data).into_layer(service);
+
+                    async_listener.serve(tls_acceptor).await
+                }
+                Tls::Boring => {
+                    let service = get_http_service_boxed(params, body_content);
+
+                    let data = get_boring_tls_data(params);
+                    ready_worker.store(true, Ordering::Release);
+                    let tls_acceptor =
+                        boring::server::TlsAcceptorLayer::new(data).into_layer(service);
+
+                    async_listener.serve(tls_acceptor).await
+                }
+            }
+        });
+    });
+
+    while !ready.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
+    addr.into()
+}
+
 fn get_inner_client(
     http: HttpVersion,
     tls: Tls,
-) -> impl Service<Request, Output = Response, Error = BoxError> {
+) -> impl Service<Request, Output = Response, Error = OpaqueError> {
     let b = EasyHttpWebClient::connector_builder().with_default_transport_connector();
 
     let proto = match http {
@@ -531,12 +567,12 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
         "large"
     };
 
-    let address = spawn_http_server(params, server_bytes.clone(), false);
+    let address = spawn_http_server(params, server_bytes);
     let url = format!("{scheme}://{address}/{endpoint}");
 
     let mut address_proxy = SocketAddress::default_ipv4(0);
     if params.proxy != Proxy::None {
-        address_proxy = spawn_http_server(params, server_bytes, true);
+        address_proxy = spawn_http_proxy(params);
     }
 
     bencher
