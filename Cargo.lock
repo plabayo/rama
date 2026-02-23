@@ -2814,6 +2814,7 @@ dependencies = [
  "rama-http-backend",
  "rama-http-core",
  "rama-net",
+ "rama-net-apple-networkextension",
  "rama-proxy",
  "rama-socks5",
  "rama-tcp",
@@ -3220,6 +3221,18 @@ dependencies = [
  "tokio",
  "tokio-test",
  "venndb",
+]
+
+[[package]]
+name = "rama-net-apple-networkextension"
+version = "0.3.0-rc1"
+dependencies = [
+ "rama-core",
+ "rama-macros",
+ "rama-net",
+ "rama-utils",
+ "tokio",
+ "tokio-test",
 ]
 
 [[package]]

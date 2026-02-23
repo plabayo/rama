@@ -292,6 +292,7 @@ Here is a list of all `rama` crates:
   used by all other `rama` code, as well as some other _core_ utilities
 - [`rama-crypto`](https://crates.io/crates/rama-crypto): rama crypto primitives and dependencies
 - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
+- [`rama-net-apple-networkextension`](https://crates.io/crates/rama-net-apple-networkextension): Apple Network Extension support for rama
 - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama

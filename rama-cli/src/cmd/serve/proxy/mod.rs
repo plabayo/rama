@@ -41,6 +41,11 @@ pub struct CliCommandProxy {
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: Interface,
 
+    #[cfg(target_vendor = "apple")]
+    /// run the proxy as a L4 (transparent) proxy
+    #[arg(long, default_value_t = false)]
+    tproxy: bool,
+
     #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow (0 = no limit)
     concurrent: usize,
@@ -54,6 +59,12 @@ pub struct CliCommandProxy {
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), BoxError> {
     tracing::info!("starting proxy on: bind interface = {}", cfg.bind);
     let exec = Executor::graceful(graceful);
+
+    #[cfg(target_vendor = "apple")]
+    if cfg.tproxy {
+        tracing::info!("test: {}", rama::net::apple::networkextension::foo());
+        return Err(BoxError::from("TODO: support transparent proxy"));
+    }
 
     let tcp_service = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
