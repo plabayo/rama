@@ -109,8 +109,10 @@ enum Tls {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Proxy {
     None,
-    Http(bool),
-    Socks5(bool),
+    Http,
+    HttpMitm,
+    Socks5,
+    Socks5Mitm,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -126,10 +128,10 @@ const VERSIONS: [HttpVersion; 2] = [HttpVersion::Http1, HttpVersion::Http2];
 const TLSES: [Tls; 3] = [Tls::None, Tls::Rustls, Tls::Boring];
 const PROXIES: [Proxy; 5] = [
     Proxy::None,
-    Proxy::Http(false),
-    Proxy::Http(true),
-    Proxy::Socks5(false),
-    Proxy::Socks5(true),
+    Proxy::Http,
+    Proxy::HttpMitm,
+    Proxy::Socks5,
+    Proxy::Socks5Mitm,
 ];
 const SIZES: [Size; 2] = [Size::Small, Size::Large];
 
@@ -295,8 +297,8 @@ where
         }
     };
 
-    let new_http_proxy = move || async move {
-        (
+    let connect_proxy = move |upgraded: Upgraded| async move {
+        let http_service = (
             MapResponseBodyLayer::new_boxed_streaming_body(),
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
@@ -305,11 +307,7 @@ where
             CompressionLayer::new(),
             AddRequiredRequestHeadersLayer::new(),
         )
-            .into_layer(service_fn(handler))
-    };
-
-    let connect_proxy = move |upgraded: Upgraded| async move {
-        let http_service = new_http_proxy().await;
+            .into_layer(service_fn(handler));
         let http_transport_service = HttpServer::auto(Executor::default()).service(http_service);
 
         match params.tls {
@@ -335,13 +333,13 @@ where
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
         match params.proxy {
-            Proxy::Http(true) | Proxy::Socks5(true) => UpgradeLayer::new(
+            Proxy::HttpMitm | Proxy::Socks5Mitm => UpgradeLayer::new(
                 Executor::default(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
                 service_fn(connect_proxy),
             ),
-            Proxy::Http(false) | Proxy::Socks5(false) => UpgradeLayer::new(
+            Proxy::Http | Proxy::Socks5 => UpgradeLayer::new(
                 Executor::default(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
@@ -386,7 +384,7 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
 
                     ready_worker.store(true, Ordering::Release);
 
-                    if let Proxy::Socks5(_) = params.proxy
+                    if matches!(params.proxy, Proxy::Socks5 | Proxy::Socks5Mitm)
                         && is_proxy
                     {
                         let socks5_acceptor =
@@ -408,7 +406,7 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
                     let tls_acceptor =
                         rustls::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    if let Proxy::Socks5(_) = params.proxy
+                    if matches!(params.proxy, Proxy::Socks5 | Proxy::Socks5Mitm)
                         && is_proxy
                     {
                         let socks5_acceptor =
@@ -430,7 +428,7 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes, is_proxy: bool
                     let tls_acceptor =
                         boring::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    if let Proxy::Socks5(_) = params.proxy
+                    if matches!(params.proxy, Proxy::Socks5 | Proxy::Socks5Mitm)
                         && is_proxy
                     {
                         let socks5_acceptor =
@@ -509,7 +507,7 @@ fn get_inner_client(
     }
 }
 
-#[divan::bench(args = TEST_MATRIX, sample_count = 50)]
+#[divan::bench(args = TEST_MATRIX, sample_count = 1)]
 fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -567,11 +565,11 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
 
                 let req_with_maybe_proxy = match params.proxy {
                     Proxy::None => req,
-                    Proxy::Http(_) => req.extension(
+                    Proxy::Http | Proxy::HttpMitm => req.extension(
                         ProxyAddress::try_from(format!("{scheme}://{}", address_proxy.clone()))
                             .unwrap(),
                     ),
-                    Proxy::Socks5(_) => req.extension(ProxyAddress {
+                    Proxy::Socks5 | Proxy::Socks5Mitm => req.extension(ProxyAddress {
                         protocol: Some(Protocol::SOCKS5),
                         address: address_proxy.into(),
                         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
