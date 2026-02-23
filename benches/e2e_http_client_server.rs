@@ -458,21 +458,23 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddre
                     let service = get_http_service_boxed(params, body_content);
 
                     let data = get_rustls_tls_data(params);
-                    ready_worker.store(true, Ordering::Release);
-                    let tls_acceptor =
-                        rustls::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    async_listener.serve(tls_acceptor).await
+                    ready_worker.store(true, Ordering::Release);
+
+                    async_listener
+                        .serve(rustls::server::TlsAcceptorLayer::new(data).into_layer(service))
+                        .await
                 }
                 Tls::Boring => {
                     let service = get_http_service_boxed(params, body_content);
 
                     let data = get_boring_tls_data(params);
-                    ready_worker.store(true, Ordering::Release);
-                    let tls_acceptor =
-                        boring::server::TlsAcceptorLayer::new(data).into_layer(service);
 
-                    async_listener.serve(tls_acceptor).await
+                    ready_worker.store(true, Ordering::Release);
+
+                    async_listener
+                        .serve(boring::server::TlsAcceptorLayer::new(data).into_layer(service))
+                        .await
                 }
             }
         });
@@ -543,7 +545,7 @@ fn get_inner_client(
     }
 }
 
-#[divan::bench(args = TEST_MATRIX, sample_count = 1)]
+#[divan::bench(args = TEST_MATRIX, sample_count = 200)]
 fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
