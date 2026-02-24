@@ -135,6 +135,33 @@ jobs:
       - name: Run example tests (cargo test)
         run: cargo nextest run --all-features --examples --workspace --no-tests=pass
 
+  test-ffi-apple-example-transparent-proxy:
+    runs-on: macos-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-transparent-proxy
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Check Xcode toolchain
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-path
+      - name: Install just and xcodegen
+        run: brew install just xcodegen
+      - name: Run transparent proxy qa
+        working-directory: ./ffi/apple/examples/transparent_proxy
+        run: just qa
+
   test-rust-linux-musl:
     strategy:
       matrix:
@@ -520,6 +547,7 @@ jobs:
       - precheck-rust-tier2
       - check-rust
       - test-rust-base
+      - test-ffi-apple-example-transparent-proxy
       - test-rust-linux-musl
       - test-rust-extra
       - test-rust-e2e
