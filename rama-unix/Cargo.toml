@@ -21,11 +21,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 
 [dependencies]
+libc = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
-libc = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

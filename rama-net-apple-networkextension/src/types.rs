@@ -143,7 +143,11 @@ impl TransparentProxyMeta {
             protocol,
             remote_endpoint: parse_endpoint_field(&parsed, "remote_endpoint"),
             local_endpoint: parse_endpoint_field(&parsed, "local_endpoint"),
-            source_app_signing_identifier: parse_string_field(&parsed, "source_app_signing_identifier").map(ArcStr::from),
+            source_app_signing_identifier: parse_string_field(
+                &parsed,
+                "source_app_signing_identifier",
+            )
+            .map(ArcStr::from),
             source_app_path: parse_string_field(&parsed, "source_app_path").map(ArcStr::from),
         }
     }
