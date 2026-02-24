@@ -3,9 +3,9 @@ use rama::{
     net::{
         address::HostWithPort,
         apple::networkextension::{
-            RamaBytesView, TcpFlow, TransparentProxyConfig, TransparentProxyEngine,
-            TransparentProxyEngineBuilder, TransparentProxyMeta, TransparentProxyTcpSession,
-            TransparentProxyUdpSession, UdpFlow, bytes_free, bytes_view_as_slice,
+            TcpFlow, TransparentProxyConfig, TransparentProxyEngine, TransparentProxyEngineBuilder,
+            TransparentProxyMeta, TransparentProxyTcpSession, TransparentProxyUdpSession, UdpFlow,
+            ffi::{RamaBytesOwned, RamaBytesView},
         },
         proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
     },
@@ -13,6 +13,7 @@ use rama::{
     service::{Service, service_fn},
     tcp::client::default_tcp_connect,
 };
+
 use std::{
     convert::Infallible,
     ffi::CStr,
@@ -20,8 +21,8 @@ use std::{
 };
 
 pub type RamaTransparentProxyEngine = TransparentProxyEngine;
-pub type RamaTcpSession = TransparentProxyTcpSession;
-pub type RamaUdpSession = TransparentProxyUdpSession;
+pub type RamaTransparentProxyTcpSession = TransparentProxyTcpSession;
+pub type RamaTransparentProxyUdpSession = TransparentProxyUdpSession;
 
 #[repr(C)]
 pub struct RamaTcpSessionCallbacks {
@@ -38,10 +39,18 @@ pub struct RamaUdpSessionCallbacks {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_transparent_proxy_engine_new(
+/// Create a new transparent proxy engine
+/// (using a Rust runtime, driven by Rama and Tokio).
+///
+/// # Safety
+///
+/// 1. `config_utf8` is a valid aligned ptr
+///   to a C-str containing a json-encoded config
+pub unsafe extern "C" fn rama_transparent_proxy_engine_new(
     config_utf8: *const c_char,
 ) -> *mut RamaTransparentProxyEngine {
-    let config_json = cstr_to_string(config_utf8);
+    // SAFETY: valid because of (1)
+    let config_json = unsafe { cstr_to_string(config_utf8) };
     let engine = TransparentProxyEngineBuilder::new(config_json)
         .with_tcp_service(service_fn(custom_tcp_service))
         .with_udp_service(service_fn(custom_udp_service))
@@ -50,17 +59,19 @@ pub extern "C" fn rama_transparent_proxy_engine_new(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_transparent_proxy_engine_free(engine: *mut RamaTransparentProxyEngine) {
+pub unsafe extern "C" fn rama_transparent_proxy_engine_free(
+    engine: *mut RamaTransparentProxyEngine,
+) {
     if engine.is_null() {
         return;
     }
-    unsafe {
-        drop(Box::from_raw(engine));
-    }
+    drop(unsafe { Box::from_raw(engine) })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_transparent_proxy_engine_start(engine: *mut RamaTransparentProxyEngine) {
+pub unsafe extern "C" fn rama_transparent_proxy_engine_start(
+    engine: *mut RamaTransparentProxyEngine,
+) {
     if engine.is_null() {
         return;
     }
@@ -70,7 +81,7 @@ pub extern "C" fn rama_transparent_proxy_engine_start(engine: *mut RamaTranspare
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_transparent_proxy_engine_stop(
+pub unsafe extern "C" fn rama_transparent_proxy_engine_stop(
     engine: *mut RamaTransparentProxyEngine,
     reason: i32,
 ) {
@@ -83,11 +94,11 @@ pub extern "C" fn rama_transparent_proxy_engine_stop(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_transparent_proxy_engine_new_tcp_session(
+pub unsafe extern "C" fn rama_transparent_proxy_engine_new_tcp_session(
     engine: *mut RamaTransparentProxyEngine,
     meta_json_utf8: *const c_char,
     callbacks: RamaTcpSessionCallbacks,
-) -> *mut RamaTcpSession {
+) -> *mut RamaTransparentProxyTcpSession {
     if engine.is_null() {
         return std::ptr::null_mut();
     }
@@ -134,7 +145,7 @@ pub extern "C" fn rama_transparent_proxy_engine_new_tcp_session(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_tcp_session_free(session: *mut RamaTcpSession) {
+pub unsafe extern "C" fn rama_tcp_session_free(session: *mut RamaTransparentProxyTcpSession) {
     if session.is_null() {
         return;
     }
@@ -144,21 +155,23 @@ pub extern "C" fn rama_tcp_session_free(session: *mut RamaTcpSession) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_tcp_session_on_client_bytes(
-    session: *mut RamaTcpSession,
+pub unsafe extern "C" fn rama_tcp_session_on_client_bytes(
+    session: *mut RamaTransparentProxyTcpSession,
     bytes: RamaBytesView,
 ) {
     if session.is_null() {
         return;
     }
-    let slice = unsafe { bytes_view_as_slice(bytes) };
+    let slice = unsafe { bytes.into_slice() };
     unsafe {
         (*session).on_client_bytes(slice);
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_tcp_session_on_client_eof(session: *mut RamaTcpSession) {
+pub unsafe extern "C" fn rama_tcp_session_on_client_eof(
+    session: *mut RamaTransparentProxyTcpSession,
+) {
     if session.is_null() {
         return;
     }
@@ -168,11 +181,11 @@ pub extern "C" fn rama_tcp_session_on_client_eof(session: *mut RamaTcpSession) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_transparent_proxy_engine_new_udp_session(
+pub unsafe extern "C" fn rama_transparent_proxy_engine_new_udp_session(
     engine: *mut RamaTransparentProxyEngine,
     meta_json_utf8: *const c_char,
     callbacks: RamaUdpSessionCallbacks,
-) -> *mut RamaUdpSession {
+) -> *mut RamaTransparentProxyUdpSession {
     if engine.is_null() {
         return std::ptr::null_mut();
     }
@@ -219,7 +232,7 @@ pub extern "C" fn rama_transparent_proxy_engine_new_udp_session(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_udp_session_free(session: *mut RamaUdpSession) {
+pub unsafe extern "C" fn rama_udp_session_free(session: *mut RamaTransparentProxyUdpSession) {
     if session.is_null() {
         return;
     }
@@ -229,38 +242,45 @@ pub extern "C" fn rama_udp_session_free(session: *mut RamaUdpSession) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_udp_session_on_client_datagram(
-    session: *mut RamaUdpSession,
+pub unsafe extern "C" fn rama_udp_session_on_client_datagram(
+    session: *mut RamaTransparentProxyUdpSession,
     bytes: RamaBytesView,
 ) {
     if session.is_null() {
         return;
     }
-    let slice = unsafe { bytes_view_as_slice(bytes) };
+    let slice = unsafe { bytes.into_slice() };
     unsafe {
         (*session).on_client_datagram(slice);
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_udp_session_on_client_close(session: *mut RamaUdpSession) {
+pub unsafe extern "C" fn rama_udp_session_on_client_close(
+    session: *mut RamaTransparentProxyUdpSession,
+) {
     if session.is_null() {
         return;
     }
     unsafe {
+        // SAFETY: contract assumes this is only called at the end,
+        // and the above check guarantees ptr is not nil
         (*session).on_client_close();
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rama_bytes_free(ptr_: *mut u8, len: i32) {
-    bytes_free(ptr_, len);
+pub unsafe extern "C" fn rama_owned_bytes_free(bytes: RamaBytesOwned) {
+    // SAFETY: contract assumes that input bytes are valid
+    unsafe { bytes.free() }
 }
 
-fn cstr_to_string(ptr: *const c_char) -> String {
+unsafe fn cstr_to_string(ptr: *const c_char) -> String {
     if ptr.is_null() {
         return String::new();
     }
+    assert!(ptr.is_aligned());
+    // SAFETY: assumed that input slice is a valid c string
     unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
 }
 

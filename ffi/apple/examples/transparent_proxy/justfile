@@ -1,16 +1,48 @@
-build-tproxy-rs:
-    cd tproxy_rs && \
-        cargo build --target aarch64-apple-darwin && \
-        cargo build --target x86_64-apple-darwin && \
-        mkdir -p target/universal && \
-        lipo -create \
-            -output target/universal/librama_tproxy_example.a \
-            target/aarch64-apple-darwin/debug/librama_tproxy_example.a \
-            target/x86_64-apple-darwin/debug/librama_tproxy_example.a
+set working-directory := '.'
 
+[working-directory: './tproxy_rs']
+build-tproxy-rs:
+    cargo build --target aarch64-apple-darwin && \
+    cargo build --target x86_64-apple-darwin && \
+    mkdir -p target/universal && \
+    lipo -create \
+        -output target/universal/librama_tproxy_example.a \
+        target/aarch64-apple-darwin/debug/librama_tproxy_example.a \
+        target/x86_64-apple-darwin/debug/librama_tproxy_example.a
+
+[working-directory: './tproxy_app']
 build-tproxy-app:
-    cd tproxy_app && \
-        xcodegen generate && \
-        xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+    xcodegen generate && \
+    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
 
 build-tproxy: build-tproxy-rs build-tproxy-app
+
+[working-directory: './tproxy_rs']
+clippy *ARGS:
+    cargo clippy --all-targets --all-features {{ARGS}}
+
+[working-directory: './tproxy_rs']
+clippy-fix *ARGS:
+    just clippy --fix {{ARGS}}
+
+[working-directory: './tproxy_rs']
+rust-doc *ARGS:
+    cargo doc --all-features --no-deps {{ARGS}}
+
+[working-directory: './tproxy_rs']
+rust-test *ARGS:
+    @cargo install cargo-nextest --locked
+    cargo nextest run --all-features {{ARGS}}
+
+[working-directory: './tproxy_rs']
+rust-test-doc *ARGS:
+    cargo test --doc --all-features {{ARGS}}
+
+[working-directory: './tproxy_rs']
+rust-test-ignored:
+    @cargo install cargo-nextest --locked
+    cargo nextest run --all-features --run-ignored=only
+
+qa-rust: clippy rust-doc rust-test rust-test-doc rust-test-ignored
+
+qa: qa-rust build-tproxy

@@ -34,9 +34,7 @@ pub use engine::{
     TransparentProxyUdpSession,
 };
 #[doc(hidden)]
-pub use ffi::{
-    RamaBytesOwned, RamaBytesView, bytes_free, bytes_owned_from_vec, bytes_view_as_slice,
-};
+pub use ffi::{RamaBytesOwned, RamaBytesView};
 pub use stream::TcpFlow;
 pub use types::{TransparentProxyConfig, TransparentProxyMeta};
 pub use udp::UdpFlow;

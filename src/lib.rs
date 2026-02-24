@@ -225,7 +225,7 @@
 //! - rama crates avoid `unsafe` Rust as much as possible and use it only where necessary.
 //! - Supply chain auditing is done with [`cargo vet`](https://github.com/mozilla/cargo-vet).
 //! - Tier 1 platforms include macOS, Linux and Windows on modern architectures.
-//! - The minimum supported Rust version (MSRV) is `1.91`.
+//! - The minimum supported Rust version (MSRV) is `1.93`.
 //!
 //! For details see the compatibility section in the README and the CI configuration in
 //! the repository.

@@ -4,7 +4,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: stable
   RUST_TOOLCHAIN_NIGHTLY: nightly
-  RUST_TOOLCHAIN_MSRV: 1.91.0
+  RUST_TOOLCHAIN_MSRV: 1.93.0
   RUST_TOOLCHAIN_BETA: beta
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_TEST_DEBUG: 0
@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - 1.91.0 # MSRV
+          - 1.93.0 # MSRV
           - stable
           - beta
         os:
@@ -57,7 +57,7 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - 1.91.0 # MSRV
+          - 1.93.0 # MSRV
           - stable
           - beta
         os:

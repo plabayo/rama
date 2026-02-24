@@ -28,14 +28,15 @@ private func dataFromView(_ view: RamaBytesView) -> Data {
     return Data(bytes: ptr, count: Int(view.len))
 }
 
-private let ramaTcpOnServerBytesCallback: @convention(c) (UnsafeMutableRawPointer?, RamaBytesView)
-    -> Void = { context, view in
-        guard let context else { return }
-        let box = Unmanaged<TcpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
-        let data = dataFromView(view)
-        if data.isEmpty { return }
-        box.onServerBytes(data)
-    }
+private let ramaTcpOnServerBytesCallback:
+    @convention(c) (UnsafeMutableRawPointer?, RamaBytesView)
+        -> Void = { context, view in
+            guard let context else { return }
+            let box = Unmanaged<TcpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
+            let data = dataFromView(view)
+            if data.isEmpty { return }
+            box.onServerBytes(data)
+        }
 
 private let ramaTcpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
     context in
@@ -44,15 +45,16 @@ private let ramaTcpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPoint
     box.onServerClosed()
 }
 
-private let ramaUdpOnServerDatagramCallback: @convention(c) (
-    UnsafeMutableRawPointer?, RamaBytesView
-) -> Void = { context, view in
-    guard let context else { return }
-    let box = Unmanaged<UdpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
-    let data = dataFromView(view)
-    if data.isEmpty { return }
-    box.onServerDatagram(data)
-}
+private let ramaUdpOnServerDatagramCallback:
+    @convention(c) (
+        UnsafeMutableRawPointer?, RamaBytesView
+    ) -> Void = { context, view in
+        guard let context else { return }
+        let box = Unmanaged<UdpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        let data = dataFromView(view)
+        if data.isEmpty { return }
+        box.onServerDatagram(data)
+    }
 
 private let ramaUdpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
     context in
@@ -159,7 +161,7 @@ final class RamaTcpSessionHandle {
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
             guard let base else { return }
-            let view = RamaBytesView(ptr: base, len: Int32(data.count))
+            let view = RamaBytesView(ptr: base, len: Int(data.count))
             rama_tcp_session_on_client_bytes(s, view)
         }
     }
@@ -193,7 +195,7 @@ final class RamaUdpSessionHandle {
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
             guard let base else { return }
-            let view = RamaBytesView(ptr: base, len: Int32(data.count))
+            let view = RamaBytesView(ptr: base, len: Int(data.count))
             rama_udp_session_on_client_datagram(s, view)
         }
     }
