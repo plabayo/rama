@@ -24,7 +24,12 @@ default = []
 rama-core = { workspace = true }
 rama-macros = { workspace = true }
 rama-net = { workspace = true }
+rama-tcp = { workspace = true }
 rama-utils = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "sync"] }
+pin-project-lite = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

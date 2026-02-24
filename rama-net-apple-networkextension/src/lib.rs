@@ -14,6 +14,7 @@
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg(target_vendor = "apple")]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(
     not(test),
@@ -21,8 +22,21 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
-#[cfg(target_vendor = "apple")]
-pub mod universal;
+mod engine;
+#[doc(hidden)]
+pub mod ffi;
+mod stream;
+mod types;
+mod udp;
 
-#[cfg(target_vendor = "apple")]
-pub use self::universal::*;
+pub use engine::{
+    TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyTcpSession,
+    TransparentProxyUdpSession,
+};
+#[doc(hidden)]
+pub use ffi::{
+    RamaBytesOwned, RamaBytesView, bytes_free, bytes_owned_from_vec, bytes_view_as_slice,
+};
+pub use stream::TcpFlow;
+pub use types::{TransparentProxyConfig, TransparentProxyMeta};
+pub use udp::UdpFlow;

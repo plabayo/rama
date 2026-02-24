@@ -1,0 +1,16 @@
+build-tproxy-rs:
+    cd tproxy_rs && \
+        cargo build --target aarch64-apple-darwin && \
+        cargo build --target x86_64-apple-darwin && \
+        mkdir -p target/universal && \
+        lipo -create \
+            -output target/universal/librama_tproxy_example.a \
+            target/aarch64-apple-darwin/debug/librama_tproxy_example.a \
+            target/x86_64-apple-darwin/debug/librama_tproxy_example.a
+
+build-tproxy-app:
+    cd tproxy_app && \
+        xcodegen generate && \
+        xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+
+build-tproxy: build-tproxy-rs build-tproxy-app

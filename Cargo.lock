@@ -3227,12 +3227,16 @@ dependencies = [
 name = "rama-net-apple-networkextension"
 version = "0.3.0-rc1"
 dependencies = [
+ "pin-project-lite",
  "rama-core",
  "rama-macros",
  "rama-net",
+ "rama-tcp",
  "rama-utils",
+ "serde_json",
  "tokio",
  "tokio-test",
+ "tracing",
 ]
 
 [[package]]
