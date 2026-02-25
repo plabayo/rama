@@ -23,6 +23,7 @@ default = []
 [dependencies]
 ahash = { workspace = true }
 hickory-resolver = { workspace = true }
+pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }

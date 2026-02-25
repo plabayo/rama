@@ -1164,6 +1164,7 @@ version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "hickory-resolver",
+ "pin-project-lite",
  "rama-core",
  "rama-net",
  "rama-utils",
