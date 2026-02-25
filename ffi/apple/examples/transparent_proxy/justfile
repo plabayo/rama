@@ -18,7 +18,7 @@ build-tproxy-app:
 [working-directory: './tproxy_app']
 build-tproxy-app-with-signing:
     xcodegen generate && \
-    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug"" build
+    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug"" build
 
 build-tproxy: build-tproxy-rs build-tproxy-app
 

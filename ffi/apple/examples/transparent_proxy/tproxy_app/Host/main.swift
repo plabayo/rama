@@ -1,5 +1,5 @@
-import NetworkExtension
 import Foundation
+import NetworkExtension
 
 final class HostController {
     private let action: String
@@ -31,9 +31,10 @@ final class HostController {
     }
 
     private func configureProxy(start: Bool) {
-        let extensionBundleId = "tech.plabayo.rama.example.tproxy.host.extension"
+        let extensionBundleId = "org.ramaproxy.example.tproxy.provider"
         let appGroupId = ProcessInfo.processInfo.environment["RAMA_APP_GROUP_ID"] ?? ""
-        let remoteEndpoint = ProcessInfo.processInfo.environment["RAMA_REMOTE_ENDPOINT"] ?? "example.com:80"
+        let remoteEndpoint =
+            ProcessInfo.processInfo.environment["RAMA_REMOTE_ENDPOINT"] ?? "example.com:80"
 
         if start && !appGroupId.isEmpty {
             writeConfig(appGroupId: appGroupId, remoteEndpoint: remoteEndpoint)
@@ -92,7 +93,8 @@ final class HostController {
                             try manager.connection.startVPNTunnel()
                             print("Transparent proxy started")
                             self.log("Transparent proxy started")
-                            self.log("connection.status=\(self.statusString(manager.connection.status))")
+                            self.log(
+                                "connection.status=\(self.statusString(manager.connection.status))")
                         } catch {
                             print("startVPNTunnel error: \(error)")
                             self.logError("startVPNTunnel error", error)
@@ -111,9 +113,11 @@ final class HostController {
     }
 
     private func writeConfig(appGroupId: String, remoteEndpoint: String) {
-        guard let containerURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: appGroupId
-        ) else {
+        guard
+            let containerURL = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: appGroupId
+            )
+        else {
             print("failed to resolve app group container for \(appGroupId)")
             log("failed to resolve app group container for \(appGroupId)")
             return
@@ -228,8 +232,8 @@ final class HostController {
             urls.append(URL(fileURLWithPath: path))
         }
         if let groupId = env["RAMA_APP_GROUP_ID"], !groupId.isEmpty,
-           let containerURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: groupId)
+            let containerURL = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: groupId)
         {
             urls.append(containerURL.appendingPathComponent("rama_tproxy_host.log"))
         }

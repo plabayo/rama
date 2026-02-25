@@ -1,6 +1,6 @@
 name: RamaTransparentProxyExample
 options:
-  bundleIdPrefix: tech.plabayo.rama
+  bundleIdPrefix: ADPG6C355H
   deploymentTarget:
     macOS: "12.0"
 
@@ -32,7 +32,7 @@ targets:
           fi
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: tech.plabayo.rama.example.tproxy.host
+        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy
         INFOPLIST_FILE: Host/Info.plist
         CODE_SIGN_ENTITLEMENTS: Host/Host.entitlements
         CODE_SIGNING_ALLOWED: YES
@@ -52,7 +52,7 @@ targets:
         product: RamaAppleNetworkExtension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: tech.plabayo.rama.example.tproxy.host.extension
+        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.provider
         INFOPLIST_FILE: Extension/Info.plist
         CODE_SIGN_ENTITLEMENTS: Extension/Extension.entitlements
         CODE_SIGNING_ALLOWED: YES
