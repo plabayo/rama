@@ -10,5 +10,5 @@ crate-type = ["staticlib"]
 [workspace]
 
 [dependencies]
-rama = { path = "../../../../../", features = ["net-apple-networkextension", "tcp"] }
+rama = { path = "../../../../../", features = ["net-apple-networkextension", "tcp", "udp"] }
 tokio = { version = "1.48", features = ["net"] }

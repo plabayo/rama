@@ -1128,6 +1128,7 @@ dependencies = [
  "rama-net-apple-networkextension",
  "rama-socks5",
  "rama-tcp",
+ "rama-udp",
  "rama-unix",
  "rama-utils",
  "rustversion",
@@ -1251,6 +1252,7 @@ dependencies = [
  "rama-macros",
  "rama-net",
  "rama-tcp",
+ "rama-udp",
  "rama-utils",
  "serde_json",
  "tokio",
@@ -1291,6 +1293,7 @@ name = "rama-udp"
 version = "0.3.0-rc1"
 dependencies = [
  "rama-core",
+ "rama-dns",
  "rama-net",
  "tokio",
  "tokio-util",

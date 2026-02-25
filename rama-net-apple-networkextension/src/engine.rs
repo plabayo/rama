@@ -12,6 +12,7 @@ use rama_net::{
 use rama_tcp::client::default_tcp_connect;
 
 use parking_lot::Mutex;
+use rama_udp::bind_udp_socket_with_connect_default_dns;
 use std::{convert::Infallible, future::Future, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -405,25 +406,32 @@ fn default_udp_service() -> UdpFlowService {
     tracing::debug!("using default udp service (dumb L4 forward)");
     service_fn(|mut flow: UdpFlow| async move {
         let target = udp_remote_endpoint_from_extensions(&flow);
-        let Some(target) = target else {
+        let Some(target_addr) = target else {
             tracing::warn!("default udp service missing target endpoint");
             while flow.recv().await.is_some() {}
             return Ok(());
         };
 
-        let remote = format!("{}:{}", target.host, target.port);
-        let socket = match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
+        let socket = match bind_udp_socket_with_connect_default_dns(
+            target_addr.clone(),
+            Some(flow.extensions()),
+        )
+        .await
+        {
             Ok(socket) => socket,
             Err(err) => {
-                tracing::warn!(%err, "default udp bind failed");
+                tracing::error!(error = %err, "default udp (forward) service: udp bind failed w/ bind + connect to address: {target_addr}");
+                while flow.recv().await.is_some() {}
                 return Ok(());
             }
         };
-        if let Err(err) = socket.connect(&remote).await {
-            tracing::warn!(%err, remote = %remote, "default udp connect failed");
-            while flow.recv().await.is_some() {}
-            return Ok(());
-        }
+
+        tracing::info!(
+            remote = %target_addr,
+            local_addr = ?socket.local_addr().ok(),
+            peer_addr = ?socket.peer_addr().ok(),
+            "default udp (forward) service started"
+        );
 
         let mut buf = vec![0u8; 64 * 1024];
         loop {

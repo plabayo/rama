@@ -1,25 +1,17 @@
+use std::ffi::{CStr, c_char, c_int, c_void};
+
 use rama::{
-    extensions::ExtensionsRef,
-    net::{
-        address::HostWithPort,
-        apple::networkextension::{
-            TcpFlow, TransparentProxyConfig, TransparentProxyEngine, TransparentProxyEngineBuilder,
-            TransparentProxyMeta, TransparentProxyTcpSession, TransparentProxyUdpSession, UdpFlow,
-            ffi::{RamaBytesOwned, RamaBytesView},
-        },
-        proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
+    net::apple::networkextension::{
+        TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyTcpSession,
+        TransparentProxyUdpSession,
+        ffi::{RamaBytesOwned, RamaBytesView},
     },
-    rt::Executor,
-    service::{Service, service_fn},
-    tcp::client::default_tcp_connect,
     telemetry::tracing,
 };
 
-use std::{
-    convert::Infallible,
-    ffi::{CStr, c_int},
-    os::raw::{c_char, c_void},
-};
+mod tcp;
+mod udp;
+mod utils;
 
 pub type RamaTransparentProxyEngine = TransparentProxyEngine;
 pub type RamaTransparentProxyTcpSession = TransparentProxyTcpSession;
@@ -56,8 +48,8 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_new(
     let config_json = unsafe { cstr_to_string(config_utf8) };
 
     let engine = TransparentProxyEngineBuilder::new(config_json)
-        .with_tcp_service(service_fn(custom_tcp_service))
-        .with_udp_service(service_fn(custom_udp_service))
+        .with_tcp_service(self::tcp::new_service())
+        .with_udp_service(self::udp::new_service())
         .build();
 
     Box::into_raw(Box::new(engine))
@@ -459,153 +451,4 @@ unsafe fn cstr_to_string(ptr: *const c_char) -> String {
 
     // SAFETY: the function contract requires `ptr` to point to a valid NUL terminated C string.
     unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
-}
-
-/// Resolve a remote target endpoint from extensions.
-///
-/// Resolution order:
-/// 1. `ProxyTarget` if present.
-/// 2. `TransparentProxyMeta` remote endpoint if present.
-/// 3. `TransparentProxyConfig` default remote endpoint if present.
-fn resolve_target_from_extensions(ext: &rama::extensions::Extensions) -> Option<HostWithPort> {
-    ext.get::<ProxyTarget>()
-        .cloned()
-        .map(|target| target.0)
-        .or_else(|| {
-            ext.get::<TransparentProxyMeta>()
-                .and_then(|meta| meta.remote_endpoint().cloned())
-        })
-        .or_else(|| {
-            ext.get::<TransparentProxyConfig>()
-                .and_then(|cfg| cfg.default_remote_endpoint().cloned())
-        })
-}
-
-/// TCP flow handler used by the transparent proxy engine.
-///
-/// This resolves the remote target, establishes a TCP connection, then forwards bytes between
-/// the client flow and the upstream stream.
-async fn custom_tcp_service(stream: TcpFlow) -> Result<(), Infallible> {
-    let meta = stream
-        .extensions()
-        .get::<TransparentProxyMeta>()
-        .cloned()
-        .unwrap_or_else(|| TransparentProxyMeta::new(rama::net::Protocol::from_static("tcp")));
-    let target = resolve_target_from_extensions(stream.extensions());
-
-    tracing::info!(
-        protocol = meta.protocol().as_str(),
-        remote = ?meta.remote_endpoint(),
-        local = ?meta.local_endpoint(),
-        "tproxy tcp start"
-    );
-
-    let Some(target_addr) = target else {
-        tracing::error!("tproxy tcp missing target endpoint, closing flow");
-        return Ok(());
-    };
-
-    let extensions = stream.extensions().clone();
-    let exec = Executor::default();
-
-    let Ok((target, _sock_addr)) = default_tcp_connect(&extensions, target_addr, exec).await else {
-        tracing::error!("tproxy tcp connect failed");
-        return Ok(());
-    };
-
-    let req = ProxyRequest {
-        source: stream,
-        target,
-    };
-
-    match StreamForwardService::new().serve(req).await {
-        Ok(()) => tracing::info!("tproxy tcp forward completed"),
-        Err(err) => tracing::error!(error = %err, "tproxy tcp forward error"),
-    }
-
-    Ok(())
-}
-
-/// UDP flow handler used by the transparent proxy engine.
-///
-/// This resolves the remote target, binds a local UDP socket, connects it to the upstream,
-/// then forwards datagrams in both directions until either side closes or an error occurs.
-async fn custom_udp_service(mut flow: UdpFlow) -> Result<(), Infallible> {
-    let target = resolve_target_from_extensions(flow.extensions());
-
-    let Some(target_addr) = target else {
-        tracing::error!("tproxy udp missing target endpoint, draining flow");
-        while flow.recv().await.is_some() {}
-        return Ok(());
-    };
-
-    let remote = format!("{}:{}", target_addr.host, target_addr.port);
-
-    let socket = match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
-        Ok(socket) => socket,
-        Err(err) => {
-            tracing::error!(error = %err, "tproxy udp bind failed");
-            while flow.recv().await.is_some() {}
-            return Ok(());
-        }
-    };
-
-    if let Err(err) = socket.connect(&remote).await {
-        tracing::error!(remote = %remote, error = %err, "tproxy udp connect failed");
-        while flow.recv().await.is_some() {}
-        return Ok(());
-    }
-
-    tracing::info!(remote = %remote, "tproxy udp forwarding started");
-
-    let mut up_packets: u64 = 0;
-    let mut down_packets: u64 = 0;
-    let mut up_bytes: u64 = 0;
-    let mut down_bytes: u64 = 0;
-
-    let mut buf = vec![0u8; 64 * 1024];
-    loop {
-        tokio::select! {
-            maybe_datagram = flow.recv() => {
-                let Some(datagram) = maybe_datagram else {
-                    break;
-                };
-                if datagram.is_empty() {
-                    continue;
-                }
-
-                up_packets += 1;
-                up_bytes += datagram.len() as u64;
-
-                if let Err(err) = socket.send(&datagram).await {
-                    tracing::error!(error = %err, "tproxy udp upstream send failed");
-                    break;
-                }
-            }
-            recv_result = socket.recv(&mut buf) => {
-                match recv_result {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        down_packets += 1;
-                        down_bytes += n as u64;
-                        flow.send(rama::bytes::Bytes::copy_from_slice(&buf[..n]));
-                    }
-                    Err(err) => {
-                        tracing::error!(error = %err, "tproxy udp upstream recv failed");
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    tracing::info!(
-        up_packets,
-        up_bytes,
-        down_packets,
-        down_bytes,
-        "tproxy udp forwarding done"
-    );
-
-    Ok(())
 }
