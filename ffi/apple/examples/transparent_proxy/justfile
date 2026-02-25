@@ -20,9 +20,9 @@ build-tproxy-app-with-signing:
     xcodegen generate && \
     xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug"" build
 
-build-tproxy: build-tproxy-rs build-tproxy-app-with-signing
+build-tproxy: build-tproxy-rs build-tproxy-app
 
-build-tproxy-with-signing: build-tproxy-rs build-tproxy-app
+build-tproxy-with-signing: build-tproxy-rs build-tproxy-app-with-signing
 
 [working-directory: './tproxy_rs']
 clippy *ARGS:

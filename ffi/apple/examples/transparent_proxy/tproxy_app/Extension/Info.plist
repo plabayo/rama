@@ -14,7 +14,7 @@
   <key>NSExtension</key>
   <dict>
     <key>NSExtensionPointIdentifier</key>
-    <string>com.apple.networkextension.transparent-proxy</string>
+    <string>com.apple.networkextension.app-proxy</string>
     <key>NSExtensionPrincipalClass</key>
     <string>RamaAppleNetworkExtension.RamaTransparentProxyProvider</string>
   </dict>
