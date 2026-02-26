@@ -1,28 +1,27 @@
-use rama_core::error::{BoxError, ErrorContext as _};
-use std::ffi::c_int;
+use rama_core::error::BoxError;
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct RamaBytesOwned {
+pub struct BytesOwned {
     pub ptr: *mut u8,
-    pub len: c_int,
-    pub cap: c_int,
+    pub len: usize,
+    pub cap: usize,
 }
 
-impl RamaBytesOwned {
+impl BytesOwned {
     pub unsafe fn free(self) {
         let Self { ptr, len, cap } = self;
-        if ptr.is_null() || cap <= 0 {
+        if ptr.is_null() || cap == 0 {
             return;
         }
 
-        let vec_len = len.min(cap) as usize;
-        let vec_cap = cap as usize;
+        let vec_len = len.min(cap);
+        let vec_cap = cap;
         let _ = unsafe { Vec::from_raw_parts(ptr, vec_len, vec_cap) };
     }
 }
 
-impl TryFrom<Vec<u8>> for RamaBytesOwned {
+impl TryFrom<Vec<u8>> for BytesOwned {
     type Error = BoxError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
@@ -37,24 +36,24 @@ impl TryFrom<Vec<u8>> for RamaBytesOwned {
         let (ptr, vec_len, vec_cap) = bytes.into_raw_parts();
         Ok(Self {
             ptr,
-            len: c_int::try_from(vec_len).context("convert vec len to c_int")?,
-            cap: c_int::try_from(vec_cap).context("convert vec len to c_int")?,
+            len: vec_len,
+            cap: vec_cap,
         })
     }
 }
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct RamaBytesView {
+pub struct BytesView {
     pub ptr: *const u8,
-    pub len: c_int,
+    pub len: usize,
 }
 
-impl RamaBytesView {
+impl BytesView {
     pub unsafe fn into_slice<'a>(self) -> &'a [u8] {
-        if self.ptr.is_null() || self.len <= 0 {
+        if self.ptr.is_null() || self.len == 0 {
             return &[];
         }
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len as usize) }
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }

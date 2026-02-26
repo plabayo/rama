@@ -1,5 +1,6 @@
 import Foundation
 import NetworkExtension
+import RamaAppleNEFFI
 
 private final class TcpClientWritePump {
     private let flow: NEAppProxyTCPFlow
@@ -124,7 +125,6 @@ private final class UdpClientWritePump {
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
-    private let logUrls = RamaTransparentProxyProvider.resolveLogUrls()
     private var engine: RamaTransparentProxyEngineHandle?
     private let stateQueue = DispatchQueue(label: "rama.tproxy.state")
     private var tcpSessions: [ObjectIdentifier: RamaTcpSessionHandle] = [:]
@@ -133,32 +133,35 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func startProxy(
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
     ) {
-        log("extension startProxy")
-        let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
-        settings.includedNetworkRules = [
-            NENetworkRule(
-                remoteNetwork: nil,
-                remotePrefix: 0,
-                localNetwork: nil,
-                localPrefix: 0,
-                protocol: .any,
-                direction: .outbound
-            )
-        ]
+        guard RamaTransparentProxyEngineHandle.initialize() else {
+            completionHandler(NSError(domain: "RamaTransparentProxy", code: 1))
+            return
+        }
+        logInfo("extension startProxy")
+
+        guard let startup = RamaTransparentProxyEngineHandle.startupConfig() else {
+            logError("failed to get startup config from rust")
+            completionHandler(NSError(domain: "RamaTransparentProxy", code: 2))
+            return
+        }
+
+        let settings = NETransparentProxyNetworkSettings(
+            tunnelRemoteAddress: startup.tunnelRemoteAddress
+        )
+        settings.includedNetworkRules = startup.rules.compactMap { Self.makeNetworkRule($0) }
+
         setTunnelNetworkSettings(settings) { error in
             if let error {
-                self.log("setTunnelNetworkSettings error: \(error)")
+                self.logError("setTunnelNetworkSettings error: \(error)")
                 completionHandler(error)
                 return
             }
 
-            self.log("setTunnelNetworkSettings ok")
-            let cfg = RamaTransparentProxyConfig.loadConfigJSON()
-            self.log("loaded config JSON")
-            self.engine = RamaTransparentProxyEngineHandle(configJSON: cfg)
-            self.log("engine created")
+            self.logInfo("setTunnelNetworkSettings ok")
+            self.engine = RamaTransparentProxyEngineHandle()
+            self.logInfo("engine created")
             self.engine?.start()
-            self.log("engine started")
+            self.logInfo("engine started")
             completionHandler(nil)
         }
     }
@@ -166,7 +169,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func stopProxy(
         with reason: NEProviderStopReason, completionHandler: @escaping () -> Void
     ) {
-        log("extension stopProxy reason=\(reason.rawValue)")
+        logInfo("extension stopProxy reason=\(reason.rawValue)")
         self.engine?.stop(reason: Int32(reason.rawValue))
         self.engine = nil
         stateQueue.async {
@@ -178,32 +181,43 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
         if let tcp = flow as? NEAppProxyTCPFlow {
-            let remote = RamaTransparentProxyConfig.remoteEndpointString(flow: tcp) ?? "unknown"
-            log("handleNewFlow tcp remote=\(remote)")
-            handleTcpFlow(tcp)
+            let meta = Self.tcpMeta(flow: tcp)
+            if !RamaTransparentProxyEngineHandle.shouldIntercept(meta: meta) {
+                logDebug("handleNewFlow tcp bypassed by rust callback")
+                return false
+            }
+            handleTcpFlow(tcp, meta: meta)
             return true
         }
 
         if let udp = flow as? NEAppProxyUDPFlow {
-            log("handleNewFlow udp")
+            let meta = Self.udpMeta(
+                flow: udp,
+                remoteEndpoint: nil,
+                localEndpoint: Self.udpLocalEndpoint(flow: udp)
+            )
+            if !RamaTransparentProxyEngineHandle.shouldIntercept(meta: meta) {
+                logDebug("handleNewFlow udp bypassed by rust callback")
+                return false
+            }
             handleUdpFlow(udp)
             return true
         }
 
-        log("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
+        logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
         return false
     }
 
-    private func handleTcpFlow(_ flow: NEAppProxyTCPFlow) {
-        let metaJSON = RamaTransparentProxyConfig.tcpMetaJSON(flow: flow)
+    private func handleTcpFlow(_ flow: NEAppProxyTCPFlow, meta: RamaTransparentProxyFlowMetaBridge)
+    {
         let writer = TcpClientWritePump(flow: flow) { [weak self] msg in
-            self?.log(msg)
+            self?.logDebug(msg)
         }
         let flowId = ObjectIdentifier(flow)
 
         guard
             let session = engine?.newTcpSession(
-                metaJSON: metaJSON,
+                meta: meta,
                 onServerBytes: { data in
                     writer.enqueue(data)
                 },
@@ -217,7 +231,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 }
             )
         else {
-            log("failed to create tcp session")
+            logDebug("failed to create tcp session")
             flow.closeReadWithError(nil)
             flow.closeWriteWithError(nil)
             return
@@ -229,7 +243,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         flow.open(withLocalEndpoint: nil) { error in
             if let error {
-                self.log("flow.open error: \(error)")
+                self.logDebug("flow.open error: \(error)")
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 session.onClientEof()
@@ -238,25 +252,25 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 }
                 return
             }
-            self.log("flow.open ok (tcp)")
+            self.logTrace("flow.open ok (tcp)")
             self.tcpReadLoop(flow: flow, session: session)
         }
     }
 
     private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) {
         let writer = UdpClientWritePump(flow: flow) { [weak self] msg in
-            self?.log(msg)
+            self?.logDebug(msg)
         }
         let flowId = ObjectIdentifier(flow)
 
         flow.open(withLocalEndpoint: nil) { error in
             if let error {
-                self.log("udp flow.open error: \(error)")
+                self.logDebug("udp flow.open error: \(error)")
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 return
             }
-            self.log("flow.open ok (udp)")
+            self.logTrace("flow.open ok (udp)")
             self.udpReadLoop(flow: flow, writer: writer, session: nil, flowId: flowId)
         }
     }
@@ -264,7 +278,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     private func tcpReadLoop(flow: NEAppProxyTCPFlow, session: RamaTcpSessionHandle) {
         flow.readData { data, error in
             if let error {
-                self.log("flow.readData error: \(error)")
+                self.logDebug("flow.readData error: \(error)")
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 session.onClientEof()
@@ -275,7 +289,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
 
             guard let data, !data.isEmpty else {
-                self.log("flow.readData eof")
+                self.logTrace("flow.readData eof")
                 session.onClientEof()
                 return
             }
@@ -293,7 +307,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     ) {
         flow.readDatagrams { datagrams, endpoints, error in
             if let error {
-                self.log("flow.readDatagrams error: \(error)")
+                self.logDebug("flow.readDatagrams error: \(error)")
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 session?.onClientClose()
@@ -304,7 +318,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
 
             guard let datagrams, !datagrams.isEmpty else {
-                self.log("flow.readDatagrams eof")
+                self.logTrace("flow.readDatagrams eof")
                 session?.onClientClose()
                 return
             }
@@ -314,9 +328,20 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
             var activeSession = session
             if activeSession == nil {
-                let metaJSON = RamaTransparentProxyConfig.udpMetaJSON(remoteEndpoint: endpoint)
+                let meta = Self.udpMeta(
+                    flow: flow,
+                    remoteEndpoint: endpoint,
+                    localEndpoint: Self.udpLocalEndpoint(flow: flow)
+                )
+                if !RamaTransparentProxyEngineHandle.shouldIntercept(meta: meta) {
+                    self.logTrace("udp flow bypassed by rust callback")
+                    flow.closeReadWithError(nil)
+                    flow.closeWriteWithError(nil)
+                    return
+                }
+
                 activeSession = self.engine?.newUdpSession(
-                    metaJSON: metaJSON,
+                    meta: meta,
                     onServerDatagram: { data in
                         writer.enqueue(data)
                     },
@@ -331,7 +356,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 )
 
                 guard let createdSession = activeSession else {
-                    self.log("failed to create udp session")
+                    self.logDebug("failed to create udp session")
                     flow.closeReadWithError(nil)
                     flow.closeWriteWithError(nil)
                     return
@@ -356,56 +381,152 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
-    private func log(_ message: String) {
-        let line = "[\(isoTimestamp())] \(message)\n"
-        appendLog(line)
+    private static func makeNetworkRule(_ rule: RamaTransparentProxyStartupRuleBridge)
+        -> NENetworkRule?
+    {
+        let remote = networkEndpoint(from: rule.remoteNetwork)
+        let local = networkEndpoint(from: rule.localNetwork)
+
+        return NENetworkRule(
+            remoteNetwork: remote,
+            remotePrefix: Int(rule.remotePrefix),
+            localNetwork: local,
+            localPrefix: Int(rule.localPrefix),
+            protocol: networkRuleProtocol(rule.protocolRaw),
+            direction: trafficDirection(rule.directionRaw)
+        )
     }
 
-    private func isoTimestamp() -> String {
-        let formatter = ISO8601DateFormatter()
-        return formatter.string(from: Date())
+    private static func networkEndpoint(from network: String?) -> NWHostEndpoint? {
+        guard let network, !network.isEmpty else { return nil }
+        return NWHostEndpoint(hostname: network, port: "0")
     }
 
-    private func appendLog(_ line: String) {
-        guard let data = line.data(using: .utf8) else { return }
-        for url in logUrls {
-            ensureParentDir(url)
-            if !FileManager.default.fileExists(atPath: url.path) {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
+    private static func networkRuleProtocol(_ raw: UInt32) -> NENetworkRule.`Protocol` {
+        switch raw {
+        case UInt32(RAMA_RULE_PROTOCOL_TCP.rawValue): return .TCP
+        case UInt32(RAMA_RULE_PROTOCOL_UDP.rawValue): return .UDP
+        default: return .any
+        }
+    }
+
+    private static func trafficDirection(_ raw: UInt32) -> NETrafficDirection {
+        switch raw {
+        case UInt32(RAMA_TRAFFIC_DIRECTION_INBOUND.rawValue): return .inbound
+        case UInt32(RAMA_TRAFFIC_DIRECTION_ANY.rawValue): return .any
+        default: return .outbound
+        }
+    }
+
+    private static func tcpMeta(flow: NEAppProxyTCPFlow) -> RamaTransparentProxyFlowMetaBridge {
+        let remote: Any?
+        if #available(macOS 15.0, *) {
+            remote = flow.remoteFlowEndpoint
+        } else {
+            remote = flow.remoteEndpoint
+        }
+        let remoteEndpoint = endpointHostPort(remote)
+        let localEndpoint = endpointHostPort(bestEffortLocalEndpoint(flow))
+        let appMeta = sourceAppMeta(flow)
+        return RamaTransparentProxyFlowMetaBridge(
+            protocolRaw: UInt32(RAMA_FLOW_PROTOCOL_TCP.rawValue),
+            remoteHost: remoteEndpoint?.host,
+            remotePort: remoteEndpoint?.port ?? 0,
+            localHost: localEndpoint?.host,
+            localPort: localEndpoint?.port ?? 0,
+            sourceAppSigningIdentifier: appMeta.signingIdentifier,
+            sourceAppBundleIdentifier: appMeta.bundleIdentifier
+        )
+    }
+
+    private static func udpMeta(
+        flow: NEAppProxyUDPFlow?,
+        remoteEndpoint: Any?,
+        localEndpoint: Any?
+    ) -> RamaTransparentProxyFlowMetaBridge {
+        let remote = endpointHostPort(remoteEndpoint)
+        let local = endpointHostPort(localEndpoint)
+        let appMeta = sourceAppMeta(flow)
+        return RamaTransparentProxyFlowMetaBridge(
+            protocolRaw: UInt32(RAMA_FLOW_PROTOCOL_UDP.rawValue),
+            remoteHost: remote?.host,
+            remotePort: remote?.port ?? 0,
+            localHost: local?.host,
+            localPort: local?.port ?? 0,
+            sourceAppSigningIdentifier: appMeta.signingIdentifier,
+            sourceAppBundleIdentifier: appMeta.bundleIdentifier
+        )
+    }
+
+    private static func sourceAppMeta(_ flow: NEAppProxyFlow?) -> (
+        signingIdentifier: String?, bundleIdentifier: String?
+    ) {
+        guard let flow else { return (nil, nil) }
+        let raw = flow.metaData.sourceAppSigningIdentifier.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return (nil, nil) }
+        // Apple documents this as "almost always equivalent to bundle identifier".
+        return (raw, raw)
+    }
+
+    private static func udpLocalEndpoint(flow: NEAppProxyUDPFlow) -> Any? {
+        if #available(macOS 15.0, *) {
+            return flow.localFlowEndpoint
+        }
+        return bestEffortLocalEndpoint(flow)
+    }
+
+    private static func bestEffortLocalEndpoint(_ flow: NEAppProxyFlow) -> Any? {
+        let object = flow as NSObject
+        if object.responds(to: NSSelectorFromString("localEndpoint")) {
+            return object.value(forKey: "localEndpoint")
+        }
+        if object.responds(to: NSSelectorFromString("localFlowEndpoint")) {
+            return object.value(forKey: "localFlowEndpoint")
+        }
+        return nil
+    }
+
+    private static func endpointHostPort(_ endpoint: Any?) -> (host: String, port: UInt16)? {
+        guard let endpoint else { return nil }
+        let raw = String(describing: endpoint)
+        guard !raw.isEmpty else { return nil }
+        if let idx = raw.lastIndex(of: ":") {
+            let hostPart = String(raw[..<idx]).trimmingCharacters(
+                in: CharacterSet(charactersIn: "[]"))
+            let portPart = String(raw[raw.index(after: idx)...])
+            if let port = UInt16(portPart) {
+                return (hostPart, port)
             }
-            if let handle = try? FileHandle(forWritingTo: url) {
-                do {
-                    try handle.seekToEnd()
-                    try handle.write(contentsOf: data)
-                    try handle.close()
-                    continue
-                } catch {
-                    try? handle.close()
-                }
-            }
         }
+        return nil
     }
 
-    private func ensureParentDir(_ url: URL) {
-        let dir = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    private func logTrace(_ message: String) {
+        RamaTransparentProxyEngineHandle.log(
+            level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
+            message: message
+        )
     }
 
-    private static func resolveLogUrls() -> [URL] {
-        let env = ProcessInfo.processInfo.environment
-        var urls: [URL] = []
-        if let path = env["RAMA_LOG_PATH"], !path.isEmpty {
-            urls.append(URL(fileURLWithPath: path))
-        }
-        if let groupId = env["RAMA_APP_GROUP_ID"], !groupId.isEmpty,
-            let containerURL = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: groupId)
-        {
-            urls.append(containerURL.appendingPathComponent("rama_tproxy_ext.log"))
-        }
-        let tmp = FileManager.default.temporaryDirectory
-        urls.append(tmp.appendingPathComponent("rama_tproxy_ext.log"))
-        urls.append(URL(fileURLWithPath: "/tmp/rama_tproxy_ext.log"))
-        return urls
+    private func logDebug(_ message: String) {
+        RamaTransparentProxyEngineHandle.log(
+            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
+            message: message
+        )
+    }
+
+    private func logInfo(_ message: String) {
+        RamaTransparentProxyEngineHandle.log(
+            level: UInt32(RAMA_LOG_LEVEL_INFO.rawValue),
+            message: message
+        )
+    }
+
+    private func logError(_ message: String) {
+        RamaTransparentProxyEngineHandle.log(
+            level: UInt32(RAMA_LOG_LEVEL_ERROR.rawValue),
+            message: message
+        )
     }
 }

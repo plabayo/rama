@@ -4,7 +4,7 @@ use rama::{
     Service,
     extensions::ExtensionsRef as _,
     net::{
-        apple::networkextension::{TcpFlow, TransparentProxyMeta},
+        apple::networkextension::{TcpFlow, tproxy::TransparentProxyMeta},
         proxy::{ProxyRequest, StreamForwardService},
     },
     rt::Executor,

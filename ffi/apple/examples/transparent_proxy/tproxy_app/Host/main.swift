@@ -32,16 +32,6 @@ final class HostController {
 
     private func configureProxy(start: Bool) {
         let extensionBundleId = "org.ramaproxy.example.tproxy.provider"
-        let appGroupId = ProcessInfo.processInfo.environment["RAMA_APP_GROUP_ID"] ?? ""
-        let remoteEndpoint =
-            ProcessInfo.processInfo.environment["RAMA_REMOTE_ENDPOINT"] ?? "example.com:80"
-
-        if start && !appGroupId.isEmpty {
-            writeConfig(appGroupId: appGroupId, remoteEndpoint: remoteEndpoint)
-        } else if start {
-            print("RAMA_APP_GROUP_ID not set; skipping config file write")
-            log("RAMA_APP_GROUP_ID not set; skipping config file write")
-        }
 
         log("calling NETransparentProxyManager.loadAllFromPreferences")
         NETransparentProxyManager.loadAllFromPreferences { managers, error in
@@ -109,35 +99,6 @@ final class HostController {
                     }
                 }
             }
-        }
-    }
-
-    private func writeConfig(appGroupId: String, remoteEndpoint: String) {
-        guard
-            let containerURL = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: appGroupId
-            )
-        else {
-            print("failed to resolve app group container for \(appGroupId)")
-            log("failed to resolve app group container for \(appGroupId)")
-            return
-        }
-
-        let url = containerURL.appendingPathComponent("rama_tproxy_config.json")
-        let dict: [String: Any] = ["remote_endpoint": remoteEndpoint]
-        guard let data = try? JSONSerialization.data(withJSONObject: dict) else {
-            print("failed to serialize config JSON")
-            log("failed to serialize config JSON")
-            return
-        }
-
-        do {
-            try data.write(to: url, options: .atomic)
-            print("wrote config to \(url.path)")
-            log("wrote config to \(url.path)")
-        } catch {
-            print("failed to write config: \(error)")
-            log("failed to write config: \(error)")
         }
     }
 

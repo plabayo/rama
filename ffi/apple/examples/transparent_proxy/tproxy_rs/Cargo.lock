@@ -1254,7 +1254,6 @@ dependencies = [
  "rama-tcp",
  "rama-udp",
  "rama-utils",
- "serde_json",
  "tokio",
  "tracing",
 ]

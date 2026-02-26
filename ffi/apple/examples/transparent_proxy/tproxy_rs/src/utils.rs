@@ -1,6 +1,6 @@
 use rama::net::{
     address::HostWithPort,
-    apple::networkextension::{TransparentProxyConfig, TransparentProxyMeta},
+    apple::networkextension::tproxy::{TransparentProxyConfig, TransparentProxyMeta},
     proxy::ProxyTarget,
 };
 

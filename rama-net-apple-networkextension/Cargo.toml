@@ -29,7 +29,6 @@ rama-net = { workspace = true }
 rama-tcp = { workspace = true }
 rama-udp = { workspace = true }
 rama-utils = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "sync"] }
 tracing = { workspace = true }
 

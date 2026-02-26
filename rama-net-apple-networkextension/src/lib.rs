@@ -22,19 +22,10 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
-mod engine;
-#[doc(hidden)]
 pub mod ffi;
-mod stream;
-mod types;
+pub mod tproxy;
+
+mod tcp;
 mod udp;
 
-pub use engine::{
-    TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyTcpSession,
-    TransparentProxyUdpSession,
-};
-#[doc(hidden)]
-pub use ffi::{RamaBytesOwned, RamaBytesView};
-pub use stream::TcpFlow;
-pub use types::{TransparentProxyConfig, TransparentProxyMeta};
-pub use udp::UdpFlow;
+pub use self::{tcp::TcpFlow, udp::UdpFlow};
