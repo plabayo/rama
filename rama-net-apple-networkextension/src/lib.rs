@@ -22,6 +22,7 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
+#[doc(hidden)]
 pub mod ffi;
 pub mod tproxy;
 

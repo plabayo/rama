@@ -5,5 +5,3 @@ mod log;
 pub use log::{LogLevel, log_callback};
 
 pub mod tproxy;
-
-mod cstr;

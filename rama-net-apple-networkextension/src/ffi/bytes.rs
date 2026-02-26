@@ -9,6 +9,10 @@ pub struct BytesOwned {
 }
 
 impl BytesOwned {
+    /// # Safety
+    ///
+    /// `self` must come from this crate's FFI allocation path and must not have
+    /// been freed before.
     pub unsafe fn free(self) {
         let Self { ptr, len, cap } = self;
         if ptr.is_null() || cap == 0 {
@@ -17,6 +21,7 @@ impl BytesOwned {
 
         let vec_len = len.min(cap);
         let vec_cap = cap;
+        // SAFETY: caller contract guarantees pointer/capacity originate from a `Vec<u8>`.
         let _ = unsafe { Vec::from_raw_parts(ptr, vec_len, vec_cap) };
     }
 }
@@ -50,10 +55,15 @@ pub struct BytesView {
 }
 
 impl BytesView {
+    /// # Safety
+    ///
+    /// `self.ptr` must be valid for reads of `self.len` bytes for the returned
+    /// lifetime.
     pub unsafe fn into_slice<'a>(self) -> &'a [u8] {
         if self.ptr.is_null() || self.len == 0 {
             return &[];
         }
+        // SAFETY: caller contract guarantees pointer validity.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }

@@ -6,10 +6,9 @@ use rama_utils::{
 
 /// Protocol filter used by transparent-proxy network rules.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransparentProxyRuleProtocol {
     /// Match both TCP and UDP.
-    #[default]
     Any = 0,
     /// Match TCP only.
     Tcp = 1,
@@ -71,11 +70,11 @@ impl From<u32> for TransparentProxyFlowProtocol {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TransparentProxyTrafficDirection {
     /// Match outbound connections.
-    #[default]
     Outbound = 0,
     /// Match inbound connections.
     Inbound = 1,
     /// Match any direction.
+    #[default]
     Any = 2,
 }
 
@@ -94,21 +93,28 @@ impl From<u32> for TransparentProxyTrafficDirection {
 }
 
 /// One network interception rule for transparent proxy settings.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TransparentProxyNetworkRule {
     remote_network: Option<ArcStr>,
-    remote_prefix: u8,
+    remote_prefix: Option<u8>,
     local_network: Option<ArcStr>,
-    local_prefix: u8,
+    local_prefix: Option<u8>,
     protocol: TransparentProxyRuleProtocol,
     direction: TransparentProxyTrafficDirection,
 }
 
 impl TransparentProxyNetworkRule {
-    /// Create an "all outbound traffic" rule.
+    /// Create an "all traffic" rule.
     #[must_use]
-    pub fn any_outbound() -> Self {
-        Self::default()
+    pub fn any() -> Self {
+        Self {
+            remote_network: None,
+            remote_prefix: None,
+            local_network: None,
+            local_prefix: None,
+            protocol: TransparentProxyRuleProtocol::Any,
+            direction: TransparentProxyTrafficDirection::Any,
+        }
     }
 
     /// Optional remote network as textual IP address.
@@ -117,9 +123,9 @@ impl TransparentProxyNetworkRule {
         self.remote_network.as_deref()
     }
 
-    /// Prefix length for `remote_network`.
+    /// Prefix length for `remote_network`, if set.
     #[must_use]
-    pub const fn remote_prefix(&self) -> u8 {
+    pub const fn remote_prefix(&self) -> Option<u8> {
         self.remote_prefix
     }
 
@@ -129,9 +135,9 @@ impl TransparentProxyNetworkRule {
         self.local_network.as_deref()
     }
 
-    /// Prefix length for `local_network`.
+    /// Prefix length for `local_network`, if set.
     #[must_use]
-    pub const fn local_prefix(&self) -> u8 {
+    pub const fn local_prefix(&self) -> Option<u8> {
         self.local_prefix
     }
 
@@ -151,7 +157,7 @@ impl TransparentProxyNetworkRule {
         /// Set remote network + prefix.
         pub fn remote_network(mut self, network: ArcStr, prefix: u8) -> Self {
             self.remote_network = Some(network);
-            self.remote_prefix = prefix;
+            self.remote_prefix = Some(prefix);
             self
         }
     }
@@ -160,7 +166,7 @@ impl TransparentProxyNetworkRule {
         /// Set local network + prefix.
         pub fn local_network(mut self, network: ArcStr, prefix: u8) -> Self {
             self.local_network = Some(network);
-            self.local_prefix = prefix;
+            self.local_prefix = Some(prefix);
             self
         }
     }
@@ -186,8 +192,9 @@ impl TransparentProxyNetworkRule {
 ///
 /// This configuration is long-lived and shared by all flows handled by one
 /// [`crate::TransparentProxyEngine`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TransparentProxyConfig {
+    tunnel_remote_address: ArcStr,
     rules: Vec<TransparentProxyNetworkRule>,
 }
 
@@ -196,8 +203,18 @@ impl TransparentProxyConfig {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            rules: vec![TransparentProxyNetworkRule::any_outbound()],
+            tunnel_remote_address: ArcStr::from("127.0.0.1"),
+            rules: vec![TransparentProxyNetworkRule::any()],
         }
+    }
+
+    /// Placeholder tunnel remote address for `NETransparentProxyNetworkSettings`.
+    ///
+    /// Apple requires this field when constructing tunnel settings, even for
+    /// transparent proxy providers where this is not used as a real upstream.
+    #[must_use]
+    pub fn tunnel_remote_address(&self) -> &str {
+        &self.tunnel_remote_address
     }
 
     /// Network interception rules for `NETransparentProxyNetworkSettings`.
@@ -207,11 +224,25 @@ impl TransparentProxyConfig {
     }
 
     generate_set_and_with! {
+        /// Set tunnel remote address placeholder.
+        pub fn tunnel_remote_address(mut self, tunnel_remote_address: ArcStr) -> Self {
+            self.tunnel_remote_address = tunnel_remote_address;
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Set interception rules.
         pub fn rules(mut self, rules: Vec<TransparentProxyNetworkRule>) -> Self {
             self.rules = rules;
             self
         }
+    }
+}
+
+impl Default for TransparentProxyConfig {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -1,6 +1,6 @@
 use rama::net::{
     address::HostWithPort,
-    apple::networkextension::tproxy::{TransparentProxyConfig, TransparentProxyMeta},
+    apple::networkextension::tproxy::TransparentProxyFlowMeta,
     proxy::ProxyTarget,
 };
 
@@ -11,12 +11,5 @@ pub(super) fn resolve_target_from_extensions(
     ext.get::<ProxyTarget>()
         .cloned()
         .map(|target| target.0)
-        .or_else(|| {
-            ext.get::<TransparentProxyMeta>()
-                .and_then(|meta| meta.remote_endpoint().cloned())
-        })
-        .or_else(|| {
-            ext.get::<TransparentProxyConfig>()
-                .and_then(|cfg| cfg.default_remote_endpoint().cloned())
-        })
+        .or_else(|| ext.get::<TransparentProxyFlowMeta>().and_then(|meta| meta.remote_endpoint.clone()))
 }

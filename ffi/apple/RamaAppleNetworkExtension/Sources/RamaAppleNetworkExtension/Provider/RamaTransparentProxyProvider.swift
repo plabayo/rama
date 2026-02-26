@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import NetworkExtension
 import RamaAppleNEFFI
@@ -139,8 +140,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
         logInfo("extension startProxy")
 
-        guard let startup = RamaTransparentProxyEngineHandle.startupConfig() else {
-            logError("failed to get startup config from rust")
+        guard let startup = RamaTransparentProxyEngineHandle.config() else {
+            logError("failed to get transparent proxy config from rust")
             completionHandler(NSError(domain: "RamaTransparentProxy", code: 2))
             return
         }
@@ -381,20 +382,68 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
-    private static func makeNetworkRule(_ rule: RamaTransparentProxyStartupRuleBridge)
+    private static func makeNetworkRule(_ rule: RamaTransparentProxyRuleBridge)
         -> NENetworkRule?
     {
         let remote = networkEndpoint(from: rule.remoteNetwork)
         let local = networkEndpoint(from: rule.localNetwork)
+        let proto = networkRuleProtocol(rule.protocolRaw)
+
+        // Host/domain-only rule (no local matcher): use destination-host initializer.
+        // This avoids forcing CIDR for non-IP hosts (e.g. example.com).
+        if let remote, local == nil, rule.remotePrefix == nil {
+            return NENetworkRule(
+                destinationHost: remote,
+                protocol: proto
+            )
+        }
+
+        guard
+            let remotePrefix = resolvedPrefix(
+                endpoint: remote,
+                networkText: rule.remoteNetwork,
+                explicitPrefix: rule.remotePrefix
+            ),
+            let localPrefix = resolvedPrefix(
+                endpoint: local,
+                networkText: rule.localNetwork,
+                explicitPrefix: rule.localPrefix
+            )
+        else {
+            return nil
+        }
 
         return NENetworkRule(
             remoteNetwork: remote,
-            remotePrefix: Int(rule.remotePrefix),
+            remotePrefix: remotePrefix,
             localNetwork: local,
-            localPrefix: Int(rule.localPrefix),
-            protocol: networkRuleProtocol(rule.protocolRaw),
+            localPrefix: localPrefix,
+            protocol: proto,
             direction: trafficDirection(rule.directionRaw)
         )
+    }
+
+    private static func resolvedPrefix(
+        endpoint: NWHostEndpoint?,
+        networkText: String?,
+        explicitPrefix: UInt8?
+    ) -> Int? {
+        guard endpoint != nil else { return 0 }
+        if let explicitPrefix { return Int(explicitPrefix) }
+        guard let networkText else { return nil }
+        return inferredHostPrefix(networkText)
+    }
+
+    private static func inferredHostPrefix(_ text: String) -> Int? {
+        var v4 = in_addr()
+        if text.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 {
+            return 32
+        }
+        var v6 = in6_addr()
+        if text.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 {
+            return 128
+        }
+        return nil
     }
 
     private static func networkEndpoint(from network: String?) -> NWHostEndpoint? {

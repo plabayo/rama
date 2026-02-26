@@ -11,18 +11,18 @@ struct RamaTransparentProxyFlowMetaBridge {
     var sourceAppBundleIdentifier: String?
 }
 
-struct RamaTransparentProxyStartupRuleBridge {
+struct RamaTransparentProxyRuleBridge {
     var remoteNetwork: String?
-    var remotePrefix: UInt8
+    var remotePrefix: UInt8?
     var localNetwork: String?
-    var localPrefix: UInt8
+    var localPrefix: UInt8?
     var protocolRaw: UInt32
     var directionRaw: UInt32
 }
 
-struct RamaStartupConfigBridge {
+struct RamaTransparentProxyConfigBridge {
     var tunnelRemoteAddress: String
-    var rules: [RamaTransparentProxyStartupRuleBridge]
+    var rules: [RamaTransparentProxyRuleBridge]
 }
 
 final class TcpSessionCallbackBox {
@@ -52,38 +52,55 @@ private func dataFromView(_ view: RamaBytesView) -> Data {
     return Data(bytes: ptr, count: Int(view.len))
 }
 
-private func stringFromPtr(_ ptr: UnsafePointer<CChar>?) -> String? {
-    guard let ptr else { return nil }
-    return String(cString: ptr)
+private func stringFromUtf8(_ ptr: UnsafePointer<CChar>?, _ len: Int) -> String? {
+    guard let ptr, len > 0 else { return nil }
+    let raw = UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
+    let buffer = UnsafeBufferPointer(start: raw, count: len)
+    return String(decoding: buffer, as: UTF8.self)
 }
 
-private func withCStringOrNil<T>(_ value: String?, _ body: (UnsafePointer<CChar>?) -> T) -> T {
+private func withUtf8OrNil<T>(
+    _ value: String?,
+    _ body: (UnsafePointer<CChar>?, Int) -> T
+) -> T {
     guard let value else {
-        return body(nil)
+        return body(nil, 0)
     }
-    return value.withCString { ptr in body(ptr) }
+
+    var bytes = Array(value.utf8)
+    return bytes.withUnsafeMutableBufferPointer { buffer in
+        guard let base = buffer.baseAddress else {
+            return body(nil, 0)
+        }
+        let ptr = UnsafeRawPointer(base).assumingMemoryBound(to: CChar.self)
+        return body(ptr, buffer.count)
+    }
 }
 
 private func withFlowMeta<T>(
     _ meta: RamaTransparentProxyFlowMetaBridge,
     _ body: (UnsafePointer<RamaTransparentProxyFlowMeta>) -> T
 ) -> T {
-    withCStringOrNil(meta.remoteHost) { remoteHostPtr in
-        withCStringOrNil(meta.localHost) { localHostPtr in
-            withCStringOrNil(meta.sourceAppSigningIdentifier) { signingIdPtr in
-                withCStringOrNil(meta.sourceAppBundleIdentifier) { bundleIdPtr in
+    withUtf8OrNil(meta.remoteHost) { remoteHostPtr, remoteHostLen in
+        withUtf8OrNil(meta.localHost) { localHostPtr, localHostLen in
+            withUtf8OrNil(meta.sourceAppSigningIdentifier) { signingIdPtr, signingIdLen in
+                withUtf8OrNil(meta.sourceAppBundleIdentifier) { bundleIdPtr, bundleIdLen in
                     var cMeta = RamaTransparentProxyFlowMeta(
                         protocol: meta.protocolRaw,
                         remote_endpoint: RamaTransparentProxyFlowEndpoint(
                             host_utf8: remoteHostPtr,
+                            host_utf8_len: remoteHostLen,
                             port: meta.remotePort,
                         ),
                         local_endpoint: RamaTransparentProxyFlowEndpoint(
                             host_utf8: localHostPtr,
+                            host_utf8_len: localHostLen,
                             port: meta.localPort,
                         ),
                         source_app_signing_identifier_utf8: signingIdPtr,
-                        source_app_bundle_identifier_utf8: bundleIdPtr
+                        source_app_signing_identifier_utf8_len: signingIdLen,
+                        source_app_bundle_identifier_utf8: bundleIdPtr,
+                        source_app_bundle_identifier_utf8_len: bundleIdLen
                     )
                     return withUnsafePointer(to: &cMeta) { metaPtr in
                         body(metaPtr)
@@ -155,30 +172,36 @@ final class RamaTransparentProxyEngineHandle {
         }
     }
 
-    static func startupConfig() -> RamaStartupConfigBridge? {
-        var out = RamaTransparentProxyStartupConfig(
-            tunnel_remote_address_utf8: nil,
-            rules: nil,
-            rules_len: 0
-        )
-        let ok = withUnsafeMutablePointer(to: &out) { outPtr in
-            rama_transparent_proxy_get_startup_config(outPtr)
-        }
-        guard ok else { return nil }
-        guard let tunnelRemoteAddress = stringFromPtr(out.tunnel_remote_address_utf8) else {
+    static func config() -> RamaTransparentProxyConfigBridge? {
+        guard let outPtr = rama_transparent_proxy_get_config() else { return nil }
+        defer { rama_transparent_proxy_config_free(outPtr) }
+        let out = outPtr.pointee
+        guard
+            let tunnelRemoteAddress = stringFromUtf8(
+                out.tunnel_remote_address_utf8,
+                Int(out.tunnel_remote_address_utf8_len)
+            )
+        else {
             return nil
         }
 
-        var rules: [RamaTransparentProxyStartupRuleBridge] = []
+        var rules: [RamaTransparentProxyRuleBridge] = []
         if let ptr = out.rules, out.rules_len > 0 {
-            let buffer = UnsafeBufferPointer(start: ptr, count: Int(out.rules_len))
+            let buffer: UnsafeBufferPointer<RamaTransparentProxyNetworkRule> =
+                UnsafeBufferPointer(start: ptr, count: Int(out.rules_len))
             for cRule in buffer {
                 rules.append(
-                    RamaTransparentProxyStartupRuleBridge(
-                        remoteNetwork: stringFromPtr(cRule.remote_network_utf8),
-                        remotePrefix: cRule.remote_prefix,
-                        localNetwork: stringFromPtr(cRule.local_network_utf8),
-                        localPrefix: cRule.local_prefix,
+                    RamaTransparentProxyRuleBridge(
+                        remoteNetwork: stringFromUtf8(
+                            cRule.remote_network_utf8,
+                            Int(cRule.remote_network_utf8_len)
+                        ),
+                        remotePrefix: cRule.remote_prefix_is_set ? cRule.remote_prefix : nil,
+                        localNetwork: stringFromUtf8(
+                            cRule.local_network_utf8,
+                            Int(cRule.local_network_utf8_len)
+                        ),
+                        localPrefix: cRule.local_prefix_is_set ? cRule.local_prefix : nil,
                         protocolRaw: cRule.protocol,
                         directionRaw: cRule.direction
                     )
@@ -186,7 +209,7 @@ final class RamaTransparentProxyEngineHandle {
             }
         }
 
-        return RamaStartupConfigBridge(
+        return RamaTransparentProxyConfigBridge(
             tunnelRemoteAddress: tunnelRemoteAddress,
             rules: rules
         )

@@ -13,7 +13,7 @@ pub enum LogLevel {
 impl LogLevel {
     #[inline]
     fn from_u32_or_debug(x: u32) -> Self {
-        if x <= LogLevel::Error as u32 {
+        if x <= Self::Error as u32 {
             // SAFETY: repr(u32) and valid range 0..=4 maps to a real variant
             unsafe { ::std::mem::transmute::<u32, Self>(x) }
         } else {
@@ -23,8 +23,11 @@ impl LogLevel {
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn log_callback(level: u32, message: BytesView) {
+/// # Safety
+///
+/// `message.ptr` must be valid for reads of `message.len` bytes for the
+/// duration of the call.
+pub unsafe fn log_callback(level: u32, message: BytesView) {
     // SAFETY: caller guarantees `message` is valid for the duration of this call.
     let msg = String::from_utf8_lossy(unsafe { message.into_slice() });
 

@@ -4,7 +4,7 @@ use rama::{
     Service,
     extensions::ExtensionsRef as _,
     net::{
-        apple::networkextension::{TcpFlow, tproxy::TransparentProxyMeta},
+        apple::networkextension::{TcpFlow, tproxy::TransparentProxyFlowMeta},
         proxy::{ProxyRequest, StreamForwardService},
     },
     rt::Executor,
@@ -26,15 +26,19 @@ pub(super) fn new_service() -> impl Service<TcpFlow, Output = (), Error = Infall
 async fn service(stream: TcpFlow) -> Result<(), Infallible> {
     let meta = stream
         .extensions()
-        .get::<TransparentProxyMeta>()
+        .get::<TransparentProxyFlowMeta>()
         .cloned()
-        .unwrap_or_else(|| TransparentProxyMeta::new(rama::net::Protocol::from_static("tcp")));
+        .unwrap_or_else(|| {
+            TransparentProxyFlowMeta::new(
+                rama::net::apple::networkextension::tproxy::TransparentProxyFlowProtocol::Tcp,
+            )
+        });
     let target = resolve_target_from_extensions(stream.extensions());
 
     tracing::info!(
-        protocol = meta.protocol().as_str(),
-        remote = ?meta.remote_endpoint(),
-        local = ?meta.local_endpoint(),
+        protocol = ?meta.protocol,
+        remote = ?meta.remote_endpoint,
+        local = ?meta.local_endpoint,
         "tproxy tcp start"
     );
 

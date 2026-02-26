@@ -1,20 +1,12 @@
-use std::{
-    ffi::{CStr, c_char, c_void},
-    sync::Once,
-};
+use std::sync::Once;
 
 use rama::telemetry::tracing::subscriber;
 use rama::{
-    net::{
-        Protocol,
-        address::{Host, HostWithPort},
-        apple::networkextension::{
-            ffi::{BytesOwned, BytesView},
-            tproxy::{
-                TransparentProxyConfig, TransparentProxyEngine, TransparentProxyEngineBuilder,
-                TransparentProxyMeta, TransparentProxyNetworkRule, TransparentProxyTcpSession,
-                TransparentProxyUdpSession,
-            },
+    net::apple::networkextension::{
+        ffi::{BytesOwned, BytesView, tproxy as ffi_tproxy},
+        tproxy::{
+            TransparentProxyConfig, TransparentProxyEngine, TransparentProxyEngineBuilder,
+            TransparentProxyFlowMeta, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
         },
     },
     telemetry::tracing,
@@ -25,149 +17,90 @@ mod udp;
 mod utils;
 
 pub type RamaTransparentProxyEngine = TransparentProxyEngine;
-pub type RamaTransparentProxyTcpSession = TransparentProxyTcpSession;
-pub type RamaTransparentProxyUdpSession = TransparentProxyUdpSession;
+pub type RamaTransparentProxyTcpSession =
+    rama::net::apple::networkextension::tproxy::TransparentProxyTcpSession;
+pub type RamaTransparentProxyUdpSession =
+    rama::net::apple::networkextension::tproxy::TransparentProxyUdpSession;
+
+pub type RamaTransparentProxyFlowMeta = ffi_tproxy::TransparentProxyFlowMeta;
+pub type RamaTransparentProxyConfig = ffi_tproxy::TransparentProxyConfig;
+pub type RamaTransparentProxyTcpSessionCallbacks = ffi_tproxy::TransparentProxyTcpSessionCallbacks;
+pub type RamaTransparentProxyUdpSessionCallbacks = ffi_tproxy::TransparentProxyUdpSessionCallbacks;
 
 static INIT_TRACING: Once = Once::new();
 
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FlowProtocol {
-    Tcp = 1,
-    Udp = 2,
+fn proxy_config() -> TransparentProxyConfig {
+    TransparentProxyConfig::new().with_rules(vec![TransparentProxyNetworkRule::any()])
 }
-
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RuleProtocol {
-    Any = 0,
-    Tcp = 1,
-    Udp = 2,
-}
-
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TrafficDirection {
-    Outbound = 0,
-    Inbound = 1,
-    Any = 2,
-}
-
-#[repr(C)]
-pub struct RamaFlowEndpoint {
-    pub host_utf8: *const c_char,
-    pub port: u16,
-}
-
-#[repr(C)]
-pub struct RamaTransparentProxyFlowMeta {
-    pub protocol: u32,
-    pub remote_endpoint: RamaFlowEndpoint,
-    pub local_endpoint: RamaFlowEndpoint,
-    pub source_app_signing_identifier_utf8: *const c_char,
-    pub source_app_bundle_identifier_utf8: *const c_char,
-}
-
-#[repr(C)]
-pub struct RamaTransparentProxyNetworkRule {
-    pub remote_network_utf8: *const c_char,
-    pub remote_prefix: u8,
-    pub local_network_utf8: *const c_char,
-    pub local_prefix: u8,
-    pub protocol: u32,
-    pub direction: u32,
-}
-
-#[repr(C)]
-pub struct RamaTransparentProxyStartupConfig {
-    pub tunnel_remote_address_utf8: *const c_char,
-    pub rules: *const RamaTransparentProxyNetworkRule,
-    pub rules_len: usize,
-}
-
-#[repr(C)]
-pub struct RamaTransparentProxyTcpSessionCallbacks {
-    pub context: *mut c_void,
-    pub on_server_bytes: Option<extern "C" fn(*mut c_void, BytesView)>,
-    pub on_server_closed: Option<extern "C" fn(*mut c_void)>,
-}
-
-#[repr(C)]
-pub struct RamaTransparentProxyUdpSessionCallbacks {
-    pub context: *mut c_void,
-    pub on_server_datagram: Option<extern "C" fn(*mut c_void, BytesView)>,
-    pub on_server_closed: Option<extern "C" fn(*mut c_void)>,
-}
-
-pub use ::rama::net::apple::networkextension::ffi::{LogLevel, log_callback as rama_log};
-
-/// For a transparent proxy implemented via Apple's NetworkExtension framework
-/// (using NETransparentProxyProvider), the tunnelRemoteAddress is
-/// typically set to localhost (127.0.0.1) as a placeholder/sentinel value.
-const TUNNEL_REMOTE_ADDRESS: &CStr = c"127.0.0.1";
-
-static mut STARTUP_RULES: [RamaTransparentProxyNetworkRule; 1] =
-    [RamaTransparentProxyNetworkRule {
-        remote_network_utf8: std::ptr::null(),
-        remote_prefix: 0,
-        local_network_utf8: std::ptr::null(),
-        local_prefix: 0,
-        protocol: RuleProtocol::Any as u32,
-        direction: TrafficDirection::Outbound as u32,
-    }];
-const STARTUP_RULES_LEN: usize = 1;
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// This function is FFI entrypoint and may be called from Swift/C.
 pub unsafe extern "C" fn rama_transparent_proxy_initialize() -> bool {
     INIT_TRACING.call_once(|| {
-        // TODO: support richer subscriber setup as part of proc macro in future
-        let _ = subscriber::fmt::init();
+        // TODO: support richer subscriber setup as part of proc macro in future.
+        subscriber::fmt::init();
     });
     true
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rama_transparent_proxy_get_startup_config(
-    out_config: *mut RamaTransparentProxyStartupConfig,
-) -> bool {
-    if out_config.is_null() {
-        return false;
-    }
-    // SAFETY: `out_config` is checked non-null above and valid per FFI contract.
-    unsafe {
-        *out_config = RamaTransparentProxyStartupConfig {
-            tunnel_remote_address_utf8: TUNNEL_REMOTE_ADDRESS.as_ptr(),
-            rules: core::ptr::addr_of!(STARTUP_RULES[0]),
-            rules_len: STARTUP_RULES_LEN,
-        };
-    }
-    true
+/// # Safety
+///
+pub unsafe extern "C" fn rama_transparent_proxy_get_config() -> *mut RamaTransparentProxyConfig {
+    let config = proxy_config();
+    let ffi_cfg = RamaTransparentProxyConfig::from_rust_type(&config);
+    Box::into_raw(Box::new(ffi_cfg))
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `config` must be either null or a pointer returned by
+/// `rama_transparent_proxy_get_config` that was not freed yet.
+pub unsafe extern "C" fn rama_transparent_proxy_config_free(
+    config: *mut RamaTransparentProxyConfig,
+) {
+    if config.is_null() {
+        return;
+    }
+    // SAFETY: `config` came from `Box::into_raw` in `rama_transparent_proxy_get_config`.
+    let config = unsafe { Box::from_raw(config) };
+    // SAFETY: guaranteed by function contract above.
+    unsafe { config.free() }
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `meta` must be either null or a valid pointer to `RamaTransparentProxyFlowMeta`.
 pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
     meta: *const RamaTransparentProxyFlowMeta,
 ) -> bool {
     if meta.is_null() {
         return false;
     }
-    // SAFETY: pointer validity is part of FFI contract.
-    let meta = unsafe { meta_from_ffi(&*meta) };
+
+    // SAFETY: pointer validity is guaranteed by FFI contract.
+    let meta = unsafe { (*meta).as_owned_rust_type() };
+
     tracing::trace!(
-        protocol = %meta.protocol(),
-        remote = ?meta.remote_endpoint(),
-        local = ?meta.local_endpoint(),
+        protocol = ?meta.protocol,
+        remote = ?meta.remote_endpoint,
+        local = ?meta.local_endpoint,
         "flow intercept decision: accepted"
     );
+
     true
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// This function is FFI entrypoint and may be called from Swift/C.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_new() -> *mut RamaTransparentProxyEngine {
-    let config =
-        TransparentProxyConfig::new().with_rules(vec![TransparentProxyNetworkRule::any_outbound()]);
-
-    let engine = TransparentProxyEngineBuilder::new(config)
+    let engine = TransparentProxyEngineBuilder::new(proxy_config())
         .with_tcp_service(self::tcp::new_service())
         .with_udp_service(self::udp::new_service())
         .build();
@@ -176,28 +109,42 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_new() -> *mut RamaTranspa
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `engine` must either be null or a pointer returned by
+/// `rama_transparent_proxy_engine_new` that has not been freed.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_free(
     engine: *mut RamaTransparentProxyEngine,
 ) {
     if engine.is_null() {
         return;
     }
+
     // SAFETY: `engine` came from `Box::into_raw` in `rama_transparent_proxy_engine_new`.
     unsafe { drop(Box::from_raw(engine)) };
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `engine` must be a valid pointer returned by
+/// `rama_transparent_proxy_engine_new`.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_start(
     engine: *mut RamaTransparentProxyEngine,
 ) {
     if engine.is_null() {
         return;
     }
-    // SAFETY: pointer validity is part of FFI contract.
+
+    // SAFETY: pointer validity is guaranteed by FFI contract.
     unsafe { (*engine).start() };
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `engine` must be a valid pointer returned by
+/// `rama_transparent_proxy_engine_new`.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_stop(
     engine: *mut RamaTransparentProxyEngine,
     reason: i32,
@@ -205,11 +152,16 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_stop(
     if engine.is_null() {
         return;
     }
-    // SAFETY: pointer validity is part of FFI contract.
+
+    // SAFETY: pointer validity is guaranteed by FFI contract.
     unsafe { (*engine).stop(reason) };
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `engine` must be valid and `meta` must be either null or point to a valid
+/// `RamaTransparentProxyFlowMeta`.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_new_tcp_session(
     engine: *mut RamaTransparentProxyEngine,
     meta: *const RamaTransparentProxyFlowMeta,
@@ -219,44 +171,46 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_new_tcp_session(
         return std::ptr::null_mut();
     }
 
-    // SAFETY: pointer validity is part of FFI contract.
     let typed_meta = if meta.is_null() {
-        TransparentProxyMeta::new(Protocol::from_static("tcp"))
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
     } else {
-        // SAFETY: pointer validity is part of FFI contract.
-        unsafe { meta_from_ffi(&*meta) }
+        // SAFETY: pointer validity is guaranteed by FFI contract.
+        unsafe { (*meta).as_owned_rust_type() }
     };
 
     let context = callbacks.context as usize;
     let on_server_bytes = callbacks.on_server_bytes;
     let on_server_closed = callbacks.on_server_closed;
 
-    // SAFETY: pointer validity is part of FFI contract.
-    let session = unsafe {
-        (*engine).new_tcp_session(
-            typed_meta,
-            move |bytes| {
-                let Some(callback) = on_server_bytes else {
-                    return;
-                };
-                if bytes.is_empty() {
-                    return;
-                }
+    // SAFETY: pointer validity is guaranteed by FFI contract.
+    let engine = unsafe { &*engine };
+    let session = engine.new_tcp_session(
+        typed_meta,
+        move |bytes| {
+            let Some(callback) = on_server_bytes else {
+                return;
+            };
+            if bytes.is_empty() {
+                return;
+            }
+            // SAFETY: callback pointer is provided by Swift and expected callable.
+            unsafe {
                 callback(
-                    context as *mut c_void,
+                    context as *mut std::ffi::c_void,
                     BytesView {
                         ptr: bytes.as_ptr(),
                         len: bytes.len(),
                     },
                 );
-            },
-            move || {
-                if let Some(callback) = on_server_closed {
-                    callback(context as *mut c_void);
-                }
-            },
-        )
-    };
+            }
+        },
+        move || {
+            if let Some(callback) = on_server_closed {
+                // SAFETY: callback pointer is provided by Swift and expected callable.
+                unsafe { callback(context as *mut std::ffi::c_void) };
+            }
+        },
+    );
 
     match session {
         Some(session) => Box::into_raw(Box::new(session)),
@@ -265,17 +219,25 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_new_tcp_session(
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `session` must either be null or a pointer returned by
+/// `rama_transparent_proxy_engine_new_tcp_session`.
 pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_free(
     session: *mut RamaTransparentProxyTcpSession,
 ) {
     if session.is_null() {
         return;
     }
+
     // SAFETY: `session` came from `Box::into_raw` in session constructor.
     unsafe { drop(Box::from_raw(session)) };
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `session` must be valid. `bytes` must reference readable memory for this call.
 pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_client_bytes(
     session: *mut RamaTransparentProxyTcpSession,
     bytes: BytesView,
@@ -283,24 +245,33 @@ pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_client_bytes(
     if session.is_null() {
         return;
     }
+
     // SAFETY: caller guarantees bytes view validity for this call.
     let slice = unsafe { bytes.into_slice() };
-    // SAFETY: pointer validity is part of FFI contract.
+    // SAFETY: pointer validity is guaranteed by FFI contract.
     unsafe { (*session).on_client_bytes(slice) };
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `session` must be valid.
 pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_client_eof(
     session: *mut RamaTransparentProxyTcpSession,
 ) {
     if session.is_null() {
         return;
     }
-    // SAFETY: pointer validity is part of FFI contract.
+
+    // SAFETY: pointer validity is guaranteed by FFI contract.
     unsafe { (*session).on_client_eof() };
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `engine` must be valid and `meta` must be either null or point to a valid
+/// `RamaTransparentProxyFlowMeta`.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_new_udp_session(
     engine: *mut RamaTransparentProxyEngine,
     meta: *const RamaTransparentProxyFlowMeta,
@@ -310,44 +281,46 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_new_udp_session(
         return std::ptr::null_mut();
     }
 
-    // SAFETY: pointer validity is part of FFI contract.
     let typed_meta = if meta.is_null() {
-        TransparentProxyMeta::new(Protocol::from_static("udp"))
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
     } else {
-        // SAFETY: pointer validity is part of FFI contract.
-        unsafe { meta_from_ffi(&*meta) }
+        // SAFETY: pointer validity is guaranteed by FFI contract.
+        unsafe { (*meta).as_owned_rust_type() }
     };
 
     let context = callbacks.context as usize;
     let on_server_datagram = callbacks.on_server_datagram;
     let on_server_closed = callbacks.on_server_closed;
 
-    // SAFETY: pointer validity is part of FFI contract.
-    let session = unsafe {
-        (*engine).new_udp_session(
-            typed_meta,
-            move |bytes| {
-                let Some(callback) = on_server_datagram else {
-                    return;
-                };
-                if bytes.is_empty() {
-                    return;
-                }
+    // SAFETY: pointer validity is guaranteed by FFI contract.
+    let engine = unsafe { &*engine };
+    let session = engine.new_udp_session(
+        typed_meta,
+        move |bytes| {
+            let Some(callback) = on_server_datagram else {
+                return;
+            };
+            if bytes.is_empty() {
+                return;
+            }
+            // SAFETY: callback pointer is provided by Swift and expected callable.
+            unsafe {
                 callback(
-                    context as *mut c_void,
+                    context as *mut std::ffi::c_void,
                     BytesView {
                         ptr: bytes.as_ptr(),
                         len: bytes.len(),
                     },
                 );
-            },
-            move || {
-                if let Some(callback) = on_server_closed {
-                    callback(context as *mut c_void);
-                }
-            },
-        )
-    };
+            }
+        },
+        move || {
+            if let Some(callback) = on_server_closed {
+                // SAFETY: callback pointer is provided by Swift and expected callable.
+                unsafe { callback(context as *mut std::ffi::c_void) };
+            }
+        },
+    );
 
     match session {
         Some(session) => Box::into_raw(Box::new(session)),
@@ -356,17 +329,25 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_new_udp_session(
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `session` must either be null or a pointer returned by
+/// `rama_transparent_proxy_engine_new_udp_session`.
 pub unsafe extern "C" fn rama_transparent_proxy_udp_session_free(
     session: *mut RamaTransparentProxyUdpSession,
 ) {
     if session.is_null() {
         return;
     }
+
     // SAFETY: `session` came from `Box::into_raw` in session constructor.
     unsafe { drop(Box::from_raw(session)) };
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `session` must be valid. `bytes` must reference readable memory for this call.
 pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_client_datagram(
     session: *mut RamaTransparentProxyUdpSession,
     bytes: BytesView,
@@ -374,74 +355,42 @@ pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_client_datagram(
     if session.is_null() {
         return;
     }
+
     // SAFETY: caller guarantees bytes view validity for this call.
     let slice = unsafe { bytes.into_slice() };
-    // SAFETY: pointer validity is part of FFI contract.
+    // SAFETY: pointer validity is guaranteed by FFI contract.
     unsafe { (*session).on_client_datagram(slice) };
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `session` must be valid.
 pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_client_close(
     session: *mut RamaTransparentProxyUdpSession,
 ) {
     if session.is_null() {
         return;
     }
-    // SAFETY: pointer validity is part of FFI contract.
+
+    // SAFETY: pointer validity is guaranteed by FFI contract.
     unsafe { (*session).on_client_close() };
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `message.ptr` must be readable for `message.len` bytes for this call.
+pub unsafe extern "C" fn rama_log(level: u32, message: BytesView) {
+    // SAFETY: guaranteed by function contract above.
+    unsafe { rama::net::apple::networkextension::ffi::log_callback(level, message) };
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `bytes` must have been returned by this Rust FFI layer and not freed yet.
 pub unsafe extern "C" fn rama_owned_bytes_free(bytes: BytesOwned) {
-    // SAFETY: caller guarantees `bytes` came from this FFI layer and is not freed yet.
-    unsafe { bytes.free() }
-}
-
-unsafe fn cstr_opt(ptr: *const c_char) -> Option<String> {
-    if ptr.is_null() {
-        return None;
-    }
-    assert!(ptr.is_aligned());
-    // SAFETY: pointer validity is part of FFI contract.
-    let raw = unsafe { CStr::from_ptr(ptr).to_string_lossy().trim().to_owned() };
-    (!raw.is_empty()).then_some(raw)
-}
-
-unsafe fn endpoint_opt(ep: &RamaFlowEndpoint) -> Option<HostWithPort> {
-    if !ep.is_set || ep.port == 0 {
-        return None;
-    }
-    // SAFETY: pointer validity is part of FFI contract.
-    let host = unsafe { cstr_opt(ep.host_utf8)? };
-    let host = Host::try_from(host.as_str()).ok()?;
-    Some(HostWithPort::new(host, ep.port))
-}
-
-unsafe fn meta_from_ffi(meta: &RamaTransparentProxyFlowMeta) -> TransparentProxyMeta {
-    let protocol = match meta.protocol {
-        x if x == FlowProtocol::Tcp as u32 => Protocol::from_static("tcp"),
-        x if x == FlowProtocol::Udp as u32 => Protocol::from_static("udp"),
-        _ => Protocol::from_static("tcp"),
-    };
-
-    let mut out = TransparentProxyMeta::new(protocol);
-
-    // SAFETY: pointer validity is part of FFI contract.
-    if let Some(remote) = unsafe { endpoint_opt(&meta.remote_endpoint) } {
-        out = out.with_remote_endpoint(remote);
-    }
-    // SAFETY: pointer validity is part of FFI contract.
-    if let Some(local) = unsafe { endpoint_opt(&meta.local_endpoint) } {
-        out = out.with_local_endpoint(local);
-    }
-    // SAFETY: pointer validity is part of FFI contract.
-    if let Some(v) = unsafe { cstr_opt(meta.source_app_signing_identifier_utf8) } {
-        out = out.with_source_app_signing_identifier(v.into());
-    }
-    // SAFETY: pointer validity is part of FFI contract.
-    if let Some(v) = unsafe { cstr_opt(meta.source_app_bundle_identifier_utf8) } {
-        out = out.with_source_app_bundle_identifier(v.into());
-    }
-
-    out
+    // SAFETY: guaranteed by function contract above.
+    unsafe { bytes.free() };
 }

@@ -204,6 +204,7 @@ impl TransparentProxyEngine {
         let service = self.tcp_service.clone();
         let bytes_sink: BytesSink = Arc::new(on_server_bytes);
         let closed_sink: ClosedSink = Arc::new(on_server_closed);
+        let remote_endpoint = meta.remote_endpoint.clone();
 
         tracing::debug!(protocol = ?meta.protocol, "new tcp session");
 
@@ -213,9 +214,9 @@ impl TransparentProxyEngine {
         );
 
         let mut stream = TcpFlow::new(user_stream);
-        stream.extensions_mut().insert(meta.clone());
-        stream.extensions_mut().insert(cfg.clone());
-        if let Some(remote) = meta.remote_endpoint.clone() {
+        stream.extensions_mut().insert(meta);
+        stream.extensions_mut().insert(cfg);
+        if let Some(remote) = remote_endpoint {
             stream.extensions_mut().insert(ProxyTarget(remote));
         }
 
@@ -244,13 +245,14 @@ impl TransparentProxyEngine {
         let service = self.udp_service.clone();
         let datagram_sink: BytesSink = Arc::new(on_server_datagram);
         let closed_sink: ClosedSink = Arc::new(on_server_closed);
+        let remote_endpoint = meta.remote_endpoint.clone();
 
         tracing::debug!(protocol = ?meta.protocol, "new udp session");
 
         let mut flow = UdpFlow::new(client_rx, datagram_sink);
-        flow.extensions_mut().insert(meta.clone());
-        flow.extensions_mut().insert(cfg.clone());
-        if let Some(remote) = meta.remote_endpoint.clone() {
+        flow.extensions_mut().insert(meta);
+        flow.extensions_mut().insert(cfg);
+        if let Some(remote) = remote_endpoint {
             flow.extensions_mut().insert(ProxyTarget(remote));
         }
 
