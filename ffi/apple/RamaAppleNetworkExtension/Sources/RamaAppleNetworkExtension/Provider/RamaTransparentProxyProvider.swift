@@ -530,16 +530,55 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
     private static func endpointHostPort(_ endpoint: Any?) -> (host: String, port: UInt16)? {
         guard let endpoint else { return nil }
+
+        if let hostEndpoint = endpoint as? NWHostEndpoint {
+            let host = hostEndpoint.hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !host.isEmpty, let port = UInt16(hostEndpoint.port) else {
+                return nil
+            }
+            return (host, port)
+        }
+
         let raw = String(describing: endpoint)
         guard !raw.isEmpty else { return nil }
+        return parseEndpointString(raw)
+    }
+
+    private static func parseEndpointString(_ raw: String) -> (host: String, port: UInt16)? {
+        // IPv6 endpoint descriptions may be formatted as:
+        // - 2a02:...:1.53
+        // - [2a02:...:1]:53
+        // while IPv4/domain typically use host:port.
+
+        if raw.hasPrefix("["), let closeIdx = raw.lastIndex(of: "]") {
+            let host = String(raw[raw.index(after: raw.startIndex)..<closeIdx])
+            let tail = raw[raw.index(after: closeIdx)...]
+            if tail.first == ":" {
+                let portText = String(tail.dropFirst())
+                if let port = UInt16(portText), !host.isEmpty {
+                    return (host, port)
+                }
+            }
+        }
+
         if let idx = raw.lastIndex(of: ":") {
             let hostPart = String(raw[..<idx]).trimmingCharacters(
                 in: CharacterSet(charactersIn: "[]"))
             let portPart = String(raw[raw.index(after: idx)...])
-            if let port = UInt16(portPart) {
+            if let port = UInt16(portPart), !hostPart.isEmpty {
                 return (hostPart, port)
             }
         }
+
+        if let idx = raw.lastIndex(of: ".") {
+            let hostPart = String(raw[..<idx]).trimmingCharacters(
+                in: CharacterSet(charactersIn: "[]"))
+            let portPart = String(raw[raw.index(after: idx)...])
+            if hostPart.contains(":"), let port = UInt16(portPart), !hostPart.isEmpty {
+                return (hostPart, port)
+            }
+        }
+
         return nil
     }
 
