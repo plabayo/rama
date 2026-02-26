@@ -419,7 +419,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             localNetwork: local,
             localPrefix: localPrefix,
             protocol: proto,
-            direction: trafficDirection(rule.directionRaw)
+            direction: .outbound
         )
     }
 
@@ -456,14 +456,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         case UInt32(RAMA_RULE_PROTOCOL_TCP.rawValue): return .TCP
         case UInt32(RAMA_RULE_PROTOCOL_UDP.rawValue): return .UDP
         default: return .any
-        }
-    }
-
-    private static func trafficDirection(_ raw: UInt32) -> NETrafficDirection {
-        switch raw {
-        case UInt32(RAMA_TRAFFIC_DIRECTION_INBOUND.rawValue): return .inbound
-        case UInt32(RAMA_TRAFFIC_DIRECTION_ANY.rawValue): return .any
-        default: return .outbound
         }
     }
 

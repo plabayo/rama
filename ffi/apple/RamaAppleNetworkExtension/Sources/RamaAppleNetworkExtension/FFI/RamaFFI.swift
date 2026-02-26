@@ -17,7 +17,6 @@ struct RamaTransparentProxyRuleBridge {
     var localNetwork: String?
     var localPrefix: UInt8?
     var protocolRaw: UInt32
-    var directionRaw: UInt32
 }
 
 struct RamaTransparentProxyConfigBridge {
@@ -202,8 +201,7 @@ final class RamaTransparentProxyEngineHandle {
                             Int(cRule.local_network_utf8_len)
                         ),
                         localPrefix: cRule.local_prefix_is_set ? cRule.local_prefix : nil,
-                        protocolRaw: cRule.protocol,
-                        directionRaw: cRule.direction
+                        protocolRaw: cRule.protocol
                     )
                 )
             }

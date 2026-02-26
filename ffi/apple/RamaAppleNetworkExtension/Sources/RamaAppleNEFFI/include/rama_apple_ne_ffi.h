@@ -69,16 +69,6 @@ typedef enum {
     RAMA_RULE_PROTOCOL_UDP = 2,
 } RamaTransparentProxyRuleProtocol;
 
-/// Traffic direction filter used by network interception rules.
-typedef enum {
-    /// Match outbound traffic.
-    RAMA_TRAFFIC_DIRECTION_OUTBOUND = 0,
-    /// Match inbound traffic.
-    RAMA_TRAFFIC_DIRECTION_INBOUND = 1,
-    /// Match both directions.
-    RAMA_TRAFFIC_DIRECTION_ANY = 2,
-} RamaTransparentProxyTrafficDirection;
-
 /// Endpoint metadata (`host:port`) for one flow side.
 ///
 /// If endpoint is not available, set `host_utf8 = NULL`, `host_utf8_len = 0`,
@@ -147,8 +137,6 @@ typedef struct {
     bool local_prefix_is_set;
     /// One of `RamaTransparentProxyRuleProtocol`.
     uint32_t protocol;
-    /// One of `RamaTransparentProxyTrafficDirection`.
-    uint32_t direction;
 } RamaTransparentProxyNetworkRule;
 
 /// Transparent proxy configuration returned by Rust to Swift.

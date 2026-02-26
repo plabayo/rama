@@ -90,7 +90,6 @@ pub struct TransparentProxyNetworkRule {
     pub local_prefix: u8,
     pub local_prefix_is_set: bool,
     pub protocol: u32,
-    pub direction: u32,
 }
 
 #[repr(C)]
@@ -124,7 +123,6 @@ impl TransparentProxyConfig {
                 local_prefix: rule.local_prefix().unwrap_or(0),
                 local_prefix_is_set: rule.local_prefix().is_some(),
                 protocol: rule.protocol().as_u32(),
-                direction: rule.direction() as u32,
             });
         }
 

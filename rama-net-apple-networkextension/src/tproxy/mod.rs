@@ -9,6 +9,5 @@ pub use self::{
     types::{
         TransparentProxyConfig, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
         TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
-        TransparentProxyTrafficDirection,
     },
 };

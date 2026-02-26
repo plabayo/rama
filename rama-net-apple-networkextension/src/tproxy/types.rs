@@ -65,33 +65,6 @@ impl From<u32> for TransparentProxyFlowProtocol {
     }
 }
 
-#[repr(u32)]
-/// Traffic direction filter used by transparent-proxy network rules.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum TransparentProxyTrafficDirection {
-    /// Match outbound connections.
-    Outbound = 0,
-    /// Match inbound connections.
-    Inbound = 1,
-    /// Match any direction.
-    #[default]
-    Any = 2,
-}
-
-impl From<u32> for TransparentProxyTrafficDirection {
-    fn from(value: u32) -> Self {
-        if value <= Self::Any as u32 {
-            // SAFETY: repr(u32) and valid range
-            unsafe { ::std::mem::transmute::<u32, Self>(value) }
-        } else {
-            tracing::debug!(
-                "invalid raw u32 value transmuted as TransparentProxyTrafficDirection: {value} (defaulting it to Any)"
-            );
-            Self::Any
-        }
-    }
-}
-
 /// One network interception rule for transparent proxy settings.
 #[derive(Clone, Debug)]
 pub struct TransparentProxyNetworkRule {
@@ -100,7 +73,6 @@ pub struct TransparentProxyNetworkRule {
     local_network: Option<ArcStr>,
     local_prefix: Option<u8>,
     protocol: TransparentProxyRuleProtocol,
-    direction: TransparentProxyTrafficDirection,
 }
 
 impl TransparentProxyNetworkRule {
@@ -113,7 +85,6 @@ impl TransparentProxyNetworkRule {
             local_network: None,
             local_prefix: None,
             protocol: TransparentProxyRuleProtocol::Any,
-            direction: TransparentProxyTrafficDirection::Any,
         }
     }
 
@@ -147,12 +118,6 @@ impl TransparentProxyNetworkRule {
         self.protocol
     }
 
-    /// Rule traffic direction filter.
-    #[must_use]
-    pub const fn direction(&self) -> TransparentProxyTrafficDirection {
-        self.direction
-    }
-
     generate_set_and_with! {
         /// Set remote network + prefix.
         pub fn remote_network(mut self, network: ArcStr, prefix: u8) -> Self {
@@ -175,14 +140,6 @@ impl TransparentProxyNetworkRule {
         /// Set protocol filter.
         pub fn protocol(mut self, protocol: TransparentProxyRuleProtocol) -> Self {
             self.protocol = protocol;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set direction filter.
-        pub fn direction(mut self, direction: TransparentProxyTrafficDirection) -> Self {
-            self.direction = direction;
             self
         }
     }
