@@ -39,6 +39,7 @@ where
 pub struct DefaultMakeSpan {
     level: Level,
     include_headers: bool,
+    otel_name: Option<String>,
 }
 
 impl DefaultMakeSpan {
@@ -48,6 +49,7 @@ impl DefaultMakeSpan {
         Self {
             level: DEFAULT_MESSAGE_LEVEL,
             include_headers: false,
+            otel_name: None,
         }
     }
 
@@ -67,10 +69,17 @@ impl DefaultMakeSpan {
         /// Include request headers on the [`Span`].
         ///
         /// By default headers are not included.
-        ///
-        /// [`Span`]: tracing::Span
+
         pub fn include_headers(mut self, include_headers: bool) -> Self {
             self.include_headers = include_headers;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the otel.name field of this [`Span`].
+        pub fn name(mut self, otel_name: Option<String>) -> Self {
+            self.otel_name = otel_name;
             self
         }
     }
@@ -105,6 +114,8 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
         let found_domain_cow_str = found_domain.as_ref().map(|d| d.to_str());
         let found_domain_str = found_domain_cow_str.as_deref();
 
+        let otel_name = self.otel_name.as_deref().unwrap_or("request");
+
         // This ugly macro is needed, unfortunately, because `tracing::span!`
         // required the level argument to be static. Meaning we can't just pass
         // `self.level`.
@@ -114,6 +125,7 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                     tracing::span!(
                         $level,
                         "request",
+                        otel.name = otel_name,
                         http.request.method = %request.method(),
                         url.full = %request.uri(),
                         url.domain = found_domain_str,
@@ -130,6 +142,7 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                     tracing::span!(
                         $level,
                         "request",
+                        otel.name = otel_name,
                         http.request.method = %request.method(),
                         url.full = %request.uri(),
                         url.domain = found_domain_str,
