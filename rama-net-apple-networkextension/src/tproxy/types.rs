@@ -1,4 +1,4 @@
-use rama_net::address::HostWithPort;
+use rama_net::address::{Host, HostWithPort};
 use rama_utils::{
     macros::generate_set_and_with,
     str::{NonEmptyStr, arcstr::ArcStr},
@@ -68,9 +68,9 @@ impl From<u32> for TransparentProxyFlowProtocol {
 /// One network interception rule for transparent proxy settings.
 #[derive(Clone, Debug)]
 pub struct TransparentProxyNetworkRule {
-    remote_network: Option<ArcStr>,
+    remote_network: Option<Host>,
     remote_prefix: Option<u8>,
-    local_network: Option<ArcStr>,
+    local_network: Option<Host>,
     local_prefix: Option<u8>,
     protocol: TransparentProxyRuleProtocol,
 }
@@ -88,10 +88,10 @@ impl TransparentProxyNetworkRule {
         }
     }
 
-    /// Optional remote network as textual IP address.
+    /// Optional remote network as domain or IP address.
     #[must_use]
-    pub fn remote_network(&self) -> Option<&str> {
-        self.remote_network.as_deref()
+    pub fn remote_network(&self) -> Option<&Host> {
+        self.remote_network.as_ref()
     }
 
     /// Prefix length for `remote_network`, if set.
@@ -100,10 +100,10 @@ impl TransparentProxyNetworkRule {
         self.remote_prefix
     }
 
-    /// Optional local network as textual IP address.
+    /// Optional local network as domain or IP address.
     #[must_use]
-    pub fn local_network(&self) -> Option<&str> {
-        self.local_network.as_deref()
+    pub fn local_network(&self) -> Option<&Host> {
+        self.local_network.as_ref()
     }
 
     /// Prefix length for `local_network`, if set.
@@ -119,18 +119,32 @@ impl TransparentProxyNetworkRule {
     }
 
     generate_set_and_with! {
-        /// Set remote network + prefix.
-        pub fn remote_network(mut self, network: ArcStr, prefix: u8) -> Self {
-            self.remote_network = Some(network);
+        /// Set remote network.
+        pub fn remote_network(mut self, network: impl Into<Host>) -> Self {
+            self.remote_network = Some(network.into());
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set local network.
+        pub fn local_network(mut self, network: impl Into<Host>) -> Self {
+            self.local_network = Some(network.into());
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set remote network prefix.
+        pub fn remote_network_prefix(mut self, prefix: u8) -> Self {
             self.remote_prefix = Some(prefix);
             self
         }
     }
 
     generate_set_and_with! {
-        /// Set local network + prefix.
-        pub fn local_network(mut self, network: ArcStr, prefix: u8) -> Self {
-            self.local_network = Some(network);
+        /// Set local network prefix.
+        pub fn local_network_prefix(mut self, prefix: u8) -> Self {
             self.local_prefix = Some(prefix);
             self
         }

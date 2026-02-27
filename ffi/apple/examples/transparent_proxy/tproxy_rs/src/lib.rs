@@ -1,9 +1,13 @@
 use rama::{
-    net::apple::networkextension::{
-        ffi::{BytesOwned, BytesView, tproxy as ffi_tproxy},
-        tproxy::{
-            TransparentProxyConfig, TransparentProxyEngine, TransparentProxyEngineBuilder,
-            TransparentProxyFlowMeta, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
+    net::{
+        address::Domain,
+        apple::networkextension::{
+            ffi::{BytesOwned, BytesView, tproxy as ffi_tproxy},
+            tproxy::{
+                TransparentProxyConfig, TransparentProxyEngine, TransparentProxyEngineBuilder,
+                TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
+                TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+            },
         },
     },
     telemetry::tracing,
@@ -25,7 +29,11 @@ pub type RamaTransparentProxyTcpSessionCallbacks = ffi_tproxy::TransparentProxyT
 pub type RamaTransparentProxyUdpSessionCallbacks = ffi_tproxy::TransparentProxyUdpSessionCallbacks;
 
 fn proxy_config() -> TransparentProxyConfig {
-    TransparentProxyConfig::new().with_rules(vec![TransparentProxyNetworkRule::any()])
+    TransparentProxyConfig::new().with_rules(vec![
+        TransparentProxyNetworkRule::any()
+            .with_protocol(TransparentProxyRuleProtocol::Tcp)
+            .with_remote_network(Domain::example()),
+    ])
 }
 
 #[unsafe(no_mangle)]

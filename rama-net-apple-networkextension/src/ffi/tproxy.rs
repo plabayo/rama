@@ -105,13 +105,14 @@ impl TransparentProxyConfig {
     #[must_use]
     pub fn from_rust_type(config: &tproxy::TransparentProxyConfig) -> Self {
         let (tunnel_remote_address_utf8, tunnel_remote_address_utf8_len) =
-            alloc_utf8(config.tunnel_remote_address());
+            alloc_str_utf8(config.tunnel_remote_address());
 
         let mut rules = Vec::with_capacity(config.rules().len());
         for rule in config.rules() {
             let (remote_network_utf8, remote_network_utf8_len) =
-                alloc_opt_utf8(rule.remote_network());
-            let (local_network_utf8, local_network_utf8_len) = alloc_opt_utf8(rule.local_network());
+                opt_string_as_utf8_array(rule.remote_network().map(ToString::to_string));
+            let (local_network_utf8, local_network_utf8_len) =
+                opt_string_as_utf8_array(rule.local_network().map(ToString::to_string));
 
             rules.push(TransparentProxyNetworkRule {
                 remote_network_utf8,
@@ -189,12 +190,21 @@ pub struct TransparentProxyUdpSessionCallbacks {
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
-fn alloc_opt_utf8(value: Option<&str>) -> (*const c_char, usize) {
-    value.map_or((ptr::null(), 0), alloc_utf8)
+fn opt_string_as_utf8_array(value: Option<String>) -> (*const c_char, usize) {
+    if let Some(s) = value {
+        alloc_vec_utf8(s.into_bytes())
+    } else {
+        (ptr::null(), 0)
+    }
 }
 
-fn alloc_utf8(value: &str) -> (*const c_char, usize) {
-    let boxed: Box<[u8]> = value.as_bytes().to_vec().into_boxed_slice();
+#[inline(always)]
+fn alloc_str_utf8(value: &str) -> (*const c_char, usize) {
+    alloc_vec_utf8(value.as_bytes().to_vec())
+}
+
+fn alloc_vec_utf8(value: Vec<u8>) -> (*const c_char, usize) {
+    let boxed: Box<[u8]> = value.into_boxed_slice();
     let len = boxed.len();
     if len == 0 {
         return (ptr::null(), 0);
