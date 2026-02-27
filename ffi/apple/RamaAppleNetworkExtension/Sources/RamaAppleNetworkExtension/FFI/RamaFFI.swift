@@ -214,9 +214,19 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     static func shouldIntercept(meta: RamaTransparentProxyFlowMetaBridge) -> Bool {
-        withFlowMeta(meta) { metaPtr in
+        RamaTransparentProxyEngineHandle.log(
+            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
+            message:
+                "swift shouldIntercept call protocol=\(meta.protocolRaw) remote=\(meta.remoteHost ?? "<nil>"):\(meta.remotePort) local=\(meta.localHost ?? "<nil>"):\(meta.localPort)"
+        )
+        let result = withFlowMeta(meta) { metaPtr in
             rama_transparent_proxy_should_intercept_flow(metaPtr)
         }
+        RamaTransparentProxyEngineHandle.log(
+            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
+            message: "swift shouldIntercept result=\(result)"
+        )
+        return result
     }
 
     func start() {

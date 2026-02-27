@@ -12,7 +12,7 @@ use rama::{
     },
     telemetry::tracing,
 };
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 mod tcp;
 mod udp;
@@ -79,7 +79,7 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
     meta: *const RamaTransparentProxyFlowMeta,
 ) -> bool {
     if meta.is_null() {
-        tracing::trace!("rama_transparent_proxy_should_intercept_flow: null meta; ignore traffic");
+        tracing::debug!("rama_transparent_proxy_should_intercept_flow: null meta; ignore traffic");
         return false;
     }
 
@@ -90,7 +90,7 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
         protocol = ?meta.protocol,
         remote = ?meta.remote_endpoint,
         local = ?meta.local_endpoint,
-        "flow intercept decision: evaluating"
+        "flow intercept decision: evaluating (rust callback entered)"
     );
 
     if meta.protocol != TransparentProxyFlowProtocol::Tcp {
@@ -101,9 +101,13 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
         return false;
     };
 
-    const TARGET_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(137, 66, 38, 65));
+    const TARGET_IPV4: IpAddr = IpAddr::V4(Ipv4Addr::new(137, 66, 38, 65));
+    const TARGET_IPV6: IpAddr = IpAddr::V6(Ipv6Addr::new(
+        0x2a09, 0x8280, 0x0001, 0x0000, 0x0000, 0x002e, 0x951c, 0x0000,
+    ));
     const TARGET_HOST: Domain = Domain::from_static("echo.ramaproxy.org");
-    let should_intercept = (remote.host == Host::Address(TARGET_IP)
+    let should_intercept = (remote.host == Host::Address(TARGET_IPV4)
+        || remote.host == Host::Address(TARGET_IPV6)
         || remote.host == Host::Name(TARGET_HOST))
         && (remote.port == 80 || remote.port == 443);
 
