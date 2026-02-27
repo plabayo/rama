@@ -148,7 +148,7 @@ impl TransparentProxyNetworkRule {
 /// Engine-level transparent proxy configuration.
 ///
 /// This configuration is long-lived and shared by all flows handled by one
-/// [`crate::TransparentProxyEngine`].
+/// [`crate::tproxy::TransparentProxyEngine`].
 #[derive(Clone, Debug)]
 pub struct TransparentProxyConfig {
     tunnel_remote_address: ArcStr,
