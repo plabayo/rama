@@ -2981,9 +2981,13 @@ version = "0.3.0-rc1"
 dependencies = [
  "base64",
  "flate2",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "pin-project-lite",
  "prost",
+ "prost-build",
  "prost-types",
+ "protoc-bin-vendored",
  "quickcheck",
  "quickcheck_macros",
  "radix_trie",
