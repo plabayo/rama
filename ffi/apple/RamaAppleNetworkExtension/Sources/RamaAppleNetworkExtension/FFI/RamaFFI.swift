@@ -159,7 +159,7 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     static func initialize() -> Bool {
-        rama_transparent_proxy_initialize()
+        return rama_transparent_proxy_initialize()
     }
 
     static func log(level: UInt32, message: String) {

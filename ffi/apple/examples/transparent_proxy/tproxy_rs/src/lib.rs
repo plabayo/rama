@@ -1,6 +1,6 @@
 use rama::{
     net::{
-        address::Domain,
+        address::{Domain, Host},
         apple::networkextension::{
             ffi::{BytesOwned, BytesView, tproxy as ffi_tproxy},
             tproxy::{
@@ -12,6 +12,7 @@ use rama::{
     },
     telemetry::tracing,
 };
+use std::net::{IpAddr, Ipv4Addr};
 
 mod tcp;
 mod udp;
@@ -30,9 +31,7 @@ pub type RamaTransparentProxyUdpSessionCallbacks = ffi_tproxy::TransparentProxyU
 
 fn proxy_config() -> TransparentProxyConfig {
     TransparentProxyConfig::new().with_rules(vec![
-        TransparentProxyNetworkRule::any()
-            .with_protocol(TransparentProxyRuleProtocol::Tcp)
-            .with_remote_network(Domain::example()),
+        TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
     ])
 }
 
@@ -41,7 +40,9 @@ fn proxy_config() -> TransparentProxyConfig {
 ///
 /// This function is FFI entrypoint and may be called from Swift/C.
 pub unsafe extern "C" fn rama_transparent_proxy_initialize() -> bool {
-    self::utils::init_tracing()
+    let init_status = self::utils::init_tracing();
+    tracing::info!("rama proxy initialized: {init_status}");
+    init_status
 }
 
 #[unsafe(no_mangle)]
@@ -78,6 +79,7 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
     meta: *const RamaTransparentProxyFlowMeta,
 ) -> bool {
     if meta.is_null() {
+        tracing::trace!("rama_transparent_proxy_should_intercept_flow: null meta; ignore traffic");
         return false;
     }
 
@@ -88,10 +90,30 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
         protocol = ?meta.protocol,
         remote = ?meta.remote_endpoint,
         local = ?meta.local_endpoint,
-        "flow intercept decision: accepted"
+        "flow intercept decision: evaluating"
     );
 
-    true
+    if meta.protocol != TransparentProxyFlowProtocol::Tcp {
+        return false;
+    }
+
+    let Some(remote) = meta.remote_endpoint else {
+        return false;
+    };
+
+    const TARGET_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(137, 66, 38, 65));
+    const TARGET_HOST: Domain = Domain::from_static("echo.ramaproxy.org");
+    let should_intercept = (remote.host == Host::Address(TARGET_IP)
+        || remote.host == Host::Name(TARGET_HOST))
+        && (remote.port == 80 || remote.port == 443);
+
+    tracing::trace!(
+        remote = ?remote,
+        should_intercept,
+        "flow intercept decision computed"
+    );
+
+    should_intercept
 }
 
 #[unsafe(no_mangle)]
@@ -137,6 +159,8 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_start(
 
     // SAFETY: pointer validity is guaranteed by FFI contract.
     unsafe { (*engine).start() };
+
+    tracing::info!("rama transparent proxy engine started");
 }
 
 #[unsafe(no_mangle)]
@@ -154,6 +178,8 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_stop(
 
     // SAFETY: pointer validity is guaranteed by FFI contract.
     unsafe { (*engine).stop(reason) };
+
+    tracing::info!("rama transparent proxy engine stopped");
 }
 
 #[unsafe(no_mangle)]

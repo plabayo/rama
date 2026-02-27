@@ -149,7 +149,21 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let settings = NETransparentProxyNetworkSettings(
             tunnelRemoteAddress: startup.tunnelRemoteAddress
         )
-        settings.includedNetworkRules = startup.rules.compactMap { Self.makeNetworkRule($0) }
+        var builtRules: [NENetworkRule] = []
+        for (idx, rule) in startup.rules.enumerated() {
+            if let built = Self.makeNetworkRule(rule) {
+                builtRules.append(built)
+                logInfo(
+                    "include rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
+                )
+            } else {
+                logError(
+                    "invalid rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
+                )
+            }
+        }
+        settings.includedNetworkRules = builtRules
+        logInfo("included network rules count=\(builtRules.count)")
 
         setTunnelNetworkSettings(settings) { error in
             if let error {

@@ -1,10 +1,14 @@
 import AppKit
 import Foundation
 import NetworkExtension
+import OSLog
 
 final class HostController: NSObject, NSApplicationDelegate {
     private let extensionBundleId = "org.ramaproxy.example.tproxy.provider"
-    private let logUrls: [URL]
+    private let logSubsystem = "org.ramaproxy.example.tproxy"
+    private let hostLogCategory = "host-app"
+    private let proxyLogCategory = "transparent-proxy"
+    private lazy var hostLogger = Logger(subsystem: logSubsystem, category: hostLogCategory)
 
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
@@ -15,15 +19,10 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var statusObserver: NSObjectProtocol?
     private var statusTimer: DispatchSourceTimer?
 
-    override init() {
-        self.logUrls = HostController.resolveLogUrls()
-        super.init()
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         log("host app launched")
-        refreshManagerAndStatus()
+        startProxy()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -66,6 +65,10 @@ final class HostController: NSObject, NSApplicationDelegate {
         openLogs()
     }
 
+    @objc private func openProxyLogsAction(_: Any?) {
+        openProxyLogs()
+    }
+
     @objc private func quitAction(_: Any?) {
         NSApplication.shared.terminate(nil)
     }
@@ -73,7 +76,7 @@ final class HostController: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.title = "Rama TProxy"
+            button.title = "🦙 tproxy demo"
         }
 
         let menu = NSMenu()
@@ -84,27 +87,38 @@ final class HostController: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let startItem = NSMenuItem(title: "Start Proxy", action: #selector(startProxyAction(_:)), keyEquivalent: "s")
+        let startItem = NSMenuItem(
+            title: "Start Proxy", action: #selector(startProxyAction(_:)), keyEquivalent: "s")
         startItem.target = self
         menu.addItem(startItem)
 
-        let stopItem = NSMenuItem(title: "Stop Proxy", action: #selector(stopProxyAction(_:)), keyEquivalent: "x")
+        let stopItem = NSMenuItem(
+            title: "Stop Proxy", action: #selector(stopProxyAction(_:)), keyEquivalent: "x")
         stopItem.target = self
         menu.addItem(stopItem)
 
-        let refreshItem = NSMenuItem(title: "Refresh Status", action: #selector(refreshAction(_:)), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(
+            title: "Refresh Status", action: #selector(refreshAction(_:)), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
 
         menu.addItem(NSMenuItem.separator())
 
-        let logsItem = NSMenuItem(title: "Open Logs", action: #selector(openLogsAction(_:)), keyEquivalent: "l")
+        let logsItem = NSMenuItem(
+            title: "Open Logs", action: #selector(openLogsAction(_:)), keyEquivalent: "l")
         logsItem.target = self
         menu.addItem(logsItem)
 
+        let proxyLogsItem = NSMenuItem(
+            title: "Open Proxy Logs", action: #selector(openProxyLogsAction(_:)), keyEquivalent: "p"
+        )
+        proxyLogsItem.target = self
+        menu.addItem(proxyLogsItem)
+
         menu.addItem(NSMenuItem.separator())
 
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitAction(_:)), keyEquivalent: "q")
+        let quitItem = NSMenuItem(
+            title: "Quit", action: #selector(quitAction(_:)), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -142,6 +156,14 @@ final class HostController: NSObject, NSApplicationDelegate {
             self.activeManager = manager
             self.installStatusObserver(manager: manager)
             self.startStatusTimer(manager: manager)
+            switch manager.connection.status {
+            case .connected, .connecting, .reasserting:
+                self.log("proxy already active; skipping start")
+                self.setStatus(status: manager.connection.status, detail: nil)
+                return
+            default:
+                break
+            }
 
             do {
                 self.log("calling startVPNTunnel")
@@ -182,13 +204,17 @@ final class HostController: NSObject, NSApplicationDelegate {
                 return
             }
 
-            let manager = managers?.first
-            self.log("loadAllFromPreferences ok (count=\(managers?.count ?? 0))")
+            let manager = self.selectManager(from: managers)
+            self.log(
+                "loadAllFromPreferences ok (count=\(managers?.count ?? 0), selected=\(manager != nil))"
+            )
             completion(manager)
         }
     }
 
-    private func loadOrCreateAndConfigureManager(completion: @escaping (NETransparentProxyManager?) -> Void) {
+    private func loadOrCreateAndConfigureManager(
+        completion: @escaping (NETransparentProxyManager?) -> Void
+    ) {
         NETransparentProxyManager.loadAllFromPreferences { managers, error in
             if let error {
                 self.logError("loadAllFromPreferences error", error)
@@ -196,7 +222,7 @@ final class HostController: NSObject, NSApplicationDelegate {
                 return
             }
 
-            let manager = managers?.first ?? NETransparentProxyManager()
+            let manager = self.selectManager(from: managers) ?? NETransparentProxyManager()
             let proto = NETunnelProviderProtocol()
             proto.providerBundleIdentifier = self.extensionBundleId
             proto.serverAddress = "127.0.0.1"
@@ -225,6 +251,23 @@ final class HostController: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    private func selectManager(from managers: [NETransparentProxyManager]?)
+        -> NETransparentProxyManager?
+    {
+        guard let managers, !managers.isEmpty else {
+            return nil
+        }
+        if let exact = managers.first(where: { manager in
+            guard let proto = manager.protocolConfiguration as? NETunnelProviderProtocol else {
+                return false
+            }
+            return proto.providerBundleIdentifier == self.extensionBundleId
+        }) {
+            return exact
+        }
+        return managers.first
     }
 
     private func installStatusObserver(manager: NETransparentProxyManager) {
@@ -274,7 +317,7 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
 
         if let button = statusItem?.button {
-            button.title = "Rama TProxy"
+            button.title = "🦙 tproxy demo"
             button.toolTip = title
         }
 
@@ -282,16 +325,46 @@ final class HostController: NSObject, NSApplicationDelegate {
     }
 
     private func openLogs() {
-        let fm = FileManager.default
-        let existing = logUrls.filter { fm.fileExists(atPath: $0.path) }
+        openTerminalLogs(category: hostLogCategory)
+    }
 
-        if existing.isEmpty {
-            NSSound.beep()
+    private func openProxyLogs() {
+        openTerminalLogs(category: proxyLogCategory)
+    }
+
+    private func openTerminalLogs(category: String) {
+        let predicate =
+            "subsystem == \"\(logSubsystem)\" AND category == \"\(category)\""
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rama_\(category)_last1h.log")
+        do {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+            process.arguments = [
+                "show",
+                "--last", "1h",
+                "--style", "compact",
+                "--info",
+                "--debug",
+                "--predicate", predicate,
+            ]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            try data.write(to: outputURL, options: .atomic)
+
+            if NSWorkspace.shared.open(outputURL) {
+                log("opened log snapshot for category=\(category): \(outputURL.path)")
+                return
+            }
+            log("failed to open log snapshot for category=\(category): \(outputURL.path)")
             return
-        }
-
-        for url in existing {
-            NSWorkspace.shared.open(url)
+        } catch {
+            logError("openTerminalLogs failed", error)
         }
     }
 
@@ -308,61 +381,14 @@ final class HostController: NSObject, NSApplicationDelegate {
     }
 
     private func log(_ message: String) {
-        let line = "[\(isoTimestamp())] \(message)\n"
-        appendLog(line)
+        hostLogger.info("\(message, privacy: .public)")
     }
 
     private func logError(_ prefix: String, _ error: Error) {
         let ns = error as NSError
-        log("\(prefix): domain=\(ns.domain) code=\(ns.code) userInfo=\(ns.userInfo)")
-    }
-
-    private func isoTimestamp() -> String {
-        let formatter = ISO8601DateFormatter()
-        return formatter.string(from: Date())
-    }
-
-    private func appendLog(_ line: String) {
-        guard let data = line.data(using: .utf8) else { return }
-        for url in logUrls {
-            ensureParentDir(url)
-            if !FileManager.default.fileExists(atPath: url.path) {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
-            }
-            if let handle = try? FileHandle(forWritingTo: url) {
-                do {
-                    try handle.seekToEnd()
-                    try handle.write(contentsOf: data)
-                    try handle.close()
-                    continue
-                } catch {
-                    try? handle.close()
-                }
-            }
-        }
-    }
-
-    private func ensureParentDir(_ url: URL) {
-        let dir = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    }
-
-    private static func resolveLogUrls() -> [URL] {
-        let env = ProcessInfo.processInfo.environment
-        var urls: [URL] = []
-        if let path = env["RAMA_LOG_PATH"], !path.isEmpty {
-            urls.append(URL(fileURLWithPath: path))
-        }
-        if let groupId = env["RAMA_APP_GROUP_ID"], !groupId.isEmpty,
-            let containerURL = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: groupId)
-        {
-            urls.append(containerURL.appendingPathComponent("rama_tproxy_host.log"))
-        }
-        let tmp = FileManager.default.temporaryDirectory
-        urls.append(tmp.appendingPathComponent("rama_tproxy_host.log"))
-        urls.append(URL(fileURLWithPath: "/tmp/rama_tproxy_host.log"))
-        return urls
+        hostLogger.error(
+            "\(prefix, privacy: .public): domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
+        )
     }
 }
 

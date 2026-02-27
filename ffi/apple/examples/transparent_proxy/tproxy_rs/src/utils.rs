@@ -1,4 +1,4 @@
-use std::{fs::create_dir_all, sync::OnceLock};
+use std::sync::OnceLock;
 
 use rama::{
     error::{BoxError, ErrorContext as _},
@@ -6,11 +6,11 @@ use rama::{
         address::HostWithPort, apple::networkextension::tproxy::TransparentProxyFlowMeta,
         proxy::ProxyTarget,
     },
-    telemetry::tracing::{
-        appender,
-        subscriber::{self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _},
+    telemetry::tracing::subscriber::{
+        self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _,
     },
 };
+use tracing_oslog::OsLogger;
 
 /// Resolve a remote target endpoint from extensions.
 pub(super) fn resolve_target_from_extensions(
@@ -38,34 +38,24 @@ pub(super) fn init_tracing() -> bool {
 }
 
 #[derive(Debug)]
-#[allow(unused)]
-struct TraceContext(appender::non_blocking::WorkerGuard);
+struct TraceContext;
 
 fn setup_tracing() -> Result<TraceContext, BoxError> {
-    const FILE_NAME: &str = "trace.log";
-
-    let log_file_dir_path = std::env::home_dir()
-        .context("fetch home dir")?
-        .join(".rama")
-        .join("examples")
-        .join("tproxy");
-    create_dir_all(&log_file_dir_path).context("create log parent dir")?;
-
-    let file_appender = appender::rolling::never(log_file_dir_path, FILE_NAME);
-    let (non_blocking, guard) = appender::non_blocking(file_appender);
-
-    let file_layer = subscriber::fmt::layer()
+    let stderr_layer = subscriber::fmt::layer()
         .json()
         .with_target(true)
         .with_current_span(true)
         .with_span_list(true)
-        .with_writer(non_blocking);
+        .with_writer(std::io::stderr);
+
+    let oslog_layer = OsLogger::new("org.ramaproxy.example.tproxy", "transparent-proxy");
 
     subscriber::registry()
         .with(filter::LevelFilter::DEBUG) // TODO: make customisable log level
-        .with(file_layer)
+        .with(stderr_layer)
+        .with(oslog_layer)
         .try_init()
         .context("init tracing subsriber")?;
 
-    Ok(TraceContext(guard))
+    Ok(TraceContext)
 }

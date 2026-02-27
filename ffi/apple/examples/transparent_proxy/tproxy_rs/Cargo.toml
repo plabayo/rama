@@ -12,3 +12,4 @@ crate-type = ["staticlib"]
 [dependencies]
 rama = { path = "../../../../../", features = ["net-apple-networkextension", "tcp", "udp"] }
 tokio = { version = "1.48", features = ["net"] }
+tracing-oslog = "0.3"
