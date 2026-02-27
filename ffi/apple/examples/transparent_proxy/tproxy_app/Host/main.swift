@@ -7,7 +7,6 @@ final class HostController: NSObject, NSApplicationDelegate {
     private let extensionBundleId = "org.ramaproxy.example.tproxy.provider"
     private let logSubsystem = "org.ramaproxy.example.tproxy"
     private let hostLogCategory = "host-app"
-    private let proxyLogCategory = "transparent-proxy"
     private lazy var hostLogger = Logger(subsystem: logSubsystem, category: hostLogCategory)
 
     private var statusItem: NSStatusItem?
@@ -61,14 +60,6 @@ final class HostController: NSObject, NSApplicationDelegate {
         refreshManagerAndStatus()
     }
 
-    @objc private func openLogsAction(_: Any?) {
-        openLogs()
-    }
-
-    @objc private func openProxyLogsAction(_: Any?) {
-        openProxyLogs()
-    }
-
     @objc private func quitAction(_: Any?) {
         NSApplication.shared.terminate(nil)
     }
@@ -101,19 +92,6 @@ final class HostController: NSObject, NSApplicationDelegate {
             title: "Refresh Status", action: #selector(refreshAction(_:)), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let logsItem = NSMenuItem(
-            title: "Open Logs", action: #selector(openLogsAction(_:)), keyEquivalent: "l")
-        logsItem.target = self
-        menu.addItem(logsItem)
-
-        let proxyLogsItem = NSMenuItem(
-            title: "Open Proxy Logs", action: #selector(openProxyLogsAction(_:)), keyEquivalent: "p"
-        )
-        proxyLogsItem.target = self
-        menu.addItem(proxyLogsItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -322,50 +300,6 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
 
         log("status=\(statusText)")
-    }
-
-    private func openLogs() {
-        openTerminalLogs(category: hostLogCategory)
-    }
-
-    private func openProxyLogs() {
-        openTerminalLogs(category: proxyLogCategory)
-    }
-
-    private func openTerminalLogs(category: String) {
-        let predicate =
-            "subsystem == \"\(logSubsystem)\" AND category == \"\(category)\""
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rama_\(category)_last1h.log")
-        do {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-            process.arguments = [
-                "show",
-                "--last", "1h",
-                "--style", "compact",
-                "--info",
-                "--debug",
-                "--predicate", predicate,
-            ]
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            try data.write(to: outputURL, options: .atomic)
-
-            if NSWorkspace.shared.open(outputURL) {
-                log("opened log snapshot for category=\(category): \(outputURL.path)")
-                return
-            }
-            log("failed to open log snapshot for category=\(category): \(outputURL.path)")
-            return
-        } catch {
-            logError("openTerminalLogs failed", error)
-        }
     }
 
     private func statusString(_ status: NEVPNStatus) -> String {
