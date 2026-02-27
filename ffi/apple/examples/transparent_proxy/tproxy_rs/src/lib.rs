@@ -1,6 +1,3 @@
-use std::sync::Once;
-
-use rama::telemetry::tracing::subscriber;
 use rama::{
     net::apple::networkextension::{
         ffi::{BytesOwned, BytesView, tproxy as ffi_tproxy},
@@ -27,8 +24,6 @@ pub type RamaTransparentProxyConfig = ffi_tproxy::TransparentProxyConfig;
 pub type RamaTransparentProxyTcpSessionCallbacks = ffi_tproxy::TransparentProxyTcpSessionCallbacks;
 pub type RamaTransparentProxyUdpSessionCallbacks = ffi_tproxy::TransparentProxyUdpSessionCallbacks;
 
-static INIT_TRACING: Once = Once::new();
-
 fn proxy_config() -> TransparentProxyConfig {
     TransparentProxyConfig::new().with_rules(vec![TransparentProxyNetworkRule::any()])
 }
@@ -38,11 +33,7 @@ fn proxy_config() -> TransparentProxyConfig {
 ///
 /// This function is FFI entrypoint and may be called from Swift/C.
 pub unsafe extern "C" fn rama_transparent_proxy_initialize() -> bool {
-    INIT_TRACING.call_once(|| {
-        // TODO: support richer subscriber setup as part of proc macro in future.
-        subscriber::fmt::init();
-    });
-    true
+    self::utils::init_tracing()
 }
 
 #[unsafe(no_mangle)]

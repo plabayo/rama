@@ -32,10 +32,10 @@ pub unsafe fn log_callback(level: u32, message: BytesView) {
     let msg = String::from_utf8_lossy(unsafe { message.into_slice() });
 
     match LogLevel::from_u32_or_debug(level) {
-        LogLevel::Trace => tracing::trace!("{}", msg.as_ref()),
-        LogLevel::Debug => tracing::debug!("{}", msg.as_ref()),
-        LogLevel::Info => tracing::info!("{}", msg.as_ref()),
-        LogLevel::Warn => tracing::warn!("{}", msg.as_ref()),
-        LogLevel::Error => tracing::error!("{}", msg.as_ref()),
+        LogLevel::Trace => tracing::trace!("[FFI::log_callback] {}", msg.as_ref()),
+        LogLevel::Debug => tracing::debug!("[FFI::log_callback] {}", msg.as_ref()),
+        LogLevel::Info => tracing::info!("[FFI::log_callback] {}", msg.as_ref()),
+        LogLevel::Warn => tracing::warn!("[FFI::log_callback] {}", msg.as_ref()),
+        LogLevel::Error => tracing::error!("[FFI::log_callback] {}", msg.as_ref()),
     }
 }
