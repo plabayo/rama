@@ -533,7 +533,7 @@ harness = false
 [[bench]]
 name = "e2e_http_client_server"
 path = "benches/e2e_http_client_server.rs"
-required-features = ["http-full", "rustls", "boring"]
+required-features = ["http-full", "rustls", "boring", "socks5"]
 harness = false
 
 [[example]]
