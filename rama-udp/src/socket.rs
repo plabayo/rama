@@ -1,12 +1,173 @@
 use std::net::SocketAddr;
 
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::{
+    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    extensions::Extensions,
+    futures::StreamExt,
+    telemetry::tracing,
+};
+use rama_dns::client::{
+    GlobalDnsResolver,
+    resolver::{DnsAddressResolver, HappyEyeballAddressResolverExt},
+};
+use rama_net::{
+    address::{HostWithPort, SocketAddress},
+    socket::Interface,
+};
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 use rama_net::socket::{DeviceName, SocketOptions};
-use rama_net::{address::SocketAddress, socket::Interface};
 
 pub use tokio::net::UdpSocket;
+
+/// Bind a [`UdpSocket`] to the local interface and connect
+/// to the given host and port using the global DNS resolver,
+/// in case the host is a Domain, otherwise the IpAddr will be used as-is.
+///
+/// This is a convenience wrapper around [`bind_udp_socket_with_connect`] that uses
+/// [`GlobalDnsResolver`].
+///
+/// Returns an error if the host is not compatible or cannot be resolve
+/// or if all resolved addresses fail to connect.
+///
+/// Calling `connect` on a UDP socket does not establish a transport level
+/// session. It sets the default remote peer and allows using `send` instead
+/// of `send_to`.
+#[inline(always)]
+pub async fn bind_udp_socket_with_connect_default_dns(
+    address: impl Into<HostWithPort>,
+    extensions: Option<&Extensions>,
+) -> Result<UdpSocket, BoxError> {
+    bind_udp_socket_with_connect(address, GlobalDnsResolver::new(), extensions).await
+}
+
+/// Bind a [`UdpSocket`] to the local interface and connect
+/// to the given host and port using the provided DNS resolver,
+/// in case the host is a Domain, otherwise the IpAddr will be used as-is.
+///
+/// The host, if a domain, is resolved using a Happy Eyeballs strategy and each resolved IP
+/// address is attempted in order until the socket successfully connects.
+/// The first successful connection attempt completes the function. The strategy
+/// also respects IP/Dns connect/resolve preferences (e.g. Ipv6 addresses won't
+/// be allowed if running in Ipv4 only modes), even if host was an Ip to begin with.
+///
+/// Returns an error if the host is not compatible or
+/// does not resolve to any IP address or
+/// if all resolved addresses fail to connect.
+///
+/// Connecting a UDP socket configures its default remote peer and
+/// restricts incoming datagrams to that peer. It does not perform a
+/// handshake or guarantee reachability.
+pub async fn bind_udp_socket_with_connect<Dns>(
+    address: impl Into<HostWithPort>,
+    dns: Dns,
+    extensions: Option<&Extensions>,
+) -> Result<UdpSocket, BoxError>
+where
+    Dns: DnsAddressResolver,
+{
+    let HostWithPort { host, port } = address.into();
+    let mut ip_stream = std::pin::pin!(
+        dns.happy_eyeballs_resolver(host.clone())
+            .maybe_with_extensions(extensions)
+            .lookup_ip()
+    );
+
+    let mut ipv4_socket = None;
+    let mut ipv6_socket = None;
+
+    let mut resolved_count = 0;
+
+    while let Some(ip_result) = ip_stream.next().await {
+        let ip = match ip_result {
+            Ok(ip) => {
+                resolved_count += 1;
+                ip
+            }
+            Err(err) => {
+                tracing::debug!("failed to resolve IP address for host {host}: {err}");
+                continue;
+            }
+        };
+
+        let address: SocketAddr = (ip, port).into();
+
+        if address.is_ipv4() {
+            let socket = if let Some(socket) = ipv4_socket.take() {
+                socket
+            } else {
+                match bind_udp_with_address(SocketAddress::default_ipv4(0)).await {
+                    Ok(socket) => socket,
+                    Err(err) => {
+                        tracing::debug!(
+                            "failed to bind default Ipv4 socket.. ignore ipv4 address {address} (host = {host}): err = {err}"
+                        );
+                        continue;
+                    }
+                }
+            };
+
+            match socket.connect(address).await {
+                Ok(()) => {
+                    tracing::trace!(
+                        "resolved#{resolved_count} udp socket connected to IpV4 address: {address} (resolved from host {host})"
+                    );
+                    return Ok(socket);
+                }
+                Err(err) => {
+                    ipv4_socket = Some(socket);
+                    tracing::trace!(
+                        "resolved#{resolved_count} udp socket failed to connect to IpV4 address: {address} (resolved from host {host}): err = {err}"
+                    );
+                }
+            }
+        } else {
+            let socket = if let Some(socket) = ipv6_socket.take() {
+                socket
+            } else {
+                match bind_udp_with_address(SocketAddress::default_ipv6(0)).await {
+                    Ok(socket) => socket,
+                    Err(err) => {
+                        tracing::debug!(
+                            "failed to bind default Ipv6 socket.. ignore IpV4 address {address} (host = {host}): err = {err}"
+                        );
+                        continue;
+                    }
+                }
+            };
+
+            match socket.connect(address).await {
+                Ok(()) => {
+                    tracing::trace!(
+                        "resolved#{resolved_count} udp socket connected to IpV6 address: {address} (resolved from host {host})"
+                    );
+                    return Ok(socket);
+                }
+                Err(err) => {
+                    ipv6_socket = Some(socket);
+                    tracing::trace!(
+                        "resolved#{resolved_count} udp socket failed to connect to IpV6 address: {address} (resolved from host {host}): err = {err}"
+                    );
+                }
+            }
+        }
+    }
+
+    if resolved_count > 0 {
+        Err(
+            BoxError::from("failed to (udp) connect to any resolved IP address")
+                .context_field("host", host)
+                .context_field("port", port)
+                .context_field("resolved_addr_count", resolved_count),
+        )
+    } else {
+        Err(
+            BoxError::from("failed to resolve into any IP address (as part of udp connect)")
+                .context_field("host", host)
+                .context_field("port", port),
+        )
+    }
+}
 
 /// Creates a new [`UdpSocket`], which will be bound to the specified address.
 ///

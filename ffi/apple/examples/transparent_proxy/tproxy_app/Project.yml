@@ -1,0 +1,69 @@
+name: RamaTransparentProxyExample
+options:
+  bundleIdPrefix: ADPG6C355H
+  deploymentTarget:
+    macOS: "12.0"
+
+packages:
+  RamaAppleNetworkExtension:
+    path: ../../../RamaAppleNetworkExtension
+
+targets:
+  RamaTransparentProxyExampleHost:
+    type: application
+    platform: macOS
+    sources:
+      - path: Host
+    dependencies:
+      - target: RamaTransparentProxyExampleExtension
+        embed: true
+        codeSign: true
+    postBuildScripts:
+      - name: Sign Embedded Extension
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          if [ "${CODE_SIGNING_ALLOWED:-YES}" != "YES" ]; then
+            exit 0
+          fi
+          APP="$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME/Contents/PlugIns/RamaTransparentProxyExampleExtension.appex"
+          if [ -d "$APP" ]; then
+            /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --entitlements "$PROJECT_DIR/Extension/Extension.entitlements" --timestamp=none "$APP"
+          fi
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy
+        INFOPLIST_FILE: Host/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Host/Host.entitlements
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: "ADPG6C355H"
+        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
+
+  RamaTransparentProxyExampleExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Extension
+    dependencies:
+      - package: RamaAppleNetworkExtension
+        product: RamaAppleNetworkExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.provider
+        INFOPLIST_FILE: Extension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Extension/Extension.entitlements
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: "ADPG6C355H"
+        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
+        ENABLE_DEBUG_DYLIB: NO
+        OTHER_LDFLAGS:
+          - "$(SRCROOT)/../tproxy_rs/target/universal/librama_tproxy_example.a"
+          - "-framework"
+          - "NetworkExtension"
+          - "-lz"

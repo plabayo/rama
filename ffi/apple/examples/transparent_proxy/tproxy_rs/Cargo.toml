@@ -1,0 +1,15 @@
+[package]
+name = "rama_tproxy_example"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[workspace]
+
+[dependencies]
+rama = { path = "../../../../../", features = ["net-apple-networkextension", "tcp", "udp", "dns", "socks5", "http-full", "boring"] }
+tokio = { version = "1.48", features = ["net"] }
+tracing-oslog = "0.3"

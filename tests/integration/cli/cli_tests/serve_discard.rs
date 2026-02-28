@@ -81,7 +81,7 @@ async fn test_tls_tcp_discard() {
                 TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
             ));
         match connector
-            .connect(TcpRequest::new(([127, 0, 0, 1], 63115).into()))
+            .connect(TcpRequest::new(HostWithPort::local_ipv4(63115)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {

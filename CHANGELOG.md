@@ -105,7 +105,7 @@ where the parameter types `Request` and `Response` make no sense.
     * **Memory Management**: Updated internal usage of `SmallVec` and `SmolStr` to reduce allocations across the workspace.
       * These dependencies are also re-exported under `rama-utils`
     * **Upstream Sync**: Massive sync with upstream forks including `hyper`, `h2` (1xx informational responses support), `tungstenite`, and `tower-http`.
-* **MSRV**: Bumped Rust Minimum Supported Rust Version to **1.91**.
+* **MSRV**: Bumped Rust Minimum Supported Rust Version to **1.93**.
 * **EasyWebClient**: Refactored to be more explicit with `connector_builder` and support for `jit_layers`.
 
 ### Fixed

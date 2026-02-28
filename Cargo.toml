@@ -46,6 +46,7 @@ members = [
     "rama-macros",
     "rama-macros/tests/macros",
     "rama-net",
+    "rama-net-apple-networkextension",
     "rama-proxy",
     "rama-socks5",
     "rama-tcp",
@@ -75,7 +76,7 @@ categories = [
     "web-programming::http-server",
 ]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.91.0"
+rust-version = "1.93.0"
 
 [workspace.dependencies]
 ahash = "0.8"
@@ -189,6 +190,7 @@ rama-http-headers = { version = "0.3.0-rc1", path = "./rama-http-headers" }
 rama-http-types = { version = "0.3.0-rc1", path = "./rama-http-types" }
 rama-macros = { version = "0.3.0-rc1", path = "./rama-macros" }
 rama-net = { version = "0.3.0-rc1", path = "./rama-net" }
+rama-net-apple-networkextension = { version = "0.3.0-rc1", path = "./rama-net-apple-networkextension" }
 rama-proxy = { version = "0.3.0-rc1", path = "./rama-proxy" }
 rama-socks5 = { version = "0.3.0-rc1", path = "./rama-socks5" }
 rama-tcp = { version = "0.3.0-rc1", path = "./rama-tcp" }
@@ -362,6 +364,7 @@ cli = [
     "http",
 ]
 net = ["dep:rama-net"]
+net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
 dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
@@ -423,6 +426,7 @@ rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }
+rama-net-apple-networkextension = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }

@@ -99,6 +99,9 @@ qa-crate CRATE:
     just test-crate {{CRATE}}
     just test-doc-crate {{CRATE}}
 
+qa-ffi-apple:
+    just ./ffi/apple/examples/transparent_proxy/qa
+
 qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:

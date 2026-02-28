@@ -1,0 +1,51 @@
+set working-directory := '.'
+
+[working-directory: './tproxy_rs']
+build-tproxy-rs:
+    cargo build --target aarch64-apple-darwin && \
+    cargo build --target x86_64-apple-darwin && \
+    mkdir -p target/universal && \
+    lipo -create \
+        -output target/universal/librama_tproxy_example.a \
+        target/aarch64-apple-darwin/debug/librama_tproxy_example.a \
+        target/x86_64-apple-darwin/debug/librama_tproxy_example.a
+
+[working-directory: './tproxy_app']
+build-tproxy-app:
+    xcodegen generate && \
+    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+
+[working-directory: './tproxy_app']
+build-tproxy-app-with-signing:
+    xcodegen generate && \
+    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug"" build
+
+build-tproxy: build-tproxy-rs build-tproxy-app
+
+build-tproxy-with-signing: build-tproxy-rs build-tproxy-app-with-signing
+
+[working-directory: './tproxy_rs']
+clippy *ARGS:
+    cargo clippy --all-targets --all-features {{ARGS}}
+
+[working-directory: './tproxy_rs']
+clippy-fix *ARGS:
+    just clippy --fix {{ARGS}}
+
+[working-directory: './tproxy_rs']
+rust-doc *ARGS:
+    cargo doc --all-features --no-deps {{ARGS}}
+
+[working-directory: './tproxy_rs']
+rust-test *ARGS:
+    @cargo install cargo-nextest --locked
+    cargo nextest run --all-features --no-tests=pass {{ARGS}}
+
+[working-directory: './tproxy_rs']
+rust-test-ignored:
+    @cargo install cargo-nextest --locked
+    cargo nextest run --all-features --run-ignored=only --no-tests=pass
+
+qa-rust: clippy rust-doc rust-test rust-test-ignored
+
+qa: qa-rust build-tproxy

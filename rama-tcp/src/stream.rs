@@ -9,6 +9,8 @@ use rama_core::{
     extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
+#[cfg(any(target_os = "windows", target_family = "unix"))]
+use rama_net::socket;
 use rama_net::{address::SocketAddress, stream::Socket};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub use tokio::net::TcpStream as TokioTcpStream;
@@ -24,11 +26,35 @@ pin_project! {
 }
 
 impl TcpStream {
+    #[inline(always)]
     pub fn new(stream: TokioTcpStream) -> Self {
         Self {
             stream,
             extensions: Extensions::new(),
         }
+    }
+
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    pub fn try_from_socket(
+        socket: socket::core::Socket,
+        extensions: Extensions,
+    ) -> Result<Self, std::io::Error> {
+        let stream = std::net::TcpStream::from(socket);
+        Self::try_from_std_tcp_stream(stream, extensions)
+    }
+
+    pub fn try_from_std_tcp_stream(
+        stream: std::net::TcpStream,
+        extensions: Extensions,
+    ) -> Result<Self, std::io::Error> {
+        stream.set_nonblocking(true)?;
+        let stream = TokioTcpStream::from_std(stream)?;
+        Ok(Self::from_tokio_tcp_stream(stream, extensions))
+    }
+
+    #[inline(always)]
+    pub fn from_tokio_tcp_stream(stream: TokioTcpStream, extensions: Extensions) -> Self {
+        Self { stream, extensions }
     }
 }
 
