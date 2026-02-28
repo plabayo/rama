@@ -90,16 +90,18 @@ impl<FailureClass> OnFailure<FailureClass> for DefaultOnFailure
 where
     FailureClass: fmt::Display,
 {
-    fn on_failure(&self, failure_classification: FailureClass, latency: Duration, _: &Span) {
+    fn on_failure(&self, failure_classification: FailureClass, latency: Duration, span: &Span) {
         let latency = Latency {
             unit: self.latency_unit,
             duration: latency,
         };
-        event_dynamic_lvl!(
-            self.level,
-            classification = %failure_classification,
-            %latency,
-            "response failed"
-        );
+        span.in_scope(|| {
+            event_dynamic_lvl!(
+                self.level,
+                classification = %failure_classification,
+                %latency,
+                "response failed"
+            )
+        });
     }
 }

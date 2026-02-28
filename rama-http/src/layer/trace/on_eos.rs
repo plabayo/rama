@@ -90,7 +90,7 @@ impl DefaultOnEos {
 }
 
 impl OnEos for DefaultOnEos {
-    fn on_eos(self, trailers: Option<&HeaderMap>, stream_duration: Duration, _span: &Span) {
+    fn on_eos(self, trailers: Option<&HeaderMap>, stream_duration: Duration, span: &Span) {
         let stream_duration = Latency {
             unit: self.latency_unit,
             duration: stream_duration,
@@ -108,6 +108,6 @@ impl OnEos for DefaultOnEos {
             }
         });
 
-        event_dynamic_lvl!(self.level, %stream_duration, status, "end of stream");
+        span.in_scope(|| event_dynamic_lvl!(self.level, %stream_duration, status, "end of stream"));
     }
 }
