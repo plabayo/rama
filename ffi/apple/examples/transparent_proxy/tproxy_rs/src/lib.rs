@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use rama::{
     net::{
         address::{Domain, Host},
@@ -14,7 +16,9 @@ use rama::{
 };
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+mod http;
 mod tcp;
+mod tls;
 mod udp;
 mod utils;
 
@@ -29,12 +33,6 @@ pub type RamaTransparentProxyConfig = ffi_tproxy::TransparentProxyConfig;
 pub type RamaTransparentProxyTcpSessionCallbacks = ffi_tproxy::TransparentProxyTcpSessionCallbacks;
 pub type RamaTransparentProxyUdpSessionCallbacks = ffi_tproxy::TransparentProxyUdpSessionCallbacks;
 
-fn proxy_config() -> TransparentProxyConfig {
-    TransparentProxyConfig::new().with_rules(vec![
-        TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
-    ])
-}
-
 #[unsafe(no_mangle)]
 /// # Safety
 ///
@@ -48,8 +46,12 @@ pub unsafe extern "C" fn rama_transparent_proxy_initialize() -> bool {
 #[unsafe(no_mangle)]
 /// # Safety
 ///
+/// Returned [`RamaTransparentProxyConfig`] should be valid.
 pub unsafe extern "C" fn rama_transparent_proxy_get_config() -> *mut RamaTransparentProxyConfig {
-    let config = proxy_config();
+    let config = TransparentProxyConfig::new().with_rules(vec![
+        TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
+    ]);
+
     let ffi_cfg = RamaTransparentProxyConfig::from_rust_type(&config);
     Box::into_raw(Box::new(ffi_cfg))
 }
@@ -101,23 +103,7 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
         return false;
     };
 
-    const TARGET_IPV4: IpAddr = IpAddr::V4(Ipv4Addr::new(137, 66, 38, 65));
-    const TARGET_IPV6: IpAddr = IpAddr::V6(Ipv6Addr::new(
-        0x2a09, 0x8280, 0x0001, 0x0000, 0x0000, 0x002e, 0x951c, 0x0000,
-    ));
-    const TARGET_HOST: Domain = Domain::from_static("echo.ramaproxy.org");
-    let should_intercept = (remote.host == Host::Address(TARGET_IPV4)
-        || remote.host == Host::Address(TARGET_IPV6)
-        || remote.host == Host::Name(TARGET_HOST))
-        && (remote.port == 80 || remote.port == 443);
-
-    tracing::trace!(
-        remote = ?remote,
-        should_intercept,
-        "flow intercept decision computed"
-    );
-
-    should_intercept
+    true
 }
 
 #[unsafe(no_mangle)]
@@ -125,7 +111,7 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
 ///
 /// This function is FFI entrypoint and may be called from Swift/C.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_new() -> *mut RamaTransparentProxyEngine {
-    let engine = TransparentProxyEngineBuilder::new(proxy_config())
+    let engine = TransparentProxyEngineBuilder::new()
         .with_tcp_service(self::tcp::new_service())
         .with_udp_service(self::udp::new_service())
         .build();

@@ -13,16 +13,13 @@ use rama_tcp::client::default_tcp_connect;
 
 use parking_lot::Mutex;
 use rama_udp::bind_udp_socket_with_connect_default_dns;
-use std::{convert::Infallible, future::Future, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot, watch},
 };
 
-use crate::{
-    TcpFlow, UdpFlow,
-    tproxy::{TransparentProxyConfig, TransparentProxyFlowMeta},
-};
+use crate::{TcpFlow, UdpFlow, tproxy::TransparentProxyFlowMeta};
 
 const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
 
@@ -38,8 +35,8 @@ type UdpFlowService = BoxService<UdpFlow, (), Infallible>;
 type BytesSink = Arc<dyn Fn(Bytes) + Send + Sync + 'static>;
 type ClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
 
+#[derive(Default)]
 pub struct TransparentProxyEngineBuilder {
-    config: TransparentProxyConfig,
     tcp_service: Option<TcpFlowService>,
     tcp_flow_buffer_size: Option<usize>,
     udp_service: Option<UdpFlowService>,
@@ -48,14 +45,8 @@ pub struct TransparentProxyEngineBuilder {
 
 impl TransparentProxyEngineBuilder {
     #[must_use]
-    pub fn new(config: TransparentProxyConfig) -> Self {
-        Self {
-            config,
-            tcp_service: None,
-            tcp_flow_buffer_size: None,
-            udp_service: None,
-            runtime: None,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -110,7 +101,6 @@ impl TransparentProxyEngineBuilder {
 
         TransparentProxyEngine {
             rt: runtime,
-            config: self.config,
             tcp_service,
             tcp_flow_buffer_size,
             udp_service,
@@ -121,7 +111,6 @@ impl TransparentProxyEngineBuilder {
 
 pub struct TransparentProxyEngine {
     rt: tokio::runtime::Runtime,
-    config: TransparentProxyConfig,
     tcp_service: TcpFlowService,
     tcp_flow_buffer_size: usize,
     udp_service: UdpFlowService,
@@ -200,7 +189,6 @@ impl TransparentProxyEngine {
         let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
         let (eof_tx, eof_rx) = watch::channel(false);
 
-        let cfg = self.config.clone();
         let service = self.tcp_service.clone();
         let bytes_sink: BytesSink = Arc::new(on_server_bytes);
         let closed_sink: ClosedSink = Arc::new(on_server_closed);
@@ -208,25 +196,31 @@ impl TransparentProxyEngine {
 
         tracing::debug!(protocol = ?meta.protocol, "new tcp session");
 
-        self.spawn_graceful(
-            guard.clone(),
-            run_tcp_bridge(internal_stream, client_rx, eof_rx, bytes_sink, closed_sink),
-        );
+        let _enter = self.rt.enter();
+
+        guard.spawn_task(run_tcp_bridge(
+            internal_stream,
+            client_rx,
+            eof_rx,
+            bytes_sink,
+            closed_sink,
+        ));
 
         let mut stream = TcpFlow::new(user_stream);
-        stream.extensions_mut().insert(meta);
-        stream.extensions_mut().insert(cfg);
+        stream.extensions_mut().insert(Arc::new(meta));
         if let Some(remote) = remote_endpoint {
             stream.extensions_mut().insert(ProxyTarget(remote));
         }
 
-        self.spawn_graceful(guard, async move {
+        guard.spawn_task_fn(async move |guard| {
+            stream.extensions_mut().insert(guard);
             let _ = service.serve(stream).await;
         });
 
         Some(TransparentProxyTcpSession { client_tx, eof_tx })
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new_udp_session<F, G>(
         &self,
         meta: TransparentProxyFlowMeta,
@@ -241,7 +235,6 @@ impl TransparentProxyEngine {
 
         let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
 
-        let cfg = self.config.clone();
         let service = self.udp_service.clone();
         let datagram_sink: BytesSink = Arc::new(on_server_datagram);
         let closed_sink: ClosedSink = Arc::new(on_server_closed);
@@ -250,13 +243,14 @@ impl TransparentProxyEngine {
         tracing::debug!(protocol = ?meta.protocol, "new udp session");
 
         let mut flow = UdpFlow::new(client_rx, datagram_sink);
-        flow.extensions_mut().insert(meta);
-        flow.extensions_mut().insert(cfg);
+        flow.extensions_mut().insert(guard.clone());
         if let Some(remote) = remote_endpoint {
             flow.extensions_mut().insert(ProxyTarget(remote));
         }
 
-        self.spawn_graceful(guard, async move {
+        let _enter = self.rt.enter();
+        guard.spawn_task_fn(async move |guard| {
+            flow.extensions_mut().insert(guard);
             let _ = service.serve(flow).await;
             closed_sink();
         });
@@ -276,14 +270,6 @@ impl TransparentProxyEngine {
 
         let shutdown = state.shutdown.as_ref()?;
         Some(shutdown.guard())
-    }
-
-    fn spawn_graceful<F>(&self, guard: ShutdownGuard, future: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        let _enter = self.rt.enter();
-        Executor::graceful(guard).spawn_task(future);
     }
 }
 
@@ -496,7 +482,7 @@ mod tests {
 
     #[test]
     fn engine_start_stop_state() {
-        let engine = TransparentProxyEngineBuilder::new(TransparentProxyConfig::new())
+        let engine = TransparentProxyEngineBuilder::new()
             .with_runtime(
                 tokio::runtime::Builder::new_current_thread()
                     .build()
@@ -512,7 +498,7 @@ mod tests {
 
     #[test]
     fn session_rejected_if_not_running() {
-        let engine = TransparentProxyEngineBuilder::new(TransparentProxyConfig::new())
+        let engine = TransparentProxyEngineBuilder::new()
             .with_runtime(
                 tokio::runtime::Builder::new_current_thread()
                     .build()
@@ -529,7 +515,7 @@ mod tests {
 
     #[test]
     fn session_rejected_after_stop() {
-        let engine = TransparentProxyEngineBuilder::new(TransparentProxyConfig::new())
+        let engine = TransparentProxyEngineBuilder::new()
             .with_runtime(
                 tokio::runtime::Builder::new_current_thread()
                     .build()
@@ -552,7 +538,7 @@ mod tests {
         let got_clone = got.clone();
         let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
 
-        let engine = TransparentProxyEngineBuilder::new(TransparentProxyConfig::new())
+        let engine = TransparentProxyEngineBuilder::new()
             .with_tcp_service(service_fn(|mut stream: TcpFlow| async move {
                 let _ = stream.write_all(b"pong").await;
                 Ok(())
@@ -593,7 +579,7 @@ mod tests {
         let got_clone = got.clone();
         let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
 
-        let engine = TransparentProxyEngineBuilder::new(TransparentProxyConfig::new())
+        let engine = TransparentProxyEngineBuilder::new()
             .with_runtime(
                 tokio::runtime::Builder::new_current_thread()
                     .build()

@@ -66,3 +66,4 @@ targets:
           - "$(SRCROOT)/../tproxy_rs/target/universal/librama_tproxy_example.a"
           - "-framework"
           - "NetworkExtension"
+          - "-lz"
