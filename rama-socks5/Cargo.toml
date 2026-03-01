@@ -33,6 +33,7 @@ rand = { workspace = true, optional = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+parking_lot = { workspace = true }
 tokio-test = { workspace = true }
 
 [lints]
