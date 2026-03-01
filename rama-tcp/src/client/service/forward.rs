@@ -96,9 +96,6 @@ where
 
         let proxy_req = ProxyRequest { source, target };
 
-        StreamForwardService::default()
-            .serve(proxy_req)
-            .await
-            .into_box_error()
+        StreamForwardService::default().serve(proxy_req).await
     }
 }

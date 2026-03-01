@@ -1,14 +1,17 @@
-// mod certs;
 // mod http;
-// mod socks5;
 // mod tunnel;
+
+mod socks5;
 
 use std::convert::Infallible;
 
 use rama::{
-    Service, extensions::ExtensionsRef, net::apple::networkextension::TcpFlow, rt::Executor,
-    tcp::client::service::DefaultForwarder, telemetry::tracing,
+    Service, extensions::ExtensionsRef, net::apple::networkextension::TcpFlow,
+    proxy::socks5::server::Socks5PeekRouter, rt::Executor, tcp::client::service::DefaultForwarder,
+    telemetry::tracing,
 };
+
+use crate::utils::executor_from_input;
 
 // use self::{http::build_entry_router, state::TcpProxyState};
 
@@ -17,25 +20,25 @@ use rama::{
 // const OBSERVED_HEADER_NAME: &str = "x-rama-tproxy-observed";
 
 pub(super) fn new_service() -> impl Service<TcpFlow, Output = (), Error = Infallible> {
-    TcpFlowProxyService
+    let exec = Executor::default(); // NOTE: in future would be good if we have access to executor already, somehow...
+
+    let socks5_svc = self::socks5::Socks5IngressService::new();
+    TcpFlowProxyService {
+        inner: Socks5PeekRouter::new(socks5_svc).with_fallback(DefaultForwarder::ctx(exec)),
+    }
 }
 
 #[derive(Debug, Clone)]
-struct TcpFlowProxyService;
+struct TcpFlowProxyService {
+    inner: Socks5PeekRouter<self::socks5::Socks5IngressService, DefaultForwarder>,
+}
 
 impl Service<TcpFlow> for TcpFlowProxyService {
     type Output = ();
     type Error = Infallible;
 
     async fn serve(&self, input: TcpFlow) -> Result<Self::Output, Self::Error> {
-        let exec = input
-            .extensions()
-            .get()
-            .cloned()
-            .map(Executor::graceful)
-            .unwrap_or_default();
-
-        if let Err(err) = DefaultForwarder::ctx(exec).serve(input).await {
+        if let Err(err) = self.inner.serve(input).await {
             tracing::debug!("failed to forward TCP traffic: {err}");
         }
 

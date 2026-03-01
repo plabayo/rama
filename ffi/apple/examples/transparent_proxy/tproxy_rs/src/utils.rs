@@ -2,10 +2,12 @@ use std::sync::OnceLock;
 
 use rama::{
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef,
     net::{
         address::HostWithPort, apple::networkextension::tproxy::TransparentProxyFlowMeta,
         proxy::ProxyTarget,
     },
+    rt::Executor,
     telemetry::tracing::subscriber::{
         self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _,
     },
@@ -23,6 +25,15 @@ pub(super) fn resolve_target_from_extensions(
             ext.get::<TransparentProxyFlowMeta>()
                 .and_then(|meta| meta.remote_endpoint.clone())
         })
+}
+
+pub(super) fn executor_from_input(input: &impl ExtensionsRef) -> Executor {
+    input
+        .extensions()
+        .get()
+        .cloned()
+        .map(Executor::graceful)
+        .unwrap_or_default()
 }
 
 pub(super) fn init_tracing() -> bool {

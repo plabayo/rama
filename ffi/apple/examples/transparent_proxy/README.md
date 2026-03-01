@@ -19,3 +19,19 @@ ffi/apple/examples/transparent_proxy/tproxy_rs/target/universal/librama_tproxy_e
 ## Xcode
 
 `/RamaTransparentProxyExample.xcodeproj` is generated using `xcodegen generate`.
+
+## Logs
+
+Stream all logs (host, extension, and Rust (incl. rama)):
+
+```sh
+log stream --info --debug \
+    --predicate 'subsystem == "org.ramaproxy.example.tproxy"'
+```
+
+Or if you want historical logs:
+
+```sh
+log show --last 1h --style compact --info --debug \
+    --predicate 'subsystem == "org.ramaproxy.example.tproxy"'
+```
