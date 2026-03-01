@@ -3,7 +3,10 @@ use std::time::Duration;
 use rama::{
     Service,
     error::{BoxError, ErrorContext as _},
-    net::proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
+    net::{
+        proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
+        user::credentials::DpiProxyCredential,
+    },
     proxy::socks5::proxy::mitm::{Socks5MitmHandshakeOutcome, Socks5MitmRelay},
     rt::Executor,
     stream::Stream,
@@ -47,6 +50,8 @@ where
             .await?
         {
             Socks5MitmHandshakeOutcome::UnsupportedFlow(egress_stream) => {
+                tracing::debug!("L4-proxy unsupported SOCKS5 flow");
+
                 let proxy_req = ProxyRequest {
                     source: input,
                     target: egress_stream,
@@ -58,6 +63,11 @@ where
                 }
             }
             Socks5MitmHandshakeOutcome::ContinueInspection(egress_stream) => {
+                tracing::debug!(
+                    "relaying SOCKS5 connection (with basic auth = {})",
+                    input.extensions().contains::<DpiProxyCredential>()
+                );
+
                 // TODO: continue inspection flow instead of relay...
                 let proxy_req = ProxyRequest {
                     source: input,
