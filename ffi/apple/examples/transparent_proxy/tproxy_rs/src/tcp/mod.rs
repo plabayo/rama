@@ -2,6 +2,7 @@
 // mod tunnel;
 
 mod socks5;
+mod tls;
 
 use std::convert::Infallible;
 
