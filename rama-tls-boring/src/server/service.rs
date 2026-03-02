@@ -44,6 +44,9 @@ impl<S> TlsAcceptorService<S> {
     define_inner_service_accessors!();
 }
 
+// TODO provide stand-alone handshake based on pre-built acceptor...
+// we need this acceptor based on server hello if possible
+
 impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
     IO: Stream + Unpin + ExtensionsMut + 'static,
