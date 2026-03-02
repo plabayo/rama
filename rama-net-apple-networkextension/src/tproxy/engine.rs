@@ -7,7 +7,7 @@ use rama_core::{
 };
 use rama_net::{
     address::HostWithPort,
-    proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
+    proxy::{ProxyTarget, StreamBridge, StreamForwardService},
 };
 use rama_tcp::client::default_tcp_connect;
 
@@ -348,9 +348,9 @@ fn default_tcp_service() -> TcpFlowService {
             return Ok(());
         };
 
-        let req = ProxyRequest {
-            source: stream,
-            target: upstream,
+        let req = StreamBridge {
+            left: stream,
+            right: upstream,
         };
         if let Err(err) = StreamForwardService::new().serve(req).await {
             tracing::warn!(%err, "default tcp forward failed");

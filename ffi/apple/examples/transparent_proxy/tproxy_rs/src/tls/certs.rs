@@ -13,7 +13,7 @@ use rama::{
         },
     },
     telemetry::tracing,
-    tls::boring::server::utils::self_signed_server_ca,
+    tls::boring::server::utils::self_signed_server_auth_gen_ca,
     utils::str::NonEmptyStr,
 };
 
@@ -74,7 +74,7 @@ fn load_or_create_ca_material() -> Result<MitmCaMaterial, BoxError> {
         fs::create_dir_all(parent).context("create root ca directory")?;
     }
 
-    let (root_cert, root_key) = self_signed_server_ca(&SelfSignedData {
+    let (root_cert, root_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
         organisation_name: Some("Rama Transparent Proxy Example".to_owned()),
         common_name: Some(Domain::from_static("rama-tproxy-mitm-ca.localhost")),
         ..Default::default()

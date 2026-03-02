@@ -2,9 +2,9 @@
 
 use crate::address::HostWithPort;
 
-mod request;
+mod bridge;
 #[doc(inline)]
-pub use request::ProxyRequest;
+pub use bridge::StreamBridge;
 
 mod forward;
 #[doc(inline)]

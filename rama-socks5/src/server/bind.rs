@@ -6,7 +6,7 @@ use rama_core::{Service, error::BoxError, layer::timeout::DefaultTimeout, stream
 use rama_net::address::HostWithPort;
 use rama_net::{
     address::{Host, SocketAddress},
-    proxy::{ProxyRequest, StreamForwardService},
+    proxy::{StreamBridge, StreamForwardService},
     socket::{Interface, SocketService},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
@@ -116,7 +116,7 @@ impl<A, S> Binder<A, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (ProxyRequest) -> ((), Into<BoxError>)
+    /// (StreamBridge) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Binder<A, T> {
         Binder {
@@ -219,7 +219,7 @@ where
     S: Stream + Unpin,
     F: SocketService<Socket: Acceptor<Stream: Unpin>>,
     StreamService: Service<
-            ProxyRequest<S, <F::Socket as Acceptor>::Stream>,
+            StreamBridge<S, <F::Socket as Acceptor>::Stream>,
             Output = (),
             Error: Into<BoxError>,
         >,
@@ -361,9 +361,9 @@ where
         );
 
         self.service
-            .serve(ProxyRequest {
-                source: stream,
-                target,
+            .serve(StreamBridge {
+                left: stream,
+                right: target,
             })
             .instrument(tracing::trace_span!("socks5::bind::serve"))
             .await

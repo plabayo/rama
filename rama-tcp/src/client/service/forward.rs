@@ -10,7 +10,7 @@ use rama_core::{
 use rama_net::{
     address::HostWithPort,
     client::{ConnectorService, EstablishedClientConnection},
-    proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
+    proxy::{ProxyTarget, StreamBridge, StreamForwardService},
 };
 
 #[derive(Debug, Clone)]
@@ -94,7 +94,10 @@ where
             .context("establish tcp connection")
             .context_field("authority", authority)?;
 
-        let proxy_req = ProxyRequest { source, target };
+        let proxy_req = StreamBridge {
+            left: source,
+            right: target,
+        };
 
         StreamForwardService::default().serve(proxy_req).await
     }

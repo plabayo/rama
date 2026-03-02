@@ -6,7 +6,7 @@ use rama_net::address::HostWithPort;
 use rama_net::client::ConnectorService;
 use rama_net::{
     client::EstablishedClientConnection,
-    proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
+    proxy::{ProxyTarget, StreamBridge, StreamForwardService},
     stream::Socket,
 };
 use rama_tcp::client::{
@@ -158,7 +158,7 @@ impl<C, S> Connector<C, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (ProxyRequest) -> ((), Into<BoxError>)
+    /// (StreamBridge) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Connector<C, T> {
         Connector {
@@ -187,7 +187,7 @@ where
     S: Stream + Unpin + ExtensionsMut,
     InnerConnector: ConnectorService<TcpRequest, Connection: Stream + Socket + Unpin>,
     StreamService:
-        Service<ProxyRequest<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
+        Service<StreamBridge<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
@@ -270,9 +270,9 @@ where
         );
 
         self.service
-            .serve(ProxyRequest {
-                source: stream,
-                target,
+            .serve(StreamBridge {
+                left: stream,
+                right: target,
             })
             .instrument(trace_span!("socks5::connect::proxy::serve"))
             .await

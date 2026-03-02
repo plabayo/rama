@@ -4,7 +4,7 @@ use rama::{
     Service,
     error::{BoxError, ErrorContext as _},
     net::{
-        proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
+        proxy::{ProxyTarget, StreamBridge, StreamForwardService},
         user::credentials::DpiProxyCredential,
     },
     proxy::socks5::proxy::mitm::{Socks5MitmHandshakeOutcome, Socks5MitmRelay},
@@ -52,9 +52,9 @@ where
             Socks5MitmHandshakeOutcome::UnsupportedFlow(egress_stream) => {
                 tracing::debug!("L4-proxy unsupported SOCKS5 flow");
 
-                let proxy_req = ProxyRequest {
-                    source: input,
-                    target: egress_stream,
+                let proxy_req = StreamBridge {
+                    left: input,
+                    right: egress_stream,
                 };
                 if let Err(err) = StreamForwardService::default().serve(proxy_req).await {
                     tracing::debug!(
@@ -69,9 +69,9 @@ where
                 );
 
                 // TODO: continue inspection flow instead of relay...
-                let proxy_req = ProxyRequest {
-                    source: input,
-                    target: egress_stream,
+                let proxy_req = StreamBridge {
+                    left: input,
+                    right: egress_stream,
                 };
                 if let Err(err) = StreamForwardService::default().serve(proxy_req).await {
                     tracing::debug!(

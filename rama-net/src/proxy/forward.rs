@@ -6,11 +6,11 @@ use rama_core::{
 
 use rama_core::stream::Stream;
 
-use super::ProxyRequest;
+use super::StreamBridge;
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-/// A proxy [`Service`] which takes a [`ProxyRequest`]
+/// A proxy [`Service`] which takes a [`StreamBridge`]
 /// and copies the bytes of both the source and target [`Stream`]s
 /// bidirectionally.
 pub struct StreamForwardService;
@@ -24,7 +24,7 @@ impl StreamForwardService {
     }
 }
 
-impl<S, T> Service<ProxyRequest<S, T>> for StreamForwardService
+impl<S, T> Service<StreamBridge<S, T>> for StreamForwardService
 where
     S: Stream + Unpin,
     T: Stream + Unpin,
@@ -34,12 +34,12 @@ where
 
     async fn serve(
         &self,
-        ProxyRequest {
-            mut source,
-            mut target,
-        }: ProxyRequest<S, T>,
+        StreamBridge {
+            mut left,
+            mut right,
+        }: StreamBridge<S, T>,
     ) -> Result<Self::Output, Self::Error> {
-        match tokio::io::copy_bidirectional(&mut source, &mut target).await {
+        match tokio::io::copy_bidirectional(&mut left, &mut right).await {
             Ok((bytes_copied_north, bytes_copied_south)) => {
                 tracing::trace!(
                     "(proxy) I/O stream forwarder finished: bytes north: {}; bytes south: {}",

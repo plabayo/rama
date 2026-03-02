@@ -16,7 +16,7 @@ fn sample_data(common_name: &'static str) -> SelfSignedData {
     }
 }
 
-fn ext_by_nid<'a>(cert: &'a X509Ref, nid: Nid) -> Vec<&'a crate::core::x509::X509ExtensionRef> {
+fn ext_by_nid(cert: &X509Ref, nid: Nid) -> Vec<&crate::core::x509::X509ExtensionRef> {
     cert.extensions()
         .filter(|ext| ext.object().nid() == nid)
         .collect()
