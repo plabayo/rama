@@ -390,3 +390,7 @@ pub fn self_signed_server_auth_gen_ca(
 
     Ok((cert, privkey))
 }
+
+#[cfg(test)]
+#[path = "./certs_tests.rs"]
+mod certs_tests;
