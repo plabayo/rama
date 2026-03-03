@@ -59,7 +59,7 @@ hack:
 
 test *ARGS:
     @cargo install cargo-nextest --locked
-    cargo nextest run --all-features --workspace {{ARGS}}
+    cargo nextest run --cfg=extensions_new --all-features --workspace {{ARGS}}
 
 test-doc *ARGS:
     cargo test --doc --all-features --workspace {{ARGS}}
