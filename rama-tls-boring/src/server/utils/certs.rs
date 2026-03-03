@@ -295,11 +295,6 @@ pub fn self_signed_server_auth_gen_ca(
     let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
     let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
 
-    let common_name = data
-        .common_name
-        .clone()
-        .unwrap_or(Domain::from_static("localhost"));
-
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
     x509_name
         .append_entry_by_nid(
@@ -312,9 +307,13 @@ pub fn self_signed_server_auth_gen_ca(
             .append_entry_by_nid(Nid::SUBJECT_ALT_NAME, subject_alt_name.as_ref())
             .context("append subject alt name to x509 name builder")?;
     }
-    x509_name
-        .append_entry_by_nid(Nid::COMMONNAME, common_name.as_str())
-        .context("append common name to x509 name builder")?;
+
+    if let Some(cn) = data.common_name.as_ref() {
+        x509_name
+            .append_entry_by_nid(Nid::COMMONNAME, cn.as_str())
+            .context("append common name to x509 name builder")?;
+    }
+
     let x509_name = x509_name.build();
 
     let mut ca_cert_builder = X509::builder().context("create x509 (cert) builder")?;
