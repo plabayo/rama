@@ -13,8 +13,8 @@ use rama_net::transport::TryRefIntoTransportContext;
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
-use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder, TlsStream};
-use crate::types::TlsTunnel;
+use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder};
+use crate::{TlsStream, types::TlsTunnel};
 
 #[cfg(feature = "http")]
 use rama_http_types::{Version, conn::TargetHttpVersion};

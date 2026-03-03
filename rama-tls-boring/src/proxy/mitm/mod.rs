@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::{
-    client,
+    TlsStream, client,
     keylog::try_new_key_log_file_handle,
     server::{self, utils::self_signed_server_auth_gen_ca},
 };
@@ -94,7 +94,7 @@ impl TlsMitmRelay {
             right: egress_stream,
         }: StreamBridge<Left, Right>,
         connector_data: Option<client::TlsConnectorData>,
-    ) -> Result<StreamBridge<server::TlsStream<Left>, client::TlsStream<Right>>, BoxError>
+    ) -> Result<StreamBridge<TlsStream<Left>, TlsStream<Right>>, BoxError>
     where
         Left: Stream + Unpin + extensions::ExtensionsMut,
         Right: Stream + Unpin + extensions::ExtensionsMut,
@@ -245,7 +245,7 @@ impl TlsMitmRelay {
         }
 
         Ok(StreamBridge {
-            left: server::TlsStream::new(ingress_tls_stream),
+            left: TlsStream::new(ingress_tls_stream),
             right: egress_tls_stream,
         })
     }

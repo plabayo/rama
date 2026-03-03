@@ -1,8 +1,8 @@
 use super::TlsAcceptorData;
 use crate::{
+    TlsStream,
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
     keylog::try_new_key_log_file_handle,
-    server::TlsStream,
     types::SecureTransport,
 };
 use parking_lot::Mutex;

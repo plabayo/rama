@@ -23,6 +23,3 @@ pub use service::TlsAcceptorService;
 mod layer;
 #[doc(inline)]
 pub use layer::TlsAcceptorLayer;
-
-mod tls_stream;
-pub use tls_stream::TlsStream;

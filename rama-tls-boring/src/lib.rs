@@ -34,6 +34,9 @@ pub mod server;
 pub mod keylog;
 pub mod type_conversion;
 
+mod tls_stream;
+pub use tls_stream::TlsStream;
+
 pub mod types {
     //! common tls types
     #[doc(inline)]
