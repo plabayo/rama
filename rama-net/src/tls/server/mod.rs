@@ -1,8 +1,5 @@
 //! TLS implementation agnostic server types
 
-mod hello;
-// TOOD...
-
 mod config;
 #[doc(inline)]
 pub use config::{
