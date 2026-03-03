@@ -1,17 +1,18 @@
 use rama_core::{
+    conversion::RamaTryInto as _,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
-    extensions,
+    extensions::{self, ExtensionsMut as _},
     stream::Stream,
     telemetry::tracing,
 };
-use rama_net::proxy::StreamBridge;
-use rama_net::tls::ApplicationProtocol;
+use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
+use rama_net::{proxy::StreamBridge, tls::KeyLogIntent};
 use std::{
     fmt,
     io::{Cursor, ErrorKind},
 };
 
-use crate::{client, server};
+use crate::{client, keylog::try_new_key_log_file_handle, server};
 use crate::{
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
     core::{pkey::PKey, pkey::Private, x509::X509},
@@ -25,6 +26,7 @@ pub struct TlsMitmRelay {
     ca_cert: X509,
     ca_privkey: PKey<Private>,
     grease_enabled: bool,
+    keylog_intent: KeyLogIntent,
 }
 
 // TODO: support cert storage for re-use, also support dynamic issuer...
@@ -35,6 +37,7 @@ impl fmt::Debug for TlsMitmRelay {
             .field("ca_cert", &self.ca_cert)
             .field("ca_privkey", &"PKey<Private>")
             .field("grease_enabled", &self.grease_enabled)
+            .field("keylog_intent", &self.keylog_intent)
             .finish()
     }
 }
@@ -47,6 +50,7 @@ impl TlsMitmRelay {
             ca_cert,
             ca_privkey,
             grease_enabled: true,
+            keylog_intent: KeyLogIntent::Environment,
         }
     }
 
@@ -56,6 +60,16 @@ impl TlsMitmRelay {
         /// By default is is enabled (true).
         pub fn grease_enabled(mut self, enabled: bool) -> Self {
             self.grease_enabled = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`keylog_intent`].
+        ///
+        /// By default [`KeyLogIntent::Environment`] is used.
+        pub fn keylog_intent(mut self, intent: KeyLogIntent) -> Self {
+            self.keylog_intent = intent;
             self
         }
     }
@@ -75,7 +89,13 @@ impl TlsMitmRelay {
         Left: Stream + Unpin + extensions::ExtensionsMut,
         Right: Stream + Unpin + extensions::ExtensionsMut,
     {
-        let egress_tls_stream = crate::client::tls_connect(egress_stream, connector_data).await?;
+        let store_server_certificate_chain = connector_data
+            .as_ref()
+            .map(|cd| cd.store_server_certificate_chain)
+            .unwrap_or_default();
+
+        let mut egress_tls_stream =
+            crate::client::tls_connect(egress_stream, connector_data).await?;
 
         let egress_ssl_ref = egress_tls_stream.ssl_ref();
         let source_cert = egress_ssl_ref
@@ -106,55 +126,84 @@ impl TlsMitmRelay {
             .check_private_key()
             .context("tls mitm relay: check mirrored private key")?;
 
-        if let Some(version) = egress_ssl_ref
-            .session()
-            .map(|session| session.protocol_version())
-        {
+        let maybe_negotiated_params = if let Some(ssl_session) = egress_ssl_ref.session() {
+            let protocol_version = ssl_session.protocol_version();
             acceptor_builder
-                .set_min_proto_version(Some(version))
+                .set_min_proto_version(Some(protocol_version))
                 .context("tls mitm relay: set mirrored min protocol version")?;
             acceptor_builder
-                .set_max_proto_version(Some(version))
+                .set_max_proto_version(Some(protocol_version))
                 .context("tls mitm relay: set mirrored max protocol version")?;
-        }
+            let protocol_version = protocol_version.rama_try_into().map_err(|v| {
+                BoxError::from("boring ssl connector: cast min proto version")
+                    .context_field("protocol_version", v)
+            })?;
 
-        if let Some(selected_alpn_protocol) = egress_ssl_ref
-            .selected_alpn_protocol()
-            .map(ApplicationProtocol::from)
-        {
-            acceptor_builder.set_alpn_select_callback(
-                move |_: &mut SslRef, client_alpns: &[u8]| {
-                    let mut reader = Cursor::new(client_alpns);
-                    loop {
-                        let n = reader.position() as usize;
-                        match ApplicationProtocol::decode_wire_format(&mut reader) {
-                            Ok(proto) => {
-                                if proto == selected_alpn_protocol {
-                                    let m = reader.position() as usize;
-                                    return Ok(&client_alpns[n + 1..m]);
+            let application_layer_protocol = egress_ssl_ref
+                .selected_alpn_protocol()
+                .map(ApplicationProtocol::from);
+
+            if let Some(selected_alpn_protocol) = application_layer_protocol.clone() {
+                tracing::trace!(
+                    "boring client (connector) has selected ALPN {selected_alpn_protocol}"
+                );
+
+                acceptor_builder.set_alpn_select_callback(
+                    move |_: &mut SslRef, client_alpns: &[u8]| {
+                        let mut reader = Cursor::new(client_alpns);
+                        loop {
+                            let n = reader.position() as usize;
+                            match ApplicationProtocol::decode_wire_format(&mut reader) {
+                                Ok(proto) => {
+                                    if proto == selected_alpn_protocol {
+                                        let m = reader.position() as usize;
+                                        return Ok(&client_alpns[n + 1..m]);
+                                    }
+                                }
+                                Err(error) => {
+                                    return Err(if error.kind() == ErrorKind::UnexpectedEof {
+                                        AlpnError::NOACK
+                                    } else {
+                                        AlpnError::ALERT_FATAL
+                                    });
                                 }
                             }
-                            Err(error) => {
-                                return Err(if error.kind() == ErrorKind::UnexpectedEof {
-                                    AlpnError::NOACK
-                                } else {
-                                    AlpnError::ALERT_FATAL
-                                });
-                            }
                         }
-                    }
-                },
-            );
-        }
+                    },
+                );
+            }
 
-        // TODO: also insert selected ALPN in both egress and ingress....
-        // Perhaps also negotiated parameters....
+            let server_certificate_chain = match store_server_certificate_chain
+                .then(|| egress_ssl_ref.peer_cert_chain())
+                .flatten()
+            {
+                Some(chain) => Some(chain.rama_try_into()?),
+                None => None,
+            };
+
+            Some(NegotiatedTlsParameters {
+                protocol_version,
+                application_layer_protocol,
+                peer_certificate_chain: server_certificate_chain,
+            })
+        } else {
+            None
+        };
+
+        if let Some(keylog_filename) = self.keylog_intent.file_path().as_deref() {
+            let handle = try_new_key_log_file_handle(keylog_filename)?;
+            acceptor_builder.set_keylog_callback(move |_, line| {
+                let line = format!("{line}\n");
+                handle.write_log_line(line);
+            });
+        }
 
         tracing::trace!(
             protocol = ?egress_ssl_ref.version(),
             has_alpn = egress_ssl_ref.selected_alpn_protocol().is_some(),
             "tls mitm relay: accepting ingress tls handshake with mirrored server hints",
         );
+
         let acceptor = acceptor_builder.build();
         let ingress_tls_stream = rama_boring_tokio::accept(&acceptor, ingress_stream)
             .await
@@ -171,6 +220,19 @@ impl TlsMitmRelay {
                 }
                 .context_debug_field("code", maybe_ssl_code)
             })?;
+
+        if let Some(negotiated_params) = maybe_negotiated_params {
+            #[cfg(feature = "http")]
+            if let Some(proto) = negotiated_params.application_layer_protocol.as_ref()
+                && let Ok(neg_version) = rama_http_types::Version::try_from(proto)
+            {
+                egress_tls_stream
+                    .extensions_mut()
+                    .insert(rama_http_types::conn::TargetHttpVersion(neg_version));
+            }
+
+            egress_tls_stream.extensions_mut().insert(negotiated_params);
+        }
 
         Ok(StreamBridge {
             left: server::TlsStream::new(ingress_tls_stream),
