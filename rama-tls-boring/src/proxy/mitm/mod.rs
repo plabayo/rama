@@ -5,14 +5,18 @@ use rama_core::{
     stream::Stream,
     telemetry::tracing,
 };
-use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
+use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData};
 use rama_net::{proxy::StreamBridge, tls::KeyLogIntent};
 use std::{
     fmt,
     io::{Cursor, ErrorKind},
 };
 
-use crate::{client, keylog::try_new_key_log_file_handle, server};
+use crate::{
+    client,
+    keylog::try_new_key_log_file_handle,
+    server::{self, utils::self_signed_server_auth_gen_ca},
+};
 use crate::{
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
     core::{pkey::PKey, pkey::Private, x509::X509},
@@ -52,6 +56,12 @@ impl TlsMitmRelay {
             grease_enabled: true,
             keylog_intent: KeyLogIntent::Environment,
         }
+    }
+
+    /// Create a new [`TlsMitmRelay`] with self-signed CA using the given data.
+    pub fn try_new_self_signed(data: &SelfSignedData) -> Result<Self, BoxError> {
+        let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(data)?;
+        Ok(Self::new(ca_cert, ca_privkey))
     }
 
     rama_utils::macros::generate_set_and_with! {
