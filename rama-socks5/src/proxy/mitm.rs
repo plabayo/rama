@@ -27,17 +27,17 @@ pub struct Socks5MitmRelay<Dns = GlobalDnsResolver, Connector = ()> {
     connect_timeout: Duration,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Outcome of [`Socks5MitmRelay::handshake`].
-pub enum Socks5MitmHandshakeOutcome<S> {
+pub enum Socks5MitmHandshakeOutcome {
     /// Flow is not supported, skip traffic inspection and
     /// resort to proxying bytes...
-    UnsupportedFlow(S),
+    UnsupportedFlow,
     /// Socks5 handshake complete, continue to inspect.
     /// In case there were credentials negotiated in the flow,
     /// they will also have been inserted in the input flow via
     /// [`DpiProxyCredential`] in its extensions.
-    ContinueInspection(S),
+    ContinueInspection,
 }
 
 impl Socks5MitmRelay {
@@ -109,14 +109,10 @@ where
         ingress_stream: &mut S,
         exec: Executor,
         socks5_proxy_address: HostWithPort,
-    ) -> Result<Socks5MitmHandshakeOutcome<impl Stream>, BoxError>
+    ) -> Result<(impl Stream, Socks5MitmHandshakeOutcome), BoxError>
     where
         S: Stream + Unpin + extensions::ExtensionsMut,
     {
-        let client_header = proto::client::Header::read_from(ingress_stream)
-            .await
-            .context("read client header")?;
-
         let (mut egress_stream, _) = tokio::time::timeout(
             self.connect_timeout,
             tcp_connect(
@@ -131,24 +127,29 @@ where
         .context("tcp connection to egress socks5 proxy server timed out")?
         .context("tcp connection to egress socks5 proxy server failed")?;
 
-        client_header
-            .write_to(&mut egress_stream)
-            .await
-            .context("write client header: with ingress provided method")?;
-
-        proxy_socks5_server_method_and_request(ingress_stream, egress_stream).await
+        let outcome = socks5_mitm_relay_handshake(ingress_stream, &mut egress_stream).await?;
+        Ok((egress_stream, outcome))
     }
 }
 
-async fn proxy_socks5_server_method_and_request<Ingress, Egress>(
+pub async fn socks5_mitm_relay_handshake<Ingress, Egress>(
     ingress_stream: &mut Ingress,
-    mut egress_stream: Egress,
-) -> Result<Socks5MitmHandshakeOutcome<Egress>, BoxError>
+    egress_stream: &mut Egress,
+) -> Result<Socks5MitmHandshakeOutcome, BoxError>
 where
     Ingress: Stream + Unpin + extensions::ExtensionsMut,
     Egress: Stream + Unpin + extensions::ExtensionsMut,
 {
-    let server_header = proto::server::Header::read_from(&mut egress_stream)
+    let client_header = proto::client::Header::read_from(ingress_stream)
+        .await
+        .context("read client header")?;
+
+    client_header
+        .write_to(egress_stream)
+        .await
+        .context("write client header: with ingress provided method")?;
+
+    let server_header = proto::server::Header::read_from(egress_stream)
         .await
         .context("read egress socks5 proxy server header")?;
 
@@ -161,8 +162,8 @@ where
         proto::SocksMethod::NoAuthenticationRequired => {
             proxy_socks5_handshake_request_response(
                 ingress_stream,
-                server_header.method,
                 egress_stream,
+                server_header.method,
             )
             .await
         }
@@ -173,12 +174,12 @@ where
                     "read client auth sub-negotiation request from ingress: username-password",
                 )?;
 
-            client_auth_req.write_to(&mut egress_stream).await.context(
+            client_auth_req.write_to(egress_stream).await.context(
                 "write client auth-sub-negotation request to egress: received from egress stream",
             )?;
 
             let server_auth_reply =
-                proto::server::UsernamePasswordResponse::read_from(&mut egress_stream)
+                proto::server::UsernamePasswordResponse::read_from(egress_stream)
                     .await
                     .context(
                         "read server sub-negotiation response from egress: username-password auth",
@@ -205,8 +206,8 @@ where
 
             proxy_socks5_handshake_request_response(
                 ingress_stream,
-                server_header.method,
                 egress_stream,
+                server_header.method,
             )
             .await
         }
@@ -223,16 +224,16 @@ where
                 "supported SOCKS5 method {method:?}: forward bytes as is without further inspection..."
             );
 
-            Ok(Socks5MitmHandshakeOutcome::UnsupportedFlow(egress_stream))
+            Ok(Socks5MitmHandshakeOutcome::UnsupportedFlow)
         }
     }
 }
 
 async fn proxy_socks5_handshake_request_response<Ingress, Egress>(
     ingress_stream: &mut Ingress,
+    egress_stream: &mut Egress,
     negotiated_method: proto::SocksMethod,
-    mut egress_stream: Egress,
-) -> Result<Socks5MitmHandshakeOutcome<Egress>, BoxError>
+) -> Result<Socks5MitmHandshakeOutcome, BoxError>
 where
     Ingress: Stream + Unpin + extensions::ExtensionsMut,
     Egress: Stream + Unpin + extensions::ExtensionsMut,
@@ -249,13 +250,13 @@ where
     );
 
     client_request
-        .write_to(&mut egress_stream)
+        .write_to(egress_stream)
         .await
         .context("write client request: with ingress provided data")?;
 
     match client_request.command {
         proto::Command::Connect => {
-            let server_reply = proto::server::Reply::read_from(&mut egress_stream)
+            let server_reply = proto::server::Reply::read_from(egress_stream)
                 .await
                 .context("read server socks5 reply from egress stream")?;
 
@@ -278,9 +279,7 @@ where
                 "socks5 proxy relay connector: handshake (socks5_client <-> proxy <-> socks5_server) complete",
             );
 
-            Ok(Socks5MitmHandshakeOutcome::ContinueInspection(
-                egress_stream,
-            ))
+            Ok(Socks5MitmHandshakeOutcome::ContinueInspection)
         }
         cmd
         @ (proto::Command::Bind | proto::Command::UdpAssociate | proto::Command::Unknown(_)) => {
@@ -297,7 +296,7 @@ where
                 "unsupported SOCKS5 method {cmd:?}: forward bytes as is without further inspection..."
             );
 
-            Ok(Socks5MitmHandshakeOutcome::UnsupportedFlow(egress_stream))
+            Ok(Socks5MitmHandshakeOutcome::UnsupportedFlow)
         }
     }
 }
@@ -307,16 +306,15 @@ mod tests {
     use super::*;
 
     use parking_lot::Mutex;
-    use std::{
-        net::{IpAddr, Ipv4Addr, SocketAddr},
-        sync::Arc,
-        time::Duration,
-    };
-
     use rama_core::{ServiceInput, extensions::ExtensionsRef as _};
     use rama_net::{
         address::{Domain, Host},
         user::credentials::Basic,
+    };
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::Arc,
+        time::Duration,
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -348,8 +346,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_mitm_relay_handshake_uses_static_dns_and_custom_connector() {
-        let mut ingress_stream =
-            ServiceInput::new(tokio_test::io::Builder::new().read(b"\x05\x01\x00").build());
+        // Egress connect fails before any socks5 bytes are consumed from ingress.
+        let mut ingress_stream = ServiceInput::new(tokio_test::io::Builder::new().build());
 
         let connector = RecordingTcpConnector::default();
         let relay = Socks5MitmRelay::new()
@@ -383,43 +381,127 @@ mod tests {
     async fn test_proxy_method_and_request_connect_no_auth_continue_inspection() {
         let mut ingress_stream = ServiceInput::new(
             tokio_test::io::Builder::new()
+                .read(b"\x05\x01\x00")
                 .write(b"\x05\x00")
                 .read(b"\x05\x01\x00\x01\x01\x02\x03\x04\x01\xbb")
                 .write(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x19\x64")
                 .build(),
         );
 
-        let egress_stream = ServiceInput::new(
+        let mut egress_stream = ServiceInput::new(
             tokio_test::io::Builder::new()
+                .write(b"\x05\x01\x00")
                 .read(b"\x05\x00")
                 .write(b"\x05\x01\x00\x01\x01\x02\x03\x04\x01\xbb")
                 .read(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x19\x64")
-                .write(b"PING")
-                .read(b"PONG")
                 .build(),
         );
 
-        let outcome = proxy_socks5_server_method_and_request(&mut ingress_stream, egress_stream)
+        let outcome = socks5_mitm_relay_handshake(&mut ingress_stream, &mut egress_stream)
             .await
             .expect("negotiate socks5 connect");
+        assert_eq!(outcome, Socks5MitmHandshakeOutcome::ContinueInspection);
+    }
 
-        let mut egress_stream = match outcome {
-            Socks5MitmHandshakeOutcome::ContinueInspection(stream) => stream,
-            Socks5MitmHandshakeOutcome::UnsupportedFlow(_) => {
-                panic!("connect flow should continue inspection")
-            }
-        };
+    #[tokio::test]
+    async fn test_proxy_connect_flow_supports_post_handshake_data_relay() {
+        let (ingress_proxy, mut ingress_client) = tokio::io::duplex(1024);
+        let (egress_proxy, mut egress_server) = tokio::io::duplex(1024);
 
-        egress_stream.write_all(b"PING").await.expect("write ping");
-        let mut buf = [0u8; 4];
-        egress_stream.read_exact(&mut buf).await.expect("read pong");
-        assert_eq!(&buf, b"PONG");
+        let mut ingress_stream = ServiceInput::new(ingress_proxy);
+        let mut egress_stream = ServiceInput::new(egress_proxy);
+
+        let client_task = tokio::spawn(async move {
+            ingress_client
+                .write_all(b"\x05\x01\x00")
+                .await
+                .expect("client write socks header");
+            let mut server_method = [0u8; 2];
+            ingress_client
+                .read_exact(&mut server_method)
+                .await
+                .expect("client read server method");
+            assert_eq!(&server_method, b"\x05\x00");
+
+            ingress_client
+                .write_all(b"\x05\x01\x00\x01\x01\x02\x03\x04\x01\xbb")
+                .await
+                .expect("client write connect request");
+            let mut server_reply = [0u8; 10];
+            ingress_client
+                .read_exact(&mut server_reply)
+                .await
+                .expect("client read connect reply");
+            assert_eq!(&server_reply, b"\x05\x00\x00\x01\x7f\x00\x00\x01\x19\x64");
+
+            ingress_client
+                .write_all(b"PING")
+                .await
+                .expect("client write application data");
+            let mut app_reply = [0u8; 4];
+            ingress_client
+                .read_exact(&mut app_reply)
+                .await
+                .expect("client read application reply");
+            assert_eq!(&app_reply, b"PONG");
+        });
+
+        let server_task = tokio::spawn(async move {
+            let mut client_header = [0u8; 3];
+            egress_server
+                .read_exact(&mut client_header)
+                .await
+                .expect("server read client header");
+            assert_eq!(&client_header, b"\x05\x01\x00");
+            egress_server
+                .write_all(b"\x05\x00")
+                .await
+                .expect("server write selected method");
+
+            let mut connect_request = [0u8; 10];
+            egress_server
+                .read_exact(&mut connect_request)
+                .await
+                .expect("server read connect request");
+            assert_eq!(
+                &connect_request,
+                b"\x05\x01\x00\x01\x01\x02\x03\x04\x01\xbb"
+            );
+            egress_server
+                .write_all(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x19\x64")
+                .await
+                .expect("server write connect reply");
+
+            let mut app_data = [0u8; 4];
+            egress_server
+                .read_exact(&mut app_data)
+                .await
+                .expect("server read application data");
+            assert_eq!(&app_data, b"PING");
+            egress_server
+                .write_all(b"PONG")
+                .await
+                .expect("server write application reply");
+        });
+
+        let outcome = socks5_mitm_relay_handshake(&mut ingress_stream, &mut egress_stream)
+            .await
+            .expect("negotiate socks5 connect");
+        assert_eq!(outcome, Socks5MitmHandshakeOutcome::ContinueInspection);
+
+        tokio::io::copy_bidirectional(&mut ingress_stream, &mut egress_stream)
+            .await
+            .expect("post-handshake relay bytes");
+
+        client_task.await.expect("client task");
+        server_task.await.expect("server task");
     }
 
     #[tokio::test]
     async fn test_proxy_method_and_request_connect_auth_sets_proxy_credential_extension() {
         let mut ingress_stream = ServiceInput::new(
             tokio_test::io::Builder::new()
+                .read(b"\x05\x01\x02")
                 .write(b"\x05\x02")
                 .read(b"\x01\x04john\x06secret")
                 .write(b"\x01\x00")
@@ -428,8 +510,9 @@ mod tests {
                 .build(),
         );
 
-        let egress_stream = ServiceInput::new(
+        let mut egress_stream = ServiceInput::new(
             tokio_test::io::Builder::new()
+                .write(b"\x05\x01\x02")
                 .read(b"\x05\x02")
                 .write(b"\x01\x04john\x06secret")
                 .read(b"\x01\x00")
@@ -438,14 +521,10 @@ mod tests {
                 .build(),
         );
 
-        let outcome = proxy_socks5_server_method_and_request(&mut ingress_stream, egress_stream)
+        let outcome = socks5_mitm_relay_handshake(&mut ingress_stream, &mut egress_stream)
             .await
             .expect("negotiate socks5 connect with auth");
-
-        assert!(
-            matches!(outcome, Socks5MitmHandshakeOutcome::ContinueInspection(_)),
-            "auth connect should still continue inspection"
-        );
+        assert_eq!(outcome, Socks5MitmHandshakeOutcome::ContinueInspection);
 
         let credential = ingress_stream
             .extensions()
@@ -487,41 +566,25 @@ mod tests {
     ) {
         let mut ingress_stream = ServiceInput::new(
             tokio_test::io::Builder::new()
+                .read(b"\x05\x01\x00")
                 .write(server_header)
                 .read(client_request)
                 .build(),
         );
 
-        let egress_stream = ServiceInput::new(
+        let mut egress_stream = ServiceInput::new(
             tokio_test::io::Builder::new()
+                .write(b"\x05\x01\x00")
                 .read(server_header)
                 .write(client_request)
-                .write(b"HI")
-                .read(b"OK")
                 .build(),
         );
 
-        let outcome = proxy_socks5_server_method_and_request(&mut ingress_stream, egress_stream)
+        let outcome = socks5_mitm_relay_handshake(&mut ingress_stream, &mut egress_stream)
             .await
             .expect("negotiate unsupported command");
+        assert_eq!(outcome, Socks5MitmHandshakeOutcome::UnsupportedFlow);
 
-        let mut egress_stream = match outcome {
-            Socks5MitmHandshakeOutcome::UnsupportedFlow(stream) => stream,
-            Socks5MitmHandshakeOutcome::ContinueInspection(_) => {
-                panic!("bind/udp-associate should be returned as unsupported flow")
-            }
-        };
-
-        egress_stream
-            .write_all(b"HI")
-            .await
-            .expect("write post-handshake payload");
-        let mut buf = [0u8; 2];
-        egress_stream
-            .read_exact(&mut buf)
-            .await
-            .expect("read post-handshake payload");
-        assert_eq!(buf, *b"OK");
         assert_eq!(
             expected_request,
             [
