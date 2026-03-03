@@ -147,7 +147,7 @@ where
                 "http proxy connector: preparing proxy connection for tls tunnel",
             );
             input.extensions_mut().insert(TlsTunnel {
-                server_host: proxy_info.address.host.clone(),
+                sni: Some(proxy_info.address.host.clone()),
             });
         }
 

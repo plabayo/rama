@@ -20,7 +20,7 @@ pub mod server;
 /// to configure the connection in function on an tls tunnel.
 pub struct TlsTunnel {
     /// The server name to use for the connection.
-    pub server_host: crate::address::Host,
+    pub sni: Option<crate::address::Host>,
 }
 
 #[derive(Debug, Clone, Default)]

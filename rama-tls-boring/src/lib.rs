@@ -28,6 +28,7 @@
 pub struct RamaTlsBoringCrateMarker;
 
 pub mod client;
+pub mod proxy;
 pub mod server;
 
 pub mod keylog;
