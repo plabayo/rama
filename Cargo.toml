@@ -365,7 +365,7 @@ cli = [
 ]
 net = ["dep:rama-net"]
 net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
-dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
+dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]

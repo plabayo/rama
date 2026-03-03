@@ -19,17 +19,16 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-dns = ["dep:rama-dns", "dep:rand"]
 
 [dependencies]
 byteorder = { workspace = true }
 rama-core = { workspace = true }
-rama-dns = { workspace = true, optional = true }
+rama-dns = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-tcp = { workspace = true, features = ["http"] }
 rama-udp = { workspace = true }
 rama-utils = { workspace = true }
-rand = { workspace = true, optional = true }
+rand = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
