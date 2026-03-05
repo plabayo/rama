@@ -123,8 +123,7 @@ impl TransparentProxyInitConfig {
     /// Pointer + length pairs in `self` must be valid for reads during this call.
     pub unsafe fn app_group_dir(&self) -> Option<PathBuf> {
         // SAFETY: pointer + length validity is guaranteed by caller contract.
-        unsafe { opt_utf8(self.app_group_dir_utf8, self.app_group_dir_utf8_len) }
-            .map(PathBuf::from)
+        unsafe { opt_utf8(self.app_group_dir_utf8, self.app_group_dir_utf8_len) }.map(PathBuf::from)
     }
 }
 

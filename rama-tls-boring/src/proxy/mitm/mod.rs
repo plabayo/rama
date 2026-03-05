@@ -176,23 +176,21 @@ where
 
         let maybe_negotiated_params = if let Some(ssl_session) = egress_ssl_ref.session() {
             let protocol_version = ssl_session.protocol_version();
-            acceptor_builder
-                .set_min_proto_version(Some(protocol_version))
-                .context("tls mitm relay: set mirrored min protocol version")?;
-            acceptor_builder
-                .set_max_proto_version(Some(protocol_version))
-                .context("tls mitm relay: set mirrored max protocol version")?;
             let protocol_version = protocol_version.rama_try_into().map_err(|v| {
                 BoxError::from("boring ssl connector: cast min proto version")
                     .context_field("protocol_version", v)
             })?;
+
+            tracing::debug!(
+                "boring client (connector) protocol version: {protocol_version} (do not set as min/max)"
+            );
 
             let application_layer_protocol = egress_ssl_ref
                 .selected_alpn_protocol()
                 .map(ApplicationProtocol::from);
 
             if let Some(selected_alpn_protocol) = application_layer_protocol.clone() {
-                tracing::trace!(
+                tracing::debug!(
                     "boring client (connector) has selected ALPN {selected_alpn_protocol}"
                 );
 
@@ -210,8 +208,14 @@ where
                                 }
                                 Err(error) => {
                                     return Err(if error.kind() == ErrorKind::UnexpectedEof {
+                                        tracing::debug!(
+                                            "failed to find ALPN (Unexpected EOF): {error}; NOACK"
+                                        );
                                         AlpnError::NOACK
                                     } else {
+                                        tracing::debug!(
+                                            "failed to decode ALPN: {error}; ALERT_FATAL"
+                                        );
                                         AlpnError::ALERT_FATAL
                                     });
                                 }
@@ -246,7 +250,7 @@ where
             });
         }
 
-        tracing::trace!(
+        tracing::debug!(
             protocol = ?egress_ssl_ref.version(),
             has_alpn = egress_ssl_ref.selected_alpn_protocol().is_some(),
             "tls mitm relay: accepting ingress tls handshake with mirrored server hints",

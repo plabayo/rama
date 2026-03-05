@@ -224,12 +224,12 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HttpPeekVersion {
+pub enum HttpPeekVersion {
     Http1x,
     H2,
 }
 
-async fn peek_http_stream<Stream: rama_core::stream::Stream + Unpin + ExtensionsMut>(
+pub async fn peek_http_stream<Stream: rama_core::stream::Stream + Unpin + ExtensionsMut>(
     mut stream: Stream,
     timeout: Option<Duration>,
 ) -> Result<(Option<HttpPeekVersion>, HttpPeekStream<Stream>), BoxError> {

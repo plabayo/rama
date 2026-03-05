@@ -4,4 +4,6 @@
 //!   is not covered by this router as this is done via sidechannel information instead (e.g. ALPN in TLS).
 
 pub mod peek;
-pub use peek::{HttpPeekRouter, HttpPeekStream, NoHttpRejectError};
+pub use peek::{
+    HttpPeekRouter, HttpPeekStream, HttpPeekVersion, NoHttpRejectError, peek_http_stream,
+};

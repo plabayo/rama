@@ -13,18 +13,21 @@ use rama::{
     telemetry::tracing,
 };
 
-use crate::{tcp::tls::OptionalTlsMitmService, utils::executor_from_input};
+use crate::{
+    tcp::{http::OptionalAutoHttpMitmService, tls::OptionalTlsMitmService},
+    utils::executor_from_input,
+};
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub(super) struct Socks5IngressService {
-    opt_tls_mitm_svc: OptionalTlsMitmService,
+    opt_tls_mitm_svc: OptionalTlsMitmService<OptionalAutoHttpMitmService>,
 }
 
 impl Socks5IngressService {
     #[inline(always)]
     pub(super) fn try_new() -> Result<Self, BoxError> {
-        let opt_tls_mitm_svc = OptionalTlsMitmService::try_new()?;
+        let opt_tls_mitm_svc = OptionalTlsMitmService::try_new(OptionalAutoHttpMitmService)?;
         Ok(Self { opt_tls_mitm_svc })
     }
 }

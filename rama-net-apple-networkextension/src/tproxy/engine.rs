@@ -7,6 +7,7 @@ use rama_core::{
 };
 use rama_net::{
     address::HostWithPort,
+    conn::is_connection_error,
     proxy::{ProxyTarget, StreamBridge, StreamForwardService},
 };
 use rama_tcp::client::default_tcp_connect;
@@ -445,8 +446,12 @@ async fn run_tcp_bridge(
             maybe = client_rx.recv() => {
                 match maybe {
                     Some(bytes) => {
-                        if write_half.write_all(&bytes).await.is_err() {
-                            tracing::debug!("tcp bridge write_all failed");
+                        if let Err(err) = write_half.write_all(&bytes).await {
+                            if is_connection_error(&err) {
+                                tracing::trace!("tcp bridge write_all conn erorr: {err}");
+                            } else {
+                                tracing::debug!("tcp bridge write_all failed: {err}");
+                            }
                             break;
                         }
                     }
@@ -462,7 +467,15 @@ async fn run_tcp_bridge(
             }
             read_res = read_half.read(&mut buf) => {
                 match read_res {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
+                    Err(err) => {
+                        if is_connection_error(&err) {
+                            tracing::trace!("tcp bridge read_half conn erorr: {err}");
+                        } else {
+                            tracing::debug!("tcp bridge read_half failed: {err}");
+                        }
+                        break;
+                    }
                     Ok(n) => on_server_bytes(Bytes::copy_from_slice(&buf[..n])),
                 }
             }

@@ -42,6 +42,7 @@ private final class TcpClientWritePump {
         flow.write(chunk) { error in
             self.queue.async {
                 self.writing = false
+                // TODO: see if there are some errors we can filter out (e.g. disconnect...)
                 if let error {
                     self.logger("flow.write error: \(error)")
                     self.closed = true
@@ -295,6 +296,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     private func tcpReadLoop(flow: NEAppProxyTCPFlow, session: RamaTcpSessionHandle) {
         flow.readData { data, error in
             if let error {
+                // TODO: see if there are some errors we can filter out (e.g. disconnect...)
                 self.logDebug("flow.readData error: \(error)")
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -637,7 +639,8 @@ extension RamaTransparentProxyProvider {
         else {
             return nil
         }
-        return base
+        return
+            base
             .appendingPathComponent("rama", isDirectory: true)
             .appendingPathComponent("tproxy", isDirectory: true)
     }

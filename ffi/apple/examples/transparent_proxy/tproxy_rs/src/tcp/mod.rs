@@ -1,6 +1,7 @@
 // mod http;
 // mod tunnel;
 
+mod http;
 mod socks5;
 mod tls;
 
@@ -12,7 +13,10 @@ use rama::{
     telemetry::tracing,
 };
 
-use crate::{tcp::tls::OptionalTlsMitmService, utils::executor_from_input};
+use crate::{
+    tcp::{http::OptionalAutoHttpMitmService, tls::OptionalTlsMitmService},
+    utils::executor_from_input,
+};
 
 // use self::{http::build_entry_router, state::TcpProxyState};
 
@@ -22,9 +26,7 @@ use crate::{tcp::tls::OptionalTlsMitmService, utils::executor_from_input};
 
 pub(super) fn try_new_service()
 -> Result<impl Service<TcpFlow, Output = (), Error = Infallible>, BoxError> {
-    let exec = Executor::default(); // NOTE: in future would be good if we have access to executor already, somehow...
-
-    let opt_tls_mitm_svc = OptionalTlsMitmService::try_new()?;
+    let opt_tls_mitm_svc = OptionalTlsMitmService::try_new(OptionalAutoHttpMitmService)?;
     let socks5_svc = self::socks5::Socks5IngressService::try_new()?;
 
     Ok(TcpFlowProxyService {
@@ -34,7 +36,10 @@ pub(super) fn try_new_service()
 
 #[derive(Debug, Clone)]
 struct TcpFlowProxyService {
-    inner: Socks5PeekRouter<self::socks5::Socks5IngressService, OptionalTlsMitmService>,
+    inner: Socks5PeekRouter<
+        self::socks5::Socks5IngressService,
+        OptionalTlsMitmService<OptionalAutoHttpMitmService>,
+    >,
 }
 
 impl Service<TcpFlow> for TcpFlowProxyService {

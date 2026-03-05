@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use rama::{
     Layer, Service,
+    combinators::Either,
     error::{BoxError, ErrorContext as _},
     extensions::{ExtensionsMut, ExtensionsRef},
     net::{
@@ -12,19 +13,24 @@ use rama::{
         tls::{
             client::ServerVerifyMode,
             server::{
-                ClientHelloRequest, PeekTlsClientHelloService, peek_client_hello_from_stream,
+                ClientHelloRequest, PeekTlsClientHelloService, PeekTlsClientHelloStream,
+                peek_client_hello_from_stream,
             },
         },
     },
     proxy::socks5::server::Socks5PeekStream,
     rt::Executor,
     stream::Stream,
-    tcp::client::{
-        Request as TcpRequest, default_tcp_connect,
-        service::{DefaultForwarder, TcpConnector},
+    tcp::{
+        TcpStream,
+        client::{
+            Request as TcpRequest, default_tcp_connect,
+            service::{DefaultForwarder, TcpConnector},
+        },
     },
     telemetry::tracing,
     tls::boring::{
+        TlsStream,
         client::{TlsConnectorDataBuilder, TlsConnectorLayer},
         proxy::{
             TlsMitmRelay,
@@ -42,22 +48,26 @@ use crate::{tls::certs::load_or_create_mitm_ca_crt_key_pair, utils::executor_fro
 pub struct TargetSni(pub Domain);
 
 #[derive(Debug, Clone)]
-pub struct OptionalTlsMitmService {
+pub struct OptionalTlsMitmService<S> {
+    inner: S,
     relay: TlsMitmRelay<CachedBoringMitmCertIssuer<InMemoryBoringMitmCertIssuer>>,
 }
 
-impl OptionalTlsMitmService {
+impl<S> OptionalTlsMitmService<S> {
     #[inline(always)]
-    pub fn try_new() -> Result<Self, BoxError> {
+    pub fn try_new(inner: S) -> Result<Self, BoxError> {
         let (ca_crt, ca_key) =
             load_or_create_mitm_ca_crt_key_pair().context("load or create MITM tls CA crt/key")?;
         let relay =
             TlsMitmRelay::new_with_cached_issuer(InMemoryBoringMitmCertIssuer::new(ca_crt, ca_key));
-        Ok(Self { relay })
+        Ok(Self { inner, relay })
     }
 }
 
-impl Service<Socks5PeekStream<TcpFlow>> for OptionalTlsMitmService {
+impl<S> Service<Socks5PeekStream<TcpFlow>> for OptionalTlsMitmService<S>
+where
+    S: Service<MaybeTlsStreamBridge<Socks5PeekStream<TcpFlow>, TcpStream>, Error: Into<BoxError>>,
+{
     type Output = ();
     type Error = BoxError;
 
@@ -84,6 +94,8 @@ impl Service<Socks5PeekStream<TcpFlow>> for OptionalTlsMitmService {
         .context("tcp connection to egress (maybe tls) server timed out")?
         .context("tcp connection to egress (maybe tls) server failed")?;
 
+        // TODO: fix this
+
         self.serve(StreamBridge {
             left: ingress_stream,
             right: egress_stream,
@@ -92,8 +104,14 @@ impl Service<Socks5PeekStream<TcpFlow>> for OptionalTlsMitmService {
     }
 }
 
-impl<Ingress, Egress> Service<StreamBridge<Ingress, Egress>> for OptionalTlsMitmService
+type MaybeTlsStreamBridge<Ingress, Egress> = StreamBridge<
+    Either<TlsStream<PeekTlsClientHelloStream<Ingress>>, PeekTlsClientHelloStream<Ingress>>,
+    Either<TlsStream<Egress>, Egress>,
+>;
+
+impl<S, Ingress, Egress> Service<StreamBridge<Ingress, Egress>> for OptionalTlsMitmService<S>
 where
+    S: Service<MaybeTlsStreamBridge<Ingress, Egress>, Error: Into<BoxError>>,
     Ingress: Stream + Unpin + ExtensionsMut,
     Egress: Stream + Unpin + ExtensionsMut,
 {
@@ -157,25 +175,28 @@ where
                 .await
                 .context("failed to MITM handshake... connection is now unstable")?;
 
-            if let Err(err) = StreamForwardService::default()
+            if let Err(err) = self
+                .inner
                 .serve(StreamBridge {
-                    left: tls_ingress_stream,
-                    right: tls_egress_stream,
+                    left: Either::A(tls_ingress_stream),
+                    right: Either::A(tls_egress_stream),
                 })
                 .await
             {
-                tracing::debug!(
-                    "failed to L4-relay TLS MITM traffic (TODO: MITM app layer data, e.g. http): {err}"
-                );
+                tracing::debug!("failed to L7 App (over TLS) MITM traffic: {}", err.into());
             }
-        } else if let Err(err) = StreamForwardService::default()
+        } else if let Err(err) = self
+            .inner
             .serve(StreamBridge {
-                left: peeked_ingress_stream,
-                right: egress_stream,
+                left: Either::B(peeked_ingress_stream),
+                right: Either::B(egress_stream),
             })
             .await
         {
-            tracing::debug!("failed to L4-relay TCP Non-TLS traffic (no TLS:CH detected): {err}");
+            tracing::debug!(
+                "failed to L7 App (not over TLS) MITM traffic: {}",
+                err.into()
+            );
         }
 
         Ok(())
