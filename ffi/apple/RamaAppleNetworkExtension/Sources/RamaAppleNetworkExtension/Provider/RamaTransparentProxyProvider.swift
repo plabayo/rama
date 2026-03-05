@@ -134,7 +134,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func startProxy(
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
     ) {
-        guard RamaTransparentProxyEngineHandle.initialize() else {
+        let storageDir = Self.defaultRustStorageDirectory()?.path
+        guard RamaTransparentProxyEngineHandle.initialize(storageDir: storageDir, appGroupDir: nil)
+        else {
             completionHandler(NSError(domain: "RamaTransparentProxy", code: 1))
             return
         }
@@ -622,5 +624,21 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             level: UInt32(RAMA_LOG_LEVEL_ERROR.rawValue),
             message: message
         )
+    }
+}
+
+extension RamaTransparentProxyProvider {
+    fileprivate static func defaultRustStorageDirectory() -> URL? {
+        guard
+            let base = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first
+        else {
+            return nil
+        }
+        return base
+            .appendingPathComponent("rama", isDirectory: true)
+            .appendingPathComponent("tproxy", isDirectory: true)
     }
 }

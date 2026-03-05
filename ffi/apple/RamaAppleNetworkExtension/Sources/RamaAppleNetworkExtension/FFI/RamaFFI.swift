@@ -158,8 +158,20 @@ final class RamaTransparentProxyEngineHandle {
         }
     }
 
-    static func initialize() -> Bool {
-        return rama_transparent_proxy_initialize()
+    static func initialize(storageDir: String?, appGroupDir: String?) -> Bool {
+        return withUtf8OrNil(storageDir) { storagePtr, storageLen in
+            withUtf8OrNil(appGroupDir) { appGroupPtr, appGroupLen in
+                var cConfig = RamaTransparentProxyInitConfig(
+                    storage_dir_utf8: storagePtr,
+                    storage_dir_utf8_len: storageLen,
+                    app_group_dir_utf8: appGroupPtr,
+                    app_group_dir_utf8_len: appGroupLen
+                )
+                return withUnsafePointer(to: &cConfig) { cfgPtr in
+                    rama_transparent_proxy_initialize(cfgPtr)
+                }
+            }
+        }
     }
 
     static func log(level: UInt32, message: String) {

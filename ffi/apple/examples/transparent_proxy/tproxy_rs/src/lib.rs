@@ -30,6 +30,7 @@ pub type RamaTransparentProxyUdpSession =
 
 pub type RamaTransparentProxyFlowMeta = ffi_tproxy::TransparentProxyFlowMeta;
 pub type RamaTransparentProxyConfig = ffi_tproxy::TransparentProxyConfig;
+pub type RamaTransparentProxyInitConfig = ffi_tproxy::TransparentProxyInitConfig;
 pub type RamaTransparentProxyTcpSessionCallbacks = ffi_tproxy::TransparentProxyTcpSessionCallbacks;
 pub type RamaTransparentProxyUdpSessionCallbacks = ffi_tproxy::TransparentProxyUdpSessionCallbacks;
 
@@ -37,7 +38,23 @@ pub type RamaTransparentProxyUdpSessionCallbacks = ffi_tproxy::TransparentProxyU
 /// # Safety
 ///
 /// This function is FFI entrypoint and may be called from Swift/C.
-pub unsafe extern "C" fn rama_transparent_proxy_initialize() -> bool {
+pub unsafe extern "C" fn rama_transparent_proxy_initialize(
+    config: *const RamaTransparentProxyInitConfig,
+) -> bool {
+    if !config.is_null() {
+        // SAFETY: pointer validity is guaranteed by FFI contract.
+        let config = unsafe { &*config };
+        // SAFETY: pointer + length validity is guaranteed by FFI contract.
+        if let Some(storage_dir) = unsafe { config.storage_dir() } {
+            self::tls::certs::set_mitm_base_dir(storage_dir.clone());
+            tracing::info!(path = %storage_dir.display(), "configured MITM storage directory");
+        }
+        // SAFETY: pointer + length validity is guaranteed by FFI contract.
+        if let Some(app_group_dir) = unsafe { config.app_group_dir() } {
+            tracing::debug!(path = %app_group_dir.display(), "received app-group directory");
+        }
+    }
+
     let init_status = self::utils::init_tracing();
     tracing::info!("rama proxy initialized: {init_status}");
     init_status

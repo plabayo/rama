@@ -1,5 +1,6 @@
 use std::{
     ffi::{c_char, c_void},
+    path::PathBuf,
     ptr,
 };
 
@@ -98,6 +99,33 @@ pub struct TransparentProxyConfig {
     pub tunnel_remote_address_utf8_len: usize,
     pub rules: *const TransparentProxyNetworkRule,
     pub rules_len: usize,
+}
+
+#[repr(C)]
+pub struct TransparentProxyInitConfig {
+    pub storage_dir_utf8: *const c_char,
+    pub storage_dir_utf8_len: usize,
+    pub app_group_dir_utf8: *const c_char,
+    pub app_group_dir_utf8_len: usize,
+}
+
+impl TransparentProxyInitConfig {
+    /// # Safety
+    ///
+    /// Pointer + length pairs in `self` must be valid for reads during this call.
+    pub unsafe fn storage_dir(&self) -> Option<PathBuf> {
+        // SAFETY: pointer + length validity is guaranteed by caller contract.
+        unsafe { opt_utf8(self.storage_dir_utf8, self.storage_dir_utf8_len) }.map(PathBuf::from)
+    }
+
+    /// # Safety
+    ///
+    /// Pointer + length pairs in `self` must be valid for reads during this call.
+    pub unsafe fn app_group_dir(&self) -> Option<PathBuf> {
+        // SAFETY: pointer + length validity is guaranteed by caller contract.
+        unsafe { opt_utf8(self.app_group_dir_utf8, self.app_group_dir_utf8_len) }
+            .map(PathBuf::from)
+    }
 }
 
 impl TransparentProxyConfig {

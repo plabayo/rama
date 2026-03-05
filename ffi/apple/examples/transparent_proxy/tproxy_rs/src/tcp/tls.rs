@@ -168,18 +168,14 @@ where
                     "failed to L4-relay TLS MITM traffic (TODO: MITM app layer data, e.g. http): {err}"
                 );
             }
-        } else {
-            if let Err(err) = StreamForwardService::default()
-                .serve(StreamBridge {
-                    left: peeked_ingress_stream,
-                    right: egress_stream,
-                })
-                .await
-            {
-                tracing::debug!(
-                    "failed to L4-relay TCP Non-TLS traffic (no TLS:CH detected): {err}"
-                );
-            }
+        } else if let Err(err) = StreamForwardService::default()
+            .serve(StreamBridge {
+                left: peeked_ingress_stream,
+                right: egress_stream,
+            })
+            .await
+        {
+            tracing::debug!("failed to L4-relay TCP Non-TLS traffic (no TLS:CH detected): {err}");
         }
 
         Ok(())

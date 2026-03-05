@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, sync::OnceLock};
 
 use rama::{
     error::{BoxError, ErrorContext as _},
@@ -15,6 +15,12 @@ use rama::{
         server::utils::self_signed_server_auth_gen_ca,
     },
 };
+
+static MITM_BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_mitm_base_dir(path: PathBuf) {
+    let _ = MITM_BASE_DIR.set(path);
+}
 
 pub fn load_or_create_mitm_ca_crt_key_pair() -> Result<(X509, PKey<Private>), BoxError> {
     let cert_path = root_ca_cert_path()?;
@@ -71,10 +77,15 @@ fn root_ca_key_path() -> Result<PathBuf, BoxError> {
 }
 
 fn root_ca_base_dir() -> Result<PathBuf, BoxError> {
+    if let Some(path) = MITM_BASE_DIR.get() {
+        return Ok(path.clone());
+    }
+
     let home = std::env::var("HOME").context("missing HOME environment variable")?;
     Ok(PathBuf::from(home)
         .join("Library")
         .join("Application Support")
-        .join("org.ramaproxy.example.tproxy")
+        .join("rama")
+        .join("transparent_proxy")
         .join("mitm"))
 }

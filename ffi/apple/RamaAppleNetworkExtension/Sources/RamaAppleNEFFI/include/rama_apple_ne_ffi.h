@@ -158,6 +158,23 @@ typedef struct {
     size_t rules_len;
 } RamaTransparentProxyConfig;
 
+/// Initialization config passed once before using engine APIs.
+///
+/// All string fields are UTF-8 byte slices (`pointer + length`) and are not
+/// required to be NUL-terminated.
+typedef struct {
+    /// Writable storage directory for Rust-managed state (certs, cache, etc).
+    /// May be NULL/0 to let Rust choose a fallback directory.
+    const char* storage_dir_utf8;
+    /// Length of `storage_dir_utf8`.
+    size_t storage_dir_utf8_len;
+    /// Optional shared app-group directory if available.
+    /// May be NULL/0 when no app-group is configured.
+    const char* app_group_dir_utf8;
+    /// Length of `app_group_dir_utf8`.
+    size_t app_group_dir_utf8_len;
+} RamaTransparentProxyInitConfig;
+
 typedef void (*RamaTcpServerBytesFn)(void* context, RamaBytesView bytes);
 typedef void (*RamaTcpServerClosedFn)(void* context);
 
@@ -198,7 +215,9 @@ void rama_log(
 // Engine lifecycle
 
 /// Initialize Rust-side transparent proxy subsystem (idempotent).
-bool rama_transparent_proxy_initialize(void);
+///
+/// `config` may be NULL. In that case Rust uses internal fallback paths.
+bool rama_transparent_proxy_initialize(const RamaTransparentProxyInitConfig* config);
 
 /// Fetch transparent proxy configuration for NETransparentProxyProvider setup.
 ///
