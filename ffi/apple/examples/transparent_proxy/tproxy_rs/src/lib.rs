@@ -111,10 +111,18 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
 ///
 /// This function is FFI entrypoint and may be called from Swift/C.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_new() -> *mut RamaTransparentProxyEngine {
-    let engine = TransparentProxyEngineBuilder::new()
-        .with_tcp_service(self::tcp::new_service())
-        .with_udp_service(self::udp::new_service())
-        .build();
+    let engine_builder =
+        TransparentProxyEngineBuilder::new().with_udp_service(self::udp::new_service());
+
+    let engine = match self::tcp::try_new_service() {
+        Ok(tcp_svc) => engine_builder.with_tcp_service(tcp_svc).build(),
+        Err(err) => {
+            tracing::error!(
+                "failed to build new TCP svc: {err}; skip forwarding TCP stream; report bug please!"
+            );
+            engine_builder.build()
+        }
+    };
 
     Box::into_raw(Box::new(engine))
 }

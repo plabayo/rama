@@ -25,7 +25,7 @@ pin_project! {
     }
 }
 
-impl<P, S: ExtensionsMut> PeekStream<P, S> {
+impl<P, S> PeekStream<P, S> {
     /// Create a new [`PeekStream`] for the given peek
     /// [`AsyncRead`] and inner [`Stream`] which implements [`ExtensionsMut`].
     ///

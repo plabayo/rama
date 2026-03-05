@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use rama_core::{
     error::{BoxError, ErrorContext as _},
-    extensions,
+    extensions::{self, ExtensionsMut},
     rt::Executor,
     stream::Stream,
     telemetry::tracing,
@@ -109,7 +109,13 @@ where
         ingress_stream: &mut S,
         exec: Executor,
         socks5_proxy_address: HostWithPort,
-    ) -> Result<(impl Stream, Socks5MitmHandshakeOutcome), BoxError>
+    ) -> Result<
+        (
+            impl Stream + Unpin + ExtensionsMut,
+            Socks5MitmHandshakeOutcome,
+        ),
+        BoxError,
+    >
     where
         S: Stream + Unpin + extensions::ExtensionsMut,
     {

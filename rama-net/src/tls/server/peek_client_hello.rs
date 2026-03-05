@@ -9,16 +9,15 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
     service::RejectService,
-    stream::{HeapReader, PeekStream, StackReader},
+    stream::{HeapReader, PeekStream},
     telemetry::tracing,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 use crate::tls::client::{ClientHello, parse_client_hello_handshake};
 
-use super::{NoTlsRejectError, TlsPeekStream};
+use super::NoTlsRejectError;
 
 /// A peek [`Service`] which returns the [`ClientHello`] to the inner
 /// service for tls-detected traffic, and otherwise make use of the Reject service.
@@ -29,6 +28,9 @@ use super::{NoTlsRejectError, TlsPeekStream};
 ///
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`PeekTlsClientHelloService::with_fallback`] to configure the fallback service.
+///
+/// Use the standalone [`peek_client_hello_from_stream`] function if you prefer
+/// this is as a standalone function instead.
 ///
 /// [`SniRouter`]: super::SniRouter
 #[derive(Debug, Clone)]
@@ -57,73 +59,88 @@ impl<S> PeekTlsClientHelloService<S> {
     }
 }
 
+/// Functional API to try to peek TLS:CH from an existing stream,
+/// returning the stream as-is with the read data prefixed from memory.
+///
+/// Use [`PeekTlsClientHelloService`] if you prefer it as a rama [`Service`] instead.
+pub async fn peek_client_hello_from_stream<Stream>(
+    mut stream: Stream,
+) -> Result<(PeekTlsClientHelloStream<Stream>, Option<ClientHello>), std::io::Error>
+where
+    Stream: rama_core::stream::Stream + Unpin,
+{
+    let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
+    let n = stream.read(&mut peek_buf).await?;
+
+    let is_tls = n == TLS_HEADER_PEEK_LEN && matches!(peek_buf, [0x16, 0x03, 0x00..=0x04, ..]);
+    tracing::trace!("tls prefix header read (is tls: {is_tls})");
+
+    if !is_tls {
+        if TLS_HEADER_PEEK_LEN.saturating_sub(n) > 0 {
+            tracing::trace!("move tls peek buffer cursor due to reading not enough (read: {n})");
+        }
+
+        let prefix_stream = HeapReader::from(&peek_buf[..n.min(TLS_HEADER_PEEK_LEN)]);
+        let peek_stream = PeekStream::new(prefix_stream, stream);
+
+        tracing::trace!("return early for non-tls traffic: missing peek header");
+        return Ok((peek_stream, None));
+    }
+
+    let n = ((peek_buf[3] as usize) << 8) | (peek_buf[4] as usize);
+    let record_size = (n + TLS_HEADER_PEEK_LEN).min(2048); // limit to 2k bytes, should be plenty for a record that's usually <=500 bytes
+
+    let mut v = vec![0u8; record_size];
+    v[..TLS_HEADER_PEEK_LEN].copy_from_slice(&peek_buf[..]);
+    let read_size = stream.read(&mut v[TLS_HEADER_PEEK_LEN..]).await?;
+
+    if read_size != n {
+        tracing::trace!(
+            read_size,
+            "unexpected read size for client hello handshake data: try regardless..."
+        );
+    }
+    let maybe_client_hello =
+        parse_client_hello_handshake(&v[..record_size - (n.saturating_sub(read_size))])
+            .inspect_err(|err| {
+                tracing::debug!(
+                    "failed parse client hello handshake bytes: {err}; return as non-tls traffic",
+                )
+            })
+            .ok();
+
+    let prefix_stream = HeapReader::from(v);
+    let peek_stream = PeekStream::new(prefix_stream, stream);
+
+    Ok((peek_stream, maybe_client_hello))
+}
+
 impl<Stream, Output, S, F> Service<Stream> for PeekTlsClientHelloService<S, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    Stream: rama_core::stream::Stream + Unpin,
     Output: Send + 'static,
     S: Service<ClientHelloRequest<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<PeekTlsClientHelloStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
-        let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
-        let n = stream
-            .read(&mut peek_buf)
+    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
+        let (peek_stream, maybe_client_hello) = peek_client_hello_from_stream(stream)
             .await
-            .context("try to read tls prefix header")?;
+            .context("I/O error while peeking TLS:CH from existing input stream")?;
 
-        let is_tls = n == TLS_HEADER_PEEK_LEN && matches!(peek_buf, [0x16, 0x03, 0x00..=0x04, ..]);
-        tracing::trace!("tls prefix header read (is tls: {is_tls})");
-
-        if !is_tls {
-            let offset = TLS_HEADER_PEEK_LEN - n;
-            if offset > 0 {
-                tracing::trace!(
-                    "move tls peek buffer cursor due to reading not enough (read: {n})"
-                );
-                peek_buf.copy_within(0..n, offset);
-            }
-
-            let mut peek = StackReader::new(peek_buf);
-            peek.skip(offset);
-            let stream = PeekStream::new(peek, stream);
-
-            tracing::trace!("fallback to non-tls service");
-            return self.fallback.serve(stream).await.into_box_error();
+        if let Some(client_hello) = maybe_client_hello {
+            self.service
+                .serve(ClientHelloRequest {
+                    stream: peek_stream,
+                    client_hello,
+                })
+                .await
+                .map_err(Into::into)
+        } else {
+            self.fallback.serve(peek_stream).await.map_err(Into::into)
         }
-
-        let n = ((peek_buf[3] as usize) << 8) | (peek_buf[4] as usize);
-        let record_size = (n + TLS_HEADER_PEEK_LEN).min(2048); // limit to 2k bytes, should be plenty for a record that's usually <=500 bytes
-
-        let mut v = vec![0u8; record_size];
-        v[..TLS_HEADER_PEEK_LEN].copy_from_slice(&peek_buf[..]);
-        let read_size = stream
-            .read(&mut v[TLS_HEADER_PEEK_LEN..])
-            .await
-            .context("read tls record")?;
-
-        if read_size != n {
-            tracing::debug!(
-                read_size,
-                "unexpected read size for client hello handshake data"
-            );
-            return Err(BoxError::from("missing client hello tls handshake data"));
-        }
-        let client_hello =
-            parse_client_hello_handshake(&v).context("parse client hello handshake bytes")?;
-
-        let mem_reader = HeapReader::from(v);
-        let peek_stream = PeekStream::new(mem_reader, stream);
-
-        self.service
-            .serve(ClientHelloRequest {
-                stream: peek_stream,
-                client_hello,
-            })
-            .await
-            .into_box_error()
     }
 }
 

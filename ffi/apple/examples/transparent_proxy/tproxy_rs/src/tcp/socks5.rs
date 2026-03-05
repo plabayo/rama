@@ -13,16 +13,19 @@ use rama::{
     telemetry::tracing,
 };
 
-use crate::utils::executor_from_input;
+use crate::{tcp::tls::OptionalTlsMitmService, utils::executor_from_input};
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub(super) struct Socks5IngressService;
+pub(super) struct Socks5IngressService {
+    opt_tls_mitm_svc: OptionalTlsMitmService,
+}
 
 impl Socks5IngressService {
     #[inline(always)]
-    pub(super) fn new() -> Self {
-        Self
+    pub(super) fn try_new() -> Result<Self, BoxError> {
+        let opt_tls_mitm_svc = OptionalTlsMitmService::try_new()?;
+        Ok(Self { opt_tls_mitm_svc })
     }
 }
 
@@ -45,38 +48,35 @@ where
 
         let exec = executor_from_input(&input);
         let socks5_relay = Socks5MitmRelay::default();
-        match socks5_relay
+        let (egress_stream, handshake_outcome) = socks5_relay
             .handshake(&mut input, exec, socks5_proxy_address)
-            .await?
-        {
-            Socks5MitmHandshakeOutcome::UnsupportedFlow(egress_stream) => {
+            .await?;
+        match handshake_outcome {
+            Socks5MitmHandshakeOutcome::UnsupportedFlow => {
                 tracing::debug!("L4-proxy unsupported SOCKS5 flow");
 
-                let proxy_req = StreamBridge {
-                    left: input,
-                    right: egress_stream,
-                };
-                if let Err(err) = StreamForwardService::default().serve(proxy_req).await {
+                if let Err(err) = StreamForwardService::default()
+                    .serve(StreamBridge {
+                        left: input,
+                        right: egress_stream,
+                    })
+                    .await
+                {
                     tracing::debug!(
                         "failed to L4-relay TCP traffic (not compatible with SOCKS5 intercept flow): {err}"
                     );
                 }
             }
-            Socks5MitmHandshakeOutcome::ContinueInspection(egress_stream) => {
-                tracing::debug!(
-                    "relaying SOCKS5 connection (with basic auth = {})",
-                    input.extensions().contains::<DpiProxyCredential>()
-                );
-
-                // TODO: continue inspection flow instead of relay...
-                let proxy_req = StreamBridge {
-                    left: input,
-                    right: egress_stream,
-                };
-                if let Err(err) = StreamForwardService::default().serve(proxy_req).await {
-                    tracing::debug!(
-                        "failed to L4-relay TCP traffic (not compatible with SOCKS5 intercept flow): {err}"
-                    );
+            Socks5MitmHandshakeOutcome::ContinueInspection => {
+                if let Err(err) = self
+                    .opt_tls_mitm_svc
+                    .serve(StreamBridge {
+                        left: input,
+                        right: egress_stream,
+                    })
+                    .await
+                {
+                    tracing::debug!("failed to relay optional TLS traffic (over SOCKS5): {err}");
                 }
             }
         }
