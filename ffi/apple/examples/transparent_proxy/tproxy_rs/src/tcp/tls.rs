@@ -34,7 +34,7 @@ use rama::{
     },
 };
 
-use crate::{tls::certs::load_or_create_mitm_tls_config, utils::executor_from_input};
+use crate::{tls::certs::load_or_create_mitm_ca_crt_key_pair, utils::executor_from_input};
 
 #[derive(Debug, Clone)]
 /// SNI found by optional Tls service for tls traffic, if one was found at all,
@@ -50,7 +50,7 @@ impl OptionalTlsMitmService {
     #[inline(always)]
     pub fn try_new() -> Result<Self, BoxError> {
         let (ca_crt, ca_key) =
-            load_or_create_mitm_tls_config().context("load or create MITM tls CA Crts...")?;
+            load_or_create_mitm_ca_crt_key_pair().context("load or create MITM tls CA crt/key")?;
         let relay =
             TlsMitmRelay::new_with_cached_issuer(InMemoryBoringMitmCertIssuer::new(ca_crt, ca_key));
         Ok(Self { relay })

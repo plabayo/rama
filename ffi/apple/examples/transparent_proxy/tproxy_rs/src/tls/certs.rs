@@ -4,70 +4,29 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     net::{
         address::Domain,
-        tls::{
-            ApplicationProtocol, DataEncoding,
-            server::{
-                CacheKind, SelfSignedData, ServerAuth, ServerAuthData, ServerCertIssuerData,
-                ServerCertIssuerKind, ServerConfig,
-            },
-        },
+        tls::server::SelfSignedData,
     },
     telemetry::tracing,
-    tls::boring::server::utils::self_signed_server_auth_gen_ca,
-    utils::str::NonEmptyStr,
+    tls::boring::{
+        core::{
+            pkey::{PKey, Private},
+            x509::X509,
+        },
+        server::utils::self_signed_server_auth_gen_ca,
+    },
 };
 
-#[derive(Debug, Clone)]
-pub(super) struct MitmCaMaterial {
-    pub(super) cert_pem: NonEmptyStr,
-    pub(super) key_pem: NonEmptyStr,
-}
-
-#[derive(Debug, Clone)]
-pub struct MitmTlsConfig {
-    pub(super) server_config: ServerConfig,
-    pub(super) root_ca_pem: NonEmptyStr,
-}
-
-pub fn load_or_create_mitm_tls_config() -> Result<MitmTlsConfig, BoxError> {
-    let MitmCaMaterial { cert_pem, key_pem } =
-        load_or_create_ca_material().context("load or create mitm root ca")?;
-
-    let server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2, // TODO: In future this should mirror egress side
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData {
-            kind: ServerCertIssuerKind::Single(ServerAuthData {
-                private_key: DataEncoding::Pem(key_pem),
-                cert_chain: DataEncoding::Pem(cert_pem.clone()),
-                ocsp: None,
-            }),
-            cache_kind: CacheKind::default(),
-        }))
-    };
-
-    Ok(MitmTlsConfig {
-        server_config,
-        root_ca_pem: cert_pem,
-    })
-}
-
-fn load_or_create_ca_material() -> Result<MitmCaMaterial, BoxError> {
+pub fn load_or_create_mitm_ca_crt_key_pair() -> Result<(X509, PKey<Private>), BoxError> {
     let cert_path = root_ca_cert_path()?;
     let key_path = root_ca_key_path()?;
 
-    if let Ok(cert_pem_raw) = fs::read_to_string(&cert_path) {
-        let cert_pem: NonEmptyStr = cert_pem_raw
-            .try_into()
-            .context("loaded pem cert bytes as NonEmptyStr")?;
-        let key_pem: NonEmptyStr = fs::read_to_string(&key_path)
-            .context("read key file as PEM string")?
-            .try_into()
-            .context("loaded pem key bytes as NonEmptyStr")?;
-
-        return Ok(MitmCaMaterial { cert_pem, key_pem });
+    if cert_path.is_file() && key_path.is_file() {
+        let cert_pem = fs::read(&cert_path).context("read root ca cert file as PEM bytes")?;
+        let key_pem = fs::read(&key_path).context("read root ca key file as PEM bytes")?;
+        let cert = X509::from_pem(&cert_pem).context("parse root ca cert PEM bytes into X509")?;
+        let key = PKey::private_key_from_pem(&key_pem)
+            .context("parse root ca private key PEM bytes into PKey<Private>")?;
+        return Ok((cert, key));
     }
 
     if let Some(parent) = cert_path.parent() {
@@ -91,13 +50,8 @@ fn load_or_create_ca_material() -> Result<MitmCaMaterial, BoxError> {
     let key_pem_str =
         String::from_utf8(key_pem_bytes).context("root ca key pem not valid utf-8")?;
 
-    let cert_pem = NonEmptyStr::try_from(cert_pem_str)
-        .context("interpret newly created cert pem from string as NonEmptyStr")?;
-    let key_pem = NonEmptyStr::try_from(key_pem_str)
-        .context("interpret newly created key pem from string as NonEmptyStr")?;
-
-    fs::write(&cert_path, cert_pem.as_bytes()).context("write root ca cert pem to disk")?;
-    fs::write(&key_path, key_pem.as_bytes()).context("write root ca key pem to disk")?;
+    fs::write(&cert_path, cert_pem_str.as_bytes()).context("write root ca cert pem to disk")?;
+    fs::write(&key_path, key_pem_str.as_bytes()).context("write root ca key pem to disk")?;
 
     tracing::info!(
         cert_path = %cert_path.display(),
@@ -105,7 +59,7 @@ fn load_or_create_ca_material() -> Result<MitmCaMaterial, BoxError> {
         "generated and persisted MITM root CA"
     );
 
-    Ok(MitmCaMaterial { cert_pem, key_pem })
+    Ok((root_cert, root_key))
 }
 
 fn root_ca_cert_path() -> Result<PathBuf, BoxError> {
