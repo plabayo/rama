@@ -93,7 +93,7 @@ impl Default for CacheKind {
     fn default() -> Self {
         Self::MemCache {
             max_size: CACHE_KIND_DEFAULT_MAX_SIZE,
-            ttl: Some(std::time::Duration::from_hours(24 * 7)), // 7 days
+            ttl: Some(std::time::Duration::from_hours(24 * 89)), // 89 days
         }
     }
 }

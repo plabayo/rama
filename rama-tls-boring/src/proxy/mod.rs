@@ -26,3 +26,4 @@
 
 mod mitm;
 pub use self::mitm::TlsMitmRelay;
+pub use self::mitm::issuer as cert_issuer;

@@ -7,61 +7,32 @@ use rama_core::{
 };
 use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData};
 use rama_net::{proxy::StreamBridge, tls::KeyLogIntent};
-use std::{
-    fmt,
-    io::{Cursor, ErrorKind},
-};
+use std::io::{Cursor, ErrorKind};
 
-use crate::{
-    TlsStream, client,
-    keylog::try_new_key_log_file_handle,
-    server::{self, utils::self_signed_server_auth_gen_ca},
-};
-use crate::{
-    core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
-    core::{pkey::PKey, pkey::Private, x509::X509},
-};
+use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef};
+use crate::{TlsStream, client, keylog::try_new_key_log_file_handle};
 
-#[derive(Clone)]
+pub mod issuer;
+
+#[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay (and MITM a TLS connection between a client and server,
 /// as part of a deep protocol inspection protocol (DPI) flow.
-pub struct TlsMitmRelay {
-    ca_cert: X509,
-    ca_privkey: PKey<Private>,
+pub struct TlsMitmRelay<Issuer> {
+    issuer: Issuer,
     grease_enabled: bool,
     keylog_intent: KeyLogIntent,
 }
 
-// TODO: support cert storage for re-use, also support dynamic issuer...
-
-impl fmt::Debug for TlsMitmRelay {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TlsMitmRelay")
-            .field("ca_cert", &self.ca_cert)
-            .field("ca_privkey", &"PKey<Private>")
-            .field("grease_enabled", &self.grease_enabled)
-            .field("keylog_intent", &self.keylog_intent)
-            .finish()
-    }
-}
-
-impl TlsMitmRelay {
+impl<Issuer> TlsMitmRelay<Issuer> {
     #[inline(always)]
     /// Create a new [`TlsMitmRelay`].
-    pub fn new(ca_cert: X509, ca_privkey: PKey<Private>) -> Self {
+    pub fn new(issuer: Issuer) -> Self {
         Self {
-            ca_cert,
-            ca_privkey,
+            issuer,
             grease_enabled: true,
             keylog_intent: KeyLogIntent::Environment,
         }
-    }
-
-    /// Create a new [`TlsMitmRelay`] with self-signed CA using the given data.
-    pub fn try_new_self_signed(data: &SelfSignedData) -> Result<Self, BoxError> {
-        let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(data)?;
-        Ok(Self::new(ca_cert, ca_privkey))
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -85,7 +56,68 @@ impl TlsMitmRelay {
     }
 }
 
-impl TlsMitmRelay {
+impl<Issuer> TlsMitmRelay<self::issuer::CachedBoringMitmCertIssuer<Issuer>> {
+    #[inline(always)]
+    /// Create a new [`TlsMitmRelay`],
+    /// with a cache layer on top top of the provided issuer
+    /// toprovide reuse functionality of previously issued certs.
+    pub fn new_with_cached_issuer(issuer: Issuer) -> Self {
+        Self::new(self::issuer::CachedBoringMitmCertIssuer::new(issuer))
+    }
+
+    #[inline(always)]
+    /// Create a new [`TlsMitmRelay`],
+    /// with a cache layer (created by given config)
+    /// on top of the provided issuer to provide reuse functionality of previously issued certs.
+    pub fn new_with_cached_issuer_and_config(
+        issuer: Issuer,
+        cfg: self::issuer::BoringMitmCertIssuerCacheConfig,
+    ) -> Self {
+        Self::new(self::issuer::CachedBoringMitmCertIssuer::new_with_config(
+            issuer, cfg,
+        ))
+    }
+}
+
+impl TlsMitmRelay<self::issuer::InMemoryBoringMitmCertIssuer> {
+    #[inline(always)]
+    /// Create a new [`TlsMitmRelay`] with self-signed CA using the given data.
+    pub fn try_new_with_self_signed_issuer(data: &SelfSignedData) -> Result<Self, BoxError> {
+        let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
+        Ok(Self::new(issuer))
+    }
+}
+
+impl
+    TlsMitmRelay<
+        self::issuer::CachedBoringMitmCertIssuer<self::issuer::InMemoryBoringMitmCertIssuer>,
+    >
+{
+    #[inline(always)]
+    /// Create a new [`TlsMitmRelay`] with self-signed CA using the given data,
+    /// with a cache layer on top to provide reuse functionality of previously issued certs.
+    pub fn try_new_with_cached_self_signed_issuer(data: &SelfSignedData) -> Result<Self, BoxError> {
+        let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
+        Ok(Self::new_with_cached_issuer(issuer))
+    }
+
+    #[inline(always)]
+    /// Create a new [`TlsMitmRelay`] with self-signed CA using the given data,
+    /// with a cache layer (created by given config)
+    /// on top to provide reuse functionality of previously issued certs.
+    pub fn try_new_with_cached_self_signed_issuer_and_config(
+        data: &SelfSignedData,
+        cfg: self::issuer::BoringMitmCertIssuerCacheConfig,
+    ) -> Result<Self, BoxError> {
+        let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
+        Ok(Self::new_with_cached_issuer_and_config(issuer, cfg))
+    }
+}
+
+impl<Issuer> TlsMitmRelay<Issuer>
+where
+    Issuer: self::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
+{
     /// Establish and MITM an handshake between the client (left) and server (right).
     pub async fn handshake<Left, Right>(
         &self,
@@ -112,12 +144,10 @@ impl TlsMitmRelay {
             .peer_certificate()
             .ok_or_else(|| BoxError::from("tls mitm relay: egress tls stream has no peer cert"))?;
 
-        let (mirrored_leaf_cert, mirrored_leaf_key) =
-            server::utils::self_signed_server_auth_mirror_cert(
-                source_cert.as_ref(),
-                &self.ca_cert,
-                &self.ca_privkey,
-            )
+        let (mirrored_leaf_cert_chain, mirrored_leaf_key) = self
+            .issuer
+            .issue_mitm_x509_cert(source_cert)
+            .await
             .context("tls mitm relay: mirror server certificate")?;
 
         let mut acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
@@ -126,9 +156,17 @@ impl TlsMitmRelay {
         acceptor_builder
             .set_default_verify_paths()
             .context("tls mitm relay: set default verify paths")?;
-        acceptor_builder
-            .set_certificate(mirrored_leaf_cert.as_ref())
-            .context("tls mitm relay: set mirrored leaf cert")?;
+        for (i, crt) in mirrored_leaf_cert_chain.into_iter().enumerate() {
+            if i == 0 {
+                acceptor_builder
+                    .set_certificate(crt.as_ref())
+                    .context("tls mitm relay: set certificate")?;
+            } else {
+                acceptor_builder
+                    .add_extra_chain_cert(crt)
+                    .context("tls mitm relay: add chain certificate")?;
+            }
+        }
         acceptor_builder
             .set_private_key(mirrored_leaf_key.as_ref())
             .context("tls mitm relay: set mirrored leaf private key")?;
