@@ -12,6 +12,8 @@ pub mod rewind;
 
 pub mod json;
 
+// TODO: rename to AsyncReadWrite (differentiate from Futures stream clearer)
+
 /// A stream is a type that implements `AsyncRead`, `AsyncWrite` and `Send`.
 /// This is specific to Rama and is directly linked to the supertraits of `Tokio`.
 pub trait Stream: AsyncRead + AsyncWrite + Send + 'static {}

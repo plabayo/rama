@@ -176,13 +176,23 @@ where
 
         let maybe_negotiated_params = if let Some(ssl_session) = egress_ssl_ref.session() {
             let protocol_version = ssl_session.protocol_version();
+
+            acceptor_builder
+                .set_min_proto_version(Some(protocol_version))
+                .context("tls mitm relay: set min tls proto version")
+                .context_field("protocol_version", protocol_version)?;
+            acceptor_builder
+                .set_max_proto_version(Some(protocol_version))
+                .context("tls mitm relay: set max tls proto version")
+                .context_field("protocol_version", protocol_version)?;
+
             let protocol_version = protocol_version.rama_try_into().map_err(|v| {
                 BoxError::from("boring ssl connector: cast min proto version")
                     .context_field("protocol_version", v)
             })?;
 
             tracing::debug!(
-                "boring client (connector) protocol version: {protocol_version} (do not set as min/max)"
+                "boring client (connector) protocol version: {protocol_version} (set as min/max)"
             );
 
             let application_layer_protocol = egress_ssl_ref

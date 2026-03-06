@@ -20,6 +20,7 @@
 )]
 
 pub mod client;
+pub mod proxy;
 pub mod server;
 
 #[cfg(test)]
