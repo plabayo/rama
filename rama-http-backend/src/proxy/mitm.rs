@@ -40,9 +40,9 @@ impl DefaultErrorResponse {
     }
 }
 
-impl Into<Response> for DefaultErrorResponse {
+impl From<DefaultErrorResponse> for Response {
     #[inline(always)]
-    fn into(self) -> Response {
+    fn from(_: DefaultErrorResponse) -> Self {
         StatusCode::BAD_GATEWAY.into_response()
     }
 }

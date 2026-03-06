@@ -7,7 +7,10 @@ use tokio::time::sleep;
 
 use rama_core::{Layer, graceful::Shutdown, layer::ArcLayer};
 use rama_core::{Service, rt::Executor, service::service_fn};
-use rama_core::{futures::future::join, layer::ConsumeErrLayer};
+use rama_core::{
+    futures::future::{join, join_all},
+    layer::ConsumeErrLayer,
+};
 use rama_http::{
     HeaderName, HeaderValue,
     body::util::BodyExt as _,
@@ -87,6 +90,54 @@ async fn test_http2_multiplex() {
     assert!(duration < Duration::from_millis(200));
 }
 
+#[tokio::test]
+async fn test_http11_handles_4_concurrent_requests() {
+    let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
+        HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+    }));
+
+    let conn = connector
+        .serve(create_test_request(Version::HTTP_11))
+        .await
+        .unwrap()
+        .conn;
+
+    let responses =
+        join_all((0..4).map(|_| conn.serve(create_test_request(Version::HTTP_11)))).await;
+
+    assert_eq!(responses.len(), 4);
+    for response in responses {
+        let response = response.unwrap();
+        assert_eq!(response.status(), 200);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "a random response body");
+    }
+}
+
+#[tokio::test]
+async fn test_http2_handles_200_concurrent_requests() {
+    let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
+        HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+    }));
+
+    let conn = connector
+        .serve(create_test_request(Version::HTTP_2))
+        .await
+        .unwrap()
+        .conn;
+
+    let responses =
+        join_all((0..200).map(|_| conn.serve(create_test_request(Version::HTTP_2)))).await;
+
+    assert_eq!(responses.len(), 200);
+    for response in responses {
+        let response = response.unwrap();
+        assert_eq!(response.status(), 200);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "a random response body");
+    }
+}
+
 async fn server_svc_fn(_: Request) -> Result<Response, Infallible> {
     sleep(Duration::from_millis(100)).await;
     Ok(Response::new(Body::from("a random response body")))
@@ -94,7 +145,13 @@ async fn server_svc_fn(_: Request) -> Result<Response, Infallible> {
 
 async fn mitm_relay_server_svc_fn(req: Request) -> Result<Response, Infallible> {
     assert!(req.headers().contains_key("x-observed-req"));
-    Ok(Response::new(Body::from("a random response body")))
+    let body = req
+        .headers()
+        .get("x-test-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|id| format!("a random response body ({id})"))
+        .unwrap_or_else(|| "a random response body".to_owned());
+    Ok(Response::new(Body::from(body)))
 }
 
 fn create_test_request(version: Version) -> Request {
@@ -102,6 +159,15 @@ fn create_test_request(version: Version) -> Request {
         .uri("https://www.example.com")
         .version(version)
         .body(Body::from("a reandom request body"))
+        .unwrap()
+}
+
+fn create_test_request_with_id(version: Version, id: usize) -> Request {
+    Request::builder()
+        .uri("https://www.example.com")
+        .version(version)
+        .header("x-test-id", id.to_string())
+        .body(Body::from(format!("a reandom request body ({id})")))
         .unwrap()
 }
 
@@ -168,6 +234,77 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
     fut.await;
 }
 
+async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpServer::auto(Executor::graceful(guard))
+            .service(service_fn(mitm_relay_server_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .with_http_middleware((
+                ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+                SetRequestHeaderLayer::overriding(
+                    HeaderName::from_static("x-observed-req"),
+                    HeaderValue::from_static("1"),
+                ),
+                SetResponseHeaderLayer::overriding(
+                    HeaderName::from_static("x-observed-res"),
+                    HeaderValue::from_static("1"),
+                ),
+                ArcLayer::new(),
+            ))
+            .serve(StreamBridge {
+                left: MockSocket::new(relay_ingress_stream),
+                right: MockSocket::new(relay_egress_stream),
+            })
+            .await
+            .unwrap();
+    });
+
+    let request = create_test_request(version);
+    let conn = http_connect(
+        MockSocket::new(client_stream),
+        request,
+        Executor::graceful(graceful.guard()),
+    )
+    .await
+    .unwrap()
+    .conn;
+
+    let mut ids = Vec::with_capacity(n);
+    let mut futures = Vec::with_capacity(n);
+    for id in 0..n {
+        ids.push(id);
+        futures.push(conn.serve(create_test_request_with_id(version, id)));
+    }
+
+    let responses = join_all(futures).await;
+    assert_eq!(responses.len(), n);
+
+    for (id, response) in ids.into_iter().zip(responses) {
+        let response = response.unwrap();
+        assert!(response.headers().contains_key("x-observed-res"));
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes, format!("a random response body ({id})"));
+    }
+
+    drop(conn);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}
+
 #[tokio::test]
 async fn test_http11_mitm_relay_roundtrip() {
     test_mitm_relay_roundtrip_inner(Version::HTTP_11).await;
@@ -176,4 +313,14 @@ async fn test_http11_mitm_relay_roundtrip() {
 #[tokio::test]
 async fn test_http2_mitm_relay_roundtrip() {
     test_mitm_relay_roundtrip_inner(Version::HTTP_2).await;
+}
+
+#[tokio::test]
+async fn test_http11_mitm_relay_handles_4_concurrent_requests() {
+    test_mitm_relay_concurrency_inner(Version::HTTP_11, 4).await;
+}
+
+#[tokio::test]
+async fn test_http2_mitm_relay_handles_200_concurrent_requests() {
+    test_mitm_relay_concurrency_inner(Version::HTTP_2, 200).await;
 }
