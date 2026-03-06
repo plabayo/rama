@@ -573,6 +573,10 @@ name = "http_mitm_proxy_boring"
 required-features = ["http-full", "boring"]
 
 [[example]]
+name = "http_mitm_relay_proxy_boring"
+required-features = ["http-full", "boring"]
+
+[[example]]
 name = "http_mitm_proxy_rustls"
 required-features = ["http-full", "rustls"]
 

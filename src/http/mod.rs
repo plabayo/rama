@@ -40,6 +40,11 @@ pub mod client;
 #[doc(inline)]
 pub use ::rama_http_backend::server;
 
+#[cfg(feature = "http-full")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
+#[doc(inline)]
+pub use ::rama_http_backend::proxy;
+
 #[cfg(feature = "ws")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ws")))]
 #[doc(inline)]
