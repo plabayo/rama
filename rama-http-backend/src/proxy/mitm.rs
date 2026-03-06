@@ -4,7 +4,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsMut,
-    futures::{self, GracefulStream, StreamExt},
+    futures::{GracefulStream, StreamExt},
     graceful::{Shutdown, ShutdownGuard},
     layer::{
         ArcLayer, ConsumeErrLayer,
@@ -110,7 +110,10 @@ impl HttpMitmRelay {
         let cancelled = token.clone().cancelled_owned();
         let graceful = Shutdown::new(async move {
             if let Some(guard) = exec.into_guard() {
-                let _ = futures::join!(cancelled, guard.cancelled());
+                tokio::select! {
+                    _ = cancelled => (),
+                    _ = guard.cancelled() => (),
+                }
             } else {
                 let _ = cancelled.await;
             }
