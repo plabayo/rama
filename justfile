@@ -115,6 +115,7 @@ bench-e2e-http-client-server *ARGS:
 
 clean:
     cargo clean
+    just ./ffi/apple/examples/transparent_proxy/clean
 
 upgrades:
     @cargo install cargo-upgrades

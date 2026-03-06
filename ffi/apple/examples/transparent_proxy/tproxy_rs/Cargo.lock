@@ -2061,6 +2061,7 @@ dependencies = [
  "rama-unix",
  "rama-utils",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
