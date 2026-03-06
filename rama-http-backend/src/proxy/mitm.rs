@@ -6,6 +6,10 @@ use rama_core::{
     extensions::ExtensionsMut,
     futures::{self, GracefulStream, StreamExt},
     graceful::{Shutdown, ShutdownGuard},
+    layer::{
+        ArcLayer, ConsumeErrLayer,
+        consume_err::{StaticOutput, Trace},
+    },
     rt::Executor,
     service::service_fn,
     stream::{Stream, wrappers::ReceiverStream},
@@ -24,6 +28,33 @@ use crate::{
     server::HttpServer,
 };
 
+#[derive(Debug, Clone, Copy, Default)]
+/// Default [`Response`] used in case the inner (egress)
+/// client of the [`HttpMitmRelay`] is erroring.
+pub struct DefaultErrorResponse;
+
+impl DefaultErrorResponse {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Into<Response> for DefaultErrorResponse {
+    #[inline(always)]
+    fn into(self) -> Response {
+        StatusCode::BAD_GATEWAY.into_response()
+    }
+}
+
+/// Default middleware used by [`HttpMitmRelay`],
+/// most likely you'll want to overwrite it with custom middleware,
+/// unless you do not require MITM middleware.
+pub type DefaultMiddleware = (
+    ConsumeErrLayer<Trace, StaticOutput<DefaultErrorResponse>>,
+    ArcLayer,
+);
+
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay HTTP requests and responses between a client and server,
 /// as part of a deep protocol inspection protocol (DPI) flow.
@@ -31,7 +62,7 @@ use crate::{
 /// Useful if you have a fairly standard MITM http flow and already
 /// have pre-established ingress and egress connections (e.g. because
 /// you already MITM'd the <L7 layers, such as SOCKS5 MITM'ng, TLS, ...).
-pub struct HttpMitmRelay<M = ()> {
+pub struct HttpMitmRelay<M = DefaultMiddleware> {
     http_server: HttpServer<Builder>,
     graceful: Shutdown,
     drop_guard: DropGuard,
@@ -69,7 +100,10 @@ impl HttpMitmRelay {
             graceful,
             relay_buffer: None,
             drop_guard: token.drop_guard(),
-            middleware: (),
+            middleware: (
+                ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
+                ArcLayer::new(),
+            ),
         }
     }
 
