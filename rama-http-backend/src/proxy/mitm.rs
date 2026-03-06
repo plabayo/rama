@@ -15,7 +15,10 @@ use rama_core::{
     stream::{Stream, wrappers::ReceiverStream},
     telemetry::tracing,
 };
-use rama_http::{Body, Request, Response, StatusCode, service::web::response::IntoResponse};
+use rama_http::{
+    Body, HeaderName, HeaderValue, Request, Response, StatusCode,
+    service::web::response::IntoResponse,
+};
 use rama_http_core::server::conn::auto::{Builder, Http1Builder, Http2Builder};
 use rama_net::{client::EstablishedClientConnection, proxy::StreamBridge};
 use rama_utils::macros::generate_set_and_with;
@@ -38,12 +41,30 @@ impl DefaultErrorResponse {
     pub fn new() -> Self {
         Self
     }
+
+    #[inline(always)]
+    fn response() -> Response {
+        (
+            [
+                (
+                    HeaderName::from_static("x-proxy-framework-name"),
+                    HeaderValue::from_static(rama_utils::info::NAME),
+                ),
+                (
+                    HeaderName::from_static("x-proxy-framework-version"),
+                    HeaderValue::from_static(rama_utils::info::VERSION),
+                ),
+            ],
+            StatusCode::BAD_GATEWAY,
+        )
+            .into_response()
+    }
 }
 
 impl From<DefaultErrorResponse> for Response {
     #[inline(always)]
     fn from(_: DefaultErrorResponse) -> Self {
-        StatusCode::BAD_GATEWAY.into_response()
+        DefaultErrorResponse::response()
     }
 }
 
@@ -193,7 +214,7 @@ where
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         if let Err(err) = req_tx.send(ReqJob { req, reply: tx }).await {
                             tracing::debug!("failed to schedule http request for MITM relay: {err}");
-                            return Ok(StatusCode::BAD_GATEWAY.into_response());
+                            return Ok(DefaultErrorResponse::response());
                         }
                         match rx.await {
                             Ok(resp) => Ok(resp),
@@ -201,7 +222,7 @@ where
                                 tracing::debug!(
                                     "failed to receive http response from MITM relay executor: {err}"
                                 );
-                                Ok(StatusCode::BAD_GATEWAY.into_response())
+                                Ok(DefaultErrorResponse::response())
                             }
                         }
                     }
@@ -241,7 +262,7 @@ async fn http_relay_service_egress<Egress, Middleware>(
         Ok(EstablishedClientConnection { input, conn }) => (input, conn),
         Err(err) => {
             tracing::debug!("failed to establish egress HTTP connection: {err}");
-            if reply.send(StatusCode::BAD_GATEWAY.into_response()).is_err() {
+            if reply.send(DefaultErrorResponse::response()).is_err() {
                 tracing::trace!("failed to send BAD_GATEWAY response (svc error: {err})");
             }
             return;
