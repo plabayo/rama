@@ -31,6 +31,12 @@ check-links:
 clippy:
     cargo clippy --workspace --all-targets --all-features
 
+clippy-beta:
+    cargo +beta clippy --workspace --all-targets --all-features
+
+clippy-beta-crate CRATE:
+    cargo +beta clippy -p {{CRATE}} --all-targets --all-features
+
 clippy-crate CRATE:
     cargo clippy -p {{CRATE}} --all-targets --all-features
 
