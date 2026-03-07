@@ -44,11 +44,11 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
-    io::Io,
+    io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer},
     net::{
         http::{RequestContext, server::peek_http_stream},
-        proxy::{ProxyTarget, StreamBridge, StreamForwardService},
+        proxy::{ProxyTarget, StreamForwardService},
         stream::layer::http::BodyLimitLayer,
         tls::{
             client::ServerVerifyMode,
@@ -218,16 +218,10 @@ where
                 })
                 .ok();
 
-            let StreamBridge {
-                left: tls_ingress_stream,
-                right: tls_egress_stream,
-            } = self
+            let BridgeIo(tls_ingress_stream, tls_egress_stream) = self
                 .tls_mitm_relay
                 .handshake(
-                    StreamBridge {
-                        left: peeked_ingress_stream,
-                        right: egress_stream,
-                    },
+                    BridgeIo(peeked_ingress_stream, egress_stream),
                     maybe_connector_data,
                 )
                 .await
@@ -263,10 +257,7 @@ where
     } else {
         tracing::info!("no HTTP version detected: transport bytes as-is");
         StreamForwardService::new()
-            .serve(StreamBridge {
-                left: peeked_ingress_stream,
-                right: egress_stream,
-            })
+            .serve(BridgeIo(peeked_ingress_stream, egress_stream))
             .await
             .context("proxy no-http bytes")?;
         return Ok(());
@@ -291,9 +282,6 @@ where
             ),
             ArcLayer::new(),
         ))
-        .serve(StreamBridge {
-            left: peeked_ingress_stream,
-            right: egress_stream,
-        })
+        .serve(BridgeIo(peeked_ingress_stream, egress_stream))
         .await
 }

@@ -31,9 +31,9 @@ pin_project! {
 
 impl<P, S> PrefixedIo<P, S> {
     /// Create a new [`PrefixedIo`] for the given prefix
-    /// [`AsyncRead`] and inner [`Stream`] which implements [`ExtensionsMut`].
+    /// [`AsyncRead`] and inner [`Io`] which implements [`ExtensionsMut`].
     ///
-    /// [`Stream`]: super::Stream
+    /// [`Io`]: super::Io
     pub fn new(prefix: P, inner: S) -> Self {
         Self {
             prefix_eof: false,
@@ -298,7 +298,7 @@ mod tests {
         .await;
 
         TestCase::<2> {
-            prefix_data: "prefix",
+            prefix_data: "peek",
             inner_data: "inner",
             expected_reads: &["pe", "ek", "in", "ne", "r", ""],
         }

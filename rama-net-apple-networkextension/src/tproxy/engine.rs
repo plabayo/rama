@@ -2,13 +2,13 @@ use rama_core::{
     bytes::Bytes,
     extensions::{ExtensionsMut, ExtensionsRef},
     graceful::{Shutdown, ShutdownGuard},
+    io::BridgeIo,
     rt::Executor,
     service::{BoxService, Service, service_fn},
 };
 use rama_net::{
-    address::HostWithPort,
     conn::is_connection_error,
-    proxy::{ProxyTarget, StreamBridge, StreamForwardService},
+    proxy::{ProxyTarget, StreamForwardService},
 };
 use rama_tcp::client::default_tcp_connect;
 
@@ -324,35 +324,26 @@ impl TransparentProxyUdpSession {
 
 fn default_tcp_service() -> TcpFlowService {
     tracing::debug!("using default tcp service (dumb L4 forward)");
-    service_fn(|stream: TcpFlow| async move {
-        let target = stream
-            .extensions()
-            .get::<ProxyTarget>()
-            .cloned()
-            .map(|target| target.0)
-            .or_else(|| {
-                stream
-                    .extensions()
-                    .get::<TransparentProxyFlowMeta>()
-                    .and_then(|meta| meta.remote_endpoint.clone())
-            });
-        let Some(target) = target else {
+    service_fn(|ingress_stream: TcpFlow| async move {
+        let Some(ProxyTarget(target)) = ingress_stream.extensions().get().cloned() else {
             tracing::warn!("default tcp service missing target endpoint");
             return Ok(());
         };
 
-        let extensions = stream.extensions().clone();
-        let exec = Executor::default();
-        let Ok((upstream, _sock_addr)) = default_tcp_connect(&extensions, target, exec).await
+        let extensions = ingress_stream.extensions();
+        let exec = extensions
+            .get()
+            .cloned()
+            .map(Executor::graceful)
+            .unwrap_or_default();
+
+        let Ok((egress_stream, _sock_addr)) = default_tcp_connect(extensions, target, exec).await
         else {
             tracing::warn!("default tcp connect failed");
             return Ok(());
         };
 
-        let req = StreamBridge {
-            left: stream,
-            right: upstream,
-        };
+        let req = BridgeIo(ingress_stream, egress_stream);
         if let Err(err) = StreamForwardService::new().serve(req).await {
             tracing::warn!(%err, "default tcp forward failed");
         }
@@ -361,23 +352,10 @@ fn default_tcp_service() -> TcpFlowService {
     .boxed()
 }
 
-fn udp_remote_endpoint_from_extensions(flow: &UdpFlow) -> Option<HostWithPort> {
-    flow.extensions()
-        .get::<ProxyTarget>()
-        .cloned()
-        .map(|target| target.0)
-        .or_else(|| {
-            flow.extensions()
-                .get::<TransparentProxyFlowMeta>()
-                .and_then(|meta| meta.remote_endpoint.clone())
-        })
-}
-
 fn default_udp_service() -> UdpFlowService {
     tracing::debug!("using default udp service (dumb L4 forward)");
     service_fn(|mut flow: UdpFlow| async move {
-        let target = udp_remote_endpoint_from_extensions(&flow);
-        let Some(target_addr) = target else {
+        let Some(ProxyTarget(target_addr)) = flow.extensions().get().cloned() else {
             tracing::warn!("default udp service missing target endpoint");
             while flow.recv().await.is_some() {}
             return Ok(());
@@ -491,6 +469,7 @@ mod tests {
 
     use super::*;
     use parking_lot::Mutex;
+    use rama_net::address::HostWithPort;
     use std::sync::Arc;
 
     #[test]

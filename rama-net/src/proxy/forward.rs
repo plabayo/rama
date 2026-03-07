@@ -4,14 +4,12 @@ use rama_core::{
     error::{BoxError, ErrorExt},
 };
 
-use rama_core::io::Io;
-
-use super::StreamBridge;
+use rama_core::io::{BridgeIo, Io};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-/// A proxy [`Service`] which takes a [`StreamBridge`]
-/// and copies the bytes of both the source and target [`Stream`]s
+/// A proxy [`Service`] which takes a [`BridgeIo`]
+/// and copies the bytes of both the source and target [`Io`]s
 /// bidirectionally.
 pub struct StreamForwardService;
 
@@ -24,7 +22,7 @@ impl StreamForwardService {
     }
 }
 
-impl<S, T> Service<StreamBridge<S, T>> for StreamForwardService
+impl<S, T> Service<BridgeIo<S, T>> for StreamForwardService
 where
     S: Io + Unpin,
     T: Io + Unpin,
@@ -34,10 +32,7 @@ where
 
     async fn serve(
         &self,
-        StreamBridge {
-            mut left,
-            mut right,
-        }: StreamBridge<S, T>,
+        BridgeIo(mut left, mut right): BridgeIo<S, T>,
     ) -> Result<Self::Output, Self::Error> {
         match tokio::io::copy_bidirectional(&mut left, &mut right).await {
             Ok((bytes_copied_north, bytes_copied_south)) => {

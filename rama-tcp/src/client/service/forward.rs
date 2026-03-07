@@ -4,13 +4,13 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsMut,
-    io::Io,
+    io::{BridgeIo, Io},
     rt::Executor,
 };
 use rama_net::{
     address::HostWithPort,
     client::{ConnectorService, EstablishedClientConnection},
-    proxy::{ProxyTarget, StreamBridge, StreamForwardService},
+    proxy::{ProxyTarget, StreamForwardService},
 };
 
 #[derive(Debug, Clone)]
@@ -73,32 +73,32 @@ where
     type Output = ();
     type Error = BoxError;
 
-    async fn serve(&self, source: T) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, ingress_stream: T) -> Result<Self::Output, Self::Error> {
         let authority = match &self.kind {
             ForwarderKind::Static(target) => target.clone(),
-            ForwarderKind::Dynamic => source
+            ForwarderKind::Dynamic => ingress_stream
                 .extensions()
                 .get::<ProxyTarget>()
                 .map(|f| f.0.clone())
                 .context("missing forward authority")?,
         };
 
-        // Clone them here so we also have them on source still
-        let extensions = source.extensions().clone();
+        // Clone them here so we also have them on (ingress) stream still
+        let extensions = ingress_stream.extensions().clone();
         let req = TcpRequest::new_with_extensions(authority.clone(), extensions);
 
-        let EstablishedClientConnection { conn: target, .. } = self
+        let EstablishedClientConnection {
+            conn: egress_stream,
+            ..
+        } = self
             .connector
             .connect(req)
             .await
             .context("establish tcp connection")
             .context_field("authority", authority)?;
 
-        let proxy_req = StreamBridge {
-            left: source,
-            right: target,
-        };
-
-        StreamForwardService::default().serve(proxy_req).await
+        StreamForwardService::default()
+            .serve(BridgeIo(ingress_stream, egress_stream))
+            .await
     }
 }

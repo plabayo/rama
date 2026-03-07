@@ -233,7 +233,7 @@ impl Client {
     ///
     /// This method returns a [`Binder`] that contains the address to which the target server
     /// is to connect to the socks5 server on behalf of the client (callee of this call).
-    /// The [`Binder`] takes ownership over of the input [`Stream`] such that it can
+    /// The [`Binder`] takes ownership over of the input [`Io`] such that it can
     /// await the established connection from target server to socks5 server.
     pub async fn handshake_bind<S: Io + Unpin>(
         &self,

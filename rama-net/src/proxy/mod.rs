@@ -2,10 +2,6 @@
 
 use crate::address::HostWithPort;
 
-mod bridge;
-#[doc(inline)]
-pub use bridge::StreamBridge;
-
 mod forward;
 #[doc(inline)]
 pub use forward::StreamForwardService;

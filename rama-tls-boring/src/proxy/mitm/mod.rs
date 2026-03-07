@@ -2,11 +2,11 @@ use rama_core::{
     conversion::RamaTryInto as _,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::{self, ExtensionsMut as _},
-    io::Io,
+    io::{BridgeIo, Io},
     telemetry::tracing,
 };
+use rama_net::tls::KeyLogIntent;
 use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData};
-use rama_net::{proxy::StreamBridge, tls::KeyLogIntent};
 use std::io::{Cursor, ErrorKind};
 
 use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef};
@@ -118,18 +118,15 @@ impl<Issuer> TlsMitmRelay<Issuer>
 where
     Issuer: self::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
 {
-    /// Establish and MITM an handshake between the client (left) and server (right).
-    pub async fn handshake<Left, Right>(
+    /// Establish and MITM an handshake between the client (ingress) and server (egress).
+    pub async fn handshake<Ingress, Egress>(
         &self,
-        StreamBridge {
-            left: ingress_stream,
-            right: egress_stream,
-        }: StreamBridge<Left, Right>,
+        BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
         connector_data: Option<client::TlsConnectorData>,
-    ) -> Result<StreamBridge<TlsStream<Left>, TlsStream<Right>>, BoxError>
+    ) -> Result<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, BoxError>
     where
-        Left: Io + Unpin + extensions::ExtensionsMut,
-        Right: Io + Unpin + extensions::ExtensionsMut,
+        Ingress: Io + Unpin + extensions::ExtensionsMut,
+        Egress: Io + Unpin + extensions::ExtensionsMut,
     {
         let store_server_certificate_chain = connector_data
             .as_ref()
@@ -267,7 +264,7 @@ where
         );
 
         let acceptor = acceptor_builder.build();
-        let ingress_tls_stream = rama_boring_tokio::accept(&acceptor, ingress_stream)
+        let ingress_boring_ssl_stream = rama_boring_tokio::accept(&acceptor, ingress_stream)
             .await
             .map_err(|err| {
                 let maybe_ssl_code = err.code();
@@ -296,9 +293,7 @@ where
             egress_tls_stream.extensions_mut().insert(negotiated_params);
         }
 
-        Ok(StreamBridge {
-            left: TlsStream::new(ingress_tls_stream),
-            right: egress_tls_stream,
-        })
+        let ingress_tls_stream = TlsStream::new(ingress_boring_ssl_stream);
+        Ok(BridgeIo(ingress_tls_stream, egress_tls_stream))
     }
 }

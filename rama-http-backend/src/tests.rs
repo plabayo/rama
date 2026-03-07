@@ -5,11 +5,15 @@ use std::{
 
 use tokio::time::sleep;
 
-use rama_core::{Layer, graceful::Shutdown, layer::ArcLayer};
-use rama_core::{Service, rt::Executor, service::service_fn};
 use rama_core::{
+    Layer, Service,
     futures::future::{join, join_all},
+    graceful::Shutdown,
+    io::BridgeIo,
+    layer::ArcLayer,
     layer::ConsumeErrLayer,
+    rt::Executor,
+    service::service_fn,
 };
 use rama_http::{
     HeaderName, HeaderValue,
@@ -17,10 +21,7 @@ use rama_http::{
     layer::set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
 };
 use rama_http_types::{Body, Request, Response, StatusCode, Version};
-use rama_net::{
-    proxy::StreamBridge,
-    test_utils::client::{MockConnectorService, MockSocket},
-};
+use rama_net::test_utils::client::{MockConnectorService, MockSocket};
 use tokio_util::sync::CancellationToken;
 
 use crate::proxy::mitm::DefaultErrorResponse;
@@ -201,10 +202,10 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
                 ),
                 ArcLayer::new(),
             ))
-            .serve(StreamBridge {
-                left: MockSocket::new(relay_ingress_stream),
-                right: MockSocket::new(relay_egress_stream),
-            })
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
             .await
             .unwrap();
     });
@@ -264,10 +265,10 @@ async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
                 ),
                 ArcLayer::new(),
             ))
-            .serve(StreamBridge {
-                left: MockSocket::new(relay_ingress_stream),
-                right: MockSocket::new(relay_egress_stream),
-            })
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
             .await
             .unwrap();
     });

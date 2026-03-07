@@ -6,7 +6,7 @@ use rama_core::{
     extensions::ExtensionsMut,
     futures::{GracefulStream, StreamExt},
     graceful::{Shutdown, ShutdownGuard},
-    io::Io,
+    io::{BridgeIo, Io},
     layer::{
         ArcLayer, ConsumeErrLayer,
         consume_err::{StaticOutput, Trace},
@@ -21,7 +21,7 @@ use rama_http::{
     service::web::response::IntoResponse,
 };
 use rama_http_core::server::conn::auto::{Builder, Http1Builder, Http2Builder};
-use rama_net::{client::EstablishedClientConnection, proxy::StreamBridge};
+use rama_net::client::EstablishedClientConnection;
 use rama_utils::macros::generate_set_and_with;
 
 use tokio::sync::{mpsc, oneshot};
@@ -179,10 +179,7 @@ where
 {
     pub async fn serve<Ingress, Egress>(
         self,
-        StreamBridge {
-            left: ingress_stream,
-            right: egress_stream,
-        }: StreamBridge<Ingress, Egress>,
+        BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<(), BoxError>
     where
         Ingress: Io + Unpin + ExtensionsMut,

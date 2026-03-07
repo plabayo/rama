@@ -15,7 +15,7 @@ use rama::{
 #[derive(Debug, Clone)]
 pub struct OptionalAutoHttpMitmService;
 
-impl<Ingress, Egress> Service<StreamBridge<Ingress, Egress>> for OptionalAutoHttpMitmService
+impl<Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for OptionalAutoHttpMitmService
 where
     Ingress: Io + Unpin + ExtensionsMut,
     Egress: Io + Unpin + ExtensionsMut,
@@ -25,10 +25,7 @@ where
 
     async fn serve(
         &self,
-        StreamBridge {
-            left: ingress_stream,
-            right: egress_stream,
-        }: StreamBridge<Ingress, Egress>,
+        BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
         let (maybe_http_version, peek_ingress_stream) =
             peek_http_stream(ingress_stream, Some(Duration::from_mins(2))).await?;
@@ -41,10 +38,7 @@ where
         }
 
         if let Err(err) = StreamForwardService::default()
-            .serve(StreamBridge {
-                left: peek_ingress_stream,
-                right: egress_stream,
-            })
+            .serve(BridgeIo(peek_ingress_stream, egress_stream))
             .await
         {
             tracing::debug!(
