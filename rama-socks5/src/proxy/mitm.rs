@@ -3,8 +3,8 @@ use std::time::Duration;
 use rama_core::{
     error::{BoxError, ErrorContext as _},
     extensions::{self, ExtensionsMut},
+    io::Io,
     rt::Executor,
-    stream::Stream,
     telemetry::tracing,
 };
 use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddressResolver};
@@ -109,15 +109,9 @@ where
         ingress_stream: &mut S,
         exec: Executor,
         socks5_proxy_address: HostWithPort,
-    ) -> Result<
-        (
-            impl Stream + Unpin + ExtensionsMut,
-            Socks5MitmHandshakeOutcome,
-        ),
-        BoxError,
-    >
+    ) -> Result<(impl Io + Unpin + ExtensionsMut, Socks5MitmHandshakeOutcome), BoxError>
     where
-        S: Stream + Unpin + extensions::ExtensionsMut,
+        S: Io + Unpin + extensions::ExtensionsMut,
     {
         let (mut egress_stream, _) = tokio::time::timeout(
             self.connect_timeout,
@@ -143,8 +137,8 @@ pub async fn socks5_mitm_relay_handshake<Ingress, Egress>(
     egress_stream: &mut Egress,
 ) -> Result<Socks5MitmHandshakeOutcome, BoxError>
 where
-    Ingress: Stream + Unpin + extensions::ExtensionsMut,
-    Egress: Stream + Unpin + extensions::ExtensionsMut,
+    Ingress: Io + Unpin + extensions::ExtensionsMut,
+    Egress: Io + Unpin + extensions::ExtensionsMut,
 {
     let client_header = proto::client::Header::read_from(ingress_stream)
         .await
@@ -241,8 +235,8 @@ async fn proxy_socks5_handshake_request_response<Ingress, Egress>(
     negotiated_method: proto::SocksMethod,
 ) -> Result<Socks5MitmHandshakeOutcome, BoxError>
 where
-    Ingress: Stream + Unpin + extensions::ExtensionsMut,
-    Egress: Stream + Unpin + extensions::ExtensionsMut,
+    Ingress: Io + Unpin + extensions::ExtensionsMut,
+    Egress: Io + Unpin + extensions::ExtensionsMut,
 {
     let client_request = proto::client::Request::read_from(ingress_stream)
         .await

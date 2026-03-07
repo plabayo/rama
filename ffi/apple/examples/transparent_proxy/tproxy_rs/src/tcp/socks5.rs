@@ -3,13 +3,13 @@ use std::time::Duration;
 use rama::{
     Service,
     error::{BoxError, ErrorContext as _},
+    io::Io,
     net::{
         proxy::{ProxyTarget, StreamBridge, StreamForwardService},
         user::credentials::DpiProxyCredential,
     },
     proxy::socks5::proxy::mitm::{Socks5MitmHandshakeOutcome, Socks5MitmRelay},
     rt::Executor,
-    stream::Stream,
     telemetry::tracing,
 };
 
@@ -34,7 +34,7 @@ impl Socks5IngressService {
 
 impl<S> Service<S> for Socks5IngressService
 where
-    S: Stream + Unpin + rama::extensions::ExtensionsMut,
+    S: Io + Unpin + rama::extensions::ExtensionsMut,
 {
     type Output = ();
     type Error = BoxError;

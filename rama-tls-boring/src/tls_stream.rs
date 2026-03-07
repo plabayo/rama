@@ -6,7 +6,7 @@ use rama_boring_tokio::SslStream;
 use rama_core::{
     extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
-    stream::Stream,
+    io::Io,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -53,7 +53,7 @@ impl<S: ExtensionsMut> ExtensionsMut for TlsStream<S> {
 #[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for TlsStream<S>
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
@@ -67,7 +67,7 @@ where
 #[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for TlsStream<S>
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     fn poll_write(
         self: std::pin::Pin<&mut Self>,

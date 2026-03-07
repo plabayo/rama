@@ -6,7 +6,7 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _, ErrorExt},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
-    stream::Stream,
+    io::Io,
     telemetry::tracing,
 };
 use rama_http::{
@@ -103,7 +103,7 @@ impl<S> HttpProxyConnector<S> {
 
 impl<S, Input> Service<Input> for HttpProxyConnector<S>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
@@ -289,7 +289,7 @@ pin_project! {
     }
 }
 
-impl<S: ExtensionsMut + Unpin + Stream> MaybeHttpProxiedConnection<S> {
+impl<S: ExtensionsMut + Unpin + Io> MaybeHttpProxiedConnection<S> {
     fn direct(conn: S) -> Self {
         Self {
             inner: Connection::Direct { conn },

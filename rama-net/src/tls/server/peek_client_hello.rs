@@ -9,8 +9,8 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
+    io::{HeapReader, PrefixedIo},
     service::RejectService,
-    stream::{HeapReader, PeekStream},
     telemetry::tracing,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
@@ -65,9 +65,9 @@ impl<S> PeekTlsClientHelloService<S> {
 /// Use [`PeekTlsClientHelloService`] if you prefer it as a rama [`Service`] instead.
 pub async fn peek_client_hello_from_stream<Stream>(
     mut stream: Stream,
-) -> Result<(PeekTlsClientHelloStream<Stream>, Option<ClientHello>), std::io::Error>
+) -> Result<(TlsClientHelloPrefixedIo<Stream>, Option<ClientHello>), std::io::Error>
 where
-    Stream: rama_core::stream::Stream + Unpin,
+    Stream: rama_core::io::Io + Unpin,
 {
     let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
     let n = stream.read(&mut peek_buf).await?;
@@ -81,7 +81,7 @@ where
         }
 
         let prefix_stream = HeapReader::from(&peek_buf[..n.min(TLS_HEADER_PEEK_LEN)]);
-        let peek_stream = PeekStream::new(prefix_stream, stream);
+        let peek_stream = PrefixedIo::new(prefix_stream, stream);
 
         tracing::trace!("return early for non-tls traffic: missing peek header");
         return Ok((peek_stream, None));
@@ -110,17 +110,17 @@ where
             .ok();
 
     let prefix_stream = HeapReader::from(v);
-    let peek_stream = PeekStream::new(prefix_stream, stream);
+    let peek_stream = PrefixedIo::new(prefix_stream, stream);
 
     Ok((peek_stream, maybe_client_hello))
 }
 
 impl<Stream, Output, S, F> Service<Stream> for PeekTlsClientHelloService<S, F>
 where
-    Stream: rama_core::stream::Stream + Unpin,
+    Stream: rama_core::io::Io + Unpin,
     Output: Send + 'static,
     S: Service<ClientHelloRequest<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<PeekTlsClientHelloStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<TlsClientHelloPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
@@ -146,8 +146,8 @@ where
 
 const TLS_HEADER_PEEK_LEN: usize = 5;
 
-/// [`PeekStream`] alias used by [`PeekTlsClientHelloService`].
-pub type PeekTlsClientHelloStream<S> = PeekStream<HeapReader, S>;
+/// [`PrefixedIo`] alias used by [`PeekTlsClientHelloService`].
+pub type TlsClientHelloPrefixedIo<S> = PrefixedIo<HeapReader, S>;
 
 pin_project! {
     /// A request ready for SNI routing,
@@ -155,7 +155,7 @@ pin_project! {
     #[derive(Debug, Clone)]
     pub struct ClientHelloRequest<S> {
         #[pin]
-        pub stream: PeekTlsClientHelloStream<S>,
+        pub stream: TlsClientHelloPrefixedIo<S>,
         pub client_hello: ClientHello,
     }
 }
@@ -304,7 +304,7 @@ mod test {
     };
     use std::convert::Infallible;
 
-    use rama_core::stream::Stream;
+    use rama_core::io::Io;
 
     use super::*;
 
@@ -434,7 +434,7 @@ mod test {
             ClientHelloRequest {
                 mut stream,
                 client_hello,
-            }: ClientHelloRequest<impl Stream + Unpin>,
+            }: ClientHelloRequest<impl Io + Unpin>,
         ) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
             let _ = stream.read_to_end(&mut v).await?;
@@ -474,9 +474,7 @@ mod test {
             }
             let tls_service = service_fn(tls_service_fn);
 
-            async fn plain_service_fn(
-                mut stream: impl Stream + Unpin,
-            ) -> Result<Vec<u8>, BoxError> {
+            async fn plain_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
                 let _ = stream.read_to_end(&mut v).await?;
                 Ok(v)
@@ -503,7 +501,7 @@ mod test {
             ClientHelloRequest {
                 mut stream,
                 client_hello,
-            }: ClientHelloRequest<impl Stream + Unpin>,
+            }: ClientHelloRequest<impl Io + Unpin>,
         ) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
             let _ = stream.read_to_end(&mut v).await?;

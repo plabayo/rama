@@ -9,15 +9,15 @@ pub use config::{
 
 mod peek;
 #[doc(inline)]
-pub use peek::{NoTlsRejectError, TlsPeekRouter, TlsPeekStream};
+pub use peek::{NoTlsRejectError, TlsPeekRouter, TlsPrefixedIo};
 
 mod peek_client_hello;
 #[doc(inline)]
 pub use peek_client_hello::{
-    ClientHelloRequest, PeekTlsClientHelloService, PeekTlsClientHelloStream,
+    ClientHelloRequest, PeekTlsClientHelloService, TlsClientHelloPrefixedIo,
     peek_client_hello_from_stream,
 };
 
 mod sni;
 #[doc(inline)]
-pub use sni::{SniPeekStream, SniRequest, SniRouter};
+pub use sni::{SniPrefixedIo, SniRequest, SniRouter};

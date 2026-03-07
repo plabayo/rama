@@ -44,6 +44,7 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
+    io::Io,
     layer::{ArcLayer, ConsumeErrLayer},
     net::{
         http::{RequestContext, server::peek_http_stream},
@@ -57,7 +58,6 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    stream::Stream,
     tcp::{client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -183,7 +183,7 @@ impl MitmHttpsService {
 
 impl<IO> Service<IO> for MitmHttpsService
 where
-    IO: Stream + Unpin + ExtensionsMut,
+    IO: Io + Unpin + ExtensionsMut,
 {
     type Output = ();
     type Error = BoxError;
@@ -250,8 +250,8 @@ async fn mitm_relay_maybe_http_traffic<Ingress, Egress>(
     egress_stream: Egress,
 ) -> Result<(), BoxError>
 where
-    Ingress: Stream + Unpin + ExtensionsMut,
-    Egress: Stream + Unpin + ExtensionsMut,
+    Ingress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsMut,
 {
     let (maybe_http_version, peeked_ingress_stream) =
         peek_http_stream(ingress_stream, Some(Duration::from_mins(2)))

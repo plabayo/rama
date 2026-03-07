@@ -5,6 +5,7 @@ use rama::{
     combinators::Either,
     error::{BoxError, ErrorContext as _},
     extensions::{ExtensionsMut, ExtensionsRef},
+    io::Io,
     net::{
         address::Domain,
         apple::networkextension::TcpFlow,
@@ -13,14 +14,13 @@ use rama::{
         tls::{
             client::ServerVerifyMode,
             server::{
-                ClientHelloRequest, PeekTlsClientHelloService, PeekTlsClientHelloStream,
+                ClientHelloRequest, PeekTlsClientHelloService, TlsClientHelloPrefixedIo,
                 peek_client_hello_from_stream,
             },
         },
     },
-    proxy::socks5::server::Socks5PeekStream,
+    proxy::socks5::server::Socks5PrefixedIo,
     rt::Executor,
-    stream::Stream,
     tcp::{
         TcpStream,
         client::{
@@ -64,16 +64,16 @@ impl<S> OptionalTlsMitmService<S> {
     }
 }
 
-impl<S> Service<Socks5PeekStream<TcpFlow>> for OptionalTlsMitmService<S>
+impl<S> Service<Socks5PrefixedIo<TcpFlow>> for OptionalTlsMitmService<S>
 where
-    S: Service<MaybeTlsStreamBridge<Socks5PeekStream<TcpFlow>, TcpStream>, Error: Into<BoxError>>,
+    S: Service<MaybeTlsStreamBridge<Socks5PrefixedIo<TcpFlow>, TcpStream>, Error: Into<BoxError>>,
 {
     type Output = ();
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ingress_stream: Socks5PeekStream<TcpFlow>,
+        ingress_stream: Socks5PrefixedIo<TcpFlow>,
     ) -> Result<Self::Output, Self::Error> {
         let Some(ProxyTarget(egress_socket_address)) = ingress_stream.extensions().get().cloned()
         else {
@@ -105,15 +105,15 @@ where
 }
 
 type MaybeTlsStreamBridge<Ingress, Egress> = StreamBridge<
-    Either<TlsStream<PeekTlsClientHelloStream<Ingress>>, PeekTlsClientHelloStream<Ingress>>,
+    Either<TlsStream<TlsClientHelloPrefixedIo<Ingress>>, TlsClientHelloPrefixedIo<Ingress>>,
     Either<TlsStream<Egress>, Egress>,
 >;
 
 impl<S, Ingress, Egress> Service<StreamBridge<Ingress, Egress>> for OptionalTlsMitmService<S>
 where
     S: Service<MaybeTlsStreamBridge<Ingress, Egress>, Error: Into<BoxError>>,
-    Ingress: Stream + Unpin + ExtensionsMut,
-    Egress: Stream + Unpin + ExtensionsMut,
+    Ingress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsMut,
 {
     type Output = ();
     type Error = BoxError;

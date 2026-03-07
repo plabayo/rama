@@ -11,7 +11,7 @@ use rama_core::{
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt},
     extensions::ExtensionsMut,
-    stream::Stream,
+    io::Io,
     telemetry::tracing::{debug, trace},
 };
 use rama_net::{
@@ -49,7 +49,7 @@ impl<S> TlsAcceptorService<S> {
 
 impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
-    IO: Stream + Unpin + ExtensionsMut + 'static,
+    IO: Io + Unpin + ExtensionsMut + 'static,
     S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
     type Output = S::Output;

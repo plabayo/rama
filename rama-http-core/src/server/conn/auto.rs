@@ -18,8 +18,8 @@ use tokio::io::ReadBuf;
 
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::io::rewind::Rewind;
 use rama_core::rt::Executor;
-use rama_core::stream::rewind::Rewind;
 
 use crate::body::Incoming;
 

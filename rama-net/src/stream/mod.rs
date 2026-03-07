@@ -1,6 +1,6 @@
 //! Utilities that operate on a [`Stream`]
 //!
-//! [`Stream`]: rama_core::stream::Stream
+//! [`Stream`]: rama_core::io::Io
 
 pub mod matcher;
 

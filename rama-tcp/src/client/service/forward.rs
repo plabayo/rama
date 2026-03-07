@@ -4,8 +4,8 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsMut,
+    io::Io,
     rt::Executor,
-    stream::Stream,
 };
 use rama_net::{
     address::HostWithPort,
@@ -67,8 +67,8 @@ impl Forwarder<super::TcpConnector> {
 
 impl<T, C> Service<T> for Forwarder<C>
 where
-    T: Stream + Unpin + ExtensionsMut,
-    C: ConnectorService<crate::client::Request, Connection: Stream + Unpin>,
+    T: Io + Unpin + ExtensionsMut,
+    C: ConnectorService<crate::client::Request, Connection: Io + Unpin>,
 {
     type Output = ();
     type Error = BoxError;

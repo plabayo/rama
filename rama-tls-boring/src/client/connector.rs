@@ -2,7 +2,7 @@ use rama_boring_tokio::SslStream;
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsMut};
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_net::address::Domain;
@@ -187,7 +187,7 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
@@ -251,7 +251,7 @@ where
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
@@ -297,7 +297,7 @@ where
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: Send + ExtensionsMut + 'static,
 {
     type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
@@ -421,7 +421,7 @@ pub async fn tls_connect<T>(
     connector_data: Option<TlsConnectorData>,
 ) -> Result<TlsStream<T>, BoxError>
 where
-    T: Stream + Unpin + ExtensionsMut,
+    T: Io + Unpin + ExtensionsMut,
 {
     let TlsConnectorData {
         config,
@@ -461,7 +461,7 @@ async fn handshake<T>(
     stream: T,
 ) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
 where
-    T: Stream + Unpin + ExtensionsMut,
+    T: Io + Unpin + ExtensionsMut,
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
     let TlsStream { inner: stream } = tls_connect(stream, Some(connector_data)).await?;

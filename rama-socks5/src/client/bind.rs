@@ -4,7 +4,7 @@
 //! [`bind-flow`]: crate::proto::Command::Bind
 //! [`Client`]: crate::Socks5Client
 
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_net::address::{HostWithPort, SocketAddress};
 use std::fmt;
@@ -86,7 +86,7 @@ pub struct BindOutput<S> {
     pub server: HostWithPort,
 }
 
-impl<S: Stream + Unpin> Binder<S> {
+impl<S: Io + Unpin> Binder<S> {
     pub(crate) fn new(
         stream: S,
         requested_bind_address: Option<SocketAddress>,

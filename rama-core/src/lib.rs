@@ -41,6 +41,7 @@ pub use service::Service;
 pub mod layer;
 pub use layer::Layer;
 
+pub mod io;
 pub mod stream;
 
 pub mod combinators;

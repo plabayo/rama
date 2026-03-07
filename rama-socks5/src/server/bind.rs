@@ -2,7 +2,7 @@ use std::{io, time::Duration};
 
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_core::{Service, error::BoxError, layer::timeout::DefaultTimeout, stream::Stream};
+use rama_core::{Service, error::BoxError, io::Io, layer::timeout::DefaultTimeout};
 use rama_net::address::HostWithPort;
 use rama_net::{
     address::{Host, SocketAddress},
@@ -39,7 +39,7 @@ pub trait Socks5BinderSeal<S>: Send + Sync + 'static {
 
 impl<S> Socks5BinderSeal<S> for ()
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     async fn accept_bind(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::debug!(
@@ -177,7 +177,7 @@ impl Service<Interface> for DefaultAcceptorFactory {
 /// [`Acceptor`] created by an factory [`Service`] in function of a bind [`Service`].
 pub trait Acceptor: Send + Sync + 'static {
     /// The [`Stream`] returned by this [`Acceptor`].
-    type Stream: Stream;
+    type Stream: Io;
 
     /// Returns the local address that this listener is bound to.
     fn local_addr(&self) -> io::Result<SocketAddress>;
@@ -216,7 +216,7 @@ impl Default for DefaultBinder {
 
 impl<S, F, StreamService> Socks5BinderSeal<S> for Binder<F, StreamService>
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
     F: SocketService<Socket: Acceptor<Stream: Unpin>>,
     StreamService: Service<
             StreamBridge<S, <F::Socket as Acceptor>::Stream>,
@@ -454,7 +454,7 @@ mod test {
 
     impl<S> Socks5BinderSeal<S> for MockBinder
     where
-        S: Stream + Unpin,
+        S: Io + Unpin,
     {
         async fn accept_bind(
             &self,

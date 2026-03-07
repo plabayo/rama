@@ -4,10 +4,10 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
     http::server::HttpServer,
+    io::{HeapReader, Io, PrefixedIo},
     net::{address::DomainTrie, tls::server::SniRequest},
     rt::Executor,
     service::BoxService,
-    stream::{HeapReader, PeekStream, Stream},
     tcp::client::service::DefaultForwarder,
     telemetry::tracing,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
@@ -24,7 +24,7 @@ pub(super) struct TunnelSniService<S> {
 
 impl<S> TunnelSniService<S>
 where
-    S: Stream + Unpin + rama::extensions::ExtensionsMut + Send + 'static,
+    S: Io + Unpin + rama::extensions::ExtensionsMut + Send + 'static,
 {
     pub fn new(exec: Executor, mitm_tls_service_data: TlsAcceptorData) -> Self {
         let domain_filter = Arc::new(
@@ -53,7 +53,7 @@ where
 
 impl<S> Service<SniRequest<S>> for TunnelSniService<S>
 where
-    S: Stream + Unpin + rama::extensions::ExtensionsMut + Send + 'static,
+    S: Io + Unpin + rama::extensions::ExtensionsMut + Send + 'static,
 {
     type Output = ();
     type Error = BoxError;

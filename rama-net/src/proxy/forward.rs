@@ -4,7 +4,7 @@ use rama_core::{
     error::{BoxError, ErrorExt},
 };
 
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 
 use super::StreamBridge;
 
@@ -26,8 +26,8 @@ impl StreamForwardService {
 
 impl<S, T> Service<StreamBridge<S, T>> for StreamForwardService
 where
-    S: Stream + Unpin,
-    T: Stream + Unpin,
+    S: Io + Unpin,
+    T: Io + Unpin,
 {
     type Output = ();
     type Error = BoxError;

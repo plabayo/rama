@@ -6,7 +6,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _, ErrorExt},
     extensions::ExtensionsMut,
-    stream::Stream,
+    io::Io,
     telemetry::tracing,
 };
 use rama_dns::client::{
@@ -323,7 +323,7 @@ impl<S> Socks5ProxyConnector<S> {
 
 impl<S, Input> Service<Input> for Socks5ProxyConnector<S>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut

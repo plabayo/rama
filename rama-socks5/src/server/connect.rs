@@ -1,7 +1,7 @@
 use rama_core::extensions::ExtensionsMut;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
-use rama_core::{Service, error::BoxError, stream::Stream};
+use rama_core::{Service, error::BoxError, io::Io};
 use rama_net::address::HostWithPort;
 use rama_net::client::ConnectorService;
 use rama_net::{
@@ -46,7 +46,7 @@ pub trait Socks5ConnectorSeal<S>: Send + Sync + 'static {
 
 impl<S> Socks5ConnectorSeal<S> for ()
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
@@ -184,8 +184,8 @@ impl Default for DefaultConnector {
 impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
-    S: Stream + Unpin + ExtensionsMut,
-    InnerConnector: ConnectorService<TcpRequest, Connection: Stream + Socket + Unpin>,
+    S: Io + Unpin + ExtensionsMut,
+    InnerConnector: ConnectorService<TcpRequest, Connection: Io + Socket + Unpin>,
     StreamService:
         Service<StreamBridge<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
 {
@@ -318,7 +318,7 @@ impl Default for LazyConnector<DefaultForwarder> {
 
 impl<S, StreamService> Socks5ConnectorSeal<S> for LazyConnector<StreamService>
 where
-    S: Stream + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsMut,
     StreamService: Service<S, Output = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
@@ -398,7 +398,7 @@ mod test {
 
     impl<S> Socks5ConnectorSeal<S> for MockConnector
     where
-        S: Stream + Unpin,
+        S: Io + Unpin,
     {
         async fn accept_connect(
             &self,

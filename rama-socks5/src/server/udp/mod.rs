@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use rama_core::{
-    Service, combinators::Either, error::BoxError, extensions::ExtensionsMut,
-    layer::timeout::DefaultTimeout, stream::Stream, telemetry::tracing,
+    Service, combinators::Either, error::BoxError, extensions::ExtensionsMut, io::Io,
+    layer::timeout::DefaultTimeout, telemetry::tracing,
 };
 use rama_net::{
     address::{Host, HostWithPort, SocketAddress},
@@ -46,12 +46,12 @@ pub trait Socks5UdpAssociatorSeal<S>: Send + Sync + 'static {
         destination: HostWithPort,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_
     where
-        S: Stream + Unpin;
+        S: Io + Unpin;
 }
 
 impl<S> Socks5UdpAssociatorSeal<S> for ()
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     async fn accept_udp_associate(
         &self,
@@ -287,7 +287,7 @@ impl<B, I, S> Socks5UdpAssociatorSeal<S> for UdpRelay<B, I>
 where
     B: SocketService<Socket = UdpSocket>,
     I: UdpPacketProxy,
-    S: Stream + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsMut,
 {
     async fn accept_udp_associate(
         &self,

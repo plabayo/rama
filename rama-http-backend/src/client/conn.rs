@@ -3,8 +3,8 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
+    io::Io,
     rt::Executor,
-    stream::Stream,
 };
 use rama_http::{
     StreamingBody,
@@ -63,7 +63,7 @@ pub async fn http_connect<IO, BodyIn, BodyConnection>(
     OpaqueError,
 >
 where
-    IO: Stream + Unpin + ExtensionsMut,
+    IO: Io + Unpin + ExtensionsMut,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     // Body type this connector will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
@@ -226,7 +226,7 @@ where
 
 impl<S, BodyIn, BodyConnection> Service<Request<BodyIn>> for HttpConnector<S, BodyConnection>
 where
-    S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin>,
+    S: ConnectorService<Request<BodyIn>, Connection: Io + Unpin>,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     // Body type this connector will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection

@@ -2,7 +2,7 @@ use rama_core::{
     conversion::RamaTryInto as _,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::{self, ExtensionsMut as _},
-    stream::Stream,
+    io::Io,
     telemetry::tracing,
 };
 use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData};
@@ -128,8 +128,8 @@ where
         connector_data: Option<client::TlsConnectorData>,
     ) -> Result<StreamBridge<TlsStream<Left>, TlsStream<Right>>, BoxError>
     where
-        Left: Stream + Unpin + extensions::ExtensionsMut,
-        Right: Stream + Unpin + extensions::ExtensionsMut,
+        Left: Io + Unpin + extensions::ExtensionsMut,
+        Right: Io + Unpin + extensions::ExtensionsMut,
     {
         let store_server_certificate_chain = connector_data
             .as_ref()

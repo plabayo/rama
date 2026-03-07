@@ -4,11 +4,11 @@ use rama::{
     Service,
     error::BoxError,
     extensions::ExtensionsMut,
+    io::Io,
     net::{
         http::server::peek_http_stream,
         proxy::{StreamBridge, StreamForwardService},
     },
-    stream::Stream,
     telemetry::tracing,
 };
 
@@ -17,8 +17,8 @@ pub struct OptionalAutoHttpMitmService;
 
 impl<Ingress, Egress> Service<StreamBridge<Ingress, Egress>> for OptionalAutoHttpMitmService
 where
-    Ingress: Stream + Unpin + ExtensionsMut,
-    Egress: Stream + Unpin + ExtensionsMut,
+    Ingress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsMut,
 {
     type Output = ();
     type Error = BoxError;

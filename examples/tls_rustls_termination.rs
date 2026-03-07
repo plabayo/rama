@@ -43,6 +43,7 @@ use rama::{
     Layer,
     extensions::ExtensionsRef,
     graceful::Shutdown,
+    io::Io,
     layer::ConsumeErrLayer,
     net::{
         address::HostWithPort, forwarded::Forwarded, stream::SocketInfo,
@@ -53,7 +54,6 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    stream::Stream,
     tcp::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
@@ -131,7 +131,7 @@ async fn main() {
 
 async fn internal_tcp_service_fn<S>(mut stream: S) -> Result<(), Infallible>
 where
-    S: Stream + Unpin + ExtensionsRef,
+    S: Io + Unpin + ExtensionsRef,
 {
     // REMARK: builds on the assumption that we are using the haproxy protocol
     let client_addr = stream

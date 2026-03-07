@@ -4,7 +4,7 @@ use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_net::address::Host;
@@ -169,7 +169,7 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + ExtensionsRef
         + Send
@@ -241,7 +241,7 @@ where
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsRef
@@ -287,7 +287,7 @@ where
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
@@ -340,7 +340,7 @@ impl<S, K> TlsConnector<S, K> {
         stream: T,
     ) -> Result<(RustlsTlsStream<T>, NegotiatedTlsParameters), BoxError>
     where
-        T: Stream + ExtensionsMut + Unpin,
+        T: Io + ExtensionsMut + Unpin,
     {
         let connector_data = connector_data
             .or(self.connector_data.clone())

@@ -2,8 +2,8 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
+    io::{PrefixedIo, StackReader},
     service::RejectService,
-    stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
 use tokio::io::AsyncReadExt;
@@ -44,10 +44,10 @@ impl<T> TlsPeekRouter<T> {
 
 impl<Stream, Output, T, F> Service<Stream> for TlsPeekRouter<T, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
     Output: Send + 'static,
-    T: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<TlsPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<TlsPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
@@ -71,7 +71,7 @@ where
         let mut peek = StackReader::new(peek_buf);
         peek.skip(offset);
 
-        let stream = PeekStream::new(peek, stream);
+        let stream = PrefixedIo::new(peek, stream);
 
         if is_tls {
             self.tls_acceptor.serve(stream).await.into_box_error()
@@ -83,8 +83,8 @@ where
 
 const TLS_HEADER_PEEK_LEN: usize = 5;
 
-/// [`PeekStream`] alias used by [`TlsPeekRouter`].
-pub type TlsPeekStream<S> = PeekStream<StackReader<TLS_HEADER_PEEK_LEN>, S>;
+/// [`PrefixedIo`] alias used by [`TlsPeekRouter`].
+pub type TlsPrefixedIo<S> = PrefixedIo<StackReader<TLS_HEADER_PEEK_LEN>, S>;
 
 #[cfg(test)]
 mod test {
@@ -94,7 +94,7 @@ mod test {
     };
     use std::convert::Infallible;
 
-    use rama_core::stream::Stream;
+    use rama_core::io::Io;
 
     use super::*;
 
@@ -136,7 +136,7 @@ mod test {
     async fn test_peek_router_read_eof() {
         const CONTENT: &[u8] = b"\x16\x03\x03\x00\x2afoo";
 
-        async fn tls_service_fn(mut stream: impl Stream + Unpin) -> Result<&'static str, BoxError> {
+        async fn tls_service_fn(mut stream: impl Io + Unpin) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
             let _ = stream.read_to_end(&mut v).await?;
             assert_eq!(CONTENT, v);
@@ -166,9 +166,7 @@ mod test {
             }
             let tls_service = service_fn(tls_service_fn);
 
-            async fn plain_service_fn(
-                mut stream: impl Stream + Unpin,
-            ) -> Result<Vec<u8>, BoxError> {
+            async fn plain_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
                 let _ = stream.read_to_end(&mut v).await?;
                 Ok(v)

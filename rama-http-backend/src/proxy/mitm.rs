@@ -6,13 +6,14 @@ use rama_core::{
     extensions::ExtensionsMut,
     futures::{GracefulStream, StreamExt},
     graceful::{Shutdown, ShutdownGuard},
+    io::Io,
     layer::{
         ArcLayer, ConsumeErrLayer,
         consume_err::{StaticOutput, Trace},
     },
     rt::Executor,
     service::service_fn,
-    stream::{Stream, wrappers::ReceiverStream},
+    stream::wrappers::ReceiverStream,
     telemetry::tracing,
 };
 use rama_http::{
@@ -184,8 +185,8 @@ where
         }: StreamBridge<Ingress, Egress>,
     ) -> Result<(), BoxError>
     where
-        Ingress: Stream + Unpin + ExtensionsMut,
-        Egress: Stream + Unpin + ExtensionsMut,
+        Ingress: Io + Unpin + ExtensionsMut,
+        Egress: Io + Unpin + ExtensionsMut,
     {
         let Self {
             mut http_server,
@@ -248,7 +249,7 @@ async fn http_relay_service_egress<Egress, Middleware>(
     req_rx: mpsc::Receiver<ReqJob>,
     middleware: Middleware,
 ) where
-    Egress: Stream + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsMut,
     Middleware: Layer<HttpClientService<Body>>,
     Middleware::Service: Service<Request, Output = Response, Error = Infallible> + Clone,
 {
