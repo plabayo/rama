@@ -30,3 +30,29 @@ impl<Io1: ExtensionsMut, Io2> ExtensionsMut for BridgeIo<Io1, Io2> {
         left.extensions_mut()
     }
 }
+
+impl<Ingress, Egress> super::PeekIoProvider for BridgeIo<Ingress, Egress>
+where
+    Ingress: super::Io,
+    Egress: super::Io,
+{
+    type PeekIo = Ingress;
+    type Mapped<PeekedIngress: super::Io> = BridgeIo<PeekedIngress, Egress>;
+
+    #[inline(always)]
+    fn peek_io_mut(&mut self) -> &mut Self::PeekIo {
+        let Self(ingress, _egress) = self;
+        ingress
+    }
+
+    #[inline(always)]
+    fn map_peek_io<PeekedIngress, F>(self, map: F) -> Self::Mapped<PeekedIngress>
+    where
+        PeekedIngress: super::Io,
+        F: FnOnce(Self::PeekIo) -> PeekedIngress,
+    {
+        let Self(ingress, egress) = self;
+        let peek_ingress = map(ingress);
+        BridgeIo(peek_ingress, egress)
+    }
+}

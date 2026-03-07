@@ -4,11 +4,8 @@ use rama::{
     Service,
     error::BoxError,
     extensions::ExtensionsMut,
-    io::Io,
-    net::{
-        http::server::peek_http_stream,
-        proxy::{StreamBridge, StreamForwardService},
-    },
+    io::{BridgeIo, Io},
+    net::{http::server::peek_http_input, proxy::StreamForwardService},
     telemetry::tracing,
 };
 
@@ -28,7 +25,7 @@ where
         BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
         let (maybe_http_version, peek_ingress_stream) =
-            peek_http_stream(ingress_stream, Some(Duration::from_mins(2))).await?;
+            peek_http_input(ingress_stream, Some(Duration::from_mins(2))).await?;
 
         if let Some(http_version) = maybe_http_version {
             tracing::debug!("detected http version: {http_version:?}");

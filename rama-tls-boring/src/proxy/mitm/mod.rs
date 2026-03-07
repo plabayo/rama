@@ -1,4 +1,5 @@
 use rama_core::{
+    Layer,
     conversion::RamaTryInto as _,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::{self, ExtensionsMut as _},
@@ -13,6 +14,9 @@ use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef};
 use crate::{TlsStream, client, keylog::try_new_key_log_file_handle};
 
 pub mod issuer;
+
+mod service;
+pub use self::service::TlsMitmRelayService;
 
 #[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
@@ -295,5 +299,17 @@ where
 
         let ingress_tls_stream = TlsStream::new(ingress_boring_ssl_stream);
         Ok(BridgeIo(ingress_tls_stream, egress_tls_stream))
+    }
+}
+
+impl<S, Issuer: Clone> Layer<S> for TlsMitmRelay<Issuer> {
+    type Service = TlsMitmRelayService<Issuer, S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        TlsMitmRelayService::new(self.clone(), inner)
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        TlsMitmRelayService::new(self, inner)
     }
 }

@@ -3,8 +3,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
-    io::{PrefixedIo, StackReader},
+    io::{PeekIoProvider, PrefixedIo, StackReader},
     service::RejectService,
     telemetry::tracing,
 };
@@ -123,101 +122,154 @@ impl<T, U> HttpPeekRouter<HttpDualAcceptor<T, U>> {
     }
 }
 
-impl<Stream, Output, T, F> Service<Stream> for HttpPeekRouter<HttpAutoAcceptor<T>, F>
+impl<PeekableInput, Output, T, F> Service<PeekableInput> for HttpPeekRouter<HttpAutoAcceptor<T>, F>
 where
-    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
     Output: Send + 'static,
-    T: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<
+            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    F: Service<
+            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
-        let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
+    async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
+        let (version, peek_input) = peek_http_input(input, self.peek_timeout).await?;
         if version.is_some() {
             tracing::trace!("http peek: serve[auto]: http acceptor; version = {version:?}");
-            self.http_acceptor.0.serve(stream).await.into_box_error()
+            self.http_acceptor
+                .0
+                .serve(peek_input)
+                .await
+                .into_box_error()
         } else {
             tracing::trace!("http peek: serve[auto]: fallback; version = {version:?}");
-            self.fallback.serve(stream).await.into_box_error()
+            self.fallback.serve(peek_input).await.into_box_error()
         }
     }
 }
 
-impl<Stream, Output, T, F> Service<Stream> for HttpPeekRouter<Http1Acceptor<T>, F>
+impl<PeekableInput, Output, T, F> Service<PeekableInput> for HttpPeekRouter<Http1Acceptor<T>, F>
 where
-    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
     Output: Send + 'static,
-    T: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<
+            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    F: Service<
+            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
-        let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
+    async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
+        let (version, peek_input) = peek_http_input(input, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::Http1x) {
             tracing::trace!("http peek: serve[http1]: http/1x acceptor; version = {version:?}");
-            self.http_acceptor.0.serve(stream).await.into_box_error()
+            self.http_acceptor
+                .0
+                .serve(peek_input)
+                .await
+                .into_box_error()
         } else {
             tracing::trace!("http peek: serve[http1]: fallback; version = {version:?}");
-            self.fallback.serve(stream).await.into_box_error()
+            self.fallback.serve(peek_input).await.into_box_error()
         }
     }
 }
 
-impl<Stream, Output, T, F> Service<Stream> for HttpPeekRouter<H2Acceptor<T>, F>
+impl<PeekableInput, Output, T, F> Service<PeekableInput> for HttpPeekRouter<H2Acceptor<T>, F>
 where
-    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
     Output: Send + 'static,
-    T: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<
+            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    F: Service<
+            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
-        let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
+    async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
+        let (version, peek_input) = peek_http_input(input, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::H2) {
             tracing::trace!("http peek: serve[h2]: http acceptor; version = {version:?}");
-            self.http_acceptor.0.serve(stream).await.into_box_error()
+            self.http_acceptor
+                .0
+                .serve(peek_input)
+                .await
+                .into_box_error()
         } else {
             tracing::trace!("http peek: serve[h2]: fallback; version = {version:?}");
-            self.fallback.serve(stream).await.into_box_error()
+            self.fallback.serve(peek_input).await.into_box_error()
         }
     }
 }
 
-impl<Stream, Output, T, U, F> Service<Stream> for HttpPeekRouter<HttpDualAcceptor<T, U>, F>
+impl<PeekableInput, Output, T, U, F> Service<PeekableInput>
+    for HttpPeekRouter<HttpDualAcceptor<T, U>, F>
 where
-    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
     Output: Send + 'static,
-    T: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
-    U: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<
+            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    U: Service<
+            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    F: Service<
+            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
-        let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
+    async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
+        let (version, peek_input) = peek_http_input(input, self.peek_timeout).await?;
         match version {
             Some(HttpPeekVersion::H2) => {
                 tracing::trace!("http peek: serve[dual]: h2 acceptor; version = {version:?}");
-                self.http_acceptor.h2.serve(stream).await.into_box_error()
+                self.http_acceptor
+                    .h2
+                    .serve(peek_input)
+                    .await
+                    .into_box_error()
             }
             Some(HttpPeekVersion::Http1x) => {
                 tracing::trace!("http peek: serve[dual]: http/1x acceptor; version = {version:?}");
                 self.http_acceptor
                     .http1
-                    .serve(stream)
+                    .serve(peek_input)
                     .await
                     .into_box_error()
             }
             None => {
                 tracing::trace!("http peek: serve[dual]: fallback; version = {version:?}");
-                self.fallback.serve(stream).await.into_box_error()
+                self.fallback.serve(peek_input).await.into_box_error()
             }
         }
     }
@@ -229,13 +281,22 @@ pub enum HttpPeekVersion {
     H2,
 }
 
-pub async fn peek_http_stream<Stream: rama_core::io::Io + Unpin + ExtensionsMut>(
-    mut stream: Stream,
+pub async fn peek_http_input<PeekableInput>(
+    mut input: PeekableInput,
     timeout: Option<Duration>,
-) -> Result<(Option<HttpPeekVersion>, HttpPrefixedIo<Stream>), BoxError> {
+) -> Result<
+    (
+        Option<HttpPeekVersion>,
+        PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+    ),
+    BoxError,
+>
+where
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
+{
     let mut peek_buf = [0u8; HTTP_HEADER_PEEK_LEN];
 
-    let read_fut = stream.read(&mut peek_buf);
+    let read_fut = input.peek_io_mut().read(&mut peek_buf);
 
     let n = match timeout {
         Some(d) => tokio::time::timeout(d, read_fut).await.unwrap_or(Ok(0)),
@@ -277,9 +338,9 @@ pub async fn peek_http_stream<Stream: rama_core::io::Io + Unpin + ExtensionsMut>
     let mut peek = StackReader::new(peek_buf);
     peek.skip(offset);
 
-    let stream = PrefixedIo::new(peek, stream);
+    let peek_input = input.map_peek_io(|io| PrefixedIo::new(peek, io));
 
-    Ok((http_version, stream))
+    Ok((http_version, peek_input))
 }
 
 const H2_MAGIC_PREFIX: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";

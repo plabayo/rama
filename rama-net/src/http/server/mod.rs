@@ -5,5 +5,5 @@
 
 pub mod peek;
 pub use peek::{
-    HttpPeekRouter, HttpPeekVersion, HttpPrefixedIo, NoHttpRejectError, peek_http_stream,
+    HttpPeekRouter, HttpPeekVersion, HttpPrefixedIo, NoHttpRejectError, peek_http_input,
 };

@@ -1,19 +1,11 @@
-use std::{
-    fmt,
-    io::{IoSlice, Read, Write},
-    pin::Pin,
-    task::{Context as TaskContext, Poll},
-};
-
-use pin_project_lite::pin_project;
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    io::{HeapReader, PrefixedIo},
+    io::{HeapReader, PeekIoProvider, PrefixedIo},
     service::RejectService,
     telemetry::tracing,
 };
-use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use tokio::io::AsyncReadExt;
 
 use crate::tls::client::{ClientHello, parse_client_hello_handshake};
 
@@ -29,7 +21,7 @@ use super::NoTlsRejectError;
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`PeekTlsClientHelloService::with_fallback`] to configure the fallback service.
 ///
-/// Use the standalone [`peek_client_hello_from_stream`] function if you prefer
+/// Use the standalone [`peek_client_hello_from_input`] function if you prefer
 /// this is as a standalone function instead.
 ///
 /// [`SniRouter`]: super::SniRouter
@@ -59,18 +51,26 @@ impl<S> PeekTlsClientHelloService<S> {
     }
 }
 
-/// Functional API to try to peek TLS:CH from an existing stream,
+/// Functional API to try to peek TLS:CH from an existing I/O input,
 /// returning the stream as-is with the read data prefixed from memory.
 ///
 /// Use [`PeekTlsClientHelloService`] if you prefer it as a rama [`Service`] instead.
-pub async fn peek_client_hello_from_stream<Stream>(
-    mut stream: Stream,
-) -> Result<(TlsClientHelloPrefixedIo<Stream>, Option<ClientHello>), std::io::Error>
+pub async fn peek_client_hello_from_input<PeekableInput>(
+    mut input: PeekableInput,
+) -> Result<
+    (
+        PeekableInput::Mapped<TlsClientHelloPrefixedIo<PeekableInput::PeekIo>>,
+        Option<ClientHello>,
+    ),
+    std::io::Error,
+>
 where
-    Stream: rama_core::io::Io + Unpin,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
 {
     let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
-    let n = stream.read(&mut peek_buf).await?;
+    let peekable_io = input.peek_io_mut();
+
+    let n = peekable_io.read(&mut peek_buf).await?;
 
     let is_tls = n == TLS_HEADER_PEEK_LEN && matches!(peek_buf, [0x16, 0x03, 0x00..=0x04, ..]);
     tracing::trace!("tls prefix header read (is tls: {is_tls})");
@@ -80,11 +80,11 @@ where
             tracing::trace!("move tls peek buffer cursor due to reading not enough (read: {n})");
         }
 
-        let prefix_stream = HeapReader::from(&peek_buf[..n.min(TLS_HEADER_PEEK_LEN)]);
-        let peek_stream = PrefixedIo::new(prefix_stream, stream);
+        let prefix_data = HeapReader::from(&peek_buf[..n.min(TLS_HEADER_PEEK_LEN)]);
+        let peeked_input = input.map_peek_io(|io| PrefixedIo::new(prefix_data, io));
 
         tracing::trace!("return early for non-tls traffic: missing peek header");
-        return Ok((peek_stream, None));
+        return Ok((peeked_input, None));
     }
 
     let n = ((peek_buf[3] as usize) << 8) | (peek_buf[4] as usize);
@@ -92,7 +92,7 @@ where
 
     let mut v = vec![0u8; record_size];
     v[..TLS_HEADER_PEEK_LEN].copy_from_slice(&peek_buf[..]);
-    let read_size = stream.read(&mut v[TLS_HEADER_PEEK_LEN..]).await?;
+    let read_size = peekable_io.read(&mut v[TLS_HEADER_PEEK_LEN..]).await?;
 
     if read_size != n {
         tracing::trace!(
@@ -109,37 +109,47 @@ where
             })
             .ok();
 
-    let prefix_stream = HeapReader::from(v);
-    let peek_stream = PrefixedIo::new(prefix_stream, stream);
+    let prefix_data = HeapReader::from(v);
+    let peeked_input = input.map_peek_io(|io| PrefixedIo::new(prefix_data, io));
 
-    Ok((peek_stream, maybe_client_hello))
+    Ok((peeked_input, maybe_client_hello))
 }
 
-impl<Stream, Output, S, F> Service<Stream> for PeekTlsClientHelloService<S, F>
+impl<PeekableInput, Output, S, F> Service<PeekableInput> for PeekTlsClientHelloService<S, F>
 where
-    Stream: rama_core::io::Io + Unpin,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
     Output: Send + 'static,
-    S: Service<ClientHelloRequest<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<TlsClientHelloPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    S: Service<
+            InputWithClientHello<
+                PeekableInput::Mapped<TlsClientHelloPrefixedIo<PeekableInput::PeekIo>>,
+            >,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    F: Service<
+            PeekableInput::Mapped<TlsClientHelloPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
-        let (peek_stream, maybe_client_hello) = peek_client_hello_from_stream(stream)
+    async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
+        let (peeked_input, maybe_client_hello) = peek_client_hello_from_input(input)
             .await
-            .context("I/O error while peeking TLS:CH from existing input stream")?;
+            .context("I/O error while peeking TLS:CH from existing input")?;
 
         if let Some(client_hello) = maybe_client_hello {
             self.service
-                .serve(ClientHelloRequest {
-                    stream: peek_stream,
+                .serve(InputWithClientHello {
+                    input: peeked_input,
                     client_hello,
                 })
                 .await
                 .map_err(Into::into)
         } else {
-            self.fallback.serve(peek_stream).await.map_err(Into::into)
+            self.fallback.serve(peeked_input).await.map_err(Into::into)
         }
     }
 }
@@ -149,151 +159,12 @@ const TLS_HEADER_PEEK_LEN: usize = 5;
 /// [`PrefixedIo`] alias used by [`PeekTlsClientHelloService`].
 pub type TlsClientHelloPrefixedIo<S> = PrefixedIo<HeapReader, S>;
 
-pin_project! {
-    /// A request ready for SNI routing,
-    /// usually used in combination with [`PeekTlsClientHelloService`].
-    #[derive(Debug, Clone)]
-    pub struct ClientHelloRequest<S> {
-        #[pin]
-        pub stream: TlsClientHelloPrefixedIo<S>,
-        pub client_hello: ClientHello,
-    }
-}
-
-#[warn(clippy::missing_trait_methods)]
-impl<S> AsyncRead for ClientHelloRequest<S>
-where
-    S: AsyncRead,
-{
-    #[inline]
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let me = self.project();
-        me.stream.poll_read(cx, buf)
-    }
-}
-
-#[warn(clippy::missing_trait_methods)]
-impl<S> AsyncBufRead for ClientHelloRequest<S>
-where
-    S: AsyncBufRead,
-{
-    #[inline]
-    fn poll_fill_buf(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<std::io::Result<&[u8]>> {
-        let me = self.project();
-        me.stream.poll_fill_buf(cx)
-    }
-
-    #[inline]
-    fn consume(self: Pin<&mut Self>, amt: usize) {
-        let me = self.project();
-        me.stream.consume(amt)
-    }
-}
-
-impl<S> Read for ClientHelloRequest<S>
-where
-    S: Read,
-{
-    #[inline]
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.stream.read(buf)
-    }
-
-    fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
-        self.stream.read_exact(buf)
-    }
-
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
-        self.stream.read_to_end(buf)
-    }
-
-    fn read_to_string(&mut self, buf: &mut String) -> std::io::Result<usize> {
-        self.stream.read_to_string(buf)
-    }
-
-    fn read_vectored(&mut self, bufs: &mut [std::io::IoSliceMut<'_>]) -> std::io::Result<usize> {
-        self.stream.read_vectored(bufs)
-    }
-}
-
-#[warn(clippy::missing_trait_methods)]
-impl<S> AsyncWrite for ClientHelloRequest<S>
-where
-    S: AsyncWrite,
-{
-    #[inline]
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        let me = self.project();
-        me.stream.poll_write(cx, buf)
-    }
-
-    #[inline]
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
-        let me = self.project();
-        me.stream.poll_flush(cx)
-    }
-
-    #[inline]
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
-        let me = self.project();
-        me.stream.poll_shutdown(cx)
-    }
-
-    #[inline]
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        let me = self.project();
-        me.stream.poll_write_vectored(cx, bufs)
-    }
-
-    #[inline]
-    fn is_write_vectored(&self) -> bool {
-        self.stream.is_write_vectored()
-    }
-}
-
-impl<S> Write for ClientHelloRequest<S>
-where
-    S: Write,
-{
-    #[inline]
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.stream.write(buf)
-    }
-
-    #[inline]
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.stream.flush()
-    }
-
-    #[inline]
-    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        self.stream.write_all(buf)
-    }
-
-    #[inline]
-    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> std::io::Result<()> {
-        self.stream.write_fmt(args)
-    }
-
-    #[inline]
-    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
-        self.stream.write_vectored(bufs)
-    }
+/// An `input` with a Client Hello (tls) attached to it,
+/// usually used in combination with [`PeekTlsClientHelloService`].
+#[derive(Debug, Clone)]
+pub struct InputWithClientHello<Input> {
+    pub input: Input,
+    pub client_hello: ClientHello,
 }
 
 #[cfg(test)]
@@ -386,8 +257,11 @@ mod test {
 
     #[tokio::test]
     async fn test_client_hello_peek_service() {
-        let tls_service = service_fn(async |req: ClientHelloRequest<_>| {
-            let sni = req.client_hello.ext_server_name().map(ToString::to_string);
+        let tls_service = service_fn(async |input: InputWithClientHello<_>| {
+            let sni = input
+                .client_hello
+                .ext_server_name()
+                .map(ToString::to_string);
             Ok::<_, Infallible>(sni)
         });
         let plain_service = service_fn(async || Ok::<_, Infallible>(Some("plain".to_owned())));
@@ -431,13 +305,13 @@ mod test {
     #[tokio::test]
     async fn test_peek_router_read_eof() {
         async fn tls_service_fn(
-            ClientHelloRequest {
-                mut stream,
+            InputWithClientHello {
+                mut input,
                 client_hello,
-            }: ClientHelloRequest<impl Io + Unpin>,
+            }: InputWithClientHello<impl Io + Unpin>,
         ) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
-            let _ = stream.read_to_end(&mut v).await?;
+            let _ = input.read_to_end(&mut v).await?;
             assert_eq!(CH_ONE_ONE_ONE_ONE, v);
             assert!(client_hello.ext_server_name().is_some());
             assert_eq!(
@@ -498,13 +372,13 @@ mod test {
     #[tokio::test]
     async fn test_peek_router_read_tls_no_sni_eof() {
         async fn tls_service_fn(
-            ClientHelloRequest {
-                mut stream,
+            InputWithClientHello {
+                mut input,
                 client_hello,
-            }: ClientHelloRequest<impl Io + Unpin>,
+            }: InputWithClientHello<impl Io + Unpin>,
         ) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
-            let _ = stream.read_to_end(&mut v).await?;
+            let _ = input.read_to_end(&mut v).await?;
             assert_eq!(TLS_BUT_NO_SNI, v);
             assert!(client_hello.ext_server_name().is_none());
             Ok("ok")

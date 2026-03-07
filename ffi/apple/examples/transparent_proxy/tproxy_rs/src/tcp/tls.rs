@@ -5,17 +5,17 @@ use rama::{
     combinators::Either,
     error::{BoxError, ErrorContext as _},
     extensions::{ExtensionsMut, ExtensionsRef},
-    io::Io,
+    io::{BridgeIo, Io},
     net::{
         address::Domain,
         apple::networkextension::TcpFlow,
         client::{ConnectorService, EstablishedClientConnection},
-        proxy::{ProxyTarget, StreamBridge, StreamForwardService},
+        proxy::{ProxyTarget, StreamForwardService},
         tls::{
             client::ServerVerifyMode,
             server::{
-                ClientHelloRequest, PeekTlsClientHelloService, TlsClientHelloPrefixedIo,
-                peek_client_hello_from_stream,
+                InputWithClientHello, PeekTlsClientHelloService, TlsClientHelloPrefixedIo,
+                peek_client_hello_from_input,
             },
         },
     },
@@ -96,20 +96,16 @@ where
 
         // TODO: fix this
 
-        self.serve(StreamBridge {
-            left: ingress_stream,
-            right: egress_stream,
-        })
-        .await
+        self.serve(BridgeIo(ingress_stream, egress_stream)).await
     }
 }
 
-type MaybeTlsStreamBridge<Ingress, Egress> = StreamBridge<
+type MaybeTlsStreamBridge<Ingress, Egress> = BridgeIo<
     Either<TlsStream<TlsClientHelloPrefixedIo<Ingress>>, TlsClientHelloPrefixedIo<Ingress>>,
     Either<TlsStream<Egress>, Egress>,
 >;
 
-impl<S, Ingress, Egress> Service<StreamBridge<Ingress, Egress>> for OptionalTlsMitmService<S>
+impl<S, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for OptionalTlsMitmService<S>
 where
     S: Service<MaybeTlsStreamBridge<Ingress, Egress>, Error: Into<BoxError>>,
     Ingress: Io + Unpin + ExtensionsMut,
@@ -120,13 +116,10 @@ where
 
     async fn serve(
         &self,
-        StreamBridge {
-            left: ingress_stream,
-            right: egress_stream,
-        }: StreamBridge<Ingress, Egress>,
+        BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
         let (peeked_ingress_stream, maybe_client_hello) =
-            peek_client_hello_from_stream(ingress_stream)
+            peek_client_hello_from_input(ingress_stream)
                 .await
                 .context("I/O error while peeking TLS:CH from existing input stream")?;
 
@@ -146,10 +139,7 @@ where
                         "failed to build tls (connector) data from builder: {err} ; abort TLS intercept to be safe...; revert to L4-forwarding..."
                     );
                     if let Err(err) = StreamForwardService::default()
-                        .serve(StreamBridge {
-                            left: peeked_ingress_stream,
-                            right: egress_stream,
-                        })
+                        .serve(BridgeIo(peeked_ingress_stream, egress_stream))
                         .await
                     {
                         tracing::debug!(
@@ -160,16 +150,10 @@ where
                 }
             };
 
-            let StreamBridge {
-                left: tls_ingress_stream,
-                right: tls_egress_stream,
-            } = self
+            let BridgeIo(tls_ingress_stream, tls_egress_stream) = self
                 .relay
                 .handshake(
-                    StreamBridge {
-                        left: peeked_ingress_stream,
-                        right: egress_stream,
-                    },
+                    BridgeIo(peeked_ingress_stream, egress_stream),
                     Some(tls_data),
                 )
                 .await
@@ -177,20 +161,20 @@ where
 
             if let Err(err) = self
                 .inner
-                .serve(StreamBridge {
-                    left: Either::A(tls_ingress_stream),
-                    right: Either::A(tls_egress_stream),
-                })
+                .serve(BridgeIo(
+                    Either::A(tls_ingress_stream),
+                    Either::A(tls_egress_stream),
+                ))
                 .await
             {
                 tracing::debug!("failed to L7 App (over TLS) MITM traffic: {}", err.into());
             }
         } else if let Err(err) = self
             .inner
-            .serve(StreamBridge {
-                left: Either::B(peeked_ingress_stream),
-                right: Either::B(egress_stream),
-            })
+            .serve(BridgeIo(
+                Either::B(peeked_ingress_stream),
+                Either::B(egress_stream),
+            ))
             .await
         {
             tracing::debug!(

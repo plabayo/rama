@@ -1,8 +1,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
-    io::{PrefixedIo, StackReader},
+    io::{PeekIoProvider, PrefixedIo, StackReader},
     service::RejectService,
     telemetry::tracing,
 };
@@ -47,19 +46,29 @@ impl<T> Socks5PeekRouter<T> {
     }
 }
 
-impl<Stream, Output, T, F> Service<Stream> for Socks5PeekRouter<T, F>
+impl<PeekableInput, Output, T, F> Service<PeekableInput> for Socks5PeekRouter<T, F>
 where
-    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
     Output: Send + 'static,
-    T: Service<Socks5PrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<Socks5PrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<
+            PeekableInput::Mapped<Socks5PrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    F: Service<
+            PeekableInput::Mapped<Socks5PrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; SOCKS5_HEADER_PEEK_LEN];
-        let n = stream
+        let peekable_io = input.peek_io_mut();
+
+        let n = peekable_io
             .read(&mut peek_buf)
             .await
             .context("try to read socks5 prefix header")?;
@@ -83,12 +92,15 @@ where
         let mut peek = StackReader::new(peek_buf);
         peek.skip(offset);
 
-        let stream = PrefixedIo::new(peek, stream);
+        let peeked_input = input.map_peek_io(|io| PrefixedIo::new(peek, io));
 
         if is_socks5 {
-            self.socks5_acceptor.serve(stream).await.into_box_error()
+            self.socks5_acceptor
+                .serve(peeked_input)
+                .await
+                .into_box_error()
         } else {
-            self.fallback.serve(stream).await.into_box_error()
+            self.fallback.serve(peeked_input).await.into_box_error()
         }
     }
 }

@@ -3,9 +3,9 @@ use std::time::Duration;
 use rama::{
     Service,
     error::{BoxError, ErrorContext as _},
-    io::Io,
+    io::{BridgeIo, Io},
     net::{
-        proxy::{BridgeIo, ProxyTarget, StreamForwardService},
+        proxy::{ProxyTarget, StreamForwardService},
         user::credentials::DpiProxyCredential,
     },
     proxy::socks5::proxy::mitm::{Socks5MitmHandshakeOutcome, Socks5MitmRelay},

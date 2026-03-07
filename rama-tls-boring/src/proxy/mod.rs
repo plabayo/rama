@@ -25,5 +25,5 @@
 //! In other words, even though it is recommended, it is optional.
 
 mod mitm;
-pub use self::mitm::TlsMitmRelay;
 pub use self::mitm::issuer as cert_issuer;
+pub use self::mitm::{TlsMitmRelay, TlsMitmRelayService};

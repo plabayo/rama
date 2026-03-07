@@ -47,12 +47,12 @@ use rama::{
     io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer},
     net::{
-        http::{RequestContext, server::peek_http_stream},
+        http::{RequestContext, server::peek_http_input},
         proxy::{ProxyTarget, StreamForwardService},
         stream::layer::http::BodyLimitLayer,
         tls::{
             client::ServerVerifyMode,
-            server::{SelfSignedData, peek_client_hello_from_stream},
+            server::{SelfSignedData, peek_client_hello_from_input},
         },
         user::credentials::basic,
     },
@@ -202,7 +202,7 @@ where
         tracing::debug!("managed to establish connection egress: {egress_addr}");
 
         let (peeked_ingress_stream, maybe_client_hello) =
-            peek_client_hello_from_stream(ingress_stream)
+            peek_client_hello_from_input(ingress_stream)
                 .await
                 .context("peek TLS client hello from stream")?;
 
@@ -248,7 +248,7 @@ where
     Egress: Io + Unpin + ExtensionsMut,
 {
     let (maybe_http_version, peeked_ingress_stream) =
-        peek_http_stream(ingress_stream, Some(Duration::from_mins(2)))
+        peek_http_input(ingress_stream, Some(Duration::from_mins(2)))
             .await
             .context("peek HTTP traffic")?;
 

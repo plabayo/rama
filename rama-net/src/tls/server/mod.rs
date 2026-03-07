@@ -14,8 +14,8 @@ pub use peek::{NoTlsRejectError, TlsPeekRouter, TlsPrefixedIo};
 mod peek_client_hello;
 #[doc(inline)]
 pub use peek_client_hello::{
-    ClientHelloRequest, PeekTlsClientHelloService, TlsClientHelloPrefixedIo,
-    peek_client_hello_from_stream,
+    InputWithClientHello, PeekTlsClientHelloService, TlsClientHelloPrefixedIo,
+    peek_client_hello_from_input,
 };
 
 mod sni;
