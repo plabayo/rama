@@ -10,49 +10,53 @@ use pin_project_lite::pin_project;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
-    /// a stream which has peeked some data of the inner stream,
-    /// to be read first prior to any other reading
+    /// a stream which has some data prefixed
+    /// to be read first prior to any other reading.
+    ///
+    /// The source of that prefix data is often the result
+    /// of data which was "peeked" from the inner I/O,
+    /// although that is not required.
     ///
     /// It's similar to `ChainReader`, except that writing is also
     /// supported and happening directly in function of the inner stream.
     #[derive(Debug, Clone)]
-    pub struct PeekStream<P, S> {
-        done_peek: bool,
+    pub struct PrefixedIo<P, S> {
+        prefix_eof: bool,
         #[pin]
-        peek: P,
+        prefix: P,
         #[pin]
         inner: S,
     }
 }
 
-impl<P, S: ExtensionsMut> PeekStream<P, S> {
-    /// Create a new [`PeekStream`] for the given peek
-    /// [`AsyncRead`] and inner [`Stream`] which implements [`ExtensionsMut`].
+impl<P, S> PrefixedIo<P, S> {
+    /// Create a new [`PrefixedIo`] for the given prefix
+    /// [`AsyncRead`] and inner [`Io`] which implements [`ExtensionsMut`].
     ///
-    /// [`Stream`]: super::Stream
-    pub fn new(peek: P, inner: S) -> Self {
+    /// [`Io`]: super::Io
+    pub fn new(prefix: P, inner: S) -> Self {
         Self {
-            done_peek: false,
-            peek,
+            prefix_eof: false,
+            prefix,
             inner,
         }
     }
 }
 
-impl<P, S: ExtensionsRef> ExtensionsRef for PeekStream<P, S> {
+impl<P, S: ExtensionsRef> ExtensionsRef for PrefixedIo<P, S> {
     fn extensions(&self) -> &Extensions {
         self.inner.extensions()
     }
 }
 
-impl<P, S: ExtensionsMut> ExtensionsMut for PeekStream<P, S> {
+impl<P, S: ExtensionsMut> ExtensionsMut for PrefixedIo<P, S> {
     fn extensions_mut(&mut self) -> &mut Extensions {
         self.inner.extensions_mut()
     }
 }
 
 #[warn(clippy::missing_trait_methods)]
-impl<P, S> AsyncRead for PeekStream<P, S>
+impl<P, S> AsyncRead for PrefixedIo<P, S>
 where
     P: AsyncRead,
     S: AsyncRead,
@@ -64,11 +68,11 @@ where
     ) -> Poll<std::io::Result<()>> {
         let me = self.project();
 
-        if !*me.done_peek {
+        if !*me.prefix_eof {
             let rem = buf.remaining();
-            ready!(me.peek.poll_read(cx, buf))?;
+            ready!(me.prefix.poll_read(cx, buf))?;
             if buf.remaining() == rem {
-                *me.done_peek = true;
+                *me.prefix_eof = true;
             } else {
                 return Poll::Ready(Ok(()));
             }
@@ -78,7 +82,7 @@ where
 }
 
 #[warn(clippy::missing_trait_methods)]
-impl<P, S> AsyncBufRead for PeekStream<P, S>
+impl<P, S> AsyncBufRead for PrefixedIo<P, S>
 where
     P: AsyncBufRead,
     S: AsyncBufRead,
@@ -86,10 +90,10 @@ where
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<&[u8]>> {
         let me = self.project();
 
-        if !*me.done_peek {
-            match ready!(me.peek.poll_fill_buf(cx)?) {
+        if !*me.prefix_eof {
+            match ready!(me.prefix.poll_fill_buf(cx)?) {
                 [] => {
-                    *me.done_peek = true;
+                    *me.prefix_eof = true;
                 }
                 buf => return Poll::Ready(Ok(buf)),
             }
@@ -99,24 +103,24 @@ where
 
     fn consume(self: Pin<&mut Self>, amt: usize) {
         let me = self.project();
-        if !*me.done_peek {
-            me.peek.consume(amt)
+        if !*me.prefix_eof {
+            me.prefix.consume(amt)
         } else {
             me.inner.consume(amt)
         }
     }
 }
 
-impl<P, S> Read for PeekStream<P, S>
+impl<P, S> Read for PrefixedIo<P, S>
 where
     P: Read,
     S: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if !self.done_peek {
-            let n = self.peek.read(buf)?;
+        if !self.prefix_eof {
+            let n = self.prefix.read(buf)?;
             if n == 0 {
-                self.done_peek = true;
+                self.prefix_eof = true;
             } else {
                 return Ok(n);
             }
@@ -126,7 +130,7 @@ where
 }
 
 #[warn(clippy::missing_trait_methods)]
-impl<P, S> AsyncWrite for PeekStream<P, S>
+impl<P, S> AsyncWrite for PrefixedIo<P, S>
 where
     S: AsyncWrite,
 {
@@ -169,7 +173,7 @@ where
     }
 }
 
-impl<P, S> Write for PeekStream<P, S>
+impl<P, S> Write for PrefixedIo<P, S>
 where
     S: Write,
 {
@@ -256,10 +260,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_peek_stream_read() {
+    async fn test_prefix_stream_read() {
         #[derive(Debug)]
         struct TestCase<const N: usize> {
-            peek_data: &'static str,
+            prefix_data: &'static str,
             inner_data: &'static str,
             expected_reads: &'static [&'static str],
         }
@@ -267,9 +271,9 @@ mod tests {
         impl<const N: usize> TestCase<N> {
             async fn test_sync_and_async(&self) {
                 let new_stream = || {
-                    let peek_data = Cursor::new(self.peek_data);
+                    let prefix_data = Cursor::new(self.prefix_data);
                     let inner_data = Cursor::new(self.inner_data);
-                    PeekStream::new(peek_data, ServiceInput::new(inner_data))
+                    PrefixedIo::new(prefix_data, ServiceInput::new(inner_data))
                 };
 
                 test_multi_read_async::<N>(&mut new_stream(), self.expected_reads).await;
@@ -278,7 +282,7 @@ mod tests {
         }
 
         TestCase::<10> {
-            peek_data: "hello",
+            prefix_data: "hello",
             inner_data: " world",
             expected_reads: &["hello", " world", ""],
         }
@@ -286,7 +290,7 @@ mod tests {
         .await;
 
         TestCase::<5> {
-            peek_data: "hello world",
+            prefix_data: "hello world",
             inner_data: "next data",
             expected_reads: &["hello", " worl", "d", "next ", "data", ""],
         }
@@ -294,7 +298,7 @@ mod tests {
         .await;
 
         TestCase::<2> {
-            peek_data: "peek",
+            prefix_data: "peek",
             inner_data: "inner",
             expected_reads: &["pe", "ek", "in", "ne", "r", ""],
         }
@@ -302,7 +306,7 @@ mod tests {
         .await;
 
         TestCase::<8> {
-            peek_data: "",
+            prefix_data: "",
             inner_data: "inner data",
             expected_reads: &["inner da", "ta", ""],
         }
@@ -310,7 +314,7 @@ mod tests {
         .await;
 
         TestCase::<10> {
-            peek_data: "",
+            prefix_data: "",
             inner_data: "inner data",
             expected_reads: &["inner data", ""],
         }
@@ -318,7 +322,7 @@ mod tests {
         .await;
 
         TestCase::<12> {
-            peek_data: "",
+            prefix_data: "",
             inner_data: "inner data",
             expected_reads: &["inner data", ""],
         }
@@ -326,10 +330,10 @@ mod tests {
         .await;
     }
 
-    fn new_peek_write_stream() -> PeekStream<Cursor<Vec<u8>>, ServiceInput<Cursor<Vec<u8>>>> {
-        let peek_data = Cursor::new(Vec::new());
+    fn new_prefix_write_stream() -> PrefixedIo<Cursor<Vec<u8>>, ServiceInput<Cursor<Vec<u8>>>> {
+        let prefix_data = Cursor::new(Vec::new());
         let inner_data = Cursor::new(Vec::new());
-        PeekStream::new(peek_data, ServiceInput::new(inner_data))
+        PrefixedIo::new(prefix_data, ServiceInput::new(inner_data))
     }
 
     async fn test_multi_write_async(mut stream: impl AsyncWrite + Unpin, cases: &[&str]) {
@@ -345,7 +349,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_peek_stream_write() {
+    async fn test_prefix_stream_write() {
         #[derive(Debug)]
         struct TestCase<'a> {
             writes: &'a [&'static str],
@@ -353,18 +357,18 @@ mod tests {
 
         impl TestCase<'_> {
             async fn test_sync_and_async(&self) {
-                let mut stream = new_peek_write_stream();
+                let mut stream = new_prefix_write_stream();
                 test_multi_write_async(&mut stream, self.writes).await;
 
-                assert!(!stream.done_peek, "[async] writes: {:?}", self.writes);
+                assert!(!stream.prefix_eof, "[async] writes: {:?}", self.writes);
                 assert_eq!(
-                    stream.peek.position(),
+                    stream.prefix.position(),
                     0,
                     "[async] writes: {:?}",
                     self.writes
                 );
                 assert!(
-                    stream.peek.into_inner().is_empty(),
+                    stream.prefix.into_inner().is_empty(),
                     "[async] writes: {:?}",
                     self.writes
                 );
@@ -376,18 +380,18 @@ mod tests {
                     self.writes,
                 );
 
-                let mut stream = new_peek_write_stream();
+                let mut stream = new_prefix_write_stream();
                 test_multi_write_sync(&mut stream, self.writes);
 
-                assert!(!stream.done_peek, "[sync] writes: {:?}", self.writes);
+                assert!(!stream.prefix_eof, "[sync] writes: {:?}", self.writes);
                 assert_eq!(
-                    stream.peek.position(),
+                    stream.prefix.position(),
                     0,
                     "[sync] writes: {:?}",
                     self.writes
                 );
                 assert!(
-                    stream.peek.into_inner().is_empty(),
+                    stream.prefix.into_inner().is_empty(),
                     "[sync] writes: {:?}",
                     self.writes,
                 );

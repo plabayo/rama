@@ -2,8 +2,8 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
+    io::{PrefixedIo, StackReader},
     service::RejectService,
-    stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
 use tokio::io::AsyncReadExt;
@@ -49,10 +49,10 @@ impl<T> Socks5PeekRouter<T> {
 
 impl<Stream, Output, T, F> Service<Stream> for Socks5PeekRouter<T, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
     Output: Send + 'static,
-    T: Service<Socks5PeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<Socks5PeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<Socks5PrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<Socks5PrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
@@ -83,7 +83,7 @@ where
         let mut peek = StackReader::new(peek_buf);
         peek.skip(offset);
 
-        let stream = PeekStream::new(peek, stream);
+        let stream = PrefixedIo::new(peek, stream);
 
         if is_socks5 {
             self.socks5_acceptor.serve(stream).await.into_box_error()
@@ -95,16 +95,15 @@ where
 
 const SOCKS5_HEADER_PEEK_LEN: usize = 5;
 
-/// [`PeekStream`] alias used by [`Socks5PeekRouter`].
-pub type Socks5PeekStream<S> = PeekStream<StackReader<SOCKS5_HEADER_PEEK_LEN>, S>;
+/// [`PrefixedIo`] alias used by [`Socks5PeekRouter`].
+pub type Socks5PrefixedIo<S> = PrefixedIo<StackReader<SOCKS5_HEADER_PEEK_LEN>, S>;
 
 #[cfg(test)]
 mod test {
-
     use rama_core::{
         ServiceInput,
+        io::Io,
         service::{RejectError, service_fn},
-        stream::Stream,
     };
 
     use std::convert::Infallible;
@@ -171,9 +170,7 @@ mod test {
     async fn test_peek_router_read_eof() {
         const CONTENT: &[u8] = b"\x05\x01\x00";
 
-        async fn socks5_service_fn(
-            mut stream: impl Stream + Unpin,
-        ) -> Result<&'static str, BoxError> {
+        async fn socks5_service_fn(mut stream: impl Io + Unpin) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
             let _ = stream.read_to_end(&mut v).await?;
             assert_eq!(CONTENT, v);
@@ -214,9 +211,7 @@ mod test {
             }
             let socks5_service = service_fn(socks5_service_fn);
 
-            async fn other_service_fn(
-                mut stream: impl Stream + Unpin,
-            ) -> Result<Vec<u8>, BoxError> {
+            async fn other_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
                 let _ = stream.read_to_end(&mut v).await?;
                 Ok(v)

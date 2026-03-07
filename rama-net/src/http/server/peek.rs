@@ -4,8 +4,8 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
+    io::{PrefixedIo, StackReader},
     service::RejectService,
-    stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
 use std::time::Duration;
@@ -125,10 +125,10 @@ impl<T, U> HttpPeekRouter<HttpDualAcceptor<T, U>> {
 
 impl<Stream, Output, T, F> Service<Stream> for HttpPeekRouter<HttpAutoAcceptor<T>, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
     Output: Send + 'static,
-    T: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
@@ -147,10 +147,10 @@ where
 
 impl<Stream, Output, T, F> Service<Stream> for HttpPeekRouter<Http1Acceptor<T>, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
     Output: Send + 'static,
-    T: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
@@ -169,10 +169,10 @@ where
 
 impl<Stream, Output, T, F> Service<Stream> for HttpPeekRouter<H2Acceptor<T>, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
     Output: Send + 'static,
-    T: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
@@ -191,11 +191,11 @@ where
 
 impl<Stream, Output, T, U, F> Service<Stream> for HttpPeekRouter<HttpDualAcceptor<T, U>, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
     Output: Send + 'static,
-    T: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
-    U: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<HttpPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    U: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<HttpPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
@@ -224,15 +224,15 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HttpPeekVersion {
+pub enum HttpPeekVersion {
     Http1x,
     H2,
 }
 
-async fn peek_http_stream<Stream: rama_core::stream::Stream + Unpin + ExtensionsMut>(
+pub async fn peek_http_stream<Stream: rama_core::io::Io + Unpin + ExtensionsMut>(
     mut stream: Stream,
     timeout: Option<Duration>,
-) -> Result<(Option<HttpPeekVersion>, HttpPeekStream<Stream>), BoxError> {
+) -> Result<(Option<HttpPeekVersion>, HttpPrefixedIo<Stream>), BoxError> {
     let mut peek_buf = [0u8; HTTP_HEADER_PEEK_LEN];
 
     let read_fut = stream.read(&mut peek_buf);
@@ -277,7 +277,7 @@ async fn peek_http_stream<Stream: rama_core::stream::Stream + Unpin + Extensions
     let mut peek = StackReader::new(peek_buf);
     peek.skip(offset);
 
-    let stream = PeekStream::new(peek, stream);
+    let stream = PrefixedIo::new(peek, stream);
 
     Ok((http_version, stream))
 }
@@ -285,8 +285,8 @@ async fn peek_http_stream<Stream: rama_core::stream::Stream + Unpin + Extensions
 const H2_MAGIC_PREFIX: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 const HTTP_HEADER_PEEK_LEN: usize = H2_MAGIC_PREFIX.len();
 
-/// [`PeekStream`] alias used by [`HttpPeekRouter`].
-pub type HttpPeekStream<S> = PeekStream<StackReader<HTTP_HEADER_PEEK_LEN>, S>;
+/// [`PrefixedIo`] alias used by [`HttpPeekRouter`].
+pub type HttpPrefixedIo<S> = PrefixedIo<StackReader<HTTP_HEADER_PEEK_LEN>, S>;
 
 #[cfg(test)]
 mod test {
@@ -296,7 +296,7 @@ mod test {
     };
     use std::convert::Infallible;
 
-    use rama_core::stream::Stream;
+    use rama_core::io::Io;
 
     use super::*;
 
@@ -502,9 +502,7 @@ mod test {
     async fn test_peek_router_read_eof() {
         const CONTENT: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nfoobar";
 
-        async fn http_service_fn(
-            mut stream: impl Stream + Unpin,
-        ) -> Result<&'static str, BoxError> {
+        async fn http_service_fn(mut stream: impl Io + Unpin) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
             let _ = stream.read_to_end(&mut v).await?;
             assert_eq!(CONTENT, v);
@@ -543,9 +541,7 @@ mod test {
             }
             let http_service = service_fn(http_service_fn);
 
-            async fn other_service_fn(
-                mut stream: impl Stream + Unpin,
-            ) -> Result<Vec<u8>, BoxError> {
+            async fn other_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
                 let _ = stream.read_to_end(&mut v).await?;
                 Ok(v)

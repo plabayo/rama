@@ -17,8 +17,8 @@ use rama_core::{
     Service,
     error::BoxError,
     extensions::{Extensions, ExtensionsMut},
+    io::Io,
     rt::Executor,
-    stream::Stream,
     telemetry::tracing,
 };
 use rama_net::{
@@ -30,7 +30,7 @@ use std::{fmt, sync::Arc};
 
 mod peek;
 #[doc(inline)]
-pub use peek::{NoSocks5RejectError, Socks5PeekRouter, Socks5PeekStream};
+pub use peek::{NoSocks5RejectError, Socks5PeekRouter, Socks5PrefixedIo};
 
 mod connect;
 pub use connect::{Connector, DefaultConnector, LazyConnector, Socks5Connector};
@@ -342,7 +342,7 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
         U: Socks5UdpAssociator<S>,
         A: Authorizer<user::Basic, Error: fmt::Debug>,
         B: Socks5Binder<S>,
-        S: Stream + Unpin + ExtensionsMut,
+        S: Io + Unpin + ExtensionsMut,
     {
         let client_header = client::Header::read_from(&mut stream)
             .await
@@ -412,7 +412,7 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
 }
 
 impl<C, B, U, A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5Acceptor<C, B, U, A> {
-    async fn handle_method<S: Stream + Unpin>(
+    async fn handle_method<S: Io + Unpin>(
         &self,
         methods: &[SocksMethod],
         stream: &mut S,
@@ -524,7 +524,7 @@ where
     U: Socks5UdpAssociator<S>,
     A: Authorizer<user::Basic, Error: fmt::Debug>,
     B: Socks5Binder<S>,
-    S: Stream + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsMut,
 {
     type Output = ();
     type Error = Error;

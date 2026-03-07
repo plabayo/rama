@@ -118,13 +118,7 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
             // "<tag>"
             b'"' => 1,
             // W/"<tag>"
-            b'W' => {
-                if length >= 4 && slice[1] == b'/' && slice[2] == b'"' {
-                    3
-                } else {
-                    return None;
-                }
-            }
+            b'W' if length >= 4 && slice[1] == b'/' && slice[2] == b'"' => 3,
             _ => return None,
         };
 

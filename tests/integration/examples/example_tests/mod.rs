@@ -35,6 +35,8 @@ mod http_listener_hello;
 mod http_mitm_proxy_boring;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
 mod http_mitm_proxy_rustls;
+#[cfg(all(feature = "http-full", feature = "rustls", feature = "boring"))]
+mod http_mitm_relay_proxy_boring;
 #[cfg(feature = "http-full")]
 mod http_nd_json;
 #[cfg(feature = "http-full")]

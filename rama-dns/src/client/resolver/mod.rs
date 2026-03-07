@@ -9,7 +9,10 @@ use rama_core::error::extra::OpaqueError;
 use rama_core::futures::{FutureExt as _, Stream, TryStreamExt as _};
 use rama_net::address::Domain;
 
-pub use self::address::{BoxDnsAddressResolver, DnsAddressResolver, DnsAddresssResolverOverwrite};
+pub use self::address::{
+    BoxDnsAddressResolver, DnsAddressResolver, DnsAddresssResolverOverwrite,
+    HappyEyeballAddressResolver, HappyEyeballAddressResolverExt,
+};
 
 mod txt;
 pub use self::txt::{BoxDnsTxtResolver, DnsTxtResolver};

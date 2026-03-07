@@ -8,10 +8,10 @@ mod config;
 pub use config::{EmptyLineHandling, ParseConfig};
 
 mod engine;
-mod stream;
 
-pub use stream::read::JsonReadStream;
-pub use stream::write::JsonWriteStream;
+mod io;
+pub use io::read::JsonReadStream;
+pub use io::write::JsonWriteStream;
 
 mod codec;
 pub use codec::{JsonDecoder, JsonEncoder};

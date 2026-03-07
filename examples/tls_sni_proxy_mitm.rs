@@ -100,6 +100,7 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
+    io::Io,
     layer::{AddInputExtensionLayer, ConsumeErrLayer},
     net::{
         Protocol,
@@ -110,13 +111,12 @@ use rama::{
             ApplicationProtocol,
             client::ServerVerifyMode,
             server::{
-                ServerAuth, ServerCertIssuerData, ServerConfig, SniPeekStream, SniRequest,
+                ServerAuth, ServerCertIssuerData, ServerConfig, SniPrefixedIo, SniRequest,
                 SniRouter,
             },
         },
     },
     rt::Executor,
-    stream::Stream,
     tcp::{client::service::Forwarder, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -253,8 +253,8 @@ struct SniRouterService<T> {
 
 impl<T, S> Service<SniRequest<S>> for SniRouterService<T>
 where
-    S: Stream + Unpin + ExtensionsMut,
-    T: Service<SniPeekStream<S>, Output = (), Error: Into<BoxError>>,
+    S: Io + Unpin + ExtensionsMut,
+    T: Service<SniPrefixedIo<S>, Output = (), Error: Into<BoxError>>,
 {
     type Output = ();
     type Error = BoxError;

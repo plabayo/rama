@@ -1,12 +1,13 @@
 use std::{io, time::Duration};
 
+use rama_core::io::BridgeIo;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_core::{Service, error::BoxError, layer::timeout::DefaultTimeout, stream::Stream};
+use rama_core::{Service, error::BoxError, io::Io, layer::timeout::DefaultTimeout};
 use rama_net::address::HostWithPort;
 use rama_net::{
     address::{Host, SocketAddress},
-    proxy::{ProxyRequest, StreamForwardService},
+    proxy::StreamForwardService,
     socket::{Interface, SocketService},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
@@ -39,7 +40,7 @@ pub trait Socks5BinderSeal<S>: Send + Sync + 'static {
 
 impl<S> Socks5BinderSeal<S> for ()
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     async fn accept_bind(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::debug!(
@@ -111,12 +112,12 @@ impl<A, S> Binder<A, S> {
     }
 
     /// Overwrite the [`Binder`]'s [`Service`]
-    /// used to actually do the proxy between the source and incoming bind [`Stream`].
+    /// used to actually do the proxy between the source and incoming bind [`Io`].
     ///
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (ProxyRequest) -> ((), Into<BoxError>)
+    /// (BridgeIo) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Binder<A, T> {
         Binder {
@@ -176,8 +177,8 @@ impl Service<Interface> for DefaultAcceptorFactory {
 
 /// [`Acceptor`] created by an factory [`Service`] in function of a bind [`Service`].
 pub trait Acceptor: Send + Sync + 'static {
-    /// The [`Stream`] returned by this [`Acceptor`].
-    type Stream: Stream;
+    /// The [`Io`] returned by this [`Acceptor`].
+    type Stream: Io;
 
     /// Returns the local address that this listener is bound to.
     fn local_addr(&self) -> io::Result<SocketAddress>;
@@ -216,17 +217,14 @@ impl Default for DefaultBinder {
 
 impl<S, F, StreamService> Socks5BinderSeal<S> for Binder<F, StreamService>
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
     F: SocketService<Socket: Acceptor<Stream: Unpin>>,
-    StreamService: Service<
-            ProxyRequest<S, <F::Socket as Acceptor>::Stream>,
-            Output = (),
-            Error: Into<BoxError>,
-        >,
+    StreamService:
+        Service<BridgeIo<S, <F::Socket as Acceptor>::Stream>, Output = (), Error: Into<BoxError>>,
 {
     async fn accept_bind(
         &self,
-        mut stream: S,
+        mut ingress_stream: S,
         requested_bind_address: HostWithPort,
     ) -> Result<(), Error> {
         tracing::trace!("socks5 server: bind: try to create acceptor @ {requested_bind_address}");
@@ -241,7 +239,7 @@ where
                 tracing::debug!("bind command does not accept domain {domain} as bind address",);
                 let reply_kind = ReplyKind::AddressTypeNotSupported;
                 Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
+                    .write_to(&mut ingress_stream)
                     .await
                     .map_err(|err| {
                         Error::io(err).with_context("write server reply: bind failed")
@@ -271,7 +269,7 @@ where
                 tracing::debug!("make bind listener failed: {err:?}");
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
+                    .write_to(&mut ingress_stream)
                     .await
                     .map_err(|err| {
                         Error::io(err).with_context("write server reply: make bind listener failed")
@@ -290,7 +288,7 @@ where
                 );
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
+                    .write_to(&mut ingress_stream)
                     .await
                     .map_err(|err| {
                         Error::io(err).with_context("write server reply: make bind listener failed")
@@ -300,7 +298,7 @@ where
         };
 
         Reply::new(bind_address)
-            .write_to(&mut stream)
+            .write_to(&mut ingress_stream)
             .await
             .map_err(|err| {
                 Error::io(err).with_context("write server reply: bind: acceptor listener ready")
@@ -315,7 +313,7 @@ where
                     tracing::debug!("accept future timed out @ {bind_interface}: {err:?}",);
                     let reply_kind = ReplyKind::TtlExpired;
                     Reply::error_reply(reply_kind)
-                        .write_to(&mut stream)
+                        .write_to(&mut ingress_stream)
                         .await
                         .map_err(|err| {
                             Error::io(err).with_context("write server reply: bind failed")
@@ -326,7 +324,7 @@ where
             None => accept_future.await,
         };
 
-        let (target, incoming_addr) = match result {
+        let (incoming_stream, incoming_addr) = match result {
             Ok((stream, addr)) => (stream, addr),
             Err(err) => {
                 let err: BoxError = err.into();
@@ -334,7 +332,7 @@ where
 
                 let reply_kind = (&err).into();
                 Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
+                    .write_to(&mut ingress_stream)
                     .await
                     .map_err(|err| {
                         Error::io(err).with_context("write server reply: bind failed")
@@ -350,7 +348,7 @@ where
         );
 
         Reply::new(incoming_addr)
-            .write_to(&mut stream)
+            .write_to(&mut ingress_stream)
             .await
             .map_err(|err| {
                 Error::io(err).with_context("write server reply: bind: connection received")
@@ -361,10 +359,7 @@ where
         );
 
         self.service
-            .serve(ProxyRequest {
-                source: stream,
-                target,
-            })
+            .serve(BridgeIo(ingress_stream, incoming_stream))
             .instrument(tracing::trace_span!("socks5::bind::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("serve bind pipe"))
@@ -454,7 +449,7 @@ mod test {
 
     impl<S> Socks5BinderSeal<S> for MockBinder
     where
-        S: Stream + Unpin,
+        S: Io + Unpin,
     {
         async fn accept_bind(
             &self,

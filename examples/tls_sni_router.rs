@@ -48,12 +48,12 @@ use rama::{
     extensions::ExtensionsMut,
     graceful::{Shutdown, ShutdownGuard},
     http::{layer::trace::TraceLayer, server::HttpServer, service::web::Router},
+    io::Io,
     net::{
         address::{Domain, SocketAddress},
         tls::server::{SelfSignedData, ServerAuth, ServerConfig, SniRequest, SniRouter},
     },
     rt::Executor,
-    stream::Stream,
     tcp::{client::service::Forwarder, server::TcpListener},
     telemetry::tracing::{
         self, Instrument as _,
@@ -124,7 +124,7 @@ struct SniRouterSvc {
 
 impl<S> Service<SniRequest<S>> for SniRouterSvc
 where
-    S: Stream + ExtensionsMut + Unpin,
+    S: Io + ExtensionsMut + Unpin,
 {
     type Output = ();
     type Error = BoxError;

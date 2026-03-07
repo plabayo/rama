@@ -22,7 +22,10 @@
 )]
 
 mod socket;
-pub use socket::{UdpSocket, bind_udp, bind_udp_with_address, bind_udp_with_socket};
+pub use socket::{
+    UdpSocket, bind_udp, bind_udp_socket_with_connect, bind_udp_socket_with_connect_default_dns,
+    bind_udp_with_address, bind_udp_with_socket,
+};
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 pub use socket::bind_udp_with_device;

@@ -1,24 +1,26 @@
-use super::BoringTlsStream;
+use std::fmt;
+
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
+use rama_boring_tokio::SslStream;
 use rama_core::{
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
-    stream::Stream,
+    extensions::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
+    io::Io,
 };
-use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
-    /// A stream which can be either a secure or a plain stream.
+    #[non_exhaustive]
     pub struct TlsStream<S> {
         #[pin]
-        pub(super) inner: BoringTlsStream<S>,
+        pub(super) inner: SslStream<S>,
     }
 }
 
 impl<S: ExtensionsMut> TlsStream<S> {
     #[must_use]
-    pub fn new(inner: BoringTlsStream<S>) -> Self {
+    pub fn new(inner: SslStream<S>) -> Self {
         Self { inner }
     }
 
@@ -51,7 +53,7 @@ impl<S: ExtensionsMut> ExtensionsMut for TlsStream<S> {
 #[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for TlsStream<S>
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
@@ -65,7 +67,7 @@ where
 #[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for TlsStream<S>
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     fn poll_write(
         self: std::pin::Pin<&mut Self>,

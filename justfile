@@ -31,6 +31,12 @@ check-links:
 clippy:
     cargo clippy --workspace --all-targets --all-features
 
+clippy-beta:
+    cargo +beta clippy --workspace --all-targets --all-features
+
+clippy-beta-crate CRATE:
+    cargo +beta clippy -p {{CRATE}} --all-targets --all-features
+
 clippy-crate CRATE:
     cargo clippy -p {{CRATE}} --all-targets --all-features
 
@@ -99,6 +105,9 @@ qa-crate CRATE:
     just test-crate {{CRATE}}
     just test-doc-crate {{CRATE}}
 
+qa-ffi-apple:
+    just ./ffi/apple/examples/transparent_proxy/qa
+
 qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:
@@ -106,6 +115,7 @@ bench-e2e-http-client-server *ARGS:
 
 clean:
     cargo clean
+    just ./ffi/apple/examples/transparent_proxy/clean
 
 upgrades:
     @cargo install cargo-upgrades

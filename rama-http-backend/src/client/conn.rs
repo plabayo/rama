@@ -3,8 +3,8 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
+    io::Io,
     rt::Executor,
-    stream::Stream,
 };
 use rama_http::{
     StreamingBody,
@@ -52,9 +52,181 @@ impl<S, Body> HttpConnector<S, Body> {
     define_inner_service_accessors!();
 }
 
+/// Establish an HTTP connection on the pre-established IO (bytes) stream
+/// with the given http request as context for the initial setup.
+pub async fn http_connect<IO, BodyIn, BodyConnection>(
+    mut io: IO,
+    req: Request<BodyIn>,
+    exec: Executor,
+) -> Result<
+    EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>,
+    OpaqueError,
+>
+where
+    IO: Io + Unpin + ExtensionsMut,
+    BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    // Body type this connector will be able to send, this is not necessarily the same one that
+    // was used in the request that created this connection
+    BodyConnection:
+        StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+{
+    // TODO this is way to tricky, this needs to be here on the io extensions
+    // Not the ones we clone, ideally the exentions should all just use the same store
+    // We can solve this by making them clonable
+    io.extensions_mut().get_or_insert(ConnectionHealth::default);
+
+    let extensions = io.extensions().clone();
+
+    let server_address = req
+        .extensions()
+        .get::<RequestContext>()
+        .map(|ctx| ctx.authority.host.to_str())
+        .or_else(|| req.uri().host().map(Into::into))
+        .or_else(|| {
+            req.headers()
+                .get(HOST)
+                .and_then(|v| v.to_str().ok())
+                .map(Into::into)
+        })
+        .unwrap_or_default();
+
+    match req.version() {
+        Version::HTTP_2 => {
+            tracing::trace!(url.full = %req.uri(), "create h2 client executor");
+
+            let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
+
+            if req.extensions().get::<Protocol>().is_some() {
+                // e.g. used for h2 bootstrap support for WebSocket
+                builder.set_enable_connect_protocol(1);
+            }
+
+            if let Some(params) = req
+                .extensions()
+                .get::<H2ClientContextParams>()
+                .or_else(|| req.extensions().get())
+            {
+                if let Some(order) = params.headers_pseudo_order.clone() {
+                    builder.set_headers_pseudo_order(order);
+                }
+                if let Some(ref frames) = params.early_frames {
+                    let v = frames.as_slice().to_vec();
+                    builder.set_early_frames(v);
+                }
+                if let Some(sz) = params.init_stream_window_size {
+                    builder.set_initial_stream_window_size(sz);
+                }
+                if let Some(sz) = params.init_connection_window_size {
+                    builder.set_initial_connection_window_size(sz);
+                }
+                if let Some(d) = params.keep_alive_interval {
+                    builder.set_keep_alive_interval(d);
+                }
+                if let Some(d) = params.keep_alive_timeout {
+                    builder.set_keep_alive_timeout(d);
+                }
+                if let Some(keep_alive) = params.keep_alive_while_idle {
+                    builder.set_keep_alive_while_idle(keep_alive);
+                }
+                if let Some(sz) = params.max_header_list_size {
+                    builder.set_max_header_list_size(sz);
+                }
+                if let Some(adaptive_window) = params.adaptive_window {
+                    builder.set_adaptive_window(adaptive_window);
+                }
+            } else if let Some(pseudo_order) = req.extensions().get::<PseudoHeaderOrder>().cloned()
+            {
+                builder.set_headers_pseudo_order(pseudo_order);
+            }
+
+            let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
+
+            let conn_span = tracing::trace_root_span!(
+                "h2::conn::serve",
+                otel.kind = "client",
+                http.request.method = %req.method().as_str(),
+                url.full = %req.uri(),
+                url.path = %req.uri().path(),
+                url.query = req.uri().query().unwrap_or_default(),
+                url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                network.protocol.name = "http",
+                network.protocol.version = version_as_protocol_version(req.version()),
+                user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                server.address = %server_address,
+                server.service.name = %server_address,
+            );
+
+            exec.into_spawn_task(
+                async move {
+                    if let Err(err) = conn.await {
+                        tracing::debug!("connection failed: {err:?}");
+                    }
+                }
+                .instrument(conn_span),
+            );
+
+            let svc = HttpClientService {
+                sender: SendRequest::Http2(sender),
+                extensions,
+            };
+
+            Ok(EstablishedClientConnection {
+                input: req,
+                conn: svc,
+            })
+        }
+        Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
+            tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
+            let mut builder = rama_http_core::client::conn::http1::Builder::new();
+            if let Some(params) = req.extensions().get::<Http1ClientContextParams>() {
+                builder.set_title_case_headers(params.title_header_case);
+            }
+            let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
+            let conn = conn.with_upgrades();
+
+            let conn_span = tracing::trace_root_span!(
+                "h1::conn::serve",
+                otel.kind = "client",
+                http.request.method = %req.method().as_str(),
+                url.full = %req.uri(),
+                url.path = %req.uri().path(),
+                url.query = req.uri().query().unwrap_or_default(),
+                url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                network.protocol.name = "http",
+                network.protocol.version = version_as_protocol_version(req.version()),
+                user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                server.address = %server_address,
+                server.service.name = %server_address,
+            );
+
+            exec.into_spawn_task(
+                async move {
+                    if let Err(err) = conn.await {
+                        tracing::debug!("connection failed: {err:?}");
+                    }
+                }
+                .instrument(conn_span),
+            );
+
+            let svc = HttpClientService {
+                sender: SendRequest::Http1(Mutex::new(sender)),
+                extensions,
+            };
+
+            Ok(EstablishedClientConnection {
+                input: req,
+                conn: svc,
+            })
+        }
+        version => Err(BoxError::from("unsupported Http version")
+            .context_debug_field("version", version)
+            .into_opaque_error()),
+    }
+}
+
 impl<S, BodyIn, BodyConnection> Service<Request<BodyIn>> for HttpConnector<S, BodyConnection>
 where
-    S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin>,
+    S: ConnectorService<Request<BodyIn>, Connection: Io + Unpin>,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     // Body type this connector will be able to send, this is not necessarily the same one that
     // was used in the request that created this connection
@@ -64,174 +236,15 @@ where
     type Output = EstablishedClientConnection<HttpClientService<BodyConnection>, Request<BodyIn>>;
     type Error = OpaqueError;
 
+    #[inline]
     async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection {
-            input: req,
-            mut conn,
-        } = self
+        let EstablishedClientConnection { input: req, conn } = self
             .inner
             .connect(req)
             .await
             .map_err(Into::into)
             .into_opaque_error()?;
-
-        // TODO this is way to tricky, this needs to be here on the io extensions
-        // Not the ones we clone, ideally the exentions should all just use the same store
-        // We can solve this by making them clonable
-        conn.extensions_mut()
-            .get_or_insert(ConnectionHealth::default);
-
-        let extensions = conn.extensions().clone();
-
-        let server_address = req
-            .extensions()
-            .get::<RequestContext>()
-            .map(|ctx| ctx.authority.host.to_str())
-            .or_else(|| req.uri().host().map(Into::into))
-            .or_else(|| {
-                req.headers()
-                    .get(HOST)
-                    .and_then(|v| v.to_str().ok())
-                    .map(Into::into)
-            })
-            .unwrap_or_default();
-
-        let io = Box::pin(conn);
-
-        match req.version() {
-            Version::HTTP_2 => {
-                tracing::trace!(url.full = %req.uri(), "create h2 client executor");
-
-                let mut builder =
-                    rama_http_core::client::conn::http2::Builder::new(self.exec.clone());
-
-                if req.extensions().get::<Protocol>().is_some() {
-                    // e.g. used for h2 bootstrap support for WebSocket
-                    builder.set_enable_connect_protocol(1);
-                }
-
-                if let Some(params) = req
-                    .extensions()
-                    .get::<H2ClientContextParams>()
-                    .or_else(|| req.extensions().get())
-                {
-                    if let Some(order) = params.headers_pseudo_order.clone() {
-                        builder.set_headers_pseudo_order(order);
-                    }
-                    if let Some(ref frames) = params.early_frames {
-                        let v = frames.as_slice().to_vec();
-                        builder.set_early_frames(v);
-                    }
-                    if let Some(sz) = params.init_stream_window_size {
-                        builder.set_initial_stream_window_size(sz);
-                    }
-                    if let Some(sz) = params.init_connection_window_size {
-                        builder.set_initial_connection_window_size(sz);
-                    }
-                    if let Some(d) = params.keep_alive_interval {
-                        builder.set_keep_alive_interval(d);
-                    }
-                    if let Some(d) = params.keep_alive_timeout {
-                        builder.set_keep_alive_timeout(d);
-                    }
-                    if let Some(keep_alive) = params.keep_alive_while_idle {
-                        builder.set_keep_alive_while_idle(keep_alive);
-                    }
-                    if let Some(sz) = params.max_header_list_size {
-                        builder.set_max_header_list_size(sz);
-                    }
-                    if let Some(adaptive_window) = params.adaptive_window {
-                        builder.set_adaptive_window(adaptive_window);
-                    }
-                } else if let Some(pseudo_order) =
-                    req.extensions().get::<PseudoHeaderOrder>().cloned()
-                {
-                    builder.set_headers_pseudo_order(pseudo_order);
-                }
-
-                let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
-
-                let conn_span = tracing::trace_root_span!(
-                    "h2::conn::serve",
-                    otel.kind = "client",
-                    http.request.method = %req.method().as_str(),
-                    url.full = %req.uri(),
-                    url.path = %req.uri().path(),
-                    url.query = req.uri().query().unwrap_or_default(),
-                    url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
-                    network.protocol.name = "http",
-                    network.protocol.version = version_as_protocol_version(req.version()),
-                    user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
-                    server.address = %server_address,
-                    server.service.name = %server_address,
-                );
-
-                self.exec.spawn_task(
-                    async move {
-                        if let Err(err) = conn.await {
-                            tracing::debug!("connection failed: {err:?}");
-                        }
-                    }
-                    .instrument(conn_span),
-                );
-
-                let svc = HttpClientService {
-                    sender: SendRequest::Http2(sender),
-                    extensions,
-                };
-
-                Ok(EstablishedClientConnection {
-                    input: req,
-                    conn: svc,
-                })
-            }
-            Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-                tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
-                let mut builder = rama_http_core::client::conn::http1::Builder::new();
-                if let Some(params) = req.extensions().get::<Http1ClientContextParams>() {
-                    builder.set_title_case_headers(params.title_header_case);
-                }
-                let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
-                let conn = conn.with_upgrades();
-
-                let conn_span = tracing::trace_root_span!(
-                    "h1::conn::serve",
-                    otel.kind = "client",
-                    http.request.method = %req.method().as_str(),
-                    url.full = %req.uri(),
-                    url.path = %req.uri().path(),
-                    url.query = req.uri().query().unwrap_or_default(),
-                    url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
-                    network.protocol.name = "http",
-                    network.protocol.version = version_as_protocol_version(req.version()),
-                    user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
-                    server.address = %server_address,
-                    server.service.name = %server_address,
-                );
-
-                self.exec.spawn_task(
-                    async move {
-                        if let Err(err) = conn.await {
-                            tracing::debug!("connection failed: {err:?}");
-                        }
-                    }
-                    .instrument(conn_span),
-                );
-
-                let svc = HttpClientService {
-                    sender: SendRequest::Http1(Mutex::new(sender)),
-                    extensions,
-                };
-
-                Ok(EstablishedClientConnection {
-                    input: req,
-                    conn: svc,
-                })
-            }
-            version => Err(BoxError::from("unsupported Http version")
-                .context_debug_field("version", version)
-                .into_opaque_error()),
-        }
+        http_connect(conn, req, self.exec.clone()).await
     }
 }
 

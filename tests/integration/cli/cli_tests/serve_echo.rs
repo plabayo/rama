@@ -155,7 +155,7 @@ async fn test_tls_tcp_echo() {
                 TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
             ));
         match connector
-            .connect(TcpRequest::new(([127, 0, 0, 1], 63111).into()))
+            .connect(TcpRequest::new(HostWithPort::local_ipv4(63111)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {
@@ -408,7 +408,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
     utils::init_tracing();
 
     let (ca_issuer_cert, ca_issuer_key) =
-        boring_server_utils::self_signed_server_ca(&SelfSignedData::default()).unwrap();
+        boring_server_utils::self_signed_server_auth_gen_ca(&SelfSignedData::default()).unwrap();
     let (issuer_server_cert, issuer_server_key) =
         boring_server_utils::self_signed_server_auth_gen_cert(
             &SelfSignedData {

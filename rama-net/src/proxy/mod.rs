@@ -2,10 +2,6 @@
 
 use crate::address::HostWithPort;
 
-mod request;
-#[doc(inline)]
-pub use request::ProxyRequest;
-
 mod forward;
 #[doc(inline)]
 pub use forward::StreamForwardService;
