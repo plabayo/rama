@@ -127,7 +127,7 @@ async fn grpc(accept_h1: bool) -> (impl Future<Output = ()>, String) {
                 .await;
         } else {
             listener
-                .serve(HttpServer::h2(Executor::default()).service(http_svc))
+                .serve(HttpServer::new_h2(Executor::default()).service(http_svc))
                 .await;
         }
     };
@@ -147,7 +147,7 @@ async fn grpc_web(accept_h1: bool) -> (impl Future<Output = ()>, String) {
                 .await;
         } else {
             listener
-                .serve(HttpServer::h2(Executor::default()).service(http_svc))
+                .serve(HttpServer::new_h2(Executor::default()).service(http_svc))
                 .await;
         }
     };

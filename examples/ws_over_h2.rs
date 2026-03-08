@@ -63,7 +63,7 @@ async fn main() {
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
 
     graceful.spawn_task_fn(async |guard| {
-        let mut h2 = HttpServer::h2(Executor::graceful(guard.clone()));
+        let mut h2 = HttpServer::new_h2(Executor::graceful(guard.clone()));
         h2.h2_mut().set_enable_connect_protocol(); // required for WS sockets
         let server = h2.service(Arc::new(
             Router::new().with_get("/", Html(INDEX)).with_connect(

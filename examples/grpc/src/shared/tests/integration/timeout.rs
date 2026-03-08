@@ -111,7 +111,7 @@ async fn run_service_in_background(latency: Duration, server_timeout: Duration) 
 
     tokio::spawn(async move {
         listener
-            .serve(HttpServer::h2(Executor::default()).service(grpc_svc))
+            .serve(HttpServer::new_h2(Executor::default()).service(grpc_svc))
             .await;
     });
 

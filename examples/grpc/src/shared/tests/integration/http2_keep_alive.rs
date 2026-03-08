@@ -43,7 +43,7 @@ async fn http2_keepalive_does_not_cause_panics() {
     let addr = listener.local_addr().unwrap();
 
     let jh = graceful.spawn_task_fn(async move |guard| {
-        let mut server = HttpServer::h2(Executor::graceful(guard.clone()));
+        let mut server = HttpServer::new_h2(Executor::graceful(guard.clone()));
         server
             .h2_mut()
             .set_keep_alive_interval(Duration::from_secs(10));
@@ -80,7 +80,7 @@ async fn http2_keepalive_does_not_cause_panics_on_client_side() {
     let addr = listener.local_addr().unwrap();
 
     let jh = graceful.spawn_task_fn(async move |guard| {
-        let mut server = HttpServer::h2(Executor::graceful(guard.clone()));
+        let mut server = HttpServer::new_h2(Executor::graceful(guard.clone()));
         server
             .h2_mut()
             .set_keep_alive_interval(Duration::from_secs(5));

@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt};
+use std::{convert::Infallible, fmt, sync::Arc};
 
 use rama_core::{
     Layer, Service,
@@ -20,7 +20,9 @@ use rama_http::{
     Body, HeaderName, HeaderValue, Request, Response, StatusCode,
     service::web::response::IntoResponse,
 };
-use rama_http_core::server::conn::auto::{Builder, Http1Builder, Http2Builder};
+use rama_http_core::server::conn::auto::Builder as AutoConnBuilder;
+use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
+use rama_http_core::server::conn::http2::Builder as H2ConnBuilder;
 use rama_net::client::EstablishedClientConnection;
 use rama_utils::macros::generate_set_and_with;
 
@@ -77,6 +79,7 @@ pub type DefaultMiddleware = (
     ArcLayer,
 );
 
+#[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay HTTP requests and responses between a client and server,
 /// as part of a deep protocol inspection protocol (DPI) flow.
@@ -85,19 +88,22 @@ pub type DefaultMiddleware = (
 /// have pre-established ingress and egress connections (e.g. because
 /// you already MITM'd the <L7 layers, such as SOCKS5 MITM'ng, TLS, ...).
 pub struct HttpMitmRelay<M = DefaultMiddleware> {
-    http_server: HttpServer<Builder>,
-    graceful: Shutdown,
-    drop_guard: DropGuard,
+    http_server: HttpServer<AutoConnBuilder>,
     relay_buffer: Option<usize>,
     middleware: M,
+    shared_state: Arc<SharedHttpMitmRelayState>,
 }
 
-impl<M: fmt::Debug> fmt::Debug for HttpMitmRelay<M> {
+struct SharedHttpMitmRelayState {
+    graceful: Shutdown,
+    drop_guard: DropGuard,
+}
+
+impl fmt::Debug for SharedHttpMitmRelayState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpMitmRelay")
-            .field("http_server", &self.http_server)
+        f.debug_struct("SharedHttpMitmRelayState")
             .field("graceful", &"Shutdown")
-            .field("middleware", &self.middleware)
+            .field("drop_guard", &self.drop_guard)
             .finish()
     }
 }
@@ -109,6 +115,12 @@ impl HttpMitmRelay {
     pub fn new(exec: Executor) -> Self {
         let token = CancellationToken::new();
         let cancelled = token.clone().cancelled_owned();
+
+        // TODO: in future when graceful shutdown is integrated
+        // and reworked, see <https://github.com/plabayo/rama/issues/830>,
+        // we can probably do better than having to create a tmp Shutdown manager,
+        // and instead just work with a guard created from a combined signal...
+
         let graceful = Shutdown::new(async move {
             if let Some(guard) = exec.into_guard() {
                 tokio::select! {
@@ -122,13 +134,15 @@ impl HttpMitmRelay {
 
         Self {
             http_server: HttpServer::auto(Executor::graceful(graceful.guard())),
-            graceful,
             relay_buffer: None,
-            drop_guard: token.drop_guard(),
             middleware: (
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                 ArcLayer::new(),
             ),
+            shared_state: Arc::new(SharedHttpMitmRelayState {
+                graceful,
+                drop_guard: token.drop_guard(),
+            }),
         }
     }
 
@@ -139,24 +153,35 @@ impl HttpMitmRelay {
     pub fn with_http_middleware<M>(self, middleware: M) -> HttpMitmRelay<M> {
         HttpMitmRelay {
             http_server: self.http_server,
-            graceful: self.graceful,
             relay_buffer: self.relay_buffer,
-            drop_guard: self.drop_guard,
             middleware,
+            shared_state: self.shared_state,
         }
     }
 }
 
 impl<M> HttpMitmRelay<M> {
     #[inline(always)]
-    /// Http1 server configuration.
-    pub fn server_http_mut(&mut self) -> Http1Builder<'_> {
+    /// Http1 builder.
+    pub fn http1(&self) -> &Http1ConnBuilder {
+        self.http_server.http1()
+    }
+
+    #[inline(always)]
+    /// Http1 mutable builder.
+    pub fn http1_mut(&mut self) -> &mut Http1ConnBuilder {
         self.http_server.http1_mut()
     }
 
-    /// H2 server configuration.
     #[inline(always)]
-    pub fn server_h2_mut(&mut self) -> Http2Builder<'_> {
+    /// H2 builder.
+    pub fn h2(&self) -> &H2ConnBuilder {
+        self.http_server.h2()
+    }
+
+    #[inline(always)]
+    /// H2 mutable builder.
+    pub fn h2_mut(&mut self) -> &mut H2ConnBuilder {
         self.http_server.h2_mut()
     }
 
@@ -172,41 +197,38 @@ impl<M> HttpMitmRelay<M> {
     }
 }
 
-impl<M> HttpMitmRelay<M>
+impl<Ingress, Egress, M> Service<BridgeIo<Ingress, Egress>> for HttpMitmRelay<M>
 where
-    M: Layer<HttpClientService<Body>> + Send + 'static,
+    Ingress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin + ExtensionsMut,
+    M: Layer<HttpClientService<Body>> + Send + Sync + 'static + Clone,
     M::Service: Service<Request, Output = Response, Error = Infallible> + Clone,
 {
-    pub async fn serve<Ingress, Egress>(
-        self,
+    type Output = ();
+    type Error = BoxError;
+
+    async fn serve(
+        &self,
         BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
-    ) -> Result<(), BoxError>
-    where
-        Ingress: Io + Unpin + ExtensionsMut,
-        Egress: Io + Unpin + ExtensionsMut,
-    {
-        let Self {
-            mut http_server,
-            graceful,
-            drop_guard,
-            relay_buffer,
-            middleware,
-        } = self;
+    ) -> Result<Self::Output, Self::Error> {
+        // TODO: we should have this shutdown manager only here...
+        // this way we can also avoid shared state!
 
         let (req_tx, req_rx) = tokio::sync::mpsc::channel(
-            relay_buffer
-                .unwrap_or_else(|| http_server.h2_mut().max_concurrent_streams() as usize)
+            self.relay_buffer
+                .unwrap_or_else(|| self.http_server.h2().max_concurrent_streams() as usize)
                 .max(1),
         );
 
-        graceful.spawn_task_fn(async move |guard| {
-            let _drop_guard = drop_guard;
-            http_relay_service_egress(egress_stream, guard, req_rx, middleware).await;
-            tracing::trace!("http_relay_service_egress = done");
-        });
+        let middleware = self.middleware.clone();
+        self.shared_state
+            .graceful
+            .spawn_task_fn(async move |guard| {
+                http_relay_service_egress(egress_stream, guard, req_rx, middleware).await;
+                tracing::trace!("http_relay_service_egress = done");
+            });
 
-        drop(graceful);
-        http_server
+        self.http_server
             .serve(
                 ingress_stream,
                 service_fn(move |req: Request| {

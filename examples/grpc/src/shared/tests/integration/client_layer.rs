@@ -46,7 +46,7 @@ async fn connect_supports_standard_rama_http_layers() {
 
     let jh = graceful.spawn_task_fn(async move |guard| {
         listener
-            .serve(HttpServer::h2(Executor::graceful(guard)).service(svc))
+            .serve(HttpServer::new_h2(Executor::graceful(guard)).service(svc))
             .await;
     });
 

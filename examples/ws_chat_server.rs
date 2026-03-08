@@ -56,7 +56,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Arc::new(Router::new().with_get("/", Html(INDEX)).with_get(
+        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(Arc::new(Router::new().with_get("/", Html(INDEX)).with_get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
                 async |mut ws: ServerWebSocket| {

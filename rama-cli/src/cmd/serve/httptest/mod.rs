@@ -194,7 +194,7 @@ where
                 tcp_listener
                     .serve(
                         tcp_service_builder
-                            .into_layer(HttpServer::http1(exec).service(http_service)),
+                            .into_layer(HttpServer::new_http1(exec).service(http_service)),
                     )
                     .await;
             }
@@ -206,7 +206,8 @@ where
                 );
                 tcp_listener
                     .serve(
-                        tcp_service_builder.into_layer(HttpServer::h2(exec).service(http_service)),
+                        tcp_service_builder
+                            .into_layer(HttpServer::new_h2(exec).service(http_service)),
                     )
                     .await;
             }
