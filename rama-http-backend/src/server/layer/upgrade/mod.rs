@@ -11,3 +11,6 @@ mod layer;
 pub use layer::UpgradeLayer;
 
 pub use rama_http::io::upgrade::Upgraded;
+
+mod http_connect;
+pub use http_connect::DefaultHttpConnectReplyService;

@@ -30,31 +30,29 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     http::{
-        HeaderName, HeaderValue, Request, Response, StatusCode,
+        HeaderName, HeaderValue,
         client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
             set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::UpgradeLayer,
+            upgrade::{DefaultHttpConnectReplyService, UpgradeLayer},
         },
         matcher::MethodMatcher,
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
         server::HttpServer,
-        service::web::response::IntoResponse,
     },
     io::Io,
     layer::{ArcLayer, ConsumeErrLayer},
     net::{
-        http::{RequestContext, server::HttpPeekRouter},
-        proxy::{IoForwardService, ProxyTarget},
+        http::server::HttpPeekRouter,
+        proxy::IoForwardService,
         stream::layer::http::BodyLimitLayer,
         tls::server::{PeekTlsClientHelloService, SelfSignedData},
         user::credentials::basic,
     },
     rt::Executor,
-    service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -98,7 +96,7 @@ async fn main() -> Result<(), BoxError> {
                 UpgradeLayer::new(
                     Executor::graceful(guard.clone()),
                     MethodMatcher::CONNECT,
-                    service_fn(http_connect_accept),
+                    DefaultHttpConnectReplyService::new(),
                     mitm_svc,
                 ),
                 (
@@ -132,25 +130,6 @@ async fn main() -> Result<(), BoxError> {
         .context("graceful shutdown")?;
 
     Ok(())
-}
-
-async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
-        Ok(authority) => {
-            tracing::info!(
-                server.address = %authority.host,
-                server.port = authority.port,
-                "accept CONNECT (lazy): insert proxy target into context",
-            );
-            req.extensions_mut().insert(ProxyTarget(authority));
-        }
-        Err(err) => {
-            tracing::error!("error extracting authority: {err:?}");
-            return Err(StatusCode::BAD_REQUEST.into_response());
-        }
-    }
-
-    Ok((StatusCode::OK.into_response(), req))
 }
 
 fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsMut>(

@@ -53,27 +53,13 @@ pub(super) fn build_http_request_service(
         UpgradeLayer::new(
             exec,
             MethodMatcher::CONNECT,
-            service_fn(http_connect_accept),
+            DefaultHttpConn,
             service_fn(http_connect_proxy),
         ),
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
     )
         .into_layer(HttpObservedProxy)
-}
-
-async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
-        Ok(authority) => {
-            req.extensions_mut().insert(ProxyTarget(authority));
-        }
-        Err(err) => {
-            tracing::error!(error = %err, "failed to parse CONNECT authority");
-            return Err(StatusCode::BAD_REQUEST.into_response());
-        }
-    }
-
-    Ok((StatusCode::OK.into_response(), req))
 }
 
 async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {

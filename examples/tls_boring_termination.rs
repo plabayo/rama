@@ -39,6 +39,7 @@ use rama::{
     net::{
         address::HostWithPort,
         forwarded::Forwarded,
+        proxy::IoForwardService,
         stream::SocketInfo,
         tls::{
             SecureTransport,
@@ -50,10 +51,7 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    tcp::{
-        client::service::{Forwarder, TcpConnector},
-        server::TcpListener,
-    },
+    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -91,18 +89,17 @@ async fn main() {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
+            IoToProxyBridgeIoLayer::new(
+                Executor::graceful(guard.clone()),
+                HostWithPort::local_ipv4(62801),
+            )
+            .with_connector(
+                // ha proxy protocol used to forwarded the client original IP
+                HaProxyClientLayer::tcp()
+                    .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
+            ),
         )
-            .into_layer(
-                Forwarder::new(
-                    Executor::graceful(guard.clone()),
-                    HostWithPort::local_ipv4(62801),
-                )
-                .with_connector(
-                    // ha proxy protocol used to forwarded the client original IP
-                    HaProxyClientLayer::tcp()
-                        .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
-                ),
-            );
+            .into_layer(IoForwardService::new());
 
         TcpListener::bind("127.0.0.1:63801", Executor::graceful(guard.clone()))
             .await

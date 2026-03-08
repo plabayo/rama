@@ -1,35 +1,28 @@
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
-    extensions::{ExtensionsMut as _, ExtensionsRef},
+    extensions::ExtensionsRef,
     io::{BridgeIo, Io},
     rt::Executor,
     telemetry::tracing,
 };
-use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddressResolver};
 use rama_net::{
     address::HostWithPort,
+    client::{ConnectorService, EstablishedClientConnection},
     proxy::ProxyTarget,
-    stream::{ClientSocketInfo, Socket as _, SocketInfo},
 };
 use rama_utils::macros::define_inner_service_accessors;
 
-use crate::{
-    TcpStream,
-    client::{
-        TcpStreamConnector,
-        service::{
-            CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStreamConnectorFactory,
-        },
-    },
-};
+use crate::client::service::TcpConnector;
+
+// TOOD: in future we can move this out of rama-tcp...
+// need to find some kind of input which is not tcp specific,
+// at that point it us no longer bound to tcp at all
 
 #[derive(Debug, Clone)]
-pub struct IoToProxyBridgeIo<S, Connector = (), Dns = GlobalDnsResolver> {
+pub struct IoToProxyBridgeIo<S, C = TcpConnector> {
     inner: S,
-    connector_factory: Connector,
-    dns: Dns,
-    exec: Executor,
+    connector: C,
     address_provider: AddressProvider,
 }
 
@@ -38,10 +31,6 @@ enum AddressProvider {
     Static(HostWithPort),
     ExtensionProxyTarget,
 }
-
-// TODO: once we refactor ProxyAddress support out of TcpConnector,
-// we can instead use that one here, as we no longer need to be afraid for
-// side-effects
 
 impl<S> IoToProxyBridgeIo<S> {
     #[inline(always)]
@@ -54,9 +43,7 @@ impl<S> IoToProxyBridgeIo<S> {
     pub fn new(inner: S, exec: Executor, target: HostWithPort) -> Self {
         Self {
             inner,
-            connector_factory: (),
-            dns: GlobalDnsResolver::new(),
-            exec,
+            connector: TcpConnector::new(exec),
             address_provider: AddressProvider::Static(target),
         }
     }
@@ -70,9 +57,7 @@ impl<S> IoToProxyBridgeIo<S> {
     pub fn extension_proxy_target(exec: Executor, inner: S) -> Self {
         Self {
             inner,
-            connector_factory: (),
-            dns: GlobalDnsResolver::new(),
-            exec,
+            connector: TcpConnector::new(exec),
             address_provider: AddressProvider::ExtensionProxyTarget,
         }
     }
@@ -80,49 +65,17 @@ impl<S> IoToProxyBridgeIo<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, Connector, Dns> IoToProxyBridgeIo<S, Connector, Dns> {
-    /// Consume `self` to attach the given `dns`
-    /// (a [`DnsAddressResolver`]) as a new [`IoToProxyBridgeIo`].
-    pub fn with_dns<OtherDns>(self, dns: OtherDns) -> IoToProxyBridgeIo<S, Connector, OtherDns>
-    where
-        OtherDns: DnsAddressResolver + Clone,
-    {
+impl<S> IoToProxyBridgeIo<S> {
+    /// Set a custom "connector" for service, overwriting
+    /// the default tcp forwarder which simply establishes a TCP connection.
+    ///
+    /// This can be useful for any custom middleware, but also to enrich with
+    /// rama-provided services for tls connections, HAproxy client endoding
+    /// or even an entirely custom tcp connector service.
+    pub fn with_connector<C>(self, connector: C) -> IoToProxyBridgeIo<S, C> {
         IoToProxyBridgeIo {
             inner: self.inner,
-            connector_factory: self.connector_factory,
-            dns,
-            exec: self.exec,
-            address_provider: self.address_provider,
-        }
-    }
-}
-
-impl<S, Dns> IoToProxyBridgeIo<S, (), Dns> {
-    /// Consume `self` to attach the given `Connector`
-    /// (a [`TcpStreamConnector`]) as a new [`IoToProxyBridgeIo`].
-    pub fn with_connector<Connector>(
-        self,
-        connector: Connector,
-    ) -> IoToProxyBridgeIo<S, TcpStreamConnectorCloneFactory<Connector>, Dns> {
-        IoToProxyBridgeIo {
-            inner: self.inner,
-            connector_factory: TcpStreamConnectorCloneFactory(connector),
-            dns: self.dns,
-            exec: self.exec,
-            address_provider: self.address_provider,
-        }
-    }
-
-    /// Consume `self` to attach the given `Factory` (a [`TcpStreamConnectorFactory`]) as a new [`IoToProxyBridgeIo`].
-    pub fn with_connector_factory<Factory>(
-        self,
-        factory: Factory,
-    ) -> IoToProxyBridgeIo<S, Factory, Dns> {
-        IoToProxyBridgeIo {
-            inner: self.inner,
-            connector_factory: factory,
-            dns: self.dns,
-            exec: self.exec,
+            connector,
             address_provider: self.address_provider,
         }
     }
@@ -130,10 +83,8 @@ impl<S, Dns> IoToProxyBridgeIo<S, (), Dns> {
 
 /// A [`Layer`] that produces [`IoToProxyBridgeIo`] services.
 #[derive(Debug, Clone)]
-pub struct IoToProxyBridgeIoLayer<Connector = (), Dns = GlobalDnsResolver> {
-    connector_factory: Connector,
-    dns: Dns,
-    exec: Executor,
+pub struct IoToProxyBridgeIoLayer<C = TcpConnector> {
+    connector: C,
     address_provider: AddressProvider,
 }
 
@@ -145,12 +96,10 @@ impl IoToProxyBridgeIoLayer {
     /// Use [`Self::extension_proxy_target`] if you wish to have it be done
     /// using the [`ProxyTarget`] extension instead, failing the input flow
     /// in case that extension not exist.
-    pub fn new(exec: Executor, target: HostWithPort) -> Self {
+    pub fn new(exec: Executor, target: impl Into<HostWithPort>) -> Self {
         Self {
-            connector_factory: (),
-            dns: GlobalDnsResolver::new(),
-            exec,
-            address_provider: AddressProvider::Static(target),
+            connector: TcpConnector::new(exec),
+            address_provider: AddressProvider::Static(target.into()),
         }
     }
 
@@ -163,72 +112,37 @@ impl IoToProxyBridgeIoLayer {
     /// Use [`Self::new`] if you wish to use a hardcoded target instead,
     pub fn extension_proxy_target(exec: Executor) -> Self {
         Self {
-            connector_factory: (),
-            dns: GlobalDnsResolver::new(),
-            exec,
+            connector: TcpConnector::new(exec),
             address_provider: AddressProvider::ExtensionProxyTarget,
         }
     }
 }
 
-impl<Connector, Dns> IoToProxyBridgeIoLayer<Connector, Dns> {
-    /// Consume `self` to attach the given `dns`
-    /// (a [`DnsAddressResolver`]) as a new [`IoToProxyBridgeIoLayer`].
-    pub fn with_dns<OtherDns>(self, dns: OtherDns) -> IoToProxyBridgeIoLayer<Connector, OtherDns>
-    where
-        OtherDns: DnsAddressResolver + Clone,
-    {
+impl IoToProxyBridgeIoLayer {
+    /// Set a custom "connector" for layer's service, overwriting
+    /// the default tcp forwarder which simply establishes a TCP connection.
+    ///
+    /// This can be useful for any custom middleware, but also to enrich with
+    /// rama-provided services for tls connections, HAproxy client endoding
+    /// or even an entirely custom tcp connector service.
+    pub fn with_connector<C>(self, connector: C) -> IoToProxyBridgeIoLayer<C> {
         IoToProxyBridgeIoLayer {
-            connector_factory: self.connector_factory,
-            dns,
-            exec: self.exec,
+            connector,
             address_provider: self.address_provider,
         }
     }
 }
 
-impl<Dns> IoToProxyBridgeIoLayer<(), Dns> {
-    /// Consume `self` to attach the given `Connector`
-    /// (a [`TcpStreamConnector`]) as a new [`IoToProxyBridgeIoLayer`].
-    pub fn with_connector<Connector>(
-        self,
-        connector: Connector,
-    ) -> IoToProxyBridgeIoLayer<TcpStreamConnectorCloneFactory<Connector>, Dns> {
-        IoToProxyBridgeIoLayer {
-            connector_factory: TcpStreamConnectorCloneFactory(connector),
-            dns: self.dns,
-            exec: self.exec,
-            address_provider: self.address_provider,
-        }
-    }
-
-    /// Consume `self` to attach the given `Factory` (a [`TcpStreamConnectorFactory`]) as a new [`IoToProxyBridgeIoLayer`].
-    pub fn with_connector_factory<Factory>(
-        self,
-        factory: Factory,
-    ) -> IoToProxyBridgeIoLayer<Factory, Dns> {
-        IoToProxyBridgeIoLayer {
-            connector_factory: factory,
-            dns: self.dns,
-            exec: self.exec,
-            address_provider: self.address_provider,
-        }
-    }
-}
-
-impl<S, Connector, Dns> Layer<S> for IoToProxyBridgeIoLayer<Connector, Dns>
+impl<S, C> Layer<S> for IoToProxyBridgeIoLayer<C>
 where
-    Connector: Clone,
-    Dns: Clone,
+    C: Clone,
 {
-    type Service = IoToProxyBridgeIo<S, Connector, Dns>;
+    type Service = IoToProxyBridgeIo<S, C>;
 
     fn layer(&self, inner: S) -> Self::Service {
         Self::Service {
             inner,
-            connector_factory: self.connector_factory.clone(),
-            dns: self.dns.clone(),
-            exec: self.exec.clone(),
+            connector: self.connector.clone(),
             address_provider: self.address_provider.clone(),
         }
     }
@@ -236,35 +150,22 @@ where
     fn into_layer(self, inner: S) -> Self::Service {
         Self::Service {
             inner,
-            connector_factory: self.connector_factory,
-            dns: self.dns,
-            exec: self.exec,
+            connector: self.connector.clone(),
             address_provider: self.address_provider,
         }
     }
 }
 
-impl<S, Ingress, Dns, ConnectorFactory> Service<Ingress>
-    for IoToProxyBridgeIo<S, ConnectorFactory, Dns>
+impl<S, Ingress, C> Service<Ingress> for IoToProxyBridgeIo<S, C>
 where
-    S: Service<BridgeIo<Ingress, TcpStream>, Error: Into<BoxError>>,
+    S: Service<BridgeIo<Ingress, C::Connection>, Error: Into<BoxError>>,
     Ingress: Io + ExtensionsRef,
-    Dns: DnsAddressResolver + Clone,
-    ConnectorFactory: TcpStreamConnectorFactory<
-            Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
-            Error: Into<BoxError> + Send + 'static,
-        > + Clone,
+    C: ConnectorService<crate::client::Request, Connection: Io + Unpin>,
 {
     type Output = S::Output;
     type Error = BoxError;
 
     async fn serve(&self, ingress: Ingress) -> Result<Self::Output, Self::Error> {
-        let CreatedTcpStreamConnector { connector } = self
-            .connector_factory
-            .make_connector()
-            .await
-            .into_box_error()?;
-
         let egress_addr = match self.address_provider.clone() {
             AddressProvider::Static(host_with_port) => host_with_port,
             AddressProvider::ExtensionProxyTarget => {
@@ -282,28 +183,18 @@ where
             "try to establish connection to egress as a means to create a BridgeIo: addr = {egress_addr}"
         );
 
-        let (mut egress, egress_addr) = crate::client::tcp_connect(
-            ingress.extensions(),
-            egress_addr,
-            self.dns.clone(),
-            connector,
-            self.exec.clone(),
-        )
-        .await
-        .context("IoToPRoxyBridgeIo: tcp connector: connect to egress")?;
+        let extensions = ingress.extensions().clone();
+        let tcp_req = crate::client::Request::new_with_extensions(egress_addr.clone(), extensions);
 
-        let socket_info = ClientSocketInfo(SocketInfo::new(
-            egress
-                .local_addr()
-                .inspect_err(|err| {
-                    tracing::debug!(
-                        "failed to receive local addr of established connection: {err:?}"
-                    )
-                })
-                .ok(),
-            egress_addr.into(),
-        ));
-        egress.extensions_mut().insert(socket_info);
+        let EstablishedClientConnection {
+            input: _,
+            conn: egress,
+        } = self
+            .connector
+            .connect(tcp_req)
+            .await
+            .context("establish tcp connection")
+            .context_field("address", egress_addr)?;
 
         let bridge_io = BridgeIo(ingress, egress);
         self.inner.serve(bridge_io).await.into_box_error()

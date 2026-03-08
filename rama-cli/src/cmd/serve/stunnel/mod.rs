@@ -31,6 +31,7 @@ use rama::{
     graceful::ShutdownGuard,
     net::{
         address::{HostWithPort, SocketAddress},
+        proxy::IoForwardService,
         socket::Interface,
         tls::{
             DataEncoding,
@@ -39,10 +40,7 @@ use rama::{
         },
     },
     rt::Executor,
-    tcp::{
-        client::service::{Forwarder, TcpConnector},
-        server::TcpListener,
-    },
+    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
     tls::boring::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer},
@@ -163,8 +161,9 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
             forward_addr
         );
 
-        let tcp_service =
-            TlsAcceptorLayer::new(acceptor_data).into_layer(Forwarder::new(exec, forward_addr));
+        let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(
+            IoToProxyBridgeIoLayer::new(exec, forward_addr).into_layer(IoForwardService::new()),
+        );
         tcp_listener.serve(tcp_service).await;
     });
 
@@ -192,11 +191,13 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
             connect_authority
         );
 
-        let tcp_service = Forwarder::new(exec.clone(), connect_authority).with_connector(
-            TlsConnectorLayer::secure()
-                .with_connector_data(tls_connector_data)
-                .into_layer(TcpConnector::new(exec)),
-        );
+        let tcp_service = IoToProxyBridgeIoLayer::new(exec.clone(), connect_authority)
+            .with_connector(
+                TlsConnectorLayer::secure()
+                    .with_connector_data(tls_connector_data)
+                    .into_layer(TcpConnector::new(exec)),
+            )
+            .into_layer(IoForwardService::new());
 
         tcp_listener.serve(tcp_service).await;
     });

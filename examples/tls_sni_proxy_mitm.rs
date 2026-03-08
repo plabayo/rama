@@ -107,6 +107,7 @@ use rama::{
         address::{Domain, HostWithPort, SocketAddress},
         client::{ConnectorTarget, pool::http::HttpPooledConnectorConfig},
         http::RequestContext,
+        proxy::IoForwardService,
         tls::{
             ApplicationProtocol,
             client::ServerVerifyMode,
@@ -117,7 +118,7 @@ use rama::{
         },
     },
     rt::Executor,
-    tcp::{client::service::Forwarder, server::TcpListener},
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -289,13 +290,14 @@ where
                 .context_field("sni", sni)?;
         } else {
             // preserve traffic as is, no MITM even
-            Forwarder::new(
+            IoToProxyBridgeIoLayer::new(
                 self.exec.clone(),
                 HostWithPort {
                     host: sni.clone().into(),
                     port: Protocol::HTTPS_DEFAULT_PORT,
                 },
             )
+            .into_layer(IoForwardService::new())
             .serve(stream)
             .await
             .context("forward data")

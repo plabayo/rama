@@ -10,10 +10,8 @@ use rama_net::{
     proxy::{IoForwardService, ProxyTarget},
     stream::Socket,
 };
-use rama_tcp::client::{
-    Request as TcpRequest,
-    service::{DefaultForwarder, TcpConnector},
-};
+use rama_tcp::client::{Request as TcpRequest, service::TcpConnector};
+use rama_tcp::proxy::IoToProxyBridgeIo;
 use rama_utils::macros::generate_set_and_with;
 use std::time::Duration;
 
@@ -311,11 +309,18 @@ impl<S> LazyConnector<S> {
     }
 }
 
-impl Default for LazyConnector<DefaultForwarder> {
-    fn default() -> Self {
+impl LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
+    fn default_with_exec(exec: Executor) -> Self {
         Self {
-            service: DefaultForwarder::ctx(Executor::default()),
+            service: IoToProxyBridgeIo::extension_proxy_target(exec, IoForwardService::new()),
         }
+    }
+}
+
+impl Default for LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::default_with_exec(Executor::default())
     }
 }
 

@@ -38,12 +38,9 @@ use rama::{
         },
     },
     layer::TraceErrLayer,
-    net::address::SocketAddress,
+    net::{address::SocketAddress, proxy::IoForwardService},
     rt::Executor,
-    tcp::{
-        client::service::{Forwarder, TcpConnector},
-        server::TcpListener,
-    },
+    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -162,17 +159,21 @@ async fn main() {
         );
 
         let exec = Executor::graceful(guard.clone());
-        let forwarder = Forwarder::new(exec.clone(), SERVER_AUTHORITY).with_connector(
-            TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
-                .with_connector_data(tls_client_data)
-                .into_layer(TcpConnector::new(exec.clone())),
-        );
+        let forwarder = (
+            TraceErrLayer::new(),
+            IoToProxyBridgeIoLayer::new(exec.clone(), SERVER_AUTHORITY).with_connector(
+                TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
+                    .with_connector_data(tls_client_data)
+                    .into_layer(TcpConnector::new(exec.clone())),
+            ),
+        )
+            .into_layer(IoForwardService::new());
 
         // L4 Proxy Service
         TcpListener::bind(TUNNEL_AUTHORITY, exec)
             .await
             .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
-            .serve(TraceErrLayer::new().into_layer(forwarder))
+            .serve(forwarder)
             .await;
     });
 

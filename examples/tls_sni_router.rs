@@ -51,10 +51,11 @@ use rama::{
     io::Io,
     net::{
         address::{Domain, SocketAddress},
+        proxy::IoForwardService,
         tls::server::{SelfSignedData, ServerAuth, ServerConfig, SniRequest, SniRouter},
     },
     rt::Executor,
-    tcp::{client::service::Forwarder, server::TcpListener},
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self, Instrument as _,
         level_filters::LevelFilter,
@@ -159,7 +160,8 @@ where
             "forward incoming connection",
         );
 
-        Forwarder::new(self.exec.clone(), fwd_interface)
+        IoToProxyBridgeIoLayer::new(self.exec.clone(), fwd_interface)
+            .into_layer(IoForwardService::new())
             .serve(stream)
             .await
     }

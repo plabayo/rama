@@ -46,7 +46,7 @@ use rama::{
     io::Io,
     layer::ConsumeErrLayer,
     net::{
-        address::HostWithPort, forwarded::Forwarded, stream::SocketInfo,
+        address::HostWithPort, forwarded::Forwarded, proxy::IoForwardService, stream::SocketInfo,
         tls::server::SelfSignedData,
     },
     proxy::haproxy::{
@@ -54,10 +54,7 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    tcp::{
-        client::service::{Forwarder, TcpConnector},
-        server::TcpListener,
-    },
+    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -92,8 +89,9 @@ async fn main() {
 
     // create tls proxy
     shutdown.spawn_task_fn(async move |guard| {
-        let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(
-            Forwarder::new(
+        let tcp_service = (
+            TlsAcceptorLayer::new(acceptor_data),
+            IoToProxyBridgeIoLayer::new(
                 Executor::graceful(guard.clone()),
                 HostWithPort::local_ipv4(62800),
             )
@@ -102,7 +100,8 @@ async fn main() {
                 HaProxyClientLayer::tcp()
                     .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
             ),
-        );
+        )
+            .into_layer(IoForwardService::new());
 
         TcpListener::bind("127.0.0.1:63800", Executor::graceful(guard.clone()))
             .await

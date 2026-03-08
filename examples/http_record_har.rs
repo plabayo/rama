@@ -36,7 +36,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     http::{
         HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -53,7 +53,7 @@ use rama::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             required_header::AddRequiredRequestHeadersLayer,
             trace::TraceLayer,
-            upgrade::{UpgradeLayer, Upgraded},
+            upgrade::{DefaultHttpConnectReplyService, UpgradeLayer, Upgraded},
         },
         matcher::{DomainMatcher, MethodMatcher},
         server::HttpServer,
@@ -61,8 +61,6 @@ use rama::{
     },
     layer::{AddInputExtensionLayer, ConsumeErrLayer, HijackLayer},
     net::{
-        http::RequestContext,
-        proxy::ProxyTarget,
         stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, SecureTransport,
@@ -179,7 +177,7 @@ async fn main() -> Result<(), BoxError> {
                 UpgradeLayer::new(
                     exec,
                     MethodMatcher::CONNECT,
-                    service_fn(http_connect_accept),
+                    DefaultHttpConnectReplyService::new(),
                     service_fn(http_connect_proxy),
                 ),
             )
@@ -204,25 +202,6 @@ async fn main() -> Result<(), BoxError> {
         .context("graceful shutdown")?;
 
     Ok(())
-}
-
-async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
-        Ok(authority) => {
-            tracing::info!(
-                server.address = %authority.host,
-                server.port = authority.port,
-                "accept CONNECT (lazy): insert proxy target into context",
-            );
-            req.extensions_mut().insert(ProxyTarget(authority));
-        }
-        Err(err) => {
-            tracing::error!("error extracting authority: {err:?}");
-            return Err(StatusCode::BAD_REQUEST.into_response());
-        }
-    }
-
-    Ok((StatusCode::OK.into_response(), req))
 }
 
 async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
