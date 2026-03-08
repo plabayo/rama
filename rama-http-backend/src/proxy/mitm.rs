@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt, sync::Arc};
+use std::convert::Infallible;
 
 use rama_core::{
     Layer, Service,
@@ -27,7 +27,7 @@ use rama_net::client::EstablishedClientConnection;
 use rama_utils::macros::generate_set_and_with;
 
 use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::{CancellationToken, DropGuard};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     client::{HttpClientService, http_connect},
@@ -91,21 +91,7 @@ pub struct HttpMitmRelay<M = DefaultMiddleware> {
     http_server: HttpServer<AutoConnBuilder>,
     relay_buffer: Option<usize>,
     middleware: M,
-    shared_state: Arc<SharedHttpMitmRelayState>,
-}
-
-struct SharedHttpMitmRelayState {
-    graceful: Shutdown,
-    drop_guard: DropGuard,
-}
-
-impl fmt::Debug for SharedHttpMitmRelayState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SharedHttpMitmRelayState")
-            .field("graceful", &"Shutdown")
-            .field("drop_guard", &self.drop_guard)
-            .finish()
-    }
+    exec: Executor,
 }
 
 impl HttpMitmRelay {
@@ -113,36 +99,14 @@ impl HttpMitmRelay {
     #[must_use]
     /// Create a new [`HttpMitmRelay`], ready to serve.
     pub fn new(exec: Executor) -> Self {
-        let token = CancellationToken::new();
-        let cancelled = token.clone().cancelled_owned();
-
-        // TODO: in future when graceful shutdown is integrated
-        // and reworked, see <https://github.com/plabayo/rama/issues/830>,
-        // we can probably do better than having to create a tmp Shutdown manager,
-        // and instead just work with a guard created from a combined signal...
-
-        let graceful = Shutdown::new(async move {
-            if let Some(guard) = exec.into_guard() {
-                tokio::select! {
-                    _ = cancelled => (),
-                    _ = guard.cancelled() => (),
-                }
-            } else {
-                let _ = cancelled.await;
-            }
-        });
-
         Self {
-            http_server: HttpServer::auto(Executor::graceful(graceful.guard())),
+            http_server: HttpServer::auto(exec.clone()),
             relay_buffer: None,
             middleware: (
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                 ArcLayer::new(),
             ),
-            shared_state: Arc::new(SharedHttpMitmRelayState {
-                graceful,
-                drop_guard: token.drop_guard(),
-            }),
+            exec,
         }
     }
 
@@ -155,7 +119,7 @@ impl HttpMitmRelay {
             http_server: self.http_server,
             relay_buffer: self.relay_buffer,
             middleware,
-            shared_state: self.shared_state,
+            exec: self.exec,
         }
     }
 }
@@ -211,8 +175,29 @@ where
         &self,
         BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
-        // TODO: we should have this shutdown manager only here...
-        // this way we can also avoid shared state!
+        let token = CancellationToken::new();
+        let cancelled = token.clone().cancelled_owned();
+
+        // TODO: see if <https://github.com/plabayo/rama/issues/830>,
+        // warrants this logic to change also slightly, relating to the graceful setup...
+
+        let graceful_guard = self.exec.guard().cloned();
+        let graceful = Shutdown::new(async move {
+            if let Some(guard) = graceful_guard {
+                tokio::select! {
+                    _ = cancelled => {
+                        tracing::trace!("HTTP MITM Relay: Shutdown: cancelation token");
+                    },
+                    _ = guard.cancelled() => {
+                        tracing::trace!("HTTP MITM Relay: Shutdown: parent guard cancellation");
+                    },
+                }
+            } else {
+                let _ = cancelled.await;
+            }
+        });
+
+        let _cancel_guard = token.drop_guard();
 
         let (req_tx, req_rx) = tokio::sync::mpsc::channel(
             self.relay_buffer
@@ -221,14 +206,14 @@ where
         );
 
         let middleware = self.middleware.clone();
-        self.shared_state
-            .graceful
-            .spawn_task_fn(async move |guard| {
-                http_relay_service_egress(egress_stream, guard, req_rx, middleware).await;
-                tracing::trace!("http_relay_service_egress = done");
-            });
+        graceful.spawn_task_fn(async move |guard| {
+            http_relay_service_egress(egress_stream, guard, req_rx, middleware).await;
+            tracing::trace!("http_relay_service_egress = done");
+        });
 
-        self.http_server
+        let graceful_shutdown_fut = graceful.shutdown();
+
+        let result = self.http_server
             .serve(
                 ingress_stream,
                 service_fn(move |req: Request| {
@@ -252,7 +237,10 @@ where
                 }),
             )
             .await
-            .context("serve HTTP MITM relay")
+            .context("serve HTTP MITM relay");
+
+        graceful_shutdown_fut.await;
+        result
     }
 }
 
