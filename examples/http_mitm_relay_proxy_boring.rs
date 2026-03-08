@@ -48,7 +48,7 @@ use rama::{
     layer::{ArcLayer, ConsumeErrLayer},
     net::{
         http::{RequestContext, server::HttpPeekRouter},
-        proxy::{ProxyTarget, StreamForwardService},
+        proxy::{IoForwardService, ProxyTarget},
         stream::layer::http::BodyLimitLayer,
         tls::server::{PeekTlsClientHelloService, SelfSignedData},
         user::credentials::basic,
@@ -175,7 +175,7 @@ fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsMut>(
         ArcLayer::new(),
     ));
     let maybe_http_relay =
-        HttpPeekRouter::new(http_mitm_relay).with_fallback(StreamForwardService::new());
+        HttpPeekRouter::new(http_mitm_relay).with_fallback(IoForwardService::new());
 
     let tls_mitm_relay = TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedData {
         organisation_name: Some("HTTP MITM Relay Proxy Boring Example".to_owned()),

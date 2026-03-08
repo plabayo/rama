@@ -10,7 +10,7 @@ use rama_core::{
 use rama_net::{
     address::HostWithPort,
     client::{ConnectorService, EstablishedClientConnection},
-    proxy::{ProxyTarget, StreamForwardService},
+    proxy::{IoForwardService, ProxyTarget},
 };
 
 #[derive(Debug, Clone)]
@@ -97,7 +97,7 @@ where
             .context("establish tcp connection")
             .context_field("authority", authority)?;
 
-        StreamForwardService::default()
+        IoForwardService::default()
             .serve(BridgeIo(ingress_stream, egress_stream))
             .await
     }

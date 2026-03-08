@@ -4,7 +4,7 @@ use crate::address::HostWithPort;
 
 mod forward;
 #[doc(inline)]
-pub use forward::StreamForwardService;
+pub use forward::IoForwardService;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Target [`HostWithPort`] for a proxy/forwarder service.

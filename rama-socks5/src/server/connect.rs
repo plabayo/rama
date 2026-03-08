@@ -7,7 +7,7 @@ use rama_net::address::HostWithPort;
 use rama_net::client::ConnectorService;
 use rama_net::{
     client::EstablishedClientConnection,
-    proxy::{ProxyTarget, StreamForwardService},
+    proxy::{IoForwardService, ProxyTarget},
     stream::Socket,
 };
 use rama_tcp::client::{
@@ -66,7 +66,7 @@ where
 }
 
 /// Default [`Connector`] type.
-pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
+pub type DefaultConnector = Connector<TcpConnector, IoForwardService>;
 
 /// Proxy Forward [`Socks5Connector`] implementation,
 /// which actually is able to accept connect requests and process them.
@@ -175,7 +175,7 @@ impl Default for DefaultConnector {
     fn default() -> Self {
         Self {
             connector: TcpConnector::default(),
-            service: StreamForwardService::default(),
+            service: IoForwardService::default(),
             hide_local_address: false,
             connect_timeout: Some(Duration::from_secs(60)),
         }

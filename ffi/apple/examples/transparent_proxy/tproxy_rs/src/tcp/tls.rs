@@ -10,7 +10,7 @@ use rama::{
         address::Domain,
         apple::networkextension::TcpFlow,
         client::{ConnectorService, EstablishedClientConnection},
-        proxy::{ProxyTarget, StreamForwardService},
+        proxy::{IoForwardService, ProxyTarget},
         tls::{
             client::ServerVerifyMode,
             server::{
@@ -138,7 +138,7 @@ where
                     tracing::debug!(
                         "failed to build tls (connector) data from builder: {err} ; abort TLS intercept to be safe...; revert to L4-forwarding..."
                     );
-                    if let Err(err) = StreamForwardService::default()
+                    if let Err(err) = IoForwardService::default()
                         .serve(BridgeIo(peeked_ingress_stream, egress_stream))
                         .await
                     {

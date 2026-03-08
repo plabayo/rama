@@ -8,7 +8,7 @@ use rama_core::{
 };
 use rama_net::{
     conn::is_connection_error,
-    proxy::{ProxyTarget, StreamForwardService},
+    proxy::{IoForwardService, ProxyTarget},
 };
 use rama_tcp::client::default_tcp_connect;
 
@@ -344,7 +344,7 @@ fn default_tcp_service() -> TcpFlowService {
         };
 
         let req = BridgeIo(ingress_stream, egress_stream);
-        if let Err(err) = StreamForwardService::new().serve(req).await {
+        if let Err(err) = IoForwardService::new().serve(req).await {
             tracing::warn!(%err, "default tcp forward failed");
         }
         Ok(())

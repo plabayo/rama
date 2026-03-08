@@ -5,7 +5,7 @@ use rama::{
     error::BoxError,
     extensions::ExtensionsMut,
     io::{BridgeIo, Io},
-    net::{http::server::peek_http_input, proxy::StreamForwardService},
+    net::{http::server::peek_http_input, proxy::IoForwardService},
     telemetry::tracing,
 };
 
@@ -34,7 +34,7 @@ where
             tracing::debug!("no http version detected... foward as non-http traffic (bytes)");
         }
 
-        if let Err(err) = StreamForwardService::default()
+        if let Err(err) = IoForwardService::default()
             .serve(BridgeIo(peek_ingress_stream, egress_stream))
             .await
         {

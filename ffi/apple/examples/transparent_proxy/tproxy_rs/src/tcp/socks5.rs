@@ -5,7 +5,7 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     io::{BridgeIo, Io},
     net::{
-        proxy::{ProxyTarget, StreamForwardService},
+        proxy::{IoForwardService, ProxyTarget},
         user::credentials::DpiProxyCredential,
     },
     proxy::socks5::proxy::mitm::{Socks5MitmHandshakeOutcome, Socks5MitmRelay},
@@ -59,7 +59,7 @@ where
             Socks5MitmHandshakeOutcome::UnsupportedFlow => {
                 tracing::debug!("L4-proxy unsupported SOCKS5 flow");
 
-                if let Err(err) = StreamForwardService::default()
+                if let Err(err) = IoForwardService::default()
                     .serve(BridgeIo(ingress_stream, egress_stream))
                     .await
                 {

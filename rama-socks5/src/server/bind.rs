@@ -7,7 +7,7 @@ use rama_core::{Service, error::BoxError, io::Io, layer::timeout::DefaultTimeout
 use rama_net::address::HostWithPort;
 use rama_net::{
     address::{Host, SocketAddress},
-    proxy::StreamForwardService,
+    proxy::IoForwardService,
     socket::{Interface, SocketService},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
@@ -60,7 +60,7 @@ where
 }
 
 /// Default [`Binder`] type.
-pub type DefaultBinder = Binder<DefaultTimeout<DefaultAcceptorFactory>, StreamForwardService>;
+pub type DefaultBinder = Binder<DefaultTimeout<DefaultAcceptorFactory>, IoForwardService>;
 
 /// Only "useful" public [`Socks5Binder`] implementation,
 /// which actually is able to accept bind requests and process them.
@@ -210,7 +210,7 @@ impl Default for DefaultBinder {
     fn default() -> Self {
         Self::new(
             DefaultTimeout::new(DefaultAcceptorFactory::default(), Duration::from_secs(30)),
-            StreamForwardService::default(),
+            IoForwardService::default(),
         )
     }
 }
