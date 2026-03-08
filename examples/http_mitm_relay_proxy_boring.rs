@@ -44,36 +44,27 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
-    io::{BridgeIo, Io},
+    io::Io,
     layer::{ArcLayer, ConsumeErrLayer},
     net::{
-        http::{RequestContext, server::peek_http_input},
+        http::{RequestContext, server::HttpPeekRouter},
         proxy::{ProxyTarget, StreamForwardService},
         stream::layer::http::BodyLimitLayer,
-        tls::{
-            client::ServerVerifyMode,
-            server::{SelfSignedData, peek_client_hello_from_input},
-        },
+        tls::server::{PeekTlsClientHelloService, SelfSignedData},
         user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
-    tcp::{client::default_tcp_connect, server::TcpListener},
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::{
-        client::TlsConnectorDataBuilder,
-        proxy::{
-            TlsMitmRelay,
-            cert_issuer::{CachedBoringMitmCertIssuer, InMemoryBoringMitmCertIssuer},
-        },
-    },
+    tls::boring::proxy::TlsMitmRelay,
 };
 
-use std::{sync::Arc, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -87,15 +78,17 @@ async fn main() -> Result<(), BoxError> {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let mitm_svc = MitmHttpsService::try_new(Executor::graceful(graceful.guard()))?;
+    let mitm_svc = new_mitm_svc(exec.clone()).context("build MITM service")?;
+
     graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
             .bind("127.0.0.1:62049")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62049");
 
-        let http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(Arc::new(
+        let http_service = HttpServer::auto(exec).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -106,7 +99,7 @@ async fn main() -> Result<(), BoxError> {
                     Executor::graceful(guard.clone()),
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
-                    ConsumeErrLayer::trace_as_debug().into_layer(mitm_svc),
+                    mitm_svc,
                 ),
                 (
                     SetRequestHeaderLayer::overriding(
@@ -160,128 +153,45 @@ async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Re
     Ok((StatusCode::OK.into_response(), req))
 }
 
-#[derive(Debug, Clone)]
-struct MitmHttpsService {
-    tls_mitm_relay: TlsMitmRelay<CachedBoringMitmCertIssuer<InMemoryBoringMitmCertIssuer>>,
+fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsMut>(
     exec: Executor,
-}
+) -> Result<impl Service<Ingress, Output = (), Error = Infallible> + Clone, BoxError> {
+    let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+        ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
+        TraceLayer::new_for_http(),
+        SetRequestHeaderLayer::overriding(
+            HeaderName::from_static("x-observed"),
+            HeaderValue::from_static("1"),
+        ),
+        SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-proxy"),
+            HeaderValue::from_static(rama::utils::info::NAME),
+        ),
+        SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-proxy-version"),
+            HeaderValue::from_static(rama::utils::info::VERSION),
+        ),
+        ArcLayer::new(),
+    ));
+    let maybe_http_relay =
+        HttpPeekRouter::new(http_mitm_relay).with_fallback(StreamForwardService::new());
 
-impl MitmHttpsService {
-    fn try_new(exec: Executor) -> Result<Self, BoxError> {
-        let tls_mitm_relay =
-            TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedData {
-                organisation_name: Some("HTTP MITM Relay Proxy Boring Example".to_owned()),
-                ..Default::default()
-            })
-            .context("create tls MITM relay svc with self-signed CA crt")?;
-        Ok(Self {
-            tls_mitm_relay,
-            exec,
-        })
-    }
-}
+    let tls_mitm_relay = TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedData {
+        organisation_name: Some("HTTP MITM Relay Proxy Boring Example".to_owned()),
+        ..Default::default()
+    })
+    .context("build TLS mitm relay")?;
 
-impl<IO> Service<IO> for MitmHttpsService
-where
-    IO: Io + Unpin + ExtensionsMut,
-{
-    type Output = ();
-    type Error = BoxError;
+    let app_mitm_layer =
+        PeekTlsClientHelloService::new(tls_mitm_relay.into_layer(maybe_http_relay.clone()))
+            .with_fallback(maybe_http_relay);
 
-    async fn serve(&self, ingress_stream: IO) -> Result<Self::Output, Self::Error> {
-        let ProxyTarget(address) = ingress_stream
-            .extensions()
-            .get()
-            .cloned()
-            .context("find proxy target in input extensions")?;
-
-        let (egress_stream, egress_addr) =
-            default_tcp_connect(ingress_stream.extensions(), address, self.exec.clone())
-                .await
-                .context("establish TCP connection to egress side")?;
-        tracing::debug!("managed to establish connection egress: {egress_addr}");
-
-        let (peeked_ingress_stream, maybe_client_hello) =
-            peek_client_hello_from_input(ingress_stream)
-                .await
-                .context("peek TLS client hello from stream")?;
-
-        if let Some(client_hello) = maybe_client_hello {
-            let maybe_connector_data = TlsConnectorDataBuilder::try_from(client_hello)
-                .unwrap_or_default()
-                .with_server_verify_mode(ServerVerifyMode::Disable)
-                .build()
-                .inspect_err(|err| {
-                    tracing::error!(
-                        "failed to build TlsConnectorData: {err}; try anyway without data"
-                    )
-                })
-                .ok();
-
-            let BridgeIo(tls_ingress_stream, tls_egress_stream) = self
-                .tls_mitm_relay
-                .handshake(
-                    BridgeIo(peeked_ingress_stream, egress_stream),
-                    maybe_connector_data,
-                )
-                .await
-                .context("TLS MITM Relay handshake")?;
-
-            mitm_relay_maybe_http_traffic(self.exec.clone(), tls_ingress_stream, tls_egress_stream)
-                .await
-                .context("within TLS: (maybe) HTTP MITM Relay")
-        } else {
-            mitm_relay_maybe_http_traffic(self.exec.clone(), peeked_ingress_stream, egress_stream)
-                .await
-                .context("(maybe) HTTP MITM Relay")
-        }
-    }
-}
-
-async fn mitm_relay_maybe_http_traffic<Ingress, Egress>(
-    exec: Executor,
-    ingress_stream: Ingress,
-    egress_stream: Egress,
-) -> Result<(), BoxError>
-where
-    Ingress: Io + Unpin + ExtensionsMut,
-    Egress: Io + Unpin + ExtensionsMut,
-{
-    let (maybe_http_version, peeked_ingress_stream) =
-        peek_http_input(ingress_stream, Some(Duration::from_mins(2)))
-            .await
-            .context("peek HTTP traffic")?;
-
-    if let Some(http_version) = maybe_http_version {
-        tracing::info!("detected HTTP version: {http_version:?}; continue MITM flow");
-    } else {
-        tracing::info!("no HTTP version detected: transport bytes as-is");
-        StreamForwardService::new()
-            .serve(BridgeIo(peeked_ingress_stream, egress_stream))
-            .await
-            .context("proxy no-http bytes")?;
-        return Ok(());
-    }
-
-    HttpMitmRelay::new(exec)
-        .with_http_middleware((
-            ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
-            MapResponseBodyLayer::new_boxed_streaming_body(),
-            TraceLayer::new_for_http(),
-            SetRequestHeaderLayer::overriding(
-                HeaderName::from_static("x-observed"),
-                HeaderValue::from_static("1"),
-            ),
-            SetResponseHeaderLayer::overriding(
-                HeaderName::from_static("x-proxy"),
-                HeaderValue::from_static(rama::utils::info::NAME),
-            ),
-            SetResponseHeaderLayer::overriding(
-                HeaderName::from_static("x-proxy-version"),
-                HeaderValue::from_static(rama::utils::info::VERSION),
-            ),
-            ArcLayer::new(),
-        ))
-        .serve(BridgeIo(peeked_ingress_stream, egress_stream))
-        .await
+    Ok(Arc::new(
+        (
+            ConsumeErrLayer::trace_as_debug(),
+            IoToProxyBridgeIoLayer::extension_proxy_target(exec),
+        )
+            .into_layer(app_mitm_layer),
+    ))
 }
