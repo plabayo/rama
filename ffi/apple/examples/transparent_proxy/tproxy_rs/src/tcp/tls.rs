@@ -23,10 +23,7 @@ use rama::{
     rt::Executor,
     tcp::{
         TcpStream,
-        client::{
-            Request as TcpRequest, default_tcp_connect,
-            service::{DefaultForwarder, TcpConnector},
-        },
+        client::{Request as TcpRequest, default_tcp_connect, service::TcpConnector},
     },
     telemetry::tracing,
     tls::boring::{

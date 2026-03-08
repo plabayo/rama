@@ -9,8 +9,7 @@ use std::convert::Infallible;
 
 use rama::{
     Service, error::BoxError, extensions::ExtensionsRef, net::apple::networkextension::TcpFlow,
-    proxy::socks5::server::Socks5PeekRouter, rt::Executor, tcp::client::service::DefaultForwarder,
-    telemetry::tracing,
+    proxy::socks5::server::Socks5PeekRouter, rt::Executor, telemetry::tracing,
 };
 
 use crate::{

@@ -15,6 +15,7 @@ pub struct OptionalAutoHttpMitmService;
 impl<Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for OptionalAutoHttpMitmService
 where
     Ingress: Io + Unpin + ExtensionsMut,
+    Egress: Io + Unpin,
 {
     type Output = ();
     type Error = BoxError;
