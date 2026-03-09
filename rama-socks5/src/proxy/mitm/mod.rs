@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use rama_core::{
     error::{BoxError, ErrorContext as _},
-    extensions::{self, ExtensionsMut},
+    extensions::{self},
     io::Io,
     rt::Executor,
     telemetry::tracing,
@@ -12,10 +12,21 @@ use rama_net::{
     address::HostWithPort,
     user::{ProxyCredential, credentials::DpiProxyCredential},
 };
-use rama_tcp::client::{TcpStreamConnector, tcp_connect};
+use rama_tcp::{
+    TcpStream,
+    client::{TcpStreamConnector, tcp_connect},
+};
 use rama_utils::macros::generate_set_and_with;
 
 use crate::proto;
+
+mod service;
+pub use self::service::Socks5MitmRelayService;
+
+// TODO: Replace tcp_connector with
+// - egress_connector, which has to be a ConnectorService returning an Io...
+//   this decouples it from Tcp which honeslty shoult not be required here to be tied,
+//   even if usually it is... It also allows this stack to be layered
 
 #[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
@@ -109,7 +120,7 @@ where
         ingress_stream: &mut S,
         exec: Executor,
         socks5_proxy_address: HostWithPort,
-    ) -> Result<(impl Io + Unpin + ExtensionsMut, Socks5MitmHandshakeOutcome), BoxError>
+    ) -> Result<(TcpStream, Socks5MitmHandshakeOutcome), BoxError>
     where
         S: Io + Unpin + extensions::ExtensionsMut,
     {
