@@ -1,3 +1,7 @@
+use rama_boring::{
+    pkey::{PKey, Private},
+    x509::X509,
+};
 use rama_core::{
     Layer,
     conversion::RamaTryInto as _,
@@ -90,6 +94,13 @@ impl TlsMitmRelay<self::issuer::InMemoryBoringMitmCertIssuer> {
         let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
         Ok(Self::new(issuer))
     }
+
+    #[inline(always)]
+    /// Create a new [`TlsMitmRelay`] with the provided CA pair.
+    pub fn new_in_memory(crt: X509, key: PKey<Private>) -> Self {
+        let issuer = self::issuer::InMemoryBoringMitmCertIssuer::new(crt, key);
+        Self::new(issuer)
+    }
 }
 
 impl
@@ -115,6 +126,27 @@ impl
     ) -> Result<Self, BoxError> {
         let issuer = self::issuer::InMemoryBoringMitmCertIssuer::try_new_self_signed(data)?;
         Ok(Self::new_with_cached_issuer_and_config(issuer, cfg))
+    }
+
+    #[inline(always)]
+    /// Create a new [`TlsMitmRelay`] with the provided CA pair,
+    /// with a cache layer on top to provide reuse functionality of previously issued certs.
+    pub fn new_cached_in_memory(crt: X509, key: PKey<Private>) -> Self {
+        let issuer = self::issuer::InMemoryBoringMitmCertIssuer::new(crt, key);
+        Self::new_with_cached_issuer(issuer)
+    }
+
+    #[inline(always)]
+    /// Create a new [`TlsMitmRelay`] with the provided CA pair,
+    /// with a cache layer (created by given config)
+    /// on top to provide reuse functionality of previously issued certs.
+    pub fn new_cached_in_memory_with_config(
+        crt: X509,
+        key: PKey<Private>,
+        cfg: self::issuer::BoringMitmCertIssuerCacheConfig,
+    ) -> Self {
+        let issuer = self::issuer::InMemoryBoringMitmCertIssuer::new(crt, key);
+        Self::new_with_cached_issuer_and_config(issuer, cfg)
     }
 }
 
