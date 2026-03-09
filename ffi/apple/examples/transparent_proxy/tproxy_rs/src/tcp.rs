@@ -1,7 +1,7 @@
 // mod http;
 // mod tunnel;
 
-use std::convert::Infallible;
+use std::{convert::Infallible, time::Duration};
 
 use rama::{
     Layer, Service,
@@ -15,7 +15,10 @@ use rama::{
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
     },
     layer::{ArcLayer, ConsumeErrLayer},
-    net::apple::networkextension::TcpFlow,
+    net::{
+        apple::networkextension::TcpFlow, http::server::HttpPeekRouter, proxy::IoForwardService,
+        tls::server::PeekTlsClientHelloService,
+    },
     proxy::socks5::{
         proxy::mitm::{Socks5MitmRelay, Socks5MitmRelayService},
         server::Socks5PeekRouter,
@@ -43,25 +46,32 @@ pub(super) fn try_new_service()
     // TODO: get actual graceful executor here...
     let exec = Executor::default();
 
+    let http_mitm_svc = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+        ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+        (
+            SetResponseHeaderLayer::if_not_present_typed(
+                crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
+            ),
+            RemoveResponseHeaderLayer::hop_by_hop(),
+        ),
+        // TODO: HTTP CONNECTOR support
+        // TODO: Hijack support
+        (
+            RemoveRequestHeaderLayer::hop_by_hop(),
+            SetRequestHeaderLayer::if_not_present_typed(
+                crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
+            ),
+        ),
+        ArcLayer::new(),
+    ));
+
+    let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
+        .with_peek_timeout(Duration::from_secs(3))
+        .with_fallback(IoForwardService::new());
+
     let app_mitm_layer =
-        tls_mitm_relay.into_layer(HttpMitmRelay::new(exec.clone()).with_http_middleware((
-            ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
-            (
-                SetResponseHeaderLayer::if_not_present_typed(
-                    crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
-                ),
-                RemoveResponseHeaderLayer::hop_by_hop(),
-            ),
-            // TODO: HTTP CONNECTOR support
-            // TODO: Hijack support
-            (
-                RemoveRequestHeaderLayer::hop_by_hop(),
-                SetRequestHeaderLayer::if_not_present_typed(
-                    crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
-                ),
-            ),
-            ArcLayer::new(),
-        )));
+        PeekTlsClientHelloService::new(tls_mitm_relay.into_layer(maybe_http_mitm_svc.clone()))
+            .with_fallback(maybe_http_mitm_svc);
 
     let socks5_mitm_relay = Socks5MitmRelayService::new(app_mitm_layer.clone());
 
