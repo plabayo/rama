@@ -5,7 +5,7 @@
 mod tracker;
 #[doc(inline)]
 pub use tracker::{
-    BytesRWTrackerHandle, IncomingBytesTrackerLayer, IncomingBytesTrackerService,
+    BytesRWTracker, BytesRWTrackerHandle, IncomingBytesTrackerLayer, IncomingBytesTrackerService,
     OutgoingBytesTrackerLayer, OutgoingBytesTrackerService,
 };
 
