@@ -145,7 +145,7 @@ impl<A, S> Binder<A, S> {
         /// By default it will use the client's requested bind address,
         /// which is in many cases not what you want.
         pub fn default_bind_address(mut self) -> Self {
-            self.bind_address = Some(SocketAddress::default_ipv4(0).into());
+            self.bind_address = Some(SocketAddress::default_ipv4(0));
             self
         }
     }
@@ -248,25 +248,21 @@ where
             }
             Host::Address(ip_addr) => ip_addr,
         };
-        let requested_interface = SocketAddress::new(requested_addr, requested_port);
+        let requested_address = SocketAddress::new(requested_addr, requested_port);
 
-        let bind_address = if let Some(bind_address) = self.bind_address.clone() {
+        let bind_address = if let Some(bind_address) = self.bind_address {
             tracing::trace!(
                 "socks5 server: bind: use server-defined bind interface: {bind_address}"
             );
             bind_address
         } else {
             tracing::debug!(
-                "socks5 server: bind: no server-defined bind interface: use requested client interface @ {requested_interface}"
+                "socks5 server: bind: no server-defined bind interface: use requested client interface @ {requested_address}"
             );
-            requested_interface.into()
+            requested_address
         };
 
-        let acceptor = match self
-            .acceptor
-            .bind_socket_with_address(bind_address.clone())
-            .await
-        {
+        let acceptor = match self.acceptor.bind_socket_with_address(bind_address).await {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();

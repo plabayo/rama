@@ -260,7 +260,7 @@ where
     };
 
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind_address(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind fp service")?;
 

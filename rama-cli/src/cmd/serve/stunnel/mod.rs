@@ -143,7 +143,7 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
 
     let exec = Executor::graceful(graceful);
 
-    let tcp_listener = TcpListener::bind_address(cfg.bind.clone(), exec.clone())
+    let tcp_listener = TcpListener::bind_address(cfg.bind, exec.clone())
         .await
         .context("bind stunnel exit node")?;
 
@@ -173,7 +173,7 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
     let tls_connector_data = build_tls_connector(&cfg)?;
 
     let exec = Executor::graceful(graceful);
-    let tcp_listener = TcpListener::bind_address(cfg.bind.clone(), exec.clone())
+    let tcp_listener = TcpListener::bind_address(cfg.bind, exec.clone())
         .await
         .context("bind stunnel entry node")?;
 

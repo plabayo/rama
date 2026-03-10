@@ -216,7 +216,7 @@ pub async fn bind_udp_with_device<
             device: Some(name),
             ..SocketOptions::default_udp()
         }
-        .try_build_socket(Domain::UNIX)
+        .try_build_socket(Domain::Unix)
         .context("create udp ipv4 socket attached to device")?;
         bind_socket_internal(socket)
     })

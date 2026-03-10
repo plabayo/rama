@@ -52,7 +52,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
     let exec = Executor::graceful(graceful);
 
     let tcp_service = TcpListener::build(exec.clone())
-        .bind_address(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind proxy service")?;
 

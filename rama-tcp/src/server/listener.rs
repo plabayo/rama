@@ -100,7 +100,7 @@ impl TcpListenerBuilder {
         domain: Domain,
         backlog: Option<i32>,
     ) -> Result<TcpListener, BoxError> {
-        tokio::task::spawn_blocking(|| {
+        tokio::task::spawn_blocking(move || {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
             let socket = SocketOptions {
                 device: Some(name),

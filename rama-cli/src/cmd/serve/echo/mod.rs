@@ -176,7 +176,7 @@ async fn bind_echo_http_service(
         cfg.bind
     );
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind_address(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind tcp socker for http(s) echo service")?;
 
@@ -266,7 +266,7 @@ async fn bind_echo_tcp_service(
 
     tracing::info!("starting TCP echo service: bind interface = {:?}", cfg.bind);
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind_address(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind TCP echo service socket")?;
 
@@ -321,7 +321,7 @@ async fn bind_echo_udp_service(
     }
 
     tracing::info!("starting UDP echo service: bind interface = {:?}", cfg.bind);
-    let udp_socket = bind_udp_with_address(cfg.bind.clone())
+    let udp_socket = bind_udp_with_address(cfg.bind)
         .await
         .context("bind UDP echo service socket")?;
 

@@ -25,6 +25,10 @@ check:
 check-crate CRATE:
     cargo check -p {{CRATE}} --all-targets --all-features
 
+check-crate-linux CRATE:
+  cargo check -p {{CRATE}} --target x86_64-unknown-linux-gnu --all-features
+  cargo check -p {{CRATE}} --target aarch64-unknown-linux-gnu --all-features
+
 check-links:
     lychee .
 

@@ -98,7 +98,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
 
     tracing::info!("starting serve service on: bind interface = {}", cfg.bind);
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind_address(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind serve service")?;
 

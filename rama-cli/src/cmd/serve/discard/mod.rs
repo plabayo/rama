@@ -113,7 +113,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
                 cfg.bind
             );
             let tcp_listener = TcpListener::build(exec.clone())
-                .bind_address(cfg.bind.clone())
+                .bind_address(cfg.bind)
                 .await
                 .context("bind TCP discard service socket")?;
 
@@ -142,7 +142,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
                 "starting UDP discard service: bind interface = {:?}",
                 cfg.bind
             );
-            let udp_socket = bind_udp_with_address(cfg.bind.clone())
+            let udp_socket = bind_udp_with_address(cfg.bind)
                 .await
                 .context("bind UDP discard service socket")?;
 

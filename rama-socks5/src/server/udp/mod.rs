@@ -189,7 +189,7 @@ impl<B, I> UdpRelay<B, I> {
         /// By default it binds the udp sockets at `0.0.0.0:0`.
         pub fn bind_address(mut self, address: impl Into<SocketAddress>) -> Self {
             let address = address.into();
-            self.bind_north_address = address.clone();
+            self.bind_north_address = address;
             self.bind_south_address = address;
             self
         }
@@ -325,7 +325,7 @@ where
 
         let socket_north = match self
             .binder
-            .bind_socket_with_address(self.bind_north_address.clone())
+            .bind_socket_with_address(self.bind_north_address)
             .await
         {
             Ok(twin) => twin,
@@ -368,7 +368,7 @@ where
 
         let socket_south = match self
             .binder
-            .bind_socket_with_address(self.bind_south_address.clone())
+            .bind_socket_with_address(self.bind_south_address)
             .await
         {
             Ok(twin) => twin,

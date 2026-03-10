@@ -96,7 +96,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
 
     tracing::info!("starting ip service: bind interface = {}", cfg.bind);
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind_address(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind ip service")?;
 

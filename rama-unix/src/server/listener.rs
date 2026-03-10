@@ -15,7 +15,7 @@ use tokio::net::UnixListener as TokioUnixListener;
 use tokio::net::unix::SocketAddr;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-use rama_net::socket::SocketOptions;
+use rama_net::socket::{SocketOptions, opts::Domain};
 
 use crate::UnixSocketAddress;
 use crate::UnixSocketInfo;
@@ -89,7 +89,7 @@ impl UnixListenerBuilder {
         })
     }
 
-    /// Creates a new TcpListener, which will be bound to the specified interface.
+    /// Creates a new UnixListener, which will be bound to the specified interface.
     ///
     /// The returned listener is ready for accepting connections.
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -97,7 +97,8 @@ impl UnixListenerBuilder {
         self,
         opts: SocketOptions,
     ) -> Result<UnixListener, rama_core::error::BoxError> {
-        let socket = tokio::task::spawn_blocking(move || opts.try_build_socket()).await??;
+        let socket =
+            tokio::task::spawn_blocking(move || opts.try_build_socket(Domain::Unix)).await??;
         Ok(self.bind_socket(socket)?)
     }
 }
@@ -147,7 +148,7 @@ impl UnixListener {
 
     #[inline]
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    /// Creates a new TcpListener, which will be bound to the specified (interface) device name.
+    /// Creates a new UnixListener, which will be bound to the specified (interface) device name.
     ///
     /// The returned listener is ready for accepting connections.
     pub async fn bind_socket_opts(
