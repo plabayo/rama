@@ -12,7 +12,7 @@ use rama::{
         layer::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::{DefaultHttpConnectReplyService, UpgradeLayer},
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
         },
         matcher::MethodMatcher,
         server::HttpServer,
@@ -67,7 +67,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                 UpgradeLayer::new(
                     exec.clone(),
                     MethodMatcher::CONNECT,
-                    DefaultHttpConnectReplyService::new(),
+                    DefaultHttpProxyConnectReplyService::new(),
                     (
                         ConsumeErrLayer::default(),
                         IoToProxyBridgeIoLayer::extension_proxy_target(exec),

@@ -74,7 +74,7 @@ use rama::{
             required_header::AddRequiredRequestHeadersLayer,
             trace::TraceLayer,
             traffic_writer::{self, RequestWriterLayer},
-            upgrade::{DefaultHttpConnectReplyService, UpgradeLayer, Upgraded},
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
         proto::RequestHeaders,
@@ -168,7 +168,7 @@ async fn main() -> Result<(), BoxError> {
                 UpgradeLayer::new(
                     exec,
                     MethodMatcher::CONNECT,
-                    DefaultHttpConnectReplyService::new(),
+                    DefaultHttpProxyConnectReplyService::new(),
                     service_fn(http_connect_proxy),
                 ),
             )

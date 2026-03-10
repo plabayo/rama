@@ -37,7 +37,7 @@ use rama::{
             proxy_auth::ProxyAuthLayer,
             set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::{DefaultHttpConnectReplyService, UpgradeLayer},
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
         },
         matcher::MethodMatcher,
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
@@ -96,7 +96,7 @@ async fn main() -> Result<(), BoxError> {
                 UpgradeLayer::new(
                     Executor::graceful(guard.clone()),
                     MethodMatcher::CONNECT,
-                    DefaultHttpConnectReplyService::new(),
+                    DefaultHttpProxyConnectReplyService::new(),
                     mitm_svc,
                 ),
                 (

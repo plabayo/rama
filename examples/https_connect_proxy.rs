@@ -32,7 +32,7 @@ use rama::{
         layer::{
             proxy_auth::ProxyAuthLayer,
             trace::TraceLayer,
-            upgrade::{DefaultHttpConnectReplyService, UpgradeLayer},
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
         },
         matcher::MethodMatcher,
         server::HttpServer,
@@ -128,7 +128,7 @@ async fn main() {
                 UpgradeLayer::new(
                     exec.clone(),
                     MethodMatcher::CONNECT,
-                    DefaultHttpConnectReplyService::new(),
+                    DefaultHttpProxyConnectReplyService::new(),
                     (
                         ConsumeErrLayer::default(),
                         IoToProxyBridgeIoLayer::extension_proxy_target(exec),
