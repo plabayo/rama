@@ -39,6 +39,11 @@ const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE_RETRIES: u32 = 5;
 
+// TODO:
+// - switch to protected app storage (macos)
+// - test + verify http connect
+// - test + verify WS
+
 // TOOD: do something fun with HTML :) replacing something innocent
 
 pub(super) fn try_new_service()
@@ -80,13 +85,11 @@ where
             http_relay_middleware_within_connect_tunnel(ca_crt_pem_bytes),
         ))
     } else {
-        Either::B(
-            HttpMitmRelay::new(exec.clone()).with_http_middleware(http_relay_middleware(
-                exec,
-                tls_mitm_relay.clone(),
-                ca_crt_pem_bytes,
-            )),
-        )
+        let mut relay = HttpMitmRelay::new(exec.clone()).with_http_middleware(
+            http_relay_middleware(exec, tls_mitm_relay.clone(), ca_crt_pem_bytes),
+        );
+        relay.h2_mut().set_enable_connect_protocol();
+        Either::B(relay)
     };
 
     let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
@@ -125,12 +128,12 @@ where
         SetResponseHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),
+        SetRequestHeaderLayer::if_not_present_typed(
+            crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
+        ),
         HttpProxyConnectMitmRelayLayer::new(
             exec.clone(),
             new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed(),
-        ),
-        SetRequestHeaderLayer::if_not_present_typed(
-            crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),
         HijackLayer::new(
             DomainMatcher::exact(HIJACK_DOMAIN),

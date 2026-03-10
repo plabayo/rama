@@ -87,7 +87,7 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if super::is_req_http_proxy_connect(&req) {
-            tracing::trace!("HttpProxyConnectMitmRelay: HTTP Proxy Connect detected");
+            tracing::debug!("HttpProxyConnectMitmRelay: HTTP Proxy Connect detected");
 
             let on_upgrade_ingress = rama_http::io::upgrade::handle_upgrade(&req);
             let req_extensions = req.extensions().clone();
@@ -120,7 +120,7 @@ where
 
             let upgrade_relay_svc = self.upgrade_svc.clone();
             self.exec.spawn_task(async move {
-                tracing::trace!(
+                tracing::debug!(
                     "HttpProxyConnectMitmRelay: HTTP Proxy Connect relay svc: spawned task active"
                 );
 
