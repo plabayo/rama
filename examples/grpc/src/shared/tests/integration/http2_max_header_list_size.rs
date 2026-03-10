@@ -53,7 +53,7 @@ async fn test_http_max_header_list_size_and_long_errors() {
     let graceful = Shutdown::new(async { drop(rx.await) });
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), exec)
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec)
         .await
         .unwrap();
     let addr = format!("http://{}", listener.local_addr().unwrap());

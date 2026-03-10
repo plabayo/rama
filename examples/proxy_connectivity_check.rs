@@ -137,7 +137,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(62030), exec.clone())
+    let tcp_service = TcpListener::bind_address(SocketAddress::default_ipv4(62030), exec.clone())
         .await
         .expect("bind tcp interface for connectivity example");
 

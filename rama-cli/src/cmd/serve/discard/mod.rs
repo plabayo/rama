@@ -13,13 +13,13 @@ use rama::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
-    net::{socket::Interface, stream::service::DiscardService},
+    net::{address::SocketAddress, stream::service::DiscardService},
     rt::Executor,
     stream::{codec::BytesCodec, io::StreamReader},
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
-    udp::{UdpFramed, bind_udp},
+    udp::{UdpFramed, bind_udp_with_address},
 };
 
 use clap::{Args, ValueEnum};
@@ -30,9 +30,9 @@ use crate::utils::tls::try_new_server_config;
 #[derive(Debug, Args)]
 /// rama discard (rfc863) service
 pub struct CliCommandDiscard {
-    /// the interface to bind to
-    #[arg(long, default_value = "127.0.0.1:9")]
-    bind: Interface,
+    /// the address to bind to
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(9))]
+    bind: SocketAddress,
 
     #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -113,7 +113,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
                 cfg.bind
             );
             let tcp_listener = TcpListener::build(exec.clone())
-                .bind(cfg.bind.clone())
+                .bind_address(cfg.bind.clone())
                 .await
                 .context("bind TCP discard service socket")?;
 
@@ -142,7 +142,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
                 "starting UDP discard service: bind interface = {:?}",
                 cfg.bind
             );
-            let udp_socket = bind_udp(cfg.bind.clone())
+            let udp_socket = bind_udp_with_address(cfg.bind.clone())
                 .await
                 .context("bind UDP discard service socket")?;
 

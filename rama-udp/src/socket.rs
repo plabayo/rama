@@ -10,13 +10,10 @@ use rama_dns::client::{
     GlobalDnsResolver,
     resolver::{DnsAddressResolver, HappyEyeballAddressResolverExt},
 };
-use rama_net::{
-    address::{HostWithPort, SocketAddress},
-    socket::Interface,
-};
+use rama_net::address::{HostWithPort, SocketAddress};
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-use rama_net::socket::{DeviceName, SocketOptions};
+use rama_net::socket::{DeviceName, SocketOptions, opts::Domain};
 
 pub use tokio::net::UdpSocket;
 
@@ -219,25 +216,12 @@ pub async fn bind_udp_with_device<
             device: Some(name),
             ..SocketOptions::default_udp()
         }
-        .try_build_socket()
+        .try_build_socket(Domain::UNIX)
         .context("create udp ipv4 socket attached to device")?;
         bind_socket_internal(socket)
     })
     .await
     .context("await blocking bind socket task")?
-}
-
-/// Creates a new [`UdpSocket`], which will be bound to the specified [`Interface`].
-///
-/// The returned socket is ready for accepting connections and connecting to others.
-pub async fn bind_udp<I: TryInto<Interface, Error: Into<BoxError>>>(
-    interface: I,
-) -> Result<UdpSocket, BoxError> {
-    match interface.try_into().map_err(Into::<BoxError>::into)? {
-        Interface::Address(addr) => bind_udp_with_address(addr).await,
-        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-        Interface::Device(name) => bind_udp_with_device(name).await,
-    }
 }
 
 fn bind_socket_internal(socket: rama_net::socket::core::Socket) -> Result<UdpSocket, BoxError> {

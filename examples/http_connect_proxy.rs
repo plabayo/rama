@@ -116,7 +116,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async move |guard| {
                 let exec = Executor::graceful(guard);
-        let tcp_service = TcpListener::build(exec.clone()).bind("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
+        let tcp_service = TcpListener::build(exec.clone()).bind_address("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
 
         let http_service = HttpServer::auto(exec.clone())
             .service((

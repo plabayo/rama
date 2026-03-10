@@ -5,7 +5,6 @@ use rama_core::extensions::ExtensionsMut;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
-use rama_net::socket::Interface;
 use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
 use std::pin::pin;
@@ -13,7 +12,7 @@ use std::{io, net::SocketAddr};
 use tokio::net::TcpListener as TokioTcpListener;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-use rama_net::socket::{DeviceName, SocketOptions};
+use rama_net::socket::{DeviceName, SocketOptions, opts::Domain};
 
 use crate::TcpStream;
 
@@ -98,6 +97,7 @@ impl TcpListenerBuilder {
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         self,
         name: N,
+        domain: Domain,
         backlog: Option<i32>,
     ) -> Result<TcpListener, BoxError> {
         tokio::task::spawn_blocking(|| {
@@ -106,7 +106,7 @@ impl TcpListenerBuilder {
                 device: Some(name),
                 ..SocketOptions::default_tcp()
             }
-            .try_build_socket()
+            .try_build_socket(domain)
             .context("create tcp ipv4 socket attached to device")?;
             socket
                 .listen(backlog.unwrap_or(4096))
@@ -115,20 +115,6 @@ impl TcpListenerBuilder {
         })
         .await
         .context("await blocking bind socket task")?
-    }
-
-    /// Creates a new TcpListener, which will be bound to the specified interface.
-    ///
-    /// The returned listener is ready for accepting connections.
-    pub async fn bind<I: TryInto<Interface, Error: Into<BoxError>>>(
-        self,
-        interface: I,
-    ) -> Result<TcpListener, BoxError> {
-        match interface.try_into().map_err(Into::<BoxError>::into)? {
-            Interface::Address(addr) => self.bind_address(addr).await,
-            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            Interface::Device(name) => self.bind_device(name).await,
-        }
     }
 }
 
@@ -185,18 +171,12 @@ impl TcpListener {
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         name: N,
         exec: Executor,
+        domain: Domain,
+        backlog: Option<i32>,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(exec).bind_device(name).await
-    }
-
-    /// Creates a new TcpListener, which will be bound to the specified interface.
-    ///
-    /// The returned listener is ready for accepting connections.
-    pub async fn bind<I: TryInto<Interface, Error: Into<BoxError>>>(
-        interface: I,
-        exec: Executor,
-    ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(exec).bind(interface).await
+        TcpListenerBuilder::new(exec)
+            .bind_device(name, domain, backlog)
+            .await
     }
 }
 

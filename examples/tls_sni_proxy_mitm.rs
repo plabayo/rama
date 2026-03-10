@@ -168,7 +168,7 @@ async fn main() -> Result<(), BoxError> {
     const INTERFACE: SocketAddress = SocketAddress::local_ipv4(62045);
 
     tracing::info!("bind SNI MITM proxy to {INTERFACE}");
-    let tcp_listener = TcpListener::bind(INTERFACE, exec.clone())
+    let tcp_listener = TcpListener::bind_address(INTERFACE, exec.clone())
         .await
         .context("bind tcp proxy")
         .context_field("interface", INTERFACE)?;

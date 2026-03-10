@@ -5,7 +5,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
     http::service::fs::DirectoryServeMode,
-    net::{socket::Interface, tls::ApplicationProtocol},
+    net::{address::SocketAddress, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
@@ -25,9 +25,9 @@ pub struct CliCommandFs {
     #[arg()]
     path: Option<PathBuf>,
 
-    /// the interface to bind to
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: Interface,
+    /// the address to bind to
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(8080))]
+    bind: SocketAddress,
 
     #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -98,7 +98,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
 
     tracing::info!("starting serve service on: bind interface = {}", cfg.bind);
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind(cfg.bind.clone())
+        .bind_address(cfg.bind.clone())
         .await
         .context("bind serve service")?;
 

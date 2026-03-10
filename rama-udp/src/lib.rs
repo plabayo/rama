@@ -23,7 +23,7 @@
 
 mod socket;
 pub use socket::{
-    UdpSocket, bind_udp, bind_udp_socket_with_connect, bind_udp_socket_with_connect_default_dns,
+    UdpSocket, bind_udp_socket_with_connect, bind_udp_socket_with_connect_default_dns,
     bind_udp_with_address, bind_udp_with_socket,
 };
 

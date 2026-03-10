@@ -35,7 +35,7 @@ const ADDR: SocketAddress = SocketAddress::local_ipv4(62500);
 #[tokio::main]
 async fn main() {
     println!("Listening on: {ADDR}");
-    TcpListener::bind(ADDR, Executor::default())
+    TcpListener::bind_address(ADDR, Executor::default())
         .await
         .expect("bind TCP Listener")
         .serve(service_fn(handle))

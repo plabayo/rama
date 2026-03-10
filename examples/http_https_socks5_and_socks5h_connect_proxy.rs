@@ -115,7 +115,7 @@ async fn main() {
 
     let exec = Executor::graceful(graceful.guard());
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62029", exec.clone())
+    let tcp_service = TcpListener::bind_address("127.0.0.1:62029", exec.clone())
         .await
         .expect("bind http+https+socks5+socks5h proxy to 127.0.0.1:62029");
 

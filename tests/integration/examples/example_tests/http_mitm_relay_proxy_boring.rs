@@ -130,7 +130,7 @@ async fn test_http_mitm_relay_proxy() {
     )));
 
     tokio::spawn(async {
-        TcpListener::bind("127.0.0.1:63017", Executor::default())
+        TcpListener::bind_address("127.0.0.1:63017", Executor::default())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)
@@ -152,7 +152,7 @@ async fn test_http_mitm_relay_proxy() {
     );
 
     tokio::spawn(async {
-        TcpListener::bind("127.0.0.1:63018", Executor::default())
+        TcpListener::bind_address("127.0.0.1:63018", Executor::default())
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener: secure web service (for h1 traffic): {e}")

@@ -215,7 +215,7 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
             })),
     );
 
-    TcpListener::bind(ADDRESS, exec)
+    TcpListener::bind_address(ADDRESS, exec)
         .await
         .unwrap()
         .serve(Abortable::new(http_svc))

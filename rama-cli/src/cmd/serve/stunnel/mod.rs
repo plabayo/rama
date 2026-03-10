@@ -32,7 +32,6 @@ use rama::{
     net::{
         address::{HostWithPort, SocketAddress},
         proxy::IoForwardService,
-        socket::Interface,
         tls::{
             DataEncoding,
             client::ServerVerifyMode,
@@ -73,11 +72,11 @@ pub enum StunnelSubcommand {
 
 #[derive(Debug, Args)]
 pub struct ExitNodeArgs {
-    #[arg(long, default_value = "127.0.0.1:8002")]
-    /// address and port to listen on for incoming TLS connections
-    pub bind: Interface,
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(8002))]
+    /// address to listen on for incoming TLS connections
+    pub bind: SocketAddress,
 
-    #[arg(long, default_value = "127.0.0.1:8080")]
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(8080))]
     /// backend address to forward decrypted connections to
     pub forward: SocketAddress,
 
@@ -98,9 +97,9 @@ pub struct ExitNodeArgs {
 
 #[derive(Debug, Args)]
 pub struct EntryNodeArgs {
-    #[arg(long, default_value = "127.0.0.1:8003")]
-    /// address and port to listen on
-    pub bind: Interface,
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(8003))]
+    /// address to listen on
+    pub bind: SocketAddress,
 
     #[arg(long, default_value = "127.0.0.1:8002", value_name = "HOST:PORT")]
     /// server to connect to
@@ -144,7 +143,7 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
 
     let exec = Executor::graceful(graceful);
 
-    let tcp_listener = TcpListener::bind(cfg.bind.clone(), exec.clone())
+    let tcp_listener = TcpListener::bind_address(cfg.bind.clone(), exec.clone())
         .await
         .context("bind stunnel exit node")?;
 
@@ -174,7 +173,7 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
     let tls_connector_data = build_tls_connector(&cfg)?;
 
     let exec = Executor::graceful(graceful);
-    let tcp_listener = TcpListener::bind(cfg.bind.clone(), exec.clone())
+    let tcp_listener = TcpListener::bind_address(cfg.bind.clone(), exec.clone())
         .await
         .context("bind stunnel entry node")?;
 

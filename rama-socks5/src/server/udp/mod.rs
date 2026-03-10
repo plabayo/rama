@@ -6,9 +6,9 @@ use rama_core::{
 };
 use rama_net::{
     address::{Host, HostWithPort, SocketAddress},
-    socket::{Interface, SocketService},
+    socket::SocketService,
 };
-use rama_udp::{UdpSocket, bind_udp};
+use rama_udp::{UdpSocket, bind_udp_with_address};
 use rama_utils::macros::generate_set_and_with;
 
 use ::rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver};
@@ -79,12 +79,12 @@ where
 /// [`Default`] binder [`Service`] implementation.
 pub struct DefaultUdpBinder;
 
-impl Service<Interface> for DefaultUdpBinder {
+impl Service<SocketAddress> for DefaultUdpBinder {
     type Output = UdpSocket;
     type Error = BoxError;
 
-    async fn serve(&self, interface: Interface) -> Result<Self::Output, Self::Error> {
-        let socket = bind_udp(interface).await?;
+    async fn serve(&self, addr: SocketAddress) -> Result<Self::Output, Self::Error> {
+        let socket = bind_udp_with_address(addr).await?;
         Ok(socket)
     }
 }
@@ -111,8 +111,8 @@ pub struct UdpRelay<B, I> {
 
     dns_resolver: Option<BoxDnsAddressResolver>,
 
-    bind_north_interface: Interface,
-    bind_south_interface: Interface,
+    bind_north_address: SocketAddress,
+    bind_south_address: SocketAddress,
 
     north_buffer_size: usize,
     south_buffer_size: usize,
@@ -127,8 +127,8 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             binder,
             inspector: DirectUdpRelay::default(),
             dns_resolver: None,
-            bind_north_interface: Interface::default_ipv4(0),
-            bind_south_interface: Interface::default_ipv4(0),
+            bind_north_address: SocketAddress::default_ipv4(0),
+            bind_south_address: SocketAddress::default_ipv4(0),
             north_buffer_size: 2048,
             south_buffer_size: 2048,
             relay_timeout: None,
@@ -142,8 +142,8 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             binder: self.binder,
             inspector: SyncUdpInspector(inspector),
             dns_resolver: self.dns_resolver,
-            bind_north_interface: self.bind_north_interface,
-            bind_south_interface: self.bind_south_interface,
+            bind_north_address: self.bind_north_address,
+            bind_south_address: self.bind_south_address,
             north_buffer_size: self.north_buffer_size,
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
@@ -157,8 +157,8 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             binder: self.binder,
             inspector: AsyncUdpInspector(inspector),
             dns_resolver: self.dns_resolver,
-            bind_north_interface: self.bind_north_interface,
-            bind_south_interface: self.bind_south_interface,
+            bind_north_address: self.bind_north_address,
+            bind_south_address: self.bind_south_address,
             north_buffer_size: self.north_buffer_size,
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
@@ -175,8 +175,8 @@ impl<B, I> UdpRelay<B, I> {
             binder,
             inspector: self.inspector,
             dns_resolver: self.dns_resolver,
-            bind_north_interface: self.bind_north_interface,
-            bind_south_interface: self.bind_south_interface,
+            bind_north_address: self.bind_north_address,
+            bind_south_address: self.bind_south_address,
             north_buffer_size: self.north_buffer_size,
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
@@ -184,33 +184,33 @@ impl<B, I> UdpRelay<B, I> {
     }
 
     generate_set_and_with! {
-        /// Define the (network) [`Interface`] to bind to, for both north and south direction.
+        /// Define the [`SocketAddress`] to bind to, for both north and south direction.
         ///
         /// By default it binds the udp sockets at `0.0.0.0:0`.
-        pub fn bind_interface(mut self, interface: impl Into<Interface>) -> Self {
-            let interface = interface.into();
-            self.bind_north_interface = interface.clone();
-            self.bind_south_interface = interface;
+        pub fn bind_address(mut self, address: impl Into<SocketAddress>) -> Self {
+            let address = address.into();
+            self.bind_north_address = address.clone();
+            self.bind_south_address = address;
             self
         }
     }
 
     generate_set_and_with! {
-        /// Define the (network) [`Interface`] to bind to, for the north direction.
+        /// Define the [`SocketAddress`] to bind to, for the north direction.
         ///
         /// By default it binds the udp sockets at `0.0.0.0:0`.
-        pub fn bind_north_interface(mut self, interface: impl Into<Interface>) -> Self {
-            self.bind_north_interface = interface.into();
+        pub fn bind_north_address(mut self, address: impl Into<SocketAddress>) -> Self {
+            self.bind_north_address = address.into();
             self
         }
     }
 
     generate_set_and_with! {
-        /// Define the (network) [`Interface`] to bind to, for the south direction.
+        /// Define the [`SocketAddress`] to bind to, for the south direction.
         ///
         /// By default it binds the udp sockets at `0.0.0.0:0`.
-        pub fn bind_south_interface(mut self, interface: impl Into<Interface>) -> Self {
-            self.bind_south_interface = interface.into();
+        pub fn bind_south_address(mut self, address: impl Into<SocketAddress>) -> Self {
+            self.bind_south_address = address.into();
             self
         }
     }
@@ -323,7 +323,11 @@ where
         };
         let client_address = SocketAddress::new(dest_addr, dest_port);
 
-        let socket_north = match self.binder.bind(self.bind_north_interface.clone()).await {
+        let socket_north = match self
+            .binder
+            .bind_socket_with_address(self.bind_north_address.clone())
+            .await
+        {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();
@@ -362,7 +366,11 @@ where
             }
         };
 
-        let socket_south = match self.binder.bind(self.bind_south_interface.clone()).await {
+        let socket_south = match self
+            .binder
+            .bind_socket_with_address(self.bind_south_address.clone())
+            .await
+        {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();

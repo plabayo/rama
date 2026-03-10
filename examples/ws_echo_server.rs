@@ -53,7 +53,7 @@ async fn main() {
         ));
         info!("open web echo chat @ http://127.0.0.1:62032");
         info!("or connect directly to ws://127.0.0.1:62032/echo (via 'rama')");
-        TcpListener::bind("127.0.0.1:62032", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:62032", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
             .serve(server)

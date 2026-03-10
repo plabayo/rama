@@ -37,7 +37,7 @@ async fn http2_keepalive_does_not_cause_panics() {
     let graceful = Shutdown::new(async { drop(rx.await) });
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), exec)
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec)
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
@@ -74,7 +74,7 @@ async fn http2_keepalive_does_not_cause_panics_on_client_side() {
 
     let graceful = Shutdown::new(async { drop(rx.await) });
     let exec = Executor::graceful(graceful.guard());
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), exec)
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec)
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();

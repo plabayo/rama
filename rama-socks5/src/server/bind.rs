@@ -8,7 +8,7 @@ use rama_net::address::HostWithPort;
 use rama_net::{
     address::{Host, SocketAddress},
     proxy::IoForwardService,
-    socket::{Interface, SocketService},
+    socket::SocketService,
 };
 use rama_tcp::{TcpStream, server::TcpListener};
 use rama_utils::macros::generate_set_and_with;
@@ -77,7 +77,7 @@ pub struct Binder<A, S> {
     acceptor: A,
     service: S,
 
-    bind_interface: Option<Interface>,
+    bind_address: Option<SocketAddress>,
 
     accept_timeout: Option<Duration>,
 }
@@ -92,7 +92,7 @@ impl<A, S> Binder<A, S> {
         Self {
             acceptor,
             service,
-            bind_interface: None,
+            bind_address: None,
             accept_timeout: None,
         }
     }
@@ -106,7 +106,7 @@ impl<A, S> Binder<A, S> {
         Binder {
             acceptor,
             service: self.service,
-            bind_interface: self.bind_interface,
+            bind_address: self.bind_address,
             accept_timeout: self.accept_timeout,
         }
     }
@@ -123,29 +123,29 @@ impl<A, S> Binder<A, S> {
         Binder {
             acceptor: self.acceptor,
             service,
-            bind_interface: self.bind_interface,
+            bind_address: self.bind_address,
             accept_timeout: self.accept_timeout,
         }
     }
 
     generate_set_and_with! {
-        /// Define the (network) [`Interface`] to bind to.
+        /// Define the [`SocketAddress`] to bind to.
         ///
         /// By default it will use the client's requested bind address,
         /// which is in many cases not what you want.
-        pub fn bind_interface(mut self, interface: impl Into<Interface>) -> Self {
-            self.bind_interface = Some(interface.into());
+        pub fn bind_address(mut self, addr: impl Into<SocketAddress>) -> Self {
+            self.bind_address = Some(addr.into());
             self
         }
     }
 
     generate_set_and_with! {
-        /// Define the default (network) [`Interface`] to bind to (`0.0.0.0:0`).
+        /// Define the default [`SocketAddress`] to bind to (`0.0.0.0:0`).
         ///
         /// By default it will use the client's requested bind address,
         /// which is in many cases not what you want.
-        pub fn default_bind_interface(mut self) -> Self {
-            self.bind_interface = Some(SocketAddress::default_ipv4(0).into());
+        pub fn default_bind_address(mut self) -> Self {
+            self.bind_address = Some(SocketAddress::default_ipv4(0).into());
             self
         }
     }
@@ -165,12 +165,12 @@ pub struct DefaultAcceptorFactory {
     exec: Executor,
 }
 
-impl Service<Interface> for DefaultAcceptorFactory {
+impl Service<SocketAddress> for DefaultAcceptorFactory {
     type Output = TcpListener;
     type Error = BoxError;
 
-    async fn serve(&self, interface: Interface) -> Result<Self::Output, Self::Error> {
-        let acceptor = TcpListener::bind(interface, self.exec.clone()).await?;
+    async fn serve(&self, addr: SocketAddress) -> Result<Self::Output, Self::Error> {
+        let acceptor = TcpListener::bind_address(addr, self.exec.clone()).await?;
         Ok(acceptor)
     }
 }
@@ -250,11 +250,11 @@ where
         };
         let requested_interface = SocketAddress::new(requested_addr, requested_port);
 
-        let bind_interface = if let Some(bind_interface) = self.bind_interface.clone() {
+        let bind_address = if let Some(bind_address) = self.bind_address.clone() {
             tracing::trace!(
-                "socks5 server: bind: use server-defined bind interface: {bind_interface}"
+                "socks5 server: bind: use server-defined bind interface: {bind_address}"
             );
-            bind_interface
+            bind_address
         } else {
             tracing::debug!(
                 "socks5 server: bind: no server-defined bind interface: use requested client interface @ {requested_interface}"
@@ -262,7 +262,11 @@ where
             requested_interface.into()
         };
 
-        let acceptor = match self.acceptor.bind(bind_interface.clone()).await {
+        let acceptor = match self
+            .acceptor
+            .bind_socket_with_address(bind_address.clone())
+            .await
+        {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();
@@ -284,7 +288,7 @@ where
             Ok(addr) => addr,
             Err(err) => {
                 tracing::debug!(
-                    "retrieve local addr of (tcp) acceptor failed @ {bind_interface}: {err:?}",
+                    "retrieve local addr of (tcp) acceptor failed @ {bind_address}: {err:?}",
                 );
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
@@ -310,7 +314,7 @@ where
             Some(duration) => match tokio::time::timeout(duration, accept_future).await {
                 Ok(result) => result,
                 Err(err) => {
-                    tracing::debug!("accept future timed out @ {bind_interface}: {err:?}",);
+                    tracing::debug!("accept future timed out @ {bind_address}: {err:?}",);
                     let reply_kind = ReplyKind::TtlExpired;
                     Reply::error_reply(reply_kind)
                         .write_to(&mut ingress_stream)
@@ -328,7 +332,7 @@ where
             Ok((stream, addr)) => (stream, addr),
             Err(err) => {
                 let err: BoxError = err.into();
-                tracing::debug!("socks5 server: abort: bind failed @ {bind_interface}: {err:?}",);
+                tracing::debug!("socks5 server: abort: bind failed @ {bind_address}: {err:?}",);
 
                 let reply_kind = (&err).into();
                 Reply::error_reply(reply_kind)
@@ -344,7 +348,7 @@ where
         };
 
         tracing::trace!(
-            "incoming connection {incoming_addr} received on bind interface {bind_interface}",
+            "incoming connection {incoming_addr} received on bind interface {bind_address}",
         );
 
         Reply::new(incoming_addr)
@@ -355,7 +359,7 @@ where
             })?;
 
         tracing::trace!(
-            "socks5 server @ {bind_interface}: bind: ready to serve from {incoming_addr}",
+            "socks5 server @ {bind_address}: bind: ready to serve from {incoming_addr}",
         );
 
         self.service

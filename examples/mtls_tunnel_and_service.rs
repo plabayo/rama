@@ -141,7 +141,7 @@ async fn main() {
             server.port = %SERVER_AUTHORITY.port,
             "start mtls (https) web service",
         );
-        TcpListener::bind(SERVER_AUTHORITY.to_string(), executor)
+        TcpListener::bind_address(SERVER_AUTHORITY.to_string(), executor)
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener ({SERVER_AUTHORITY}): mtls (https): web service: {e}")
@@ -170,7 +170,7 @@ async fn main() {
             .into_layer(IoForwardService::new());
 
         // L4 Proxy Service
-        TcpListener::bind(TUNNEL_AUTHORITY, exec)
+        TcpListener::bind_address(TUNNEL_AUTHORITY, exec)
             .await
             .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
             .serve(forwarder)

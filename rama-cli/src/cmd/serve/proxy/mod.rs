@@ -22,7 +22,7 @@ use rama::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
-    net::{proxy::IoForwardService, socket::Interface, stream::layer::http::BodyLimitLayer},
+    net::{address::SocketAddress, proxy::IoForwardService, stream::layer::http::BodyLimitLayer},
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -33,9 +33,9 @@ use std::{convert::Infallible, time::Duration};
 #[derive(Debug, Args)]
 /// rama proxy server
 pub struct CliCommandProxy {
-    /// the interface to bind to
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: Interface,
+    /// the address to bind to
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(8080))]
+    bind: SocketAddress,
 
     #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow (0 = no limit)
@@ -52,7 +52,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
     let exec = Executor::graceful(graceful);
 
     let tcp_service = TcpListener::build(exec.clone())
-        .bind(cfg.bind.clone())
+        .bind_address(cfg.bind.clone())
         .await
         .context("bind proxy service")?;
 

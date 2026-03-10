@@ -14,7 +14,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     TcpListener::bind("127.0.0.1:9000", Executor::default())
+//!     TcpListener::bind_address("127.0.0.1:9000", Executor::default())
 //!         .await
 //!         .expect("bind TCP Listener")
 //!         .serve(service_fn(async |mut stream: TcpStream| {

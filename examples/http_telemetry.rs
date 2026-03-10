@@ -158,7 +158,7 @@ async fn main() {
 
         // service setup & go
         TcpListener::build(exec)
-            .bind("127.0.0.1:62012")
+            .bind_address("127.0.0.1:62012")
             .await
             .unwrap()
             .serve(

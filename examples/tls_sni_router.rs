@@ -86,13 +86,13 @@ async fn main() {
     spawn_https_server(shutdown.guard(), NAME_BAZ, INTERFACE_BAZ);
 
     shutdown.spawn_task_fn(async move |guard| {
-        let interface = SocketAddress::default_ipv4(62026);
+        let socket_address = SocketAddress::default_ipv4(62026);
         tracing::info!(
-            network.local.address = %interface.ip_addr,
-            network.local.port = %interface.port,
+            network.local.address = %socket_address.ip_addr,
+            network.local.port = %socket_address.port,
             "[tcp] spawn sni router: bind and go",
         );
-        TcpListener::bind(interface, Executor::graceful(guard.clone()))
+        TcpListener::bind_address(socket_address, Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener for SNI router")
             .serve(SniRouter::new(SniRouterSvc {
@@ -167,7 +167,7 @@ where
     }
 }
 
-fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: SocketAddress) {
+fn spawn_https_server(guard: ShutdownGuard, name: &'static str, socket_address: SocketAddress) {
     let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
         common_name: Some(format!("{name}.local").parse().expect("encode common name")),
         ..Default::default()
@@ -177,11 +177,11 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: Socke
     guard.into_spawn_task_fn(async move |guard| {
         tracing::info!(
             host.name = %name,
-            network.local.address = %interface.ip_addr,
-            network.local.port = %interface.port,
+            network.local.address = %socket_address.ip_addr,
+            network.local.port = %socket_address.port,
             "[tcp] spawn https server: bind and go",
         );
-        TcpListener::bind(interface, Executor::graceful(guard.clone()))
+        TcpListener::bind_address(socket_address, Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener for web server")
             .serve(TlsAcceptorLayer::new(acceptor_data).into_layer(

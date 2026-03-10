@@ -138,7 +138,7 @@ async fn main() -> Result<(), BoxError> {
         let exec = Executor::graceful(guard);
 
         let tcp_service = TcpListener::build(exec.clone())
-            .bind("127.0.0.1:62040")
+            .bind_address("127.0.0.1:62040")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62040");
 

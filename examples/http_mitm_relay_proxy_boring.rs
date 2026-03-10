@@ -82,7 +82,7 @@ async fn main() -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
-            .bind("127.0.0.1:62049")
+            .bind_address("127.0.0.1:62049")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62049");
 

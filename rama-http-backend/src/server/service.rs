@@ -13,7 +13,7 @@ use rama_http_core::server::conn::auto::Builder as AutoConnBuilder;
 use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
 use rama_http_core::server::conn::http2::Builder as H2ConnBuilder;
 use rama_http_types::Request;
-use rama_net::socket::Interface;
+use rama_net::address::SocketAddress;
 use rama_tcp::server::TcpListener;
 use std::convert::Infallible;
 use std::fmt;
@@ -149,16 +149,16 @@ where
             .await
     }
 
-    /// Listen for connections on the given [`Interface`], serving HTTP connections.
+    /// Listen for connections on the given [`SocketAddress`], serving HTTP connections.
     ///
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
-    pub async fn listen<S, Response, I>(self, interface: I, service: S) -> HttpServeResult
+    pub async fn listen<S, Response, A>(self, address: A, service: S) -> HttpServeResult
     where
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
-        I: TryInto<Interface, Error: Into<BoxError>>,
+        A: TryInto<SocketAddress, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind(interface, self.exec.clone()).await?;
+        let tcp = TcpListener::bind_address(address, self.exec.clone()).await?;
         let service = HttpService {
             guard: self.exec.guard().cloned(),
             builder: Arc::new(self.builder),

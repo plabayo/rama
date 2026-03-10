@@ -32,7 +32,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    udp::{UdpFramed, bind_udp},
+    udp::{UdpFramed, bind_udp_with_address},
 };
 
 use std::convert::Infallible;
@@ -63,7 +63,7 @@ async fn main() {
         .await
         .expect("initiate socks5 UDP Associate handshake");
 
-    let udp_server = bind_udp(SocketAddress::local_ipv4(0))
+    let udp_server = bind_udp_with_address(SocketAddress::local_ipv4(0))
         .await
         .expect("bind udp server");
 
@@ -103,7 +103,7 @@ async fn main() {
     });
 
     let udp_socket_relay = udp_binder
-        .bind(SocketAddress::local_ipv4(0))
+        .bind_address(SocketAddress::local_ipv4(0))
         .await
         .expect("server to be connected");
 
@@ -141,7 +141,7 @@ async fn main() {
 }
 
 async fn spawn_socks5_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::local_ipv4(0), Executor::default())
+    let tcp_service = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
         .await
         .expect("bind socks5 UDP Associate proxy on open port");
 
@@ -154,7 +154,7 @@ async fn spawn_socks5_server() -> SocketAddress {
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_udp_associator(
             DefaultUdpRelay::default()
-                .with_bind_interface(SocketAddress::local_ipv4(0))
+                .with_bind_address(SocketAddress::local_ipv4(0))
                 .with_sync_inspector(udp_packet_inspect),
         );
 

@@ -5,8 +5,8 @@ use rama_core::futures::Stream;
 use rama_core::stream::codec::{Decoder, Encoder};
 use rama_core::telemetry::tracing;
 use rama_net::address::HostWithPort;
-use rama_net::{address::SocketAddress, socket::Interface};
-use rama_udp::{UdpSocket, bind_udp};
+use rama_net::address::SocketAddress;
+use rama_udp::{UdpSocket, bind_udp_with_address};
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::{fmt, io, net::SocketAddr};
@@ -28,15 +28,15 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelayBinder<S> {
         Self { stream }
     }
 
-    /// Bind the relay as an Udp socket on the given interface,
+    /// Bind the relay as an Udp socket on the given address,
     /// and complete the association handshake with as goal
     /// to have a relay proxy udp connection established at the end
     /// of this bind fn call.
-    pub async fn bind(
+    pub async fn bind_address(
         mut self,
-        interface: impl TryInto<Interface, Error: Into<BoxError>>,
+        address: impl TryInto<SocketAddress, Error: Into<BoxError>>,
     ) -> Result<UdpSocketRelay<S>, HandshakeError> {
-        let socket = bind_udp(interface).await.map_err(|err| {
+        let socket = bind_udp_with_address(address).await.map_err(|err| {
             HandshakeError::other(err).with_context("bind udp socket ready for sending")
         })?;
 

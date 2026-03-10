@@ -188,7 +188,7 @@ async fn main() {
         let tcp_service =
             TlsAcceptorLayer::new(acceptor_data).layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind("127.0.0.1:5001", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:5001", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener: tls")
             .serve(tcp_service)
@@ -248,7 +248,7 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind(ADDR, exec)
+        TcpListener::bind_address(ADDR, exec)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

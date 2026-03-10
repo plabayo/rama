@@ -65,7 +65,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62023", exec.clone())
+    let tcp_service = TcpListener::bind_address("127.0.0.1:62023", exec.clone())
         .await
         .expect("bind socks5+http proxy to 127.0.0.1:62023");
 

@@ -103,7 +103,7 @@ async fn main() {
         )
             .into_layer(IoForwardService::new());
 
-        TcpListener::bind("127.0.0.1:63800", Executor::graceful(guard.clone()))
+        TcpListener::bind_address("127.0.0.1:63800", Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener: tls")
             .serve(tcp_service)
@@ -115,7 +115,7 @@ async fn main() {
         let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
             .into_layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind("127.0.0.1:62800", Executor::graceful(guard.clone()))
+        TcpListener::bind_address("127.0.0.1:62800", Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)
