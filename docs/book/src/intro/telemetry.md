@@ -36,6 +36,8 @@ popular ingestion tools such as [Prometheus](https://prometheus.io/).
 ### Rama Telemetry Example
 
 > Source Code: [/examples/http_telemetry.rs](https://github.com/plabayo/rama/tree/main/examples/http_telemetry.rs)
+>
+> Source Code (gRPC OTLP): [/examples/grpc_example.rs](https://github.com/plabayo/rama/tree/main/examples/grpc_example.rs)
 
 In this example you can see a web service which keeps track of a visitor counter as a custom opentelemetry counter metric. It also makes use of the rama provided [`RequestMetricsLayer`](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/struct.RequestMetricsLayer.html) and [`NetworkMetricsLayer`](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/struct.NetworkMetricsLayer.html) layers to also some insights in the traffic both on the network- and application (http) layers. These metrics are exported using the <https://crates.io/crates/opentelemetry-otlp> dependency.
 
