@@ -31,13 +31,15 @@ use rama::{
     tls::boring::proxy::{TlsMitmRelay, cert_issuer::BoringMitmCertIssuer},
 };
 
-const HIJACK_DOMAIN: Domain = Domain::from_static("tproxy.example.rama.internal");
+const HIJACK_DOMAIN: Domain = Domain::from_static("http-test.ramaproxy.org");
 
 const HTTP_PEEK_DURATION: Duration = Duration::from_secs(8);
 
 const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE_RETRIES: u32 = 5;
+
+// TOOD: do something fun with HTML :) replacing something innocent
 
 pub(super) fn try_new_service()
 -> Result<impl Service<TcpFlow, Output = (), Error = Infallible>, BoxError> {

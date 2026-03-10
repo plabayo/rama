@@ -215,7 +215,7 @@ mod tests {
         ] {
             let msg = format!("parsing '{s}'");
 
-            assert_eq(s, s.parse::<DeviceName>().expect(&msg).as_str());
+            assert_eq!(s, s.parse::<DeviceName>().expect(&msg).as_str());
         }
     }
 
