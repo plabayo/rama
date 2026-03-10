@@ -9,6 +9,7 @@ mod prefix;
 pub use prefix::PrefixedIo;
 
 pub mod rewind;
+pub mod timeout;
 
 mod bridge;
 pub use bridge::BridgeIo;
