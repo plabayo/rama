@@ -10,6 +10,7 @@ use rama_core::{
 use rama_http::{
     Request, Response, io::upgrade::Upgraded, opentelemetry::version_as_protocol_version,
 };
+use rama_http_types::proxy::is_req_http_proxy_connect;
 
 #[derive(Debug, Clone)]
 /// Layer used to create the middleware [`HttpProxyConnectMitmRelay`] service.
@@ -86,7 +87,7 @@ where
     type Error = S::Error;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        if super::is_req_http_proxy_connect(&req) {
+        if is_req_http_proxy_connect(&req) {
             tracing::debug!("HttpProxyConnectMitmRelay: HTTP Proxy Connect detected");
 
             let on_upgrade_ingress = rama_http::io::upgrade::handle_upgrade(&req);

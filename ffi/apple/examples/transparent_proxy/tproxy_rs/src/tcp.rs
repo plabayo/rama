@@ -8,6 +8,7 @@ use rama::{
     http::{
         Request, Response,
         layer::{
+            dpi_proxy_credential::DpiProxyCredentialExtractorLayer,
             set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
             upgrade::HttpProxyConnectMitmRelayLayer,
         },
@@ -135,6 +136,7 @@ where
             exec.clone(),
             new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed(),
         ),
+        DpiProxyCredentialExtractorLayer::new(),
         HijackLayer::new(
             DomainMatcher::exact(HIJACK_DOMAIN),
             Arc::new(crate::http::hijack::new_service(ca_crt_pem_bytes)),

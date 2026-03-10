@@ -8,6 +8,7 @@ use crate::headers::{HeaderMapExt, ProxyAuthorization};
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
+use rama_http_types::proxy::is_req_http_proxy_connect;
 use rama_net::user::credentials::DpiProxyCredential;
 use rama_net::user::{Basic, Bearer, ProxyCredential};
 use rama_utils::macros::define_inner_service_accessors;
@@ -63,18 +64,22 @@ where
     type Error = S::Error;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        if let Some(ProxyAuthorization::<Basic>(credentials)) = req.headers().typed_get() {
-            tracing::trace!(
-                "DpiProxyCredentialExtractor: extracted Basic proxy auth: inserted in req extensions"
-            );
-            req.extensions_mut()
-                .insert(DpiProxyCredential(ProxyCredential::Basic(credentials)));
-        } else if let Some(ProxyAuthorization::<Bearer>(token)) = req.headers().typed_get() {
-            tracing::trace!(
-                "DpiProxyCredentialExtractor: extracted Bearer proxy auth: inserted in req extensions"
-            );
-            req.extensions_mut()
-                .insert(DpiProxyCredential(ProxyCredential::Bearer(token)));
+        if is_req_http_proxy_connect(&req) {
+            tracing::trace!("DpiProxyCredentialExtractor: try to extract proxy authorization data");
+
+            if let Some(ProxyAuthorization::<Basic>(credentials)) = req.headers().typed_get() {
+                tracing::debug!(
+                    "DpiProxyCredentialExtractor: extracted Basic proxy auth: inserted in req extensions"
+                );
+                req.extensions_mut()
+                    .insert(DpiProxyCredential(ProxyCredential::Basic(credentials)));
+            } else if let Some(ProxyAuthorization::<Bearer>(token)) = req.headers().typed_get() {
+                tracing::debug!(
+                    "DpiProxyCredentialExtractor: extracted Bearer proxy auth: inserted in req extensions"
+                );
+                req.extensions_mut()
+                    .insert(DpiProxyCredential(ProxyCredential::Bearer(token)));
+            }
         }
 
         self.inner.serve(req).await
