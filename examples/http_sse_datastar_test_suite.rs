@@ -101,7 +101,7 @@ pub mod handlers {
         ElementPatchMode, ExecuteScript, PatchElements,
         execute_script::{ScriptAttribute, ScriptType},
     };
-    use rama_utils::str::NonEmptyStr;
+    use rama::utils::str::NonEmptyStr;
     use serde::Deserialize;
     use serde_json::{Map, Value};
 
