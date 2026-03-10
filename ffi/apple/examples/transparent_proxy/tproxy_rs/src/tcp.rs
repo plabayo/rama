@@ -14,8 +14,8 @@ use rama::{
         matcher::DomainMatcher,
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
     },
-    io::{BridgeIo, Io, timeout::TimeoutIo},
-    layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapInputLayer},
+    io::{BridgeIo, Io},
+    layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
     net::{
         address::Domain,
         apple::networkextension::TcpFlow,
@@ -34,8 +34,6 @@ use rama::{
 const HIJACK_DOMAIN: Domain = Domain::from_static("tproxy.example.rama.internal");
 
 const HTTP_PEEK_DURATION: Duration = Duration::from_secs(8);
-
-const INGRESS_READ_WRITE_TIMEOUT: Duration = Duration::from_mins(5);
 
 const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
@@ -59,15 +57,6 @@ pub(super) fn try_new_service()
 
     Ok((
         ConsumeErrLayer::trace_as_debug(),
-        MapInputLayer::new(|s: TcpFlow| {
-            s.map_input(|inner| {
-                Box::pin(
-                    TimeoutIo::new(inner)
-                        .with_read_timeout(INGRESS_READ_WRITE_TIMEOUT)
-                        .with_write_timeout(INGRESS_READ_WRITE_TIMEOUT),
-                )
-            })
-        }),
         IoToProxyBridgeIoLayer::extension_proxy_target_with_connector(tcp_connector_service(exec)),
     )
         .into_layer(mitm_svc))
