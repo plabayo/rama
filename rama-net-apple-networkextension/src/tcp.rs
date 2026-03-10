@@ -5,7 +5,10 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::{
+    ServiceInput,
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 
 pin_project! {
@@ -27,6 +30,20 @@ impl TcpFlow {
         Self {
             inner,
             extensions: Extensions::new(),
+        }
+    }
+
+    /// Consume the [`TcpFlow`] by mapping the input and
+    /// returning this as a new generic [`ServiceInput`].
+    pub fn map_input<Input>(self, map: impl FnOnce(DuplexStream) -> Input) -> ServiceInput<Input> {
+        let Self {
+            inner: duplex_stream,
+            extensions,
+        } = self;
+
+        ServiceInput {
+            input: map(duplex_stream),
+            extensions,
         }
     }
 }

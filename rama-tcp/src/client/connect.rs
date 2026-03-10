@@ -105,15 +105,9 @@ impl TcpStreamConnector for SocketAddress {
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let bind_addr = *self;
-        let opts = match bind_addr.ip_addr {
-            IpAddr::V4(_ip) => SocketOptions {
-                address: Some(bind_addr),
-                ..SocketOptions::default_tcp()
-            },
-            IpAddr::V6(_ip) => SocketOptions {
-                address: Some(bind_addr),
-                ..SocketOptions::default_tcp_v6()
-            },
+        let opts = SocketOptions {
+            address: Some(bind_addr),
+            ..SocketOptions::default_tcp()
         };
         tokio::task::spawn_blocking(move || tcp_connect_with_socket_opts(&opts, addr))
             .await
@@ -146,7 +140,7 @@ fn tcp_connect_with_socket_opts(
     addr: SocketAddr,
 ) -> Result<TcpStream, BoxError> {
     let socket = opts
-        .try_build_socket()
+        .try_build_socket(addr.into())
         .context("try to build TCP socket's underlying OS socket")?;
     socket
         .connect(&addr.into())

@@ -374,63 +374,63 @@ where
 }
 
 pin_project! {
-    /// A stream which applies read and write timeouts to an inner stream.
+    /// A io which applies read and write timeouts to an inner io.
     #[derive(Debug)]
-    pub struct TimeoutStream<S> {
+    pub struct TimeoutIo<S> {
         #[pin]
-        stream: TimeoutReader<TimeoutWriter<S>>
+        io: TimeoutReader<TimeoutWriter<S>>
     }
 }
 
-impl<S> TimeoutStream<S>
+impl<S> TimeoutIo<S>
 where
     S: AsyncRead + AsyncWrite,
 {
-    /// Returns a new `TimeoutStream` wrapping the specified stream.
+    /// Returns a new `TimeoutIo` wrapping the specified io.
     ///
     /// There is initially no read or write timeout.
-    pub fn new(stream: S) -> Self {
-        let writer = TimeoutWriter::new(stream);
-        let stream = TimeoutReader::new(writer);
-        Self { stream }
+    pub fn new(io: S) -> Self {
+        let writer = TimeoutWriter::new(io);
+        let io = TimeoutReader::new(writer);
+        Self { io }
     }
 
     /// Returns the current read timeout.
     pub fn read_timeout(&self) -> Option<Duration> {
-        self.stream.timeout()
+        self.io.timeout()
     }
 
     generate_set_and_with! {
         /// Sets the read timeout.
         ///
-        /// This can only be used before the stream is pinned; use
+        /// This can only be used before the io is pinned; use
         /// [`set_read_timeout_pinned`](Self::set_read_timeout_pinned) otherwise.
         pub fn read_timeout(mut self, timeout: Option<Duration>) -> Self {
-            self.stream.maybe_set_timeout(timeout);
+            self.io.maybe_set_timeout(timeout);
             self
         }
     }
 
     /// Sets the read timeout.
     ///
-    /// This will reset any pending read timeout. Use [`set_read_timeout`](Self::set_read_timeout) instead if the stream
+    /// This will reset any pending read timeout. Use [`set_read_timeout`](Self::set_read_timeout) instead if the io
     /// has not yet been pinned.
     pub fn set_read_timeout_pinned(self: Pin<&mut Self>, timeout: Option<Duration>) {
-        self.project().stream.set_timeout_pinned(timeout)
+        self.project().io.set_timeout_pinned(timeout)
     }
 
     /// Returns the current write timeout.
     pub fn write_timeout(&self) -> Option<Duration> {
-        self.stream.get_ref().timeout()
+        self.io.get_ref().timeout()
     }
 
     generate_set_and_with! {
         /// Sets the write timeout.
         ///
-        /// This can only be used before the stream is pinned; use
+        /// This can only be used before the io is pinned; use
         /// [`set_write_timeout_pinned`](Self::set_write_timeout_pinned) otherwise.
         pub fn write_timeout(mut self, timeout: Option<Duration>) -> Self {
-            self.stream.get_mut().maybe_set_timeout(timeout);
+            self.io.get_mut().maybe_set_timeout(timeout);
             self
         }
     }
@@ -438,36 +438,33 @@ where
     /// Sets the write timeout.
     ///
     /// This will reset any pending write timeout. Use [`set_write_timeout`](Self::set_write_timeout) instead if the
-    /// stream has not yet been pinned.
+    /// io has not yet been pinned.
     pub fn set_write_timeout_pinned(self: Pin<&mut Self>, timeout: Option<Duration>) {
-        self.project()
-            .stream
-            .get_pin_mut()
-            .set_timeout_pinned(timeout)
+        self.project().io.get_pin_mut().set_timeout_pinned(timeout)
     }
 
-    /// Returns a shared reference to the inner stream.
+    /// Returns a shared reference to the inner io.
     pub fn get_ref(&self) -> &S {
-        self.stream.get_ref().get_ref()
+        self.io.get_ref().get_ref()
     }
 
-    /// Returns a mutable reference to the inner stream.
+    /// Returns a mutable reference to the inner io.
     pub fn get_mut(&mut self) -> &mut S {
-        self.stream.get_mut().get_mut()
+        self.io.get_mut().get_mut()
     }
 
-    /// Returns a pinned mutable reference to the inner stream.
+    /// Returns a pinned mutable reference to the inner io.
     pub fn get_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
-        self.project().stream.get_pin_mut().get_pin_mut()
+        self.project().io.get_pin_mut().get_pin_mut()
     }
 
-    /// Consumes the stream, returning the inner stream.
+    /// Consumes the io, returning the inner io.
     pub fn into_inner(self) -> S {
-        self.stream.into_inner().into_inner()
+        self.io.into_inner().into_inner()
     }
 }
 
-impl<S> AsyncRead for TimeoutStream<S>
+impl<S> AsyncRead for TimeoutIo<S>
 where
     S: AsyncRead + AsyncWrite,
 {
@@ -476,11 +473,11 @@ where
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        self.project().stream.poll_read(cx, buf)
+        self.project().io.poll_read(cx, buf)
     }
 }
 
-impl<S> AsyncWrite for TimeoutStream<S>
+impl<S> AsyncWrite for TimeoutIo<S>
 where
     S: AsyncRead + AsyncWrite,
 {
@@ -489,15 +486,15 @@ where
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        self.project().stream.poll_write(cx, buf)
+        self.project().io.poll_write(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
-        self.project().stream.poll_flush(cx)
+        self.project().io.poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
-        self.project().stream.poll_shutdown(cx)
+        self.project().io.poll_shutdown(cx)
     }
 
     fn poll_write_vectored(
@@ -505,11 +502,11 @@ where
         cx: &mut Context<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        self.project().stream.poll_write_vectored(cx, bufs)
+        self.project().io.poll_write_vectored(cx, bufs)
     }
 
     fn is_write_vectored(&self) -> bool {
-        self.stream.is_write_vectored()
+        self.io.is_write_vectored()
     }
 }
 
@@ -672,7 +669,7 @@ mod test {
             let _ = writer.write_all(b"f").await; // this may hit an eof
         });
 
-        let mut s = pin!(TimeoutStream::new(reader).with_read_timeout(Duration::from_millis(100)));
+        let mut s = pin!(TimeoutIo::new(reader).with_read_timeout(Duration::from_millis(100)));
 
         let _ = s.read(&mut [0]).await.unwrap();
         let r = s.read(&mut [0]).await;
@@ -685,9 +682,9 @@ mod test {
     }
 
     #[tokio::test]
-    async fn timeout_stream_write_timeout() {
+    async fn timeout_io_write_timeout() {
         let io = DelayIo::new(Instant::now() + Duration::from_millis(150));
-        let mut io = pin!(TimeoutStream::new(io).with_write_timeout(Duration::from_millis(100)));
+        let mut io = pin!(TimeoutIo::new(io).with_write_timeout(Duration::from_millis(100)));
 
         let r = io.write(&[0]).await;
         assert_eq!(r.err().unwrap().kind(), io::ErrorKind::TimedOut);

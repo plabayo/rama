@@ -237,12 +237,6 @@ pub async fn bind_udp<I: TryInto<Interface, Error: Into<BoxError>>>(
         Interface::Address(addr) => bind_udp_with_address(addr).await,
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         Interface::Device(name) => bind_udp_with_device(name).await,
-        Interface::Socket(opts) => {
-            let socket = opts
-                .try_build_socket()
-                .context("build udp socket from options")?;
-            bind_udp_with_socket(socket).await
-        }
     }
 }
 

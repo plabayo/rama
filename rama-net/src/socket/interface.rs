@@ -1,10 +1,10 @@
 use crate::address::{SocketAddress, parse_utils::try_to_parse_str_to_ip};
 use rama_core::error::{BoxError, ErrorContext};
 use std::{
+    borrow::Cow,
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     str::FromStr,
-    sync::Arc,
 };
 
 /// The interface to bind a [`Socket`] to.
@@ -28,8 +28,6 @@ pub enum Interface {
     ///
     /// [`Socket`]: super::core::Socket
     Device(DeviceName),
-    /// Bind to a socket with the following options.
-    Socket(Arc<SocketOptions>),
 }
 
 impl Interface {
@@ -45,8 +43,6 @@ impl Interface {
     doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
 )]
 pub use device::DeviceName;
-
-use super::SocketOptions;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 mod device {
@@ -415,27 +411,12 @@ impl From<([u8; 16], u16)> for Interface {
     }
 }
 
-impl From<SocketOptions> for Interface {
-    #[inline]
-    fn from(value: SocketOptions) -> Self {
-        Self::Socket(Arc::new(value))
-    }
-}
-
-impl From<Arc<SocketOptions>> for Interface {
-    #[inline]
-    fn from(value: Arc<SocketOptions>) -> Self {
-        Self::Socket(value)
-    }
-}
-
 impl fmt::Display for Interface {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Address(socket_address) => write!(f, "{socket_address}"),
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Self::Device(name) => write!(f, "{name}"),
-            Self::Socket(opts) => write!(f, "{opts:?}"),
         }
     }
 }
@@ -533,18 +514,8 @@ impl<'de> serde::Deserialize<'de> for Interface {
     where
         D: serde::Deserializer<'de>,
     {
-        #[allow(clippy::large_enum_variant)]
-        #[derive(serde::Deserialize)]
-        #[serde(untagged)]
-        enum Variants {
-            Str(String),
-            Opts(SocketOptions),
-        }
-
-        match Variants::deserialize(deserializer)? {
-            Variants::Str(s) => s.parse().map_err(serde::de::Error::custom),
-            Variants::Opts(opts) => Ok(Self::Socket(Arc::new(opts))),
-        }
+        let s = <Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -552,6 +523,7 @@ impl<'de> serde::Deserialize<'de> for Interface {
 mod tests {
     use super::*;
 
+    #[allow(clippy::needless_pass_by_value)]
     fn assert_eq_socket_address(s: &str, bind_address: Interface, ip_addr: &str, port: u16) {
         match bind_address {
             Interface::Address(socket_address) => {
@@ -560,9 +532,6 @@ mod tests {
             }
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => panic!("unexpected device name '{name}': parsing '{s}'"),
-            Interface::Socket(opts) => {
-                panic!("unexpected socket options '{opts:?}': parsing '{s}'")
-            }
         }
     }
 

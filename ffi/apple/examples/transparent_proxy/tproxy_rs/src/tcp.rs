@@ -14,20 +14,32 @@ use rama::{
         matcher::DomainMatcher,
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
     },
-    io::{BridgeIo, Io},
-    layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
+    io::{BridgeIo, Io, timeout::TimeoutIo},
+    layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapInputLayer},
     net::{
-        address::Domain, apple::networkextension::TcpFlow, http::server::HttpPeekRouter,
-        proxy::IoForwardService, tls::server::PeekTlsClientHelloService,
+        address::Domain,
+        apple::networkextension::TcpFlow,
+        client::ConnectorService,
+        http::server::HttpPeekRouter,
+        proxy::IoForwardService,
+        socket::{SocketOptions, opts::TcpKeepAlive},
+        tls::server::PeekTlsClientHelloService,
     },
     proxy::socks5::{proxy::mitm::Socks5MitmRelayService, server::Socks5PeekRouter},
     rt::Executor,
-    tcp::proxy::IoToProxyBridgeIoLayer,
+    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer},
     tls::boring::proxy::{TlsMitmRelay, cert_issuer::BoringMitmCertIssuer},
 };
 
 const HIJACK_DOMAIN: Domain = Domain::from_static("tproxy.example.rama.internal");
+
 const HTTP_PEEK_DURATION: Duration = Duration::from_secs(8);
+
+const INGRESS_READ_WRITE_TIMEOUT: Duration = Duration::from_mins(5);
+
+const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const TCP_KEEPALIVE_RETRIES: u32 = 5;
 
 pub(super) fn try_new_service()
 -> Result<impl Service<TcpFlow, Output = (), Error = Infallible>, BoxError> {
@@ -47,7 +59,16 @@ pub(super) fn try_new_service()
 
     Ok((
         ConsumeErrLayer::trace_as_debug(),
-        IoToProxyBridgeIoLayer::extension_proxy_target(exec),
+        MapInputLayer::new(|s: TcpFlow| {
+            s.map_input(|inner| {
+                Box::pin(
+                    TimeoutIo::new(inner)
+                        .with_read_timeout(INGRESS_READ_WRITE_TIMEOUT)
+                        .with_write_timeout(INGRESS_READ_WRITE_TIMEOUT),
+                )
+            })
+        }),
+        IoToProxyBridgeIoLayer::extension_proxy_target_with_connector(tcp_connector_service(exec)),
     )
         .into_layer(mitm_svc))
 }
@@ -152,4 +173,18 @@ where
         ),
         ArcLayer::new(),
     )
+}
+
+fn tcp_connector_service(
+    exec: Executor,
+) -> impl ConnectorService<rama::tcp::client::Request, Connection: Io + Unpin> + Clone {
+    TcpConnector::new(exec).with_connector(Arc::new(SocketOptions {
+        keep_alive: Some(true),
+        tcp_keep_alive: Some(TcpKeepAlive {
+            time: Some(TCP_KEEPALIVE_TIME),
+            interval: Some(TCP_KEEPALIVE_INTERVAL),
+            retries: Some(TCP_KEEPALIVE_RETRIES),
+        }),
+        ..SocketOptions::default_tcp()
+    }))
 }

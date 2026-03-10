@@ -133,6 +133,26 @@ impl IoToProxyBridgeIoLayer {
     }
 }
 
+impl<C> IoToProxyBridgeIoLayer<C> {
+    #[inline(always)]
+    /// Same as [`Self::new`] but using a custom connector.
+    pub fn new_with_connector(target: impl Into<HostWithPort>, connector: C) -> Self {
+        Self {
+            connector,
+            address_provider: AddressProvider::Static(target.into()),
+        }
+    }
+
+    #[inline(always)]
+    /// Same as [`Self::extension_proxy_target`] but using a custom connector.
+    pub fn extension_proxy_target_with_connector(connector: C) -> Self {
+        Self {
+            connector,
+            address_provider: AddressProvider::ExtensionProxyTarget,
+        }
+    }
+}
+
 impl<S, C> Layer<S> for IoToProxyBridgeIoLayer<C>
 where
     C: Clone,

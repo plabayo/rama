@@ -98,6 +98,7 @@ impl TcpListenerBuilder {
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         self,
         name: N,
+        backlog: Option<i32>,
     ) -> Result<TcpListener, BoxError> {
         tokio::task::spawn_blocking(|| {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
@@ -108,7 +109,7 @@ impl TcpListenerBuilder {
             .try_build_socket()
             .context("create tcp ipv4 socket attached to device")?;
             socket
-                .listen(4096)
+                .listen(backlog.unwrap_or(4096))
                 .context("mark the socket as ready to accept incoming connection requests")?;
             bind_socket_internal(socket, self.exec)
         })
@@ -127,15 +128,6 @@ impl TcpListenerBuilder {
             Interface::Address(addr) => self.bind_address(addr).await,
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => self.bind_device(name).await,
-            Interface::Socket(opts) => {
-                let socket = opts
-                    .try_build_socket()
-                    .context("build socket from options")?;
-                socket
-                    .listen(4096)
-                    .context("mark the socket as ready to accept incoming connection requests")?;
-                self.bind_socket(socket).await
-            }
         }
     }
 }
