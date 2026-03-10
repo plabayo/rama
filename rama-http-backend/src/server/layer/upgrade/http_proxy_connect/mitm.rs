@@ -14,8 +14,8 @@ use rama_http::{
 #[derive(Debug, Clone)]
 /// Layer used to create the middleware [`HttpProxyConnectMitmRelay`] service.
 pub struct HttpProxyConnectMitmRelayLayer<U> {
-    upgrade_svc: U,
     exec: Executor,
+    upgrade_svc: U,
 }
 
 impl<U> HttpProxyConnectMitmRelayLayer<U> {
@@ -23,8 +23,8 @@ impl<U> HttpProxyConnectMitmRelayLayer<U> {
     #[must_use]
     /// Create a new [`HttpProxyConnectMitmRelayLayer`] used to produce
     /// the middleware [`HttpProxyConnectMitmRelay`] service.
-    pub const fn new(upgrade_svc: U, exec: Executor) -> Self {
-        Self { upgrade_svc, exec }
+    pub const fn new(exec: Executor, upgrade_svc: U) -> Self {
+        Self { exec, upgrade_svc }
     }
 }
 
@@ -34,18 +34,18 @@ impl<U: Clone, S> Layer<S> for HttpProxyConnectMitmRelayLayer<U> {
     #[inline(always)]
     fn layer(&self, inner_svc: S) -> Self::Service {
         Self::Service {
+            exec: self.exec.clone(),
             upgrade_svc: self.upgrade_svc.clone(),
             inner_svc,
-            exec: self.exec.clone(),
         }
     }
 
     #[inline(always)]
     fn into_layer(self, inner_svc: S) -> Self::Service {
         Self::Service {
+            exec: self.exec,
             upgrade_svc: self.upgrade_svc,
             inner_svc,
-            exec: self.exec,
         }
     }
 }
@@ -56,8 +56,8 @@ impl<U: Clone, S> Layer<S> for HttpProxyConnectMitmRelayLayer<U> {
 /// as-is and pipe the upgraded upgrade request on both ends
 /// via the upgrade (bridgeIo) svc.
 pub struct HttpProxyConnectMitmRelay<U, S> {
-    upgrade_svc: U,
     exec: Executor,
+    upgrade_svc: U,
     inner_svc: S,
 }
 
@@ -66,10 +66,10 @@ impl<U, S> HttpProxyConnectMitmRelay<U, S> {
     #[must_use]
     /// Create a new [`HttpProxyConnectMitmRelayLayer`] used to produce
     /// the middleware [`HttpProxyConnectMitmRelay`] service.
-    pub const fn new(upgrade_svc: U, exec: Executor, inner_svc: S) -> Self {
+    pub const fn new(exec: Executor, upgrade_svc: U, inner_svc: S) -> Self {
         Self {
-            upgrade_svc,
             exec,
+            upgrade_svc,
             inner_svc,
         }
     }

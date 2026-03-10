@@ -2,23 +2,23 @@ use std::convert::Infallible;
 
 use rama::{
     Service,
-    bytes::Bytes,
     http::{
-        Body, HeaderValue, Request, Response,
+        HeaderValue, Request, Response,
         header::CONTENT_TYPE,
-        service::web::{Router, response::Html},
+        service::web::{
+            Router,
+            response::{Html, IntoResponse},
+        },
     },
-    utils::str::NonEmptyStr,
 };
 
 pub fn new_service(
-    root_ca_pem: NonEmptyStr,
+    root_ca_pem: &'static [u8],
 ) -> impl Service<Request, Output = Response, Error = Infallible> {
     Router::new()
         .with_get("/", Html(STATIC_INDEX_PAGE))
         .with_get("/data/root.ca.pem", move || {
-            let mut resp =
-                Response::new(Body::from(Bytes::copy_from_slice(root_ca_pem.as_bytes())));
+            let mut resp = root_ca_pem.into_response();
             resp.headers_mut().insert(
                 CONTENT_TYPE,
                 HeaderValue::from_static("application/x-pem-file"),

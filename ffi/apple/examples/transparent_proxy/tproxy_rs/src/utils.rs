@@ -2,39 +2,11 @@ use std::sync::OnceLock;
 
 use rama::{
     error::{BoxError, ErrorContext as _},
-    extensions::ExtensionsRef,
-    net::{
-        address::HostWithPort, apple::networkextension::tproxy::TransparentProxyFlowMeta,
-        proxy::ProxyTarget,
-    },
-    rt::Executor,
     telemetry::tracing::subscriber::{
         self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _,
     },
 };
 use tracing_oslog::OsLogger;
-
-/// Resolve a remote target endpoint from extensions.
-pub(super) fn resolve_target_from_extensions(
-    ext: &rama::extensions::Extensions,
-) -> Option<HostWithPort> {
-    ext.get::<ProxyTarget>()
-        .cloned()
-        .map(|target| target.0)
-        .or_else(|| {
-            ext.get::<TransparentProxyFlowMeta>()
-                .and_then(|meta| meta.remote_endpoint.clone())
-        })
-}
-
-pub(super) fn executor_from_input(input: &impl ExtensionsRef) -> Executor {
-    input
-        .extensions()
-        .get()
-        .cloned()
-        .map(Executor::graceful)
-        .unwrap_or_default()
-}
 
 pub(super) fn init_tracing() -> bool {
     static CTX: OnceLock<Option<TraceContext>> = OnceLock::new();

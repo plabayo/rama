@@ -1,11 +1,13 @@
 use std::convert::Infallible;
 
 use rama::{
-    Service, extensions::ExtensionsRef as _, net::apple::networkextension::UdpFlow,
-    service::service_fn, telemetry::tracing, udp::bind_udp_socket_with_connect_default_dns,
+    Service,
+    extensions::ExtensionsRef as _,
+    net::{apple::networkextension::UdpFlow, proxy::ProxyTarget},
+    service::service_fn,
+    telemetry::tracing,
+    udp::bind_udp_socket_with_connect_default_dns,
 };
-
-use crate::utils::resolve_target_from_extensions;
 
 pub(super) fn new_service() -> impl Service<UdpFlow, Output = (), Error = Infallible> {
     service_fn(service)
@@ -16,9 +18,7 @@ pub(super) fn new_service() -> impl Service<UdpFlow, Output = (), Error = Infall
 /// This resolves the remote target, binds a local UDP socket, connects it to the upstream,
 /// then forwards datagrams in both directions until either side closes or an error occurs.
 async fn service(mut flow: UdpFlow) -> Result<(), Infallible> {
-    let target = resolve_target_from_extensions(flow.extensions());
-
-    let Some(target_addr) = target else {
+    let Some(ProxyTarget(target_addr)) = flow.extensions().get().cloned() else {
         tracing::error!("tproxy udp missing target endpoint, draining flow");
         while flow.recv().await.is_some() {}
         return Ok(());

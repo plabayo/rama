@@ -1,20 +1,14 @@
-#![allow(unused)]
-
 use rama::{
-    net::{
-        address::{Domain, Host},
-        apple::networkextension::{
-            ffi::{BytesOwned, BytesView, tproxy as ffi_tproxy},
-            tproxy::{
-                TransparentProxyConfig, TransparentProxyEngine, TransparentProxyEngineBuilder,
-                TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
-                TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
-            },
+    net::apple::networkextension::{
+        ffi::{BytesOwned, BytesView, tproxy as ffi_tproxy},
+        tproxy::{
+            TransparentProxyConfig, TransparentProxyEngine, TransparentProxyEngineBuilder,
+            TransparentProxyFlowMeta, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
+            TransparentProxyRuleProtocol,
         },
     },
     telemetry::tracing,
 };
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 mod http;
 mod tcp;
@@ -116,7 +110,7 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
         return false;
     }
 
-    let Some(remote) = meta.remote_endpoint else {
+    if meta.remote_endpoint.is_none() {
         return false;
     };
 
