@@ -29,7 +29,8 @@
 )]
 
 pub mod extensions;
-
+#[cfg(extensions_new)]
+pub mod extensions_new;
 pub use ::rama_error as error;
 
 pub mod graceful;
