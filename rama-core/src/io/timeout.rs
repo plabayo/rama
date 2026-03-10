@@ -38,7 +38,10 @@ impl TimeoutState {
 
     #[inline]
     fn set_timeout(&mut self, timeout: Option<Duration>) {
-        // since this takes &mut self, we can't yet be active
+        debug_assert!(
+            !self.active,
+            "set_timeout is only expected before a timeout becomes active"
+        );
         self.timeout = timeout;
     }
 
@@ -232,7 +235,7 @@ impl<W> TimeoutWriter<W>
 where
     W: AsyncWrite,
 {
-    /// Returns a new `TimeoutReader` wrapping the specified reader.
+    /// Returns a new `TimeoutWriter` wrapping the specified writer.
     ///
     /// There is initially no timeout.
     pub fn new(writer: W) -> Self {
@@ -261,8 +264,8 @@ where
 
     /// Sets the write timeout.
     ///
-    /// This will reset any pending timeout. Use [`set_timeout`](Self::set_timeout) instead if the reader is not yet
-    /// pinned.
+    /// This will reset any pending timeout. Use [`set_timeout`](Self::set_timeout)
+    /// instead if the writer is not yet pinned.
     pub fn set_timeout_pinned(self: Pin<&mut Self>, timeout: Option<Duration>) {
         self.project().state.set_timeout_pinned(timeout);
     }
@@ -513,13 +516,10 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::futures::FutureExt as _;
 
     use std::pin::pin;
-    use std::{io::Write, net::TcpListener, thread};
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpStream,
-    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
     pin_project! {
         struct DelayIo {
@@ -609,20 +609,70 @@ mod test {
     }
 
     #[tokio::test]
-    async fn tcp_read() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
+    async fn read_timeout_disabled() {
+        let reader = DelayIo::new(Instant::now() + Duration::from_millis(20));
+        let mut reader = pin!(TimeoutReader::new(reader));
 
-        thread::spawn(move || {
-            let mut socket = listener.accept().unwrap().0;
-            thread::sleep(Duration::from_millis(10));
-            socket.write_all(b"f").unwrap();
-            thread::sleep(Duration::from_millis(500));
-            let _ = socket.write_all(b"f"); // this may hit an eof
+        let _ = reader.read(&mut [0]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_timeout_disabled() {
+        let writer = DelayIo::new(Instant::now() + Duration::from_millis(20));
+        let mut writer = pin!(TimeoutWriter::new(writer));
+
+        let _ = writer.write(&[0]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_set_timeout_pinned_resets_pending_timer() {
+        let reader = DelayIo::new(Instant::now() + Duration::from_millis(150));
+        let mut reader = pin!(TimeoutReader::new(reader).with_timeout(Duration::from_millis(100)));
+
+        let mut buf = [0];
+
+        {
+            let mut pinned_reader = reader.as_mut();
+            let mut fut = pin!(pinned_reader.read(&mut buf));
+            assert!(fut.as_mut().now_or_never().is_none());
+        }
+
+        reader
+            .as_mut()
+            .set_timeout_pinned(Some(Duration::from_millis(500)));
+
+        let _ = reader.read(&mut [0]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_set_timeout_pinned_resets_pending_timer() {
+        let writer = DelayIo::new(Instant::now() + Duration::from_millis(150));
+        let mut writer = pin!(TimeoutWriter::new(writer).with_timeout(Duration::from_millis(100)));
+
+        {
+            let mut pinned_writer = writer.as_mut();
+            let mut fut = pin!(pinned_writer.write(&[0]));
+            assert!(fut.as_mut().now_or_never().is_none());
+        }
+
+        writer
+            .as_mut()
+            .set_timeout_pinned(Some(Duration::from_millis(500)));
+
+        let _ = writer.write(&[0]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rw_test() {
+        let (mut writer, reader) = duplex(16);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            writer.write_all(b"f").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let _ = writer.write_all(b"f").await; // this may hit an eof
         });
 
-        let s = TcpStream::connect(&addr).await.unwrap();
-        let mut s = pin!(TimeoutStream::new(s).with_read_timeout(Duration::from_millis(100)));
+        let mut s = pin!(TimeoutStream::new(reader).with_read_timeout(Duration::from_millis(100)));
 
         let _ = s.read(&mut [0]).await.unwrap();
         let r = s.read(&mut [0]).await;
@@ -632,5 +682,14 @@ mod test {
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
             Err(e) => panic!("{e:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn timeout_stream_write_timeout() {
+        let io = DelayIo::new(Instant::now() + Duration::from_millis(150));
+        let mut io = pin!(TimeoutStream::new(io).with_write_timeout(Duration::from_millis(100)));
+
+        let r = io.write(&[0]).await;
+        assert_eq!(r.err().unwrap().kind(), io::ErrorKind::TimedOut);
     }
 }
