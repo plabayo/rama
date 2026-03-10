@@ -137,6 +137,7 @@ where
                 Err(e) => Ok(e),
             };
         }
+
         self.inner.serve(req).await
     }
 }
