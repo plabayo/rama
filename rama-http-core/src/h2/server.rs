@@ -71,7 +71,7 @@
 //!
 //! #[tokio::main]
 //! pub async fn main() {
-//!     let mut listener = TcpListener::bind_address("127.0.0.1:5928").await.unwrap();
+//!     let mut listener = TcpListener::bind("127.0.0.1:5928").await.unwrap();
 //!
 //!     // Accept all incoming TCP connections.
 //!     loop {

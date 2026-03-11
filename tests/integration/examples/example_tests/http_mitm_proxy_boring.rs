@@ -21,7 +21,7 @@ use rama::{
             Router,
             response::{Headers, IntoResponse as _, Json},
         },
-        ws::handshake::server::{WebSocketAcceptor, WebSocketMatcher},
+        ws::handshake::{matcher::WebSocketMatcher, server::WebSocketAcceptor},
     },
     layer::ConsumeErrLayer,
     net::{address::ProxyAddress, tls::ApplicationProtocol, tls::server::SelfSignedData},

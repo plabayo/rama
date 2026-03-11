@@ -30,7 +30,8 @@ pub trait ServiceMatcher<Input>: Send + Sync + 'static {
     type Service: Send + 'static;
     /// The error that can happen while evaluating the matcher.
     type Error: Send + 'static;
-
+    /// Input returned by matching functions,
+    /// it might be same as the original input but it can also be modified.
     type ModifiedInput: Send + 'static;
 
     /// Attempt to select a service for `input`.
