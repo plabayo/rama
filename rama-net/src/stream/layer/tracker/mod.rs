@@ -1,6 +1,6 @@
 mod bytes;
 #[doc(inline)]
-pub use bytes::BytesRWTrackerHandle;
+pub use bytes::{BytesRWTracker, BytesRWTrackerHandle};
 
 mod incoming;
 #[doc(inline)]
