@@ -98,3 +98,75 @@ impl_service_matcher_tuple!(Either6, A => SM1: sm1, B => SM2: sm2, C => SM3: sm3
 impl_service_matcher_tuple!(Either7, A => SM1: sm1, B => SM2: sm2, C => SM3: sm3, D => SM4: sm4, E => SM5: sm5, F => SM6: sm6, G => SM7: sm7);
 impl_service_matcher_tuple!(Either8, A => SM1: sm1, B => SM2: sm2, C => SM3: sm3, D => SM4: sm4, E => SM5: sm5, F => SM6: sm6, G => SM7: sm7, H => SM8: sm8);
 impl_service_matcher_tuple!(Either9, A => SM1: sm1, B => SM2: sm2, C => SM3: sm3, D => SM4: sm4, E => SM5: sm5, F => SM6: sm6, G => SM7: sm7, H => SM8: sm8, I => SM9: sm9);
+
+macro_rules! impl_service_matcher_either {
+    ($either:ident, $first:ident $(, $rest:ident)* $(,)?) => {
+        impl<Input, ModifiedInput, $first, $($rest,)*> ServiceMatcher<Input>
+            for crate::combinators::$either<$first $(, $rest)*>
+        where
+            Input: Send + 'static,
+            ModifiedInput: Send + 'static,
+            $first: ServiceMatcher<Input, ModifiedInput = ModifiedInput>,
+            $(
+                $rest: ServiceMatcher<
+                    Input,
+                    ModifiedInput = ModifiedInput,
+                    Error: Into<$first::Error>,
+                >,
+            )*
+        {
+            type Service = crate::combinators::$either<$first::Service $(, $rest::Service)*>;
+            type Error = $first::Error;
+            type ModifiedInput = ModifiedInput;
+
+            async fn match_service(
+                &self,
+                input: Input,
+            ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error> {
+                match self {
+                    crate::combinators::$either::$first(matcher) => {
+                        matcher.match_service(input).await.map(|sm| ServiceMatch {
+                            input: sm.input,
+                            service: sm.service.map(crate::combinators::$either::$first),
+                        })
+                    }
+                    $(
+                        crate::combinators::$either::$rest(matcher) => {
+                            matcher.match_service(input).await.map_err(Into::into).map(|sm| ServiceMatch {
+                                input: sm.input,
+                                service: sm.service.map(crate::combinators::$either::$rest),
+                            })
+                        }
+                    )*
+                }
+            }
+
+            async fn into_match_service(
+                self,
+                input: Input,
+            ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>
+            where
+                Input: Send,
+            {
+                match self {
+                    crate::combinators::$either::$first(matcher) => {
+                        matcher.into_match_service(input).await.map(|sm| ServiceMatch {
+                            input: sm.input,
+                            service: sm.service.map(crate::combinators::$either::$first),
+                        })
+                    }
+                    $(
+                        crate::combinators::$either::$rest(matcher) => {
+                            matcher.into_match_service(input).await.map_err(Into::into).map(|sm| ServiceMatch {
+                                input: sm.input,
+                                service: sm.service.map(crate::combinators::$either::$rest),
+                            })
+                        }
+                    )*
+                }
+            }
+        }
+    };
+}
+
+crate::combinators::impl_either!(impl_service_matcher_either);

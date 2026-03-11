@@ -82,7 +82,7 @@ use rama::{
         service::web::response::IntoResponse,
         ws::{
             AsyncWebSocket, Message, ProtocolError,
-            handshake::{client::HttpClientWebSocketExt, server::WebSocketMatcher},
+            handshake::{client::HttpClientWebSocketExt, matcher::WebSocketMatcher},
             protocol::{Role, WebSocketConfig},
         },
     },

@@ -16,6 +16,7 @@ use rama::{
         },
         matcher::DomainMatcher,
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
+        ws::handshake::matcher::HttpWebSocketRelayServiceRequestMatcher,
     },
     io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
@@ -136,8 +137,13 @@ where
         ),
         HttpUpgradeMitmRelayLayer::new(
             exec.clone(),
-            HttpProxyConnectRelayServiceRequestMatcher::new(
-                new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed(),
+            (
+                HttpProxyConnectRelayServiceRequestMatcher::new(
+                    new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed(),
+                ),
+                HttpWebSocketRelayServiceRequestMatcher::new(
+                    ConsumeErrLayer::trace_as_debug().into_layer(IoForwardService::new()),
+                ),
             ),
         ),
         DpiProxyCredentialExtractorLayer::new(),

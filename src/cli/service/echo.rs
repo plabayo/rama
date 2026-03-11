@@ -28,7 +28,10 @@ use crate::{
         proto::h2::PseudoHeaderOrder,
         server::{HttpServer, layer::upgrade::UpgradeLayer},
         service::web::{extract::Json, response::IntoResponse},
-        ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher},
+        ws::handshake::{
+            matcher::WebSocketMatcher,
+            server::{WebSocketAcceptor, WebSocketEchoService},
+        },
     },
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
