@@ -5,6 +5,8 @@ import OSLog
 
 final class HostController: NSObject, NSApplicationDelegate {
     private let extensionBundleId = "org.ramaproxy.example.tproxy.provider"
+    private let managerDescription = "Rama Transparent Proxy Example"
+    private let managerServerAddress = "127.0.0.1"
     private let logSubsystem = "org.ramaproxy.example.tproxy"
     private let hostLogCategory = "host-app"
     private lazy var hostLogger = Logger(subsystem: logSubsystem, category: hostLogCategory)
@@ -200,33 +202,102 @@ final class HostController: NSObject, NSApplicationDelegate {
                 return
             }
 
-            let manager = self.selectManager(from: managers) ?? NETransparentProxyManager()
-            let proto = NETunnelProviderProtocol()
-            proto.providerBundleIdentifier = self.extensionBundleId
-            proto.serverAddress = "127.0.0.1"
+            let existingManager = self.selectManager(from: managers)
+            let manager = existingManager ?? NETransparentProxyManager()
+            let isExisting = existingManager != nil
+            let changed = self.configure(manager: manager)
+
+            if isExisting, !changed {
+                self.log("reusing installed manager without saving preferences")
+                completion(manager)
+                return
+            }
+
+            self.log(isExisting ? "saving updated preferences" : "saving new preferences")
+            self.save(manager: manager, fallbackManager: existingManager, completion: completion)
+        }
+    }
+
+    private func configure(manager: NETransparentProxyManager) -> Bool {
+        var changed = false
+
+        let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol)
+            ?? NETunnelProviderProtocol()
+
+        if proto.providerBundleIdentifier != extensionBundleId {
+            proto.providerBundleIdentifier = extensionBundleId
+            changed = true
+        }
+
+        if proto.serverAddress != managerServerAddress {
+            proto.serverAddress = managerServerAddress
+            changed = true
+        }
+
+        let providerConfiguration = proto.providerConfiguration ?? [:]
+        if !providerConfiguration.isEmpty {
             proto.providerConfiguration = [:]
+            changed = true
+        } else if proto.providerConfiguration == nil {
+            proto.providerConfiguration = [:]
+            changed = true
+        }
 
-            manager.localizedDescription = "Rama Transparent Proxy Example"
+        if manager.localizedDescription != managerDescription {
+            manager.localizedDescription = managerDescription
+            changed = true
+        }
+
+        if manager.protocolConfiguration == nil
+            || !self.protocolMatchesExpected(manager.protocolConfiguration as? NETunnelProviderProtocol)
+        {
             manager.protocolConfiguration = proto
-            manager.isEnabled = true
+            changed = true
+        }
 
-            self.log("saving preferences")
-            manager.saveToPreferences { saveError in
-                if let saveError {
-                    self.logError("saveToPreferences error", saveError)
+        if !manager.isEnabled {
+            manager.isEnabled = true
+            changed = true
+        }
+
+        return changed
+    }
+
+    private func protocolMatchesExpected(_ proto: NETunnelProviderProtocol?) -> Bool {
+        guard let proto else {
+            return false
+        }
+
+        return proto.providerBundleIdentifier == extensionBundleId
+            && proto.serverAddress == managerServerAddress
+            && (proto.providerConfiguration ?? [:]).isEmpty
+    }
+
+    private func save(
+        manager: NETransparentProxyManager,
+        fallbackManager: NETransparentProxyManager?,
+        completion: @escaping (NETransparentProxyManager?) -> Void
+    ) {
+        manager.saveToPreferences { saveError in
+            if let saveError {
+                self.logError("saveToPreferences error", saveError)
+                if let fallbackManager {
+                    self.log("falling back to existing manager after save failure")
+                    completion(fallbackManager)
+                    return
+                }
+                completion(nil)
+                return
+            }
+
+            self.log("saveToPreferences ok; loading")
+            manager.loadFromPreferences { loadError in
+                if let loadError {
+                    self.logError("loadFromPreferences error", loadError)
                     completion(nil)
                     return
                 }
-
-                self.log("saveToPreferences ok; loading")
-                manager.loadFromPreferences { loadError in
-                    if let loadError {
-                        self.logError("loadFromPreferences error", loadError)
-                        completion(nil)
-                        return
-                    }
-                    completion(manager)
-                }
+                completion(manager)
             }
         }
     }

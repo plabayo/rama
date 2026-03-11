@@ -32,7 +32,7 @@ use rama::{
     tls::boring::proxy::{TlsMitmRelay, cert_issuer::BoringMitmCertIssuer},
 };
 
-const HIJACK_DOMAIN: Domain = Domain::from_static("http-test.ramaproxy.org");
+const HIJACK_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
 
 const HTTP_PEEK_DURATION: Duration = Duration::from_secs(8);
 
