@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use rama::{
     Service,
     http::{
-        HeaderValue, Request, Response,
+        HeaderValue, Request, Response, StatusCode,
         header::CONTENT_TYPE,
         service::web::{
             Router,
@@ -17,6 +17,7 @@ pub fn new_service(
 ) -> impl Service<Request, Output = Response, Error = Infallible> {
     Router::new()
         .with_get("/", Html(STATIC_INDEX_PAGE))
+        .with_get("/ping", StatusCode::OK)
         .with_get("/data/root.ca.pem", move || {
             let mut resp = root_ca_pem.into_response();
             resp.headers_mut().insert(
