@@ -10,7 +10,9 @@ use rama::{
         layer::{
             dpi_proxy_credential::DpiProxyCredentialExtractorLayer,
             set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
-            upgrade::HttpProxyConnectMitmRelayLayer,
+            upgrade::{
+                HttpProxyConnectRelayServiceRequestMatcher, mitm::HttpUpgradeMitmRelayLayer,
+            },
         },
         matcher::DomainMatcher,
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
@@ -132,9 +134,11 @@ where
         SetRequestHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),
-        HttpProxyConnectMitmRelayLayer::new(
+        HttpUpgradeMitmRelayLayer::new(
             exec.clone(),
-            new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed(),
+            HttpProxyConnectRelayServiceRequestMatcher::new(
+                new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed(),
+            ),
         ),
         DpiProxyCredentialExtractorLayer::new(),
         HijackLayer::new(

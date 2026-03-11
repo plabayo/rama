@@ -34,7 +34,7 @@ where
                 tracing::info!(
                     server.address = %authority.host,
                     server.port = authority.port,
-                    "accept CONNECT (lazy): insert proxy target into extensions",
+                    "accept CONNECT: insert proxy target into extensions",
                 );
                 req.extensions_mut().insert(ProxyTarget(authority));
             }

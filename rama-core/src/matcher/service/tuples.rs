@@ -6,22 +6,28 @@ use super::{ServiceMatch, ServiceMatcher};
 
 macro_rules! impl_service_matcher_tuple {
     ($either:ident, $first_variant:ident => $first_ty:ident : $first_var:ident, $($variant:ident => $rest_ty:ident : $rest_var:ident),+ $(,)?) => {
-        impl<Input, $first_ty, $($rest_ty),+> ServiceMatcher<Input>
+        impl<Input, ModifiedInput, $first_ty, $($rest_ty),+> ServiceMatcher<Input>
             for ($first_ty, $($rest_ty),+)
         where
             Input: Send + ExtensionsMut + 'static,
-            $first_ty: ServiceMatcher<Input, Error: Into<BoxError>>,
+            ModifiedInput: Send + 'static,
+            $first_ty: ServiceMatcher<Input, Error: Into<BoxError>, ModifiedInput = ModifiedInput>,
             $(
-                $rest_ty: ServiceMatcher<Input, Error: Into<BoxError>>,
+                $rest_ty: ServiceMatcher<
+                    ModifiedInput,
+                    Error: Into<BoxError>,
+                    ModifiedInput = ModifiedInput,
+                >,
             )+
         {
             type Service = crate::combinators::$either<$first_ty::Service, $($rest_ty::Service),+>;
             type Error = BoxError;
+            type ModifiedInput = ModifiedInput;
 
             async fn match_service(
                 &self,
                 input: Input,
-            ) -> Result<ServiceMatch<Input, Self::Service>, Self::Error> {
+            ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error> {
                 let ($first_var, $($rest_var),+) = self;
 
                 let ServiceMatch { input, service } = $first_var.match_service(input).await.into_box_error()?;
@@ -51,7 +57,7 @@ macro_rules! impl_service_matcher_tuple {
             async fn into_match_service(
                 self,
                 input: Input,
-            ) -> Result<ServiceMatch<Input, Self::Service>, Self::Error>
+            ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>
             where
                 Input: Send,
             {

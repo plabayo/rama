@@ -11,6 +11,8 @@ pub trait DynServiceMatcher<Input>: Send + Sync + 'static {
     type Service: Send + 'static;
     /// The error that can happen while evaluating the matcher.
     type Error: Send + 'static;
+    /// The input after matcher evaluation.
+    type ModifiedInput: Send + 'static;
 
     /// Attempt to select a service for `input`.
     #[allow(clippy::type_complexity)]
@@ -19,8 +21,9 @@ pub trait DynServiceMatcher<Input>: Send + Sync + 'static {
         input: Input,
     ) -> Pin<
         Box<
-            dyn Future<Output = Result<ServiceMatch<Input, Self::Service>, Self::Error>>
-                + Send
+            dyn Future<
+                    Output = Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>,
+                > + Send
                 + '_,
         >,
     >;
@@ -32,14 +35,16 @@ where
 {
     type Service = T::Service;
     type Error = T::Error;
+    type ModifiedInput = T::ModifiedInput;
 
     fn match_service_box(
         &self,
         input: Input,
     ) -> Pin<
         Box<
-            dyn Future<Output = Result<ServiceMatch<Input, Self::Service>, Self::Error>>
-                + Send
+            dyn Future<
+                    Output = Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>,
+                > + Send
                 + '_,
         >,
     > {
@@ -50,12 +55,21 @@ where
 /// A boxed [`ServiceMatcher`].
 ///
 /// This gives dynamic dispatch without constraining the selected value.
-pub struct BoxServiceMatcher<Input, SelectedService, Error> {
-    inner: Arc<dyn DynServiceMatcher<Input, Service = SelectedService, Error = Error> + Send + Sync + 'static>,
+pub struct BoxServiceMatcher<Input, SelectedService, Error, ModifiedInput> {
+    inner: Arc<
+        dyn DynServiceMatcher<
+                Input,
+                Service = SelectedService,
+                Error = Error,
+                ModifiedInput = ModifiedInput,
+            > + Send
+            + Sync
+            + 'static,
+    >,
 }
 
-impl<Input, SelectedService, Error> Clone
-    for BoxServiceMatcher<Input, SelectedService, Error>
+impl<Input, SelectedService, Error, ModifiedInput> Clone
+    for BoxServiceMatcher<Input, SelectedService, Error, ModifiedInput>
 {
     fn clone(&self) -> Self {
         Self {
@@ -64,13 +78,19 @@ impl<Input, SelectedService, Error> Clone
     }
 }
 
-impl<Input, SelectedService, Error> BoxServiceMatcher<Input, SelectedService, Error>
+impl<Input, SelectedService, Error, ModifiedInput>
+    BoxServiceMatcher<Input, SelectedService, Error, ModifiedInput>
 {
     /// Create a boxed matcher from a concrete matcher implementation.
     #[inline]
     pub fn new<T>(matcher: T) -> Self
     where
-        T: ServiceMatcher<Input, Service = SelectedService, Error = Error>,
+        T: ServiceMatcher<
+                Input,
+                Service = SelectedService,
+                Error = Error,
+                ModifiedInput = ModifiedInput,
+            >,
     {
         Self {
             inner: Arc::new(matcher),
@@ -78,41 +98,45 @@ impl<Input, SelectedService, Error> BoxServiceMatcher<Input, SelectedService, Er
     }
 }
 
-impl<Input, SelectedService, Error> fmt::Debug for BoxServiceMatcher<Input, SelectedService, Error>
+impl<Input, SelectedService, Error, ModifiedInput> fmt::Debug
+    for BoxServiceMatcher<Input, SelectedService, Error, ModifiedInput>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BoxServiceMatcher").finish()
     }
 }
 
-impl<Input, SelectedService, Error> ServiceMatcher<Input>
-    for BoxServiceMatcher<Input, SelectedService, Error>
+impl<Input, SelectedService, Error, ModifiedInput> ServiceMatcher<Input>
+    for BoxServiceMatcher<Input, SelectedService, Error, ModifiedInput>
 where
     Input: 'static,
     SelectedService: Send + 'static,
     Error: Send + 'static,
+    ModifiedInput: Send + 'static,
 {
     type Service = SelectedService;
     type Error = Error;
+    type ModifiedInput = ModifiedInput;
 
     #[inline]
     fn match_service(
         &self,
         input: Input,
-    ) -> impl Future<Output = Result<ServiceMatch<Input, Self::Service>, Self::Error>> + Send + '_
-    {
+    ) -> impl Future<Output = Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>>
+    + Send
+    + '_ {
         self.inner.match_service_box(input)
     }
 
-    fn into_match_service(
+    async fn into_match_service(
         self,
         input: Input,
-    ) -> impl Future<Output = Result<ServiceMatch<Input, Self::Service>, Self::Error>> + Send
+    ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>
     where
         Self: Sized,
         Input: Send,
     {
-        async move { self.inner.match_service_box(input).await }
+        self.inner.match_service_box(input).await
     }
 
     #[inline]

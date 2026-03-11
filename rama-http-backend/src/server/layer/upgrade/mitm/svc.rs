@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt};
+use std::convert::Infallible;
 
 use rama_core::{
     Service, bytes,
@@ -38,23 +38,25 @@ impl<M, S> HttpUpgradeMitmRelay<M, S> {
     }
 }
 
-impl<M, S, ReqBody, ResBody> Service<Request<ReqBody>> for HttpUpgradeMitmRelay<M, S>
+impl<M, S, ReqBody, ModReqBody, ResBody, ModResBody> Service<Request<ReqBody>>
+    for HttpUpgradeMitmRelay<M, S>
 where
     M: ServiceMatcher<
             Request<ReqBody>,
             Error: IntoResponse,
+            ModifiedInput = Request<ModReqBody>,
             Service: ServiceMatcher<
                 Response<ResBody>,
-                Error: IntoResponse,
+                Error: Into<S::Error>,
+                ModifiedInput = Response<ModResBody>,
                 Service: Service<BridgeIo<Upgraded, Upgraded>, Output = (), Error = Infallible>,
             >,
         >,
-    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
-    ReqBody: Send + 'static,
-    ResBody: StreamingBody<Data = bytes::Bytes, Error: Into<BoxError> + fmt::Display>
-        + Send
-        + Sync
-        + 'static,
+    S: Service<Request, Output = Response<ResBody>>,
+    ReqBody: StreamingBody<Data = bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ModReqBody: StreamingBody<Data = bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ResBody: StreamingBody<Data = bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ModResBody: StreamingBody<Data = bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Output = Response;
     type Error = S::Error;
@@ -88,15 +90,15 @@ where
                 network.protocol.version = version_as_protocol_version(req.version()),
             );
 
-            let res = self.inner_svc.serve(req).await?;
+            let res = self.inner_svc.serve(req.map(Body::new)).await?;
 
             let ServiceMatch {
                 input: res,
                 service: maybe_relay_svc,
-            } = match res_svc_matcher.match_service(res).await {
-                Ok(sm) => sm,
-                Err(err) => return Ok(err.into_response()),
-            };
+            } = res_svc_matcher
+                .match_service(res)
+                .await
+                .map_err(Into::into)?;
 
             if let Some(relay_svc) = maybe_relay_svc {
                 let on_upgrade_egress = rama_http::io::upgrade::handle_upgrade(&res);
@@ -132,7 +134,7 @@ where
                 Ok(res.map(Body::new))
             }
         } else {
-            let res = self.inner_svc.serve(req).await?;
+            let res = self.inner_svc.serve(req.map(Body::new)).await?;
             Ok(res.map(Body::new))
         }
     }

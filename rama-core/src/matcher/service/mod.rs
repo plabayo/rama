@@ -31,11 +31,15 @@ pub trait ServiceMatcher<Input>: Send + Sync + 'static {
     /// The error that can happen while evaluating the matcher.
     type Error: Send + 'static;
 
+    type ModifiedInput: Send + 'static;
+
     /// Attempt to select a service for `input`.
     fn match_service(
         &self,
         input: Input,
-    ) -> impl Future<Output = Result<ServiceMatch<Input, Self::Service>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>>
+    + Send
+    + '_;
 
     /// Attempt to select a service for `input`, consuming the matcher.
     ///
@@ -44,7 +48,7 @@ pub trait ServiceMatcher<Input>: Send + Sync + 'static {
     fn into_match_service(
         self,
         input: Input,
-    ) -> impl Future<Output = Result<ServiceMatch<Input, Self::Service>, Self::Error>> + Send
+    ) -> impl Future<Output = Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>> + Send
     where
         Self: Sized,
         Input: Send,
@@ -53,7 +57,7 @@ pub trait ServiceMatcher<Input>: Send + Sync + 'static {
     }
 
     /// Box this matcher for dynamic dispatch.
-    fn boxed(self) -> BoxServiceMatcher<Input, Self::Service, Self::Error>
+    fn boxed(self) -> BoxServiceMatcher<Input, Self::Service, Self::Error, Self::ModifiedInput>
     where
         Self: Sized,
     {
@@ -67,23 +71,25 @@ where
 {
     type Service = M::Service;
     type Error = M::Error;
+    type ModifiedInput = M::ModifiedInput;
 
     fn match_service(
         &self,
         input: Input,
-    ) -> impl Future<Output = Result<ServiceMatch<Input, Self::Service>, Self::Error>> + Send + '_
-    {
+    ) -> impl Future<Output = Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>>
+    + Send
+    + '_ {
         (**self).match_service(input)
     }
 
-    fn into_match_service(
+    async fn into_match_service(
         self,
         input: Input,
-    ) -> impl Future<Output = Result<ServiceMatch<Input, Self::Service>, Self::Error>> + Send
+    ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error>
     where
         Self: Sized,
         Input: Send,
     {
-        async move { (*self).match_service(input).await }
+        (*self).match_service(input).await
     }
 }

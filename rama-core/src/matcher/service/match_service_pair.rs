@@ -35,12 +35,13 @@ where
 {
     type Service = S;
     type Error = Infallible;
+    type ModifiedInput = Input;
 
     async fn match_service(
         &self,
         mut input: Input,
     ) -> Result<ServiceMatch<Input, Self::Service>, Self::Error> {
-        let MatcherServicePair(matcher, service) = self;
+        let Self(matcher, service) = self;
         let mut ext = Extensions::new();
         if matcher.matches(Some(&mut ext), &input) {
             input.extensions_mut().extend(ext);
@@ -63,7 +64,7 @@ where
     where
         Input: Send,
     {
-        let MatcherServicePair(matcher, service) = self;
+        let Self(matcher, service) = self;
         let mut ext = Extensions::new();
         if matcher.matches(Some(&mut ext), &input) {
             input.extensions_mut().extend(ext);
