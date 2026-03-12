@@ -1,9 +1,16 @@
 use std::convert::Infallible;
 
-use rama_core::matcher::service::{ServiceMatch, ServiceMatcher};
+use rama_core::{
+    extensions::ExtensionsRef,
+    matcher::service::{ServiceMatch, ServiceMatcher},
+    telemetry::tracing,
+};
 use rama_http::{Request, Response};
 use rama_http_types::proxy::is_req_http_proxy_connect;
-use rama_net::proxy::IoForwardService;
+use rama_net::{
+    proxy::{IoForwardService, ProxyTarget},
+    user::{ProxyCredential, credentials::DpiProxyCredential},
+};
 
 #[derive(Debug, Clone)]
 /// Default matcher that can be used for Http proxy connects.
@@ -45,28 +52,72 @@ where
         &self,
         req: Request<Body>,
     ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error> {
-        Ok(ServiceMatch {
-            service: is_req_http_proxy_connect(&req).then(|| {
-                HttpProxyConnectRelayServiceResponseMatcher {
-                    relay_svc: self.relay_svc.clone(),
-                }
-            }),
+        let Self { relay_svc } = self;
+
+        let mut svc_match = ServiceMatch {
+            service: None,
             input: req,
-        })
+        };
+
+        if !is_req_http_proxy_connect(&svc_match.input) {
+            tracing::debug!(
+                "no req http proxy connect match: target = {:?}; http version = {:?}; method = {:?}; uri = {:?}",
+                svc_match.input.extensions().get::<ProxyTarget>(),
+                svc_match.input.version(),
+                svc_match.input.method(),
+                svc_match.input.uri(),
+            );
+            return Ok(svc_match);
+        }
+
+        tracing::debug!(
+            "http proxy connect match: target = {:?}; http version = {:?}; method = {:?}; uri = {:?}",
+            svc_match.input.extensions().get::<ProxyTarget>(),
+            svc_match.input.version(),
+            svc_match.input.method(),
+            svc_match.input.uri(),
+        );
+
+        svc_match.service = Some(HttpProxyConnectRelayServiceResponseMatcher {
+            relay_svc: relay_svc.clone(),
+        });
+
+        Ok(svc_match)
     }
 
     async fn into_match_service(
         self,
         req: Request<Body>,
     ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error> {
-        Ok(ServiceMatch {
-            service: is_req_http_proxy_connect(&req).then(|| {
-                HttpProxyConnectRelayServiceResponseMatcher {
-                    relay_svc: self.relay_svc,
-                }
-            }),
+        let Self { relay_svc } = self;
+
+        let mut svc_match = ServiceMatch {
+            service: None,
             input: req,
-        })
+        };
+
+        if !is_req_http_proxy_connect(&svc_match.input) {
+            tracing::debug!(
+                "no req http proxy connect match: target = {:?}; http version = {:?}; method = {:?}; uri = {:?}",
+                svc_match.input.extensions().get::<ProxyTarget>(),
+                svc_match.input.version(),
+                svc_match.input.method(),
+                svc_match.input.uri(),
+            );
+            return Ok(svc_match);
+        }
+
+        tracing::debug!(
+            "http proxy connect match: target = {:?}; http version = {:?}; method = {:?}; uri = {:?}",
+            svc_match.input.extensions().get::<ProxyTarget>(),
+            svc_match.input.version(),
+            svc_match.input.method(),
+            svc_match.input.uri(),
+        );
+
+        svc_match.service = Some(HttpProxyConnectRelayServiceResponseMatcher { relay_svc });
+
+        Ok(svc_match)
     }
 }
 
@@ -90,19 +141,77 @@ where
         &self,
         res: Response<Body>,
     ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error> {
-        Ok(ServiceMatch {
-            service: res.status().is_success().then(|| self.relay_svc.clone()),
+        let Self { relay_svc } = self;
+
+        let mut svc_match = ServiceMatch {
+            service: None,
             input: res,
-        })
+        };
+
+        if !svc_match.input.status().is_success() {
+            tracing::debug!(
+                "no res http proxy connect match: target = {:?}; http version = {:?}",
+                svc_match.input.extensions().get::<ProxyTarget>(),
+                svc_match.input.version(),
+            );
+            return Ok(svc_match);
+        }
+
+        let proxy_target = svc_match.input.extensions().get::<ProxyTarget>();
+        let proxy_credential_info =
+            svc_match
+                .input
+                .extensions()
+                .get()
+                .map(|DpiProxyCredential(c)| match c {
+                    ProxyCredential::Basic(user_pass) => ("basic", user_pass.username()),
+                    ProxyCredential::Bearer(_) => ("bearer", "***"),
+                });
+        tracing::debug!(
+            "response matched by (HTTP) proxy request: proxy target = {proxy_target:?}; credials = {proxy_credential_info:?}"
+        );
+
+        svc_match.service = Some(relay_svc.clone());
+
+        Ok(svc_match)
     }
 
     async fn into_match_service(
         self,
         res: Response<Body>,
     ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error> {
-        Ok(ServiceMatch {
-            service: res.status().is_success().then_some(self.relay_svc),
+        let Self { relay_svc } = self;
+
+        let mut svc_match = ServiceMatch {
+            service: None,
             input: res,
-        })
+        };
+
+        if !svc_match.input.status().is_success() {
+            tracing::debug!(
+                "no res http proxy connect match: target = {:?}; http version = {:?}",
+                svc_match.input.extensions().get::<ProxyTarget>(),
+                svc_match.input.version(),
+            );
+            return Ok(svc_match);
+        }
+
+        let proxy_target = svc_match.input.extensions().get::<ProxyTarget>();
+        let proxy_credential_info =
+            svc_match
+                .input
+                .extensions()
+                .get()
+                .map(|DpiProxyCredential(c)| match c {
+                    ProxyCredential::Basic(user_pass) => ("basic", user_pass.username()),
+                    ProxyCredential::Bearer(_) => ("bearer", "***"),
+                });
+        tracing::debug!(
+            "response matched by (HTTP) proxy request: proxy target = {proxy_target:?}; credials = {proxy_credential_info:?}"
+        );
+
+        svc_match.service = Some(relay_svc);
+
+        Ok(svc_match)
     }
 }

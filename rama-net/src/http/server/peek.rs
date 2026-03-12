@@ -8,7 +8,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::{io::AsyncReadExt, time::Instant};
 
 /// A [`Service`] router that can be used to support
 /// http/1x and h2 traffic as well as non-tls traffic.
@@ -143,14 +143,16 @@ where
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let (version, peek_input) = peek_http_input(input, self.peek_timeout).await?;
         if version.is_some() {
-            tracing::trace!("http peek: serve[auto]: http acceptor; version = {version:?}");
+            tracing::debug!(
+                "http peek [auto]: HTTP detect: version = {version:?}; continue with http_acceptor svc"
+            );
             self.http_acceptor
                 .0
                 .serve(peek_input)
                 .await
                 .into_box_error()
         } else {
-            tracing::trace!("http peek: serve[auto]: fallback; version = {version:?}");
+            tracing::debug!("http peek [auto]: HTTP not detect: continue with fallback svc");
             self.fallback.serve(peek_input).await.into_box_error()
         }
     }
@@ -177,14 +179,14 @@ where
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let (version, peek_input) = peek_http_input(input, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::Http1x) {
-            tracing::trace!("http peek: serve[http1]: http/1x acceptor; version = {version:?}");
+            tracing::debug!("http peek: serve[http1]: http/1x acceptor; version = {version:?}");
             self.http_acceptor
                 .0
                 .serve(peek_input)
                 .await
                 .into_box_error()
         } else {
-            tracing::trace!("http peek: serve[http1]: fallback; version = {version:?}");
+            tracing::debug!("http peek: serve[http1]: fallback; version = {version:?}");
             self.fallback.serve(peek_input).await.into_box_error()
         }
     }
@@ -211,14 +213,14 @@ where
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let (version, peek_input) = peek_http_input(input, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::H2) {
-            tracing::trace!("http peek: serve[h2]: http acceptor; version = {version:?}");
+            tracing::debug!("http peek: serve[h2]: http acceptor; version = {version:?}");
             self.http_acceptor
                 .0
                 .serve(peek_input)
                 .await
                 .into_box_error()
         } else {
-            tracing::trace!("http peek: serve[h2]: fallback; version = {version:?}");
+            tracing::debug!("http peek: serve[h2]: fallback; version = {version:?}");
             self.fallback.serve(peek_input).await.into_box_error()
         }
     }
@@ -296,43 +298,82 @@ where
 {
     let mut peek_buf = [0u8; HTTP_HEADER_PEEK_LEN];
 
-    let read_fut = input.peek_io_mut().read(&mut peek_buf);
+    let peek_deadline = timeout.map(|d| Instant::now() + d);
+    let mut peek_filled = 0;
 
-    let n = match timeout {
-        Some(d) => tokio::time::timeout(d, read_fut).await.unwrap_or(Ok(0)),
-        None => read_fut.await,
+    let mut maybe_http_version = None;
+
+    for _ in 0..8 {
+        let read_fut = input.peek_io_mut().read(&mut peek_buf[peek_filled..]);
+
+        let n = match peek_deadline {
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+
+                let remaining = deadline - now;
+                match tokio::time::timeout(remaining, read_fut).await {
+                    Err(err) => {
+                        tracing::debug!("http peek: time-fenced peek read timeout error: {err}");
+                        0
+                    }
+                    Ok(Err(err)) => {
+                        tracing::debug!("http peek: time-fenced peek read error: {err}");
+                        0
+                    }
+                    Ok(Ok(n)) => n,
+                }
+            }
+            None => match read_fut.await {
+                Err(err) => {
+                    tracing::debug!("http peek: peek read error: {err}");
+                    0
+                }
+                Ok(n) => n,
+            },
+        };
+
+        if n == 0 {
+            tracing::trace!("http peek: break loop: no new data read...");
+            break;
+        }
+
+        peek_filled = (peek_filled + n).min(peek_buf.len());
+
+        const HTTP_METHODS: &[&[u8]] = &[
+            b"GET ",
+            b"POST ",
+            b"PUT ",
+            b"DELETE ",
+            b"HEAD ",
+            b"OPTIONS ",
+            b"CONNECT ",
+            b"TRACE ",
+            b"PATCH ",
+        ];
+
+        if n == H2_MAGIC_PREFIX.len() && peek_buf.eq(H2_MAGIC_PREFIX) {
+            maybe_http_version = Some(HttpPeekVersion::H2);
+            break;
+        } else if HTTP_METHODS
+            .iter()
+            .any(|method| peek_buf.starts_with(method))
+        {
+            maybe_http_version = Some(HttpPeekVersion::Http1x);
+            break;
+        }
     }
-    .context("try to read http prefix")?;
 
-    const HTTP_METHODS: &[&[u8]] = &[
-        b"GET ",
-        b"POST ",
-        b"PUT ",
-        b"DELETE ",
-        b"HEAD ",
-        b"OPTIONS ",
-        b"CONNECT ",
-        b"TRACE ",
-        b"PATCH ",
-    ];
+    tracing::trace!("http prefix read loop finished: version = {maybe_http_version:?}");
 
-    let http_version = if n == H2_MAGIC_PREFIX.len() && peek_buf.eq(H2_MAGIC_PREFIX) {
-        Some(HttpPeekVersion::H2)
-    } else if HTTP_METHODS
-        .iter()
-        .any(|method| peek_buf.starts_with(method))
-    {
-        Some(HttpPeekVersion::Http1x)
-    } else {
-        None
-    };
-
-    tracing::trace!("http prefix header read: version = {http_version:?}");
-
-    let offset = HTTP_HEADER_PEEK_LEN - n;
+    let offset = HTTP_HEADER_PEEK_LEN - peek_filled;
     if offset > 0 {
-        tracing::trace!("move http peek buffer cursor due to reading not enough (read: {n})");
-        peek_buf.copy_within(0..n, offset);
+        tracing::trace!(
+            "move http peek buffer cursor due to reading not enough (read: {peek_filled})"
+        );
+        peek_buf.copy_within(0..peek_filled, offset);
     }
 
     let mut peek = StackReader::new(peek_buf);
@@ -340,7 +381,7 @@ where
 
     let peek_input = input.map_peek_io(|io| PrefixedIo::new(peek, io));
 
-    Ok((http_version, peek_input))
+    Ok((maybe_http_version, peek_input))
 }
 
 const H2_MAGIC_PREFIX: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -353,7 +394,10 @@ pub type HttpPrefixedIo<S> = PrefixedIo<StackReader<HTTP_HEADER_PEEK_LEN>, S>;
 mod test {
     use rama_core::{
         ServiceInput,
+        bytes::Bytes,
+        futures::{StreamExt as _, async_stream::stream_fn},
         service::{RejectError, service_fn},
+        stream::io::StreamReader,
     };
     use std::convert::Infallible;
 
@@ -414,6 +458,31 @@ mod test {
             .await
             .unwrap();
         assert_eq!("other", response);
+    }
+
+    #[tokio::test]
+    async fn test_peek_http1_connect() {
+        for timeout in [Some(Duration::from_millis(500)), None] {
+            let reader = StreamReader::new(
+                stream_fn(async |mut yielder| {
+                    yielder.yield_item(Bytes::from_static(b"CONN")).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    yielder.yield_item(Bytes::from_static(b"EC")).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    yielder
+                        .yield_item(Bytes::from_static(b"T http://foobar.com"))
+                        .await;
+                })
+                .map(Ok::<_, std::io::Error>),
+            );
+            let writer = tokio::io::sink();
+
+            let io = Box::pin(tokio::io::join(reader, writer));
+
+            let (http_version, _) = peek_http_input(io, timeout).await.unwrap();
+
+            assert_eq!(Some(HttpPeekVersion::Http1x), http_version);
+        }
     }
 
     #[tokio::test]

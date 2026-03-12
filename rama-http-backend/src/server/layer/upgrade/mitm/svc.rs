@@ -96,7 +96,7 @@ where
                 input: res,
                 service: maybe_relay_svc,
             } = res_svc_matcher
-                .match_service(res)
+                .into_match_service(res)
                 .await
                 .map_err(Into::into)?;
 

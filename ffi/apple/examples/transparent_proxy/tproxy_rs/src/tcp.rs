@@ -52,11 +52,17 @@ const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE_RETRIES: u32 = 5;
 
 // TODO:
-// - switch to protected app storage (macos)
-// - test + verify http connect
-// - test + verify WS
+// - [ ] look into errors and see which ones we can demote to trace or label better, e.g. disconnected is ok
+//   ... example: FFI::log_callback] flow.write error
+//                Error Domain=NEAppProxyFlowErrorDomain Code=1 "The operation
+//                could not be completed because the flow is not connected"
+//                UserInfo={NSLocalizedDescription=The operation could not be
+//                completed because the flow is not connected}
+// - [ ] switch to protected app storage (macos)
+// - [x] test + verify http connect
+// - [x] test + verify WS
 
-// TOOD: do something fun with HTML :) replacing something innocent
+// TOOD: [ ] do something fun with HTML :) replacing something innocent
 
 pub(super) fn try_new_service()
 -> Result<impl Service<TcpFlow, Output = (), Error = Infallible>, BoxError> {
