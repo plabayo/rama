@@ -872,19 +872,15 @@ pub fn apply_response_data_to_base_websocket_config<Body>(
     }
 
     #[cfg(not(feature = "compression"))]
-    let maybe_ws_cfg = {
+    {
         if let Some(pmd_cfg) = accepted_pmd_cfg {
             tracing::error!(
                 "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension."
             );
         }
 
-        if let Some(mut ws_cfg) = base_cfg.as_mut() {
-            ws_cfg.per_message_deflate = None;
-        }
-
         base_cfg
-    };
+    }
 }
 
 /// Intermediate websocket handshake created by
