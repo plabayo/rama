@@ -8,7 +8,10 @@ use rama::{
     http::{
         Request, Response,
         layer::{
+            compression::stream::StreamCompressionLayer,
+            decompression::DecompressionLayer,
             dpi_proxy_credential::DpiProxyCredentialExtractorLayer,
+            map_response_body::MapResponseBodyLayer,
             set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
             upgrade::{
                 HttpProxyConnectRelayServiceRequestMatcher, mitm::HttpUpgradeMitmRelayLayer,
@@ -16,7 +19,9 @@ use rama::{
         },
         matcher::DomainMatcher,
         proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
-        ws::handshake::matcher::HttpWebSocketRelayServiceRequestMatcher,
+        ws::handshake::{
+            matcher::HttpWebSocketRelayServiceRequestMatcher, mitm::WebSocketRelayService,
+        },
     },
     io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
@@ -31,9 +36,12 @@ use rama::{
     },
     proxy::socks5::{proxy::mitm::Socks5MitmRelayService, server::Socks5PeekRouter},
     rt::Executor,
+    service::MirrorService,
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer},
     tls::boring::proxy::{TlsMitmRelay, cert_issuer::BoringMitmCertIssuer},
 };
+
+use crate::demo_trace_traffic::DemoTraceTrafficLayer;
 
 const HIJACK_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
 
@@ -129,20 +137,24 @@ where
 {
     (
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
+        StreamCompressionLayer::new(),
+        DecompressionLayer::new(),
         SetResponseHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),
+        DemoTraceTrafficLayer,
         SetRequestHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),
         HttpUpgradeMitmRelayLayer::new(
             exec.clone(),
             (
+                HttpWebSocketRelayServiceRequestMatcher::new(WebSocketRelayService::new(
+                    DemoTraceTrafficLayer.into_layer(MirrorService::new()),
+                )),
                 HttpProxyConnectRelayServiceRequestMatcher::new(
                     new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed(),
-                ),
-                HttpWebSocketRelayServiceRequestMatcher::new(
-                    ConsumeErrLayer::trace_as_debug().into_layer(IoForwardService::new()),
                 ),
             ),
         ),
@@ -167,9 +179,13 @@ where
 {
     (
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
+        StreamCompressionLayer::new(),
+        DecompressionLayer::new(),
         SetResponseHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),
+        DemoTraceTrafficLayer,
         SetRequestHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),

@@ -1,0 +1,86 @@
+use rama::{
+    Layer, Service,
+    http::{
+        Request, Response,
+        ws::handshake::mitm::{WebSocketRelayData, WebSocketRelayDirection},
+    },
+    telemetry::tracing,
+};
+
+#[derive(Debug, Clone, Default)]
+pub struct DemoTraceTrafficLayer;
+
+impl<S> Layer<S> for DemoTraceTrafficLayer {
+    type Service = DemoTraceTrafficService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        DemoTraceTrafficService(inner)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DemoTraceTrafficService<S>(S);
+
+impl<S> Service<WebSocketRelayData> for DemoTraceTrafficService<S>
+where
+    S: Service<WebSocketRelayData>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, input: WebSocketRelayData) -> Result<Self::Output, Self::Error> {
+        let direction = input.direction;
+        tracing::debug!(
+            "demo traffic logger: relay {} WS msg: {:?}",
+            match direction {
+                WebSocketRelayDirection::Ingress => "[client->server]",
+                WebSocketRelayDirection::Egress => "[server->client]",
+            },
+            input.message,
+        );
+
+        let result = self.0.serve(input).await;
+
+        tracing::debug!(
+            "demo traffic logger: relay {} WS msg: reply = {}",
+            match direction {
+                WebSocketRelayDirection::Ingress => "[client->server]",
+                WebSocketRelayDirection::Egress => "[server->client]",
+            },
+            match result {
+                Ok(_) => "ok",
+                Err(_) => "err",
+            },
+        );
+
+        result
+    }
+}
+
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for DemoTraceTrafficService<S>
+where
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
+    ReqBody: Send + 'static,
+    ResBody: Send + 'static,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let method = req.method().clone();
+        let uri = req.uri().clone();
+        tracing::debug!("demo traffic logger: http ingress: {method} {uri}: request",);
+
+        let result = self.0.serve(req).await;
+
+        match result.as_ref() {
+            Ok(res) => tracing::debug!(
+                "demo traffic logger: http egress: {method} {uri}: response status = {}",
+                res.status(),
+            ),
+            Err(_) => tracing::debug!("demo traffic logger: http egress: {method} {uri}: error",),
+        }
+
+        result
+    }
+}

@@ -13,7 +13,9 @@ use rama_http::{
 
 mod service;
 pub use self::service::{
+    HttpWebSocketRelayHandshakeRequest, HttpWebSocketRelayHandshakeResponse,
     HttpWebSocketRelayServiceRequestMatcher, HttpWebSocketRelayServiceResponseMatcher,
+    RelayWebSocketConfig,
 };
 
 #[derive(Debug, Clone, Default)]

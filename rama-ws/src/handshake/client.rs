@@ -831,6 +831,62 @@ impl<B> WebSocketRequestBuilder<B> {
     }
 }
 
+/// Utility which can be used my Mitm proxies to
+/// update the base config of a client websocket config.
+pub fn apply_response_data_to_base_websocket_config<Body>(
+    base_cfg: Option<WebSocketConfig>,
+    res: &mut Response<Body>,
+) -> Option<WebSocketConfig> {
+    let accepted_pmd_cfg = res
+        .headers()
+        .typed_get::<SecWebSocketExtensions>()
+        .map(|ext| ext.0.head)
+        .and_then(|ext| {
+            if let Extension::PerMessageDeflate(cfg) = ext {
+                Some(cfg)
+            } else {
+                None
+            }
+        });
+
+    if let Some(accepted_protocol) = res
+        .headers()
+        .typed_get::<SecWebSocketProtocol>()
+        .map(|h| h.accept_first_protocol())
+    {
+        res.extensions_mut().insert(accepted_protocol);
+    }
+
+    #[cfg(feature = "compression")]
+    {
+        if let Some(pmd_cfg) = accepted_pmd_cfg {
+            let mut ws_cfg = base_cfg.unwrap_or_default();
+            ws_cfg.per_message_deflate = Some(pmd_cfg.into());
+            Some(ws_cfg)
+        } else if let Some(mut ws_cfg) = base_cfg {
+            ws_cfg.per_message_deflate = None;
+            Some(ws_cfg)
+        } else {
+            base_cfg
+        }
+    }
+
+    #[cfg(not(feature = "compression"))]
+    let maybe_ws_cfg = {
+        if let Some(pmd_cfg) = accepted_pmd_cfg {
+            tracing::error!(
+                "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension."
+            );
+        }
+
+        if let Some(mut ws_cfg) = base_cfg.as_mut() {
+            ws_cfg.per_message_deflate = None;
+        }
+
+        base_cfg
+    };
+}
+
 /// Intermediate websocket handshake created by
 /// [`WebSocketRequestBuilder::initiate_handshake`].
 ///

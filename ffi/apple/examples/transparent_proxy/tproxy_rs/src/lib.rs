@@ -10,6 +10,7 @@ use rama::{
     telemetry::tracing,
 };
 
+mod demo_trace_traffic;
 mod http;
 mod tcp;
 mod tls;
