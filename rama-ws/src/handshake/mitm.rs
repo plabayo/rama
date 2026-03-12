@@ -1,3 +1,5 @@
+use std::convert::Infallible;
+
 use rama_core::{
     Service,
     bytes::Bytes,
@@ -97,7 +99,7 @@ where
     Egress: Io + Unpin + extensions::ExtensionsMut,
 {
     type Output = ();
-    type Error = ();
+    type Error = Infallible;
 
     async fn serve(
         &self,

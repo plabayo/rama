@@ -73,12 +73,13 @@ where
 
         let result = self.0.serve(req).await;
 
-        match result.as_ref() {
-            Ok(res) => tracing::debug!(
+        if let Ok(res) = result.as_ref() {
+            tracing::debug!(
                 "demo traffic logger: http egress: {method} {uri}: response status = {}",
                 res.status(),
-            ),
-            Err(_) => tracing::debug!("demo traffic logger: http egress: {method} {uri}: error",),
+            );
+        } else {
+            tracing::debug!("demo traffic logger: http egress: {method} {uri}: error");
         }
 
         result
