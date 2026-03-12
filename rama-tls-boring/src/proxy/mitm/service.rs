@@ -1,11 +1,14 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
-    extensions,
+    extensions::{self, ExtensionsRef},
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
-use rama_net::tls::{client::ServerVerifyMode, server::InputWithClientHello};
+use rama_net::{
+    proxy::ProxyTarget,
+    tls::{client::ServerVerifyMode, server::InputWithClientHello},
+};
 
 use crate::{TlsStream, client::TlsConnectorDataBuilder, proxy::TlsMitmRelay};
 
@@ -51,11 +54,13 @@ where
             })
             .ok();
 
+        let proxy_target = input.extensions().get::<ProxyTarget>().cloned();
         let tls_input = self
             .relay
             .handshake(input, maybe_connector_data)
             .await
-            .context("tls MITM relay handshake")?;
+            .context("tls MITM relay handshake")
+            .context_debug_field("proxy_target", proxy_target)?;
 
         self.inner.serve(tls_input).await.map_err(Into::into)
     }
@@ -79,6 +84,9 @@ where
             client_hello,
         }: InputWithClientHello<BridgeIo<Ingress, Egress>>,
     ) -> Result<Self::Output, Self::Error> {
+        // TODO: in future have flow that works for SNI
+        // as well as ECH target data??? If not already...
+        let maybe_sni = client_hello.ext_server_name().cloned();
         let maybe_connector_data = TlsConnectorDataBuilder::try_from(client_hello)
             .unwrap_or_default()
             .with_server_verify_mode(ServerVerifyMode::Disable)
@@ -88,11 +96,18 @@ where
             })
             .ok();
 
+        let proxy_target = input.extensions().get::<ProxyTarget>().cloned();
         let tls_input = self
             .relay
             .handshake(input, maybe_connector_data)
             .await
-            .context("tls MITM relay handshake")?;
+            .context("tls MITM relay handshake (with peek Client Hello)")
+            .context_debug_field("proxy_target", proxy_target)
+            .context_debug_field("sni", maybe_sni.clone())?;
+
+        tracing::debug!(
+            "tls MITM relay handshake for SNI={maybe_sni:?} is complete... continue to serve tls tunnel bridge from within..."
+        );
 
         self.inner.serve(tls_input).await.map_err(Into::into)
     }
