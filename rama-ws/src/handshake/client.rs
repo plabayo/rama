@@ -873,7 +873,7 @@ pub fn apply_response_data_to_base_websocket_config<Body>(
 
     #[cfg(not(feature = "compression"))]
     {
-        if let Some(pmd_cfg) = accepted_pmd_cfg {
+        if accepted_pmd_cfg.is_some() {
             tracing::error!(
                 "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension."
             );
