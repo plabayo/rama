@@ -18,6 +18,7 @@ use nom::{
     number::streaming::{be_u8, be_u16},
 };
 use rama_core::error::{BoxError, ErrorExt as _};
+use rama_core::telemetry::tracing;
 use std::str;
 
 /// Parse a [`ClientHello`] from the raw "wire" bytes.
@@ -29,13 +30,12 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, BoxError> {
         Err(err) => Err(BoxError::from("parse client hello handshake message")
             .context_debug_field("err", err.to_owned())),
         Ok((i, hello)) => {
-            if i.is_empty() {
-                Ok(hello)
-            } else {
-                Err(BoxError::from(
-                    "parse client hello handshake message: unexpected trailer content",
-                ))
+            if !i.is_empty() {
+                tracing::debug!(
+                    "parse_client_hello: parse client hello handshake message: unexpected trailer content"
+                )
             }
+            Ok(hello)
         }
     }
 }
@@ -49,13 +49,12 @@ pub fn parse_client_hello_handshake(i: &[u8]) -> Result<ClientHello, BoxError> {
         Err(err) => Err(BoxError::from("parse client hello handshake message")
             .context_debug_field("err", err.to_owned())),
         Ok((i, hello)) => {
-            if i.is_empty() {
-                Ok(hello)
-            } else {
-                Err(BoxError::from(
-                    "parse client hello handshake message: unexpected trailer content",
-                ))
+            if !i.is_empty() {
+                tracing::debug!(
+                    "parse_client_hello_handshake: parse client hello handshake message: unexpected trailer content"
+                )
             }
+            Ok(hello)
         }
     }
 }
