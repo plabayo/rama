@@ -47,6 +47,26 @@ impl MethodMatcher {
     pub const fn or(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+
+    /// Returns an iterator over the HTTP method name strings represented by this matcher.
+    ///
+    /// The iterator yields names in alphabetical order (CONNECT, DELETE, GET, HEAD, OPTIONS,
+    /// PATCH, POST, PUT, TRACE) matching only the bits that are set.
+    pub fn iter_str(self) -> impl Iterator<Item = &'static str> {
+        [
+            (Self::CONNECT, "CONNECT"),
+            (Self::DELETE, "DELETE"),
+            (Self::GET, "GET"),
+            (Self::HEAD, "HEAD"),
+            (Self::OPTIONS, "OPTIONS"),
+            (Self::PATCH, "PATCH"),
+            (Self::POST, "POST"),
+            (Self::PUT, "PUT"),
+            (Self::TRACE, "TRACE"),
+        ]
+        .into_iter()
+        .filter_map(move |(m, s)| self.contains(m).then_some(s))
+    }
 }
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for MethodMatcher {

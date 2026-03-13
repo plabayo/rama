@@ -1,6 +1,6 @@
 use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
-use std::{convert::Infallible, path::Path, sync::Arc};
+use std::{collections::BTreeSet, convert::Infallible, path::Path, sync::Arc};
 
 use crate::{
     Request, Response,
@@ -18,7 +18,8 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_types::{
-    Body, OriginalRouterUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
+    Body, HeaderValue, OriginalRouterUri, StatusCode, header, mime::Mime,
+    uri::try_to_strip_path_prefix_from_uri,
 };
 use rama_utils::{
     include_dir,
@@ -584,6 +585,11 @@ where
     async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
         let path = req.uri().path().to_lowercase_smolstr();
 
+        // Collect allowed methods when a path matches but no method matches.
+        // Initialised here so it is visible after the if-let block and after
+        // sub_services, letting sub_services take priority over a 405.
+        let mut allowed_methods: BTreeSet<&'static str> = BTreeSet::new();
+
         if let Ok(matched) = self.routes.at(path.as_str()) {
             let uri_params = matched.params.iter();
 
@@ -603,6 +609,14 @@ where
                 if matcher.matches(Some(&mut ext), &req) {
                     req.extensions_mut().extend(ext);
                     return service.serve(req).await;
+                }
+            }
+
+            // Path matched but no method matched — collect for a potential 405.
+            // Do not return yet: a sub_service may still handle this request.
+            for (matcher, _) in matched.value.iter() {
+                if let Some(mm) = matcher.allowed_methods() {
+                    allowed_methods.extend(mm.iter_str());
                 }
             }
         }
@@ -700,6 +714,18 @@ where
             }
         }
 
+        // A route matched the path but no registered method matched, and no sub_service
+        // handled the request — return 405 with the Allow header per RFC 7231.
+        if !allowed_methods.is_empty() {
+            let allow_val = allowed_methods.into_iter().collect::<Vec<_>>().join(", ");
+            let mut res = StatusCode::METHOD_NOT_ALLOWED.into_response();
+            res.headers_mut().insert(
+                header::ALLOW,
+                HeaderValue::from_str(&allow_val).unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
+            return Ok(res);
+        }
+
         if let Some(not_found) = &self.not_found {
             let req = Request::from_parts(parts, body);
             not_found.serve(req).await
@@ -715,7 +741,7 @@ mod tests {
 
     use super::*;
     use rama_core::{extensions::ExtensionsRef, service::service_fn};
-    use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt};
+    use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt, header};
 
     fn root_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
@@ -822,8 +848,8 @@ mod tests {
             (
                 Method::PUT,
                 "/users/123",
-                "Not Found",
-                StatusCode::NOT_FOUND,
+                "",
+                StatusCode::METHOD_NOT_ALLOWED,
             ),
             (
                 Method::GET,
@@ -877,6 +903,74 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_router_method_not_allowed() {
+        let router = Router::new()
+            .with_get("/users", get_users_service())
+            .with_post("/users", create_user_service())
+            .with_get("/users/{user_id}", get_user_service())
+            .with_delete("/users/{user_id}", delete_user_service())
+            .with_not_found(not_found_service());
+
+        // PUT /users/123 → 405: verify status, Allow header, and empty body in one shot
+        let req = Request::put("/users/123").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            res.headers()
+                .get(header::ALLOW)
+                .expect("Allow header must be present on 405")
+                .to_str()
+                .unwrap(),
+            "DELETE, GET"
+        );
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert!(
+            body.is_empty(),
+            "405 body must be empty, not from not_found service"
+        );
+
+        // DELETE /users → 405 with a different Allow set (GET, POST)
+        let req = Request::delete("/users").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            res.headers().get(header::ALLOW).unwrap().to_str().unwrap(),
+            "GET, POST"
+        );
+
+        // Unknown path → 404, no Allow header (not_found service body present)
+        let req = Request::get("/nonexistent").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert!(
+            res.headers().get(header::ALLOW).is_none(),
+            "404 must not carry Allow header"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_router_method_not_allowed_no_not_found_service() {
+        // Verify 405 fires correctly when no custom not_found service is registered.
+        let router = Router::new()
+            .with_get("/users/{user_id}", get_user_service())
+            .with_delete("/users/{user_id}", delete_user_service());
+
+        let req = Request::put("/users/123").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            res.headers().get(header::ALLOW).unwrap().to_str().unwrap(),
+            "DELETE, GET"
+        );
+
+        // Unknown path without not_found service → plain 404, no Allow header
+        let req = Request::get("/nonexistent").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert!(res.headers().get(header::ALLOW).is_none());
     }
 
     #[tokio::test]
@@ -963,6 +1057,23 @@ mod tests {
                     "method: {method} ; path = {path}; prefix = {prefix}"
                 );
             }
+
+            // PUT /api/users/123 → the outer router has no direct route for this path,
+            // but the api_router has DELETE /users/{user_id} registered directly.
+            // However the sub-router for users/{user_id}/* takes priority (deferred 405),
+            // and that sub-router has GET / — so the final 405 reflects Allow: GET.
+            let req = Request::put("/api/users/123").body(Body::empty()).unwrap();
+            let res = app.serve(req).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "nested router: PUT /api/users/123 must be 405; prefix = {prefix}"
+            );
+            assert_eq!(
+                res.headers().get(header::ALLOW).unwrap().to_str().unwrap(),
+                "GET",
+                "nested router: Allow header reflects sub-router's registered methods; prefix = {prefix}"
+            );
         }
     }
 }

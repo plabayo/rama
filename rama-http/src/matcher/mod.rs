@@ -874,6 +874,30 @@ impl<Body> HttpMatcher<Body> {
             negate: true,
         }
     }
+
+    /// Returns the set of HTTP methods this matcher explicitly allows, if determinable.
+    ///
+    /// Returns `None` when the matcher is negated, has no method constraint (meaning it would
+    /// accept any method), or contains a custom matcher whose allowed methods cannot be
+    /// inspected. A `None` result means the caller cannot enumerate a finite Allow list.
+    pub(crate) fn allowed_methods(&self) -> Option<MethodMatcher> {
+        if self.negate {
+            return None;
+        }
+        self.kind.allowed_methods()
+    }
+}
+
+impl<Body> HttpMatcherKind<Body> {
+    fn allowed_methods(&self) -> Option<MethodMatcher> {
+        match self {
+            Self::Method(m) => Some(*m),
+            // All other variants (All, Any, Path, Domain, Version, Uri, Header, Socket,
+            // SubdomainTrie, Custom) either have no method constraint or cannot be
+            // enumerated — callers treat None as "no finite Allow list available".
+            _ => None,
+        }
+    }
 }
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for HttpMatcher<Body>
