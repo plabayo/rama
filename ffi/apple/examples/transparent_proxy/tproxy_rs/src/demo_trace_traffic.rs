@@ -2,7 +2,7 @@ use rama::{
     Layer, Service,
     http::{
         Request, Response,
-        ws::handshake::mitm::{WebSocketRelayData, WebSocketRelayDirection},
+        ws::handshake::mitm::{WebSocketRelayDirection, WebSocketRelayInput},
     },
     telemetry::tracing,
 };
@@ -21,14 +21,14 @@ impl<S> Layer<S> for DemoTraceTrafficLayer {
 #[derive(Debug, Clone)]
 pub struct DemoTraceTrafficService<S>(S);
 
-impl<S> Service<WebSocketRelayData> for DemoTraceTrafficService<S>
+impl<S> Service<WebSocketRelayInput> for DemoTraceTrafficService<S>
 where
-    S: Service<WebSocketRelayData>,
+    S: Service<WebSocketRelayInput>,
 {
     type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, input: WebSocketRelayData) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: WebSocketRelayInput) -> Result<Self::Output, Self::Error> {
         let direction = input.direction;
         tracing::debug!(
             "demo traffic logger: relay {} WS msg: {:?}",

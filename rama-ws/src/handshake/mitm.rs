@@ -27,7 +27,7 @@ use crate::{
 /// This service is for simple DPI purposes.
 ///
 /// Fork or create your own relay service for more advanced purposes,
-/// such as the possibility to drop or buffer messages,
+/// such as the possibility to side-channel messages,
 /// or even route messages via external services.
 pub struct WebSocketRelayService<S = MirrorService> {
     middleware: S,
@@ -43,22 +43,22 @@ impl<S> WebSocketRelayService<S> {
 }
 
 #[derive(Debug, Clone)]
-/// Most typically used as Input+Output
+/// Most typically used as Input
 /// for users of [`WebSocketRelayService`].
-pub struct WebSocketRelayData {
+pub struct WebSocketRelayInput {
     pub direction: WebSocketRelayDirection,
     pub message: WebSocketRelayMessage,
     pub extensions: Extensions,
 }
 
-impl ExtensionsRef for WebSocketRelayData {
+impl ExtensionsRef for WebSocketRelayInput {
     #[inline(always)]
     fn extensions(&self) -> &Extensions {
         &self.extensions
     }
 }
 
-impl ExtensionsMut for WebSocketRelayData {
+impl ExtensionsMut for WebSocketRelayInput {
     #[inline(always)]
     fn extensions_mut(&mut self) -> &mut Extensions {
         &mut self.extensions
@@ -66,8 +66,47 @@ impl ExtensionsMut for WebSocketRelayData {
 }
 
 #[derive(Debug, Clone)]
-/// Non-meta WebSocket messages, used as part of [`WebSocketRelayData`],
-/// most typically for users of [`WebSocketRelayService`].
+/// Most typically used as Output
+/// for users of [`WebSocketRelayService`].
+pub struct WebSocketRelayOutput {
+    /// 0 or more messages, providing the ability
+    /// to drop messages first and return buffered messages later
+    pub messages: Vec<WebSocketRelayMessage>,
+    pub extensions: Extensions,
+}
+
+impl From<WebSocketRelayInput> for WebSocketRelayOutput {
+    fn from(value: WebSocketRelayInput) -> Self {
+        let WebSocketRelayInput {
+            direction: _,
+            message,
+            extensions,
+        } = value;
+
+        Self {
+            messages: vec![message],
+            extensions,
+        }
+    }
+}
+
+impl ExtensionsRef for WebSocketRelayOutput {
+    #[inline(always)]
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for WebSocketRelayOutput {
+    #[inline(always)]
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
+}
+
+#[derive(Debug, Clone)]
+/// Non-meta WebSocket messages, used as part of [`WebSocketRelayInput`]
+/// and [`WebSocketRelayOutput`], most typically for users of [`WebSocketRelayService`].
 pub enum WebSocketRelayMessage {
     /// A text WebSocket message
     Text(Utf8Bytes),
@@ -85,7 +124,7 @@ impl From<WebSocketRelayMessage> for crate::protocol::Message {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Direction data used as part of [`WebSocketRelayData`],
+/// Direction data used as part of [`WebSocketRelayInput`],
 /// most typically for users of [`WebSocketRelayService`].
 pub enum WebSocketRelayDirection {
     Ingress,
@@ -94,7 +133,7 @@ pub enum WebSocketRelayDirection {
 
 impl<S, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for WebSocketRelayService<S>
 where
-    S: Service<WebSocketRelayData, Output = WebSocketRelayData, Error: Into<BoxError>>,
+    S: Service<WebSocketRelayInput, Output: Into<WebSocketRelayOutput>, Error: Into<BoxError>>,
     Ingress: Io + Unpin + extensions::ExtensionsMut,
     Egress: Io + Unpin + extensions::ExtensionsMut,
 {
@@ -143,24 +182,26 @@ where
                                     continue;
                                 },
                             };
-                            match middleware.serve(WebSocketRelayData {
+                            match middleware.serve(WebSocketRelayInput {
                                 direction: WebSocketRelayDirection::Ingress,
                                 message: msg,
                                 extensions: relay_extensions,
-                            }).await {
-                                Ok(WebSocketRelayData {
-                                    direction: _,
-                                    message,
+                            }).await.map(Into::into) {
+                                Ok(WebSocketRelayOutput {
+                                    messages,
                                     extensions,
                                 }) => {
                                     relay_extensions = extensions;
-                                    tracing::trace!("relay text/binary ingress WS message");
-                                    if let Err(err) = egress_socket.send(message.into()).await {
-                                        if err.is_connection_error() {
-                                            tracing::debug!("egress socket disconnected ({err})... drop MITM relay");
-                                            return Ok(());
+                                    tracing::trace!("relay text/binary ingress WS message(s)");
+                                    for (message_index, message) in messages.into_iter().enumerate() {
+                                        tracing::trace!("relay text/binary ingress WS message #{message_index}");
+                                        if let Err(err) = egress_socket.send(message.into()).await {
+                                            if err.is_connection_error() {
+                                                tracing::debug!("egress socket disconnected ({err}) @ message#{message_index}... drop MITM relay");
+                                                return Ok(());
+                                            }
+                                            tracing::debug!("failed to relay ingress msg: {err} @ message#{message_index}; continue anyway..");
                                         }
-                                        tracing::debug!("failed to relay ingress msg: {err}; continue anyway..");
                                     }
                                 },
                                 Err(err) => {
@@ -202,24 +243,26 @@ where
                                     continue;
                                 },
                             };
-                            match middleware.serve(WebSocketRelayData {
+                            match middleware.serve(WebSocketRelayInput {
                                 direction: WebSocketRelayDirection::Egress,
                                 message: msg,
                                 extensions: relay_extensions,
-                            }).await {
-                                Ok(WebSocketRelayData {
-                                    direction: _,
-                                    message,
+                            }).await.map(Into::into) {
+                                Ok(WebSocketRelayOutput {
+                                    messages,
                                     extensions,
                                 }) => {
                                     relay_extensions = extensions;
-                                    tracing::trace!("relay text/binary egress WS message");
-                                    if let Err(err) = ingress_socket.send(message.into()).await {
-                                        if err.is_connection_error() {
-                                            tracing::debug!("ingress socket disconnected ({err})... drop MITM relay");
-                                            return Ok(());
+                                    tracing::trace!("relay text/binary egress WS message(s)");
+                                    for (message_index, message) in messages.into_iter().enumerate() {
+                                        tracing::trace!("relay text/binary egress WS message #{message_index}");
+                                        if let Err(err) = ingress_socket.send(message.into()).await {
+                                            if err.is_connection_error() {
+                                                tracing::debug!("ingress socket disconnected ({err}) @ message#{message_index}... drop MITM relay");
+                                                return Ok(());
+                                            }
+                                            tracing::debug!("failed to relay egress msg: {err} @ message#{message_index}; continue anyway..");
                                         }
-                                        tracing::debug!("failed to relay egress msg: {err}; continue anyway..");
                                     }
                                 },
                                 Err(err) => {

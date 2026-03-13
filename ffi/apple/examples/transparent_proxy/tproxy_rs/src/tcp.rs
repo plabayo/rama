@@ -53,7 +53,7 @@ const TCP_KEEPALIVE_RETRIES: u32 = 5;
 
 // TODO:
 // - [X] use WS also in connect flow + simplify by merging middleware fn into 1
-// - [ ] support impl Into<Response> for relay as to support also dropping, and even multiple messages for relay :)
+// - [X] support impl Into<Response> for relay as to support also dropping, and even multiple messages for relay :)
 // - [ ] look into errors and see which ones we can demote to trace or label better, e.g. disconnected is ok
 //   ... example: FFI::log_callback] flow.write error
 //                Error Domain=NEAppProxyFlowErrorDomain Code=1 "The operation
