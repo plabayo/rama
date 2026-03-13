@@ -1,11 +1,16 @@
+use std::time::Duration;
+
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    io::{HeapReader, PeekIoProvider, PrefixedIo},
+    io::{
+        HeapReader, PeekIoProvider, PrefixedIo,
+        peek::{PeekOutput, peek_input_until, peek_input_until_with_offset},
+    },
     service::RejectService,
     telemetry::tracing,
 };
-use tokio::io::AsyncReadExt;
+use tokio::time::Instant;
 
 use crate::tls::client::{ClientHello, parse_client_hello_handshake};
 
@@ -29,6 +34,7 @@ use super::NoTlsRejectError;
 pub struct PeekTlsClientHelloService<S, F = RejectService<(), NoTlsRejectError>> {
     service: S,
     fallback: F,
+    peek_timeout: Option<Duration>,
 }
 
 impl<S> PeekTlsClientHelloService<S> {
@@ -37,6 +43,7 @@ impl<S> PeekTlsClientHelloService<S> {
         Self {
             service,
             fallback: RejectService::new(NoTlsRejectError),
+            peek_timeout: None,
         }
     }
 
@@ -47,6 +54,17 @@ impl<S> PeekTlsClientHelloService<S> {
         PeekTlsClientHelloService {
             service: self.service,
             fallback,
+            peek_timeout: self.peek_timeout,
+        }
+    }
+}
+
+impl<S, F> PeekTlsClientHelloService<S, F> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the peek window to timeout on
+        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
+            self.peek_timeout = peek_timeout;
+            self
         }
     }
 }
@@ -57,6 +75,7 @@ impl<S> PeekTlsClientHelloService<S> {
 /// Use [`PeekTlsClientHelloService`] if you prefer it as a rama [`Service`] instead.
 pub async fn peek_client_hello_from_input<PeekableInput>(
     mut input: PeekableInput,
+    timeout: Option<Duration>,
 ) -> Result<
     (
         PeekableInput::Mapped<TlsClientHelloPrefixedIo<PeekableInput::PeekIo>>,
@@ -70,17 +89,31 @@ where
     let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
     let peekable_io = input.peek_io_mut();
 
-    let n = peekable_io.read(&mut peek_buf).await?;
+    let start = Instant::now();
 
-    let is_tls = n == TLS_HEADER_PEEK_LEN && matches!(peek_buf, [0x16, 0x03, 0x00..=0x04, ..]);
+    let PeekOutput { data, peek_size } =
+        peek_input_until(peekable_io, &mut peek_buf, timeout, |buffer| {
+            if buffer.len() == TLS_HEADER_PEEK_LEN
+                && matches!(buffer, [0x16, 0x03, 0x00..=0x04, ..])
+            {
+                Some(())
+            } else {
+                None
+            }
+        })
+        .await;
+
+    let is_tls = data.is_some();
     tracing::trace!("tls prefix header read (is tls: {is_tls})");
 
     if !is_tls {
-        if TLS_HEADER_PEEK_LEN.saturating_sub(n) > 0 {
-            tracing::trace!("move tls peek buffer cursor due to reading not enough (read: {n})");
+        if TLS_HEADER_PEEK_LEN.saturating_sub(peek_size) > 0 {
+            tracing::trace!(
+                "move tls peek buffer cursor due to reading not enough (read: {peek_size})"
+            );
         }
 
-        let prefix_data = HeapReader::from(&peek_buf[..n.min(TLS_HEADER_PEEK_LEN)]);
+        let prefix_data = HeapReader::from(&peek_buf[..peek_size.min(TLS_HEADER_PEEK_LEN)]);
         let peeked_input = input.map_peek_io(|io| PrefixedIo::new(prefix_data, io));
 
         tracing::trace!("return early for non-tls traffic: missing peek header");
@@ -92,22 +125,36 @@ where
 
     let mut v = vec![0u8; record_size];
     v[..TLS_HEADER_PEEK_LEN].copy_from_slice(&peek_buf[..]);
-    let read_size = peekable_io.read(&mut v[TLS_HEADER_PEEK_LEN..]).await?;
 
-    if read_size != n {
+    let new_timeout = timeout.map(|t| t.saturating_sub(start.elapsed()));
+
+    let PeekOutput {
+        data: maybe_client_hello,
+        peek_size,
+    } = peek_input_until_with_offset(
+        peekable_io,
+        &mut v,
+        TLS_HEADER_PEEK_LEN,
+        new_timeout,
+        |buffer| {
+            let n = buffer.len();
+            parse_client_hello_handshake(buffer)
+                .inspect_err(|err| {
+                    tracing::debug!("failed parse client hello handshake ({n}) byte(s): {err}",)
+                })
+                .ok()
+        },
+    )
+    .await;
+
+    let new_peek_size = peek_size - TLS_HEADER_PEEK_LEN;
+    if new_peek_size != n {
         tracing::trace!(
-            read_size,
+            peek_size = new_peek_size,
+            expected_peek_size = n,
             "unexpected read size for client hello handshake data: try regardless..."
         );
     }
-    let maybe_client_hello =
-        parse_client_hello_handshake(&v[..record_size - (n.saturating_sub(read_size))])
-            .inspect_err(|err| {
-                tracing::debug!(
-                    "failed parse client hello handshake bytes: {err}; return as non-tls traffic",
-                )
-            })
-            .ok();
 
     let prefix_data = HeapReader::from(v);
     let peeked_input = input.map_peek_io(|io| PrefixedIo::new(prefix_data, io));
@@ -136,9 +183,10 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
-        let (peeked_input, maybe_client_hello) = peek_client_hello_from_input(input)
-            .await
-            .context("I/O error while peeking TLS:CH from existing input")?;
+        let (peeked_input, maybe_client_hello) =
+            peek_client_hello_from_input(input, self.peek_timeout)
+                .await
+                .context("I/O error while peeking TLS:CH from existing input")?;
 
         if let Some(client_hello) = maybe_client_hello {
             self.service
@@ -174,6 +222,7 @@ mod test {
         service::{RejectError, service_fn},
     };
     use std::convert::Infallible;
+    use tokio::io::AsyncReadExt as _;
 
     use rama_core::io::Io;
 

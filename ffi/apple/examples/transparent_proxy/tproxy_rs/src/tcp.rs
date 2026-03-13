@@ -45,14 +45,14 @@ use crate::demo_trace_traffic::DemoTraceTrafficLayer;
 
 const HIJACK_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
 
-const HTTP_PEEK_DURATION: Duration = Duration::from_secs(8);
+const PEEK_DURATION: Duration = Duration::from_secs(8);
 
 const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE_RETRIES: u32 = 5;
 
 // TODO:
-// - [ ] use WS also in connect flow + simplify by merging middleware fn into 1
+// - [X] use WS also in connect flow + simplify by merging middleware fn into 1
 // - [ ] support impl Into<Response> for relay as to support also dropping, and even multiple messages for relay :)
 // - [ ] look into errors and see which ones we can demote to trace or label better, e.g. disconnected is ok
 //   ... example: FFI::log_callback] flow.write error
@@ -100,24 +100,25 @@ where
     Ingress: Io + Unpin + ExtensionsMut,
     Egress: Io + Unpin + ExtensionsMut,
 {
-    let http_mitm_svc = if within_connect_tunnel {
-        Either::A(HttpMitmRelay::new(exec).with_http_middleware(
-            http_relay_middleware_within_connect_tunnel(ca_crt_pem_bytes),
-        ))
-    } else {
-        let mut relay = HttpMitmRelay::new(exec.clone()).with_http_middleware(
-            http_relay_middleware(exec, tls_mitm_relay.clone(), ca_crt_pem_bytes),
-        );
+    let http_mitm_svc = {
+        let mut relay =
+            HttpMitmRelay::new(exec.clone()).with_http_middleware(http_relay_middleware(
+                exec,
+                tls_mitm_relay.clone(),
+                ca_crt_pem_bytes,
+                within_connect_tunnel,
+            ));
         relay.h2_mut().set_enable_connect_protocol();
-        Either::B(relay)
+        relay
     };
 
     let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
-        .with_peek_timeout(HTTP_PEEK_DURATION)
+        .with_peek_timeout(PEEK_DURATION)
         .with_fallback(IoForwardService::new());
 
     let app_mitm_layer =
         PeekTlsClientHelloService::new(tls_mitm_relay.into_layer(maybe_http_mitm_svc.clone()))
+            .with_peek_timeout(PEEK_DURATION)
             .with_fallback(maybe_http_mitm_svc);
 
     if within_connect_tunnel {
@@ -125,7 +126,9 @@ where
     }
 
     let socks5_mitm_relay = Socks5MitmRelayService::new(app_mitm_layer.clone());
-    let mitm_svc = Socks5PeekRouter::new(socks5_mitm_relay).with_fallback(app_mitm_layer);
+    let mitm_svc = Socks5PeekRouter::new(socks5_mitm_relay)
+        .with_peek_timeout(PEEK_DURATION)
+        .with_fallback(app_mitm_layer);
 
     Either::B(ConsumeErrLayer::trace_as_debug().into_layer(mitm_svc))
 }
@@ -134,6 +137,7 @@ fn http_relay_middleware<S, Issuer>(
     exec: Executor,
     tls_mitm_relay: TlsMitmRelay<Issuer>,
     ca_crt_pem_bytes: &'static [u8],
+    within_connect_tunnel: bool,
 ) -> impl Layer<S, Service: Service<Request, Output = Response, Error = Infallible> + Clone>
 + Send
 + Sync
@@ -161,42 +165,16 @@ where
                 HttpWebSocketRelayServiceRequestMatcher::new(WebSocketRelayService::new(
                     DemoTraceTrafficLayer.into_layer(MirrorService::new()),
                 )),
-                HttpProxyConnectRelayServiceRequestMatcher::new(
-                    new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed(),
-                ),
+                HttpProxyConnectRelayServiceRequestMatcher::new(if within_connect_tunnel {
+                    ConsumeErrLayer::trace_as_debug()
+                        .into_layer(IoForwardService::new())
+                        .boxed()
+                } else {
+                    new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed()
+                }),
             ),
         ),
         DpiProxyCredentialExtractorLayer::new(),
-        HijackLayer::new(
-            DomainMatcher::exact(HIJACK_DOMAIN),
-            Arc::new(crate::http::hijack::new_service(ca_crt_pem_bytes)),
-        ),
-        ArcLayer::new(),
-    )
-}
-
-fn http_relay_middleware_within_connect_tunnel<S>(
-    ca_crt_pem_bytes: &'static [u8],
-) -> impl Layer<S, Service: Service<Request, Output = Response, Error = Infallible> + Clone>
-+ Send
-+ Sync
-+ 'static
-+ Clone
-where
-    S: Service<Request, Output = Response, Error = BoxError>,
-{
-    (
-        ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
-        MapResponseBodyLayer::new_boxed_streaming_body(),
-        StreamCompressionLayer::new(),
-        DecompressionLayer::new(),
-        SetResponseHeaderLayer::if_not_present_typed(
-            crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
-        ),
-        DemoTraceTrafficLayer,
-        SetRequestHeaderLayer::if_not_present_typed(
-            crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
-        ),
         HijackLayer::new(
             DomainMatcher::exact(HIJACK_DOMAIN),
             Arc::new(crate::http::hijack::new_service(ca_crt_pem_bytes)),

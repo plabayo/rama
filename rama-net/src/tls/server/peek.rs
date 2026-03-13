@@ -1,11 +1,15 @@
+use std::time::Duration;
+
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    io::{PeekIoProvider, PrefixedIo, StackReader},
+    io::{
+        PeekIoProvider, PrefixedIo, StackReader,
+        peek::{PeekOutput, peek_input_until},
+    },
     service::RejectService,
     telemetry::tracing,
 };
-use tokio::io::AsyncReadExt;
 
 /// A [`Service`] router that can be used to support
 /// tls traffic as well as non-tls traffic.
@@ -16,6 +20,7 @@ use tokio::io::AsyncReadExt;
 pub struct TlsPeekRouter<T, F = RejectService<(), NoTlsRejectError>> {
     tls_acceptor: T,
     fallback: F,
+    peek_timeout: Option<Duration>,
 }
 
 rama_utils::macros::error::static_str_error! {
@@ -29,6 +34,7 @@ impl<T> TlsPeekRouter<T> {
         Self {
             tls_acceptor,
             fallback: RejectService::new(NoTlsRejectError),
+            peek_timeout: None,
         }
     }
 
@@ -37,6 +43,17 @@ impl<T> TlsPeekRouter<T> {
         TlsPeekRouter {
             tls_acceptor: self.tls_acceptor,
             fallback,
+            peek_timeout: self.peek_timeout,
+        }
+    }
+}
+
+impl<T, F> TlsPeekRouter<T, F> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the peek window to timeout on
+        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
+            self.peek_timeout = peek_timeout;
+            self
         }
     }
 }
@@ -61,19 +78,29 @@ where
 
     async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
-        let n = input
-            .peek_io_mut()
-            .read(&mut peek_buf)
-            .await
-            .context("try to read tls prefix header")?;
+        let peek_reader = input.peek_io_mut();
 
-        let is_tls = n == TLS_HEADER_PEEK_LEN && matches!(peek_buf, [0x16, 0x03, 0x00..=0x04, ..]);
+        let PeekOutput { data, peek_size } =
+            peek_input_until(peek_reader, &mut peek_buf, self.peek_timeout, |buffer| {
+                if buffer.len() == TLS_HEADER_PEEK_LEN
+                    && matches!(buffer, [0x16, 0x03, 0x00..=0x04, ..])
+                {
+                    Some(())
+                } else {
+                    None
+                }
+            })
+            .await;
+        let is_tls = data.is_some();
+
         tracing::trace!(%is_tls, "tls prefix header read: is tls: {is_tls}");
 
-        let offset = TLS_HEADER_PEEK_LEN - n;
+        let offset = TLS_HEADER_PEEK_LEN - peek_size;
         if offset > 0 {
-            tracing::trace!("move tls peek buffer cursor due to reading not enough: (read: {n})");
-            peek_buf.copy_within(0..n, offset);
+            tracing::trace!(
+                "move tls peek buffer cursor due to reading not enough: (read: {peek_size})"
+            );
+            peek_buf.copy_within(0..peek_size, offset);
         }
 
         let mut peek_stack_data = StackReader::new(peek_buf);
@@ -101,6 +128,7 @@ mod test {
         service::{RejectError, service_fn},
     };
     use std::convert::Infallible;
+    use tokio::io::AsyncReadExt as _;
 
     use rama_core::io::Io;
 

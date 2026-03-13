@@ -3,12 +3,14 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    io::{PeekIoProvider, PrefixedIo, StackReader},
+    io::{
+        PeekIoProvider, PrefixedIo, StackReader,
+        peek::{PeekOutput, peek_input_until},
+    },
     service::RejectService,
     telemetry::tracing,
 };
 use std::time::Duration;
-use tokio::{io::AsyncReadExt, time::Instant};
 
 /// A [`Service`] router that can be used to support
 /// http/1x and h2 traffic as well as non-tls traffic.
@@ -298,50 +300,10 @@ where
 {
     let mut peek_buf = [0u8; HTTP_HEADER_PEEK_LEN];
 
-    let peek_deadline = timeout.map(|d| Instant::now() + d);
-    let mut peek_filled = 0;
-
-    let mut maybe_http_version = None;
-
-    for _ in 0..8 {
-        let read_fut = input.peek_io_mut().read(&mut peek_buf[peek_filled..]);
-
-        let n = match peek_deadline {
-            Some(deadline) => {
-                let now = Instant::now();
-                if now >= deadline {
-                    break;
-                }
-
-                let remaining = deadline - now;
-                match tokio::time::timeout(remaining, read_fut).await {
-                    Err(err) => {
-                        tracing::debug!("http peek: time-fenced peek read timeout error: {err}");
-                        0
-                    }
-                    Ok(Err(err)) => {
-                        tracing::debug!("http peek: time-fenced peek read error: {err}");
-                        0
-                    }
-                    Ok(Ok(n)) => n,
-                }
-            }
-            None => match read_fut.await {
-                Err(err) => {
-                    tracing::debug!("http peek: peek read error: {err}");
-                    0
-                }
-                Ok(n) => n,
-            },
-        };
-
-        if n == 0 {
-            tracing::trace!("http peek: break loop: no new data read...");
-            break;
-        }
-
-        peek_filled = (peek_filled + n).min(peek_buf.len());
-
+    let PeekOutput {
+        data: maybe_http_version,
+        peek_size,
+    } = peek_input_until(input.peek_io_mut(), &mut peek_buf, timeout, |buffer| {
         const HTTP_METHODS: &[&[u8]] = &[
             b"GET ",
             b"POST ",
@@ -354,26 +316,24 @@ where
             b"PATCH ",
         ];
 
-        if n == H2_MAGIC_PREFIX.len() && peek_buf.eq(H2_MAGIC_PREFIX) {
-            maybe_http_version = Some(HttpPeekVersion::H2);
-            break;
-        } else if HTTP_METHODS
-            .iter()
-            .any(|method| peek_buf.starts_with(method))
-        {
-            maybe_http_version = Some(HttpPeekVersion::Http1x);
-            break;
+        if buffer.eq(H2_MAGIC_PREFIX) {
+            Some(HttpPeekVersion::H2)
+        } else if HTTP_METHODS.iter().any(|method| buffer.starts_with(method)) {
+            Some(HttpPeekVersion::Http1x)
+        } else {
+            None
         }
-    }
+    })
+    .await;
 
     tracing::trace!("http prefix read loop finished: version = {maybe_http_version:?}");
 
-    let offset = HTTP_HEADER_PEEK_LEN - peek_filled;
+    let offset = HTTP_HEADER_PEEK_LEN - peek_size;
     if offset > 0 {
         tracing::trace!(
-            "move http peek buffer cursor due to reading not enough (read: {peek_filled})"
+            "move http peek buffer cursor due to reading not enough (read: {peek_size})"
         );
-        peek_buf.copy_within(0..peek_filled, offset);
+        peek_buf.copy_within(0..peek_size, offset);
     }
 
     let mut peek = StackReader::new(peek_buf);
@@ -400,6 +360,7 @@ mod test {
         stream::io::StreamReader,
     };
     use std::convert::Infallible;
+    use tokio::io::AsyncReadExt as _;
 
     use rama_core::io::Io;
 
