@@ -3,15 +3,226 @@ import Foundation
 import NetworkExtension
 import RamaAppleNEFFI
 
+private enum FlowLogLevel {
+    case trace
+    case debug
+    case error
+}
+
+private struct FlowLogMessage {
+    let level: FlowLogLevel
+    let text: String
+}
+
+/// Mirror of Apple's `NEAppProxyFlowError` values used to classify callback errors.
+///
+/// Source of truth for the numeric enum values:
+/// - Xcode SDK header:
+///   `NetworkExtension.framework/Headers/NEAppProxyFlow.h`
+/// - Apple enum docs:
+///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code
+private enum AppProxyFlowErrorCode: Int {
+    /// The flow is not connected.
+    ///
+    /// We treat this as a normal teardown/disconnect signal in read/write callbacks.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorNotConnected = 1`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/notconnected
+    case notConnected = 1
+
+    /// The remote peer reset the flow.
+    ///
+    /// We treat this as an expected remote-close outcome, not a provider bug.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorPeerReset = 2`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/peerreset
+    case peerReset = 2
+
+    /// The remote peer is unreachable.
+    ///
+    /// This is a network-path/connectivity issue and remains worth surfacing at debug level.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorHostUnreachable = 3`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/hostunreachable
+    case hostUnreachable = 3
+
+    /// An invalid argument was passed to an `NEAppProxyFlow` method.
+    ///
+    /// This suggests a provider bug or incorrect API usage and should be treated as actionable.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorInvalidArgument = 4`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/invalidargument
+    case invalidArgument = 4
+
+    /// The flow was aborted.
+    ///
+    /// This can happen during shutdown, but when not already closing it may still indicate
+    /// a noteworthy runtime interruption.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorAborted = 5`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/aborted
+    case aborted = 5
+
+    /// The flow was refused/disallowed.
+    ///
+    /// This is treated as an environment or policy failure rather than an expected disconnect.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorRefused = 6`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/refused
+    case refused = 6
+
+    /// The flow timed out.
+    ///
+    /// This is a network/runtime condition and remains visible at debug level.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorTimedOut = 7`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/timedout
+    case timedOut = 7
+
+    /// An internal NetworkExtension error occurred.
+    ///
+    /// This is not expected during normal flow teardown and should be treated as actionable.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorInternal = 8`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/internal
+    case `internal` = 8
+
+    /// A UDP datagram exceeded the socket receive window.
+    ///
+    /// This is an operational misuse/limit condition and is treated as actionable.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorDatagramTooLarge = 9`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/datagramtoolarge
+    case datagramTooLarge = 9
+
+    /// A second read was started while another read was still pending.
+    ///
+    /// This should not occur in our serialized read loops and therefore indicates a logic bug.
+    ///
+    /// Normative source:
+    /// - SDK header: `NEAppProxyFlowErrorReadAlreadyPending = 10`
+    /// - Apple symbol docs:
+    ///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code/readalreadypending
+    case readAlreadyPending = 10
+}
+
+private let appProxyFlowErrorDomains: Set<String> = [
+    "NEAppProxyFlowErrorDomain",
+    "NEAppProxyErrorDomain",
+]
+
+private let expectedDisconnectPosixCodes: Set<Int32> = [
+    ECONNABORTED,
+    ECONNRESET,
+    ENOTCONN,
+    EPIPE,
+]
+
+/// Classify callback errors from `NEAppProxyFlow` read/write operations into expected
+/// disconnects versus actionable failures.
+///
+/// Primary references:
+/// - Normative error-code source:
+///   `/Applications/Xcode.app/.../NetworkExtension.framework/Headers/NEAppProxyFlow.h`
+/// - Apple enum docs:
+///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code
+///
+/// Notes for maintainers:
+/// - The numeric `NEAppProxyFlowError` mapping used here comes from the SDK header shipped with
+///   Xcode, which is the normative source for the per-code symbols.
+/// - The Apple enum pages linked from each case are the intended human-readable references for
+///   those symbols.
+/// - We intentionally log disconnect-like outcomes at `trace` with “ended” wording so they are
+///   distinguishable from provider faults during audits.
+private func classifyFlowCallbackError(
+    _ error: Error,
+    operation: String,
+    isClosing: Bool = false
+) -> FlowLogMessage {
+    let nsError = error as NSError
+    let detail =
+        "domain=\(nsError.domain) code=\(nsError.code) description=\(nsError.localizedDescription)"
+
+    if appProxyFlowErrorDomains.contains(nsError.domain),
+        let code = AppProxyFlowErrorCode(rawValue: nsError.code)
+    {
+        switch code {
+        case .notConnected:
+            let reason =
+                isClosing ? "normal flow shutdown already in progress" : "flow already disconnected"
+            return FlowLogMessage(
+                level: .trace,
+                text: "\(operation) ended during \(reason): \(detail)"
+            )
+        case .peerReset:
+            return FlowLogMessage(
+                level: .trace,
+                text: "\(operation) ended after peer reset the flow: \(detail)"
+            )
+        case .aborted:
+            let level: FlowLogLevel = isClosing ? .trace : .debug
+            let reason =
+                isClosing ? "flow shutdown already in progress" : "flow was aborted by the system"
+            return FlowLogMessage(
+                level: level,
+                text: "\(operation) ended because \(reason): \(detail)"
+            )
+        case .hostUnreachable, .refused, .timedOut:
+            return FlowLogMessage(
+                level: .debug,
+                text: "\(operation) failed because the network path was unavailable: \(detail)"
+            )
+        case .invalidArgument, .internal, .datagramTooLarge, .readAlreadyPending:
+            return FlowLogMessage(
+                level: .error,
+                text: "\(operation) failed with an unexpected provider/runtime error: \(detail)"
+            )
+        }
+    }
+
+    if nsError.domain == NSPOSIXErrorDomain,
+        expectedDisconnectPosixCodes.contains(Int32(nsError.code))
+    {
+        let reason = isClosing ? "normal flow shutdown already in progress" : "peer disconnected"
+        return FlowLogMessage(
+            level: .trace,
+            text: "\(operation) ended during \(reason): \(detail)"
+        )
+    }
+
+    return FlowLogMessage(
+        level: .debug,
+        text: "\(operation) failed with an unclassified callback error: \(detail)"
+    )
+}
+
 private final class TcpClientWritePump {
     private let flow: NEAppProxyTCPFlow
-    private let logger: (String) -> Void
+    private let logger: (FlowLogMessage) -> Void
     private let queue = DispatchQueue(label: "rama.tproxy.tcp.write", qos: .utility)
     private var pending: [Data] = []
     private var writing = false
     private var closed = false
 
-    init(flow: NEAppProxyTCPFlow, logger: @escaping (String) -> Void) {
+    init(flow: NEAppProxyTCPFlow, logger: @escaping (FlowLogMessage) -> Void) {
         self.flow = flow
         self.logger = logger
     }
@@ -42,9 +253,14 @@ private final class TcpClientWritePump {
         flow.write(chunk) { error in
             self.queue.async {
                 self.writing = false
-                // TODO: see if there are some errors we can filter out (e.g. disconnect...)
                 if let error {
-                    self.logger("flow.write error: \(error)")
+                    self.logger(
+                        classifyFlowCallbackError(
+                            error,
+                            operation: "tcp flow.write",
+                            isClosing: self.closed
+                        )
+                    )
                     self.closed = true
                     self.pending.removeAll(keepingCapacity: false)
                     self.flow.closeReadWithError(error)
@@ -60,14 +276,14 @@ private final class TcpClientWritePump {
 
 private final class UdpClientWritePump {
     private let flow: NEAppProxyUDPFlow
-    private let logger: (String) -> Void
+    private let logger: (FlowLogMessage) -> Void
     private let queue = DispatchQueue(label: "rama.tproxy.udp.write", qos: .utility)
     private var pending: [Data] = []
     private var writing = false
     private var closed = false
     private var sentByEndpoint: NWEndpoint?
 
-    init(flow: NEAppProxyUDPFlow, logger: @escaping (String) -> Void) {
+    init(flow: NEAppProxyUDPFlow, logger: @escaping (FlowLogMessage) -> Void) {
         self.flow = flow
         self.logger = logger
     }
@@ -112,7 +328,13 @@ private final class UdpClientWritePump {
             self.queue.async {
                 self.writing = false
                 if let error {
-                    self.logger("udp writeDatagrams error: \(error)")
+                    self.logger(
+                        classifyFlowCallbackError(
+                            error,
+                            operation: "udp flow.write",
+                            isClosing: self.closed
+                        )
+                    )
                     self.closed = true
                     self.pending.removeAll(keepingCapacity: false)
                     self.flow.closeReadWithError(error)
@@ -228,8 +450,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
     private func handleTcpFlow(_ flow: NEAppProxyTCPFlow, meta: RamaTransparentProxyFlowMetaBridge)
     {
-        let writer = TcpClientWritePump(flow: flow) { [weak self] msg in
-            self?.logDebug(msg)
+        let writer = TcpClientWritePump(flow: flow) { [weak self] message in
+            self?.logFlowMessage(message)
         }
         let flowId = ObjectIdentifier(flow)
 
@@ -276,8 +498,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     }
 
     private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) {
-        let writer = UdpClientWritePump(flow: flow) { [weak self] msg in
-            self?.logDebug(msg)
+        let writer = UdpClientWritePump(flow: flow) { [weak self] message in
+            self?.logFlowMessage(message)
         }
         let flowId = ObjectIdentifier(flow)
 
@@ -296,8 +518,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     private func tcpReadLoop(flow: NEAppProxyTCPFlow, session: RamaTcpSessionHandle) {
         flow.readData { data, error in
             if let error {
-                // TODO: see if there are some errors we can filter out (e.g. disconnect...)
-                self.logDebug("flow.readData error: \(error)")
+                self.logFlowMessage(
+                    classifyFlowCallbackError(error, operation: "tcp flow.read")
+                )
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 session.onClientEof()
@@ -326,7 +549,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     ) {
         flow.readDatagrams { datagrams, endpoints, error in
             if let error {
-                self.logDebug("flow.readDatagrams error: \(error)")
+                self.logFlowMessage(
+                    classifyFlowCallbackError(error, operation: "udp flow.read")
+                )
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 session?.onClientClose()
@@ -626,6 +851,17 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             level: UInt32(RAMA_LOG_LEVEL_ERROR.rawValue),
             message: message
         )
+    }
+
+    private func logFlowMessage(_ message: FlowLogMessage) {
+        switch message.level {
+        case .trace:
+            logTrace(message.text)
+        case .debug:
+            logDebug(message.text)
+        case .error:
+            logError(message.text)
+        }
     }
 }
 
