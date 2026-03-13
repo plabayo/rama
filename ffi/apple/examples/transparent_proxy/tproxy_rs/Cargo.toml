@@ -13,6 +13,8 @@ crate-type = ["staticlib"]
 rama = { path = "../../../../../", features = ["net-apple-networkextension", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
 tokio = { version = "1.48", features = ["net"] }
 tracing-oslog = "0.3"
+apple-native-keyring-store = { version = "0.2", features = ["protected"] }
+keyring-core = "0.7"
 
 [lints.rust]
 unused_imports = "warn"

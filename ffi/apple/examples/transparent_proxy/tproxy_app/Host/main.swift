@@ -19,6 +19,8 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var activeManager: NETransparentProxyManager?
     private var statusObserver: NSObjectProtocol?
     private var statusTimer: DispatchSourceTimer?
+    private var lastStatus: NEVPNStatus?
+    private var lastLoggedDisconnectSignature: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -370,7 +372,71 @@ final class HostController: NSObject, NSApplicationDelegate {
             button.toolTip = title
         }
 
-        log("status=\(statusText)")
+        let previousStatusText = lastStatus.map(statusString)
+        if previousStatusText != statusText {
+            if let previousStatusText {
+                log("status transition \(previousStatusText) -> \(statusText)")
+            } else {
+                log("status=\(statusText)")
+            }
+        } else {
+            log("status=\(statusText)")
+        }
+        logDisconnectReasonIfNeeded(for: status)
+        lastStatus = status
+    }
+
+    private func logDisconnectReasonIfNeeded(for status: NEVPNStatus) {
+        guard isDisconnected(status) else {
+            if !isDisconnecting(status) {
+                lastLoggedDisconnectSignature = nil
+            }
+            return
+        }
+
+        guard let error = lastDisconnectError() else {
+            if lastLoggedDisconnectSignature != "none" {
+                log("status=disconnected reason=<none reported by NetworkExtension>")
+                lastLoggedDisconnectSignature = "none"
+            }
+            return
+        }
+
+        let ns = error as NSError
+        let signature = "\(ns.domain)#\(ns.code)#\(ns.localizedDescription)"
+        guard lastLoggedDisconnectSignature != signature else {
+            return
+        }
+
+        lastLoggedDisconnectSignature = signature
+        logDisconnectReason(error)
+    }
+
+    private func lastDisconnectError() -> Error? {
+        guard let connection = activeManager?.connection as? NSObject else {
+            return nil
+        }
+
+        let selector = NSSelectorFromString("lastDisconnectError")
+        guard connection.responds(to: selector) else {
+            return nil
+        }
+
+        return connection.value(forKey: "lastDisconnectError") as? Error
+    }
+
+    private func isDisconnected(_ status: NEVPNStatus) -> Bool {
+        if case .disconnected = status {
+            return true
+        }
+        return false
+    }
+
+    private func isDisconnecting(_ status: NEVPNStatus) -> Bool {
+        if case .disconnecting = status {
+            return true
+        }
+        return false
     }
 
     private func statusString(_ status: NEVPNStatus) -> String {
@@ -389,11 +455,77 @@ final class HostController: NSObject, NSApplicationDelegate {
         hostLogger.info("\(message, privacy: .public)")
     }
 
+    private func logDisconnectReason(_ error: Error) {
+        let ns = error as NSError
+        let classification = classifyDisconnectReason(ns)
+        hostLogger.error(
+            "status=disconnected reason: classification=\(classification, privacy: .public) domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) description=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
+        )
+    }
+
     private func logError(_ prefix: String, _ error: Error) {
         let ns = error as NSError
         hostLogger.error(
-            "\(prefix, privacy: .public): domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
+            "\(prefix, privacy: .public): domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) description=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
         )
+    }
+
+    private func classifyDisconnectReason(_ error: NSError) -> String {
+        switch error.domain {
+        case "NEVPNConnectionErrorDomainPlugin":
+            return
+                "extension/plugin startup failure; provider likely failed before it could report its own NSError"
+        case "NEVPNConnectionErrorDomain":
+            return classifySystemDisconnectReason(code: error.code)
+        default:
+            return
+                "provider-reported disconnect or nonstandard NetworkExtension error; inspect domain/code directly"
+        }
+    }
+
+    private func classifySystemDisconnectReason(code: Int) -> String {
+        switch code {
+        case 1:
+            return "system sleep interrupted the VPN session"
+        case 2:
+            return "no network was available to establish the VPN session"
+        case 3:
+            return "network conditions changed and the VPN session could not be maintained"
+        case 4:
+            return "VPN configuration was invalid"
+        case 5:
+            return "VPN server address resolution failed"
+        case 6:
+            return "VPN server did not respond"
+        case 7:
+            return "VPN server is no longer functioning"
+        case 8:
+            return "VPN authentication failed"
+        case 9:
+            return "client certificate is invalid"
+        case 10:
+            return "client certificate is not yet valid"
+        case 11:
+            return "client certificate expired"
+        case 12:
+            return "VPN plugin died unexpectedly"
+        case 13:
+            return "VPN configuration could not be found"
+        case 14:
+            return "VPN plugin is disabled or unavailable"
+        case 15:
+            return "VPN protocol negotiation failed"
+        case 16:
+            return "VPN server disconnected the session"
+        case 17:
+            return "VPN server certificate is invalid"
+        case 18:
+            return "VPN server certificate is not yet valid"
+        case 19:
+            return "VPN server certificate expired"
+        default:
+            return "unknown system VPN disconnect reason"
+        }
     }
 }
 

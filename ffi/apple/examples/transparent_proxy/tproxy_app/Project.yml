@@ -28,7 +28,7 @@ targets:
           fi
           APP="$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME/Contents/PlugIns/RamaTransparentProxyExampleExtension.appex"
           if [ -d "$APP" ]; then
-            /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --entitlements "$PROJECT_DIR/Extension/Extension.entitlements" --timestamp=none "$APP"
+            /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --preserve-metadata=entitlements --timestamp=none "$APP"
           fi
     settings:
       base:

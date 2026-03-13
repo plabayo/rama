@@ -41,8 +41,7 @@ pub unsafe extern "C" fn rama_transparent_proxy_initialize(
         let config = unsafe { &*config };
         // SAFETY: pointer + length validity is guaranteed by FFI contract.
         if let Some(storage_dir) = unsafe { config.storage_dir() } {
-            self::tls::certs::set_mitm_base_dir(storage_dir.clone());
-            tracing::info!(path = %storage_dir.display(), "configured MITM storage directory");
+            tracing::debug!(path = %storage_dir.display(), "received storage directory");
         }
         // SAFETY: pointer + length validity is guaranteed by FFI contract.
         if let Some(app_group_dir) = unsafe { config.app_group_dir() } {

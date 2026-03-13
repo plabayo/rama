@@ -1,7 +1,11 @@
-use std::{fs, path::PathBuf, sync::OnceLock};
+use std::sync::Arc;
+use std::sync::OnceLock;
+
+use apple_native_keyring_store::protected::Store as AppleProtectedStore;
+use keyring_core::{Entry, Error as KeyringError, api::CredentialStoreApi};
 
 use rama::{
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, ErrorContext as _, ErrorExt as _},
     net::{address::Domain, tls::server::SelfSignedData},
     telemetry::tracing,
     tls::boring::{
@@ -14,32 +18,20 @@ use rama::{
 };
 
 pub fn load_or_create_mitm_ca_crt_key_pair() -> Result<(X509, PKey<Private>), BoxError> {
-    let root_dir = root_ca_base_dir()?;
+    if let (Some(cert_pem), Some(key_pem)) = (
+        load_protected_secret(ROOT_CA_CERT_SERVICE)?,
+        load_protected_secret(ROOT_CA_KEY_SERVICE)?,
+    ) {
+        tracing::info!("MITM CA present in Apple protected storage; loading existing keypair");
 
-    let cert_path = root_dir.join("root.ca.pem");
-    let key_path = root_dir.join("root.ca.key.pem");
-
-    if cert_path.is_file() && key_path.is_file() {
-        tracing::info!(
-            "crt/key files exist: try to load existing CA crt/key from disk and fail otherwise!"
-        );
-
-        let cert_pem = fs::read(&cert_path).context("read root ca cert file as PEM bytes")?;
-        let key_pem = fs::read(&key_path).context("read root ca key file as PEM bytes")?;
-        let cert = X509::from_pem(&cert_pem).context("parse root ca cert PEM bytes into X509")?;
+        let cert = X509::from_pem(&cert_pem)
+            .context("parse protected-store root ca cert PEM bytes into X509")?;
         let key = PKey::private_key_from_pem(&key_pem)
-            .context("parse root ca private key PEM bytes into PKey<Private>")?;
+            .context("parse protected-store root ca private key PEM bytes into PKey<Private>")?;
         return Ok((cert, key));
     }
 
-    tracing::info!(
-        "no CA crt/key pair found... create new ones and store under {}",
-        root_dir.display()
-    );
-
-    if let Some(parent) = cert_path.parent() {
-        fs::create_dir_all(parent).context("create root ca directory")?;
-    }
+    tracing::info!("no MITM CA in Apple protected storage; generating new root CA keypair");
 
     let (root_cert, root_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
         organisation_name: Some("Rama Transparent Proxy Example".to_owned()),
@@ -53,32 +45,52 @@ pub fn load_or_create_mitm_ca_crt_key_pair() -> Result<(X509, PKey<Private>), Bo
         .private_key_to_pem_pkcs8()
         .context("encode root ca key to pkcs8 pem")?;
 
-    let cert_pem_str =
-        String::from_utf8(cert_pem_bytes).context("root ca cert pem not valid utf-8")?;
-    let key_pem_str =
-        String::from_utf8(key_pem_bytes).context("root ca key pem not valid utf-8")?;
+    store_protected_secret(ROOT_CA_CERT_SERVICE, &cert_pem_bytes)?;
+    store_protected_secret(ROOT_CA_KEY_SERVICE, &key_pem_bytes)?;
 
-    fs::write(&cert_path, cert_pem_str.as_bytes()).context("write root ca cert pem to disk")?;
-    fs::write(&key_path, key_pem_str.as_bytes()).context("write root ca key pem to disk")?;
-
-    tracing::info!(
-        cert_path = %cert_path.display(),
-        key_path = %key_path.display(),
-        "generated and persisted MITM root CA"
-    );
+    tracing::info!("generated and persisted MITM root CA in Apple protected storage");
 
     Ok((root_cert, root_key))
 }
 
-fn root_ca_base_dir() -> Result<PathBuf, BoxError> {
-    MITM_BASE_DIR
-        .get()
-        .cloned()
-        .context("missing MITM_BASE_DIR; proxy not properly initialised?")
+const ROOT_CA_ACCOUNT: &str = env!("CARGO_PKG_NAME");
+const ROOT_CA_CERT_SERVICE: &str = "mitm-root-ca-cert-pem";
+const ROOT_CA_KEY_SERVICE: &str = "mitm-root-ca-key-pem";
+
+static PROTECTED_STORE: OnceLock<Arc<AppleProtectedStore>> = OnceLock::new();
+
+fn protected_store() -> Result<Arc<AppleProtectedStore>, BoxError> {
+    if let Some(store) = PROTECTED_STORE.get() {
+        return Ok(store.clone());
+    }
+
+    let store = AppleProtectedStore::new().context("create Apple Protected Data store")?;
+    let _ = PROTECTED_STORE.set(store.clone());
+    Ok(PROTECTED_STORE.get().cloned().unwrap_or(store))
 }
 
-static MITM_BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
+fn new_protected_entry(service: &str) -> Result<Entry, BoxError> {
+    protected_store()?
+        .build(service, ROOT_CA_ACCOUNT, None)
+        .context("create MITM CA protected-store entry")
+        .context_str_field("service", service)
+}
 
-pub fn set_mitm_base_dir(path: PathBuf) {
-    let _ = MITM_BASE_DIR.set(path);
+fn load_protected_secret(service: &str) -> Result<Option<Vec<u8>>, BoxError> {
+    let entry = new_protected_entry(service)?;
+
+    match entry.get_secret() {
+        Ok(raw) => Ok(Some(raw)),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(err) => Err(err
+            .context("load protected-store secret")
+            .context_str_field("service", service)),
+    }
+}
+
+fn store_protected_secret(service: &str, secret: &[u8]) -> Result<(), BoxError> {
+    new_protected_entry(service)?
+        .set_secret(secret)
+        .context("store protected-store secret")
+        .context_str_field("service", service)
 }

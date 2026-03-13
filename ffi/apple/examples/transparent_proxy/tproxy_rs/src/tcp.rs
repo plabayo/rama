@@ -60,7 +60,10 @@ const TCP_KEEPALIVE_RETRIES: u32 = 5;
 //                could not be completed because the flow is not connected"
 //                UserInfo={NSLocalizedDescription=The operation could not be
 //                completed because the flow is not connected}
-// - [ ] switch to protected app storage (macos)
+// - [x] switch to protected app storage (macos)
+// - [ ] add env support to print options + config of global (DNS) config when created and write to file..
+// - [ ] add to this demo a fail-open policy so we add exception for connections that fail to MITM,
+//       and on future connections do not MITM IT (based on dst IP or SNI)
 // - [x] test + verify http connect
 // - [x] test + verify WS
 

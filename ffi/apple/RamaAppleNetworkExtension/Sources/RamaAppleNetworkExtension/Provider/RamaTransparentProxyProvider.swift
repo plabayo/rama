@@ -360,14 +360,42 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let storageDir = Self.defaultRustStorageDirectory()?.path
         guard RamaTransparentProxyEngineHandle.initialize(storageDir: storageDir, appGroupDir: nil)
         else {
-            completionHandler(NSError(domain: "RamaTransparentProxy", code: 1))
+            let error = NSError(
+                domain: "RamaTransparentProxy.Startup",
+                code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "rust initialization failed before provider startup completed",
+                    NSLocalizedFailureReasonErrorKey:
+                        "rama_transparent_proxy_initialize returned false",
+                    NSLocalizedRecoverySuggestionErrorKey:
+                        "Inspect extension bootstrap logs for entitlement, protected-storage, or Rust startup failures.",
+                    "storageDir": storageDir ?? NSNull(),
+                    "startupStage": "initialize",
+                ]
+            )
+            completionHandler(error)
             return
         }
         logInfo("extension startProxy")
 
         guard let startup = RamaTransparentProxyEngineHandle.config() else {
             logError("failed to get transparent proxy config from rust")
-            completionHandler(NSError(domain: "RamaTransparentProxy", code: 2))
+            let error = NSError(
+                domain: "RamaTransparentProxy.Startup",
+                code: 2,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "rust startup configuration could not be loaded",
+                    NSLocalizedFailureReasonErrorKey:
+                        "rama_transparent_proxy_get_config returned nil",
+                    NSLocalizedRecoverySuggestionErrorKey:
+                        "Inspect extension bootstrap logs for Rust-side configuration or secret-loading failures.",
+                    "storageDir": storageDir ?? NSNull(),
+                    "startupStage": "config",
+                ]
+            )
+            completionHandler(error)
             return
         }
 
