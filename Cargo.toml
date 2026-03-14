@@ -109,7 +109,7 @@ futures = "0.3"
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
-hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config"] }
+hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config", "serde"] }
 honggfuzz = "0.5"
 http = "1"
 http-body = "1"

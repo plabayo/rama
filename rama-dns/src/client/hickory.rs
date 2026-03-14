@@ -3,11 +3,12 @@
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
+    time::Duration,
 };
 
 pub use hickory_resolver as resolver;
 use hickory_resolver::{
-    Name, TokioResolver,
+    Name, ResolverBuilder, TokioResolver,
     config::ResolverConfig,
     name_server::TokioConnectionProvider,
     proto::rr::rdata::{A, AAAA},
@@ -21,6 +22,7 @@ use rama_core::{
 use rama_core::{futures::async_stream::stream_fn, telemetry::tracing};
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
+use serde::Serialize;
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
 
@@ -43,6 +45,17 @@ impl Default for HickoryDnsResolver {
     fn default() -> Self {
         Self::new_cloudflare()
     }
+}
+
+fn default_resolver_opts() -> self::resolver::config::ResolverOpts {
+    let mut opts = self::resolver::config::ResolverOpts::default();
+    opts.cache_size = 32_000;
+    opts.timeout = Duration::from_secs(3);
+    opts.num_concurrent_reqs = std::thread::available_parallelism()
+        .map(|n| (n.get() / 2).clamp(2, 8))
+        .unwrap_or(2);
+    opts.try_tcp_on_error = true;
+    opts
 }
 
 impl HickoryDnsResolver {
@@ -114,16 +127,42 @@ impl HickoryDnsResolver {
     /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
     pub fn try_new_system() -> Result<Self, BoxError> {
         tracing::trace!("try to create HickoryDnsResolver resolver using system config");
-        Ok(TokioResolver::builder_tokio()
-            .context("build async dns resolver with system conf")
-            .inspect_err(|err| {
-                tracing::debug!(
-                    "failed to create HickoryDnsResolver resolver using system config: {err:?}"
-                )
-            })?
-            .build()
-            .into())
+        Ok(Self::new_with_builder(
+            TokioResolver::builder_tokio()
+                .context("build async dns resolver with system conf")
+                .inspect_err(|err| {
+                    tracing::debug!(
+                        "failed to create HickoryDnsResolver resolver using system config: {err:?}"
+                    )
+                })?
+                .with_options(default_resolver_opts()),
+        ))
     }
+
+    #[inline(always)]
+    fn new_with_builder(builder: ResolverBuilder<TokioConnectionProvider>) -> Self {
+        let resolver = builder.build();
+        // NOTE: in future this central loc can be used
+        // to do any optimizations or sanitizations if ever required
+        resolver.into()
+    }
+
+    /// Return a reference to the configuration used for the upstream name servers and resolver.
+    pub fn config(&self) -> HickoryDnsResolverConfigRef<'_> {
+        HickoryDnsResolverConfigRef {
+            config: self.0.config(),
+            options: self.0.options(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+/// Reference to the configuration used for the upstream name servers and resolver.
+pub struct HickoryDnsResolverConfigRef<'a> {
+    /// Configuration for the upstream nameservers to use for resolution
+    pub config: &'a self::resolver::config::ResolverConfig,
+    /// Configuration for the Resolver
+    pub options: &'a self::resolver::config::ResolverOpts,
 }
 
 impl From<TokioResolver> for HickoryDnsResolver {
@@ -132,11 +171,21 @@ impl From<TokioResolver> for HickoryDnsResolver {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 /// Used to [`build`][`Self::build`] a [`HickoryDnsResolver`] instance.
 pub struct HickoryDnsBuilder {
     config: Option<self::resolver::config::ResolverConfig>,
     options: Option<self::resolver::config::ResolverOpts>,
+}
+
+impl Default for HickoryDnsBuilder {
+    #[inline(always)]
+    fn default() -> Self {
+        Self {
+            config: None,
+            options: Some(default_resolver_opts()),
+        }
+    }
 }
 
 impl HickoryDnsBuilder {
@@ -170,7 +219,7 @@ impl HickoryDnsBuilder {
         if let Some(options) = self.options {
             *resolver_builder.options_mut() = options;
         }
-        HickoryDnsResolver(Arc::new(resolver_builder.build()))
+        HickoryDnsResolver::new_with_builder(resolver_builder)
     }
 }
 
