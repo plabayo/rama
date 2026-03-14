@@ -1,13 +1,17 @@
 use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
-use std::{collections::BTreeSet, convert::Infallible, path::Path, sync::Arc};
+use std::{convert::Infallible, path::Path, sync::Arc};
 
 use crate::{
     Request, Response,
-    matcher::{HttpMatcher, PathMatcher, UriParams},
+    headers::Allow,
+    matcher::{HttpMatcher, MethodMatcher, PathMatcher, UriParams},
     service::{
         fs::{DirectoryServeMode, ServeDir},
-        web::{IntoEndpointService, IntoEndpointServiceWithState, response::IntoResponse},
+        web::{
+            IntoEndpointService, IntoEndpointServiceWithState,
+            response::{Headers, IntoResponse},
+        },
     },
 };
 
@@ -18,10 +22,10 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_types::{
-    Body, HeaderValue, OriginalRouterUri, StatusCode, header, mime::Mime,
-    uri::try_to_strip_path_prefix_from_uri,
+    Body, Method, OriginalRouterUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
 };
 use rama_utils::{
+    collections::{NonEmptySmallVec, smallvec::SmallVec},
     include_dir,
     str::smol_str::{StrExt as _, format_smolstr},
 };
@@ -588,7 +592,7 @@ where
         // Collect allowed methods when a path matches but no method matches.
         // Initialised here so it is visible after the if-let block and after
         // sub_services, letting sub_services take priority over a 405.
-        let mut allowed_methods: BTreeSet<&'static str> = BTreeSet::new();
+        let mut allowed_methods: Option<MethodMatcher> = None;
 
         if let Ok(matched) = self.routes.at(path.as_str()) {
             let uri_params = matched.params.iter();
@@ -615,8 +619,8 @@ where
             // Path matched but no method matched — collect for a potential 405.
             // Do not return yet: a sub_service may still handle this request.
             for (matcher, _) in matched.value.iter() {
-                if let Some(mm) = matcher.allowed_methods() {
-                    allowed_methods.extend(mm.iter_str());
+                if let Some(m) = matcher.allowed_methods() {
+                    allowed_methods = Some(allowed_methods.map_or(m, |acc| acc.or(m)));
                 }
             }
         }
@@ -716,14 +720,15 @@ where
 
         // A route matched the path but no registered method matched, and no sub_service
         // handled the request — return 405 with the Allow header per RFC 7231.
-        if !allowed_methods.is_empty() {
-            let allow_val = allowed_methods.into_iter().collect::<Vec<_>>().join(", ");
-            let mut res = StatusCode::METHOD_NOT_ALLOWED.into_response();
-            res.headers_mut().insert(
-                header::ALLOW,
-                HeaderValue::from_str(&allow_val).unwrap_or_else(|_| HeaderValue::from_static("")),
-            );
-            return Ok(res);
+        if let Some(matcher) = allowed_methods {
+            let methods: SmallVec<[Method; 7]> = matcher.iter().collect();
+            if let Ok(non_empty) = NonEmptySmallVec::try_from(methods) {
+                return Ok((
+                    Headers::single(Allow(non_empty)),
+                    StatusCode::METHOD_NOT_ALLOWED,
+                )
+                    .into_response());
+            }
         }
 
         if let Some(not_found) = &self.not_found {

@@ -875,16 +875,25 @@ impl<Body> HttpMatcher<Body> {
         }
     }
 
-    /// Returns the set of HTTP methods this matcher explicitly allows, if determinable.
+    /// Returns the set of HTTP methods this matcher explicitly allows, as a [`MethodMatcher`].
     ///
-    /// Returns `None` when the matcher is negated, has no method constraint (meaning it would
-    /// accept any method), or contains a custom matcher whose allowed methods cannot be
-    /// inspected. A `None` result means the caller cannot enumerate a finite Allow list.
+    /// Returns `None` when the allowed method set cannot be enumerated — e.g. a
+    /// negated `All`/`Any` matcher, or a non-method constraint (Path, Domain, Custom, …)
+    /// that imposes no method restriction.
+    ///
+    /// Negated `Method` matchers are handled correctly: a negated `GET` matcher means
+    /// "every known method except GET", returned via the bitwise complement.
     pub(crate) fn allowed_methods(&self) -> Option<MethodMatcher> {
-        if self.negate {
-            return None;
+        match (&self.kind, self.negate) {
+            // Non-negated method: the matcher's own bits.
+            (HttpMatcherKind::Method(m), false) => Some(*m),
+            // Negated method: every known method except those in m.
+            (HttpMatcherKind::Method(m), true) => Some(m.complement()),
+            // Non-negated: delegate to kind.
+            (_, false) => self.kind.allowed_methods(),
+            // Negated All/Any: too complex to enumerate — treat as unconstrained.
+            (_, true) => None,
         }
-        self.kind.allowed_methods()
     }
 }
 
@@ -892,9 +901,22 @@ impl<Body> HttpMatcherKind<Body> {
     fn allowed_methods(&self) -> Option<MethodMatcher> {
         match self {
             Self::Method(m) => Some(*m),
-            // All other variants (All, Any, Path, Domain, Version, Uri, Header, Socket,
-            // SubdomainTrie, Custom) either have no method constraint or cannot be
-            // enumerated — callers treat None as "no finite Allow list available".
+            Self::All(matchers) => {
+                // Intersect: AND together every child that has a method constraint.
+                // Non-method children (None) are skipped — they don't restrict methods.
+                matchers
+                    .iter()
+                    .filter_map(|m| m.allowed_methods())
+                    .reduce(|acc, next| acc.and(next))
+            }
+            Self::Any(matchers) => {
+                // Union: OR together all children.
+                // If any child is unconstrained (None), the union is unbounded → None.
+                matchers.iter().try_fold(MethodMatcher::NONE, |acc, m| {
+                    Some(acc.or(m.allowed_methods()?))
+                })
+            }
+            // All other variants impose no method constraint.
             _ => None,
         }
     }
