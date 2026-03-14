@@ -2894,6 +2894,7 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "hickory-resolver",
  "itertools 0.14.0",
  "mimalloc",
  "rama",

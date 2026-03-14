@@ -47,7 +47,10 @@ impl Default for HickoryDnsResolver {
     }
 }
 
-fn default_resolver_opts() -> self::resolver::config::ResolverOpts {
+/// Rama defined overwrites of HickoryDNS [`ResolverOpts`].
+///
+/// [`ResolverOpts`]: self::resolver::config::ResolverOpts
+pub fn default_resolver_opts() -> self::resolver::config::ResolverOpts {
     let mut opts = self::resolver::config::ResolverOpts::default();
     opts.cache_size = 32_000;
     opts.timeout = Duration::from_secs(3);

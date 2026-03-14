@@ -22,6 +22,7 @@ bb8-postgres = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }
+hickory-resolver = { workspace = true }
 itertools = { workspace = true }
 mimalloc = { workspace = true, optional = true }
 rama = { version = "0.3.0-rc1", path = "..", features = ["boring", "cli", "tcp", "udp", "http-full", "proxy-full", "opentelemetry"] }
