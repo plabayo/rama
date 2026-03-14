@@ -877,22 +877,17 @@ impl<Body> HttpMatcher<Body> {
 
     /// Returns the set of HTTP methods this matcher explicitly allows, as a [`MethodMatcher`].
     ///
-    /// Returns `None` when the allowed method set cannot be enumerated — e.g. a
-    /// negated `All`/`Any` matcher, or a non-method constraint (Path, Domain, Custom, …)
-    /// that imposes no method restriction.
+    /// Returns `None` when the matcher imposes no method restriction
+    /// (e.g. a Path, Domain, or Custom matcher).
     ///
-    /// Negated `Method` matchers are handled correctly: a negated `GET` matcher means
-    /// "every known method except GET", returned via the bitwise complement.
-    pub(crate) fn allowed_methods(&self) -> Option<MethodMatcher> {
-        match (&self.kind, self.negate) {
-            // Non-negated method: the matcher's own bits.
-            (HttpMatcherKind::Method(m), false) => Some(*m),
-            // Negated method: every known method except those in m.
-            (HttpMatcherKind::Method(m), true) => Some(m.complement()),
-            // Non-negated: delegate to kind.
-            (_, false) => self.kind.allowed_methods(),
-            // Negated All/Any: too complex to enumerate — treat as unconstrained.
-            (_, true) => None,
+    /// Negation is applied uniformly: if `self` is negated the raw method set is
+    /// complemented, so `NOT GET` yields every known method except GET.
+    pub fn allowed_methods(&self) -> Option<MethodMatcher> {
+        let m = self.kind.allowed_methods();
+        if self.negate {
+            m.map(|m| m.complement())
+        } else {
+            m
         }
     }
 }
