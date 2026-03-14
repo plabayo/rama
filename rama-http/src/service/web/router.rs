@@ -22,10 +22,10 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_types::{
-    Body, Method, OriginalRouterUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
+    Body, OriginalRouterUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
 };
 use rama_utils::{
-    collections::{NonEmptySmallVec, smallvec::SmallVec},
+    collections::NonEmptySmallVec,
     include_dir,
     str::smol_str::{StrExt as _, format_smolstr},
 };
@@ -720,15 +720,14 @@ where
 
         // A route matched the path but no registered method matched, and no sub_service
         // handled the request — return 405 with the Allow header per RFC 7231.
-        if let Some(matcher) = allowed_methods {
-            let methods: SmallVec<[Method; 7]> = matcher.iter().collect();
-            if let Ok(non_empty) = NonEmptySmallVec::try_from(methods) {
-                return Ok((
-                    Headers::single(Allow(non_empty)),
-                    StatusCode::METHOD_NOT_ALLOWED,
-                )
-                    .into_response());
-            }
+        if let Some(matcher) = allowed_methods
+            && let Some(methods) = NonEmptySmallVec::collect(matcher.iter())
+        {
+            return Ok((
+                Headers::single(Allow(methods)),
+                StatusCode::METHOD_NOT_ALLOWED,
+            )
+                .into_response());
         }
 
         if let Some(not_found) = &self.not_found {
