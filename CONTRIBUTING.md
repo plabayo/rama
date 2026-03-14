@@ -48,7 +48,7 @@ just qa
 
 Before you can do this you do require the following to be installed:
 
-* `Rust`, version 1.91 or beyond: <https://www.rust-lang.org/tools/install>
+* `Rust`, version 1.93 or beyond: <https://www.rust-lang.org/tools/install>
 * `just` (to run _just_ (config) files): <https://just.systems/man/en/packages.html>
 
 What you will also need to have installed is:

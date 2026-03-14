@@ -5,7 +5,7 @@ use rama::{
     combinators::Either,
     error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
-    net::{socket::Interface, tls::ApplicationProtocol},
+    net::{address::SocketAddress, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
@@ -19,9 +19,9 @@ use crate::utils::tls::try_new_server_config;
 #[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)
 pub struct CliCommandIp {
-    /// the interface to bind to
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: Interface,
+    /// the address to bind to
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(8080))]
+    bind: SocketAddress,
 
     #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -96,7 +96,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
 
     tracing::info!("starting ip service: bind interface = {}", cfg.bind);
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind ip service")?;
 

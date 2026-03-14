@@ -101,7 +101,7 @@ async fn main() {
 
     let exec = Executor::graceful(graceful.guard());
     let tcp_server = TcpListener::build(exec)
-        .bind(address)
+        .bind_address(address)
         .await
         .expect("bind tcp server");
 

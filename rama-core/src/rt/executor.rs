@@ -52,4 +52,10 @@ impl Executor {
     pub fn guard(&self) -> Option<&ShutdownGuard> {
         self.guard.as_ref()
     }
+
+    /// Consume itself as the internal shutdown guard, if any
+    #[must_use]
+    pub fn into_guard(self) -> Option<ShutdownGuard> {
+        self.guard
+    }
 }

@@ -23,16 +23,17 @@ default = []
 [dependencies]
 ahash = { workspace = true }
 hickory-resolver = { workspace = true }
+pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
 
 [dev-dependencies]
 serde_html_form = { workspace = true }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true

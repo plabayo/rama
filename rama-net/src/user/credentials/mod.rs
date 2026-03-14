@@ -12,4 +12,4 @@ pub use bearer::{Bearer, bearer};
 
 mod proxy;
 #[doc(inline)]
-pub use proxy::ProxyCredential;
+pub use proxy::{DpiProxyCredential, ProxyCredential};

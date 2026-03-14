@@ -53,13 +53,13 @@ async fn test_http_max_header_list_size_and_long_errors() {
     let graceful = Shutdown::new(async { drop(rx.await) });
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), exec)
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec)
         .await
         .unwrap();
     let addr = format!("http://{}", listener.local_addr().unwrap());
 
     let jh = graceful.spawn_task_fn(async move |guard| {
-        let mut http_server = HttpServer::h2(Executor::graceful(guard.clone()));
+        let mut http_server = HttpServer::new_h2(Executor::graceful(guard.clone()));
         http_server.h2_mut().set_max_pending_accept_reset_streams(0);
 
         let tcp_service = MapInputLayer::new(|stream: TcpStream| {

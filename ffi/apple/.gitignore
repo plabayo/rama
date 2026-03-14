@@ -1,0 +1,16 @@
+
+build/
+DerivedData/
+*.xcarchive
+*.xcresult
+*.ipa
+*.xcworkspace
+!*.xcworkspace/contents.xcworkspacedata
+*.xcuserdata/
+*.xcuserstate
+*.xcodeproj/xcuserdata/
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj
+target/

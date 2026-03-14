@@ -122,7 +122,7 @@ async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::h2(Executor::default()).service(grpc_svc)
+        HttpServer::new_h2(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -248,7 +248,7 @@ async fn server_replying_with_unsupported_encoding(encoding: CompressionEncoding
 
     let grpc_svc = MapOutputLayer::new(add_weird_content_encoding).into_layer(svc);
 
-    let server = HttpServer::h2(Executor::default()).service(grpc_svc);
+    let server = HttpServer::new_h2(Executor::default()).service(grpc_svc);
 
     let client = test_client::TestClient::new(
         mock_io_client(move || server.clone()),
@@ -335,7 +335,7 @@ async fn disabling_compression_on_response_but_keeping_compression_on_stream(
         })
         .into_layer(svc);
 
-        HttpServer::h2(Executor::default()).service(grpc_svc)
+        HttpServer::new_h2(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(

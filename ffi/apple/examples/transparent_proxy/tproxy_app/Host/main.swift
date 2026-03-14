@@ -1,0 +1,536 @@
+import AppKit
+import Foundation
+import NetworkExtension
+import OSLog
+
+final class HostController: NSObject, NSApplicationDelegate {
+    private let extensionBundleId = "org.ramaproxy.example.tproxy.provider"
+    private let managerDescription = "Rama Transparent Proxy Example"
+    private let managerServerAddress = "127.0.0.1"
+    private let logSubsystem = "org.ramaproxy.example.tproxy"
+    private let hostLogCategory = "host-app"
+    private lazy var hostLogger = Logger(subsystem: logSubsystem, category: hostLogCategory)
+
+    private var statusItem: NSStatusItem?
+    private var statusMenuItem: NSMenuItem?
+    private var startMenuItem: NSMenuItem?
+    private var stopMenuItem: NSMenuItem?
+
+    private var activeManager: NETransparentProxyManager?
+    private var statusObserver: NSObjectProtocol?
+    private var statusTimer: DispatchSourceTimer?
+    private var lastStatus: NEVPNStatus?
+    private var lastLoggedDisconnectSignature: String?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setupStatusItem()
+        log("host app launched")
+        startProxy()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let statusObserver {
+            NotificationCenter.default.removeObserver(statusObserver)
+        }
+        statusTimer?.cancel()
+        statusTimer = nil
+        log("host app terminated")
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let manager = activeManager else {
+            return .terminateNow
+        }
+
+        switch manager.connection.status {
+        case .connected, .connecting, .reasserting:
+            log("quit requested: stopping proxy first")
+            stopProxy { sender.reply(toApplicationShouldTerminate: true) }
+            return .terminateLater
+        default:
+            return .terminateNow
+        }
+    }
+
+    @objc private func startProxyAction(_: Any?) {
+        startProxy()
+    }
+
+    @objc private func stopProxyAction(_: Any?) {
+        stopProxy(completion: nil)
+    }
+
+    @objc private func refreshAction(_: Any?) {
+        refreshManagerAndStatus()
+    }
+
+    @objc private func quitAction(_: Any?) {
+        NSApplication.shared.terminate(nil)
+    }
+
+    private func setupStatusItem() {
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem.button {
+            button.title = "🦙 tproxy demo"
+        }
+
+        let menu = NSMenu()
+
+        let statusItemMenu = NSMenuItem(title: "Status: loading", action: nil, keyEquivalent: "")
+        statusItemMenu.isEnabled = false
+        menu.addItem(statusItemMenu)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let startItem = NSMenuItem(
+            title: "Start Proxy", action: #selector(startProxyAction(_:)), keyEquivalent: "s")
+        startItem.target = self
+        menu.addItem(startItem)
+
+        let stopItem = NSMenuItem(
+            title: "Stop Proxy", action: #selector(stopProxyAction(_:)), keyEquivalent: "x")
+        stopItem.target = self
+        menu.addItem(stopItem)
+
+        let refreshItem = NSMenuItem(
+            title: "Refresh Status", action: #selector(refreshAction(_:)), keyEquivalent: "r")
+        refreshItem.target = self
+        menu.addItem(refreshItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let quitItem = NSMenuItem(
+            title: "Quit", action: #selector(quitAction(_:)), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        statusItem.menu = menu
+
+        self.statusItem = statusItem
+        self.statusMenuItem = statusItemMenu
+        self.startMenuItem = startItem
+        self.stopMenuItem = stopItem
+    }
+
+    private func refreshManagerAndStatus() {
+        loadManager { [weak self] manager in
+            guard let self else { return }
+            guard let manager else {
+                self.setStatus(status: .invalid, detail: "manager unavailable")
+                return
+            }
+
+            self.activeManager = manager
+            self.installStatusObserver(manager: manager)
+            self.startStatusTimer(manager: manager)
+            self.setStatus(status: manager.connection.status, detail: nil)
+        }
+    }
+
+    private func startProxy() {
+        loadOrCreateAndConfigureManager { [weak self] manager in
+            guard let self else { return }
+            guard let manager else {
+                self.setStatus(status: .invalid, detail: "configuration failed")
+                return
+            }
+
+            self.activeManager = manager
+            self.installStatusObserver(manager: manager)
+            self.startStatusTimer(manager: manager)
+            switch manager.connection.status {
+            case .connected, .connecting, .reasserting:
+                self.log("proxy already active; skipping start")
+                self.setStatus(status: manager.connection.status, detail: nil)
+                return
+            default:
+                break
+            }
+
+            do {
+                self.log("calling startVPNTunnel")
+                try manager.connection.startVPNTunnel()
+                self.log("transparent proxy start requested")
+                self.setStatus(status: manager.connection.status, detail: nil)
+            } catch {
+                self.logError("startVPNTunnel error", error)
+                self.setStatus(status: .disconnected, detail: "start failed")
+            }
+        }
+    }
+
+    private func stopProxy(completion: (() -> Void)?) {
+        loadManager { [weak self] manager in
+            guard let self else {
+                completion?()
+                return
+            }
+            guard let manager else {
+                self.setStatus(status: .invalid, detail: "manager unavailable")
+                completion?()
+                return
+            }
+
+            self.log("calling stopVPNTunnel")
+            manager.connection.stopVPNTunnel()
+            self.setStatus(status: manager.connection.status, detail: nil)
+            completion?()
+        }
+    }
+
+    private func loadManager(completion: @escaping (NETransparentProxyManager?) -> Void) {
+        NETransparentProxyManager.loadAllFromPreferences { managers, error in
+            if let error {
+                self.logError("loadAllFromPreferences error", error)
+                completion(nil)
+                return
+            }
+
+            let manager = self.selectManager(from: managers)
+            self.log(
+                "loadAllFromPreferences ok (count=\(managers?.count ?? 0), selected=\(manager != nil))"
+            )
+            completion(manager)
+        }
+    }
+
+    private func loadOrCreateAndConfigureManager(
+        completion: @escaping (NETransparentProxyManager?) -> Void
+    ) {
+        NETransparentProxyManager.loadAllFromPreferences { managers, error in
+            if let error {
+                self.logError("loadAllFromPreferences error", error)
+                completion(nil)
+                return
+            }
+
+            let existingManager = self.selectManager(from: managers)
+            let manager = existingManager ?? NETransparentProxyManager()
+            let isExisting = existingManager != nil
+            let changed = self.configure(manager: manager)
+
+            if isExisting, !changed {
+                self.log("reusing installed manager without saving preferences")
+                completion(manager)
+                return
+            }
+
+            self.log(isExisting ? "saving updated preferences" : "saving new preferences")
+            self.save(manager: manager, fallbackManager: existingManager, completion: completion)
+        }
+    }
+
+    private func configure(manager: NETransparentProxyManager) -> Bool {
+        var changed = false
+
+        let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol)
+            ?? NETunnelProviderProtocol()
+
+        if proto.providerBundleIdentifier != extensionBundleId {
+            proto.providerBundleIdentifier = extensionBundleId
+            changed = true
+        }
+
+        if proto.serverAddress != managerServerAddress {
+            proto.serverAddress = managerServerAddress
+            changed = true
+        }
+
+        let providerConfiguration = proto.providerConfiguration ?? [:]
+        if !providerConfiguration.isEmpty {
+            proto.providerConfiguration = [:]
+            changed = true
+        } else if proto.providerConfiguration == nil {
+            proto.providerConfiguration = [:]
+            changed = true
+        }
+
+        if manager.localizedDescription != managerDescription {
+            manager.localizedDescription = managerDescription
+            changed = true
+        }
+
+        if manager.protocolConfiguration == nil
+            || !self.protocolMatchesExpected(manager.protocolConfiguration as? NETunnelProviderProtocol)
+        {
+            manager.protocolConfiguration = proto
+            changed = true
+        }
+
+        if !manager.isEnabled {
+            manager.isEnabled = true
+            changed = true
+        }
+
+        return changed
+    }
+
+    private func protocolMatchesExpected(_ proto: NETunnelProviderProtocol?) -> Bool {
+        guard let proto else {
+            return false
+        }
+
+        return proto.providerBundleIdentifier == extensionBundleId
+            && proto.serverAddress == managerServerAddress
+            && (proto.providerConfiguration ?? [:]).isEmpty
+    }
+
+    private func save(
+        manager: NETransparentProxyManager,
+        fallbackManager: NETransparentProxyManager?,
+        completion: @escaping (NETransparentProxyManager?) -> Void
+    ) {
+        manager.saveToPreferences { saveError in
+            if let saveError {
+                self.logError("saveToPreferences error", saveError)
+                if let fallbackManager {
+                    self.log("falling back to existing manager after save failure")
+                    completion(fallbackManager)
+                    return
+                }
+                completion(nil)
+                return
+            }
+
+            self.log("saveToPreferences ok; loading")
+            manager.loadFromPreferences { loadError in
+                if let loadError {
+                    self.logError("loadFromPreferences error", loadError)
+                    completion(nil)
+                    return
+                }
+                completion(manager)
+            }
+        }
+    }
+
+    private func selectManager(from managers: [NETransparentProxyManager]?)
+        -> NETransparentProxyManager?
+    {
+        guard let managers, !managers.isEmpty else {
+            return nil
+        }
+        if let exact = managers.first(where: { manager in
+            guard let proto = manager.protocolConfiguration as? NETunnelProviderProtocol else {
+                return false
+            }
+            return proto.providerBundleIdentifier == self.extensionBundleId
+        }) {
+            return exact
+        }
+        return managers.first
+    }
+
+    private func installStatusObserver(manager: NETransparentProxyManager) {
+        if let statusObserver {
+            NotificationCenter.default.removeObserver(statusObserver)
+        }
+
+        statusObserver = NotificationCenter.default.addObserver(
+            forName: .NEVPNStatusDidChange,
+            object: manager.connection,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.setStatus(status: manager.connection.status, detail: nil)
+        }
+
+        log("installed status observer")
+    }
+
+    private func startStatusTimer(manager: NETransparentProxyManager) {
+        statusTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 1.0, repeating: 5.0)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.setStatus(status: manager.connection.status, detail: nil)
+        }
+        timer.resume()
+        statusTimer = timer
+    }
+
+    private func setStatus(status: NEVPNStatus, detail: String?) {
+        let statusText = statusString(status)
+        let title = detail.map { "Status: \(statusText) (\($0))" } ?? "Status: \(statusText)"
+        statusMenuItem?.title = title
+
+        switch status {
+        case .connected:
+            startMenuItem?.isEnabled = false
+            stopMenuItem?.isEnabled = true
+        case .connecting, .reasserting:
+            startMenuItem?.isEnabled = false
+            stopMenuItem?.isEnabled = true
+        default:
+            startMenuItem?.isEnabled = true
+            stopMenuItem?.isEnabled = false
+        }
+
+        if let button = statusItem?.button {
+            button.title = "🦙 tproxy demo"
+            button.toolTip = title
+        }
+
+        let previousStatusText = lastStatus.map(statusString)
+        if previousStatusText != statusText {
+            if let previousStatusText {
+                log("status transition \(previousStatusText) -> \(statusText)")
+            } else {
+                log("status=\(statusText)")
+            }
+        } else {
+            log("status=\(statusText)")
+        }
+        logDisconnectReasonIfNeeded(for: status)
+        lastStatus = status
+    }
+
+    private func logDisconnectReasonIfNeeded(for status: NEVPNStatus) {
+        guard isDisconnected(status) else {
+            if !isDisconnecting(status) {
+                lastLoggedDisconnectSignature = nil
+            }
+            return
+        }
+
+        guard let error = lastDisconnectError() else {
+            if lastLoggedDisconnectSignature != "none" {
+                log("status=disconnected reason=<none reported by NetworkExtension>")
+                lastLoggedDisconnectSignature = "none"
+            }
+            return
+        }
+
+        let ns = error as NSError
+        let signature = "\(ns.domain)#\(ns.code)#\(ns.localizedDescription)"
+        guard lastLoggedDisconnectSignature != signature else {
+            return
+        }
+
+        lastLoggedDisconnectSignature = signature
+        logDisconnectReason(error)
+    }
+
+    private func lastDisconnectError() -> Error? {
+        guard let connection = activeManager?.connection as? NSObject else {
+            return nil
+        }
+
+        let selector = NSSelectorFromString("lastDisconnectError")
+        guard connection.responds(to: selector) else {
+            return nil
+        }
+
+        return connection.value(forKey: "lastDisconnectError") as? Error
+    }
+
+    private func isDisconnected(_ status: NEVPNStatus) -> Bool {
+        if case .disconnected = status {
+            return true
+        }
+        return false
+    }
+
+    private func isDisconnecting(_ status: NEVPNStatus) -> Bool {
+        if case .disconnecting = status {
+            return true
+        }
+        return false
+    }
+
+    private func statusString(_ status: NEVPNStatus) -> String {
+        switch status {
+        case .invalid: return "invalid"
+        case .disconnected: return "disconnected"
+        case .connecting: return "connecting"
+        case .connected: return "connected"
+        case .reasserting: return "reasserting"
+        case .disconnecting: return "disconnecting"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private func log(_ message: String) {
+        hostLogger.info("\(message, privacy: .public)")
+    }
+
+    private func logDisconnectReason(_ error: Error) {
+        let ns = error as NSError
+        let classification = classifyDisconnectReason(ns)
+        hostLogger.error(
+            "status=disconnected reason: classification=\(classification, privacy: .public) domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) description=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
+        )
+    }
+
+    private func logError(_ prefix: String, _ error: Error) {
+        let ns = error as NSError
+        hostLogger.error(
+            "\(prefix, privacy: .public): domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) description=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
+        )
+    }
+
+    private func classifyDisconnectReason(_ error: NSError) -> String {
+        switch error.domain {
+        case "NEVPNConnectionErrorDomainPlugin":
+            return
+                "extension/plugin startup failure; provider likely failed before it could report its own NSError"
+        case "NEVPNConnectionErrorDomain":
+            return classifySystemDisconnectReason(code: error.code)
+        default:
+            return
+                "provider-reported disconnect or nonstandard NetworkExtension error; inspect domain/code directly"
+        }
+    }
+
+    private func classifySystemDisconnectReason(code: Int) -> String {
+        switch code {
+        case 1:
+            return "system sleep interrupted the VPN session"
+        case 2:
+            return "no network was available to establish the VPN session"
+        case 3:
+            return "network conditions changed and the VPN session could not be maintained"
+        case 4:
+            return "VPN configuration was invalid"
+        case 5:
+            return "VPN server address resolution failed"
+        case 6:
+            return "VPN server did not respond"
+        case 7:
+            return "VPN server is no longer functioning"
+        case 8:
+            return "VPN authentication failed"
+        case 9:
+            return "client certificate is invalid"
+        case 10:
+            return "client certificate is not yet valid"
+        case 11:
+            return "client certificate expired"
+        case 12:
+            return "VPN plugin died unexpectedly"
+        case 13:
+            return "VPN configuration could not be found"
+        case 14:
+            return "VPN plugin is disabled or unavailable"
+        case 15:
+            return "VPN protocol negotiation failed"
+        case 16:
+            return "VPN server disconnected the session"
+        case 17:
+            return "VPN server certificate is invalid"
+        case 18:
+            return "VPN server certificate is not yet valid"
+        case 19:
+            return "VPN server certificate expired"
+        default:
+            return "unknown system VPN disconnect reason"
+        }
+    }
+}
+
+let app = NSApplication.shared
+let delegate = HostController()
+app.delegate = delegate
+app.setActivationPolicy(.accessory)
+app.run()

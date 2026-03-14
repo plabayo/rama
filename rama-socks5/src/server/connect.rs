@@ -1,18 +1,17 @@
 use rama_core::extensions::ExtensionsMut;
+use rama_core::io::BridgeIo;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
-use rama_core::{Service, error::BoxError, stream::Stream};
+use rama_core::{Service, error::BoxError, io::Io};
 use rama_net::address::HostWithPort;
 use rama_net::client::ConnectorService;
 use rama_net::{
     client::EstablishedClientConnection,
-    proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
+    proxy::{IoForwardService, ProxyTarget},
     stream::Socket,
 };
-use rama_tcp::client::{
-    Request as TcpRequest,
-    service::{DefaultForwarder, TcpConnector},
-};
+use rama_tcp::client::{Request as TcpRequest, service::TcpConnector};
+use rama_tcp::proxy::IoToProxyBridgeIo;
 use rama_utils::macros::generate_set_and_with;
 use std::time::Duration;
 
@@ -46,7 +45,7 @@ pub trait Socks5ConnectorSeal<S>: Send + Sync + 'static {
 
 impl<S> Socks5ConnectorSeal<S> for ()
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
@@ -65,14 +64,14 @@ where
 }
 
 /// Default [`Connector`] type.
-pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
+pub type DefaultConnector = Connector<TcpConnector, IoForwardService>;
 
 /// Proxy Forward [`Socks5Connector`] implementation,
 /// which actually is able to accept connect requests and process them.
 ///
 /// The [`Default`] implementation establishes a connection for the requested
-/// destination [`HostWithPort`] and pipes the incoming [`Stream`] with the established
-/// outgoing [`Stream`] by copying the bytes without doing anyting else with them.
+/// destination [`HostWithPort`] and pipes the incoming [`Io`] with the established
+/// outgoing [`Io`] by copying the bytes without doing anyting else with them.
 ///
 /// You can customise the [`Connector`] fully by creating it using [`Connector::new`]
 /// or overwrite any of the default components using either or both of [`Connector::with_connector`]
@@ -135,7 +134,7 @@ impl<C, S> Connector<C, S> {
 impl<C, S> Connector<C, S> {
     /// Overwrite the [`Connector`]'s connector [`Service`]
     /// used to establish a Tcp connection used as the
-    /// [`Stream`] in the direction from target to source.
+    /// [`Io`] in the direction from target to source.
     ///
     /// Any [`Service`] can be used as long as it has the signature:
     ///
@@ -153,12 +152,12 @@ impl<C, S> Connector<C, S> {
     }
 
     /// Overwrite the [`Connector`]'s [`Service`]
-    /// used to actually do the proxy between the source and target [`Stream`].
+    /// used to actually do the proxy between the source and target [`Io`].
     ///
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (ProxyRequest) -> ((), Into<BoxError>)
+    /// (BridgeIo) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Connector<C, T> {
         Connector {
@@ -174,7 +173,7 @@ impl Default for DefaultConnector {
     fn default() -> Self {
         Self {
             connector: TcpConnector::default(),
-            service: StreamForwardService::default(),
+            service: IoForwardService::default(),
             hide_local_address: false,
             connect_timeout: Some(Duration::from_secs(60)),
         }
@@ -184,22 +183,24 @@ impl Default for DefaultConnector {
 impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
-    S: Stream + Unpin + ExtensionsMut,
-    InnerConnector: ConnectorService<TcpRequest, Connection: Stream + Socket + Unpin>,
+    S: Io + Unpin + ExtensionsMut,
+    InnerConnector: ConnectorService<TcpRequest, Connection: Io + Socket + Unpin>,
     StreamService:
-        Service<ProxyRequest<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
+        Service<BridgeIo<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
 {
-    async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
+    async fn accept_connect(
+        &self,
+        mut ingress_stream: S,
+        destination: HostWithPort,
+    ) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: connect: try to establish connection",
         );
 
-        // TODO: replace with timeout layer once possible
-
-        // Clone so we also have them on stream still
+        // Clone so we also have them on (ingress) stream still
         let connect_future = self.connector.connect(TcpRequest::new_with_extensions(
             destination.clone(),
-            stream.extensions().clone(),
+            ingress_stream.extensions().clone(),
         ));
 
         let result = match self.connect_timeout {
@@ -209,7 +210,7 @@ where
                     tracing::debug!("connect future timed out: {err:?}",);
                     let reply_kind = ReplyKind::TtlExpired;
                     Reply::error_reply(reply_kind)
-                        .write_to(&mut stream)
+                        .write_to(&mut ingress_stream)
                         .await
                         .map_err(|err| {
                             Error::io(err).with_context("write server reply: connect failed")
@@ -220,7 +221,10 @@ where
             None => connect_future.await,
         };
 
-        let EstablishedClientConnection { conn: target, .. } = match result {
+        let EstablishedClientConnection {
+            conn: egress_stream,
+            ..
+        } = match result {
             Ok(ecs) => ecs,
             Err(err) => {
                 let err: BoxError = err.into();
@@ -230,7 +234,7 @@ where
 
                 let reply_kind = (&err).into();
                 Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
+                    .write_to(&mut ingress_stream)
                     .await
                     .map_err(|err| {
                         Error::io(err).with_context("write server reply: connect failed")
@@ -241,7 +245,7 @@ where
             }
         };
 
-        let local_addr = target
+        let egress_addr_local = egress_stream
             .local_addr()
             .map(Into::into)
             .inspect_err(|err| {
@@ -250,30 +254,27 @@ where
                 );
             })
             .unwrap_or(HostWithPort::default_ipv4(0));
-        let peer_addr = target.peer_addr();
+        let egress_addr = egress_stream.peer_addr();
 
         tracing::trace!(
-            "socks5 server w/ destination {destination}: connect: connection established, serve pipe: {local_addr} <-> {peer_addr:?}",
+            "socks5 server w/ destination {destination}: connect: connection established, serve pipe: {egress_addr_local} <-> {egress_addr:?}",
         );
 
         Reply::new(if self.hide_local_address {
             HostWithPort::default_ipv4(0)
         } else {
-            local_addr.clone()
+            egress_addr_local.clone()
         })
-        .write_to(&mut stream)
+        .write_to(&mut ingress_stream)
         .await
         .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
 
         tracing::trace!(
-            "socks5 server w/ destination {destination}: connect: reply sent, start serving source-target pipe: {local_addr} <-> {peer_addr:?}",
+            "socks5 server w/ destination {destination}: connect: reply sent, start serving source-target pipe: {egress_addr_local} <-> {egress_addr:?}",
         );
 
         self.service
-            .serve(ProxyRequest {
-                source: stream,
-                target,
-            })
+            .serve(BridgeIo(ingress_stream, egress_stream))
             .instrument(trace_span!("socks5::connect::proxy::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("serve connect pipe"))
@@ -308,17 +309,24 @@ impl<S> LazyConnector<S> {
     }
 }
 
-impl Default for LazyConnector<DefaultForwarder> {
-    fn default() -> Self {
+impl LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
+    fn default_with_exec(exec: Executor) -> Self {
         Self {
-            service: DefaultForwarder::ctx(Executor::default()),
+            service: IoToProxyBridgeIo::extension_proxy_target(exec, IoForwardService::new()),
         }
+    }
+}
+
+impl Default for LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::default_with_exec(Executor::default())
     }
 }
 
 impl<S, StreamService> Socks5ConnectorSeal<S> for LazyConnector<StreamService>
 where
-    S: Stream + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsMut,
     StreamService: Service<S, Output = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
@@ -398,7 +406,7 @@ mod test {
 
     impl<S> Socks5ConnectorSeal<S> for MockConnector
     where
-        S: Stream + Unpin,
+        S: Io + Unpin,
     {
         async fn accept_connect(
             &self,

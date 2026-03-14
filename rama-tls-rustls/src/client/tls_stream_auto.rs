@@ -4,7 +4,7 @@ use super::RustlsTlsStream;
 use pin_project_lite::pin_project;
 use rama_core::{
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
-    stream::Stream,
+    io::Io,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -61,7 +61,7 @@ impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
 #[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for AutoTlsStream<S>
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
@@ -78,7 +78,7 @@ where
 #[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for AutoTlsStream<S>
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     fn poll_write(
         self: std::pin::Pin<&mut Self>,

@@ -2,6 +2,12 @@ use std::fmt;
 
 use super::{Basic, Bearer};
 
+#[derive(Debug, Clone)]
+/// Extension wrapper that can be used by
+/// Deep Protocol Inspection (DPI) services which
+/// processed an exchanged [`ProxyCredential`].
+pub struct DpiProxyCredential(pub ProxyCredential);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Proxy credentials.
 pub enum ProxyCredential {

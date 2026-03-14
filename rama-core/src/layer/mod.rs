@@ -926,7 +926,7 @@ mod map_err;
 #[doc(inline)]
 pub use map_err::{MapErr, MapErrLayer};
 
-mod consume_err;
+pub mod consume_err;
 #[doc(inline)]
 pub use consume_err::{ConsumeErr, ConsumeErrLayer};
 
@@ -955,6 +955,9 @@ pub mod add_extension;
 pub use add_extension::{
     AddInputExtension, AddInputExtensionLayer, AddOutputExtension, AddOutputExtensionLayer,
 };
+
+mod arc;
+pub use arc::ArcLayer;
 
 pub mod get_extension;
 pub use get_extension::{
