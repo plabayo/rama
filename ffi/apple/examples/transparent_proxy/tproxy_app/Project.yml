@@ -33,7 +33,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy
+        CURRENT_PROJECT_VERSION: 1
         INFOPLIST_FILE: Host/Info.plist
+        MARKETING_VERSION: 0.1
         CODE_SIGN_ENTITLEMENTS: Host/Host.entitlements
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
@@ -53,7 +55,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.provider
+        CURRENT_PROJECT_VERSION: 1
         INFOPLIST_FILE: Extension/Info.plist
+        MARKETING_VERSION: 0.1
         CODE_SIGN_ENTITLEMENTS: Extension/Extension.entitlements
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES

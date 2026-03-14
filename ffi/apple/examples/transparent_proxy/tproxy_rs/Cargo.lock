@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "rama_tproxy_example"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "apple-native-keyring-store",
  "keyring-core",

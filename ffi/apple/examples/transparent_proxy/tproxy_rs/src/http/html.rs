@@ -7,9 +7,7 @@ use rama::{
         body::util::BodyExt,
         header::CONTENT_ENCODING,
         headers::{ContentLength, ContentType, HeaderMapExt},
-        layer::remove_header::{
-            remove_cache_validation_response_headers, remove_payload_metadata_headers,
-        },
+        layer::remove_header::remove_payload_metadata_headers,
         mime,
     },
     utils::str::{contains_ignore_ascii_case, submatch_ignore_ascii_case},
@@ -70,7 +68,6 @@ where
 
         let updated_html = updated_html.expect("updated_html is_some above");
         remove_payload_metadata_headers(&mut parts.headers);
-        remove_cache_validation_response_headers(&mut parts.headers);
         let updated_html_len = u64::try_from(updated_html.len())
             .context("convert updated HTML response length to u64")?;
         parts.headers.typed_insert(ContentLength(updated_html_len));
@@ -136,6 +133,9 @@ mod tests {
     use super::*;
     use rama::{
         http::header::{CONTENT_ENCODING, ETAG},
+        http::layer::{
+            compression::stream::StreamCompressionLayer, decompression::DecompressionLayer,
+        },
         service::service_fn,
     };
 
@@ -210,5 +210,63 @@ mod tests {
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
 
         assert_eq!(body_bytes.as_ref(), expected_body.as_ref());
+    }
+
+    #[tokio::test]
+    async fn html_badge_layer_rewrites_after_decompression_and_recompresses() {
+        let html = format!("<html><body>{}</body></html>", "Hello ".repeat(16));
+        let svc = (
+            HtmlBadgeLayer,
+            DecompressionLayer::new(),
+            StreamCompressionLayer::new(),
+        )
+            .into_layer(service_fn(move |_req: Request<Body>| {
+                let html = html.clone();
+                async move {
+                    let mut response = Response::new(Body::from(html));
+                    response
+                        .headers_mut()
+                        .typed_insert(ContentType::html_utf8());
+                    Ok::<_, BoxError>(response)
+                }
+            }));
+
+        let request = Request::builder()
+            .header(rama::http::header::ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let response: Response<Body> = svc.serve(request).await.unwrap();
+
+        assert_eq!(response.headers().get(CONTENT_ENCODING).unwrap(), "gzip");
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let decompressed = rama::http::layer::decompression::DecompressionLayer::new()
+            .into_layer(service_fn(move |_req: Request<Body>| {
+                let body = body.clone();
+                async move {
+                    let mut response = Response::new(Body::from(body));
+                    response
+                        .headers_mut()
+                        .typed_insert(ContentType::html_utf8());
+                    response
+                        .headers_mut()
+                        .insert(CONTENT_ENCODING, "gzip".try_into().unwrap());
+                    Ok::<_, BoxError>(response)
+                }
+            }))
+            .serve(Request::new(Body::empty()))
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+
+        assert!(
+            decompressed
+                .windows(BADGE_HTML_BYTES.len())
+                .any(|w| w == BADGE_HTML_BYTES)
+        );
     }
 }

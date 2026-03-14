@@ -159,7 +159,6 @@ pub fn remove_sensitive_response_headers(headers: &mut HeaderMap) {
 /// such as decompression, aggregation, or content rewriting.
 pub fn remove_payload_metadata_headers(headers: &mut HeaderMap) {
     for header in [
-        &header::TRAILER,
         &header::CONTENT_ENCODING,
         &header::TRANSFER_ENCODING,
         &header::CONTENT_LENGTH,

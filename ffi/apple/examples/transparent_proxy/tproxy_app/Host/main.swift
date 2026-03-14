@@ -15,17 +15,23 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var statusMenuItem: NSMenuItem?
     private var startMenuItem: NSMenuItem?
     private var stopMenuItem: NSMenuItem?
+    private var resetMenuItem: NSMenuItem?
 
     private var activeManager: NETransparentProxyManager?
     private var statusObserver: NSObjectProtocol?
     private var statusTimer: DispatchSourceTimer?
     private var lastStatus: NEVPNStatus?
     private var lastLoggedDisconnectSignature: String?
+    private lazy var resetProfileOnLaunch =
+        ProcessInfo.processInfo.arguments.contains("--reset-profile-on-launch")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         log("host app launched")
-        startProxy()
+        if resetProfileOnLaunch {
+            log("launch flag detected: resetting saved proxy profile before start")
+        }
+        startProxy(forceReinstall: resetProfileOnLaunch)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -60,6 +66,10 @@ final class HostController: NSObject, NSApplicationDelegate {
         stopProxy(completion: nil)
     }
 
+    @objc private func resetProfileAction(_: Any?) {
+        resetProxyConfigurationAndStart()
+    }
+
     @objc private func refreshAction(_: Any?) {
         refreshManagerAndStatus()
     }
@@ -92,6 +102,11 @@ final class HostController: NSObject, NSApplicationDelegate {
         stopItem.target = self
         menu.addItem(stopItem)
 
+        let resetItem = NSMenuItem(
+            title: "Reset Profile", action: #selector(resetProfileAction(_:)), keyEquivalent: "")
+        resetItem.target = self
+        menu.addItem(resetItem)
+
         let refreshItem = NSMenuItem(
             title: "Refresh Status", action: #selector(refreshAction(_:)), keyEquivalent: "r")
         refreshItem.target = self
@@ -110,6 +125,7 @@ final class HostController: NSObject, NSApplicationDelegate {
         self.statusMenuItem = statusItemMenu
         self.startMenuItem = startItem
         self.stopMenuItem = stopItem
+        self.resetMenuItem = resetItem
     }
 
     private func refreshManagerAndStatus() {
@@ -127,8 +143,8 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func startProxy() {
-        loadOrCreateAndConfigureManager { [weak self] manager in
+    private func startProxy(forceReinstall: Bool = false) {
+        loadOrCreateAndConfigureManager(forceReinstall: forceReinstall) { [weak self] manager in
             guard let self else { return }
             guard let manager else {
                 self.setStatus(status: .invalid, detail: "configuration failed")
@@ -156,6 +172,14 @@ final class HostController: NSObject, NSApplicationDelegate {
                 self.logError("startVPNTunnel error", error)
                 self.setStatus(status: .disconnected, detail: "start failed")
             }
+        }
+    }
+
+    private func resetProxyConfigurationAndStart() {
+        log("reset proxy configuration requested")
+        stopProxy { [weak self] in
+            guard let self else { return }
+            self.startProxy(forceReinstall: true)
         }
     }
 
@@ -195,6 +219,7 @@ final class HostController: NSObject, NSApplicationDelegate {
     }
 
     private func loadOrCreateAndConfigureManager(
+        forceReinstall: Bool = false,
         completion: @escaping (NETransparentProxyManager?) -> Void
     ) {
         NETransparentProxyManager.loadAllFromPreferences { managers, error in
@@ -205,6 +230,34 @@ final class HostController: NSObject, NSApplicationDelegate {
             }
 
             let existingManager = self.selectManager(from: managers)
+            if forceReinstall {
+                let managersToRemove = self.matchingManagers(from: managers)
+                if managersToRemove.isEmpty {
+                    self.log("forced manager reinstall requested; no existing manager to remove")
+                    let manager = NETransparentProxyManager()
+                    _ = self.configure(manager: manager)
+                    self.log("saving fresh preferences after forced reinstall")
+                    self.save(manager: manager, fallbackManager: nil, completion: completion)
+                    return
+                }
+
+                self.log(
+                    "forced manager reinstall requested; removing \(managersToRemove.count) matching manager(s)"
+                )
+                self.removeManagersFromPreferences(managersToRemove) { removeSucceeded in
+                    guard removeSucceeded else {
+                        completion(nil)
+                        return
+                    }
+
+                    let manager = NETransparentProxyManager()
+                    _ = self.configure(manager: manager)
+                    self.log("saving fresh preferences after forced reinstall")
+                    self.save(manager: manager, fallbackManager: nil, completion: completion)
+                }
+                return
+            }
+
             let manager = existingManager ?? NETransparentProxyManager()
             let isExisting = existingManager != nil
             let changed = self.configure(manager: manager)
@@ -321,6 +374,45 @@ final class HostController: NSObject, NSApplicationDelegate {
         return managers.first
     }
 
+    private func matchingManagers(from managers: [NETransparentProxyManager]?)
+        -> [NETransparentProxyManager]
+    {
+        guard let managers else {
+            return []
+        }
+
+        return managers.filter { manager in
+            if let proto = manager.protocolConfiguration as? NETunnelProviderProtocol,
+                proto.providerBundleIdentifier == self.extensionBundleId
+            {
+                return true
+            }
+
+            return manager.localizedDescription == self.managerDescription
+        }
+    }
+
+    private func removeManagersFromPreferences(
+        _ managers: [NETransparentProxyManager],
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard let manager = managers.first else {
+            completion(true)
+            return
+        }
+
+        manager.removeFromPreferences { error in
+            if let error {
+                self.logError("removeFromPreferences error", error)
+                completion(false)
+                return
+            }
+
+            self.log("removeFromPreferences ok")
+            self.removeManagersFromPreferences(Array(managers.dropFirst()), completion: completion)
+        }
+    }
+
     private func installStatusObserver(manager: NETransparentProxyManager) {
         if let statusObserver {
             NotificationCenter.default.removeObserver(statusObserver)
@@ -379,8 +471,6 @@ final class HostController: NSObject, NSApplicationDelegate {
             } else {
                 log("status=\(statusText)")
             }
-        } else {
-            log("status=\(statusText)")
         }
         logDisconnectReasonIfNeeded(for: status)
         lastStatus = status

@@ -148,9 +148,9 @@ where
     (
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
-        StreamCompressionLayer::new(),
-        DecompressionLayer::new(),
         crate::http::html::HtmlBadgeLayer,
+        DecompressionLayer::new(),
+        StreamCompressionLayer::new(),
         SetResponseHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),

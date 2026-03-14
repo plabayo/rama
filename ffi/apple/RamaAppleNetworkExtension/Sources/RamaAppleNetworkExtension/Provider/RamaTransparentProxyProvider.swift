@@ -514,10 +514,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 self.logDebug("flow.open error: \(error)")
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
+                // Keep the callback box alive until Rust signals onServerClosed.
                 session.onClientEof()
-                self.stateQueue.async {
-                    self.tcpSessions.removeValue(forKey: flowId)
-                }
                 return
             }
             self.logTrace("flow.open ok (tcp)")
@@ -551,10 +549,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 )
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
+                // Keep the callback box alive until Rust signals onServerClosed.
                 session.onClientEof()
-                self.stateQueue.async {
-                    self.tcpSessions.removeValue(forKey: ObjectIdentifier(flow))
-                }
                 return
             }
 
@@ -582,10 +578,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 )
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
+                // Keep the callback box alive until Rust signals onServerClosed.
                 session?.onClientClose()
-                self.stateQueue.async {
-                    self.udpSessions.removeValue(forKey: ObjectIdentifier(flow))
-                }
                 return
             }
 
