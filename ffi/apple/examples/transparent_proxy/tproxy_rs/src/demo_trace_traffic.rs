@@ -1,3 +1,5 @@
+use std::fmt;
+
 use rama::{
     Layer, Service,
     http::{
@@ -59,7 +61,7 @@ where
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for DemoTraceTrafficService<S>
 where
-    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Error: fmt::Display, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -73,13 +75,14 @@ where
 
         let result = self.0.serve(req).await;
 
-        if let Ok(res) = result.as_ref() {
-            tracing::debug!(
+        match result.as_ref() {
+            Ok(res) => tracing::debug!(
                 "demo traffic logger: http egress: {method} {uri}: response status = {}",
                 res.status(),
-            );
-        } else {
-            tracing::debug!("demo traffic logger: http egress: {method} {uri}: error");
+            ),
+            Err(err) => {
+                tracing::debug!("demo traffic logger: http egress: {method} {uri}: error: {err}")
+            }
         }
 
         result
