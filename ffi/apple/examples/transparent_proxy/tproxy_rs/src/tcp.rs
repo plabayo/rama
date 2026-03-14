@@ -53,24 +53,6 @@ const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE_RETRIES: u32 = 5;
 
-// TODO:
-// - [X] use WS also in connect flow + simplify by merging middleware fn into 1
-// - [X] support impl Into<Response> for relay as to support also dropping, and even multiple messages for relay :)
-// - [x] look into errors and see which ones we can demote to trace or label better, e.g. disconnected is ok
-//   ... example: FFI::log_callback] flow.write error
-//                Error Domain=NEAppProxyFlowErrorDomain Code=1 "The operation
-//                could not be completed because the flow is not connected"
-//                UserInfo={NSLocalizedDescription=The operation could not be
-//                completed because the flow is not connected}
-// - [x] switch to protected app storage (macos)
-// - [x] add env support to print options + config of global (DNS) config when created and write to file..
-// - [x] add to this demo a fail-open policy so we add exception for connections that fail to MITM,
-//       and on future connections do not MITM IT (based on dst IP or SNI)
-// - [x] test + verify http connect
-// - [x] test + verify WS
-
-// TOOD: [ ] do something fun with HTML :) replacing something innocent
-
 pub(super) fn try_new_service()
 -> Result<impl Service<TcpFlow, Output = (), Error = Infallible>, BoxError> {
     let (ca_crt, ca_key) = crate::tls::certs::load_or_create_mitm_ca_crt_key_pair()
@@ -168,6 +150,7 @@ where
         MapResponseBodyLayer::new_boxed_streaming_body(),
         StreamCompressionLayer::new(),
         DecompressionLayer::new(),
+        crate::http::html::HtmlBadgeLayer,
         SetResponseHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),
