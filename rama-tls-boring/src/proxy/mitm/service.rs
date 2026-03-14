@@ -1,6 +1,6 @@
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext as _},
+    error::BoxError,
     extensions::{self, ExtensionsRef},
     io::{BridgeIo, Io},
     telemetry::tracing,
@@ -10,7 +10,11 @@ use rama_net::{
     tls::{client::ServerVerifyMode, server::InputWithClientHello},
 };
 
-use crate::{TlsStream, client::TlsConnectorDataBuilder, proxy::TlsMitmRelay};
+use crate::{
+    TlsStream,
+    client::TlsConnectorDataBuilder,
+    proxy::{TlsMitmRelay, TlsMitmRelayError},
+};
 
 #[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
@@ -41,7 +45,7 @@ where
     Egress: Io + Unpin + extensions::ExtensionsMut,
 {
     type Output = ();
-    type Error = BoxError;
+    type Error = TlsMitmRelayError;
 
     async fn serve(&self, input: BridgeIo<Ingress, Egress>) -> Result<Self::Output, Self::Error> {
         let maybe_connector_data = TlsConnectorDataBuilder::default()
@@ -59,10 +63,12 @@ where
             .relay
             .handshake(input, maybe_connector_data)
             .await
-            .context("tls MITM relay handshake")
-            .context_debug_field("proxy_target", proxy_target)?;
+            .map_err(|err| err.maybe_with_proxy_target(proxy_target))?;
 
-        self.inner.serve(tls_input).await.map_err(Into::into)
+        self.inner
+            .serve(tls_input)
+            .await
+            .map_err(TlsMitmRelayError::tls_serve)
     }
 }
 
@@ -75,7 +81,7 @@ where
     Egress: Io + Unpin + extensions::ExtensionsMut,
 {
     type Output = ();
-    type Error = BoxError;
+    type Error = TlsMitmRelayError;
 
     async fn serve(
         &self,
@@ -101,14 +107,18 @@ where
             .relay
             .handshake(input, maybe_connector_data)
             .await
-            .context("tls MITM relay handshake (with peek Client Hello)")
-            .context_debug_field("proxy_target", proxy_target)
-            .context_debug_field("sni", maybe_sni.clone())?;
+            .map_err(|err| {
+                err.maybe_with_proxy_target(proxy_target)
+                    .maybe_with_sni(maybe_sni.clone())
+            })?;
 
         tracing::debug!(
             "tls MITM relay handshake for SNI={maybe_sni:?} is complete... continue to serve tls tunnel bridge from within..."
         );
 
-        self.inner.serve(tls_input).await.map_err(Into::into)
+        self.inner
+            .serve(tls_input)
+            .await
+            .map_err(TlsMitmRelayError::tls_serve)
     }
 }

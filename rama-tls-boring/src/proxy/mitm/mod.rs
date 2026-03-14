@@ -1,7 +1,9 @@
 use rama_boring::{
     pkey::{PKey, Private},
+    ssl::ErrorCode,
     x509::X509,
 };
+use rama_boring_tokio::SslErrorStack;
 use rama_core::{
     Layer,
     conversion::RamaTryInto as _,
@@ -10,9 +12,16 @@ use rama_core::{
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
-use rama_net::tls::KeyLogIntent;
-use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData};
-use std::io::{Cursor, ErrorKind};
+use rama_net::{
+    address::{Domain, HostWithPort},
+    tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData},
+};
+use rama_net::{proxy::ProxyTarget, tls::KeyLogIntent};
+use rama_utils::str::any_submatch_ignore_ascii_case;
+use std::{
+    fmt,
+    io::{Cursor, ErrorKind},
+};
 
 use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef};
 use crate::{TlsStream, client, keylog::try_new_key_log_file_handle};
@@ -150,6 +159,153 @@ impl
     }
 }
 
+#[derive(Debug)]
+/// Error type for [`TlsMitmRelay::handshake`] and the
+/// service using it. Can be used to filter out cert-related issues
+/// due to the relay.
+pub struct TlsMitmRelayError {
+    kind: TlsMitmRelayErrorKind,
+    proxy_target: Option<ProxyTarget>,
+    sni: Option<Domain>,
+    inner: BoxError,
+}
+
+impl TlsMitmRelayError {
+    #[inline(always)]
+    fn config(error: impl Into<BoxError>) -> Self {
+        Self {
+            kind: TlsMitmRelayErrorKind::Config,
+            proxy_target: None,
+            sni: None,
+            inner: error.into(),
+        }
+    }
+
+    #[inline(always)]
+    fn egress(error: impl Into<BoxError>) -> Self {
+        Self {
+            kind: TlsMitmRelayErrorKind::Egress,
+            proxy_target: None,
+            sni: None,
+            inner: error.into(),
+        }
+    }
+
+    #[inline(always)]
+    fn ingress(error: impl Into<BoxError>, ssl_code: Option<ErrorCode>) -> Self {
+        let cert_related = ssl_code
+            .map(|code| code == ErrorCode::SYSCALL)
+            .unwrap_or_default();
+
+        Self {
+            kind: TlsMitmRelayErrorKind::Ingress { cert_related },
+            proxy_target: None,
+            sni: None,
+            inner: error.into(),
+        }
+    }
+
+    #[inline(always)]
+    fn ingress_io(error: impl Into<BoxError>) -> Self {
+        Self {
+            kind: TlsMitmRelayErrorKind::Ingress {
+                cert_related: false,
+            },
+            proxy_target: None,
+            sni: None,
+            inner: error.into(),
+        }
+    }
+
+    #[inline(always)]
+    fn ingress_ssl(err: SslErrorStack, ssl_code: Option<ErrorCode>) -> Self {
+        let ssl_err = err.first();
+        let cert_related = ssl_code
+            .map(|code| code == ErrorCode::SYSCALL)
+            .unwrap_or_default()
+            || ssl_err
+                .reason()
+                .map(|s| any_submatch_ignore_ascii_case(s, ["unknown_ca", "certificate"]))
+                .unwrap_or_default();
+
+        Self {
+            kind: TlsMitmRelayErrorKind::Ingress { cert_related },
+            proxy_target: None,
+            sni: None,
+            inner: BoxError::from(err).context("tls mitm relay: ingress tls accept ssl error"),
+        }
+    }
+
+    #[inline(always)]
+    fn tls_serve(error: impl Into<BoxError>) -> Self {
+        Self {
+            kind: TlsMitmRelayErrorKind::TlsServe,
+            proxy_target: None,
+            sni: None,
+            inner: error.into(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn proxy_target(&self) -> Option<&HostWithPort> {
+        self.proxy_target.as_ref().map(|t| &t.0)
+    }
+
+    #[inline(always)]
+    pub fn sni(&self) -> Option<&Domain> {
+        self.sni.as_ref()
+    }
+
+    #[inline(always)]
+    /// Returns true in case the error can be classified as a certificate
+    /// related relay issue. In which case you probably want to filter out this
+    /// traffic in your MITM flows.
+    pub fn is_relay_cert_issue(&self) -> bool {
+        matches!(
+            self.kind,
+            TlsMitmRelayErrorKind::Config | TlsMitmRelayErrorKind::Ingress { cert_related: true }
+        )
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        fn proxy_target(mut self, proxy_target: Option<ProxyTarget>) -> Self {
+            self.proxy_target = proxy_target;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        fn sni(mut self, sni: Option<Domain>) -> Self {
+            self.sni = sni;
+            self
+        }
+    }
+}
+
+impl fmt::Display for TlsMitmRelayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:?}: {} (proxy-target={:?}; sni={:?})",
+            self.kind, self.inner, self.proxy_target, self.sni
+        )
+    }
+}
+
+impl std::error::Error for TlsMitmRelayError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.inner.as_ref())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TlsMitmRelayErrorKind {
+    Config,
+    Egress,
+    Ingress { cert_related: bool },
+    TlsServe,
+}
+
 impl<Issuer> TlsMitmRelay<Issuer>
 where
     Issuer: self::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
@@ -159,7 +315,7 @@ where
         &self,
         BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
         connector_data: Option<client::TlsConnectorData>,
-    ) -> Result<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, BoxError>
+    ) -> Result<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, TlsMitmRelayError>
     where
         Ingress: Io + Unpin + extensions::ExtensionsMut,
         Egress: Io + Unpin + extensions::ExtensionsMut,
@@ -169,43 +325,52 @@ where
             .map(|cd| cd.store_server_certificate_chain)
             .unwrap_or_default();
 
-        let mut egress_tls_stream =
-            crate::client::tls_connect(egress_stream, connector_data).await?;
+        let mut egress_tls_stream = crate::client::tls_connect(egress_stream, connector_data)
+            .await
+            .map_err(TlsMitmRelayError::egress)?;
 
         let egress_ssl_ref = egress_tls_stream.ssl_ref();
         let source_cert = egress_ssl_ref
             .peer_certificate()
-            .ok_or_else(|| BoxError::from("tls mitm relay: egress tls stream has no peer cert"))?;
+            .ok_or_else(|| BoxError::from("tls mitm relay: egress tls stream has no peer cert"))
+            .map_err(TlsMitmRelayError::config)?;
 
         let (mirrored_leaf_cert_chain, mirrored_leaf_key) = self
             .issuer
             .issue_mitm_x509_cert(source_cert)
             .await
-            .context("tls mitm relay: mirror server certificate")?;
+            .context("tls mitm relay: mirror server certificate")
+            .map_err(TlsMitmRelayError::config)?;
 
         let mut acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
-            .context("tls mitm relay: create boring ssl acceptor")?;
+            .context("tls mitm relay: create boring ssl acceptor")
+            .map_err(TlsMitmRelayError::config)?;
         acceptor_builder.set_grease_enabled(self.grease_enabled);
         acceptor_builder
             .set_default_verify_paths()
-            .context("tls mitm relay: set default verify paths")?;
+            .context("tls mitm relay: set default verify paths")
+            .map_err(TlsMitmRelayError::config)?;
         for (i, crt) in mirrored_leaf_cert_chain.into_iter().enumerate() {
             if i == 0 {
                 acceptor_builder
                     .set_certificate(crt.as_ref())
-                    .context("tls mitm relay: set certificate")?;
+                    .context("tls mitm relay: set certificate")
+                    .map_err(TlsMitmRelayError::config)?;
             } else {
                 acceptor_builder
                     .add_extra_chain_cert(crt)
-                    .context("tls mitm relay: add chain certificate")?;
+                    .context("tls mitm relay: add chain certificate")
+                    .map_err(TlsMitmRelayError::config)?;
             }
         }
         acceptor_builder
             .set_private_key(mirrored_leaf_key.as_ref())
-            .context("tls mitm relay: set mirrored leaf private key")?;
+            .context("tls mitm relay: set mirrored leaf private key")
+            .map_err(TlsMitmRelayError::config)?;
         acceptor_builder
             .check_private_key()
-            .context("tls mitm relay: check mirrored private key")?;
+            .context("tls mitm relay: check mirrored private key")
+            .map_err(TlsMitmRelayError::config)?;
 
         let maybe_negotiated_params = if let Some(ssl_session) = egress_ssl_ref.session() {
             let protocol_version = ssl_session.protocol_version();
@@ -213,16 +378,21 @@ where
             acceptor_builder
                 .set_min_proto_version(Some(protocol_version))
                 .context("tls mitm relay: set min tls proto version")
-                .context_field("protocol_version", protocol_version)?;
+                .context_field("protocol_version", protocol_version)
+                .map_err(TlsMitmRelayError::config)?;
             acceptor_builder
                 .set_max_proto_version(Some(protocol_version))
                 .context("tls mitm relay: set max tls proto version")
-                .context_field("protocol_version", protocol_version)?;
+                .context_field("protocol_version", protocol_version)
+                .map_err(TlsMitmRelayError::config)?;
 
-            let protocol_version = protocol_version.rama_try_into().map_err(|v| {
-                BoxError::from("boring ssl connector: cast min proto version")
-                    .context_field("protocol_version", v)
-            })?;
+            let protocol_version = protocol_version
+                .rama_try_into()
+                .map_err(|v| {
+                    BoxError::from("boring ssl connector: cast min proto version")
+                        .context_field("protocol_version", v)
+                })
+                .map_err(TlsMitmRelayError::config)?;
 
             tracing::debug!(
                 "boring client (connector) protocol version: {protocol_version} (set as min/max)"
@@ -272,7 +442,7 @@ where
                 .then(|| egress_ssl_ref.peer_cert_chain())
                 .flatten()
             {
-                Some(chain) => Some(chain.rama_try_into()?),
+                Some(chain) => Some(chain.rama_try_into().map_err(TlsMitmRelayError::config)?),
                 None => None,
             };
 
@@ -286,7 +456,8 @@ where
         };
 
         if let Some(keylog_filename) = self.keylog_intent.file_path().as_deref() {
-            let handle = try_new_key_log_file_handle(keylog_filename)?;
+            let handle =
+                try_new_key_log_file_handle(keylog_filename).map_err(TlsMitmRelayError::config)?;
             acceptor_builder.set_keylog_callback(move |_, line| {
                 let line = format!("{line}\n");
                 handle.write_log_line(line);
@@ -305,15 +476,21 @@ where
             .map_err(|err| {
                 let maybe_ssl_code = err.code();
                 if let Some(io_err) = err.as_io_error() {
-                    BoxError::from(format!(
-                        "tls mitm relay: ingress tls accept failed with io error: {io_err}"
-                    ))
+                    TlsMitmRelayError::ingress_io(
+                        BoxError::from(format!(
+                            "tls mitm relay: ingress tls accept failed with io error: {io_err}"
+                        ))
+                        .context_debug_field("code", maybe_ssl_code),
+                    )
                 } else if let Some(err) = err.as_ssl_error_stack() {
-                    BoxError::from(err).context("tls mitm relay: ingress tls accept ssl error")
+                    TlsMitmRelayError::ingress_ssl(err, maybe_ssl_code)
                 } else {
-                    BoxError::from("tls mitm relay: ingress tls accept failed")
+                    TlsMitmRelayError::ingress(
+                        BoxError::from("tls mitm relay: ingress tls accept failed")
+                            .context_debug_field("code", maybe_ssl_code),
+                        maybe_ssl_code,
+                    )
                 }
-                .context_debug_field("code", maybe_ssl_code)
             })?;
 
         if let Some(negotiated_params) = maybe_negotiated_params {

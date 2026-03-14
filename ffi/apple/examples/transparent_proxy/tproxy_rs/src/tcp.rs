@@ -41,7 +41,9 @@ use rama::{
     tls::boring::proxy::{TlsMitmRelay, cert_issuer::BoringMitmCertIssuer},
 };
 
-use crate::demo_trace_traffic::DemoTraceTrafficLayer;
+use crate::{
+    demo_trace_traffic::DemoTraceTrafficLayer, tls::mitm_relay_policy::TlsMitmRelayPolicyLayer,
+};
 
 const HIJACK_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
 
@@ -62,7 +64,7 @@ const TCP_KEEPALIVE_RETRIES: u32 = 5;
 //                completed because the flow is not connected}
 // - [x] switch to protected app storage (macos)
 // - [x] add env support to print options + config of global (DNS) config when created and write to file..
-// - [ ] add to this demo a fail-open policy so we add exception for connections that fail to MITM,
+// - [x] add to this demo a fail-open policy so we add exception for connections that fail to MITM,
 //       and on future connections do not MITM IT (based on dst IP or SNI)
 // - [x] test + verify http connect
 // - [x] test + verify WS
@@ -78,12 +80,19 @@ pub(super) fn try_new_service()
         .context("encode root ca cert to pem")?
         .leak();
 
+    let tls_mitm_relay_policy = TlsMitmRelayPolicyLayer::new();
     let tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
 
     // TODO: get actual graceful executor here...
     let exec = Executor::default();
 
-    let mitm_svc = new_tcp_service_inner(exec.clone(), tls_mitm_relay, ca_crt_pem_bytes, false);
+    let mitm_svc = new_tcp_service_inner(
+        exec.clone(),
+        tls_mitm_relay_policy,
+        tls_mitm_relay,
+        ca_crt_pem_bytes,
+        false,
+    );
 
     Ok((
         ConsumeErrLayer::trace_as_debug(),
@@ -94,6 +103,7 @@ pub(super) fn try_new_service()
 
 fn new_tcp_service_inner<Issuer, Ingress, Egress>(
     exec: Executor,
+    tls_mitm_relay_policy: TlsMitmRelayPolicyLayer,
     tls_mitm_relay: TlsMitmRelay<Issuer>,
     ca_crt_pem_bytes: &'static [u8],
     within_connect_tunnel: bool,
@@ -107,6 +117,7 @@ where
         let mut relay =
             HttpMitmRelay::new(exec.clone()).with_http_middleware(http_relay_middleware(
                 exec,
+                tls_mitm_relay_policy.clone(),
                 tls_mitm_relay.clone(),
                 ca_crt_pem_bytes,
                 within_connect_tunnel,
@@ -119,10 +130,11 @@ where
         .with_peek_timeout(PEEK_DURATION)
         .with_fallback(IoForwardService::new());
 
-    let app_mitm_layer =
-        PeekTlsClientHelloService::new(tls_mitm_relay.into_layer(maybe_http_mitm_svc.clone()))
-            .with_peek_timeout(PEEK_DURATION)
-            .with_fallback(maybe_http_mitm_svc);
+    let app_mitm_layer = PeekTlsClientHelloService::new(
+        (tls_mitm_relay_policy, tls_mitm_relay).into_layer(maybe_http_mitm_svc.clone()),
+    )
+    .with_peek_timeout(PEEK_DURATION)
+    .with_fallback(maybe_http_mitm_svc);
 
     if within_connect_tunnel {
         return Either::A(ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_layer));
@@ -138,6 +150,7 @@ where
 
 fn http_relay_middleware<S, Issuer>(
     exec: Executor,
+    tls_mitm_relay_policy: TlsMitmRelayPolicyLayer,
     tls_mitm_relay: TlsMitmRelay<Issuer>,
     ca_crt_pem_bytes: &'static [u8],
     within_connect_tunnel: bool,
@@ -173,7 +186,14 @@ where
                         .into_layer(IoForwardService::new())
                         .boxed()
                 } else {
-                    new_tcp_service_inner(exec, tls_mitm_relay, ca_crt_pem_bytes, true).boxed()
+                    new_tcp_service_inner(
+                        exec,
+                        tls_mitm_relay_policy,
+                        tls_mitm_relay,
+                        ca_crt_pem_bytes,
+                        true,
+                    )
+                    .boxed()
                 }),
             ),
         ),

@@ -2355,6 +2355,7 @@ version = "0.0.0"
 dependencies = [
  "apple-native-keyring-store",
  "keyring-core",
+ "moka",
  "rama",
  "tokio",
  "tracing-oslog",
