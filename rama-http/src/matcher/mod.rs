@@ -907,13 +907,13 @@ impl<Body> HttpMatcherKind<Body> {
                 matchers
                     .iter()
                     .filter_map(|m| m.allowed_methods())
-                    .reduce(|acc, next| acc.and(next))
+                    .reduce(|acc, next| acc.and_method(next))
             }
             Self::Any(matchers) => {
                 // Union: OR together all children.
                 // If any child is unconstrained (None), the union is unbounded → None.
                 matchers.iter().try_fold(MethodMatcher::NONE, |acc, m| {
-                    Some(acc.or(m.allowed_methods()?))
+                    Some(acc.or_method(m.allowed_methods()?))
                 })
             }
             // All other variants impose no method constraint.

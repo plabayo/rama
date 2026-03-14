@@ -620,7 +620,7 @@ where
             // Do not return yet: a sub_service may still handle this request.
             for (matcher, _) in matched.value.iter() {
                 if let Some(m) = matcher.allowed_methods() {
-                    allowed_methods = Some(allowed_methods.map_or(m, |acc| acc.or(m)));
+                    allowed_methods = Some(allowed_methods.map_or(m, |acc| acc.or_method(m)));
                 }
             }
         }

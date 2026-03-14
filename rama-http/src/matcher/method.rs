@@ -41,22 +41,23 @@ impl MethodMatcher {
     /// An empty matcher that matches no methods — the identity element for [`or`].
     pub(crate) const NONE: Self = Self::from_bits(0);
     pub(crate) const ALL_KNOWN: Self = Self::CONNECT
-        .or(Self::DELETE)
-        .or(Self::GET)
-        .or(Self::HEAD)
-        .or(Self::OPTIONS)
-        .or(Self::PATCH)
-        .or(Self::POST)
-        .or(Self::PUT)
-        .or(Self::TRACE);
+        .or_method(Self::DELETE)
+        .or_method(Self::GET)
+        .or_method(Self::HEAD)
+        .or_method(Self::OPTIONS)
+        .or_method(Self::PATCH)
+        .or_method(Self::POST)
+        .or_method(Self::PUT)
+        .or_method(Self::TRACE);
 
-    pub(crate) const fn contains(self, other: Self) -> bool {
+    /// Returns `true` if `self` contains all bits set in `other`.
+    pub const fn contains(self, other: Self) -> bool {
         self.bits() & other.bits() == other.bits()
     }
 
     /// Performs the OR operation between the [`MethodMatcher`] in `self` with `other`.
     #[must_use]
-    pub const fn or(self, other: Self) -> Self {
+    pub const fn or_method(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
@@ -64,7 +65,7 @@ impl MethodMatcher {
     ///
     /// Useful for intersecting two method sets (e.g. inside an `All` compound matcher).
     #[must_use]
-    pub(crate) const fn and(self, other: Self) -> Self {
+    pub const fn and_method(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
 
@@ -72,7 +73,7 @@ impl MethodMatcher {
     ///
     /// Used when a method matcher is negated — e.g. `NOT GET` → every known method except GET.
     #[must_use]
-    pub(crate) const fn complement(self) -> Self {
+    pub const fn complement(self) -> Self {
         Self(Self::ALL_KNOWN.bits() & !self.bits())
     }
 
