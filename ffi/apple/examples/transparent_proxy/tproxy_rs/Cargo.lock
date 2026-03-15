@@ -2357,6 +2357,8 @@ dependencies = [
  "keyring-core",
  "moka",
  "rama",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing-oslog",
 ]

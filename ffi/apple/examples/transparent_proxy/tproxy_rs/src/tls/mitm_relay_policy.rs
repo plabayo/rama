@@ -40,6 +40,11 @@ impl TlsMitmRelayPolicyLayer {
         Self::default()
     }
 
+    pub fn with_excluded_domains(mut self, excluded_domains: DomainExclusionList) -> Self {
+        self.excluded_domains = excluded_domains;
+        self
+    }
+
     #[expect(unused)]
     pub fn with_fallback<F>(self, fallback: F) -> TlsMitmRelayPolicyLayer<F> {
         TlsMitmRelayPolicyLayer {

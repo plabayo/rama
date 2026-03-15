@@ -54,6 +54,13 @@ type UdpFlowServiceFactory = Arc<
 #[derive(Clone)]
 pub struct TransparentProxyServiceContext {
     pub executor: Executor,
+    opaque_config: Option<Arc<[u8]>>,
+}
+
+impl TransparentProxyServiceContext {
+    pub fn opaque_config(&self) -> Option<&[u8]> {
+        self.opaque_config.as_deref()
+    }
 }
 
 #[derive(Default)]
@@ -61,6 +68,7 @@ pub struct TransparentProxyEngineBuilder {
     tcp_service_factory: Option<TcpFlowServiceFactory>,
     tcp_flow_buffer_size: Option<usize>,
     udp_service_factory: Option<UdpFlowServiceFactory>,
+    opaque_config: Option<Arc<[u8]>>,
     runtime: Option<tokio::runtime::Runtime>,
 }
 
@@ -125,6 +133,12 @@ impl TransparentProxyEngineBuilder {
         self.udp_service_factory(factory)
     }
 
+    #[must_use]
+    pub fn opaque_config(mut self, opaque_config: Option<Arc<[u8]>>) -> Self {
+        self.opaque_config = opaque_config;
+        self
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// define the Tokio runtime for the transparent proxy engine.
         pub fn runtime(mut self, runtime: Option<tokio::runtime::Runtime>) -> Self {
@@ -144,6 +158,7 @@ impl TransparentProxyEngineBuilder {
         let udp_service_factory = self
             .udp_service_factory
             .unwrap_or_else(|| Arc::new(default_udp_service));
+        let opaque_config = self.opaque_config;
         let runtime = self.runtime.unwrap_or_else(build_default_runtime);
 
         TransparentProxyEngine {
@@ -151,6 +166,7 @@ impl TransparentProxyEngineBuilder {
             tcp_service_factory,
             tcp_flow_buffer_size,
             udp_service_factory,
+            opaque_config,
             state: Mutex::new(EngineState::default()),
         }
     }
@@ -161,6 +177,7 @@ pub struct TransparentProxyEngine {
     tcp_service_factory: TcpFlowServiceFactory,
     tcp_flow_buffer_size: usize,
     udp_service_factory: UdpFlowServiceFactory,
+    opaque_config: Option<Arc<[u8]>>,
     state: Mutex<EngineState>,
 }
 
@@ -183,6 +200,7 @@ impl TransparentProxyEngine {
         let guard = shutdown.guard();
         let ctx = TransparentProxyServiceContext {
             executor: Executor::graceful(guard),
+            opaque_config: self.opaque_config.clone(),
         };
         let tcp_service = (self.tcp_service_factory)(ctx.clone())?;
         let udp_service = (self.udp_service_factory)(ctx)?;

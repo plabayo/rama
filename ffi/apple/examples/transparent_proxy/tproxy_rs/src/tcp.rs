@@ -42,7 +42,8 @@ use rama::{
 };
 
 use crate::{
-    demo_trace_traffic::DemoTraceTrafficLayer, tls::mitm_relay_policy::TlsMitmRelayPolicyLayer,
+    config::DemoProxyConfig, demo_trace_traffic::DemoTraceTrafficLayer,
+    tls::mitm_relay_policy::TlsMitmRelayPolicyLayer,
 };
 
 const HIJACK_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
@@ -54,8 +55,10 @@ const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE_RETRIES: u32 = 5;
 
 pub(super) fn try_new_service(
-    TransparentProxyServiceContext { executor }: TransparentProxyServiceContext,
+    ctx: TransparentProxyServiceContext,
 ) -> Result<impl Service<TcpFlow, Output = (), Error = Infallible>, BoxError> {
+    let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
+    let executor = ctx.executor;
     let (ca_crt, ca_key) = crate::tls::certs::load_or_create_mitm_ca_crt_key_pair()
         .context("load/create MITM CA Crt/Key pair")?;
     let ca_crt_pem_bytes: &[u8] = ca_crt
@@ -63,11 +66,15 @@ pub(super) fn try_new_service(
         .context("encode root ca cert to pem")?
         .leak();
 
-    let tls_mitm_relay_policy = TlsMitmRelayPolicyLayer::new();
+    let excluded_domains =
+        crate::policy::DomainExclusionList::new(demo_config.exclude_domains.iter());
+    let tls_mitm_relay_policy =
+        TlsMitmRelayPolicyLayer::new().with_excluded_domains(excluded_domains);
     let tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
 
     let mitm_svc = new_tcp_service_inner(
         executor.clone(),
+        demo_config,
         tls_mitm_relay_policy,
         tls_mitm_relay,
         ca_crt_pem_bytes,
@@ -85,6 +92,7 @@ pub(super) fn try_new_service(
 
 fn new_tcp_service_inner<Issuer, Ingress, Egress>(
     exec: Executor,
+    demo_config: DemoProxyConfig,
     tls_mitm_relay_policy: TlsMitmRelayPolicyLayer,
     tls_mitm_relay: TlsMitmRelay<Issuer>,
     ca_crt_pem_bytes: &'static [u8],
@@ -99,6 +107,7 @@ where
         let mut relay =
             HttpMitmRelay::new(exec.clone()).with_http_middleware(http_relay_middleware(
                 exec,
+                demo_config,
                 tls_mitm_relay_policy.clone(),
                 tls_mitm_relay.clone(),
                 ca_crt_pem_bytes,
@@ -132,6 +141,7 @@ where
 
 fn http_relay_middleware<S, Issuer>(
     exec: Executor,
+    demo_config: DemoProxyConfig,
     tls_mitm_relay_policy: TlsMitmRelayPolicyLayer,
     tls_mitm_relay: TlsMitmRelay<Issuer>,
     ca_crt_pem_bytes: &'static [u8],
@@ -145,10 +155,15 @@ where
     S: Service<Request, Output = Response, Error = BoxError>,
     Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone,
 {
+    let excluded_domains =
+        crate::policy::DomainExclusionList::new(demo_config.exclude_domains.iter());
     (
         MapResponseBodyLayer::new_boxed_streaming_body(),
         StreamCompressionLayer::new(),
-        crate::http::html::HtmlBadgeLayer::new(),
+        crate::http::html::HtmlBadgeLayer::new()
+            .with_enabled(demo_config.html_badge_enabled)
+            .with_badge_label(&demo_config.html_badge_label)
+            .with_excluded_domains(excluded_domains),
         DecompressionLayer::new(),
         SetResponseHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
@@ -170,6 +185,7 @@ where
                 } else {
                     new_tcp_service_inner(
                         exec,
+                        demo_config,
                         tls_mitm_relay_policy,
                         tls_mitm_relay,
                         ca_crt_pem_bytes,

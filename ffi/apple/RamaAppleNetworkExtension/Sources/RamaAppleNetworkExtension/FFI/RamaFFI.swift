@@ -156,8 +156,17 @@ private let ramaUdpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPoint
 final class RamaTransparentProxyEngineHandle {
     private var enginePtr: OpaquePointer?
 
-    init() {
-        self.enginePtr = rama_transparent_proxy_engine_new()
+    init(engineConfigJson: Data? = nil) {
+        if let engineConfigJson, !engineConfigJson.isEmpty {
+            self.enginePtr = engineConfigJson.withUnsafeBytes { raw in
+                let ptr = raw.bindMemory(to: UInt8.self).baseAddress
+                return rama_transparent_proxy_engine_new_with_config(
+                    RamaBytesView(ptr: ptr, len: raw.count)
+                )
+            }
+        } else {
+            self.enginePtr = rama_transparent_proxy_engine_new()
+        }
     }
 
     deinit {

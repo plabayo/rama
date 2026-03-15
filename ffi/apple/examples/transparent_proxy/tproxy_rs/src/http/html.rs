@@ -19,15 +19,15 @@ use rama::{
 
 use crate::policy::DomainExclusionList;
 
-const BADGE_HTML: &str = r#"<div id="rama-proxy-badge" style="position:fixed;top:16px;right:16px;z-index:2147483647;padding:10px 14px;background:rgba(17,17,17,0.92);color:#fff;font:700 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;border-radius:999px;box-shadow:0 4px 18px rgba(0,0,0,0.25);pointer-events:none">proxied by rama</div>"#;
-const BADGE_HTML_BYTES: &[u8] = BADGE_HTML.as_bytes();
 const BADGE_MARKER: &[u8] = b"id=\"rama-proxy-badge\"";
 const BODY_OPEN: &[u8] = b"<body";
 const BODY_CLOSE: &[u8] = b"</body>";
 const MAX_CONTENT_LENGTH_BYTES: usize = 1024 * 1024;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HtmlBadgeLayer {
+    enabled: bool,
+    badge_html: Vec<u8>,
     excluded_domains: DomainExclusionList,
 }
 
@@ -35,7 +35,26 @@ impl HtmlBadgeLayer {
     #[inline(always)]
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            enabled: true,
+            badge_html: badge_html("proxied by rama"),
+            excluded_domains: DomainExclusionList::default(),
+        }
+    }
+
+    pub fn with_badge_label(mut self, badge_label: impl AsRef<str>) -> Self {
+        self.badge_html = badge_html(badge_label.as_ref());
+        self
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn with_excluded_domains(mut self, excluded_domains: DomainExclusionList) -> Self {
+        self.excluded_domains = excluded_domains;
+        self
     }
 }
 
@@ -43,19 +62,31 @@ impl<S> Layer<S> for HtmlBadgeLayer {
     type Service = HtmlBadgeService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        let Self { excluded_domains } = self;
+        let Self {
+            enabled,
+            badge_html,
+            excluded_domains,
+        } = self;
 
         HtmlBadgeService {
             inner,
+            enabled: *enabled,
+            badge_html: badge_html.clone(),
             excluded_domains: excluded_domains.clone(),
         }
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        let Self { excluded_domains } = self;
+        let Self {
+            enabled,
+            badge_html,
+            excluded_domains,
+        } = self;
 
         HtmlBadgeService {
             inner,
+            enabled,
+            badge_html,
             excluded_domains,
         }
     }
@@ -64,6 +95,8 @@ impl<S> Layer<S> for HtmlBadgeLayer {
 #[derive(Debug, Clone)]
 pub struct HtmlBadgeService<S> {
     inner: S,
+    enabled: bool,
+    badge_html: Vec<u8>,
     excluded_domains: DomainExclusionList,
 }
 
@@ -84,6 +117,10 @@ where
         let req_uri = req.uri().clone();
 
         let response = self.inner.serve(req).await?;
+
+        if !self.enabled {
+            return Ok(response.map(Body::new));
+        }
 
         if req_method == Method::HEAD {
             tracing::debug!(
@@ -120,7 +157,7 @@ where
             .context("collect HTML response body for badge injection")?
             .to_bytes();
 
-        let updated_html = inject_badge(html.as_ref());
+        let updated_html = inject_badge(html.as_ref(), &self.badge_html);
 
         if updated_html.is_none() {
             return Ok(Response::from_parts(parts, Body::from(html)));
@@ -162,7 +199,7 @@ fn should_rewrite<B>(response: &Response<B>) -> bool {
     content_length.0 <= MAX_CONTENT_LENGTH_BYTES as u64
 }
 
-fn inject_badge(html: &[u8]) -> Option<Vec<u8>> {
+fn inject_badge(html: &[u8], badge_html: &[u8]) -> Option<Vec<u8>> {
     if submatch_ignore_ascii_case(html, BADGE_MARKER) {
         return None;
     }
@@ -171,14 +208,14 @@ fn inject_badge(html: &[u8]) -> Option<Vec<u8>> {
         && let Some(body_end) = html[body_start..].iter().position(|byte| *byte == b'>')
     {
         let insert_at = body_start + body_end + 1;
-        return Some(insert_bytes(html, insert_at, BADGE_HTML_BYTES));
+        return Some(insert_bytes(html, insert_at, badge_html));
     }
 
     if let Some(body_end) = contains_ignore_ascii_case(html, BODY_CLOSE) {
-        return Some(insert_bytes(html, body_end, BADGE_HTML_BYTES));
+        return Some(insert_bytes(html, body_end, badge_html));
     }
 
-    Some(insert_bytes(html, html.len(), BADGE_HTML_BYTES))
+    Some(insert_bytes(html, html.len(), badge_html))
 }
 
 fn insert_bytes(html: &[u8], index: usize, insertion: &[u8]) -> Vec<u8> {
@@ -187,6 +224,13 @@ fn insert_bytes(html: &[u8], index: usize, insertion: &[u8]) -> Vec<u8> {
     output.extend_from_slice(insertion);
     output.extend_from_slice(&html[index..]);
     output
+}
+
+fn badge_html(label: &str) -> Vec<u8> {
+    format!(
+        r#"<div id="rama-proxy-badge" style="position:fixed;top:16px;right:16px;z-index:2147483647;padding:10px 14px;background:rgba(17,17,17,0.92);color:#fff;font:700 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;border-radius:999px;box-shadow:0 4px 18px rgba(0,0,0,0.25);pointer-events:none">{label}</div>"#,
+    )
+    .into_bytes()
 }
 
 #[cfg(test)]
@@ -203,25 +247,29 @@ mod tests {
         service::service_fn,
     };
 
+    fn default_badge_html() -> Vec<u8> {
+        badge_html("proxied by rama")
+    }
+
     #[test]
     fn inject_badge_after_body_open_tag() {
         let html = b"<html><body class=\"demo\">\xffHello</body></html>";
-        let updated = inject_badge(html).expect("badge should be injected");
+        let badge_html = default_badge_html();
+        let updated = inject_badge(html, &badge_html).expect("badge should be injected");
 
         assert!(updated.starts_with(b"<html><body class=\"demo\">"));
         assert!(updated.ends_with(b"\xffHello</body></html>"));
-        assert!(
-            updated
-                .windows(BADGE_HTML_BYTES.len())
-                .any(|w| w == BADGE_HTML_BYTES)
-        );
+        assert!(updated.windows(badge_html.len()).any(|w| w == badge_html));
     }
 
     #[test]
     fn inject_badge_is_idempotent() {
-        let html = format!("<html><body>{BADGE_HTML}hello</body></html>");
+        let html = format!(
+            "<html><body>{}hello</body></html>",
+            String::from_utf8_lossy(&default_badge_html())
+        );
 
-        assert!(inject_badge(html.as_bytes()).is_none());
+        assert!(inject_badge(html.as_bytes(), &default_badge_html()).is_none());
     }
 
     #[tokio::test]
@@ -250,10 +298,8 @@ mod tests {
         assert!(response.headers().get(ETAG).is_none());
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(
-            body.windows(BADGE_HTML_BYTES.len())
-                .any(|w| w == BADGE_HTML_BYTES)
-        );
+        let badge_html = default_badge_html();
+        assert!(body.windows(badge_html.len()).any(|w| w == badge_html));
         assert_eq!(content_length.0, body.len() as u64);
     }
 
@@ -331,11 +377,12 @@ mod tests {
             .await
             .unwrap()
             .to_bytes();
+        let badge_html = default_badge_html();
 
         assert!(
             decompressed
-                .windows(BADGE_HTML_BYTES.len())
-                .any(|w| w == BADGE_HTML_BYTES),
+                .windows(badge_html.len())
+                .any(|w| w == badge_html.as_slice()),
             "output: {:?}",
             String::from_utf8_lossy(&decompressed)
         );

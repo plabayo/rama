@@ -10,7 +10,9 @@ use rama::{
     },
     telemetry::tracing,
 };
+use std::sync::Arc;
 
+mod config;
 mod demo_trace_traffic;
 mod http;
 mod policy;
@@ -124,9 +126,32 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
 ///
 /// This function is FFI entrypoint and may be called from Swift/C.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_new() -> *mut RamaTransparentProxyEngine {
-    let engine_builder =
-        TransparentProxyEngineBuilder::new()
-            .with_udp_service_factory(|_ctx| Ok(self::udp::new_service()));
+    unsafe {
+        rama_transparent_proxy_engine_new_with_config(BytesView {
+            ptr: std::ptr::null(),
+            len: 0,
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// This function is FFI entrypoint and may be called from Swift/C.
+/// `engine_config` is borrowed for the duration of the call.
+pub unsafe extern "C" fn rama_transparent_proxy_engine_new_with_config(
+    engine_config: BytesView,
+) -> *mut RamaTransparentProxyEngine {
+    let opaque_config = if engine_config.ptr.is_null() || engine_config.len == 0 {
+        None
+    } else {
+        // SAFETY: pointer validity is guaranteed by FFI contract.
+        Some(Arc::<[u8]>::from(unsafe { engine_config.into_slice() }))
+    };
+
+    let engine_builder = TransparentProxyEngineBuilder::new()
+        .opaque_config(opaque_config)
+        .with_udp_service_factory(|_ctx| Ok(self::udp::new_service()));
 
     let engine = engine_builder
         .with_tcp_service_factory(|ctx| Ok(self::tcp::try_new_service(ctx)?.boxed()))
@@ -181,11 +206,14 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_start(
         }
         Err(err) => {
             tracing::error!("rama transparent proxy engine failed to start: {err}");
-            err.to_string().into_bytes().try_into().unwrap_or(BytesOwned {
-                ptr: std::ptr::null_mut(),
-                len: 0,
-                cap: 0,
-            })
+            err.to_string()
+                .into_bytes()
+                .try_into()
+                .unwrap_or(BytesOwned {
+                    ptr: std::ptr::null_mut(),
+                    len: 0,
+                    cap: 0,
+                })
         }
     }
 }

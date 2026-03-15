@@ -244,6 +244,12 @@ bool rama_transparent_proxy_should_intercept_flow(
 /// Returns NULL on failure.
 RamaTransparentProxyEngine* rama_transparent_proxy_engine_new(void);
 
+/// Allocate a new transparent proxy engine with an optional opaque config blob.
+///
+/// `engine_config` is borrowed for the duration of the call only.
+/// Returns NULL on failure.
+RamaTransparentProxyEngine* rama_transparent_proxy_engine_new_with_config(RamaBytesView engine_config);
+
 /// Free an engine previously returned by `rama_transparent_proxy_engine_new`.
 ///
 /// NULL is allowed and ignored.

@@ -3,6 +3,20 @@ import Foundation
 import NetworkExtension
 import OSLog
 
+private struct DemoProxySettings: Equatable {
+    var htmlBadgeEnabled = true
+    var htmlBadgeLabel = "proxied by rama"
+    var excludeDomains = [
+        "detectportal.firefox.com",
+        "connectivitycheck.gstatic.com",
+        "captive.apple.com",
+    ]
+
+    var isDefault: Bool {
+        self == Self()
+    }
+}
+
 final class HostController: NSObject, NSApplicationDelegate {
     private let extensionBundleId = "org.ramaproxy.example.tproxy.provider"
     private let managerDescription = "Rama Transparent Proxy Example"
@@ -15,6 +29,10 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var statusMenuItem: NSMenuItem?
     private var startMenuItem: NSMenuItem?
     private var stopMenuItem: NSMenuItem?
+    private var badgeEnabledMenuItem: NSMenuItem?
+    private var badgeLabelMenuItem: NSMenuItem?
+    private var excludeDomainsMenuItem: NSMenuItem?
+    private var resetDemoSettingsMenuItem: NSMenuItem?
     private var resetMenuItem: NSMenuItem?
 
     private var activeManager: NETransparentProxyManager?
@@ -22,6 +40,7 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var statusTimer: DispatchSourceTimer?
     private var lastStatus: NEVPNStatus?
     private var lastLoggedDisconnectSignature: String?
+    private var demoSettings = DemoProxySettings()
     private lazy var resetProfileOnLaunch =
         ProcessInfo.processInfo.arguments.contains("--reset-profile-on-launch")
 
@@ -70,6 +89,54 @@ final class HostController: NSObject, NSApplicationDelegate {
         resetProxyConfigurationAndStart()
     }
 
+    @objc private func toggleHtmlBadgeAction(_: Any?) {
+        demoSettings.htmlBadgeEnabled.toggle()
+        updateDemoSettingsMenu()
+        applyDemoSettings()
+    }
+
+    @objc private func editBadgeLabelAction(_: Any?) {
+        guard let value = promptForText(
+            title: "Badge Label",
+            message: "Choose the HTML badge label shown on rewritten pages.",
+            defaultValue: demoSettings.htmlBadgeLabel
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !value.isEmpty
+        else {
+            return
+        }
+
+        demoSettings.htmlBadgeLabel = value
+        updateDemoSettingsMenu()
+        applyDemoSettings()
+    }
+
+    @objc private func editExcludeDomainsAction(_: Any?) {
+        let defaultValue = demoSettings.excludeDomains.joined(separator: ", ")
+        guard let value = promptForText(
+            title: "Excluded Domains",
+            message: "Comma-separated domains that should bypass the demo MITM behavior.",
+            defaultValue: defaultValue
+        )
+        else {
+            return
+        }
+
+        let domains = value
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        demoSettings.excludeDomains = domains.isEmpty ? DemoProxySettings().excludeDomains : domains
+        updateDemoSettingsMenu()
+        applyDemoSettings()
+    }
+
+    @objc private func resetDemoSettingsAction(_: Any?) {
+        demoSettings = DemoProxySettings()
+        updateDemoSettingsMenu()
+        applyDemoSettings()
+    }
+
     @objc private func refreshAction(_: Any?) {
         refreshManagerAndStatus()
     }
@@ -102,6 +169,42 @@ final class HostController: NSObject, NSApplicationDelegate {
         stopItem.target = self
         menu.addItem(stopItem)
 
+        menu.addItem(NSMenuItem.separator())
+
+        let badgeEnabledItem = NSMenuItem(
+            title: "HTML Badge Enabled",
+            action: #selector(toggleHtmlBadgeAction(_:)),
+            keyEquivalent: ""
+        )
+        badgeEnabledItem.target = self
+        menu.addItem(badgeEnabledItem)
+
+        let badgeLabelItem = NSMenuItem(
+            title: "Badge Label…",
+            action: #selector(editBadgeLabelAction(_:)),
+            keyEquivalent: ""
+        )
+        badgeLabelItem.target = self
+        menu.addItem(badgeLabelItem)
+
+        let excludeDomainsItem = NSMenuItem(
+            title: "Excluded Domains…",
+            action: #selector(editExcludeDomainsAction(_:)),
+            keyEquivalent: ""
+        )
+        excludeDomainsItem.target = self
+        menu.addItem(excludeDomainsItem)
+
+        let resetDemoSettingsItem = NSMenuItem(
+            title: "Reset Demo Settings",
+            action: #selector(resetDemoSettingsAction(_:)),
+            keyEquivalent: ""
+        )
+        resetDemoSettingsItem.target = self
+        menu.addItem(resetDemoSettingsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let resetItem = NSMenuItem(
             title: "Reset Profile", action: #selector(resetProfileAction(_:)), keyEquivalent: "")
         resetItem.target = self
@@ -125,7 +228,12 @@ final class HostController: NSObject, NSApplicationDelegate {
         self.statusMenuItem = statusItemMenu
         self.startMenuItem = startItem
         self.stopMenuItem = stopItem
+        self.badgeEnabledMenuItem = badgeEnabledItem
+        self.badgeLabelMenuItem = badgeLabelItem
+        self.excludeDomainsMenuItem = excludeDomainsItem
+        self.resetDemoSettingsMenuItem = resetDemoSettingsItem
         self.resetMenuItem = resetItem
+        updateDemoSettingsMenu()
     }
 
     private func refreshManagerAndStatus() {
@@ -136,6 +244,7 @@ final class HostController: NSObject, NSApplicationDelegate {
                 return
             }
 
+            self.syncDemoSettings(from: manager.protocolConfiguration as? NETunnelProviderProtocol)
             self.activeManager = manager
             self.installStatusObserver(manager: manager)
             self.startStatusTimer(manager: manager)
@@ -220,6 +329,7 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     private func loadOrCreateAndConfigureManager(
         forceReinstall: Bool = false,
+        preserveCurrentDemoSettings: Bool = false,
         completion: @escaping (NETransparentProxyManager?) -> Void
     ) {
         NETransparentProxyManager.loadAllFromPreferences { managers, error in
@@ -230,6 +340,11 @@ final class HostController: NSObject, NSApplicationDelegate {
             }
 
             let existingManager = self.selectManager(from: managers)
+            if !preserveCurrentDemoSettings {
+                self.syncDemoSettings(
+                    from: existingManager?.protocolConfiguration as? NETunnelProviderProtocol
+                )
+            }
             if forceReinstall {
                 let managersToRemove = self.matchingManagers(from: managers)
                 if managersToRemove.isEmpty {
@@ -289,12 +404,13 @@ final class HostController: NSObject, NSApplicationDelegate {
             changed = true
         }
 
-        let providerConfiguration = proto.providerConfiguration ?? [:]
-        if !providerConfiguration.isEmpty {
-            proto.providerConfiguration = [:]
-            changed = true
-        } else if proto.providerConfiguration == nil {
-            proto.providerConfiguration = [:]
+        let expectedProviderConfiguration = currentProviderConfiguration()
+        let existingEngineConfigJson = proto.providerConfiguration?["engineConfigJson"] as? String
+        let expectedEngineConfigJson = expectedProviderConfiguration["engineConfigJson"] as? String
+        if proto.providerConfiguration == nil
+            || existingEngineConfigJson != expectedEngineConfigJson
+        {
+            proto.providerConfiguration = expectedProviderConfiguration
             changed = true
         }
 
@@ -325,7 +441,176 @@ final class HostController: NSObject, NSApplicationDelegate {
 
         return proto.providerBundleIdentifier == extensionBundleId
             && proto.serverAddress == managerServerAddress
-            && (proto.providerConfiguration ?? [:]).isEmpty
+            && (proto.providerConfiguration?["engineConfigJson"] as? String)
+                == (currentProviderConfiguration()["engineConfigJson"] as? String)
+    }
+
+    private func currentProviderConfiguration() -> [String: Any] {
+        guard let engineConfigJson = currentEngineConfigJson() else {
+            return [:]
+        }
+
+        return ["engineConfigJson": engineConfigJson]
+    }
+
+    private func currentEngineConfigJson() -> String? {
+        if demoSettings.isDefault {
+            return nil
+        }
+
+        let config: [String: Any] = [
+            "html_badge_enabled": demoSettings.htmlBadgeEnabled,
+            "html_badge_label": demoSettings.htmlBadgeLabel,
+            "exclude_domains": demoSettings.excludeDomains,
+        ]
+
+        guard JSONSerialization.isValidJSONObject(config),
+            let data = try? JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            logErrorText("failed to encode engineConfigJson from host args/env")
+            return nil
+        }
+
+        log("engineConfigJson=\(json)")
+        return json
+    }
+
+    private func syncDemoSettings(from proto: NETunnelProviderProtocol?) {
+        demoSettings = Self.demoSettings(from: proto) ?? DemoProxySettings()
+        updateDemoSettingsMenu()
+    }
+
+    private static func demoSettings(from proto: NETunnelProviderProtocol?) -> DemoProxySettings? {
+        guard let json = proto?.providerConfiguration?["engineConfigJson"] as? String,
+            let data = json.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+
+        var settings = DemoProxySettings()
+        if let htmlBadgeEnabled = object["html_badge_enabled"] as? Bool {
+            settings.htmlBadgeEnabled = htmlBadgeEnabled
+        }
+        if let htmlBadgeLabel = object["html_badge_label"] as? String,
+            !htmlBadgeLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            settings.htmlBadgeLabel = htmlBadgeLabel
+        }
+        if let excludeDomains = object["exclude_domains"] as? [String] {
+            let domains = excludeDomains
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !domains.isEmpty {
+                settings.excludeDomains = domains
+            }
+        }
+        return settings
+    }
+
+    private func updateDemoSettingsMenu() {
+        badgeEnabledMenuItem?.state = demoSettings.htmlBadgeEnabled ? .on : .off
+        badgeLabelMenuItem?.title = "Badge Label… (\(demoSettings.htmlBadgeLabel))"
+        excludeDomainsMenuItem?.title =
+            "Excluded Domains… (\(demoSettings.excludeDomains.count))"
+    }
+
+    private func applyDemoSettings() {
+        let shouldRestart = {
+            guard let activeManager else {
+                return false
+            }
+            switch activeManager.connection.status {
+            case .connected, .connecting, .reasserting:
+                return true
+            default:
+                return false
+            }
+        }()
+
+        loadOrCreateAndConfigureManager(preserveCurrentDemoSettings: true) { [weak self] manager in
+            guard let self else { return }
+            guard let manager else {
+                self.setStatus(status: .invalid, detail: "configuration failed")
+                return
+            }
+
+            self.activeManager = manager
+            self.installStatusObserver(manager: manager)
+            self.startStatusTimer(manager: manager)
+            if shouldRestart {
+                self.log("demo settings changed; restarting proxy to apply")
+                self.stopProxyAndWaitForDisconnect(manager: manager) { [weak self] in
+                    self?.startProxy()
+                }
+                return
+            }
+
+            self.setStatus(status: manager.connection.status, detail: "demo settings saved")
+        }
+    }
+
+    private func stopProxyAndWaitForDisconnect(
+        manager: NETransparentProxyManager,
+        completion: @escaping () -> Void
+    ) {
+        self.log("calling stopVPNTunnel")
+        manager.connection.stopVPNTunnel()
+        self.setStatus(status: manager.connection.status, detail: "applying demo settings")
+
+        waitUntilDisconnected(manager: manager, remainingAttempts: 40, completion: completion)
+    }
+
+    private func waitUntilDisconnected(
+        manager: NETransparentProxyManager,
+        remainingAttempts: Int,
+        completion: @escaping () -> Void
+    ) {
+        switch manager.connection.status {
+        case .disconnected, .invalid:
+            completion()
+        case .disconnecting, .connected, .connecting, .reasserting:
+            guard remainingAttempts > 0 else {
+                log("disconnect wait timed out; attempting restart anyway")
+                completion()
+                return
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self else { return }
+                self.waitUntilDisconnected(
+                    manager: manager,
+                    remainingAttempts: remainingAttempts - 1,
+                    completion: completion
+                )
+            }
+        @unknown default:
+            completion()
+        }
+    }
+
+    private func promptForText(
+        title: String,
+        message: String,
+        defaultValue: String
+    ) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let textField = NSTextField(string: defaultValue)
+        textField.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = textField
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+
+        return textField.stringValue
     }
 
     private func save(
@@ -564,6 +849,10 @@ final class HostController: NSObject, NSApplicationDelegate {
         hostLogger.error(
             "\(prefix, privacy: .public): domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) description=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
         )
+    }
+
+    private func logErrorText(_ message: String) {
+        hostLogger.error("\(message, privacy: .public)")
     }
 
     private func classifyDisconnectReason(_ error: NSError) -> String {

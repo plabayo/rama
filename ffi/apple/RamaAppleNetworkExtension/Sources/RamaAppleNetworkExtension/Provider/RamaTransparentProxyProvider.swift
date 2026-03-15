@@ -426,7 +426,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
 
             self.logInfo("setTunnelNetworkSettings ok")
-            self.engine = RamaTransparentProxyEngineHandle()
+            let engineConfigJson = Self.engineConfigJson(
+                protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
+                startOptions: options
+            )
+            if let engineConfigJson {
+                self.logInfo("engine config json bytes=\(engineConfigJson.count)")
+            }
+            self.engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
             self.logInfo("engine created")
             do {
                 try self.engine?.start()
@@ -720,6 +727,28 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     private static func networkEndpoint(from network: String?) -> NWHostEndpoint? {
         guard let network, !network.isEmpty else { return nil }
         return NWHostEndpoint(hostname: network, port: "0")
+    }
+
+    private static func engineConfigJson(
+        protocolConfiguration: NETunnelProviderProtocol?,
+        startOptions: [String: Any]?
+    ) -> Data? {
+        if let json = startOptions?["engineConfigJson"] as? Data, !json.isEmpty {
+            return json
+        }
+        if let json = startOptions?["engineConfigJson"] as? String, !json.isEmpty {
+            return Data(json.utf8)
+        }
+
+        let providerConfiguration = protocolConfiguration?.providerConfiguration
+        if let json = providerConfiguration?["engineConfigJson"] as? Data, !json.isEmpty {
+            return json
+        }
+        if let json = providerConfiguration?["engineConfigJson"] as? String, !json.isEmpty {
+            return Data(json.utf8)
+        }
+
+        return nil
     }
 
     private static func networkRuleProtocol(_ raw: UInt32) -> NENetworkRule.`Protocol` {
