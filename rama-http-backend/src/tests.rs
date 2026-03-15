@@ -1,5 +1,9 @@
 use std::{
     convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -153,6 +157,23 @@ async fn mitm_relay_server_svc_fn(req: Request) -> Result<Response, Infallible> 
         .map(|id| format!("a random response body ({id})"))
         .unwrap_or_else(|| "a random response body".to_owned());
     Ok(Response::new(Body::from(body)))
+}
+
+async fn mitm_relay_server_close_after_first_request_svc_fn(
+    req: Request,
+    request_count: Arc<AtomicUsize>,
+) -> Result<Response, Infallible> {
+    assert!(req.headers().contains_key("x-observed-req"));
+
+    let id = request_count.fetch_add(1, Ordering::SeqCst);
+    let mut response = Response::new(Body::from(format!("single response body ({id})")));
+    if id == 0 {
+        response.headers_mut().insert(
+            HeaderName::from_static("connection"),
+            HeaderValue::from_static("close"),
+        );
+    }
+    Ok(response)
 }
 
 fn create_test_request(version: Version) -> Request {
@@ -324,4 +345,86 @@ async fn test_http11_mitm_relay_handles_4_concurrent_requests() {
 #[tokio::test]
 async fn test_http2_mitm_relay_handles_200_concurrent_requests() {
     test_mitm_relay_concurrency_inner(Version::HTTP_2, 200).await;
+}
+
+#[tokio::test]
+async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+    let request_count = Arc::new(AtomicUsize::new(0));
+
+    graceful.spawn_task_fn({
+        let request_count = request_count.clone();
+        async move |guard| {
+            HttpServer::auto(Executor::graceful(guard))
+                .service(service_fn(move |req| {
+                    let request_count = request_count.clone();
+                    async move {
+                        mitm_relay_server_close_after_first_request_svc_fn(req, request_count).await
+                    }
+                }))
+                .serve(MockSocket::new(server_stream))
+                .await
+                .unwrap();
+        }
+    });
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .with_http_middleware((
+                ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+                SetRequestHeaderLayer::overriding(
+                    HeaderName::from_static("x-observed-req"),
+                    HeaderValue::from_static("1"),
+                ),
+                SetResponseHeaderLayer::overriding(
+                    HeaderName::from_static("x-observed-res"),
+                    HeaderValue::from_static("1"),
+                ),
+                ArcLayer::new(),
+            ))
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
+            .await
+            .unwrap();
+    });
+
+    let request = create_test_request(Version::HTTP_11);
+    let conn = http_connect(
+        MockSocket::new(client_stream),
+        request,
+        Executor::graceful(graceful.guard()),
+    )
+    .await
+    .unwrap()
+    .conn;
+
+    let response = conn
+        .serve(create_test_request(Version::HTTP_11))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("connection")
+            .and_then(|v| v.to_str().ok()),
+        Some("close")
+    );
+
+    let second = conn.serve(create_test_request(Version::HTTP_11)).await;
+    assert!(
+        second.is_err(),
+        "downstream connection should close after upstream close"
+    );
+
+    drop(conn);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
 }

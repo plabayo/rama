@@ -1,10 +1,10 @@
-use std::convert::Infallible;
+use std::convert::TryFrom;
 
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::ExtensionsMut,
-    futures::{GracefulStream, StreamExt},
+    futures::{self, GracefulStream, StreamExt},
     graceful::{Shutdown, ShutdownGuard},
     io::{BridgeIo, Io},
     layer::{
@@ -17,16 +17,18 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http::{
-    Body, HeaderName, HeaderValue, Request, Response, StatusCode,
+    Body, HeaderName, HeaderValue, Request, Response, StatusCode, Version,
     service::web::response::IntoResponse,
 };
-use rama_http_core::server::conn::auto::Builder as AutoConnBuilder;
-use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
-use rama_http_core::server::conn::http2::Builder as H2ConnBuilder;
+use rama_http_core::server::conn::{
+    auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
+    http2::Builder as H2ConnBuilder,
+};
 use rama_net::client::EstablishedClientConnection;
 use rama_utils::macros::generate_set_and_with;
 
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -61,6 +63,21 @@ impl DefaultErrorResponse {
             StatusCode::BAD_GATEWAY,
         )
             .into_response()
+    }
+
+    #[inline(always)]
+    fn response_for_version(version: Version) -> Response {
+        let mut response = Self::response();
+        if matches!(
+            version,
+            Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11
+        ) {
+            response.headers_mut().insert(
+                HeaderName::from_static("connection"),
+                HeaderValue::from_static("close"),
+            );
+        }
+        response
     }
 }
 
@@ -166,7 +183,8 @@ where
     Ingress: Io + Unpin + ExtensionsMut,
     Egress: Io + Unpin + ExtensionsMut,
     M: Layer<HttpClientService<Body>> + Send + Sync + 'static + Clone,
-    M::Service: Service<Request, Output = Response, Error = Infallible> + Clone,
+    M::Service: Service<Request, Output = Response> + Clone,
+    <M::Service as Service<Request>>::Error: Into<BoxError>,
 {
     type Output = ();
     type Error = BoxError;
@@ -197,7 +215,7 @@ where
             }
         });
 
-        let _cancel_guard = token.drop_guard();
+        let _cancel_guard = token.clone().drop_guard();
 
         let (req_tx, req_rx) = tokio::sync::mpsc::channel(
             self.relay_buffer
@@ -206,8 +224,10 @@ where
         );
 
         let middleware = self.middleware.clone();
+        let close_ingress = token.clone();
         graceful.spawn_task_fn(async move |guard| {
-            http_relay_service_egress(egress_stream, guard, req_rx, middleware).await;
+            http_relay_service_egress(egress_stream, guard, req_rx, middleware, close_ingress)
+                .await;
             tracing::trace!("http_relay_service_egress = done");
         });
 
@@ -218,11 +238,14 @@ where
                 ingress_stream,
                 service_fn(move |req: Request| {
                     let req_tx = req_tx.clone();
+                    let close_ingress = token.clone();
                     async move {
+                        let version = req.version();
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         if let Err(err) = req_tx.send(ReqJob { req, reply: tx }).await {
                             tracing::debug!("failed to schedule http request for MITM relay: {err}");
-                            return Ok(DefaultErrorResponse::response());
+                            close_ingress.cancel();
+                            return Ok(DefaultErrorResponse::response_for_version(version));
                         }
                         match rx.await {
                             Ok(resp) => Ok(resp),
@@ -230,7 +253,8 @@ where
                                 tracing::debug!(
                                     "failed to receive http response from MITM relay executor: {err}"
                                 );
-                                Ok(DefaultErrorResponse::response())
+                                close_ingress.cancel();
+                                Ok(DefaultErrorResponse::response_for_version(version))
                             }
                         }
                     }
@@ -250,30 +274,80 @@ struct ReqJob {
     reply: oneshot::Sender<Response>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RelayMode {
+    Http1,
+    Http2,
+}
+
+impl RelayMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Http1 => "http1",
+            Self::Http2 => "http2",
+        }
+    }
+}
+
+impl TryFrom<Version> for RelayMode {
+    type Error = BoxError;
+
+    fn try_from(version: Version) -> Result<Self, Self::Error> {
+        match version {
+            Version::HTTP_2 => Ok(Self::Http2),
+            Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => Ok(Self::Http1),
+            version => Err(BoxError::from("unsupported request version for MITM relay")
+                .context_debug_field("version", version)),
+        }
+    }
+}
+
 async fn http_relay_service_egress<Egress, Middleware>(
     egress_stream: Egress,
     guard: ShutdownGuard,
     req_rx: mpsc::Receiver<ReqJob>,
     middleware: Middleware,
+    close_ingress: CancellationToken,
 ) where
     Egress: Io + Unpin + ExtensionsMut,
     Middleware: Layer<HttpClientService<Body>>,
-    Middleware::Service: Service<Request, Output = Response, Error = Infallible> + Clone,
+    Middleware::Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
 {
     let cancelled = std::pin::pin!(guard.clone_weak().into_cancelled());
     let mut req_stream = GracefulStream::new(cancelled, ReceiverStream::new(req_rx));
 
-    let Some(ReqJob { req, reply }) = req_stream.next().await else {
+    let Some(first_job @ ReqJob { .. }) = req_stream.next().await else {
         tracing::debug!("failed to receive initial request for HTTP MITM relay... return early");
         return;
     };
+
+    let first_request_version = first_job.req.version();
+    let relay_mode = match RelayMode::try_from(first_request_version) {
+        Ok(mode) => mode,
+        Err(err) => {
+            tracing::debug!("failed to derive relay mode from initial request version: {err}");
+            close_ingress.cancel();
+            let _ = first_job
+                .reply
+                .send(DefaultErrorResponse::response_for_version(
+                    first_request_version,
+                ));
+            return;
+        }
+    };
+    let ReqJob { req, reply } = first_job;
+    let req_version = req.version();
 
     let (req, core_client) = match http_connect(egress_stream, req, Executor::graceful(guard)).await
     {
         Ok(EstablishedClientConnection { input, conn }) => (input, conn),
         Err(err) => {
             tracing::debug!("failed to establish egress HTTP connection: {err}");
-            if reply.send(DefaultErrorResponse::response()).is_err() {
+            close_ingress.cancel();
+            if reply
+                .send(DefaultErrorResponse::response_for_version(req_version))
+                .is_err()
+            {
                 tracing::trace!("failed to send BAD_GATEWAY response (svc error: {err})");
             }
             return;
@@ -282,26 +356,195 @@ async fn http_relay_service_egress<Egress, Middleware>(
 
     let client = middleware.into_layer(core_client);
 
-    let mut job_req = req;
-    let mut job_reply = reply;
-
     tracing::debug!("egress http side ready; HTTP MITM relay loop ready and starting");
+    tracing::debug!(
+        mode = relay_mode.as_str(),
+        ?first_request_version,
+        "http mitm relay selected upstream driver mode"
+    );
+
+    let first_job = ReqJob { req, reply };
+
+    match relay_mode {
+        RelayMode::Http1 => {
+            run_http1_relay_loop(req_stream, client, first_job, close_ingress).await;
+        }
+        RelayMode::Http2 => {
+            run_http2_relay_loop(req_stream, client, first_job, close_ingress).await;
+        }
+    }
+}
+
+async fn run_http1_relay_loop<Stream, Client>(
+    mut req_stream: Stream,
+    client: Client,
+    mut job: ReqJob,
+    close_ingress: CancellationToken,
+) where
+    Stream: futures::Stream<Item = ReqJob> + Unpin,
+    Client: Service<Request, Output = Response, Error: Into<BoxError>>,
+{
+    let mut request_id = 0_u64;
 
     loop {
-        let client = client.clone();
-        tokio::spawn(async move {
-            let Ok(resp) = client.serve(job_req).await;
-            if job_reply.send(resp).is_err() {
-                tracing::trace!("failed to send received response");
-            }
-        });
+        if !serve_relay_job(&client, job, request_id, close_ingress.clone()).await {
+            tracing::debug!(
+                mode = RelayMode::Http1.as_str(),
+                relay.request_id = request_id,
+                "stopping HTTP/1 MITM relay loop after upstream failure"
+            );
+            return;
+        }
+        request_id += 1;
 
-        let Some(job) = req_stream.next().await else {
-            tracing::debug!("(ingress) request stream exhausted; abort relay loop");
+        let Some(next_job) = req_stream.next().await else {
+            tracing::debug!(
+                mode = RelayMode::Http1.as_str(),
+                "request stream exhausted; HTTP MITM relay loop finished"
+            );
             return;
         };
 
-        job_req = job.req;
-        job_reply = job.reply;
+        job = next_job;
     }
+}
+
+async fn run_http2_relay_loop<Stream, Client>(
+    mut req_stream: Stream,
+    client: Client,
+    first_job: ReqJob,
+    close_ingress: CancellationToken,
+) where
+    Stream: rama_core::futures::Stream<Item = ReqJob> + Unpin,
+    Client: Service<Request, Output = Response> + Clone + Send + 'static,
+    Client::Error: Into<BoxError> + Send,
+{
+    let mut tasks = JoinSet::new();
+    let mut request_id = 0_u64;
+
+    spawn_relay_job(
+        &mut tasks,
+        client.clone(),
+        first_job,
+        request_id,
+        close_ingress.clone(),
+    );
+    request_id += 1;
+
+    while let Some(job) = req_stream.next().await {
+        if close_ingress.is_cancelled() {
+            tracing::debug!(
+                mode = RelayMode::Http2.as_str(),
+                "ingress shutdown already requested; stop scheduling new HTTP/2 relay jobs"
+            );
+            break;
+        }
+
+        spawn_relay_job(
+            &mut tasks,
+            client.clone(),
+            job,
+            request_id,
+            close_ingress.clone(),
+        );
+        request_id += 1;
+    }
+
+    tracing::debug!(
+        mode = RelayMode::Http2.as_str(),
+        in_flight = tasks.len(),
+        "request stream exhausted; draining in-flight HTTP MITM relay tasks"
+    );
+
+    while let Some(join_result) = tasks.join_next().await {
+        if let Err(err) = join_result {
+            tracing::debug!("http2 relay task failed to join cleanly: {err}");
+        }
+    }
+}
+
+fn spawn_relay_job<Client>(
+    tasks: &mut JoinSet<()>,
+    client: Client,
+    job: ReqJob,
+    request_id: u64,
+    close_ingress: CancellationToken,
+) where
+    Client: Service<Request, Output = Response, Error: Into<BoxError> + Send> + Send + 'static,
+{
+    tasks.spawn(async move {
+        let _ = serve_relay_job(&client, job, request_id, close_ingress).await;
+    });
+}
+
+async fn serve_relay_job<Client>(
+    client: &Client,
+    job: ReqJob,
+    request_id: u64,
+    close_ingress: CancellationToken,
+) -> bool
+where
+    Client: Service<Request, Output = Response, Error: Into<BoxError>>,
+{
+    let ReqJob { req, reply } = job;
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let version = req.version();
+
+    tracing::trace!(
+        relay.request_id = request_id,
+        http.request.method = %method,
+        url.full = %uri,
+        ?version,
+        "dispatching request on MITM relay egress"
+    );
+
+    let resp = match client.serve(req).await {
+        Ok(resp) => resp,
+        Err(err) => {
+            let err = err.into();
+            tracing::debug!(
+                relay.request_id = request_id,
+                http.request.method = %method,
+                url.full = %uri,
+                ?version,
+                "upstream MITM relay request failed: {err}"
+            );
+            close_ingress.cancel();
+            if reply
+                .send(DefaultErrorResponse::response_for_version(version))
+                .is_err()
+            {
+                tracing::trace!(
+                    relay.request_id = request_id,
+                    http.request.method = %method,
+                    url.full = %uri,
+                    ?version,
+                    "failed to send fallback response after upstream MITM relay failure"
+                );
+            }
+            return false;
+        }
+    };
+
+    tracing::trace!(
+        relay.request_id = request_id,
+        http.request.method = %method,
+        url.full = %uri,
+        ?version,
+        http.response.status_code = resp.status().as_u16(),
+        "received response from MITM relay egress"
+    );
+
+    if reply.send(resp).is_err() {
+        tracing::trace!(
+            relay.request_id = request_id,
+            http.request.method = %method,
+            url.full = %uri,
+            ?version,
+            "failed to send received response back to ingress"
+        );
+    }
+
+    true
 }

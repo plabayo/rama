@@ -18,12 +18,12 @@ build-tproxy-app:
 [working-directory: './tproxy_app']
 build-tproxy-app-with-signing:
     xcodegen generate && \
-    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug build
+    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug clean build
 
 [working-directory: './tproxy_app']
 install-tproxy-app-with-signing:
     xcodegen generate
-    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug build
+    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug clean build
     TARGET_BUILD_DIR="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/TARGET_BUILD_DIR/ {print $2; exit}')"; \
     FULL_PRODUCT_NAME="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/FULL_PRODUCT_NAME/ {print $2; exit}')"; \
     APP_PATH="$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME"; \
@@ -40,7 +40,7 @@ install-tproxy-app-with-signing:
 [working-directory: './tproxy_app']
 install-tproxy-app-with-signing-reset-profile:
     xcodegen generate
-    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug build
+    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug clean build
     TARGET_BUILD_DIR="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/TARGET_BUILD_DIR/ {print $2; exit}')"; \
     FULL_PRODUCT_NAME="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/FULL_PRODUCT_NAME/ {print $2; exit}')"; \
     APP_PATH="$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME"; \

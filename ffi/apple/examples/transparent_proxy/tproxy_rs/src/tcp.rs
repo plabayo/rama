@@ -18,7 +18,7 @@ use rama::{
             },
         },
         matcher::DomainMatcher,
-        proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
+        proxy::mitm::HttpMitmRelay,
         ws::handshake::{
             matcher::HttpWebSocketRelayServiceRequestMatcher, mitm::WebSocketRelayService,
         },
@@ -136,7 +136,7 @@ fn http_relay_middleware<S, Issuer>(
     tls_mitm_relay: TlsMitmRelay<Issuer>,
     ca_crt_pem_bytes: &'static [u8],
     within_connect_tunnel: bool,
-) -> impl Layer<S, Service: Service<Request, Output = Response, Error = Infallible> + Clone>
+) -> impl Layer<S, Service: Service<Request, Output = Response, Error = BoxError> + Clone>
 + Send
 + Sync
 + 'static
@@ -146,7 +146,6 @@ where
     Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone,
 {
     (
-        ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         StreamCompressionLayer::new(),
         crate::http::html::HtmlBadgeLayer::new(),
