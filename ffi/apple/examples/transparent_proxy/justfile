@@ -35,6 +35,23 @@ install-tproxy-app-with-signing:
     ditto "$APP_PATH" "$INSTALLED_APP"; \
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
     pluginkit -a "$INSTALLED_APPEX" || true; \
+    open "$INSTALLED_APP"
+
+[working-directory: './tproxy_app']
+install-tproxy-app-with-signing-reset-profile:
+    xcodegen generate
+    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug build
+    TARGET_BUILD_DIR="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/TARGET_BUILD_DIR/ {print $2; exit}')"; \
+    FULL_PRODUCT_NAME="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/FULL_PRODUCT_NAME/ {print $2; exit}')"; \
+    APP_PATH="$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME"; \
+    INSTALLED_APP=/Applications/RamaTransparentProxyExampleHost.app; \
+    INSTALLED_APPEX="$INSTALLED_APP/Contents/PlugIns/RamaTransparentProxyExampleExtension.appex"; \
+    pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true; \
+    sleep 1; \
+    rm -rf "$INSTALLED_APP"; \
+    ditto "$APP_PATH" "$INSTALLED_APP"; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
+    pluginkit -a "$INSTALLED_APPEX" || true; \
     open -a "$INSTALLED_APP" --args --reset-profile-on-launch
 
 build-tproxy: build-tproxy-rs build-tproxy-app
@@ -42,6 +59,8 @@ build-tproxy: build-tproxy-rs build-tproxy-app
 build-tproxy-with-signing: build-tproxy-rs build-tproxy-app-with-signing
 
 install-tproxy-with-signing: build-tproxy-rs install-tproxy-app-with-signing
+
+install-tproxy-with-signing-reset-profile: build-tproxy-rs install-tproxy-app-with-signing-reset-profile
 
 [working-directory: './tproxy_rs']
 clean:

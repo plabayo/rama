@@ -444,7 +444,10 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     private func setStatus(status: NEVPNStatus, detail: String?) {
         let statusText = statusString(status)
-        let title = detail.map { "Status: \(statusText) (\($0))" } ?? "Status: \(statusText)"
+        let effectiveDetail =
+            detail ?? disconnectStatusDetail(for: status, error: lastDisconnectError())
+        let title =
+            effectiveDetail.map { "Status: \(statusText) (\($0))" } ?? "Status: \(statusText)"
         statusMenuItem?.title = title
 
         switch status {
@@ -499,6 +502,9 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
 
         lastLoggedDisconnectSignature = signature
+        if let hint = disconnectDebugHint(ns) {
+            log("debug hint: \(hint)")
+        }
         logDisconnectReason(error)
     }
 
@@ -615,6 +621,42 @@ final class HostController: NSObject, NSApplicationDelegate {
             return "VPN server certificate expired"
         default:
             return "unknown system VPN disconnect reason"
+        }
+    }
+
+    private func disconnectStatusDetail(for status: NEVPNStatus, error: Error?) -> String? {
+        guard isDisconnected(status), let error else {
+            return nil
+        }
+
+        let ns = error as NSError
+        switch (ns.domain, ns.code) {
+        case ("NEVPNConnectionErrorDomainPlugin", 6):
+            return "appex unavailable; reinstall app or reset profile"
+        case ("NEVPNConnectionErrorDomainPlugin", 7):
+            return "provider crashed; inspect extension logs/crash report"
+        case ("NEVPNConnectionErrorDomain", 12):
+            return "plugin died unexpectedly; inspect extension crash report"
+        case ("NEVPNConnectionErrorDomain", 14):
+            return "plugin disabled; reinstall app and recreate profile"
+        default:
+            return nil
+        }
+    }
+
+    private func disconnectDebugHint(_ error: NSError) -> String? {
+        switch (error.domain, error.code) {
+        case ("NEVPNConnectionErrorDomainPlugin", 6):
+            return
+                "run `just install-tproxy-with-signing`; then check `pluginkit -mAvv | rg org.ramaproxy.example.tproxy`"
+        case ("NEVPNConnectionErrorDomainPlugin", 7), ("NEVPNConnectionErrorDomain", 12):
+            return
+                "inspect `~/Library/Logs/DiagnosticReports/RamaTransparentProxyExampleExtension*.ips` and `log show --last 5m --style compact --predicate 'process == \"RamaTransparentProxyExampleExtension\" OR subsystem == \"org.ramaproxy.example.tproxy\"'`"
+        case ("NEVPNConnectionErrorDomain", 14):
+            return
+                "plugin was disabled after a failure; reinstall with `just install-tproxy-with-signing` to reset registration and profile"
+        default:
+            return nil
         }
     }
 }

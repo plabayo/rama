@@ -12,6 +12,7 @@ use rama::{
 
 mod demo_trace_traffic;
 mod http;
+mod policy;
 mod tcp;
 mod tls;
 mod udp;

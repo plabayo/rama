@@ -150,7 +150,7 @@ private let expectedDisconnectPosixCodes: Set<Int32> = [
 ///   Xcode, which is the normative source for the per-code symbols.
 /// - The Apple enum pages linked from each case are the intended human-readable references for
 ///   those symbols.
-/// - We intentionally log disconnect-like outcomes at `trace` with “ended” wording so they are
+/// - We intentionally log disconnect-like outcomes at `trace` with "ended" wording so they are
 ///   distinguishable from provider faults during audits.
 private func classifyFlowCallbackError(
     _ error: Error,

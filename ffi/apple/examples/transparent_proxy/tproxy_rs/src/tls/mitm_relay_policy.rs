@@ -17,6 +17,8 @@ use rama::{
     },
 };
 
+use crate::policy::DomainExclusionList;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum PolicyKey {
     Sni(Domain),
@@ -28,6 +30,7 @@ type Cache = moka::sync::Cache<PolicyKey, ()>;
 #[derive(Debug, Clone)]
 pub struct TlsMitmRelayPolicyLayer<F = IoForwardService> {
     cache: Cache,
+    excluded_domains: DomainExclusionList,
     fallback: F,
 }
 
@@ -41,6 +44,7 @@ impl TlsMitmRelayPolicyLayer {
     pub fn with_fallback<F>(self, fallback: F) -> TlsMitmRelayPolicyLayer<F> {
         TlsMitmRelayPolicyLayer {
             cache: self.cache,
+            excluded_domains: self.excluded_domains,
             fallback,
         }
     }
@@ -52,8 +56,10 @@ impl Default for TlsMitmRelayPolicyLayer {
         let cache = moka::sync::CacheBuilder::new(4096)
             .time_to_live(Duration::from_mins(5))
             .build();
+        let excluded_domains = DomainExclusionList::default();
         Self {
             cache,
+            excluded_domains,
             fallback: IoForwardService::new(),
         }
     }
@@ -65,20 +71,30 @@ impl<Issuer, Inner, F: Clone> Layer<TlsMitmRelayService<Issuer, Inner>>
     type Service = TlsMitmRelayPolicyService<Issuer, Inner, F>;
 
     fn layer(&self, tls_relay: TlsMitmRelayService<Issuer, Inner>) -> Self::Service {
-        let Self { cache, fallback } = self;
+        let Self {
+            cache,
+            excluded_domains,
+            fallback,
+        } = self;
 
         Self::Service {
             cache: cache.clone(),
+            excluded_domains: excluded_domains.clone(),
             fallback: fallback.clone(),
             tls_relay,
         }
     }
 
     fn into_layer(self, tls_relay: TlsMitmRelayService<Issuer, Inner>) -> Self::Service {
-        let Self { cache, fallback } = self;
+        let Self {
+            cache,
+            excluded_domains,
+            fallback,
+        } = self;
 
         Self::Service {
             cache,
+            excluded_domains,
             fallback,
             tls_relay,
         }
@@ -88,6 +104,7 @@ impl<Issuer, Inner, F: Clone> Layer<TlsMitmRelayService<Issuer, Inner>>
 #[derive(Debug, Clone)]
 pub struct TlsMitmRelayPolicyService<Issuer, Inner, F = IoForwardService> {
     cache: Cache,
+    excluded_domains: DomainExclusionList,
     fallback: F,
     tls_relay: TlsMitmRelayService<Issuer, Inner>,
 }
@@ -111,21 +128,35 @@ where
             client_hello,
         }: InputWithClientHello<BridgeIo<Ingress, Egress>>,
     ) -> Result<Self::Output, Self::Error> {
-        if let Some(server_name) = client_hello.ext_server_name().cloned()
-            && self
+        if let Some(server_name) = client_hello.ext_server_name().cloned() {
+            if self.excluded_domains.is_excluded(&server_name) {
+                tracing::debug!(
+                    "serving via fallback IO due to present in exclusion list; SNI = {server_name}"
+                );
+                let server_name = server_name.clone();
+                return self
+                    .fallback
+                    .serve(bridge_io)
+                    .await
+                    .context("serve via fallback IO (skip TLS due to present in exclusion list)")
+                    .context_field("sni", server_name);
+            }
+
+            if self
                 .cache
                 .get(&PolicyKey::Sni(server_name.clone()))
                 .is_some()
-        {
-            tracing::debug!(
-                "serving via fallback IO due to exception in cache for SNI = {server_name}"
-            );
-            return self
-                .fallback
-                .serve(bridge_io)
-                .await
-                .context("serve via fallback IO (skip TLS due to cached exception)")
-                .context_field("sni", server_name);
+            {
+                tracing::debug!(
+                    "serving via fallback IO due to exception in cache for SNI = {server_name}"
+                );
+                return self
+                    .fallback
+                    .serve(bridge_io)
+                    .await
+                    .context("serve via fallback IO (skip TLS due to cached exception)")
+                    .context_field("sni", server_name);
+            }
         }
 
         if let Some(ProxyTarget(target)) = bridge_io.extensions().get().cloned()

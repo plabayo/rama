@@ -3,7 +3,7 @@ use rama::{
     bytes::Bytes,
     error::{BoxError, ErrorContext as _},
     http::{
-        Body, Request, Response,
+        Body, Method, Request, Response,
         body::util::BodyExt,
         header::CONTENT_ENCODING,
         headers::{ContentLength, ContentType, HeaderMapExt},
@@ -12,8 +12,12 @@ use rama::{
         },
         mime,
     },
+    net::http::RequestContext,
+    telemetry::tracing,
     utils::str::{contains_ignore_ascii_case, submatch_ignore_ascii_case},
 };
+
+use crate::policy::DomainExclusionList;
 
 const BADGE_HTML: &str = r#"<div id="rama-proxy-badge" style="position:fixed;top:16px;right:16px;z-index:2147483647;padding:10px 14px;background:rgba(17,17,17,0.92);color:#fff;font:700 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;border-radius:999px;box-shadow:0 4px 18px rgba(0,0,0,0.25);pointer-events:none">proxied by rama</div>"#;
 const BADGE_HTML_BYTES: &[u8] = BADGE_HTML.as_bytes();
@@ -23,19 +27,44 @@ const BODY_CLOSE: &[u8] = b"</body>";
 const MAX_CONTENT_LENGTH_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
-pub struct HtmlBadgeLayer;
+pub struct HtmlBadgeLayer {
+    excluded_domains: DomainExclusionList,
+}
+
+impl HtmlBadgeLayer {
+    #[inline(always)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl<S> Layer<S> for HtmlBadgeLayer {
     type Service = HtmlBadgeService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        HtmlBadgeService { inner }
+        let Self { excluded_domains } = self;
+
+        HtmlBadgeService {
+            inner,
+            excluded_domains: excluded_domains.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        let Self { excluded_domains } = self;
+
+        HtmlBadgeService {
+            inner,
+            excluded_domains,
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct HtmlBadgeService<S> {
     inner: S,
+    excluded_domains: DomainExclusionList,
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for HtmlBadgeService<S>
@@ -48,10 +77,39 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let is_head_request = req.method() == rama::http::Method::HEAD;
+        let req_method = req.method().clone();
+        let req_domain = RequestContext::try_from(&req)
+            .ok()
+            .and_then(|rc| rc.authority.host.into_domain());
+        let req_uri = req.uri().clone();
+
         let response = self.inner.serve(req).await?;
 
-        if is_head_request || !should_rewrite(&response) {
+        if req_method == Method::HEAD {
+            tracing::debug!(
+                "skip HTML (domain = {req_domain:?}; method = {req_method:?}; uri = {req_uri}; ) \
+                modification: request method = HEAD",
+            );
+            return Ok(response.map(Body::new));
+        }
+
+        if req_domain
+            .as_ref()
+            .map(|d| self.excluded_domains.is_excluded(d))
+            .unwrap_or_default()
+        {
+            tracing::debug!(
+                "skip HTML (domain = {req_domain:?}; method = {req_method:?}; uri = {req_uri}; ) \
+                modification: request's domain is excluded",
+            );
+            return Ok(response.map(Body::new));
+        }
+
+        if !should_rewrite(&response) {
+            tracing::debug!(
+                "skip HTML (domain = {req_domain:?}; method = {req_method:?}; uri = {req_uri}; ) \
+                modification: response detected as not to be rewritten",
+            );
             return Ok(response.map(Body::new));
         }
 
@@ -168,20 +226,21 @@ mod tests {
 
     #[tokio::test]
     async fn html_badge_layer_rewrites_plain_html_and_updates_headers() {
-        let svc = HtmlBadgeLayer.into_layer(service_fn(move |_req: Request<Body>| async move {
-            const CONTENT: &str = "<html><body>Hello</body></html>";
-            let mut response = Response::new(Body::from(CONTENT));
-            response
-                .headers_mut()
-                .typed_insert(ContentType::html_utf8());
-            response
-                .headers_mut()
-                .typed_insert(ContentLength(CONTENT.len() as u64));
-            response
-                .headers_mut()
-                .insert(ETAG, "\"abc\"".try_into().unwrap());
-            Ok::<_, BoxError>(response)
-        }));
+        let svc =
+            HtmlBadgeLayer::new().into_layer(service_fn(move |_req: Request<Body>| async move {
+                const CONTENT: &str = "<html><body>Hello</body></html>";
+                let mut response = Response::new(Body::from(CONTENT));
+                response
+                    .headers_mut()
+                    .typed_insert(ContentType::html_utf8());
+                response
+                    .headers_mut()
+                    .typed_insert(ContentLength(CONTENT.len() as u64));
+                response
+                    .headers_mut()
+                    .insert(ETAG, "\"abc\"".try_into().unwrap());
+                Ok::<_, BoxError>(response)
+            }));
 
         let response: Response<Body> = svc.serve(Request::new(Body::empty())).await.unwrap();
         let content_length = response
@@ -202,7 +261,7 @@ mod tests {
     async fn html_badge_layer_skips_content_encoded_responses() {
         let body = Bytes::from_static(b"not really gzip, but encoded");
         let expected_body = body.clone();
-        let svc = HtmlBadgeLayer.into_layer(service_fn(move |_req: Request<Body>| {
+        let svc = HtmlBadgeLayer::new().into_layer(service_fn(move |_req: Request<Body>| {
             let body = body.clone();
             async move {
                 let mut response = Response::new(Body::from(body));
@@ -227,7 +286,7 @@ mod tests {
         let html = format!("<html><body>{}</body></html>", "Hello ".repeat(16));
         let svc = (
             StreamCompressionLayer::new().with_compress_predicate(Always::new()),
-            HtmlBadgeLayer,
+            HtmlBadgeLayer::new(),
             DecompressionLayer::new(),
         )
             .into_layer(service_fn(move |_req: Request<Body>| {

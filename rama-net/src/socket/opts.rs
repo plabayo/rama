@@ -644,7 +644,7 @@ pub struct SocketOptions {
 
     /// Set the value of the `IPV6_MULTICAST_HOPS` option for this [`Socket`].
     ///
-    /// Indicates the number of “routers” multicast packets will transit for this [`Socket`].
+    /// Indicates the number of "routers" multicast packets will transit for this [`Socket`].
     /// The default value is 1 which means that multicast packets don’t leave the local network unless
     /// explicitly requested.
     pub multicast_hops_v6: Option<u32>,
