@@ -8,6 +8,9 @@ mod prefix;
 #[doc(inline)]
 pub use prefix::PrefixedIo;
 
+mod graceful;
+pub use graceful::GracefulIo;
+
 pub mod peek;
 pub mod rewind;
 pub mod timeout;
