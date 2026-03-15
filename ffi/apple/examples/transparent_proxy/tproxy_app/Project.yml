@@ -6,7 +6,7 @@ options:
 
 packages:
   RamaAppleNetworkExtension:
-    path: ../../../RamaAppleNetworkExtension
+    path: ../../../../..
 
 targets:
   RamaTransparentProxyExampleHost:

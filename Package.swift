@@ -16,12 +16,12 @@ let package = Package(
     targets: [
         .target(
             name: "RamaAppleNEFFI",
-            path: "Sources/RamaAppleNEFFI"
+            path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI"
         ),
         .target(
             name: "RamaAppleNetworkExtension",
             dependencies: ["RamaAppleNEFFI"],
-            path: "Sources/RamaAppleNetworkExtension"
+            path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension"
         ),
     ]
 )
