@@ -428,7 +428,13 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             self.logInfo("setTunnelNetworkSettings ok")
             self.engine = RamaTransparentProxyEngineHandle()
             self.logInfo("engine created")
-            self.engine?.start()
+            do {
+                try self.engine?.start()
+            } catch {
+                self.logError("engine start error: \(error)")
+                completionHandler(error)
+                return
+            }
             self.logInfo("engine started")
             completionHandler(nil)
         }

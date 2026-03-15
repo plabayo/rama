@@ -1,4 +1,5 @@
 use rama::{
+    Service,
     net::apple::networkextension::{
         ffi::{BytesOwned, BytesView, tproxy as ffi_tproxy},
         tproxy::{
@@ -124,17 +125,12 @@ pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
 /// This function is FFI entrypoint and may be called from Swift/C.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_new() -> *mut RamaTransparentProxyEngine {
     let engine_builder =
-        TransparentProxyEngineBuilder::new().with_udp_service(self::udp::new_service());
+        TransparentProxyEngineBuilder::new()
+            .with_udp_service_factory(|_ctx| Ok(self::udp::new_service()));
 
-    let engine = match self::tcp::try_new_service() {
-        Ok(tcp_svc) => engine_builder.with_tcp_service(tcp_svc).build(),
-        Err(err) => {
-            tracing::error!(
-                "failed to build new TCP svc: {err}; skip forwarding TCP stream; report bug please!"
-            );
-            engine_builder.build()
-        }
-    };
+    let engine = engine_builder
+        .with_tcp_service_factory(|ctx| Ok(self::tcp::try_new_service(ctx)?.boxed()))
+        .build();
 
     Box::into_raw(Box::new(engine))
 }
@@ -162,15 +158,36 @@ pub unsafe extern "C" fn rama_transparent_proxy_engine_free(
 /// `rama_transparent_proxy_engine_new`.
 pub unsafe extern "C" fn rama_transparent_proxy_engine_start(
     engine: *mut RamaTransparentProxyEngine,
-) {
+) -> BytesOwned {
     if engine.is_null() {
-        return;
+        return Vec::from("null transparent proxy engine pointer".as_bytes())
+            .try_into()
+            .unwrap_or(BytesOwned {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            });
     }
 
     // SAFETY: pointer validity is guaranteed by FFI contract.
-    unsafe { (*engine).start() };
-
-    tracing::info!("rama transparent proxy engine started");
+    match unsafe { (*engine).start() } {
+        Ok(()) => {
+            tracing::info!("rama transparent proxy engine started");
+            BytesOwned {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }
+        }
+        Err(err) => {
+            tracing::error!("rama transparent proxy engine failed to start: {err}");
+            err.to_string().into_bytes().try_into().unwrap_or(BytesOwned {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            })
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

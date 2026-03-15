@@ -27,7 +27,7 @@ use rama::{
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
     net::{
         address::Domain,
-        apple::networkextension::TcpFlow,
+        apple::networkextension::{TcpFlow, tproxy::TransparentProxyServiceContext},
         client::ConnectorService,
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
@@ -53,8 +53,9 @@ const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE_RETRIES: u32 = 5;
 
-pub(super) fn try_new_service()
--> Result<impl Service<TcpFlow, Output = (), Error = Infallible>, BoxError> {
+pub(super) fn try_new_service(
+    TransparentProxyServiceContext { executor }: TransparentProxyServiceContext,
+) -> Result<impl Service<TcpFlow, Output = (), Error = Infallible>, BoxError> {
     let (ca_crt, ca_key) = crate::tls::certs::load_or_create_mitm_ca_crt_key_pair()
         .context("load/create MITM CA Crt/Key pair")?;
     let ca_crt_pem_bytes: &[u8] = ca_crt
@@ -65,11 +66,8 @@ pub(super) fn try_new_service()
     let tls_mitm_relay_policy = TlsMitmRelayPolicyLayer::new();
     let tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
 
-    // TODO: get actual graceful executor here...
-    let exec = Executor::default();
-
     let mitm_svc = new_tcp_service_inner(
-        exec.clone(),
+        executor.clone(),
         tls_mitm_relay_policy,
         tls_mitm_relay,
         ca_crt_pem_bytes,
@@ -78,7 +76,9 @@ pub(super) fn try_new_service()
 
     Ok((
         ConsumeErrLayer::trace_as_debug(),
-        IoToProxyBridgeIoLayer::extension_proxy_target_with_connector(tcp_connector_service(exec)),
+        IoToProxyBridgeIoLayer::extension_proxy_target_with_connector(tcp_connector_service(
+            executor,
+        )),
     )
         .into_layer(mitm_svc))
 }

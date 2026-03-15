@@ -3,8 +3,8 @@ mod types;
 
 pub use self::{
     engine::{
-        TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyTcpSession,
-        TransparentProxyUdpSession,
+        TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyServiceContext,
+        TransparentProxyTcpSession, TransparentProxyUdpSession,
     },
     types::{
         TransparentProxyConfig, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,

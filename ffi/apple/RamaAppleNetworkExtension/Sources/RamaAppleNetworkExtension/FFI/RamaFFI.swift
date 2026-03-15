@@ -51,6 +51,14 @@ private func dataFromView(_ view: RamaBytesView) -> Data {
     return Data(bytes: ptr, count: Int(view.len))
 }
 
+private func dataFromOwnedBytes(_ bytes: RamaBytesOwned) -> Data {
+    defer { rama_owned_bytes_free(bytes) }
+    guard let ptr = bytes.ptr, bytes.len > 0 else {
+        return Data()
+    }
+    return Data(bytes: ptr, count: Int(bytes.len))
+}
+
 private func stringFromUtf8(_ ptr: UnsafePointer<CChar>?, _ len: Int) -> String? {
     guard let ptr, len > 0 else { return nil }
     let raw = UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
@@ -241,9 +249,21 @@ final class RamaTransparentProxyEngineHandle {
         return result
     }
 
-    func start() {
+    func start() throws {
         guard let p = enginePtr else { return }
-        rama_transparent_proxy_engine_start(p)
+        let errorBytes = dataFromOwnedBytes(rama_transparent_proxy_engine_start(p))
+        guard !errorBytes.isEmpty else {
+            return
+        }
+        let message = String(decoding: errorBytes, as: UTF8.self)
+        throw NSError(
+            domain: "org.ramaproxy.example.tproxy.engine",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Failed to start transparent proxy engine",
+                NSLocalizedFailureReasonErrorKey: message,
+            ]
+        )
     }
 
     func stop(reason: Int32) {

@@ -251,8 +251,8 @@ void rama_transparent_proxy_engine_free(RamaTransparentProxyEngine* engine);
 
 /// Start the transparent proxy engine.
 ///
-/// NULL is allowed and ignored.
-void rama_transparent_proxy_engine_start(RamaTransparentProxyEngine* engine);
+/// Returns empty bytes on success, or a UTF-8 error message on failure.
+RamaBytesOwned rama_transparent_proxy_engine_start(RamaTransparentProxyEngine* engine);
 
 /// Stop the transparent proxy engine with provider stop reason.
 ///
