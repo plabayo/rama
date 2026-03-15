@@ -7,7 +7,9 @@ use rama::{
         body::util::BodyExt,
         header::CONTENT_ENCODING,
         headers::{ContentLength, ContentType, HeaderMapExt},
-        layer::remove_header::remove_payload_metadata_headers,
+        layer::remove_header::{
+            remove_cache_validation_response_headers, remove_payload_metadata_headers,
+        },
         mime,
     },
     utils::str::{contains_ignore_ascii_case, submatch_ignore_ascii_case},
@@ -68,6 +70,7 @@ where
 
         let updated_html = updated_html.expect("updated_html is_some above");
         remove_payload_metadata_headers(&mut parts.headers);
+        remove_cache_validation_response_headers(&mut parts.headers);
         let updated_html_len = u64::try_from(updated_html.len())
             .context("convert updated HTML response length to u64")?;
         parts.headers.typed_insert(ContentLength(updated_html_len));
@@ -132,9 +135,12 @@ fn insert_bytes(html: &[u8], index: usize, insertion: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use rama::{
-        http::header::{CONTENT_ENCODING, ETAG},
-        http::layer::{
-            compression::stream::StreamCompressionLayer, decompression::DecompressionLayer,
+        http::{
+            header::{CONTENT_ENCODING, ETAG},
+            layer::{
+                compression::{predicate::Always, stream::StreamCompressionLayer},
+                decompression::DecompressionLayer,
+            },
         },
         service::service_fn,
     };
@@ -163,10 +169,14 @@ mod tests {
     #[tokio::test]
     async fn html_badge_layer_rewrites_plain_html_and_updates_headers() {
         let svc = HtmlBadgeLayer.into_layer(service_fn(move |_req: Request<Body>| async move {
-            let mut response = Response::new(Body::from("<html><body>Hello</body></html>"));
+            const CONTENT: &str = "<html><body>Hello</body></html>";
+            let mut response = Response::new(Body::from(CONTENT));
             response
                 .headers_mut()
                 .typed_insert(ContentType::html_utf8());
+            response
+                .headers_mut()
+                .typed_insert(ContentLength(CONTENT.len() as u64));
             response
                 .headers_mut()
                 .insert(ETAG, "\"abc\"".try_into().unwrap());
@@ -216,9 +226,9 @@ mod tests {
     async fn html_badge_layer_rewrites_after_decompression_and_recompresses() {
         let html = format!("<html><body>{}</body></html>", "Hello ".repeat(16));
         let svc = (
+            StreamCompressionLayer::new().with_compress_predicate(Always::new()),
             HtmlBadgeLayer,
             DecompressionLayer::new(),
-            StreamCompressionLayer::new(),
         )
             .into_layer(service_fn(move |_req: Request<Body>| {
                 let html = html.clone();
@@ -235,7 +245,7 @@ mod tests {
             .header(rama::http::header::ACCEPT_ENCODING, "gzip")
             .body(Body::empty())
             .unwrap();
-        let response: Response<Body> = svc.serve(request).await.unwrap();
+        let response = svc.serve(request).await.unwrap();
 
         assert_eq!(response.headers().get(CONTENT_ENCODING).unwrap(), "gzip");
 
@@ -266,7 +276,9 @@ mod tests {
         assert!(
             decompressed
                 .windows(BADGE_HTML_BYTES.len())
-                .any(|w| w == BADGE_HTML_BYTES)
+                .any(|w| w == BADGE_HTML_BYTES),
+            "output: {:?}",
+            String::from_utf8_lossy(&decompressed)
         );
     }
 }
