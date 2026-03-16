@@ -50,6 +50,27 @@ Learn more about `rama`:
 - Github: <https://github.com/plabayo/rama>
 - Book: <https://ramaproxy.org/book/>
 
+## Showcase
+
+See the macOS transparent proxy example in:
+
+- [`ffi/apple/examples/transparent_proxy`](../ffi/apple/examples/transparent_proxy)
+
+It shows:
+
+- a host app and `NETransparentProxyProvider`
+- a Rust `staticlib` implementing the Apple C ABI contract
+- a macro-driven FFI entrypoint
+- end-to-end Apple FFI tests covering HTTP, HTTPS, HTTP/2, WebSocket, raw TCP/TLS, and basic UDP
+
+Run the main checks with:
+
+```sh
+just qa-crate rama-net-apple-networkextension
+just qa-ffi-apple
+just test-e2e-ffi-apple
+```
+
 ## Swift Package
 
 The Apple Network Extension bridge is available as the Swift package:
@@ -58,7 +79,7 @@ The Apple Network Extension bridge is available as the Swift package:
 
 Use the `RamaAppleNetworkExtension` product from:
 
-- [`Package.swift`](/Users/glendc/code/github.com/plabayo/rama/Package.swift)
+- [`Package.swift`](../Package.swift)
 
 This package ships the Swift and C bridge only. Your app or extension provides the Rust
 implementation as a static library and links that library into the final Apple target.
@@ -80,7 +101,7 @@ Then depend on the `RamaAppleNetworkExtension` product in your target:
 You still need to link your own Rust static library into the Network Extension target. In the
 transparent proxy example that is done in:
 
-- [`ffi/apple/examples/transparent_proxy/tproxy_app/Project.yml`](/Users/glendc/code/github.com/plabayo/rama/ffi/apple/examples/transparent_proxy/tproxy_app/Project.yml#L44)
+- [`ffi/apple/examples/transparent_proxy/tproxy_app/Project.yml`](../ffi/apple/examples/transparent_proxy/tproxy_app/Project.yml#L44)
 
 The relevant part is:
 
@@ -107,7 +128,7 @@ Consumer checklist:
 
 The public C ABI contract used by the Swift bridge is defined in:
 
-- [`ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI/include/rama_apple_ne_ffi.h`](/Users/glendc/code/github.com/plabayo/rama/ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI/include/rama_apple_ne_ffi.h)
+- [`ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI/include/rama_apple_ne_ffi.h`](../ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI/include/rama_apple_ne_ffi.h)
 
 ### Why This Shape
 
@@ -132,7 +153,7 @@ particular:
 - changes to `Package.swift`
 - changes to public Swift APIs under `ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension`
 - changes to the public C header
-  [`rama_apple_ne_ffi.h`](/Users/glendc/code/github.com/plabayo/rama/ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI/include/rama_apple_ne_ffi.h)
+  [`rama_apple_ne_ffi.h`](../ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI/include/rama_apple_ne_ffi.h)
 
 should be released in the next repository tag that Swift package consumers will use.
 
@@ -141,7 +162,7 @@ should be released in the next repository tag that Swift package consumers will 
 The package is published through the normal repository tag/release flow. Maintainers should:
 
 1. update the bridge code and docs in `ffi/apple/RamaAppleNetworkExtension`
-2. update the root Swift package manifest in [`Package.swift`](/Users/glendc/code/github.com/plabayo/rama/Package.swift) if needed
+2. update the root Swift package manifest in [`Package.swift`](../Package.swift) if needed
 3. verify the Swift package still typechecks in consumer scenarios
 4. ensure the example still integrates correctly with a Rust static library
 5. create and publish the next repository tag/version
