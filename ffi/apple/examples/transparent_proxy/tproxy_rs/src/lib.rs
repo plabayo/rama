@@ -65,6 +65,6 @@ apple_ne::transparent_proxy_ffi! {
     init = init,
     config = proxy_config,
     should_intercept_flow = should_intercept_flow,
-    tcp_service = |ctx| self::tcp::try_new_service(ctx),
+    tcp_service = self::tcp::try_new_service,
     udp_service = |_ctx| Ok(self::udp::new_service()),
 }
