@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 use rama_core::{
     error::BoxError,
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
@@ -46,7 +46,7 @@ impl<S> AsyncWebSocket<S> {
     /// handshake.
     pub async fn from_raw_socket(stream: S, role: Role, config: Option<WebSocketConfig>) -> Self
     where
-        S: Stream + Unpin + ExtensionsMut,
+        S: Io + Unpin + ExtensionsMut,
     {
         without_handshake(stream, move |allow_std| {
             WebSocket::from_raw_socket(allow_std, role, config)
@@ -63,7 +63,7 @@ impl<S> AsyncWebSocket<S> {
         config: Option<WebSocketConfig>,
     ) -> Self
     where
-        S: Stream + Unpin + ExtensionsMut,
+        S: Io + Unpin + ExtensionsMut,
     {
         without_handshake(stream, move |allow_std| {
             WebSocket::from_partially_read(allow_std, part, role, config)
@@ -101,7 +101,7 @@ impl<S> AsyncWebSocket<S> {
     /// Returns a shared reference to the inner stream.
     pub fn get_ref(&self) -> &S
     where
-        S: Stream + Unpin,
+        S: Io + Unpin,
     {
         self.inner.get_ref().get_ref()
     }
@@ -109,7 +109,7 @@ impl<S> AsyncWebSocket<S> {
     /// Returns a mutable reference to the inner stream.
     pub fn get_mut(&mut self) -> &mut S
     where
-        S: Stream + Unpin,
+        S: Io + Unpin,
     {
         self.inner.get_mut().get_mut()
     }
@@ -122,7 +122,7 @@ impl<S> AsyncWebSocket<S> {
     /// Close the underlying web socket
     pub async fn close(&mut self, msg: Option<CloseFrame>) -> Result<(), ProtocolError>
     where
-        S: Stream + Unpin,
+        S: Io + Unpin,
     {
         self.send(Message::Close(msg)).await
     }
@@ -140,7 +140,7 @@ impl<S: ExtensionsMut> ExtensionsMut for AsyncWebSocket<S> {
     }
 }
 
-impl<S: Stream + Unpin> AsyncWebSocket<S> {
+impl<S: Io + Unpin> AsyncWebSocket<S> {
     #[inline]
     /// Writes and immediately flushes a message.
     pub fn send_message(
@@ -162,7 +162,7 @@ impl<S: Stream + Unpin> AsyncWebSocket<S> {
 
 impl<T> futures::Stream for AsyncWebSocket<T>
 where
-    T: Stream + Unpin,
+    T: Io + Unpin,
 {
     type Item = Result<Message, ProtocolError>;
 
@@ -195,7 +195,7 @@ where
 
 impl<T> futures::stream::FusedStream for AsyncWebSocket<T>
 where
-    T: Stream + Unpin,
+    T: Io + Unpin,
 {
     fn is_terminated(&self) -> bool {
         self.ended
@@ -204,7 +204,7 @@ where
 
 impl<T> futures::Sink<Message> for AsyncWebSocket<T>
 where
-    T: Stream + Unpin,
+    T: Io + Unpin,
 {
     type Error = ProtocolError;
 

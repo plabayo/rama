@@ -25,6 +25,26 @@ pub enum Domain {
     Unix,
 }
 
+impl From<SocketAddr> for Domain {
+    fn from(value: SocketAddr) -> Self {
+        if value.is_ipv4() {
+            Self::IPv4
+        } else {
+            Self::IPv6
+        }
+    }
+}
+
+impl From<SocketAddress> for Domain {
+    fn from(value: SocketAddress) -> Self {
+        if value.ip_addr.is_ipv4() {
+            Self::IPv4
+        } else {
+            Self::IPv6
+        }
+    }
+}
+
 impl Domain {
     #[inline]
     #[must_use]
@@ -370,42 +390,18 @@ impl From<TcpKeepAlive> for SocketTcpKeepAlive {
 }
 
 impl SocketOptions {
-    /// Create a default TCP (Ipv4) [`SocketOptions`].
+    /// Create a default TCP  [`SocketOptions`].
     #[inline]
     #[must_use]
     pub fn default_tcp() -> Self {
         Default::default()
     }
 
-    /// Create a default TCP (Ipv6) [`SocketOptions`].
-    #[inline]
-    #[must_use]
-    pub fn default_tcp_v6() -> Self {
-        Self {
-            domain: Domain::IPv6,
-            r#type: Type::Stream,
-            protocol: Some(Protocol::TCP),
-            ..Default::default()
-        }
-    }
-    /// Create a default UDP (Ipv4) [`SocketOptions`].
+    /// Create a default UDP [`SocketOptions`].
     #[inline]
     #[must_use]
     pub fn default_udp() -> Self {
         Self {
-            domain: Domain::IPv4,
-            r#type: Type::Datagram,
-            protocol: Some(Protocol::UDP),
-            ..Default::default()
-        }
-    }
-
-    /// Create a default UDP (Ipv6) [`SocketOptions`].
-    #[inline]
-    #[must_use]
-    pub fn default_udp_v6() -> Self {
-        Self {
-            domain: Domain::IPv6,
             r#type: Type::Datagram,
             protocol: Some(Protocol::UDP),
             ..Default::default()
@@ -415,7 +411,6 @@ impl SocketOptions {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SocketOptions {
-    pub domain: Domain,
     pub r#type: Type,
     pub protocol: Option<Protocol>,
 
@@ -649,7 +644,7 @@ pub struct SocketOptions {
 
     /// Set the value of the `IPV6_MULTICAST_HOPS` option for this [`Socket`].
     ///
-    /// Indicates the number of “routers” multicast packets will transit for this [`Socket`].
+    /// Indicates the number of "routers" multicast packets will transit for this [`Socket`].
     /// The default value is 1 which means that multicast packets don’t leave the local network unless
     /// explicitly requested.
     pub multicast_hops_v6: Option<u32>,
@@ -1063,9 +1058,9 @@ pub struct SocketOptions {
 }
 
 impl SocketOptions {
-    pub fn try_build_socket(&self) -> io::Result<Socket> {
+    pub fn try_build_socket(&self, domain: Domain) -> io::Result<Socket> {
         let socket = Socket::new(
-            self.domain.into(),
+            domain.into(),
             self.r#type.into(),
             self.protocol.map(Into::into),
         )?;

@@ -58,7 +58,7 @@
 
 use rama::{
     Layer, Service,
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef, InputExtensions},
+    extensions::{Extensions, ExtensionsRef, InputExtensions},
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -66,26 +66,21 @@ use rama::{
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::UpgradeLayer,
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
         },
         matcher::{DomainMatcher, HttpMatcher, MethodMatcher},
         server::HttpServer,
-        service::web::{
-            extract::Path,
-            match_service,
-            response::{IntoResponse, Json},
-        },
+        service::web::{extract::Path, match_service, response::Json},
     },
     layer::{ConsumeErrLayer, HijackLayer},
     net::{
-        http::RequestContext,
-        proxy::ProxyTarget,
+        proxy::IoForwardService,
         stream::{ClientSocketInfo, layer::http::BodyLimitLayer},
         user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
-    tcp::{client::service::Forwarder, server::TcpListener},
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -121,7 +116,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async move |guard| {
                 let exec = Executor::graceful(guard);
-        let tcp_service = TcpListener::build(exec.clone()).bind("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
+        let tcp_service = TcpListener::build(exec.clone()).bind_address("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
 
         let http_service = HttpServer::auto(exec.clone())
             .service((
@@ -158,8 +153,11 @@ async fn main() {
                     UpgradeLayer::new(
                         exec.clone(),
                         MethodMatcher::CONNECT,
-                        service_fn(http_connect_accept),
-                        ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
+                        DefaultHttpProxyConnectReplyService::new(),
+                        (
+                            ConsumeErrLayer::default(),
+                            IoToProxyBridgeIoLayer::extension_proxy_target(exec),
+                        ).into_layer(IoForwardService::new()),
                     ),
                     RemoveResponseHeaderLayer::hop_by_hop(),
                     RemoveRequestHeaderLayer::hop_by_hop(),
@@ -176,25 +174,6 @@ async fn main() {
         .shutdown_with_limit(Duration::from_secs(30))
         .await
         .expect("graceful shutdown");
-}
-
-async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
-        Ok(authority) => {
-            tracing::info!(
-                server.address = %authority.host,
-                server.port = authority.port,
-                "accept CONNECT (lazy): insert proxy target into context",
-            );
-            req.extensions_mut().insert(ProxyTarget(authority));
-        }
-        Err(err) => {
-            tracing::error!("error extracting authority: {err:?}");
-            return Err(StatusCode::BAD_REQUEST.into_response());
-        }
-    }
-
-    Ok((StatusCode::OK.into_response(), req))
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {

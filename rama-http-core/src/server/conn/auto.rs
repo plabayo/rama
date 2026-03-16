@@ -1,12 +1,12 @@
 //! Http1 or Http2 connection.
 
 use std::convert::Infallible;
+use std::io;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::task::ready;
 use std::task::{Context, Poll};
-use std::{io, time::Duration};
 
 use pin_project_lite::pin_project;
 use rama_core::Service;
@@ -18,8 +18,8 @@ use tokio::io::ReadBuf;
 
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::io::rewind::Rewind;
 use rama_core::rt::Executor;
-use rama_core::stream::rewind::Rewind;
 
 use crate::body::Incoming;
 
@@ -46,14 +46,24 @@ impl Builder {
         }
     }
 
-    /// Http1 configuration.
-    pub fn http1(&mut self) -> Http1Builder<'_> {
-        Http1Builder { inner: self }
+    /// Http1 builder.
+    pub fn http1(&self) -> &http1::Builder {
+        &self.http1
     }
 
-    /// Http2 configuration.
-    pub fn http2(&mut self) -> Http2Builder<'_> {
-        Http2Builder { inner: self }
+    /// Http1 nutable builder.
+    pub fn http1_mut(&mut self) -> &mut http1::Builder {
+        &mut self.http1
+    }
+
+    /// H2 builder.
+    pub fn h2(&self) -> &http2::Builder {
+        &self.http2
+    }
+
+    /// H2 mutable builder.
+    pub fn h2_mut(&mut self) -> &mut http2::Builder {
+        &mut self.http2
     }
 
     /// Only accepts HTTP/2
@@ -62,7 +72,7 @@ impl Builder {
     ///
     /// [`serve_connection_with_upgrades`]: Builder::serve_connection_with_upgrades
     #[must_use]
-    pub fn http2_only(mut self) -> Self {
+    pub fn h2_only(mut self) -> Self {
         assert!(self.version.is_none());
         self.version = Some(Version::H2);
         self
@@ -96,6 +106,14 @@ impl Builder {
             Some(Version::H1) => false,
             None | Some(Version::H2) => true,
         }
+    }
+
+    /// Gets the [`SETTINGS_MAX_CONCURRENT_STREAMS`][spec] option used
+    /// for HTTP2 connections.
+    ///
+    /// [spec]: https://httpwg.org/specs/rfc9113.html#SETTINGS_MAX_CONCURRENT_STREAMS
+    pub fn max_concurrent_streams(&self) -> u32 {
+        self.http2.max_concurrent_streams()
     }
 
     /// Bind a connection together with a [`Service`].
@@ -515,374 +533,6 @@ where
     }
 }
 
-/// Http1 part of builder.
-pub struct Http1Builder<'a> {
-    inner: &'a mut Builder,
-}
-
-impl Http1Builder<'_> {
-    /// Http2 configuration.
-    pub fn http2(&mut self) -> Http2Builder<'_> {
-        Http2Builder { inner: self.inner }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set whether the `date` header should be included in HTTP responses.
-        ///
-        /// Note that including the `date` header is recommended by RFC 7231.
-        ///
-        /// Default is `true`.
-        pub fn auto_date_header(mut self, enabled: bool) -> Self {
-            self.inner.http1.set_auto_date_header(enabled);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set whether HTTP/1 connections should support half-closures.
-        ///
-        /// Clients can chose to shutdown their write-side while waiting
-        /// for the server to respond. Setting this to `true` will
-        /// prevent closing the connection immediately if `read`
-        /// detects an EOF in the middle of a request.
-        ///
-        /// Default is `false`.
-        pub fn half_close(mut self, val: bool) -> Self {
-            self.inner.http1.set_half_close(val);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Enables or disables HTTP/1 keep-alive.
-        ///
-        /// Default is `true`.
-        pub fn keep_alive(mut self, val: bool) -> Self {
-            self.inner.http1.set_keep_alive(val);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set whether HTTP/1 connections will write header names as title case at
-        /// the socket level.
-        ///
-        /// Note that this setting does not affect HTTP/2.
-        ///
-        /// Default is `false`.
-        pub fn title_case_headers(mut self, enabled: bool) -> Self {
-            self.inner.http1.set_title_case_headers(enabled);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set whether HTTP/1 connections will silently ignored malformed header lines.
-        ///
-        /// If this is enabled and a header line does not start with a valid header
-        /// name, or does not include a colon at all, the line will be silently ignored
-        /// and no error will be reported.
-        ///
-        /// Default is `false`.
-        pub fn ignore_invalid_headers(mut self, enabled: bool) -> Self {
-            self.inner.http1.set_ignore_invalid_headers(enabled);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the maximum number of headers.
-        ///
-        /// When a request is received, the parser will reserve a buffer to store headers for optimal
-        /// performance.
-        ///
-        /// If server receives more headers than the buffer size, it responds to the client with
-        /// "431 Request Header Fields Too Large".
-        ///
-        /// The headers is allocated on the stack by default, which has higher performance. After
-        /// setting this value, headers will be allocated in heap memory, that is, heap memory
-        /// allocation will occur for each request, and there will be a performance drop of about 5%.
-        ///
-        /// Note that this setting does not affect HTTP/2.
-        ///
-        /// Default is 100.
-        pub fn max_headers(mut self, val: Option<usize>) -> Self {
-            self.inner.http1.maybe_set_max_headers(val);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set a timeout for reading client request headers. If a client does not
-        /// transmit the entire header within this time, the connection is closed.
-        ///
-        /// Default is currently 30 seconds, but do not depend on that.
-        pub fn header_read_timeout(mut self, read_timeout: Duration) -> Self {
-            self.inner.http1.set_header_read_timeout(read_timeout);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set whether HTTP/1 connections should try to use vectored writes,
-        /// or always flatten into a single buffer.
-        ///
-        /// Note that setting this to false may mean more copies of body data,
-        /// but may also improve performance when an IO transport doesn't
-        /// support vectored writes well, such as most TLS implementations.
-        ///
-        /// Setting this to true will force hyper to use queued strategy
-        /// which may eliminate unnecessary cloning on some TLS backends
-        ///
-        /// Default is `auto`. In this mode rama-http-core will try to guess which
-        /// mode to use
-        pub fn writev(mut self, val: Option<bool>) -> Self {
-            self.inner.http1.maybe_set_writev(val);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the maximum buffer size for the connection.
-        ///
-        /// Default is ~400kb.
-        ///
-        /// # Errors
-        ///
-        /// The minimum value allowed is 8192. This method errors if the passed `max` is less than the minimum.
-        pub fn max_buf_size(mut self, max: usize) -> Result<Self, BoxError> {
-            self.inner.http1.try_set_max_buf_size(max)?;
-            Ok(self)
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Aggregates flushes to better support pipelined responses.
-        ///
-        /// Experimental, may have bugs.
-        ///
-        /// Default is `false`.
-        pub fn pipeline_flush(mut self, enabled: bool) -> Self {
-            self.inner.http1.set_pipeline_flush(enabled);
-            self
-        }
-    }
-
-    /// Bind a connection together with a [`Service`].
-    pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<(), BoxError>
-    where
-        S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
-        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
-    {
-        self.inner.serve_connection(io, service).await
-    }
-
-    /// Bind a connection together with a [`Service`], with the ability to
-    /// handle HTTP upgrades. This requires that the IO object implements
-    /// `Send`.
-    pub fn serve_connection_with_upgrades<I, S>(
-        &self,
-        io: I,
-        service: S,
-    ) -> UpgradeableConnection<'_, I, S>
-    where
-        S: Service<Request<Incoming>, Output = Response, Error = Infallible>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
-    {
-        self.inner.serve_connection_with_upgrades(io, service)
-    }
-}
-
-/// Http2 part of builder.
-pub struct Http2Builder<'a> {
-    inner: &'a mut Builder,
-}
-
-impl Http2Builder<'_> {
-    /// Http1 configuration.
-    pub fn http1(&mut self) -> Http1Builder<'_> {
-        Http1Builder { inner: self.inner }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Configures the maximum number of pending reset streams allowed before a GOAWAY will be sent.
-        ///
-        /// This will default to the default value set by the [`h2` crate](https://crates.io/crates/h2).
-        /// As of v0.4.0, it is 20.
-        ///
-        /// See <https://github.com/hyperium/hyper/issues/2877> for more information.
-        pub fn max_pending_accept_reset_streams(mut self, max: Option<usize>) -> Self {
-            self.inner.http2.maybe_set_max_pending_accept_reset_streams(max);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Configures the maximum number of local reset streams allowed before a GOAWAY will be sent.
-        ///
-        /// If not set, rama-http-core will use a default, currently of 1024.
-        ///
-        /// If `None` is supplied, rama-http-core will not apply any limit.
-        /// This is not advised, as it can potentially expose servers to DOS vulnerabilities.
-        ///
-        /// See <https://rustsec.org/advisories/RUSTSEC-2024-0003.html> for more information.
-        pub fn max_local_error_reset_streams(mut self, max: Option<usize>) -> Self {
-            self.inner.http2.maybe_set_max_local_error_reset_streams(max);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
-        /// stream-level flow control.
-        ///
-        /// If not set, rama-http-core will use a default.
-        ///
-        /// [spec]: https://http2.github.io/http2-spec/#SETTINGS_INITIAL_WINDOW_SIZE
-        pub fn initial_stream_window_size(mut self, sz: u32) -> Self {
-            self.inner.http2.set_initial_stream_window_size(sz);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Sets the max connection-level flow control for HTTP2.
-        ///
-        /// If not set, rama-http-core will use a default.
-        pub fn initial_connection_window_size(mut self, sz: u32) -> Self {
-            self.inner.http2.set_initial_connection_window_size(sz);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Sets whether to use an adaptive flow control.
-        ///
-        /// Enabling this will override the limits set in
-        /// `http2_initial_stream_window_size` and
-        /// `http2_initial_connection_window_size`.
-        pub fn adaptive_window(mut self, enabled: bool) -> Self {
-            self.inner.http2.set_adaptive_window(enabled);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Sets the maximum frame size to use for HTTP2.
-        ///
-        /// If not set, rama-http-core will use a default.
-        pub fn max_frame_size(mut self, sz: u32) -> Self {
-            self.inner.http2.set_max_frame_size(sz);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Sets the [`SETTINGS_MAX_CONCURRENT_STREAMS`][spec] option for HTTP2
-        /// connections.
-        ///
-        /// Default is 200. Passing `None` will remove any limit.
-        ///
-        /// [spec]: https://http2.github.io/http2-spec/#SETTINGS_MAX_CONCURRENT_STREAMS
-        pub fn max_concurrent_streams(mut self, max: u32) -> Self {
-            self.inner.http2.set_max_concurrent_streams(max);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Sets an interval for HTTP2 Ping frames should be sent to keep a
-        /// connection alive.
-        ///
-        /// Pass `None` to disable HTTP2 keep-alive.
-        ///
-        /// Default is currently disabled.
-        pub fn keep_alive_interval(mut self, interval: Option<Duration>) -> Self {
-            self.inner.http2.maybe_set_keep_alive_interval(interval);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
-        ///
-        /// If the ping is not acknowledged within the timeout, the connection will
-        /// be closed. Does nothing if `http2_keep_alive_interval` is disabled.
-        ///
-        /// Default is 20 seconds.
-        pub fn keep_alive_timeout(mut self, timeout: Duration) -> Self {
-            self.inner.http2.set_keep_alive_timeout(timeout);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the maximum write buffer size for each HTTP/2 stream.
-        ///
-        /// Default is currently ~400KB, but may change.
-        pub fn max_send_buf_size(mut self, max: u32) -> Self {
-            self.inner.http2.set_max_send_buf_size(max);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Enables the [extended CONNECT protocol].
-        ///
-        /// [extended CONNECT protocol]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
-        pub fn enable_connect_protocol(mut self) -> Self {
-            self.inner.http2.set_enable_connect_protocol();
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Sets the max size of received header frames.
-        ///
-        /// Default is currently ~16MB, but may change.
-        pub fn max_header_list_size(mut self, max: u32) -> Self {
-            self.inner.http2.set_max_header_list_size(max);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set whether the `date` header should be included in HTTP responses.
-        ///
-        /// Note that including the `date` header is recommended by RFC 7231.
-        ///
-        /// Default is `true`.
-        pub fn auto_date_header(mut self, enabled: bool) -> Self {
-            self.inner.http2.set_auto_date_header(enabled);
-            self
-        }
-    }
-
-    /// Bind a connection together with a [`Service`].
-    pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<(), BoxError>
-    where
-        S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
-        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
-    {
-        self.inner.serve_connection(io, service).await
-    }
-
-    /// Bind a connection together with a [`Service`], with the ability to
-    /// handle HTTP upgrades. This requires that the IO object implements
-    /// `Send`.
-    pub fn serve_connection_with_upgrades<I, S>(
-        &self,
-        io: I,
-        service: S,
-    ) -> UpgradeableConnection<'_, I, S>
-    where
-        S: Service<Request<Incoming>, Output = Response, Error = Infallible>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
-    {
-        self.inner.serve_connection_with_upgrades(io, service)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::client::conn::http1;
@@ -906,19 +556,11 @@ mod tests {
 
     #[test]
     fn configuration() {
-        // One liner.
-        auto::Builder::new(Executor::new())
-            .http1()
-            .set_keep_alive(true)
-            .http2()
-            .maybe_set_keep_alive_interval(None);
-        //  .serve_connection(io, service);
-
         // Using variable.
         let mut builder = auto::Builder::new(Executor::new());
 
-        builder.http1().set_keep_alive(true);
-        builder.http2().maybe_set_keep_alive_interval(None);
+        builder.http1_mut().set_keep_alive(true);
+        builder.h2_mut().maybe_set_keep_alive_interval(None);
         // builder.serve_connection(io, service);
     }
 
@@ -1096,18 +738,14 @@ mod tests {
                             .serve_connection(stream, RamaHttpService::new(service_fn(hello)))
                             .await
                     } else if h2_only {
-                        builder = builder.http2_only();
+                        builder = builder.h2_only();
                         builder
                             .serve_connection(stream, RamaHttpService::new(service_fn(hello)))
                             .await
                     } else {
+                        builder.h2_mut().set_max_header_list_size(4096);
                         builder
-                            .http2()
-                            .set_max_header_list_size(4096)
-                            .serve_connection_with_upgrades(
-                                stream,
-                                RamaHttpService::new(service_fn(hello)),
-                            )
+                            .serve_connection(stream, RamaHttpService::new(service_fn(hello)))
                             .await
                     }
                     .unwrap();

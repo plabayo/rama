@@ -1,0 +1,69 @@
+[package]
+name = "rama_tproxy_example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[workspace]
+
+[dependencies]
+rama = { path = "../../../../../", features = ["net-apple-networkextension", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
+tokio = { version = "1.48", features = ["net"] }
+tracing-oslog = "0.3"
+apple-native-keyring-store = { version = "0.2", features = ["protected"] }
+keyring-core = "0.7"
+moka = { version = "0.12", features = ["sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+unused_imports = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+todo = "warn"
+empty_enums = "warn"
+enum_glob_use = "warn"
+equatable_if_let = "warn"
+mem_forget = "warn"
+unused_self = "warn"
+filter_map_next = "warn"
+needless_continue = "warn"
+needless_borrow = "warn"
+match_wildcard_for_single_variants = "warn"
+if_let_mutex = "warn"
+implicit_clone = "warn"
+await_holding_lock = "warn"
+imprecise_flops = "warn"
+suboptimal_flops = "warn"
+lossy_float_literal = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+fn_params_excessive_bools = "warn"
+exit = "warn"
+inefficient_to_string = "warn"
+linkedlist = "warn"
+macro_use_imports = "warn"
+manual_let_else = "warn"
+match_same_arms = "warn"
+needless_pass_by_ref_mut = "warn"
+needless_pass_by_value = "warn"
+option_option = "warn"
+redundant_clone = "warn"
+ref_option = "warn"
+verbose_file_reads = "warn"
+unnested_or_patterns = "warn"
+str_to_string = "warn"
+type_complexity = "allow"
+return_self_not_must_use = "warn"
+single_match_else = "warn"
+trivially_copy_pass_by_ref = "warn"
+use_self = "warn"
+uninlined_format_args = "warn"
+fallible_impl_from = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"

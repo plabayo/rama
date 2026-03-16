@@ -5,6 +5,7 @@ use crate::{
     http::client::proxy::layer::{
         HttpProxyConnector, HttpProxyConnectorLayer, MaybeHttpProxiedConnection,
     },
+    io::Io,
     net::{
         Protocol,
         address::ProxyAddress,
@@ -12,7 +13,6 @@ use crate::{
         transport::TryRefIntoTransportContext,
     },
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
-    stream::Stream,
     telemetry::tracing,
 };
 use pin_project_lite::pin_project;
@@ -79,7 +79,7 @@ impl<S: Clone> ProxyConnector<S> {
 
 impl<Input, S> Service<Input> for ProxyConnector<S>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut

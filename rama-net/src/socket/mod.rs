@@ -1,8 +1,7 @@
 pub use ::socket2 as core;
 
-mod interface;
-#[doc(inline)]
-pub use interface::Interface;
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+mod device_name;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 #[cfg_attr(
@@ -10,7 +9,7 @@ pub use interface::Interface;
     doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
 )]
 #[doc(inline)]
-pub use interface::DeviceName;
+pub use device_name::DeviceName;
 
 pub mod opts;
 #[doc(inline)]

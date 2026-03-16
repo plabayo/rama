@@ -20,7 +20,7 @@ use rama::{
         ConsumeErrLayer, Layer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
-    net::{socket::Interface, stream::layer::http::BodyLimitLayer, tls::ApplicationProtocol},
+    net::{address::SocketAddress, stream::layer::http::BodyLimitLayer, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
@@ -38,9 +38,9 @@ mod endpoint;
 #[derive(Debug, Args)]
 /// rama http test service
 pub struct CliCommandHttpTest {
-    /// the interface to bind to
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: Interface,
+    /// the address to bind to
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(8080))]
+    bind: SocketAddress,
 
     #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -142,7 +142,7 @@ where
     };
 
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind http test service")?;
 
@@ -194,7 +194,7 @@ where
                 tcp_listener
                     .serve(
                         tcp_service_builder
-                            .into_layer(HttpServer::http1(exec).service(http_service)),
+                            .into_layer(HttpServer::new_http1(exec).service(http_service)),
                     )
                     .await;
             }
@@ -206,7 +206,8 @@ where
                 );
                 tcp_listener
                     .serve(
-                        tcp_service_builder.into_layer(HttpServer::h2(exec).service(http_service)),
+                        tcp_service_builder
+                            .into_layer(HttpServer::new_h2(exec).service(http_service)),
                     )
                     .await;
             }

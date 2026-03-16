@@ -6,9 +6,6 @@ mod compress_certificate;
 mod tls_stream_auto;
 pub use tls_stream_auto::AutoTlsStream;
 
-mod tls_stream;
-pub use tls_stream::TlsStream;
-
 pub use rama_boring_tokio::SslStream as BoringTlsStream;
 
 mod connector;

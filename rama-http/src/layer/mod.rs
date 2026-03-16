@@ -23,6 +23,7 @@ pub mod classify;
 pub mod collect_body;
 pub mod cors;
 pub mod dns;
+pub mod dpi_proxy_credential;
 pub mod error_handling;
 pub mod follow_redirect;
 pub mod forwarded;

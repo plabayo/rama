@@ -81,7 +81,7 @@ async fn main() {
     let address = SocketAddress::local_ipv4(62036);
     tracing::info!("running service at: {address}");
     let exec = Executor::graceful(graceful.guard());
-    let tcp_server = TcpListener::bind(address, exec)
+    let tcp_server = TcpListener::bind_address(address, exec)
         .await
         .expect("bind tcp server");
 

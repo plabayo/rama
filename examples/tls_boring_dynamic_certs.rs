@@ -117,7 +117,7 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind("127.0.0.1:64801", exec)
+        TcpListener::bind_address("127.0.0.1:64801", exec)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

@@ -4,7 +4,7 @@ use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_net::address::Host;
@@ -169,7 +169,7 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + ExtensionsRef
         + Send
@@ -204,7 +204,7 @@ where
             });
         }
 
-        let server_host = transport_ctx.authority.host.clone();
+        let server_host = &transport_ctx.authority.host;
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
@@ -215,7 +215,9 @@ where
 
         let connector_data = input.extensions().get::<TlsConnectorData>().cloned();
 
-        let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
+        let (stream, negotiated_params) = self
+            .handshake(connector_data, Some(server_host), conn)
+            .await?;
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
@@ -239,7 +241,7 @@ where
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsRef
@@ -262,11 +264,13 @@ where
             transport_ctx.app_protocol,
         );
 
-        let server_host = transport_ctx.authority.host.clone();
+        let server_host = &transport_ctx.authority.host;
 
         let connector_data = input.extensions().get::<TlsConnectorData>().cloned();
 
-        let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
+        let (conn, negotiated_params) = self
+            .handshake(connector_data, Some(server_host), conn)
+            .await?;
 
         let mut conn = TlsStream::new(conn);
         #[cfg(feature = "http")]
@@ -283,7 +287,7 @@ where
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
@@ -293,14 +297,10 @@ where
         let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let server_host = if let Some(host) = input
-            .extensions()
-            .get::<TlsTunnel>()
-            .as_ref()
-            .map(|t| &t.server_host)
-            .or(self.kind.host.as_ref())
-        {
-            host.clone()
+        let maybe_server_host = if let Some(tunnel) = input.extensions().get::<TlsTunnel>() {
+            tunnel.sni.as_ref()
+        } else if let Some(hardcoded_sni) = self.kind.host.as_ref() {
+            Some(hardcoded_sni)
         } else {
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
@@ -314,7 +314,9 @@ where
 
         let connector_data = input.extensions().get::<TlsConnectorData>().cloned();
 
-        let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
+        let (conn, negotiated_params) = self
+            .handshake(connector_data, maybe_server_host, conn)
+            .await?;
         let mut conn = AutoTlsStream::secure(conn);
 
         #[cfg(feature = "http")]
@@ -334,18 +336,21 @@ impl<S, K> TlsConnector<S, K> {
     async fn handshake<T>(
         &self,
         connector_data: Option<TlsConnectorData>,
-        server_host: Host,
+        maybe_server_host: Option<&Host>,
         stream: T,
     ) -> Result<(RustlsTlsStream<T>, NegotiatedTlsParameters), BoxError>
     where
-        T: Stream + ExtensionsMut + Unpin,
+        T: Io + ExtensionsMut + Unpin,
     {
         let connector_data = connector_data
             .or(self.connector_data.clone())
             .unwrap_or(TlsConnectorData::try_new_http_auto()?);
 
         let server_name = rustls_pki_types::ServerName::rama_try_from(
-            connector_data.server_name.unwrap_or(server_host),
+            connector_data
+                .server_name
+                .or_else(|| maybe_server_host.cloned())
+                .context("server name missing")?,
         )?;
 
         let connector = RustlsConnector::from(connector_data.client_config);

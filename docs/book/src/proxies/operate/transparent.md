@@ -31,7 +31,11 @@ You implement a subclass of **`NETransparentProxyProvider`**. Unlike Linux, wher
 2. **Flow Handling:** macOS hands your code an `NEAppProxyFlow`. Because this is a flow-based API, you don't have to worry about raw IP packets; you get a clean stream of data to pipe into a "Stream" Service.
 3. **Identification:** To make smart filtering decisions, you often pair this with an **`NEFilterDataProvider`**. This allows you to inspect the "Audit Token" to see exactly which app (e.g., Slack vs. Safari) is generating the traffic.
 
+See for more information:
+
 * **Official Documentation:** [Apple Developer: Network Extension](https://developer.apple.com/documentation/networkextension)
+* **Rama Crate:** [`rama-net-apple-networkextension`](https://crates.io/crates/rama-net-apple-networkextension)
+* **Example:** [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) shows a full transparent proxy host app, Network Extension, Rust `staticlib`, and Apple FFI end-to-end tests.
 
 ## 3. Windows: Windows Filtering Platform (WFP)
 

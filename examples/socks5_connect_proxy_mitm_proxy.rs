@@ -89,7 +89,7 @@ async fn main() {
 
     let auto_https_service = TlsPeekRouter::new(https_service).with_fallback(http_service);
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62022", exec.clone())
+    let tcp_service = TcpListener::bind_address("127.0.0.1:62022", exec.clone())
         .await
         .expect("bind proxy to 127.0.0.1:62022");
     let socks5_acceptor = Socks5Acceptor::new(exec)

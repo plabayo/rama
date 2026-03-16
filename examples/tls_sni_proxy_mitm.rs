@@ -100,24 +100,25 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
+    io::Io,
     layer::{AddInputExtensionLayer, ConsumeErrLayer},
     net::{
         Protocol,
         address::{Domain, HostWithPort, SocketAddress},
         client::{ConnectorTarget, pool::http::HttpPooledConnectorConfig},
         http::RequestContext,
+        proxy::IoForwardService,
         tls::{
             ApplicationProtocol,
             client::ServerVerifyMode,
             server::{
-                ServerAuth, ServerCertIssuerData, ServerConfig, SniPeekStream, SniRequest,
+                ServerAuth, ServerCertIssuerData, ServerConfig, SniPrefixedIo, SniRequest,
                 SniRouter,
             },
         },
     },
     rt::Executor,
-    stream::Stream,
-    tcp::{client::service::Forwarder, server::TcpListener},
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -167,7 +168,7 @@ async fn main() -> Result<(), BoxError> {
     const INTERFACE: SocketAddress = SocketAddress::local_ipv4(62045);
 
     tracing::info!("bind SNI MITM proxy to {INTERFACE}");
-    let tcp_listener = TcpListener::bind(INTERFACE, exec.clone())
+    let tcp_listener = TcpListener::bind_address(INTERFACE, exec.clone())
         .await
         .context("bind tcp proxy")
         .context_field("interface", INTERFACE)?;
@@ -253,8 +254,8 @@ struct SniRouterService<T> {
 
 impl<T, S> Service<SniRequest<S>> for SniRouterService<T>
 where
-    S: Stream + Unpin + ExtensionsMut,
-    T: Service<SniPeekStream<S>, Output = (), Error: Into<BoxError>>,
+    S: Io + Unpin + ExtensionsMut,
+    T: Service<SniPrefixedIo<S>, Output = (), Error: Into<BoxError>>,
 {
     type Output = ();
     type Error = BoxError;
@@ -289,13 +290,14 @@ where
                 .context_field("sni", sni)?;
         } else {
             // preserve traffic as is, no MITM even
-            Forwarder::new(
+            IoToProxyBridgeIoLayer::new(
                 self.exec.clone(),
                 HostWithPort {
                     host: sni.clone().into(),
                     port: Protocol::HTTPS_DEFAULT_PORT,
                 },
             )
+            .into_layer(IoForwardService::new())
             .serve(stream)
             .await
             .context("forward data")

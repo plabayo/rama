@@ -13,7 +13,7 @@ use rama::{
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
     net::{
-        socket::Interface,
+        address::SocketAddress,
         stream::service::EchoService,
         tls::{ApplicationProtocol, server::ServerConfig},
     },
@@ -23,7 +23,7 @@ use rama::{
     telemetry::tracing::{self, Instrument},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     ua::profile::UserAgentDatabase,
-    udp::bind_udp,
+    udp::bind_udp_with_address,
 };
 
 use clap::{Args, ValueEnum};
@@ -35,9 +35,9 @@ use crate::utils::{http::HttpVersion, tls::try_new_server_config};
 #[derive(Debug, Clone, Args)]
 /// rama echo service (rich https echo or else raw tcp/udp bytes)
 pub struct CliCommandEcho {
-    /// the interface to bind to
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: Interface,
+    /// the address to bind to
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(8080))]
+    bind: SocketAddress,
 
     #[arg(short = 'c', long)]
     /// the number of concurrent connections to allow
@@ -176,7 +176,7 @@ async fn bind_echo_http_service(
         cfg.bind
     );
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind tcp socker for http(s) echo service")?;
 
@@ -266,7 +266,7 @@ async fn bind_echo_tcp_service(
 
     tracing::info!("starting TCP echo service: bind interface = {:?}", cfg.bind);
     let tcp_listener = TcpListener::build(exec.clone())
-        .bind(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind TCP echo service socket")?;
 
@@ -321,7 +321,7 @@ async fn bind_echo_udp_service(
     }
 
     tracing::info!("starting UDP echo service: bind interface = {:?}", cfg.bind);
-    let udp_socket = bind_udp(cfg.bind.clone())
+    let udp_socket = bind_udp_with_address(cfg.bind)
         .await
         .context("bind UDP echo service socket")?;
 

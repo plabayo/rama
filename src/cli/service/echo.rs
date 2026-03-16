@@ -28,7 +28,10 @@ use crate::{
         proto::h2::PseudoHeaderOrder,
         server::{HttpServer, layer::upgrade::UpgradeLayer},
         service::web::{extract::Json, response::IntoResponse},
-        ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher},
+        ws::handshake::{
+            matcher::WebSocketMatcher,
+            server::{WebSocketAcceptor, WebSocketEchoService},
+        },
     },
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
@@ -279,14 +282,14 @@ where
 
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A({
-                let mut http = HttpServer::h2(exec);
+                let mut http = HttpServer::new_h2(exec);
                 if self.ws_support {
                     http.h2_mut().set_enable_connect_protocol();
                 }
                 http.service(http_service)
             }),
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
-                Either3::B(HttpServer::http1(exec).service(http_service))
+                Either3::B(HttpServer::new_http1(exec).service(http_service))
             }
             Some(version) => {
                 return Err(BoxError::from("unsupported http version")

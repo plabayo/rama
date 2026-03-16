@@ -73,7 +73,7 @@ mod private {
     use rama_core::extensions::ExtensionsMut;
     use rama_core::futures::FutureExt;
     use rama_core::graceful::ShutdownGuard;
-    use rama_core::stream::Stream;
+    use rama_core::io::Io;
     use rama_core::telemetry::tracing;
     use rama_http::service::web::response::IntoResponse;
     use rama_http_core::service::RamaHttpService;
@@ -91,7 +91,7 @@ mod private {
             guard: Option<ShutdownGuard>,
         ) -> impl Future<Output = HttpServeResult> + Send + '_
         where
-            IO: Stream + ExtensionsMut,
+            IO: Io + ExtensionsMut,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static;
     }
@@ -105,7 +105,7 @@ mod private {
             guard: Option<ShutdownGuard>,
         ) -> HttpServeResult
         where
-            IO: Stream + ExtensionsMut,
+            IO: Io + ExtensionsMut,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
@@ -147,7 +147,7 @@ mod private {
             guard: Option<ShutdownGuard>,
         ) -> HttpServeResult
         where
-            IO: Stream + ExtensionsMut,
+            IO: Io + ExtensionsMut,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
@@ -189,7 +189,7 @@ mod private {
             guard: Option<ShutdownGuard>,
         ) -> HttpServeResult
         where
-            IO: Stream + ExtensionsMut,
+            IO: Io + ExtensionsMut,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {

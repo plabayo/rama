@@ -26,7 +26,7 @@ impl MockUdpAssociator {
 
 impl<S> Socks5UdpAssociatorSeal<S> for MockUdpAssociator
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     async fn accept_udp_associate(
         &self,

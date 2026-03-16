@@ -3,7 +3,7 @@ use super::*;
 /// A push-based, lossy decoder for UTF-8.
 /// Errors are replaced with the U+FFFD replacement character.
 ///
-/// Users “push” bytes into the decoder, which in turn “pushes” `&str` slices into a callback.
+/// Users "push" bytes into the decoder, which in turn "pushes" `&str` slices into a callback.
 ///
 /// For example, `String::from_utf8_lossy` (but returning `String` instead of `Cow`)
 /// can be rewritten as:

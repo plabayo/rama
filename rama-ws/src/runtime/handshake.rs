@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 use rama_core::telemetry::tracing::trace;
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 pub(crate) async fn without_handshake<F, S>(stream: S, f: F) -> AsyncWebSocket<S>
 where
     F: FnOnce(AllowStd<S>) -> WebSocket<AllowStd<S>> + Unpin,
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     let start = SkippedHandshakeFuture(Some(SkippedHandshakeFutureInner { f, stream }));
 

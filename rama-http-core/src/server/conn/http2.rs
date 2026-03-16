@@ -202,6 +202,14 @@ impl Builder {
         }
     }
 
+    /// Gets the [`SETTINGS_MAX_CONCURRENT_STREAMS`][spec] option used
+    /// for HTTP2 connections.
+    ///
+    /// [spec]: https://httpwg.org/specs/rfc9113.html#SETTINGS_MAX_CONCURRENT_STREAMS
+    pub fn max_concurrent_streams(&self) -> u32 {
+        self.h2_builder.max_concurrent_streams.unwrap_or(200)
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Sets an interval for HTTP2 Ping frames should be sent to keep a
         /// connection alive.

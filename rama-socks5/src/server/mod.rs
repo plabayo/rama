@@ -17,12 +17,12 @@ use rama_core::{
     Service,
     error::BoxError,
     extensions::{Extensions, ExtensionsMut},
+    io::Io,
     rt::Executor,
-    stream::Stream,
     telemetry::tracing,
 };
 use rama_net::{
-    socket::Interface,
+    address::SocketAddress,
     user::{self, authority::Authorizer},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
@@ -30,7 +30,7 @@ use std::{fmt, sync::Arc};
 
 mod peek;
 #[doc(inline)]
-pub use peek::{NoSocks5RejectError, Socks5PeekRouter, Socks5PeekStream};
+pub use peek::{NoSocks5RejectError, Socks5PeekRouter, Socks5PrefixedIo};
 
 mod connect;
 pub use connect::{Connector, DefaultConnector, LazyConnector, Socks5Connector};
@@ -342,7 +342,7 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
         U: Socks5UdpAssociator<S>,
         A: Authorizer<user::Basic, Error: fmt::Debug>,
         B: Socks5Binder<S>,
-        S: Stream + Unpin + ExtensionsMut,
+        S: Io + Unpin + ExtensionsMut,
     {
         let client_header = client::Header::read_from(&mut stream)
             .await
@@ -412,7 +412,7 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
 }
 
 impl<C, B, U, A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5Acceptor<C, B, U, A> {
-    async fn handle_method<S: Stream + Unpin>(
+    async fn handle_method<S: Io + Unpin>(
         &self,
         methods: &[SocksMethod],
         stream: &mut S,
@@ -524,7 +524,7 @@ where
     U: Socks5UdpAssociator<S>,
     A: Authorizer<user::Basic, Error: fmt::Debug>,
     B: Socks5Binder<S>,
-    S: Stream + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsMut,
 {
     type Output = ();
     type Error = Error;
@@ -545,14 +545,14 @@ where
     A: Authorizer<user::Basic, Error: fmt::Debug>,
     B: Socks5Binder<TcpStream>,
 {
-    /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
+    /// Listen for connections on the given [`SocketAddress`], serving Socks5(h) connections.
     ///
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
-    pub async fn listen<I>(self, interface: I) -> Result<(), BoxError>
+    pub async fn listen<Address>(self, address: Address) -> Result<(), BoxError>
     where
-        I: TryInto<Interface, Error: Into<BoxError>>,
+        Address: TryInto<SocketAddress, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind(interface, self.exec.clone()).await?;
+        let tcp = TcpListener::bind_address(address, self.exec.clone()).await?;
         tcp.serve(Arc::new(self)).await;
         Ok(())
     }

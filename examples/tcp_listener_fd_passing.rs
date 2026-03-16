@@ -69,7 +69,7 @@ mod unix_example {
         println!("Creating TCP listener...");
 
         // Create listener
-        let listener = TcpListener::bind("127.0.0.1:62046", Executor::default()).await?;
+        let listener = TcpListener::bind_address("127.0.0.1:62046", Executor::default()).await?;
         let addr = listener.local_addr()?;
         println!("✓ Listening on {addr}");
 

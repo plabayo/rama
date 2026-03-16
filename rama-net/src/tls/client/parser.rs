@@ -18,6 +18,7 @@ use nom::{
     number::streaming::{be_u8, be_u16},
 };
 use rama_core::error::{BoxError, ErrorExt as _};
+use rama_core::telemetry::tracing;
 use std::str;
 
 /// Parse a [`ClientHello`] from the raw "wire" bytes.
@@ -29,15 +30,50 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, BoxError> {
         Err(err) => Err(BoxError::from("parse client hello handshake message")
             .context_debug_field("err", err.to_owned())),
         Ok((i, hello)) => {
-            if i.is_empty() {
-                Ok(hello)
-            } else {
-                Err(BoxError::from(
-                    "parse client hello handshake message: unexpected trailer content",
-                ))
+            if !i.is_empty() {
+                tracing::debug!(
+                    "parse_client_hello: parse client hello handshake message: unexpected trailer content"
+                )
             }
+            Ok(hello)
         }
     }
+}
+
+/// Parse a [`ClientHello`] from the raw handshake "wire" bytes.
+///
+/// Same as [`parse_client_hello`] but for the outer tls handshake,
+/// instead of just the record
+pub fn parse_client_hello_handshake(i: &[u8]) -> Result<ClientHello, BoxError> {
+    match parse_client_hello_handshake_inner(i) {
+        Err(err) => Err(BoxError::from("parse client hello handshake message")
+            .context_debug_field("err", err.to_owned())),
+        Ok((i, hello)) => {
+            if !i.is_empty() {
+                tracing::debug!(
+                    "parse_client_hello_handshake: parse client hello handshake message: unexpected trailer content"
+                )
+            }
+            Ok(hello)
+        }
+    }
+}
+
+fn parse_client_hello_handshake_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
+    // verify content type and tls version
+    let (i, _) = verify(take(3usize), |s: &[u8]| {
+        matches!(s, [0x16, 0x03, 0x00..=0x04])
+    })
+    .parse(i)?;
+
+    // skip record length
+    let (i, _) = be_u16(i)?;
+
+    // verify handshake type and drop the handshake length
+    let (i, _) = verify(take(4usize), |s: &[u8]| matches!(s, [0x01, ..])).parse(i)?;
+
+    // now it's time for the record
+    parse_client_hello_inner(i)
 }
 
 /// Parse a [`ClientHello`] from the raw incoming "wire" client handshake bytes to find the SNI Host value.

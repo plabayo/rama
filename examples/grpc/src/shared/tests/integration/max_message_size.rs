@@ -124,7 +124,7 @@ async fn response_stream_limit() {
 
     let svc = test1_server::Test1Server::new(Svc);
 
-    let server = HttpServer::h2(Executor::default()).service(svc);
+    let server = HttpServer::new_h2(Executor::default()).service(svc);
 
     let client = test1_client::Test1Client::new(
         super::mock_io_client(move || server.clone()),
@@ -198,12 +198,9 @@ fn assert_test_case(case: TestCase) {
 
     match (case.expected_code, res) {
         (Some(_), Ok(())) => panic!("Expected failure, but got success"),
-        (Some(code), Err(status)) => {
-            if status.code() != code {
-                panic!("Expected failure, got failure but wrong code, got: {status:?}")
-            }
+        (Some(code), Err(status)) if status.code() != code => {
+            panic!("Expected failure, got failure but wrong code, got: {status:?}")
         }
-
         (None, Err(status)) => panic!("Expected success, but got failure, got: {status:?}"),
 
         _ => (),
@@ -257,7 +254,7 @@ async fn max_message_run(case: &TestCase) -> Result<(), Status> {
         svc.set_max_encoding_message_size(size);
     }
 
-    let server = HttpServer::h2(Executor::default()).service(svc);
+    let server = HttpServer::new_h2(Executor::default()).service(svc);
 
     let mut client = test1_client::Test1Client::new(
         super::mock_io_client(move || server.clone()),

@@ -187,10 +187,10 @@ where
         ));
 
     match params.version {
-        HttpVersion::Http1 => HttpServer::http1(Executor::default())
+        HttpVersion::Http1 => HttpServer::new_http1(Executor::default())
             .service(http_service)
             .boxed(),
-        HttpVersion::Http2 => HttpServer::h2(Executor::default())
+        HttpVersion::Http2 => HttpServer::new_h2(Executor::default())
             .service(http_service)
             .boxed(),
     }

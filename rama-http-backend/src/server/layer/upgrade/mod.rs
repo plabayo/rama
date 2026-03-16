@@ -11,3 +11,11 @@ mod layer;
 pub use layer::UpgradeLayer;
 
 pub use rama_http::io::upgrade::Upgraded;
+
+mod http_proxy_connect;
+pub use http_proxy_connect::{
+    DefaultHttpProxyConnectReplyService, HttpProxyConnectRelayServiceRequestMatcher,
+    HttpProxyConnectRelayServiceResponseMatcher,
+};
+
+pub mod mitm;
