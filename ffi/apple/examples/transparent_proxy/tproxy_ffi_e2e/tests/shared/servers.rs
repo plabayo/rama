@@ -158,17 +158,18 @@ fn http_app(
     )
 }
 
-pub(crate) async fn spawn_http_server(bind_port: u16, observations: SharedObservations) {
+pub(crate) async fn spawn_http_server(observations: SharedObservations) -> u16 {
     let mut server = HttpServer::auto(Executor::default());
     server.h2_mut().set_enable_connect_protocol();
-    let listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(bind_port), Executor::default())
-            .await
-            .expect("bind plain http server");
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .expect("bind plain http server");
+    let port = listener.local_addr().expect("plain http local addr").port();
     tokio::spawn(listener.serve(server.service(http_app(&observations))));
+    port
 }
 
-pub(crate) async fn spawn_https_server(bind_port: u16, observations: SharedObservations) {
+pub(crate) async fn spawn_https_server(observations: SharedObservations) -> u16 {
     let tls_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
         organisation_name: Some("Rama FFI HTTPS E2E".to_owned()),
         common_name: Some(Domain::from_static("127.0.0.1")),
@@ -180,13 +181,14 @@ pub(crate) async fn spawn_https_server(bind_port: u16, observations: SharedObser
 
     let mut server = HttpServer::auto(Executor::default());
     server.h2_mut().set_enable_connect_protocol();
-    let listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(bind_port), Executor::default())
-            .await
-            .expect("bind https server");
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .expect("bind https server");
+    let port = listener.local_addr().expect("https local addr").port();
     tokio::spawn(listener.serve(
         TlsAcceptorLayer::new(tls_data).into_layer(server.service(http_app(&observations))),
     ));
+    port
 }
 
 async fn record_http_observation(observations: SharedObservations, req: &Request) {
@@ -200,10 +202,11 @@ async fn record_http_observation(observations: SharedObservations, req: &Request
     });
 }
 
-pub(crate) async fn spawn_raw_tcp_echo(bind_port: u16) {
-    let listener = TokioTcpListener::bind(format!("127.0.0.1:{bind_port}"))
+pub(crate) async fn spawn_raw_tcp_echo() -> u16 {
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind raw tcp echo");
+    let port = listener.local_addr().expect("raw tcp local addr").port();
     tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
@@ -225,9 +228,10 @@ pub(crate) async fn spawn_raw_tcp_echo(bind_port: u16) {
             });
         }
     });
+    port
 }
 
-pub(crate) async fn spawn_raw_tls_echo(bind_port: u16) {
+pub(crate) async fn spawn_raw_tls_echo() -> u16 {
     let tls_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
         organisation_name: Some("Rama FFI Raw TLS E2E".to_owned()),
         common_name: Some(Domain::from_static("127.0.0.1")),
@@ -236,15 +240,16 @@ pub(crate) async fn spawn_raw_tls_echo(bind_port: u16) {
     .expect("raw tls data")
     .build();
 
-    let listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(bind_port), Executor::default())
-            .await
-            .expect("bind raw tls echo");
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .expect("bind raw tls echo");
+    let port = listener.local_addr().expect("raw tls local addr").port();
     tokio::spawn(
         listener.serve(TlsAcceptorLayer::new(tls_data).into_layer(service_fn(
             |stream| async move { tls_echo_service(stream).await },
         ))),
     );
+    port
 }
 
 async fn tls_echo_service<S>(mut stream: S) -> Result<(), io::Error>
@@ -261,10 +266,9 @@ where
     }
 }
 
-pub(crate) async fn spawn_udp_echo(bind_port: u16) {
-    let socket = UdpSocket::bind(format!("127.0.0.1:{bind_port}"))
-        .await
-        .expect("bind udp echo");
+pub(crate) async fn spawn_udp_echo() -> u16 {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind udp echo");
+    let port = socket.local_addr().expect("udp local addr").port();
     tokio::spawn(async move {
         let mut buf = [0_u8; 2048];
         loop {
@@ -280,9 +284,10 @@ pub(crate) async fn spawn_udp_echo(bind_port: u16) {
             }
         }
     });
+    port
 }
 
-pub(crate) async fn spawn_combined_proxy(bind_port: u16) {
+pub(crate) async fn spawn_combined_proxy() -> u16 {
     let exec = Executor::default();
     let mut http_server = HttpServer::auto(exec.clone());
     http_server.h2_mut().set_enable_connect_protocol();
@@ -302,14 +307,15 @@ pub(crate) async fn spawn_combined_proxy(bind_port: u16) {
         .into_layer(service_fn(http_plain_proxy)),
     );
 
-    let listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(bind_port), Executor::default())
-            .await
-            .expect("bind proxy listener");
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .expect("bind proxy listener");
+    let port = listener.local_addr().expect("proxy local addr").port();
 
     tokio::spawn(
         listener.serve(Socks5PeekRouter::new(Socks5Acceptor::default()).with_fallback(http_proxy)),
     );
+    port
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {

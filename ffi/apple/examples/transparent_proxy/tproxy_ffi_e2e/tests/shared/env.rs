@@ -8,7 +8,7 @@ use super::{
         spawn_combined_proxy, spawn_http_server, spawn_https_server, spawn_raw_tcp_echo,
         spawn_raw_tls_echo, spawn_udp_echo,
     },
-    types::{HttpObservation, PortBlock, SharedObservations, next_port_block},
+    types::{HttpObservation, PortBlock, SharedObservations},
 };
 
 pub(crate) struct TestEnv {
@@ -21,14 +21,14 @@ pub(crate) struct TestEnv {
 pub(crate) async fn setup_env() -> TestEnv {
     let http_observations = Arc::new(Mutex::new(Vec::<HttpObservation>::new()));
     let https_observations = Arc::new(Mutex::new(Vec::<HttpObservation>::new()));
-    let ports = next_port_block();
-
-    spawn_http_server(ports.http, http_observations.clone()).await;
-    spawn_https_server(ports.https, https_observations.clone()).await;
-    spawn_raw_tcp_echo(ports.raw_tcp).await;
-    spawn_raw_tls_echo(ports.raw_tls).await;
-    spawn_udp_echo(ports.udp).await;
-    spawn_combined_proxy(ports.proxy).await;
+    let ports = PortBlock {
+        http: spawn_http_server(http_observations.clone()).await,
+        https: spawn_https_server(https_observations.clone()).await,
+        raw_tcp: spawn_raw_tcp_echo().await,
+        raw_tls: spawn_raw_tls_echo().await,
+        udp: spawn_udp_echo().await,
+        proxy: spawn_combined_proxy().await,
+    };
 
     let storage_dir = test_storage_dir();
     std::fs::create_dir_all(&storage_dir).expect("create storage dir");
