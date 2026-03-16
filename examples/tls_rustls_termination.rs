@@ -43,9 +43,10 @@ use rama::{
     Layer,
     extensions::ExtensionsRef,
     graceful::Shutdown,
+    io::Io,
     layer::ConsumeErrLayer,
     net::{
-        address::HostWithPort, forwarded::Forwarded, stream::SocketInfo,
+        address::HostWithPort, forwarded::Forwarded, proxy::IoForwardService, stream::SocketInfo,
         tls::server::SelfSignedData,
     },
     proxy::haproxy::{
@@ -53,11 +54,7 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    stream::Stream,
-    tcp::{
-        client::service::{Forwarder, TcpConnector},
-        server::TcpListener,
-    },
+    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -92,8 +89,9 @@ async fn main() {
 
     // create tls proxy
     shutdown.spawn_task_fn(async move |guard| {
-        let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(
-            Forwarder::new(
+        let tcp_service = (
+            TlsAcceptorLayer::new(acceptor_data),
+            IoToProxyBridgeIoLayer::new(
                 Executor::graceful(guard.clone()),
                 HostWithPort::local_ipv4(62800),
             )
@@ -102,9 +100,10 @@ async fn main() {
                 HaProxyClientLayer::tcp()
                     .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
             ),
-        );
+        )
+            .into_layer(IoForwardService::new());
 
-        TcpListener::bind("127.0.0.1:63800", Executor::graceful(guard.clone()))
+        TcpListener::bind_address("127.0.0.1:63800", Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener: tls")
             .serve(tcp_service)
@@ -116,7 +115,7 @@ async fn main() {
         let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
             .into_layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind("127.0.0.1:62800", Executor::graceful(guard.clone()))
+        TcpListener::bind_address("127.0.0.1:62800", Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)
@@ -131,7 +130,7 @@ async fn main() {
 
 async fn internal_tcp_service_fn<S>(mut stream: S) -> Result<(), Infallible>
 where
-    S: Stream + Unpin + ExtensionsRef,
+    S: Io + Unpin + ExtensionsRef,
 {
     // REMARK: builds on the assumption that we are using the haproxy protocol
     let client_addr = stream

@@ -46,6 +46,7 @@ members = [
     "rama-macros",
     "rama-macros/tests/macros",
     "rama-net",
+    "rama-net-apple-networkextension",
     "rama-proxy",
     "rama-socks5",
     "rama-tcp",
@@ -75,7 +76,7 @@ categories = [
     "web-programming::http-server",
 ]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.91.0"
+rust-version = "1.93.0"
 
 [workspace.dependencies]
 ahash = "0.8"
@@ -92,11 +93,7 @@ bitflags = "2.10"
 brotli = "8"
 byteorder = "1.5"
 bytes = "1"
-chrono = { version = "0.4", default-features = false, features = [
-    "serde",
-    "oldtime",
-    "clock",
-] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "oldtime", "clock"] }
 clap = { version = "4.5", features = ["derive", "unstable-v5", "wrap_help"] }
 compression-codecs = "0.4"
 compression-core = "0.4"
@@ -112,10 +109,7 @@ futures = "0.3"
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
-hickory-resolver = { version = "0.25", default-features = false, features = [
-    "tokio",
-    "system-config",
-] }
+hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config", "serde"] }
 honggfuzz = "0.5"
 http = "1"
 http-body = "1"
@@ -140,23 +134,11 @@ mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 nom = "8.0.0"
-opentelemetry = { version = "0.31", default-features = false, features = [
-    "trace",
-] }
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
 opentelemetry-http = { version = "0.31", default-features = false }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = [
-    "internal-logs",
-    "logs",
-    "metrics",
-    "trace",
-] }
-opentelemetry-semantic-conventions = { version = "0.31", features = [
-    "semconv_experimental",
-] }
-opentelemetry_sdk = { version = "0.31", default-features = false, features = [
-    "trace",
-    "rt-tokio",
-] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["internal-logs", "logs", "metrics", "trace"] }
+opentelemetry-semantic-conventions = { version = "0.31", features = ["semconv_experimental"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
 parking_lot = "0.12"
 percent-encoding = "2.3"
 pin-project-lite = "0.2"
@@ -173,8 +155,8 @@ quickcheck_macros = "1.1"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.3.0-rc1", path = "." }
-rama-boring = "0.5.12"
-rama-boring-tokio = "0.5.12"
+rama-boring = { version = "0.6.0" }
+rama-boring-tokio = { version = "0.6.0" }
 rama-core = { version = "0.3.0-rc1", path = "./rama-core" }
 rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto" }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns" }
@@ -189,6 +171,7 @@ rama-http-headers = { version = "0.3.0-rc1", path = "./rama-http-headers" }
 rama-http-types = { version = "0.3.0-rc1", path = "./rama-http-types" }
 rama-macros = { version = "0.3.0-rc1", path = "./rama-macros" }
 rama-net = { version = "0.3.0-rc1", path = "./rama-net" }
+rama-net-apple-networkextension = { version = "0.3.0-rc1", path = "./rama-net-apple-networkextension" }
 rama-proxy = { version = "0.3.0-rc1", path = "./rama-proxy" }
 rama-socks5 = { version = "0.3.0-rc1", path = "./rama-socks5" }
 rama-tcp = { version = "0.3.0-rc1", path = "./rama-tcp" }
@@ -206,12 +189,7 @@ ratatui = "0.30"
 rawzip = { version = "0.4" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
 regex = "1.12"
-rustls = { version = "0.23", default-features = false, features = [
-    "logging",
-    "std",
-    "tls12",
-    "aws_lc_rs",
-] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws_lc_rs"] }
 rustls-native-certs = "0.8"
 rustls-pki-types = "^1"
 rustversion = "1.0"
@@ -235,11 +213,7 @@ terminal-prompt = "0.2"
 tokio = "1.48"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
-tokio-rustls = { version = "0.26", default-features = false, features = [
-    "logging",
-    "tls12",
-    "aws_lc_rs",
-] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "aws_lc_rs"] }
 tokio-stream = "0.1"
 tokio-test = "0.4"
 tokio-util = "0.7"
@@ -362,7 +336,8 @@ cli = [
     "http",
 ]
 net = ["dep:rama-net"]
-dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
+net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
+dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
@@ -423,6 +398,7 @@ rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }
+rama-net-apple-networkextension = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
@@ -594,6 +570,10 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_mitm_proxy_boring"
+required-features = ["http-full", "boring"]
+
+[[example]]
+name = "http_mitm_relay_proxy_boring"
 required-features = ["http-full", "boring"]
 
 [[example]]

@@ -44,7 +44,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Arc::new(
+        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(Arc::new(
             Router::new().with_get("/", Html(INDEX)).with_get(
                 "/echo",
                 ConsumeErrLayer::trace_as_debug().into_layer(
@@ -56,7 +56,7 @@ async fn main() {
         ));
         info!("open web echo chat @ http://127.0.0.1:62038");
         info!("or connect directly to ws://127.0.0.1:62038/echo (via 'rama')");
-        TcpListener::bind("127.0.0.1:62038", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:62038", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
             .serve(server)

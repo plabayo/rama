@@ -18,6 +18,8 @@ use crate::extensions::ExtensionsMut;
 use rama_macros::paste;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
+pub mod service;
+
 mod op_or;
 #[doc(inline)]
 pub use op_or::Or;

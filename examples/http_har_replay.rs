@@ -19,6 +19,7 @@ use rama::{
     graceful::Shutdown,
     http::{
         Request, Response, Uri,
+        body::util::BodyExt,
         client::EasyHttpWebClient,
         layer::{
             compression::{CompressionLayer, predicate::Always},
@@ -43,7 +44,6 @@ use rama::{
     },
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_http::body::util::BodyExt;
 
 use std::{convert::Infallible, fs, sync::Arc, time::Duration};
 use tokio::sync::oneshot;
@@ -81,8 +81,8 @@ async fn main() {
     let exec = Executor::graceful(graceful.guard());
     let traffic_writer = BidirectionalWriter::stdout_unbounded(
         &exec,
-        Some(rama_http::layer::traffic_writer::WriterMode::All),
-        Some(rama_http::layer::traffic_writer::WriterMode::All),
+        Some(rama::http::layer::traffic_writer::WriterMode::All),
+        Some(rama::http::layer::traffic_writer::WriterMode::All),
     );
 
     let client = (
@@ -215,7 +215,7 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
             })),
     );
 
-    TcpListener::bind(ADDRESS, exec)
+    TcpListener::bind_address(ADDRESS, exec)
         .await
         .unwrap()
         .serve(Abortable::new(http_svc))

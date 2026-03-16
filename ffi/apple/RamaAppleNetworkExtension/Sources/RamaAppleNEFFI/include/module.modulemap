@@ -1,0 +1,4 @@
+module RamaAppleNEFFI {
+  header "rama_apple_ne_ffi.h"
+  export *
+}

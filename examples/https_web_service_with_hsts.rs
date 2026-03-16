@@ -106,7 +106,7 @@ async fn main() {
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard);
         let tcp_service = TcpListener::build(exec.clone())
-            .bind("127.0.0.1:62043")
+            .bind_address("127.0.0.1:62043")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62043");
 
@@ -125,7 +125,7 @@ async fn main() {
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard);
         let tcp_service = TcpListener::build(exec.clone())
-            .bind("127.0.0.1:62044")
+            .bind_address("127.0.0.1:62044")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62044");
 

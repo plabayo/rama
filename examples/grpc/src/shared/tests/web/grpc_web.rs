@@ -69,7 +69,7 @@ async fn text_request() {
 
 async fn spawn() -> String {
     let addr = SocketAddress::local_ipv4(0);
-    let listener = TcpListener::bind(addr, Executor::default())
+    let listener = TcpListener::bind_address(addr, Executor::default())
         .await
         .expect("listener");
     let url = format!("http://{}", listener.local_addr().unwrap());

@@ -1,5 +1,5 @@
 use rama_core::error::BoxError;
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_net::address::{Host, HostWithPort, SocketAddress};
 use rama_utils::collections::smallvec::smallvec;
@@ -184,7 +184,7 @@ impl Client {
     /// In case the handshake was sucessfull it will return
     /// the local address used by the Socks5 (proxy) server
     /// to connect to the destination [`HostWithPort`] on behalf of this [`Client`].
-    pub async fn handshake_connect<S: Stream + Unpin>(
+    pub async fn handshake_connect<S: Io + Unpin>(
         &self,
         stream: &mut S,
         destination: &HostWithPort,
@@ -233,9 +233,9 @@ impl Client {
     ///
     /// This method returns a [`Binder`] that contains the address to which the target server
     /// is to connect to the socks5 server on behalf of the client (callee of this call).
-    /// The [`Binder`] takes ownership over of the input [`Stream`] such that it can
+    /// The [`Binder`] takes ownership over of the input [`Io`] such that it can
     /// await the established connection from target server to socks5 server.
-    pub async fn handshake_bind<S: Stream + Unpin>(
+    pub async fn handshake_bind<S: Io + Unpin>(
         &self,
         mut stream: S,
         requested_bind_address: Option<SocketAddress>,
@@ -313,7 +313,7 @@ impl Client {
     /// socks5 proxy server to the required.
     ///
     /// [`Service`]: rama_core::Service
-    pub async fn handshake_udp<S: Stream + Unpin>(
+    pub async fn handshake_udp<S: Io + Unpin>(
         &self,
         mut stream: S,
     ) -> Result<UdpSocketRelayBinder<S>, HandshakeError> {
@@ -327,7 +327,7 @@ impl Client {
         Ok(UdpSocketRelayBinder::new(stream))
     }
 
-    async fn handshake_headers_auth<S: Stream + Unpin>(
+    async fn handshake_headers_auth<S: Io + Unpin>(
         &self,
         stream: &mut S,
         auth: &Socks5Auth,
@@ -408,7 +408,7 @@ impl Client {
         Ok(auth_method)
     }
 
-    async fn handshake_headers_no_auth<S: Stream + Unpin>(
+    async fn handshake_headers_no_auth<S: Io + Unpin>(
         &self,
         stream: &mut S,
     ) -> Result<SocksMethod, HandshakeError> {

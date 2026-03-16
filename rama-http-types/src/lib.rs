@@ -65,6 +65,8 @@ pub mod opentelemetry;
 
 pub mod conn;
 
+pub mod proxy;
+
 pub mod header {
     //! HTTP header types
 

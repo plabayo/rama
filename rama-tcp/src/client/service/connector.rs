@@ -26,8 +26,6 @@ pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
     exec: Executor,
 }
 
-impl<Dns, Connector> TcpConnector<Dns, Connector> {}
-
 impl TcpConnector {
     /// Create a new [`TcpConnector`], which is used to establish a connection to a server.
     ///

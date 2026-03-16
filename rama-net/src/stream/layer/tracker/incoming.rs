@@ -1,11 +1,11 @@
 use super::bytes::BytesRWTracker;
-use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
+use rama_core::{Layer, Service, extensions::ExtensionsMut, io::Io};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// A [`Service`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.
 ///
 /// [`Service`]: rama_core::Service
-/// [`Stream`]: rama_core::stream::Stream
+/// [`Stream`]: rama_core::io::Io
 #[derive(Debug, Clone)]
 pub struct IncomingBytesTrackerService<S> {
     inner: S,
@@ -25,7 +25,7 @@ impl<S> IncomingBytesTrackerService<S> {
 impl<S, IO> Service<IO> for IncomingBytesTrackerService<S>
 where
     S: Service<BytesRWTracker<IO>>,
-    IO: Stream + ExtensionsMut,
+    IO: Io + ExtensionsMut,
 {
     type Output = S::Output;
     type Error = S::Error;
@@ -46,7 +46,7 @@ where
 ///
 /// [`Layer`]: rama_core::Layer
 /// [`Service`]: rama_core::Service
-/// [`Stream`]: rama_core::stream::Stream
+/// [`Stream`]: rama_core::io::Io
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct IncomingBytesTrackerLayer;

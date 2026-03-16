@@ -6,16 +6,14 @@ use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::graceful::ShutdownGuard;
+use rama_core::io::Io;
 use rama_core::rt::Executor;
-use rama_core::stream::Stream;
 use rama_http::service::web::response::IntoResponse;
 use rama_http_core::server::conn::auto::Builder as AutoConnBuilder;
-use rama_http_core::server::conn::auto::Http1Builder as InnerAutoHttp1Builder;
-use rama_http_core::server::conn::auto::Http2Builder as InnerAutoHttp2Builder;
 use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
 use rama_http_core::server::conn::http2::Builder as H2ConnBuilder;
 use rama_http_types::Request;
-use rama_net::socket::Interface;
+use rama_net::address::SocketAddress;
 use rama_tcp::server::TcpListener;
 use std::convert::Infallible;
 use std::fmt;
@@ -45,7 +43,7 @@ impl Default for HttpServer<AutoConnBuilder> {
 impl HttpServer<Http1ConnBuilder> {
     /// Create a new http/1.1 `Builder` with default settings.
     #[must_use]
-    pub fn http1(exec: Executor) -> Self {
+    pub fn new_http1(exec: Executor) -> Self {
         Self {
             builder: Http1ConnBuilder::new(),
             exec,
@@ -55,6 +53,11 @@ impl HttpServer<Http1ConnBuilder> {
 
 impl HttpServer<Http1ConnBuilder> {
     /// Http1 configuration.
+    pub fn http1(&mut self) -> &Http1ConnBuilder {
+        &self.builder
+    }
+
+    /// Http1 mutable configuration.
     pub fn http1_mut(&mut self) -> &mut Http1ConnBuilder {
         &mut self.builder
     }
@@ -63,7 +66,7 @@ impl HttpServer<Http1ConnBuilder> {
 impl HttpServer<H2ConnBuilder> {
     /// Create a new h2 `Builder` with default settings.
     #[must_use]
-    pub fn h2(exec: Executor) -> Self {
+    pub fn new_h2(exec: Executor) -> Self {
         Self {
             builder: H2ConnBuilder::new(exec.clone()),
             exec,
@@ -73,6 +76,11 @@ impl HttpServer<H2ConnBuilder> {
 
 impl HttpServer<H2ConnBuilder> {
     /// H2 configuration.
+    pub fn h2(&self) -> &H2ConnBuilder {
+        &self.builder
+    }
+
+    /// H2 mutable configuration.
     pub fn h2_mut(&mut self) -> &mut H2ConnBuilder {
         &mut self.builder
     }
@@ -90,14 +98,28 @@ impl HttpServer<AutoConnBuilder> {
 }
 
 impl HttpServer<AutoConnBuilder> {
-    /// Http1 configuration.
-    pub fn http1_mut(&mut self) -> InnerAutoHttp1Builder<'_> {
+    #[inline(always)]
+    /// Http1 builder.
+    pub fn http1(&self) -> &Http1ConnBuilder {
         self.builder.http1()
     }
 
-    /// H2 configuration.
-    pub fn h2_mut(&mut self) -> InnerAutoHttp2Builder<'_> {
-        self.builder.http2()
+    #[inline(always)]
+    /// Http1 mutable builder.
+    pub fn http1_mut(&mut self) -> &mut Http1ConnBuilder {
+        self.builder.http1_mut()
+    }
+
+    #[inline(always)]
+    /// H2 builder.
+    pub fn h2(&self) -> &H2ConnBuilder {
+        self.builder.h2()
+    }
+
+    #[inline(always)]
+    /// H2 mutable builder.
+    pub fn h2_mut(&mut self) -> &mut H2ConnBuilder {
+        self.builder.h2_mut()
     }
 }
 
@@ -120,23 +142,23 @@ where
     where
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
-        IO: Stream + ExtensionsMut,
+        IO: Io + ExtensionsMut,
     {
         self.builder
             .http_core_serve_connection(stream, service, self.exec.guard().cloned())
             .await
     }
 
-    /// Listen for connections on the given [`Interface`], serving HTTP connections.
+    /// Listen for connections on the given [`SocketAddress`], serving HTTP connections.
     ///
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
-    pub async fn listen<S, Response, I>(self, interface: I, service: S) -> HttpServeResult
+    pub async fn listen<S, Response, A>(self, address: A, service: S) -> HttpServeResult
     where
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
-        I: TryInto<Interface, Error: Into<BoxError>>,
+        A: TryInto<SocketAddress, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind(interface, self.exec.clone()).await?;
+        let tcp = TcpListener::bind_address(address, self.exec.clone()).await?;
         let service = HttpService {
             guard: self.exec.guard().cloned(),
             builder: Arc::new(self.builder),
@@ -204,7 +226,7 @@ where
     B: HttpCoreConnServer,
     S: Service<Request, Output = Response, Error = Infallible> + Clone,
     Response: IntoResponse + Send + 'static,
-    IO: Stream + ExtensionsMut,
+    IO: Io + ExtensionsMut,
 {
     type Output = ();
     type Error = rama_core::error::BoxError;

@@ -39,14 +39,14 @@ async fn connect_supports_standard_rama_http_layers() {
     let graceful = Shutdown::new(async { drop(rx.await) });
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::local_ipv4(0), exec)
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec)
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
     let jh = graceful.spawn_task_fn(async move |guard| {
         listener
-            .serve(HttpServer::h2(Executor::graceful(guard)).service(svc))
+            .serve(HttpServer::new_h2(Executor::graceful(guard)).service(svc))
             .await;
     });
 

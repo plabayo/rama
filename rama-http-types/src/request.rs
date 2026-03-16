@@ -581,6 +581,12 @@ impl<T> Request<T> {
         &mut self.head.headers
     }
 
+    /// Returned a cloned of the associated HTTP header.
+    #[inline]
+    pub fn clone_parts(&self) -> Parts {
+        self.head.clone()
+    }
+
     /// Returns a reference to the associated HTTP body.
     ///
     /// # Examples

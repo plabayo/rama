@@ -1,4 +1,4 @@
-use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream};
+use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream, telemetry::tracing};
 use rama_net::address::Domain;
 
 use crate::client::{
@@ -112,8 +112,52 @@ impl DnsResolver for GlobalDnsResolver {
 /// the global [`DnsResolver`]. This has to be done as early as possible,
 /// as it fails if the global resolver was already initialised (e.g. using the default).
 fn global_dns_resolver() -> &'static BoxDnsResolver {
-    GLOBAL_DNS_RESOLVER.get_or_init(|| HickoryDnsResolver::default().into_box_dns_resolver())
+    GLOBAL_DNS_RESOLVER.get_or_init(|| {
+        tracing::debug!("no global dns resolver configured by user: init (default) global (hickory) DNS resolver");
+        let resolver = HickoryDnsResolver::default();
+
+        if let Ok(path) = std::env::var(ENV_NAME_RAMA_DEBUG_HICKORY_DNS_RESOLVER_CONFIG) {
+            tracing::debug!("spawn background task to write auto-init global (hickory) DNS resolver config to: {path}");
+            tokio::task::spawn(try_to_write_hickory_dns_resolver_config_for_diagnostics(resolver.clone(), path));
+        }
+
+        resolver.into_box_dns_resolver()
+    })
 }
+
+async fn try_to_write_hickory_dns_resolver_config_for_diagnostics(
+    resolver: HickoryDnsResolver,
+    path: String,
+) {
+    let config = resolver.config();
+    let v = match serde_json::to_vec_pretty(&config) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::error!(
+                "failed to encode (HickoryDns global) config with (json) serde (report bug please): {err}"
+            );
+            return;
+        }
+    };
+    if let Err(err) = tokio::fs::write(&path, v).await {
+        tracing::error!("failed to write json-encoded (HickoryDns global) config to {path}: {err}");
+    } else {
+        tracing::debug!("wrote json-encoded (HickoryDns global) config to {path}");
+    }
+}
+
+/// Environment name that can be set by user of software built with Rama to write
+/// the used hickory DNS resolver config/opts to the given file as json.
+///
+/// This can be useful to inspect why DNS might not be resolved correctly.
+///
+/// It is only used if the global dns resolver is used as the global dns resolver,
+/// with none set by the user explicitly.
+///
+/// Use [`HickoryDnsResolver::config`] if you wish to write or use
+/// that same config for your own created HickoryDnsResolver's.
+pub const ENV_NAME_RAMA_DEBUG_HICKORY_DNS_RESOLVER_CONFIG: &str =
+    "RAMA_DEBUG_HICKORY_DNS_RESOLVER_CONFIG";
 
 #[inline(always)]
 /// Initialises the global [`DnsResolver`].

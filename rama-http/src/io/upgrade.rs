@@ -48,8 +48,8 @@ use rama_core::error::BoxError;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::stream::Stream;
-use rama_core::stream::rewind::Rewind;
+use rama_core::io::Io;
+use rama_core::io::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
 
 /// An upgraded HTTP connection.
@@ -61,7 +61,7 @@ use rama_core::telemetry::tracing::trace;
 /// Alternatively, if the exact type is known, this can be deconstructed
 /// into its parts.
 pub struct Upgraded {
-    io: Rewind<Box<dyn Io>>,
+    io: Rewind<Box<dyn UpgradeIo>>,
     extensions: Extensions,
 }
 
@@ -151,7 +151,7 @@ impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
     pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
-        T: Stream + Unpin + ExtensionsMut,
+        T: Io + Unpin + ExtensionsMut,
     {
         Self {
             extensions: io.extensions().clone(),
@@ -163,7 +163,7 @@ impl Upgraded {
     ///
     /// On success, returns the downcasted parts. On error, returns the
     /// `Upgraded` back.
-    pub fn downcast<T: Stream + Unpin>(self) -> Result<Parts<T>, Self> {
+    pub fn downcast<T: Io + Unpin>(self) -> Result<Parts<T>, Self> {
         let (io, buf) = self.io.into_inner();
         match io.__downcast() {
             Ok(t) => Ok(Parts {
@@ -179,25 +179,25 @@ impl Upgraded {
     }
 }
 
-trait Io: Stream + Unpin {
+trait UpgradeIo: Io + Unpin {
     fn __type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
 }
 
-impl<T: Stream + Unpin> Io for T {}
+impl<T: Io + Unpin> UpgradeIo for T {}
 
-impl dyn Io {
-    fn __is<T: Io>(&self) -> bool {
+impl dyn UpgradeIo {
+    fn __is<T: UpgradeIo>(&self) -> bool {
         let t = TypeId::of::<T>();
         self.__type_id() == t
     }
 
-    fn __downcast<T: Io>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
+    fn __downcast<T: UpgradeIo>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
         if self.__is::<T>() {
             // Taken from `std::error::Error::downcast()`.
             unsafe {
-                let raw: *mut dyn Io = Box::into_raw(self);
+                let raw: *mut dyn UpgradeIo = Box::into_raw(self);
                 Ok(Box::from_raw(raw as *mut T))
             }
         } else {
