@@ -40,18 +40,22 @@ pub type RamaTransparentProxyUdpSessionCallbacks = ffi_tproxy::TransparentProxyU
 pub unsafe extern "C" fn rama_transparent_proxy_initialize(
     config: *const RamaTransparentProxyInitConfig,
 ) -> bool {
+    let mut storage_dir = None;
     if !config.is_null() {
         // SAFETY: pointer validity is guaranteed by FFI contract.
         let config = unsafe { &*config };
         // SAFETY: pointer + length validity is guaranteed by FFI contract.
-        if let Some(storage_dir) = unsafe { config.storage_dir() } {
-            tracing::debug!(path = %storage_dir.display(), "received storage directory");
+        if let Some(path) = unsafe { config.storage_dir() } {
+            tracing::debug!(path = %path.display(), "received storage directory");
+            storage_dir = Some(path);
         }
         // SAFETY: pointer + length validity is guaranteed by FFI contract.
         if let Some(app_group_dir) = unsafe { config.app_group_dir() } {
             tracing::debug!(path = %app_group_dir.display(), "received app-group directory");
         }
     }
+
+    self::utils::set_storage_dir(storage_dir);
 
     let init_status = self::utils::init_tracing();
     tracing::info!("rama proxy initialized: {init_status}");

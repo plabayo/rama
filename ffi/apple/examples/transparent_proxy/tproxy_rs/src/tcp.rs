@@ -48,8 +48,6 @@ use crate::{
 
 const HIJACK_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
 
-const PEEK_DURATION: Duration = Duration::from_secs(8);
-
 const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE_RETRIES: u32 = 5;
@@ -103,28 +101,26 @@ where
     Ingress: Io + Unpin + ExtensionsMut,
     Egress: Io + Unpin + ExtensionsMut,
 {
-    let http_mitm_svc = {
-        let mut relay =
-            HttpMitmRelay::new(exec.clone()).with_http_middleware(http_relay_middleware(
-                exec,
-                demo_config,
-                tls_mitm_relay_policy.clone(),
-                tls_mitm_relay.clone(),
-                ca_crt_pem_bytes,
-                within_connect_tunnel,
-            ));
-        relay.h2_mut().set_enable_connect_protocol();
-        relay
-    };
+    let peek_duration = Duration::from_secs_f64(demo_config.peek_duration_s.max(0.5));
+
+    let http_mitm_svc =
+        HttpMitmRelay::new(exec.clone()).with_http_middleware(http_relay_middleware(
+            exec,
+            demo_config,
+            tls_mitm_relay_policy.clone(),
+            tls_mitm_relay.clone(),
+            ca_crt_pem_bytes,
+            within_connect_tunnel,
+        ));
 
     let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
-        .with_peek_timeout(PEEK_DURATION)
+        .with_peek_timeout(peek_duration)
         .with_fallback(IoForwardService::new());
 
     let app_mitm_layer = PeekTlsClientHelloService::new(
         (tls_mitm_relay_policy, tls_mitm_relay).into_layer(maybe_http_mitm_svc.clone()),
     )
-    .with_peek_timeout(PEEK_DURATION)
+    .with_peek_timeout(peek_duration)
     .with_fallback(maybe_http_mitm_svc);
 
     if within_connect_tunnel {
@@ -133,7 +129,7 @@ where
 
     let socks5_mitm_relay = Socks5MitmRelayService::new(app_mitm_layer.clone());
     let mitm_svc = Socks5PeekRouter::new(socks5_mitm_relay)
-        .with_peek_timeout(PEEK_DURATION)
+        .with_peek_timeout(peek_duration)
         .with_fallback(app_mitm_layer);
 
     Either::B(ConsumeErrLayer::trace_as_debug().into_layer(mitm_svc))

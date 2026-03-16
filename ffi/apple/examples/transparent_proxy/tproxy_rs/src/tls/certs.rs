@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::{path::PathBuf, sync::Arc, sync::OnceLock};
 
 use apple_native_keyring_store::protected::Store as AppleProtectedStore;
 use keyring_core::{Entry, Error as KeyringError, api::CredentialStoreApi};
@@ -18,16 +17,36 @@ use rama::{
 };
 
 pub fn load_or_create_mitm_ca_crt_key_pair() -> Result<(X509, PKey<Private>), BoxError> {
-    if let (Some(cert_pem), Some(key_pem)) = (
-        load_protected_secret(ROOT_CA_CERT_SERVICE)?,
-        load_protected_secret(ROOT_CA_KEY_SERVICE)?,
+    match (
+        load_protected_secret(ROOT_CA_CERT_SERVICE),
+        load_protected_secret(ROOT_CA_KEY_SERVICE),
     ) {
-        tracing::info!("MITM CA present in Apple protected storage; loading existing keypair");
+        (Ok(Some(cert_pem)), Ok(Some(key_pem))) => {
+            tracing::info!("MITM CA present in Apple protected storage; loading existing keypair");
 
-        let cert = X509::from_pem(&cert_pem)
-            .context("parse protected-store root ca cert PEM bytes into X509")?;
+            let cert = X509::from_pem(&cert_pem)
+                .context("parse protected-store root ca cert PEM bytes into X509")?;
+            let key = PKey::private_key_from_pem(&key_pem).context(
+                "parse protected-store root ca private key PEM bytes into PKey<Private>",
+            )?;
+            return Ok((cert, key));
+        }
+        (Err(err), _) | (_, Err(err)) => {
+            tracing::warn!("protected-store MITM CA unavailable; falling back to filesystem storage: {err}");
+        }
+        _ => {}
+    }
+
+    if let (Some(cert_pem), Some(key_pem)) = (
+        load_file_secret(ROOT_CA_CERT_SERVICE)?,
+        load_file_secret(ROOT_CA_KEY_SERVICE)?,
+    ) {
+        tracing::info!("MITM CA present in filesystem storage; loading existing keypair");
+
+        let cert =
+            X509::from_pem(&cert_pem).context("parse filesystem root ca cert PEM bytes into X509")?;
         let key = PKey::private_key_from_pem(&key_pem)
-            .context("parse protected-store root ca private key PEM bytes into PKey<Private>")?;
+            .context("parse filesystem root ca private key PEM bytes into PKey<Private>")?;
         return Ok((cert, key));
     }
 
@@ -45,10 +64,22 @@ pub fn load_or_create_mitm_ca_crt_key_pair() -> Result<(X509, PKey<Private>), Bo
         .private_key_to_pem_pkcs8()
         .context("encode root ca key to pkcs8 pem")?;
 
-    store_protected_secret(ROOT_CA_CERT_SERVICE, &cert_pem_bytes)?;
-    store_protected_secret(ROOT_CA_KEY_SERVICE, &key_pem_bytes)?;
-
-    tracing::info!("generated and persisted MITM root CA in Apple protected storage");
+    match (
+        store_protected_secret(ROOT_CA_CERT_SERVICE, &cert_pem_bytes),
+        store_protected_secret(ROOT_CA_KEY_SERVICE, &key_pem_bytes),
+    ) {
+        (Ok(()), Ok(())) => {
+            tracing::info!("generated and persisted MITM root CA in Apple protected storage");
+        }
+        (cert_result, key_result) => {
+            if let Err(err) = cert_result.and(key_result) {
+                tracing::warn!("failed to persist MITM CA in protected storage; storing on filesystem instead: {err}");
+            }
+            store_file_secret(ROOT_CA_CERT_SERVICE, &cert_pem_bytes)?;
+            store_file_secret(ROOT_CA_KEY_SERVICE, &key_pem_bytes)?;
+            tracing::info!("generated and persisted MITM root CA in filesystem storage");
+        }
+    }
 
     Ok((root_cert, root_key))
 }
@@ -93,4 +124,31 @@ fn store_protected_secret(service: &str, secret: &[u8]) -> Result<(), BoxError> 
         .set_secret(secret)
         .context("store protected-store secret")
         .context_str_field("service", service)
+}
+
+fn file_secret_path(service: &str) -> PathBuf {
+    crate::utils::storage_dir().join(format!("{service}.pem"))
+}
+
+fn load_file_secret(service: &str) -> Result<Option<Vec<u8>>, BoxError> {
+    let path = file_secret_path(service);
+    match std::fs::read(&path) {
+        Ok(raw) => Ok(Some(raw)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(BoxError::from(err)
+            .context("load filesystem secret")
+            .context_str_field("service", service)
+            .context_str_field("path", path.display().to_string())),
+    }
+}
+
+fn store_file_secret(service: &str, secret: &[u8]) -> Result<(), BoxError> {
+    let path = file_secret_path(service);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("create filesystem secret parent dir")?;
+    }
+    std::fs::write(&path, secret)
+        .context("store filesystem secret")
+        .context_str_field("service", service)
+        .context_str_field("path", path.display().to_string())
 }

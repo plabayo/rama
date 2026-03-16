@@ -71,9 +71,7 @@ where
         };
 
         if let Some(res_svc_matcher) = maybe_res_svc_matcher {
-            tracing::debug!(
-                "HttpUpgradeMitmRelay: upgrade MITM relay req match made... opening request upgrade handle option"
-            );
+            tracing::debug!("HttpUpgradeMitmRelay: upgrade MITM relay req match made...");
 
             let on_upgrade_ingress = rama_http::io::upgrade::handle_upgrade(&req);
             let req_extensions = req.extensions().clone();
@@ -90,7 +88,15 @@ where
                 network.protocol.version = version_as_protocol_version(req.version()),
             );
 
+            tracing::trace!(
+                "HttpUpgradeMitmRelay: matched req flow: request response from inner svc"
+            );
+
             let res = self.inner_svc.serve(req.map(Body::new)).await?;
+
+            tracing::trace!(
+                "HttpUpgradeMitmRelay: matched req flow: received res from inner flow... continue match making"
+            );
 
             let ServiceMatch {
                 input: res,
@@ -101,6 +107,10 @@ where
                 .map_err(Into::into)?;
 
             if let Some(relay_svc) = maybe_relay_svc {
+                tracing::debug!(
+                    "HttpUpgradeMitmRelay: upgrade MITM relay res match made... spawning relay task..."
+                );
+
                 let on_upgrade_egress = rama_http::io::upgrade::handle_upgrade(&res);
                 let res_extensions = res.extensions().clone();
 
@@ -130,7 +140,9 @@ where
 
                 Ok(res.map(Body::new))
             } else {
-                tracing::trace!("HttpUpgradeMitmRelay: aborted: no response match");
+                tracing::debug!(
+                    "HttpUpgradeMitmRelay: aborted: req was matched... but no response match"
+                );
                 Ok(res.map(Body::new))
             }
         } else {

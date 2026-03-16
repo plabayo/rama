@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{path::PathBuf, sync::OnceLock};
 
 use rama::{
     error::{BoxError, ErrorContext as _},
@@ -18,6 +18,21 @@ pub(super) fn init_tracing() -> bool {
         }
     })
     .is_some()
+}
+
+static STORAGE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub(super) fn set_storage_dir(path: Option<PathBuf>) {
+    if let Some(path) = path {
+        let _ = STORAGE_DIR.set(path);
+    }
+}
+
+pub(super) fn storage_dir() -> PathBuf {
+    STORAGE_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::temp_dir().join("rama_tproxy_example"))
 }
 
 #[derive(Debug)]

@@ -112,6 +112,9 @@ qa-crate CRATE:
 qa-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/qa
 
+test-e2e-ffi-apple:
+    just ./ffi/apple/examples/transparent_proxy/test-e2e
+
 qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:

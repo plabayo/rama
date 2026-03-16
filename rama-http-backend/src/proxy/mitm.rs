@@ -129,8 +129,10 @@ impl HttpMitmRelay {
     #[must_use]
     /// Create a new [`HttpMitmRelay`], ready to serve.
     pub fn new(exec: Executor) -> Self {
+        let mut http_server = HttpServer::auto(exec.clone());
+        http_server.h2_mut().set_enable_connect_protocol();
         Self {
-            http_server: HttpServer::auto(exec.clone()),
+            http_server,
             middleware: (
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                 ArcLayer::new(),

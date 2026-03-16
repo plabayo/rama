@@ -3,8 +3,9 @@ use std::{convert::Infallible, sync::Arc};
 use rama_core::{
     extensions::ExtensionsMut,
     matcher::service::{ServiceMatch, ServiceMatcher},
+    telemetry::tracing,
 };
-use rama_http::{Request, Response, StatusCode, request, response};
+use rama_http::{Request, Response, StatusCode, Version, request, response};
 use rama_net::proxy::IoForwardService;
 
 use crate::protocol::WebSocketConfig;
@@ -228,8 +229,16 @@ where
             input: res,
         };
 
-        if svc_match.input.status() != StatusCode::SWITCHING_PROTOCOLS {
-            return Ok(svc_match);
+        let http_version = svc_match.input.version();
+        let http_status = svc_match.input.status();
+
+        match (http_version, http_status) {
+            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS)
+            | (Version::HTTP_2, StatusCode::OK) => (),
+            _ => {
+                tracing::debug!(?http_version, ?http_status, "WS response failed to match");
+                return Ok(svc_match);
+            }
         }
 
         if *store_handshake_res_header {
@@ -269,8 +278,16 @@ where
             input: res,
         };
 
-        if svc_match.input.status() != StatusCode::SWITCHING_PROTOCOLS {
-            return Ok(svc_match);
+        let http_version = svc_match.input.version();
+        let http_status = svc_match.input.status();
+
+        match (http_version, http_status) {
+            (Version::HTTP_10 | Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS)
+            | (Version::HTTP_2, StatusCode::OK) => (),
+            _ => {
+                tracing::debug!(?http_version, ?http_status, "WS response failed to match");
+                return Ok(svc_match);
+            }
         }
 
         if store_handshake_res_header {
