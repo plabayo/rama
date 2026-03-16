@@ -24,6 +24,10 @@
 
 #[doc(hidden)]
 pub mod ffi;
+#[doc(hidden)]
+#[macro_use]
+#[path = "macro.rs"]
+mod macros;
 pub mod tproxy;
 
 mod tcp;

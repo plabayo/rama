@@ -325,6 +325,14 @@ pub mod net {
     }
 }
 
+#[cfg(all(target_vendor = "apple", feature = "net-apple-networkextension"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(target_vendor = "apple", feature = "net-apple-networkextension")))
+)]
+#[doc(inline)]
+pub use ::rama_net_apple_networkextension::transparent_proxy_ffi;
+
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub mod http;
