@@ -398,7 +398,7 @@ pub mod controller {
             const HOT_RELOAD: &str = r##"
                 <div
                     id="hotreload"
-                    data-on-load="@get('/hotreload', {retryMaxCount: 1000,retryInterval:20, retryMaxWaitMs:200})"
+                    data-init="@get('/hotreload', {retryMaxCount: 1000,retryInterval:20, retryMaxWaitMs:200})"
                 ></div>
             "##;
 
@@ -553,10 +553,10 @@ pub mod controller {
         }}
     </style>
 </head>
-<body data-on-load="@get('/hello-world')">
+<body data-init="@get('/hello-world')">
     {HOT_RELOAD}
     <div id="server-warning" style="display: none"></div>
-    <div data-signals-delay="{delay}" class="card">
+    <div data-signals:delay="{delay}" class="card">
         <div class="card-header">
             <h1>🦙💬 "hello 🚀 datastar"</h1>
             <div id="sse-status">🔴</div>
@@ -571,10 +571,10 @@ pub mod controller {
 
         <div class="input-group">
             <label for="delay">Delay in milliseconds</label>
-            <input data-bind-delay id="delay" type="number" step="100" min="0" />
+            <input data-bind:delay id="delay" type="number" step="100" min="0" />
         </div>
 
-        <button data-on-click="@post('/start')">Start</button>
+        <button data-on:click="@post('/start')">Start</button>
     </div>
 
     <div id="progress-bar-container">
@@ -752,7 +752,7 @@ pub mod controller {
     <span
         class="status-ack"
         data-elapsed="{elapsed}"
-        data-on-load__delay.10s="if (el.dataset.elapsed == {elapsed}) {{ el.textContent = '🔴' }}"
+        data-init__delay.10s="if (el.dataset.elapsed == {elapsed}) {{ el.textContent = '🔴' }}"
     >🟢</span>
 </div>
 "##,
@@ -781,7 +781,7 @@ pub mod controller {
     width: 100%;
     z-index: 9999;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-" data-on-load__delay.3s="@get('/hello-world')">
+" data-init__delay.3s="@get('/hello-world')">
     ⚠️ {msg}.
 </div>
 "##
