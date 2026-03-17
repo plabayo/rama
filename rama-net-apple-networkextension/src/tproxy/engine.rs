@@ -15,7 +15,7 @@ use rama_tcp::client::default_tcp_connect;
 
 use parking_lot::Mutex;
 use rama_udp::bind_udp_socket_with_connect_default_dns;
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot, watch},
@@ -38,18 +38,14 @@ type TcpFlowService = BoxService<TcpFlow, (), Infallible>;
 type UdpFlowService = BoxService<UdpFlow, (), Infallible>;
 type BytesSink = Arc<dyn Fn(Bytes) + Send + Sync + 'static>;
 type ClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
-type TcpFlowServiceFactory = Arc<
-    dyn Fn(TransparentProxyServiceContext) -> Result<TcpFlowService, BoxError>
-        + Send
-        + Sync
-        + 'static,
->;
-type UdpFlowServiceFactory = Arc<
-    dyn Fn(TransparentProxyServiceContext) -> Result<UdpFlowService, BoxError>
-        + Send
-        + Sync
-        + 'static,
->;
+type TcpFlowServiceFuture =
+    Pin<Box<dyn Future<Output = Result<TcpFlowService, BoxError>> + Send + 'static>>;
+type UdpFlowServiceFuture =
+    Pin<Box<dyn Future<Output = Result<UdpFlowService, BoxError>> + Send + 'static>>;
+type TcpFlowServiceFactory =
+    Arc<dyn Fn(TransparentProxyServiceContext) -> TcpFlowServiceFuture + Send + Sync + 'static>;
+type UdpFlowServiceFactory =
+    Arc<dyn Fn(TransparentProxyServiceContext) -> UdpFlowServiceFuture + Send + Sync + 'static>;
 
 #[derive(Clone)]
 pub struct TransparentProxyServiceContext {
@@ -82,21 +78,28 @@ impl TransparentProxyEngineBuilder {
     ///
     /// The factory is invoked when the engine starts, with a fresh shutdown-aware context.
     #[must_use]
-    pub fn tcp_service_factory<S, F>(mut self, factory: F) -> Self
+    pub fn tcp_service_factory<S, F, Fut>(mut self, factory: F) -> Self
     where
         S: Service<TcpFlow, Output = (), Error = Infallible> + 'static,
-        F: Fn(TransparentProxyServiceContext) -> Result<S, BoxError> + Send + Sync + 'static,
+        F: Fn(TransparentProxyServiceContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<S, BoxError>> + Send + 'static,
     {
-        self.tcp_service_factory = Some(Arc::new(move |ctx| Ok(factory(ctx)?.boxed())));
+        self.tcp_service_factory = Some(Arc::new(move |ctx| {
+            Box::pin({
+                let future = factory(ctx);
+                async move { Ok(future.await?.boxed()) }
+            })
+        }));
         self
     }
 
     /// Builder alias for [`Self::tcp_service_factory`].
     #[must_use]
-    pub fn with_tcp_service_factory<S, F>(self, factory: F) -> Self
+    pub fn with_tcp_service_factory<S, F, Fut>(self, factory: F) -> Self
     where
         S: Service<TcpFlow, Output = (), Error = Infallible> + 'static,
-        F: Fn(TransparentProxyServiceContext) -> Result<S, BoxError> + Send + Sync + 'static,
+        F: Fn(TransparentProxyServiceContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<S, BoxError>> + Send + 'static,
     {
         self.tcp_service_factory(factory)
     }
@@ -114,21 +117,28 @@ impl TransparentProxyEngineBuilder {
     ///
     /// The factory is invoked when the engine starts, with a fresh shutdown-aware context.
     #[must_use]
-    pub fn udp_service_factory<S, F>(mut self, factory: F) -> Self
+    pub fn udp_service_factory<S, F, Fut>(mut self, factory: F) -> Self
     where
         S: Service<UdpFlow, Output = (), Error = Infallible> + 'static,
-        F: Fn(TransparentProxyServiceContext) -> Result<S, BoxError> + Send + Sync + 'static,
+        F: Fn(TransparentProxyServiceContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<S, BoxError>> + Send + 'static,
     {
-        self.udp_service_factory = Some(Arc::new(move |ctx| Ok(factory(ctx)?.boxed())));
+        self.udp_service_factory = Some(Arc::new(move |ctx| {
+            Box::pin({
+                let future = factory(ctx);
+                async move { Ok(future.await?.boxed()) }
+            })
+        }));
         self
     }
 
     /// Builder alias for [`Self::udp_service_factory`].
     #[must_use]
-    pub fn with_udp_service_factory<S, F>(self, factory: F) -> Self
+    pub fn with_udp_service_factory<S, F, Fut>(self, factory: F) -> Self
     where
         S: Service<UdpFlow, Output = (), Error = Infallible> + 'static,
-        F: Fn(TransparentProxyServiceContext) -> Result<S, BoxError> + Send + Sync + 'static,
+        F: Fn(TransparentProxyServiceContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<S, BoxError>> + Send + 'static,
     {
         self.udp_service_factory(factory)
     }
@@ -151,13 +161,13 @@ impl TransparentProxyEngineBuilder {
     pub fn build(self) -> TransparentProxyEngine {
         let tcp_service_factory = self
             .tcp_service_factory
-            .unwrap_or_else(|| Arc::new(default_tcp_service));
+            .unwrap_or_else(|| Arc::new(|ctx| Box::pin(default_tcp_service(ctx))));
         let tcp_flow_buffer_size = self
             .tcp_flow_buffer_size
             .unwrap_or(DEFAULT_TCP_FLOW_BUFFER_SIZE);
         let udp_service_factory = self
             .udp_service_factory
-            .unwrap_or_else(|| Arc::new(default_udp_service));
+            .unwrap_or_else(|| Arc::new(|ctx| Box::pin(default_udp_service(ctx))));
         let opaque_config = self.opaque_config;
         let runtime = self.runtime.unwrap_or_else(build_default_runtime);
 
@@ -202,8 +212,8 @@ impl TransparentProxyEngine {
             executor: Executor::graceful(guard),
             opaque_config: self.opaque_config.clone(),
         };
-        let tcp_service = (self.tcp_service_factory)(ctx.clone())?;
-        let udp_service = (self.udp_service_factory)(ctx)?;
+        let tcp_service = self.rt.block_on((self.tcp_service_factory)(ctx.clone()))?;
+        let udp_service = self.rt.block_on((self.udp_service_factory)(ctx))?;
 
         state.running = true;
         state.tcp_service = Some(tcp_service);
@@ -403,7 +413,9 @@ impl TransparentProxyUdpSession {
     }
 }
 
-fn default_tcp_service(_ctx: TransparentProxyServiceContext) -> Result<TcpFlowService, BoxError> {
+async fn default_tcp_service(
+    _ctx: TransparentProxyServiceContext,
+) -> Result<TcpFlowService, BoxError> {
     tracing::debug!("using default tcp service (dumb L4 forward)");
     Ok(service_fn(|ingress_stream: TcpFlow| async move {
         let Some(ProxyTarget(target)) = ingress_stream.extensions().get().cloned() else {
@@ -433,7 +445,9 @@ fn default_tcp_service(_ctx: TransparentProxyServiceContext) -> Result<TcpFlowSe
     .boxed())
 }
 
-fn default_udp_service(_ctx: TransparentProxyServiceContext) -> Result<UdpFlowService, BoxError> {
+async fn default_udp_service(
+    _ctx: TransparentProxyServiceContext,
+) -> Result<UdpFlowService, BoxError> {
     tracing::debug!("using default udp service (dumb L4 forward)");
     Ok(service_fn(|mut flow: UdpFlow| async move {
         let Some(ProxyTarget(target_addr)) = flow.extensions().get().cloned() else {
@@ -612,7 +626,7 @@ mod tests {
         let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
 
         let engine = TransparentProxyEngineBuilder::new()
-            .with_tcp_service_factory(|_ctx| {
+            .with_tcp_service_factory(|_ctx| async {
                 Ok(service_fn(|mut stream: TcpFlow| async move {
                     let _ = stream.write_all(b"pong").await;
                     Ok(())
@@ -660,7 +674,7 @@ mod tests {
                     .build()
                     .unwrap(),
             )
-            .with_udp_service_factory(|_ctx| {
+            .with_udp_service_factory(|_ctx| async {
                 Ok(service_fn(|mut flow: UdpFlow| async move {
                     if let Some(datagram) = flow.recv().await {
                         flow.send(datagram);

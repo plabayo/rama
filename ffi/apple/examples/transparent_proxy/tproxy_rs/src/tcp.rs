@@ -52,7 +52,7 @@ const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE_RETRIES: u32 = 5;
 
-pub(super) fn try_new_service(
+pub(super) async fn try_new_service(
     ctx: TransparentProxyServiceContext,
 ) -> Result<impl Service<TcpFlow, Output = (), Error = Infallible>, BoxError> {
     let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;

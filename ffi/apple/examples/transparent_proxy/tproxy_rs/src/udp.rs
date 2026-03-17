@@ -2,15 +2,21 @@ use std::convert::Infallible;
 
 use rama::{
     Service,
+    error::BoxError,
     extensions::ExtensionsRef as _,
-    net::{apple::networkextension::UdpFlow, proxy::ProxyTarget},
+    net::{
+        apple::networkextension::{UdpFlow, tproxy::TransparentProxyServiceContext},
+        proxy::ProxyTarget,
+    },
     service::service_fn,
     telemetry::tracing,
     udp::bind_udp_socket_with_connect_default_dns,
 };
 
-pub(super) fn new_service() -> impl Service<UdpFlow, Output = (), Error = Infallible> {
-    service_fn(service)
+pub(super) async fn new_service(
+    _: TransparentProxyServiceContext,
+) -> Result<impl Service<UdpFlow, Output = (), Error = Infallible>, BoxError> {
+    Ok(service_fn(service))
 }
 
 /// UDP flow handler used by the transparent proxy engine.
