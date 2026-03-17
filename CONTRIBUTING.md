@@ -91,4 +91,4 @@ When all these pass you can be pretty certain that all tests in the GitHub CI st
 will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV and three platforms in total:
 
 - Tier 1 platforms: MacOS, Linux and Windows
-- Tier 2 platforms: Android and Linux
+- Tier 2 platforms: Android and iOS
