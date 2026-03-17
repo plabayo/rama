@@ -9,6 +9,9 @@ use rama::{
     telemetry::tracing,
 };
 
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 mod config;
 mod demo_trace_traffic;
 mod http;
