@@ -428,3 +428,73 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
     cancel_drop_guard.disarm().cancel();
     graceful.shutdown().await;
 }
+
+#[tokio::test]
+async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpServer::auto(Executor::graceful(guard))
+            .service(service_fn(mitm_relay_server_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+
+    let (relay_done_tx, relay_done_rx) = tokio::sync::oneshot::channel::<()>();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .with_http_middleware((
+                ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+                SetRequestHeaderLayer::overriding(
+                    HeaderName::from_static("x-observed-req"),
+                    HeaderValue::from_static("1"),
+                ),
+                SetResponseHeaderLayer::overriding(
+                    HeaderName::from_static("x-observed-res"),
+                    HeaderValue::from_static("1"),
+                ),
+                ArcLayer::new(),
+            ))
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
+            .await
+            .unwrap();
+        let _ = relay_done_tx.send(());
+    });
+
+    let request = create_test_request(Version::HTTP_11);
+    let conn = http_connect(
+        MockSocket::new(client_stream),
+        request,
+        Executor::graceful(graceful.guard()),
+    )
+    .await
+    .unwrap()
+    .conn;
+
+    let response = conn
+        .serve(create_test_request(Version::HTTP_11))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = response.into_body().collect().await.unwrap();
+
+    drop(conn);
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), relay_done_rx)
+        .await
+        .expect("relay task should finish after ingress disconnect")
+        .expect("relay completion signal");
+
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}

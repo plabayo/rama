@@ -250,6 +250,7 @@ where
             .await
             .context("serve HTTP MITM relay");
 
+        drop(_cancel_guard);
         graceful_shutdown_fut.await;
         tracing::debug!("HTTP MITM Relay: Shutdown: done");
         result
