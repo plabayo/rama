@@ -211,14 +211,15 @@ where
             if let Some(guard) = graceful_guard {
                 tokio::select! {
                     _ = cancelled => {
-                        tracing::trace!("HTTP MITM Relay: Shutdown: cancelation token");
+                        tracing::debug!("HTTP MITM Relay: Shutdown: cancelation token");
                     },
                     _ = guard.cancelled() => {
-                        tracing::trace!("HTTP MITM Relay: Shutdown: parent guard cancellation");
+                        tracing::debug!("HTTP MITM Relay: Shutdown: parent guard cancellation");
                     },
                 }
             } else {
                 let _ = cancelled.await;
+                tracing::debug!("HTTP MITM Relay: Shutdown: non-graceful cancelation token");
             }
         });
 
@@ -230,6 +231,8 @@ where
         let request_guard = self.exec.guard().cloned();
 
         let graceful_shutdown_fut = graceful.shutdown();
+
+        tracing::debug!("HTTP MITM Relay: start");
 
         let result = self
             .http_server
@@ -248,6 +251,7 @@ where
             .context("serve HTTP MITM relay");
 
         graceful_shutdown_fut.await;
+        tracing::debug!("HTTP MITM Relay: Shutdown: done");
         result
     }
 }
