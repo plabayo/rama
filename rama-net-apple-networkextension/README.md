@@ -15,7 +15,7 @@
 [crates-badge]: https://img.shields.io/crates/v/rama-net-apple-networkextension.svg
 [crates-url]: https://crates.io/crates/rama-net-apple-networkextension
 [docs-badge]: https://img.shields.io/docsrs/rama-net-apple-networkextension/latest
-[docs-url]: https://docs.rs/rama-net-apple-networkextension/latest/rama_net/index.html
+[docs-url]: https://docs.rs/rama-net-apple-networkextension/latest/rama_net_apple_networkextension/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
