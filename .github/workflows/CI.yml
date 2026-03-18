@@ -570,6 +570,7 @@ jobs:
       - check-rust
       - test-rust-base
       - test-ffi-apple-example-transparent-proxy
+      - test-ffi-apple-example-transparent-proxy-e2e
       - test-rust-linux-musl
       - test-rust-extra
       - test-rust-e2e
