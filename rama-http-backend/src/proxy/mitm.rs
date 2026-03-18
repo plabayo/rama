@@ -5,7 +5,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::ExtensionsMut,
-    graceful::{Shutdown, ShutdownGuard},
+    graceful::ShutdownGuard,
     io::{BridgeIo, GracefulIo, Io},
     layer::{
         ArcLayer, ConsumeErrLayer,
@@ -201,36 +201,15 @@ where
         BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
         let token = CancellationToken::new();
-        let cancelled = token.clone().cancelled_owned();
 
         // TODO: see if <https://github.com/plabayo/rama/issues/830>,
         // warrants this logic to change also slightly, relating to the graceful setup...
 
-        let graceful_guard = self.exec.guard().cloned();
-        let graceful = Shutdown::new(async move {
-            if let Some(guard) = graceful_guard {
-                tokio::select! {
-                    _ = cancelled => {
-                        tracing::debug!("HTTP MITM Relay: Shutdown: cancelation token");
-                    },
-                    _ = guard.cancelled() => {
-                        tracing::debug!("HTTP MITM Relay: Shutdown: parent guard cancellation");
-                    },
-                }
-            } else {
-                let _ = cancelled.await;
-                tracing::debug!("HTTP MITM Relay: Shutdown: non-graceful cancelation token");
-            }
-        });
-
-        let _cancel_guard = token.clone().drop_guard();
         let relay_state = Arc::new(Mutex::new(RelayState::new(
             egress_stream,
             self.middleware.clone(),
         )));
         let request_guard = self.exec.guard().cloned();
-
-        let graceful_shutdown_fut = graceful.shutdown();
 
         tracing::debug!("HTTP MITM Relay: start");
 
@@ -250,8 +229,6 @@ where
             .await
             .context("serve HTTP MITM relay");
 
-        drop(_cancel_guard);
-        graceful_shutdown_fut.await;
         tracing::debug!("HTTP MITM Relay: Shutdown: done");
         result
     }
