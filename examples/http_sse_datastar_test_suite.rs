@@ -7,7 +7,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62036`.
+//! The server will start and listen on `:62050`.
 //! With this setup you can now run the test suite runners from the datastar repo.
 //!
 //! You can run all tests, assuming Go (the language) is installed
@@ -16,7 +16,7 @@
 //! ```sh
 //! go run \
 //!     github.com/starfederation/datastar/sdk/tests/cmd/datastar-sdk-tests@latest \
-//!     -server http://localhost:62036
+//!     -server http://localhost:62050
 //! ```
 //!
 //! If all is well it will end with process exit code `0`
@@ -67,7 +67,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62036), exec.clone())
+    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62050), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");

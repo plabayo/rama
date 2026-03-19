@@ -30,7 +30,7 @@ async fn test_http_sse_datastar_hello() {
     // basic html page and script sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner.get("http://127.0.0.1:62031").send().await.unwrap();
+    let index_response = runner.get("http://127.0.0.1:62051").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -43,7 +43,7 @@ async fn test_http_sse_datastar_hello() {
     assert!(index_content.contains(r##"<h1>🦙💬 "hello 🚀 datastar"</h1>"##));
 
     let script_rsponse = runner
-        .get("http://127.0.0.1:62031/assets/datastar.js")
+        .get("http://127.0.0.1:62051/assets/datastar.js")
         .send()
         .await
         .unwrap();
@@ -63,7 +63,7 @@ async fn test_http_sse_datastar_hello() {
     // test the hotreload dev-only feature
 
     let mut hotreload_stream = runner
-        .get("http://127.0.0.1:62031/hotreload")
+        .get("http://127.0.0.1:62051/hotreload")
         .send()
         .await
         .unwrap()
@@ -131,7 +131,7 @@ async fn test_http_sse_datastar_hello() {
     let mut signal_counter = 0;
 
     let mut stream = runner
-        .get("http://127.0.0.1:62031/hello-world")
+        .get("http://127.0.0.1:62051/hello-world")
         .send()
         .await
         .unwrap()
@@ -140,7 +140,7 @@ async fn test_http_sse_datastar_hello() {
 
     // start animation so we get it streamed in next response
     let response = runner
-        .post("http://127.0.0.1:62031/start?datastar=")
+        .post("http://127.0.0.1:62051/start?datastar=")
         .json(&json!({
             "delay": 1,
         }))
