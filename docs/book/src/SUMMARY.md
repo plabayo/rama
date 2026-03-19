@@ -50,6 +50,7 @@
 # Intro to HTTP
 
 - [Http Clients](./http/http_clients.md)
+- [gRPC](./http/grpc.md)
 - [Server-Sent Events (SSE)](./http/sse.md)
 - [WebSockets (WS)](./http/ws.md)
 - [HTTP Archive format (HAR)](./http/har.md)

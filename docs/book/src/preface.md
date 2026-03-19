@@ -100,7 +100,8 @@ Rama provides:
 * an `HttpClientExt` trait for a higher level, fluent client API
 
 You can find more detail in the [**Web Services**](./web_servers.md) and
-[**HTTP Clients**](./http/http_clients.md) chapters of this book.
+[**HTTP Clients**](./http/http_clients.md) chapters of this book,
+as well as the dedicated [**gRPC**](./http/grpc.md) chapter.
 
 
 ## The `rama` binary

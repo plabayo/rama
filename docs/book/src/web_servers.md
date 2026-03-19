@@ -2,6 +2,8 @@
 
 Rama is a powerful and flexible service framework that excels at building web services, though it takes a different approach than traditional web frameworks. While Rama is often associated with proxy services, it's equally capable of building robust web applications and APIs.
 
+If your service surface is RPC-oriented rather than REST-oriented, also see the dedicated [gRPC chapter](./http/grpc.md). gRPC in Rama often builds on top of the same HTTP server machinery, while still being treated as its own protocol layer.
+
 ## Philosophy
 
 Rama's approach to web services is built on the principle of empowerment through control and flexibility. Rather than providing high-level abstractions that make certain patterns easier but limit your options, Rama gives you direct access to the underlying layers while still providing ergonomic tools for common tasks.
