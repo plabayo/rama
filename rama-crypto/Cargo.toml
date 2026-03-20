@@ -19,7 +19,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-aws-lc = ["dep:aws-lc-rs"]
+aws-lc = ["dep:aws-lc-rs", "rcgen/aws_lc_rs", "x509-parser/verify-aws"]
+ring = ["rcgen/ring", "x509-parser/verify"]
 
 [dependencies]
 aws-lc-rs = { workspace = true, optional = true }
@@ -30,7 +31,7 @@ rcgen = { workspace = true }
 rustls-pki-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-x509-parser = { workspace = true, features = ["verify-aws"] }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

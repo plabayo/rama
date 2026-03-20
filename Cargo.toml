@@ -189,7 +189,7 @@ ratatui = "0.30"
 rawzip = { version = "0.4" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
 regex = "1.12"
-rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "prefer-post-quantum"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pki-types = "^1"
 rustversion = "1.0"
@@ -324,7 +324,7 @@ tls = [
     "dep:serde",
 ]
 aws-lc = ["rama-crypto?/aws-lc", "rama-tls-rustls?/aws-lc"]
-ring = ["rama-tls-rustls?/ring"]
+ring = ["rama-crypto?/ring", "rama-tls-rustls?/ring"]
 rustls = ["tls", "dep:rama-tls-rustls"]
 boring = ["tls", "dep:rama-tls-boring"]
 cli = [
