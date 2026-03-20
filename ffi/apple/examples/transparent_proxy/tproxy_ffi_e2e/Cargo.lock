@@ -2187,7 +2187,6 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "rama-core",
- "rama-macros",
  "rama-net",
  "rama-tcp",
  "rama-udp",
@@ -2207,7 +2206,6 @@ dependencies = [
  "rama-tcp",
  "rama-udp",
  "rama-utils",
- "rand 0.10.0",
  "tokio",
 ]
 

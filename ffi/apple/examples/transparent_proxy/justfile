@@ -93,6 +93,12 @@ rust-test-ignored:
 build-tproxy-rs-debug:
     cargo build
 
+[working-directory: './tproxy_rs']
+update-deps:
+    @cargo install cargo-outdated --locked
+    cargo outdated
+    cargo update
+
 [working-directory: './tproxy_ffi_e2e']
 clippy-tproxy-ffi-e2e:
     cargo clippy --all-targets -- -D warnings

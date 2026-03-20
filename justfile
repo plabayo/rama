@@ -124,10 +124,6 @@ clean:
     cargo clean
     just ./ffi/apple/examples/transparent_proxy/clean
 
-upgrades:
-    @cargo install cargo-upgrades
-    cargo upgrades
-
 watch-docs:
     @cargo install cargo-watch
     cargo watch -x doc
@@ -231,8 +227,11 @@ publish *ARGS:
     wingetcreate submit -p 'Plabayo.Rama.Preview version bump' .
 
 update-deps:
-    cargo upgrades
+    @cargo install cargo-outdated --locked
+    cargo outdated
     cargo update
+    just ./ffi/apple/examples/transparent_proxy/clean
+    just ./ffi/apple/examples/transparent_proxy/update-deps
 
 oss-endpoint-healthcheck:
     bash rama-fp/infra/scripts/remote-healthcheck.sh
