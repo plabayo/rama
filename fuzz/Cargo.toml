@@ -45,7 +45,7 @@ doc = false
 
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["full"] }
+rama = { path = "../", features = ["ua", "http"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dependencies.h2-support]

@@ -290,21 +290,6 @@ broken_intra_doc_links = "deny"
 
 [features]
 default = []
-full = [
-    "compression",
-    "rustls",
-    "boring",
-    "acme",
-    "cli",
-    "tcp",
-    "udp",
-    "grpc",
-    "http-full",
-    "grpc-full",
-    "proxy-full",
-    "tower",
-    "opentelemetry",
-]
 compression = [
     "http",
     "rama-http?/compression",

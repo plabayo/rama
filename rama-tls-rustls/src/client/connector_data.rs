@@ -1,13 +1,18 @@
-use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use crate::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
 use crate::key_log::KeyLogFile;
 use crate::verify::NoServerCertVerifier;
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::BoxError;
 use rama_net::address::Host;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
 use rustls::client::danger::ServerCertVerifier;
 use std::sync::{Arc, OnceLock};
+
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+use crate::dep::pki_types::PrivatePkcs8KeyDer;
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+use ::rama_core::error::ErrorContext;
 
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::TlsConnector`].
