@@ -2844,7 +2844,6 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
- "tracing-appender",
  "tracing-subscriber",
  "turmoil",
 ]
@@ -2966,7 +2965,6 @@ dependencies = [
  "rama-utils",
  "rand 0.10.0",
  "serde",
- "serde_html_form",
  "serde_json",
  "tokio",
 ]
@@ -3241,13 +3239,11 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "rama-core",
- "rama-macros",
  "rama-net",
  "rama-tcp",
  "rama-udp",
  "rama-utils",
  "tokio",
- "tokio-test",
  "tracing",
 ]
 
@@ -3283,7 +3279,6 @@ dependencies = [
  "rama-tcp",
  "rama-udp",
  "rama-utils",
- "rand 0.10.0",
  "tokio",
  "tokio-test",
 ]
