@@ -565,7 +565,9 @@ required-features = ["http-full", "boring"]
 
 [[example]]
 name = "http_mitm_proxy_rustls"
-required-features = ["http-full", "rustls", "aws-lc"]
+# ensure to also enable at least one of following features: aws-lc, ring
+# in order to test this example we cannot add this to required features, sorry
+required-features = ["http-full", "rustls"]
 
 [[example]]
 name = "http_pooled_client"

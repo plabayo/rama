@@ -23,6 +23,12 @@
 //! cargo run --example http_mitm_proxy_rustls --features=http-full,rustls,aws-lc
 //! ```
 //!
+//! or if you prefer ring instead:
+//!
+//! ```sh
+//! cargo run --example http_mitm_proxy_rustls --features=http-full,rustls,ring
+//! ```
+//!
 //! # Expected output
 //!
 //! The server will start and listen on `:62019`. You can use `curl` to interact with the service:
