@@ -316,7 +316,7 @@ jobs:
               IPHONEOS_DEPLOYMENT_TARGET: 17.5
           - thing: x86_64-ios
             target: x86_64-apple-ios
-            os: macos-latest
+            os: macos-15-intel
             rust: stable
             custom_env:
               IPHONEOS_DEPLOYMENT_TARGET: 17.5

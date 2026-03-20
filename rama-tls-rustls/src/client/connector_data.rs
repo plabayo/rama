@@ -39,32 +39,73 @@ impl From<Arc<ClientConfig>> for TlsConnectorData {
 }
 
 impl TlsConnectorData {
+    /// Create a default [`TlsConnectorData`] without configuring ALPN.
+    pub fn try_new() -> Result<Self, BoxError> {
+        Ok(TlsConnectorDataBuilder::new()
+            .try_with_env_key_logger()?
+            .build())
+    }
+
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.
     pub fn try_new_http_auto() -> Result<Self, BoxError> {
-        Ok(TlsConnectorDataBuilder::new()
-            .try_with_env_key_logger()?
-            .with_alpn_protocols_http_auto()
-            .build())
+        Ok(Self::try_new()?.with_alpn_protocols_http_auto())
     }
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing http/1.1 connections.
     pub fn try_new_http_1() -> Result<Self, BoxError> {
-        Ok(TlsConnectorDataBuilder::new()
-            .try_with_env_key_logger()?
-            .with_alpn_protocols(&[ApplicationProtocol::HTTP_11])
-            .build())
+        Ok(Self::try_new()?.with_alpn_protocols_http_1())
     }
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing h2 connections.
     pub fn try_new_http_2() -> Result<Self, BoxError> {
-        Ok(TlsConnectorDataBuilder::new()
-            .try_with_env_key_logger()?
-            .with_alpn_protocols(&[ApplicationProtocol::HTTP_2])
-            .build())
+        Ok(Self::try_new()?.with_alpn_protocols_http_2())
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`ApplicationProtocol`]s supported in alpn extension
+        pub fn alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
+            let protos: Vec<Vec<u8>> = protos
+                .iter()
+                .map(|proto| proto.as_bytes().to_vec())
+                .collect();
+
+            if self.client_config.alpn_protocols != protos {
+                let mut client_config = (*self.client_config).clone();
+                client_config.alpn_protocols = protos;
+                self.client_config = Arc::new(client_config);
+            }
+
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to most commonly used http protocols:
+        /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
+        pub fn alpn_protocols_http_auto(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_11`].
+        pub fn alpn_protocols_http_1(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_11]);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_2`].
+        pub fn alpn_protocols_http_2(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2]);
+            self
+        }
     }
 }
 
@@ -153,6 +194,22 @@ impl TlsConnectorDataBuilder {
         /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
         pub fn alpn_protocols_http_auto(mut self) -> Self {
             self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_11`].
+        pub fn alpn_protocols_http_1(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_11]);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_2`].
+        pub fn alpn_protocols_http_2(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2]);
             self
         }
     }
