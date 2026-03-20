@@ -27,12 +27,7 @@ aws-lc = [
     "x509-parser/verify-aws",
     "rustls/prefer-post-quantum",
 ]
-ring = [
-    "rustls/ring",
-    "tokio-rustls/ring",
-    "rcgen/ring",
-    "x509-parser/verify",
-]
+ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring", "x509-parser/verify"]
 
 [dependencies]
 pin-project-lite = { workspace = true }
