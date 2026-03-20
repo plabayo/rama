@@ -11,3 +11,9 @@ pub use request_context::{RequestContext, try_request_ctx_from_http_parts};
 pub mod server;
 
 pub mod uri;
+
+mod proxy_target_from_req;
+#[doc(inline)]
+pub use proxy_target_from_req::{
+    ProxyTargetFromRequestContext, ProxyTargetFromRequestContextLayer,
+};
