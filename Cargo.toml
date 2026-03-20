@@ -187,9 +187,9 @@ rama-ws = { version = "0.3.0-rc1", path = "./rama-ws" }
 rand = "0.10"
 ratatui = "0.30"
 rawzip = { version = "0.4" }
-rcgen = { version = "0.14", default-features = false, features = ["pem", "ring", "x509-parser"] }
+rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
 regex = "1.12"
-rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws_lc_rs"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "prefer-post-quantum"] }
 rustls-native-certs = "0.8"
 rustls-pki-types = "^1"
 rustversion = "1.0"
@@ -213,7 +213,7 @@ terminal-prompt = "0.2"
 tokio = "1.48"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
-tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] }
 tokio-stream = "0.1"
 tokio-test = "0.4"
 tokio-util = "0.7"
@@ -323,6 +323,13 @@ tls = [
     "dep:base64",
     "dep:serde",
 ]
+aws-lc = [
+    "rama-crypto?/aws-lc",
+    "rama-tls-rustls?/aws-lc",
+]
+ring = [
+    "rama-tls-rustls?/ring",
+]
 rustls = ["tls", "dep:rama-tls-rustls"]
 boring = ["tls", "dep:rama-tls-boring"]
 cli = [
@@ -341,7 +348,7 @@ dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
-acme = ["crypto", "dep:rama-tls-acme"]
+acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
 grpc = ["http", "dep:rama-grpc"]
 grpc-full = ["grpc", "http-full"]
 http = [

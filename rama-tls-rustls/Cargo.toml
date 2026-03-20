@@ -20,6 +20,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 http = ["dep:rama-http-types"]
+aws-lc = ["rustls/aws_lc_rs", "tokio-rustls/aws_lc_rs", "rcgen/aws_lc_rs"]
+ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring"]
 
 [dependencies]
 pin-project-lite = { workspace = true }
