@@ -323,13 +323,8 @@ tls = [
     "dep:base64",
     "dep:serde",
 ]
-aws-lc = [
-    "rama-crypto?/aws-lc",
-    "rama-tls-rustls?/aws-lc",
-]
-ring = [
-    "rama-tls-rustls?/ring",
-]
+aws-lc = ["rama-crypto?/aws-lc", "rama-tls-rustls?/aws-lc"]
+ring = ["rama-tls-rustls?/ring"]
 rustls = ["tls", "dep:rama-tls-rustls"]
 boring = ["tls", "dep:rama-tls-boring"]
 cli = [
