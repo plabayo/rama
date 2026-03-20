@@ -213,7 +213,7 @@ where
             transport_ctx.app_protocol,
         );
 
-        let connector_data = input.extensions().get::<TlsConnectorData>().cloned();
+        let connector_data = self.connector_data(&input)?;
 
         let (stream, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
@@ -266,7 +266,7 @@ where
 
         let server_host = &transport_ctx.authority.host;
 
-        let connector_data = input.extensions().get::<TlsConnectorData>().cloned();
+        let connector_data = self.connector_data(&input)?;
 
         let (conn, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
@@ -312,7 +312,7 @@ where
             });
         };
 
-        let connector_data = input.extensions().get::<TlsConnectorData>().cloned();
+        let connector_data = self.connector_data(&input)?;
 
         let (conn, negotiated_params) = self
             .handshake(connector_data, maybe_server_host, conn)
@@ -333,6 +333,22 @@ where
 }
 
 impl<S, K> TlsConnector<S, K> {
+    fn connector_data<Input>(&self, input: &Input) -> Result<Option<TlsConnectorData>, BoxError>
+    where
+        Input: ExtensionsRef,
+    {
+        let request_extensions = input.extensions();
+        let connector_data = request_extensions
+            .get::<TlsConnectorData>()
+            .cloned()
+            .or(self.connector_data.clone());
+
+        #[cfg(feature = "http")]
+        let connector_data = resolve_http_connector_data(request_extensions, connector_data)?;
+
+        Ok(connector_data)
+    }
+
     async fn handshake<T>(
         &self,
         connector_data: Option<TlsConnectorData>,
@@ -342,9 +358,7 @@ impl<S, K> TlsConnector<S, K> {
     where
         T: Io + ExtensionsMut + Unpin,
     {
-        let connector_data = connector_data
-            .or(self.connector_data.clone())
-            .unwrap_or(TlsConnectorData::try_new_http_auto()?);
+        let connector_data = connector_data.unwrap_or(TlsConnectorData::try_new()?);
 
         let server_name = rustls_pki_types::ServerName::rama_try_from(
             connector_data
@@ -378,6 +392,35 @@ impl<S, K> TlsConnector<S, K> {
 
         Ok((stream, params))
     }
+}
+
+/// Resolve request-scoped connector data for HTTP.
+///
+/// When HTTP sets a concrete [`TargetHttpVersion`], rustls ALPN needs to match
+/// that version before the handshake starts. Otherwise protocols like WebSocket
+/// can negotiate `h2` even though the request requires HTTP/1.1 upgrade.
+#[cfg(feature = "http")]
+fn resolve_http_connector_data(
+    request_extensions: &Extensions,
+    connector_data: Option<TlsConnectorData>,
+) -> Result<Option<TlsConnectorData>, BoxError> {
+    let Some(target_version) = request_extensions.get::<TargetHttpVersion>() else {
+        return Ok(connector_data);
+    };
+
+    let target_alpn = ApplicationProtocol::try_from(target_version.0)?;
+    tracing::trace!(
+        ?target_version,
+        ?target_alpn,
+        "resolving TLS connector data to match TargetHttpVersion",
+    );
+
+    Ok(Some(
+        connector_data
+            .map(Ok)
+            .unwrap_or_else(TlsConnectorData::try_new)?
+            .with_alpn_protocols(&[target_alpn]),
+    ))
 }
 
 #[cfg(feature = "http")]
@@ -454,5 +497,115 @@ mod tests {
         use rama_utils::test_helpers::assert_sync;
 
         assert_sync::<TlsConnectorLayer>();
+    }
+
+    #[cfg(feature = "http")]
+    mod connector_data_resolution {
+        use super::*;
+        use rama_core::extensions::Extensions;
+        use rama_http_types::{Version, conn::TargetHttpVersion};
+        use rama_net::tls::ApplicationProtocol;
+
+        use crate::client::TlsConnectorDataBuilder;
+
+        fn make_http_auto() -> TlsConnectorData {
+            TlsConnectorDataBuilder::new()
+                .with_alpn_protocols_http_auto()
+                .build()
+        }
+
+        fn make_http_1() -> TlsConnectorData {
+            TlsConnectorDataBuilder::new()
+                .with_alpn_protocols_http_1()
+                .build()
+        }
+
+        #[test]
+        fn creates_http11_connector_data_when_missing() {
+            let mut ext = Extensions::new();
+            ext.insert(TargetHttpVersion(Version::HTTP_11));
+
+            assert_eq!(
+                resolve_http_connector_data(&ext, None)
+                    .unwrap()
+                    .expect("connector data should be created")
+                    .client_config
+                    .alpn_protocols,
+                vec![ApplicationProtocol::HTTP_11.as_bytes().to_vec()],
+            );
+        }
+
+        #[test]
+        fn creates_http2_connector_data_when_missing() {
+            let mut ext = Extensions::new();
+            ext.insert(TargetHttpVersion(Version::HTTP_2));
+
+            assert_eq!(
+                resolve_http_connector_data(&ext, None)
+                    .unwrap()
+                    .expect("connector data should be created")
+                    .client_config
+                    .alpn_protocols,
+                vec![ApplicationProtocol::HTTP_2.as_bytes().to_vec()],
+            );
+        }
+
+        #[test]
+        fn leaves_missing_connector_data_undefined_without_target_version() {
+            let ext = Extensions::new();
+            assert!(resolve_http_connector_data(&ext, None).unwrap().is_none());
+        }
+
+        #[test]
+        fn leaves_existing_connector_data_unchanged_without_target_version() {
+            let ext = Extensions::new();
+            let data = make_http_auto();
+            let arc_before = data.client_config.clone();
+
+            let data = resolve_http_connector_data(&ext, Some(data))
+                .unwrap()
+                .expect("existing connector data should be preserved");
+
+            assert!(std::sync::Arc::ptr_eq(&arc_before, &data.client_config));
+        }
+
+        #[test]
+        fn constrains_existing_connector_data_to_h1_when_target_is_http11() {
+            let mut ext = Extensions::new();
+            ext.insert(TargetHttpVersion(Version::HTTP_11));
+
+            let data = make_http_auto();
+            assert_eq!(
+                data.client_config.alpn_protocols,
+                vec![
+                    ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
+                    ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
+                ],
+                "precondition: default auto has h2+h1.1"
+            );
+
+            let data = resolve_http_connector_data(&ext, Some(data))
+                .unwrap()
+                .expect("existing connector data should be preserved");
+            assert_eq!(
+                data.client_config.alpn_protocols,
+                vec![ApplicationProtocol::HTTP_11.as_bytes().to_vec()],
+            );
+        }
+
+        #[test]
+        fn does_not_clone_when_existing_h1_alpn_already_matches() {
+            let mut ext = Extensions::new();
+            ext.insert(TargetHttpVersion(Version::HTTP_11));
+
+            let data = make_http_1();
+            let arc_before = data.client_config.clone();
+
+            let data = resolve_http_connector_data(&ext, Some(data))
+                .unwrap()
+                .expect("existing connector data should be preserved");
+            // Same Arc — no clone occurred.
+            assert!(std::sync::Arc::ptr_eq(&arc_before, &data.client_config));
+        }
     }
 }
