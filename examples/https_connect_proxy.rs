@@ -6,7 +6,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example https_connect_proxy --features=http-full,rustls
+//! cargo run --example https_connect_proxy --features=http-full,rustls,aws-lc
 //! ```
 //!
 //! # Expected output

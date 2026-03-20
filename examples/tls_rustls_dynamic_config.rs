@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_rustls_dynamic_config --features=rustls,http-full
+//! cargo run --example tls_rustls_dynamic_config --features=rustls,aws-lc,http-full
 //! ```
 //!
 //! Test if the correct certificates are returned by making curl resolve example and second.example to

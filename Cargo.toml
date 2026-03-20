@@ -565,7 +565,7 @@ required-features = ["http-full", "boring"]
 
 [[example]]
 name = "http_mitm_proxy_rustls"
-required-features = ["http-full", "rustls"]
+required-features = ["http-full", "rustls", "aws-lc"]
 
 [[example]]
 name = "http_pooled_client"
@@ -645,15 +645,15 @@ required-features = ["http-full"]
 
 [[example]]
 name = "https_connect_proxy"
-required-features = ["http-full", "rustls"]
+required-features = ["http-full", "rustls", "aws-lc"]
 
 [[example]]
 name = "https_web_service_with_hsts"
-required-features = ["http-full", "rustls"]
+required-features = ["http-full", "rustls", "aws-lc"]
 
 [[example]]
 name = "mtls_tunnel_and_service"
-required-features = ["http-full", "rustls"]
+required-features = ["http-full", "rustls", "aws-lc"]
 
 [[example]]
 name = "tls_sni_proxy_mitm"
@@ -689,11 +689,11 @@ required-features = ["boring", "http-full"]
 
 [[example]]
 name = "tls_rustls_dynamic_certs"
-required-features = ["rustls", "http-full"]
+required-features = ["rustls", "aws-lc", "http-full"]
 
 [[example]]
 name = "tls_rustls_dynamic_config"
-required-features = ["rustls", "http-full"]
+required-features = ["rustls", "aws-lc", "http-full"]
 
 [[example]]
 name = "tls_boring_termination"
@@ -701,7 +701,7 @@ required-features = ["boring", "haproxy", "http-full"]
 
 [[example]]
 name = "tls_rustls_termination"
-required-features = ["rustls", "haproxy", "http-full"]
+required-features = ["rustls", "aws-lc", "haproxy", "http-full"]
 
 [[example]]
 name = "socks5_connect_proxy"

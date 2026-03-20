@@ -20,7 +20,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_mitm_proxy_rustls --features=http-full,rustls
+//! cargo run --example http_mitm_proxy_rustls --features=http-full,rustls,aws-lc
 //! ```
 //!
 //! # Expected output
