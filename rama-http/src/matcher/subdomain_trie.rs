@@ -1,9 +1,6 @@
 use crate::Request;
 use rama_core::telemetry::tracing;
-use rama_core::{
-    extensions::{Extensions, ExtensionsRef},
-    matcher::Matcher,
-};
+use rama_core::{extensions::Extensions, matcher::Matcher};
 use rama_net::address::{AsDomainRef, DomainTrie, Host};
 use rama_net::http::RequestContext;
 
@@ -34,8 +31,16 @@ impl SubdomainTrieMatcher {
 }
 
 impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
-        let match_authority = |ctx: &RequestContext| match ctx.authority.host {
+    fn matches(&self, _: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+        let req_ctx = match RequestContext::try_from(req) {
+            Ok(rc) => rc,
+            Err(err) => {
+                tracing::debug!("SubdomainTrieMatcher: failed to extract request context: {err:?}",);
+                return false;
+            }
+        };
+
+        match req_ctx.authority.host {
             Host::Name(ref domain) => {
                 let is_match = self.is_match(domain);
                 tracing::trace!(
@@ -49,25 +54,6 @@ impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
                 tracing::trace!("SubdomainTrieMatcher: ignoring numeric address: {address}",);
                 false
             }
-        };
-
-        if let Some(req_ctx) = req.extensions().get() {
-            match_authority(req_ctx)
-        } else {
-            let req_ctx = match RequestContext::try_from(req) {
-                Ok(rc) => rc,
-                Err(err) => {
-                    tracing::debug!(
-                        "SubdomainTrieMatcher: failed to extract request context: {err:?}",
-                    );
-                    return false;
-                }
-            };
-            let is_match = match_authority(&req_ctx);
-            if let Some(ext) = ext {
-                ext.insert(req_ctx);
-            }
-            is_match
         }
     }
 }

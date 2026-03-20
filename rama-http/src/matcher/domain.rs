@@ -1,9 +1,6 @@
 use crate::Request;
 
-use rama_core::{
-    extensions::{Extensions, ExtensionsRef},
-    telemetry::tracing,
-};
+use rama_core::{extensions::Extensions, telemetry::tracing};
 use rama_net::{
     address::{Domain, Host, IntoDomain},
     http::RequestContext,
@@ -41,10 +38,8 @@ impl DomainMatcher {
 }
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
-        let host = if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
-            req_ctx.authority.host.clone()
-        } else {
+    fn matches(&self, _: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+        let host = {
             let req_ctx = match RequestContext::try_from(req) {
                 Ok(req_ctx) => req_ctx,
                 Err(err) => {
@@ -52,12 +47,9 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
                     return false;
                 }
             };
-            let host = req_ctx.authority.host.clone();
-            if let Some(ext) = ext {
-                ext.insert(req_ctx);
-            }
-            host
+            req_ctx.authority.host
         };
+
         match host {
             Host::Name(domain) => {
                 if self.sub {

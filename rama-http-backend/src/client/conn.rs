@@ -20,13 +20,12 @@ use rama_http_types::{
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     conn::ConnectionHealth,
-    http::RequestContext,
 };
 use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
-use std::marker::PhantomData;
+use std::{borrow::Cow, marker::PhantomData};
 
 #[derive(Debug, Clone)]
 /// A [`Service`] which establishes an HTTP Connection.
@@ -77,11 +76,10 @@ where
 
     let extensions = io.extensions().clone();
 
-    let server_address = req
-        .extensions()
-        .get::<RequestContext>()
-        .map(|ctx| ctx.authority.host.to_str())
-        .or_else(|| req.uri().host().map(Into::into))
+    let server_address: Cow<'_, str> = req
+        .uri()
+        .host()
+        .map(Into::into)
         .or_else(|| {
             req.headers()
                 .get(HOST)

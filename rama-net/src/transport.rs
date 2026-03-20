@@ -6,7 +6,6 @@ use crate::Protocol;
 use crate::address::{HostWithOptPort, HostWithPort};
 use crate::http::RequestContext;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsRef;
 use rama_http_types::request::Parts;
 use rama_http_types::{Request, Version};
 
@@ -74,14 +73,8 @@ impl TryFrom<&Parts> for TransportContext {
     type Error = BoxError;
 
     fn try_from(parts: &Parts) -> Result<Self, Self::Error> {
-        Ok(
-            if let Some(req_ctx) = parts.extensions().get::<RequestContext>() {
-                req_ctx.into()
-            } else {
-                let req_ctx = RequestContext::try_from(parts)?;
-                req_ctx.into()
-            },
-        )
+        let req_ctx = RequestContext::try_from(parts)?;
+        Ok(req_ctx.into())
     }
 }
 
@@ -89,13 +82,7 @@ impl<Body> TryFrom<&Request<Body>> for TransportContext {
     type Error = BoxError;
 
     fn try_from(req: &Request<Body>) -> Result<Self, Self::Error> {
-        Ok(
-            if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
-                req_ctx.into()
-            } else {
-                let req_ctx = RequestContext::try_from(req)?;
-                req_ctx.into()
-            },
-        )
+        let req_ctx = RequestContext::try_from(req)?;
+        Ok(req_ctx.into())
     }
 }

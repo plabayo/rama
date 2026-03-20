@@ -393,23 +393,17 @@ where
                         let preserve_ua_header =
                             req.extensions().contains::<PreserveHeaderUserAgent>();
 
-                        let (authority, protocol) = match req.extensions().get::<RequestContext>() {
-                            Some(ctx) => (
-                                Some(Cow::Borrowed(&ctx.authority)),
-                                Some(Cow::Borrowed(&ctx.protocol)),
+                        let (authority, protocol) = match RequestContext::try_from(&req) {
+                            Ok(ctx) => (
+                                Some(Cow::Owned(ctx.authority)),
+                                Some(Cow::Owned(ctx.protocol)),
                             ),
-                            None => match RequestContext::try_from(&req) {
-                                Ok(ctx) => (
-                                    Some(Cow::Owned(ctx.authority)),
-                                    Some(Cow::Owned(ctx.protocol)),
-                                ),
-                                Err(err) => {
-                                    tracing::debug!(
-                                        "failed to compute request's authority and protocol for UA Emulation purposes: {err:?}",
-                                    );
-                                    (None, None)
-                                }
-                            },
+                            Err(err) => {
+                                tracing::debug!(
+                                    "failed to compute request's authority and protocol for UA Emulation purposes: {err:?}",
+                                );
+                                (None, None)
+                            }
                         };
 
                         let output_headers = merge_http_headers(

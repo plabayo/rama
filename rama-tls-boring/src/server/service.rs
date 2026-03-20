@@ -14,11 +14,7 @@ use rama_core::{
     io::Io,
     telemetry::tracing::{debug, trace},
 };
-use rama_net::{
-    http::RequestContext,
-    tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
-    transport::TransportContext,
-};
+use rama_net::tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{io::ErrorKind, sync::Arc};
 
@@ -78,19 +74,7 @@ where
             .extensions()
             .get::<SecureTransport>()
             .and_then(|t| t.client_hello())
-            .and_then(|c| c.ext_server_name().cloned())
-            .or_else(|| {
-                stream
-                    .extensions()
-                    .get::<TransportContext>()
-                    .and_then(|ctx| ctx.authority.host.as_domain().cloned())
-            })
-            .or_else(|| {
-                stream
-                    .extensions()
-                    .get::<RequestContext>()
-                    .and_then(|ctx| ctx.authority.host.as_domain().cloned())
-            });
+            .and_then(|c| c.ext_server_name().cloned());
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
         // are called multiples times (fn closures type). But in testing it seems fnOnce should also
