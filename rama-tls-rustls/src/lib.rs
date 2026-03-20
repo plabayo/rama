@@ -35,6 +35,25 @@ pub mod key_log;
 
 mod type_conversion;
 
+#[cfg(all(feature = "aws-lc", feature = "ring"))]
+fn ensure_default_crypto_provider() {
+    use std::sync::Once;
+
+    static INSTALL_DEFAULT_PROVIDER: Once = Once::new();
+
+    INSTALL_DEFAULT_PROVIDER.call_once(|| {
+        if let Err(provider) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
+            rama_core::telemetry::tracing::debug!(
+                ?provider,
+                "rama-tls-rustls: failed to install aws-lc as the default rustls crypto provider"
+            );
+        }
+    });
+}
+
+#[cfg(not(all(feature = "aws-lc", feature = "ring")))]
+fn ensure_default_crypto_provider() {}
+
 pub mod types {
     //! common tls types
     #[doc(inline)]

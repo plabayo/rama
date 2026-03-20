@@ -142,6 +142,7 @@ impl TlsConnectorDataBuilder {
     /// certificate store, and no client auth
     #[must_use]
     pub fn new() -> Self {
+        crate::ensure_default_crypto_provider();
         let config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_root_certificates(client_root_certs())
             .with_no_client_auth();
@@ -158,6 +159,7 @@ impl TlsConnectorDataBuilder {
         client_cert_chain: Vec<CertificateDer<'static>>,
         client_priv_key: PrivateKeyDer<'static>,
     ) -> Result<Self, BoxError> {
+        crate::ensure_default_crypto_provider();
         let config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_root_certificates(client_root_certs())
             .with_client_auth_cert(client_cert_chain, client_priv_key)

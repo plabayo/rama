@@ -124,6 +124,7 @@ impl TlsAcceptorDataBuilder {
         cert_chain: Vec<CertificateDer<'static>>,
         key_der: PrivateKeyDer<'static>,
     ) -> Result<Self, BoxError> {
+        crate::ensure_default_crypto_provider();
         let config = rustls::ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_no_client_auth()
             .with_single_cert(cert_chain, key_der)
@@ -138,6 +139,7 @@ impl TlsAcceptorDataBuilder {
     /// generated certificate chain and private key
     pub fn try_new_self_signed(data: SelfSignedData) -> Result<Self, BoxError> {
         let (cert_chain, key_der) = self_signed_server_auth(data)?;
+        crate::ensure_default_crypto_provider();
         let config = rustls::ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_no_client_auth()
             .with_single_cert(cert_chain, key_der)
