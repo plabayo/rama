@@ -39,7 +39,7 @@ async fn test_https_connect_proxy() {
             .unwrap();
     });
 
-    let runner = utils::ExampleRunner::interactive("https_connect_proxy", Some("rustls"));
+    let runner = utils::ExampleRunner::interactive("https_connect_proxy", Some("rustls,aws-lc"));
 
     // test regular proxy flow
     let result = runner

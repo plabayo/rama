@@ -38,7 +38,12 @@ mod http_listener_hello;
     feature = "boring",
 ))]
 mod http_mitm_proxy_boring;
-#[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]
+#[cfg(all(
+    feature = "http-full",
+    feature = "rustls",
+    feature = "aws-lc",
+    feature = "ring"
+))]
 mod http_mitm_proxy_rustls;
 #[cfg(all(
     feature = "http-full",
