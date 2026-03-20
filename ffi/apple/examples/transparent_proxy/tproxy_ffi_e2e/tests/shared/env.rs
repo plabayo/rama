@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use tokio::sync::Mutex;
 
@@ -18,6 +21,8 @@ pub(crate) struct TestEnv {
     pub(crate) https_observations: SharedObservations,
 }
 
+static FFI_INIT: OnceLock<()> = OnceLock::new();
+
 pub(crate) async fn setup_env() -> TestEnv {
     let http_observations = Arc::new(Mutex::new(Vec::<HttpObservation>::new()));
     let https_observations = Arc::new(Mutex::new(Vec::<HttpObservation>::new()));
@@ -31,13 +36,18 @@ pub(crate) async fn setup_env() -> TestEnv {
     };
 
     let storage_dir = test_storage_dir();
-    std::fs::create_dir_all(&storage_dir).expect("create storage dir");
-    initialize_ffi(&storage_dir);
+    let engine = tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&storage_dir).expect("create storage dir");
+        FFI_INIT.get_or_init(|| initialize_ffi(&storage_dir));
+        default_engine()
+    })
+    .await
+    .expect("join ffi setup task");
 
     tokio::time::sleep(Duration::from_millis(25)).await;
 
     TestEnv {
-        engine: default_engine(),
+        engine,
         ports,
         http_observations,
         https_observations,

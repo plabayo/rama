@@ -1,9 +1,14 @@
+use std::net::IpAddr;
+
 use rama::{
-    net::apple::networkextension::{
-        self as apple_ne,
-        tproxy::{
-            TransparentProxyConfig, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
-            TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+    net::{
+        address::{Host, HostWithPort},
+        apple::networkextension::{
+            self as apple_ne,
+            tproxy::{
+                TransparentProxyConfig, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
+                TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+            },
         },
     },
     telemetry::tracing,
@@ -57,11 +62,20 @@ fn should_intercept_flow(meta: &TransparentProxyFlowMeta) -> bool {
         return false;
     }
 
-    if meta.remote_endpoint.is_none() {
+    should_intercept_remote_endpoint(meta.remote_endpoint.as_ref())
+}
+
+#[inline(always)]
+fn should_intercept_remote_endpoint(remote_endpoint: Option<&HostWithPort>) -> bool {
+    let Some(target) = remote_endpoint else {
         return false;
     };
 
-    true
+    match &target.host {
+        Host::Name(_) => true,
+        Host::Address(IpAddr::V4(addr)) => !addr.is_loopback() && !addr.is_private(),
+        Host::Address(IpAddr::V6(addr)) => !addr.is_loopback() && !addr.is_unique_local(),
+    }
 }
 
 apple_ne::transparent_proxy_ffi! {

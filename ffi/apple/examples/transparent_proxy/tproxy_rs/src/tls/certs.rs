@@ -32,7 +32,9 @@ pub fn load_or_create_mitm_ca_crt_key_pair() -> Result<(X509, PKey<Private>), Bo
             return Ok((cert, key));
         }
         (Err(err), _) | (_, Err(err)) => {
-            tracing::warn!("protected-store MITM CA unavailable; falling back to filesystem storage: {err}");
+            tracing::warn!(
+                "protected-store MITM CA unavailable; falling back to filesystem storage: {err}"
+            );
         }
         _ => {}
     }
@@ -43,8 +45,8 @@ pub fn load_or_create_mitm_ca_crt_key_pair() -> Result<(X509, PKey<Private>), Bo
     ) {
         tracing::info!("MITM CA present in filesystem storage; loading existing keypair");
 
-        let cert =
-            X509::from_pem(&cert_pem).context("parse filesystem root ca cert PEM bytes into X509")?;
+        let cert = X509::from_pem(&cert_pem)
+            .context("parse filesystem root ca cert PEM bytes into X509")?;
         let key = PKey::private_key_from_pem(&key_pem)
             .context("parse filesystem root ca private key PEM bytes into PKey<Private>")?;
         return Ok((cert, key));
@@ -73,7 +75,9 @@ pub fn load_or_create_mitm_ca_crt_key_pair() -> Result<(X509, PKey<Private>), Bo
         }
         (cert_result, key_result) => {
             if let Err(err) = cert_result.and(key_result) {
-                tracing::warn!("failed to persist MITM CA in protected storage; storing on filesystem instead: {err}");
+                tracing::warn!(
+                    "failed to persist MITM CA in protected storage; storing on filesystem instead: {err}"
+                );
             }
             store_file_secret(ROOT_CA_CERT_SERVICE, &cert_pem_bytes)?;
             store_file_secret(ROOT_CA_KEY_SERVICE, &key_pem_bytes)?;

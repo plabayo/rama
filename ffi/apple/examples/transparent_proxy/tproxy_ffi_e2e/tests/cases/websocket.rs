@@ -5,7 +5,7 @@
 //! - target: `plain`, `tls`
 //! - proxy: `direct`, `http`, `socks5`
 
-use rama::{http::Version, telemetry::tracing};
+use rama::http::Version;
 use serial_test::serial;
 
 use crate::shared::{
@@ -19,7 +19,6 @@ use crate::shared::{
 macro_rules! websocket_test {
     ($name:ident, $version:expr, $target:expr, $proxy:expr) => {
         #[tokio::test]
-        #[tracing_test::traced_test]
         #[serial]
         async fn $name() {
             run_websocket_case($version, $target, $proxy).await;
