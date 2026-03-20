@@ -45,6 +45,7 @@ pub mod dep {
         pub use aws_lc_rs::*;
     }
 
+    #[cfg(any(feature = "aws-lc", feature = "ring"))]
     pub mod rcgen {
         //! Re-export of the [`rcgen`] crate.
         //!

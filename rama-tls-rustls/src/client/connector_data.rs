@@ -1,5 +1,4 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use crate::dep::rcgen::{self, KeyPair};
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
 use crate::key_log::KeyLogFile;
@@ -271,12 +270,21 @@ pub fn client_root_certs() -> Arc<RootCertStore> {
         .clone()
 }
 
+#[cfg(not(any(feature = "aws-lc", feature = "ring")))]
+pub fn self_signed_client_auth()
+-> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    Err(BoxError::from(
+        "enable aws-lc or ring feature to use fn self_signed_client_auth",
+    ))
+}
+
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub fn self_signed_client_auth()
 -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     // Create a client end entity cert.
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-    let client_key_pair =
-        KeyPair::generate_for(alg).context("self-signed client auth: generate client key pair")?;
+    let client_key_pair = rcgen::KeyPair::generate_for(alg)
+        .context("self-signed client auth: generate client key pair")?;
     let mut client_ee_params = rcgen::CertificateParams::new(vec![])
         .context("self-signed client auth: create client EE Params")?;
     client_ee_params.is_ca = rcgen::IsCa::NoCa;

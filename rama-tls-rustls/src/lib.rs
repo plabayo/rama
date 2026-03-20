@@ -69,6 +69,7 @@ pub mod dep {
         pub use rustls_native_certs::*;
     }
 
+    #[cfg(any(feature = "aws-lc", feature = "ring"))]
     pub mod rcgen {
         //! Re-export of the [`rcgen`] crate.
         //!

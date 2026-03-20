@@ -25,7 +25,15 @@ hex = { workspace = true }
 hickory-resolver = { workspace = true }
 itertools = { workspace = true }
 mimalloc = { workspace = true, optional = true }
-rama = { version = "0.3.0-rc1", path = "..", features = ["boring", "cli", "tcp", "udp", "http-full", "proxy-full", "opentelemetry"] }
+rama = { version = "0.3.0-rc1", path = "..", features = [
+    "boring",
+    "cli",
+    "tcp",
+    "udp",
+    "http-full",
+    "proxy-full",
+    "opentelemetry",
+] }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

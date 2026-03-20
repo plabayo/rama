@@ -1,5 +1,4 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use crate::dep::rcgen::{self, Issuer, KeyPair};
 use crate::dep::rustls::{self, ALL_VERSIONS};
 use crate::key_log::KeyLogFile;
 use rama_core::error::{BoxError, ErrorContext};
@@ -194,12 +193,23 @@ impl TlsAcceptorDataBuilder {
     }
 }
 
+#[cfg(not(any(feature = "aws-lc", feature = "ring")))]
+pub fn self_signed_server_auth(
+    _: SelfSignedData,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    Err(BoxError::from(
+        "enable aws-lc or ring feature to use fn self_signed_server_auth",
+    ))
+}
+
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub fn self_signed_server_auth(
     data: SelfSignedData,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     // Create an issuer CA cert.
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-    let ca_key_pair = KeyPair::generate_for(alg).context("self-signed: generate ca key pair")?;
+    let ca_key_pair =
+        rcgen::KeyPair::generate_for(alg).context("self-signed: generate ca key pair")?;
 
     let common_name = data
         .common_name
@@ -227,14 +237,17 @@ pub fn self_signed_server_auth(
         .context("self-signed: create ca cert")?;
 
     let server_key_pair =
-        KeyPair::generate_for(alg).context("self-signed: create server key pair")?;
+        rcgen::KeyPair::generate_for(alg).context("self-signed: create server key pair")?;
     let mut server_ee_params =
         rcgen::CertificateParams::new(data.subject_alternative_names.unwrap_or_default())
             .context("self-signed: create server EE params")?;
     server_ee_params.is_ca = rcgen::IsCa::NoCa;
     server_ee_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     let server_cert = server_ee_params
-        .signed_by(&server_key_pair, &Issuer::new(ca_params, ca_key_pair))
+        .signed_by(
+            &server_key_pair,
+            &rcgen::Issuer::new(ca_params, ca_key_pair),
+        )
         .context("self-signed: sign servert cert")?;
 
     let server_ca_cert_der: CertificateDer = ca_cert.into();
