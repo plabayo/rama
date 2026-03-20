@@ -31,6 +31,7 @@ use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
 
+#[cfg(not(extensions_new))]
 /// A type map of protocol extensions.
 ///
 /// `Extensions` can be used by `Request` and `Response` to store
@@ -41,9 +42,11 @@ pub struct Extensions {
     extensions: Vec<StoredExtension>,
 }
 
+#[cfg(not(extensions_new))]
 #[derive(Clone, Debug)]
 struct StoredExtension(std::any::TypeId, Box<dyn ExtensionType>);
 
+#[cfg(not(extensions_new))]
 impl Extensions {
     /// Create an empty [`Extensions`] store.
     #[inline(always)]
@@ -148,6 +151,80 @@ impl Extensions {
             .iter()
             .filter(move |item| item.0 == type_id)
             .map(|ext| (*ext.1).as_any().downcast_ref().unwrap())
+    }
+}
+
+#[cfg(extensions_new)]
+#[derive(Debug, Clone, Default)]
+// TODO remove this and only use new extensions, but for now we use this to test
+// if our new extension logic works internally. Once that is confirmed we completely
+// switch to ExtensionsNew, rename it, and start using the features
+pub struct Extensions {
+    new: super::extensions_new::Extensions,
+}
+
+#[cfg(extensions_new)]
+impl Extensions {
+    /// Create an empty [`Extensions`] store.
+    #[inline(always)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            new: super::extensions_new::Extensions::new(),
+        }
+    }
+
+    /// Insert a type into this [`Extensions]` store.
+    pub fn insert<T: Extension + Clone>(&mut self, val: T) -> &T {
+        self.new.insert(val)
+    }
+
+    /// Extend this [`Extensions`] store with the [`Extensions`] from the provided store
+    pub fn extend(&mut self, extensions: Self) {
+        self.new.extend(extensions.new);
+    }
+
+    /// Returns true if the [`Extensions`] store contains the given type.
+    #[must_use]
+    pub fn contains<T: Extension + Clone>(&self) -> bool {
+        self.new.contains::<T>()
+    }
+
+    /// Get a shared reference to the most recently insert item of type T
+    ///
+    /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
+    /// if you need the oldest item T use [`Self::first`]
+    #[must_use]
+    pub fn get<T: Extension + Clone>(&self) -> Option<&T> {
+        self.new.get::<T>()
+    }
+
+    /// Get a shared reference to the most recently insert item of type T, or insert in case no item was found
+    ///
+    /// Note: [`Self::get`] will return the last added item T, in most cases this is exactly what you want, but
+    /// if you need the oldest item T use [`Self::first`]
+    pub fn get_or_insert<T, F>(&mut self, create_fn: F) -> &T
+    where
+        T: Extension,
+        F: FnOnce() -> T,
+    {
+        self.new.get_ref_or_insert(create_fn)
+    }
+
+    /// Get a shared reference to the oldest inserted item of type T
+    ///
+    /// Note: [`Self::first`] will return the first added item T, in most cases this is not what you want,
+    /// instead use [`Self::get`] to get the most recently inserted item T
+    #[must_use]
+    pub fn first<T: Extension + Clone>(&self) -> Option<&T> {
+        self.new.first_ref()
+    }
+
+    /// Iterate over all the inserted items of type T
+    ///
+    /// Note: items are ordered from oldest to newest
+    pub fn iter<T: Extension + Clone>(&self) -> impl Iterator<Item = &T> {
+        self.new.iter::<T>().map(|item| item.as_ref())
     }
 }
 
@@ -334,6 +411,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 trait ExtensionType: Extension {
     fn clone_box(&self) -> Box<dyn ExtensionType>;
     fn as_any(&self) -> &dyn Any;
