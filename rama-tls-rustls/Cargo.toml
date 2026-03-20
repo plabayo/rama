@@ -27,7 +27,12 @@ aws-lc = [
     "x509-parser/verify-aws",
     "rustls/prefer-post-quantum",
 ]
-ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring", "x509-parser/verify"]
+ring = [
+    "rustls/ring",
+    "tokio-rustls/ring",
+    "rcgen/ring",
+    "x509-parser/verify",
+]
 
 [dependencies]
 pin-project-lite = { workspace = true }
@@ -35,7 +40,7 @@ rama-core = { workspace = true }
 rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["tls", "http"] }
 rama-utils = { workspace = true }
-rcgen = { workspace = true }
+rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }
 rustls-native-certs = { workspace = true }
 rustls-pki-types = { workspace = true }
