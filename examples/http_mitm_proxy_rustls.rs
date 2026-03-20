@@ -20,7 +20,13 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_mitm_proxy_rustls --features=http-full,rustls
+//! cargo run --example http_mitm_proxy_rustls --features=http-full,rustls,aws-lc
+//! ```
+//!
+//! or if you prefer ring instead:
+//!
+//! ```sh
+//! cargo run --example http_mitm_proxy_rustls --features=http-full,rustls,ring
 //! ```
 //!
 //! # Expected output

@@ -4,7 +4,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example https_web_service_with_hsts --features=http-full,rustls
+//! cargo run --example https_web_service_with_hsts --features=http-full,rustls,aws-lc
 //! ```
 //!
 //! # Expected output

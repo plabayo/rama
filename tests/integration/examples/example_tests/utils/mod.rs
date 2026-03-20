@@ -44,10 +44,18 @@ use rama::http::layer::decompression::DecompressionLayer;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 use rama::{net::tls::client::ServerVerifyMode, tls::boring::client as boring_client};
 
-#[cfg(all(feature = "http-full", feature = "rustls", not(feature = "boring")))]
+#[cfg(all(
+    feature = "http-full",
+    feature = "rustls",
+    feature = "aws-lc",
+    not(feature = "boring")
+))]
 use rama::tls::rustls::client as rustls_client;
 
-#[cfg(all(feature = "http-full", any(feature = "rustls", feature = "boring")))]
+#[cfg(all(
+    feature = "http-full",
+    any(all(feature = "rustls", feature = "aws-lc"), feature = "boring")
+))]
 use rama::rt::Executor;
 
 #[cfg(feature = "http-full")]
@@ -157,7 +165,7 @@ impl ExampleRunner {
                     .build_client()
             };
 
-            #[cfg(all(feature = "rustls", not(feature = "boring")))]
+            #[cfg(all(feature = "rustls", feature = "aws-lc", not(feature = "boring")))]
             let inner_client = {
                 let tls_config = rustls_client::TlsConnectorDataBuilder::new()
                     .with_no_cert_verifier()

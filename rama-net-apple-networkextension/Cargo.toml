@@ -24,7 +24,6 @@ default = []
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
-rama-macros = { workspace = true }
 rama-net = { workspace = true }
 rama-tcp = { workspace = true }
 rama-udp = { workspace = true }
@@ -34,7 +33,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
 
 [lints]
 workspace = true

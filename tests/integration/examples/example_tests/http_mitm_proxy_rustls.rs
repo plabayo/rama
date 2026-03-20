@@ -61,31 +61,33 @@ async fn test_http_mitm_proxy() {
             .await;
     });
 
-    let runner = utils::ExampleRunner::interactive("http_mitm_proxy_rustls", Some("rustls"));
+    for features in ["rustls,aws-lc", "rustls,ring", "rustls,aws-lc,ring"] {
+        let runner = utils::ExampleRunner::interactive("http_mitm_proxy_rustls", Some(features));
 
-    // test http request proxy flow
-    let result = runner
-        .get("http://127.0.0.1:63005/foo/bar")
-        .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap())
-        .send()
-        .await
-        .unwrap()
-        .try_into_json::<Value>()
-        .await
-        .unwrap();
-    let expected_value = json!({"method":"GET","path":"/foo/bar"});
-    assert_eq!(expected_value, result);
+        // test http request proxy flow
+        let result = runner
+            .get("http://127.0.0.1:63005/foo/bar")
+            .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap())
+            .send()
+            .await
+            .unwrap()
+            .try_into_json::<Value>()
+            .await
+            .unwrap();
+        let expected_value = json!({"method":"GET","path":"/foo/bar"});
+        assert_eq!(expected_value, result);
 
-    // test https request proxy flow
-    let result = runner
-        .get("https://127.0.0.1:63006/foo/bar")
-        .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap())
-        .send()
-        .await
-        .unwrap()
-        .try_into_json::<Value>()
-        .await
-        .unwrap();
-    let expected_value = json!({"method":"GET","path":"/foo/bar"});
-    assert_eq!(expected_value, result);
+        // test https request proxy flow
+        let result = runner
+            .get("https://127.0.0.1:63006/foo/bar")
+            .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap())
+            .send()
+            .await
+            .unwrap()
+            .try_into_json::<Value>()
+            .await
+            .unwrap();
+        let expected_value = json!({"method":"GET","path":"/foo/bar"});
+        assert_eq!(expected_value, result);
+    }
 }

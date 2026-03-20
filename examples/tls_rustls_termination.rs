@@ -16,7 +16,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_rustls_termination --features=haproxy,http-full,rustls
+//! cargo run --example tls_rustls_termination --features=haproxy,http-full,rustls,aws-lc
 //! ```
 //!
 //! # Expected output

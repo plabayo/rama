@@ -6,7 +6,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example mtls_tunnel_and_service --features=http-full,rustls
+//! cargo run --example mtls_tunnel_and_service --features=http-full,rustls,aws-lc
 //! ```
 //!
 //! # Expected output

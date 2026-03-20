@@ -28,7 +28,6 @@ rama-net = { workspace = true, features = ["http"] }
 rama-tcp = { workspace = true, features = ["http"] }
 rama-udp = { workspace = true }
 rama-utils = { workspace = true }
-rand = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]

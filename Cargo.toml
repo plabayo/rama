@@ -187,9 +187,9 @@ rama-ws = { version = "0.3.0-rc1", path = "./rama-ws" }
 rand = "0.10"
 ratatui = "0.30"
 rawzip = { version = "0.4" }
-rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
+rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
 regex = "1.12"
-rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws_lc_rs"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pki-types = "^1"
 rustversion = "1.0"
@@ -213,7 +213,7 @@ terminal-prompt = "0.2"
 tokio = "1.48"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
-tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] }
 tokio-stream = "0.1"
 tokio-test = "0.4"
 tokio-util = "0.7"
@@ -290,21 +290,6 @@ broken_intra_doc_links = "deny"
 
 [features]
 default = []
-full = [
-    "compression",
-    "rustls",
-    "boring",
-    "acme",
-    "cli",
-    "tcp",
-    "udp",
-    "grpc",
-    "http-full",
-    "grpc-full",
-    "proxy-full",
-    "tower",
-    "opentelemetry",
-]
 compression = [
     "http",
     "rama-http?/compression",
@@ -323,6 +308,8 @@ tls = [
     "dep:base64",
     "dep:serde",
 ]
+aws-lc = ["rama-crypto?/aws-lc", "rama-tls-rustls?/aws-lc"]
+ring = ["rama-crypto?/ring", "rama-tls-rustls?/ring"]
 rustls = ["tls", "dep:rama-tls-rustls"]
 boring = ["tls", "dep:rama-tls-boring"]
 cli = [
@@ -341,7 +328,7 @@ dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
-acme = ["crypto", "dep:rama-tls-acme"]
+acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]
 grpc = ["http", "dep:rama-grpc"]
 grpc-full = ["grpc", "http-full"]
 http = [
@@ -416,7 +403,6 @@ serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tokio-util = { workspace = true }
-tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
 
 [target.'cfg(target_family = "unix")'.dependencies]
@@ -445,7 +431,6 @@ serde_json = { workspace = true }
 spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
-tracing-appender = { workspace = true }
 turmoil = { workspace = true }
 
 [lints]
@@ -578,6 +563,8 @@ required-features = ["http-full", "boring"]
 
 [[example]]
 name = "http_mitm_proxy_rustls"
+# ensure to also enable at least one of following features: aws-lc, ring
+# in order to test this example we cannot add this to required features, sorry
 required-features = ["http-full", "rustls"]
 
 [[example]]
@@ -658,15 +645,15 @@ required-features = ["http-full"]
 
 [[example]]
 name = "https_connect_proxy"
-required-features = ["http-full", "rustls"]
+required-features = ["http-full", "rustls", "aws-lc"]
 
 [[example]]
 name = "https_web_service_with_hsts"
-required-features = ["http-full", "rustls"]
+required-features = ["http-full", "rustls", "aws-lc"]
 
 [[example]]
 name = "mtls_tunnel_and_service"
-required-features = ["http-full", "rustls"]
+required-features = ["http-full", "rustls", "aws-lc"]
 
 [[example]]
 name = "tls_sni_proxy_mitm"
@@ -702,11 +689,11 @@ required-features = ["boring", "http-full"]
 
 [[example]]
 name = "tls_rustls_dynamic_certs"
-required-features = ["rustls", "http-full"]
+required-features = ["rustls", "aws-lc", "http-full"]
 
 [[example]]
 name = "tls_rustls_dynamic_config"
-required-features = ["rustls", "http-full"]
+required-features = ["rustls", "aws-lc", "http-full"]
 
 [[example]]
 name = "tls_boring_termination"
@@ -714,7 +701,7 @@ required-features = ["boring", "haproxy", "http-full"]
 
 [[example]]
 name = "tls_rustls_termination"
-required-features = ["rustls", "haproxy", "http-full"]
+required-features = ["rustls", "aws-lc", "haproxy", "http-full"]
 
 [[example]]
 name = "socks5_connect_proxy"

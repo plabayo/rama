@@ -14,7 +14,8 @@ const ADDRESS_HTTPS: HostWithPort = HostWithPort::local_ipv4(62044);
 async fn test_https_web_service_with_hsts() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("https_web_service_with_hsts", Some("rustls"));
+    let runner =
+        utils::ExampleRunner::interactive("https_web_service_with_hsts", Some("rustls,aws-lc"));
 
     // Get Redirected correctly from http to https (including port overwrite)
 
