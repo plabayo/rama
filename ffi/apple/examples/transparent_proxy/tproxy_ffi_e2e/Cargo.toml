@@ -9,22 +9,19 @@ build = "build.rs"
 
 [dependencies]
 bytes = "1"
-rama = {
-    path = "../../../../../",
-    features = [
-        "net-apple-networkextension",
-        "tcp",
-        "udp",
-        "dns",
-        "socks5",
-        "ws",
-        "http-full",
-        "boring",
-        "rustls",
-        "aws-lc",
-        "compression",
-    ]
-}
+rama = { path = "../../../../../", features = [
+    "net-apple-networkextension",
+    "tcp",
+    "udp",
+    "dns",
+    "socks5",
+    "ws",
+    "http-full",
+    "boring",
+    "rustls",
+    "aws-lc",
+    "compression",
+] }
 serde_json = "1"
 serial_test = "3"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }

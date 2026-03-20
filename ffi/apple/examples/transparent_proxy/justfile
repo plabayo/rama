@@ -67,9 +67,14 @@ install-tproxy-with-signing-reset-profile: build-tproxy-rs install-tproxy-app-wi
 clean:
     cargo clean
 
-[working-directory: './tproxy_rs']
 clippy *ARGS:
-    cargo clippy --all-targets --all-features {{ARGS}}
+    cd ./tproxy_rs && cargo clippy --all-targets --all-features {{ARGS}}
+    cd ./tproxy_ffi_e2e && cargo clippy --all-targets --all-features {{ARGS}}
+
+sort:
+    @cargo install cargo-sort
+    cd ./tproxy_rs && cargo sort --workspace --grouped
+    cd ./tproxy_ffi_e2e && cargo sort --workspace --grouped
 
 [working-directory: './tproxy_rs']
 clippy-fix *ARGS:
@@ -93,11 +98,10 @@ rust-test-ignored:
 build-tproxy-rs-debug:
     cargo build
 
-[working-directory: './tproxy_rs']
 update-deps:
     @cargo install cargo-outdated --locked
-    cargo outdated
-    cargo update
+    cd ./tproxy_rs && cargo outdated && cargo update
+    cd ./tproxy_ffi_e2e && cargo outdated && cargo update
 
 [working-directory: './tproxy_ffi_e2e']
 clippy-tproxy-ffi-e2e:
@@ -111,7 +115,7 @@ cleanup-tproxy-ffi-e2e:
 run-tproxy-ffi-e2e:
     cargo test --test e2e -- --test-threads=1 --nocapture
 
-qa-rust: clippy rust-doc rust-test rust-test-ignored
+qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 
 qa: qa-rust build-tproxy
 
