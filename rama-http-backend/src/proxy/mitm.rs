@@ -202,9 +202,6 @@ where
     ) -> Result<Self::Output, Self::Error> {
         let token = CancellationToken::new();
 
-        // TODO: see if <https://github.com/plabayo/rama/issues/830>,
-        // warrants this logic to change also slightly, relating to the graceful setup...
-
         let relay_state = Arc::new(Mutex::new(RelayState::new(
             egress_stream,
             self.middleware.clone(),
