@@ -574,7 +574,7 @@ where
     match http_connect(egress_stream, req, exec).await {
         Ok(EstablishedClientConnection { input, conn }) => {
             let version = input.version();
-            let client = middleware.clone().into_layer(conn);
+            let client = middleware.layer(conn);
             match RelayMode::try_from(version) {
                 Ok(RelayMode::Http1) => {
                     *state = RelayState::Http1 { client };
