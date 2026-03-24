@@ -1,4 +1,4 @@
-use super::{DecompressionBody, body::BodyInner};
+use super::{DecompressedFrom, DecompressionBody, body::BodyInner};
 use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::util::compression::{CompressionLevel, WrapBody};
 use crate::{
@@ -86,33 +86,39 @@ where
 
         let res =
             if let header::Entry::Occupied(entry) = parts.headers.entry(header::CONTENT_ENCODING) {
-                let body = match entry.get().as_bytes() {
-                    b"gzip" if self.accept.gzip() => DecompressionBody::new(BodyInner::gzip(
+                let maybe_marker = match entry.get().as_bytes() {
+                    b"gzip" if self.accept.gzip() => Some(DecompressedFrom::Gzip),
+                    b"deflate" if self.accept.deflate() => Some(DecompressedFrom::Deflate),
+                    b"br" if self.accept.br() => Some(DecompressedFrom::Brotli),
+                    b"zstd" if self.accept.zstd() => Some(DecompressedFrom::Zstd),
+                    _ => None,
+                };
+
+                let Some(marker) = maybe_marker else {
+                    return Ok(Response::from_parts(
+                        parts,
+                        DecompressionBody::new(BodyInner::identity(body)),
+                    ));
+                };
+
+                let body = match marker {
+                    DecompressedFrom::Gzip => DecompressionBody::new(BodyInner::gzip(
                         WrapBody::new(body, CompressionLevel::default()),
                     )),
-
-                    b"deflate" if self.accept.deflate() => DecompressionBody::new(
-                        BodyInner::deflate(WrapBody::new(body, CompressionLevel::default())),
-                    ),
-
-                    b"br" if self.accept.br() => DecompressionBody::new(BodyInner::brotli(
+                    DecompressedFrom::Deflate => DecompressionBody::new(BodyInner::deflate(
                         WrapBody::new(body, CompressionLevel::default()),
                     )),
-
-                    b"zstd" if self.accept.zstd() => DecompressionBody::new(BodyInner::zstd(
+                    DecompressedFrom::Brotli => DecompressionBody::new(BodyInner::brotli(
                         WrapBody::new(body, CompressionLevel::default()),
                     )),
-
-                    _ => {
-                        return Ok(Response::from_parts(
-                            parts,
-                            DecompressionBody::new(BodyInner::identity(body)),
-                        ));
-                    }
+                    DecompressedFrom::Zstd => DecompressionBody::new(BodyInner::zstd(
+                        WrapBody::new(body, CompressionLevel::default()),
+                    )),
                 };
 
                 entry.remove();
                 parts.headers.remove(header::CONTENT_LENGTH);
+                parts.extensions.insert(marker);
 
                 Response::from_parts(parts, body)
             } else {

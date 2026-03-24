@@ -88,7 +88,7 @@ mod service;
 pub use self::{
     body::CompressionBody,
     layer::CompressionLayer,
-    predicate::{DefaultPredicate, Predicate},
+    predicate::{DefaultPredicate, ForDecompressed, Predicate},
     service::Compression,
 };
 #[doc(inline)]
@@ -98,7 +98,8 @@ pub use crate::layer::util::compression::CompressionLevel;
 mod tests {
     use super::*;
 
-    use crate::layer::compression::predicate::SizeAbove;
+    use crate::layer::compression::predicate::{ForDecompressed, SizeAbove};
+    use crate::layer::decompression::DecompressedFrom;
 
     use crate::header::{
         ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_RANGE, CONTENT_TYPE, RANGE,
@@ -107,6 +108,7 @@ mod tests {
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
     use rama_core::Service;
+    use rama_core::extensions::ExtensionsMut;
     use rama_core::service::service_fn;
     use rama_core::stream::io::StreamReader;
     use rama_http_types::Body;
@@ -211,6 +213,51 @@ mod tests {
         let decompressed = String::from_utf8(decompressed).unwrap();
 
         assert_eq!(decompressed, "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn predicate_only_compresses_previously_decompressed_responses() {
+        let svc = service_fn(async |_| {
+            let mut res = Response::new(Body::from("Hello, World!"));
+            res.extensions_mut().insert(DecompressedFrom::Gzip);
+            Ok::<_, Infallible>(res)
+        });
+        let svc = Compression::new(svc).with_compress_predicate(ForDecompressed::new());
+
+        let req = Request::builder()
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.headers()[CONTENT_ENCODING], "gzip");
+
+        let collected = res.into_body().collect().await.unwrap();
+        let compressed_data = collected.to_bytes();
+
+        let mut decoder = GzDecoder::new(&compressed_data[..]);
+        let mut decompressed = String::new();
+        decoder.read_to_string(&mut decompressed).unwrap();
+
+        assert_eq!(decompressed, "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn predicate_skips_responses_that_were_not_decompressed() {
+        let svc =
+            service_fn(async |_| Ok::<_, Infallible>(Response::new(Body::from("Hello, World!"))));
+        let svc = Compression::new(svc).with_compress_predicate(ForDecompressed::new());
+
+        let req = Request::builder()
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert!(!res.headers().contains_key(CONTENT_ENCODING));
+
+        let collected = res.into_body().collect().await.unwrap();
+        assert_eq!(collected.to_bytes().as_ref(), b"Hello, World!");
     }
 
     #[tokio::test]

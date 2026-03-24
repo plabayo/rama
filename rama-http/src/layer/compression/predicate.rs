@@ -4,6 +4,8 @@ use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 
+use crate::layer::decompression::DecompressedFrom;
+
 /// Predicate used to determine if a response should be compressed or not.
 pub trait Predicate: Clone {
     /// Should this response be compressed or not?
@@ -185,6 +187,28 @@ impl Predicate for DefaultStreamPredicate {
         B: StreamingBody,
     {
         self.0.should_compress(response)
+    }
+}
+
+/// [`Predicate`] that will only enable compression for responses previously
+/// decompressed by Rama's [`crate::layer::decompression::DecompressionLayer`].
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct ForDecompressed;
+
+impl ForDecompressed {
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Predicate for ForDecompressed {
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    where
+        B: StreamingBody,
+    {
+        response.extensions().contains::<DecompressedFrom>()
     }
 }
 

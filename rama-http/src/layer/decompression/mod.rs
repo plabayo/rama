@@ -101,6 +101,16 @@ pub(crate) mod body;
 mod layer;
 mod service;
 
+/// Marker extension inserted into a response when [`Decompression`] unwraps a
+/// compressed response body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DecompressedFrom {
+    Gzip,
+    Deflate,
+    Brotli,
+    Zstd,
+}
+
 #[doc(inline)]
 pub use self::{body::DecompressionBody, layer::DecompressionLayer, service::Decompression};
 
@@ -119,6 +129,7 @@ mod tests {
     use crate::layer::compression::Compression;
     use crate::{Body, HeaderMap, HeaderName, Request, Response, body::util::BodyExt};
     use rama_core::Service;
+    use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
 
     use rama_http_types::BodyExtractExt;
@@ -133,18 +144,26 @@ mod tests {
             .unwrap();
         let res = client.serve(req).await.unwrap();
 
+        assert_eq!(
+            res.extensions().get::<DecompressedFrom>(),
+            Some(&DecompressedFrom::Gzip)
+        );
+
         // read the body, it will be decompressed automatically
         let body = res.into_body();
         let collected = body.collect().await.unwrap();
         let decompressed_data = String::from_utf8(collected.to_bytes().to_vec()).unwrap();
 
-        assert_eq!(decompressed_data, "Hello, World!");
+        assert_eq!(
+            decompressed_data,
+            "Hello, World! Hello, World! Hello, World!"
+        );
     }
 
-    async fn handle(_req: Request) -> Result<Response, Infallible> {
+    async fn handle(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
         let mut trailers = HeaderMap::new();
         trailers.insert(HeaderName::from_static("foo"), "bar".parse().unwrap());
-        let body = Body::from("Hello, World!");
+        let body = Body::from("Hello, World! Hello, World! Hello, World!");
         Ok(Response::builder().body(body).unwrap())
     }
 
