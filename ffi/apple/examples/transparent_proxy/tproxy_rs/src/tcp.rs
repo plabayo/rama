@@ -8,7 +8,7 @@ use rama::{
     http::{
         Request, Response,
         layer::{
-            compression::stream::StreamCompressionLayer,
+            compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
             dpi_proxy_credential::DpiProxyCredentialExtractorLayer,
             map_response_body::MapResponseBodyLayer,
@@ -155,7 +155,7 @@ where
         crate::policy::DomainExclusionList::new(demo_config.exclude_domains.iter());
     (
         MapResponseBodyLayer::new_boxed_streaming_body(),
-        StreamCompressionLayer::new(),
+        StreamCompressionLayer::new().with_compress_predicate(MirrorDecompressed::new()),
         crate::http::html::HtmlBadgeLayer::new()
             .with_enabled(demo_config.html_badge_enabled)
             .with_badge_label(&demo_config.html_badge_label)

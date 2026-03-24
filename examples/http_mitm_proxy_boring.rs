@@ -66,7 +66,7 @@ use rama::{
         },
         io::upgrade,
         layer::{
-            compression::CompressionLayer,
+            compression::{CompressionLayer, MirrorDecompressed},
             decompression::DecompressionLayer,
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
@@ -239,7 +239,7 @@ fn new_http_mitm_proxy(
             UserAgentEmulateLayer::new(state.ua_db.clone())
                 .with_try_auto_detect_user_agent(true)
                 .with_is_optional(true),
-            CompressionLayer::new(),
+            CompressionLayer::new().with_compress_predicate(MirrorDecompressed::new()),
             AddRequiredRequestHeadersLayer::new(),
             EmulateTlsProfileLayer::new(),
         )

@@ -46,7 +46,7 @@ use rama::{
         Body, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
         layer::{
-            compression::CompressionLayer,
+            compression::{CompressionLayer, MirrorDecompressed},
             decompression::DecompressionLayer,
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
@@ -186,7 +186,7 @@ fn new_http_mitm_proxy() -> impl Service<Request, Output = Response, Error = Inf
             ConsumeErrLayer::default(),
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),
-            CompressionLayer::new(),
+            CompressionLayer::new().with_compress_predicate(MirrorDecompressed::new()),
             AddRequiredRequestHeadersLayer::new(),
         )
             .into_layer(service_fn(http_mitm_proxy)),
