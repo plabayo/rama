@@ -2,7 +2,7 @@ use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream, teleme
 use rama_net::address::Domain;
 
 use crate::client::{
-    HickoryDnsResolver,
+    DenyAllDnsResolver, HickoryDnsResolver,
     resolver::{BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver},
 };
 use std::{
@@ -114,50 +114,29 @@ impl DnsResolver for GlobalDnsResolver {
 fn global_dns_resolver() -> &'static BoxDnsResolver {
     GLOBAL_DNS_RESOLVER.get_or_init(|| {
         tracing::debug!("no global dns resolver configured by user: init (default) global (hickory) DNS resolver");
-        let resolver = HickoryDnsResolver::default();
-
-        if let Ok(path) = std::env::var(ENV_NAME_RAMA_DEBUG_HICKORY_DNS_RESOLVER_CONFIG) {
-            tracing::debug!("spawn background task to write auto-init global (hickory) DNS resolver config to: {path}");
-            tokio::task::spawn(try_to_write_hickory_dns_resolver_config_for_diagnostics(resolver.clone(), path));
-        }
-
+        // TODO: is there no infallible default???
+        let resolver = match HickoryDnsResolver::try_new_system() {
+            Ok(system_resolver) => {
+                tracing::debug!("created system dns resolver");
+                system_resolver
+            },
+            Err(err) => {
+                tracing::warn!("failed to create system resolver, try cloudflare (err = {err})");
+                match HickoryDnsResolver::try_new_cloudflare() {
+                    Ok(cloudflare_resolver) => {
+                        tracing::debug!("created cloudflare dns resolver");
+                        cloudflare_resolver
+                    }
+                    Err(err) => {
+                        tracing::error!("failed to create resolvers: system, cloudflare (err = {err}); revert to deny all dns traffic...");
+                        return DenyAllDnsResolver::new().into_box_dns_resolver();
+                    }
+                }
+            },
+        };
         resolver.into_box_dns_resolver()
     })
 }
-
-async fn try_to_write_hickory_dns_resolver_config_for_diagnostics(
-    resolver: HickoryDnsResolver,
-    path: String,
-) {
-    let config = resolver.config();
-    let v = match serde_json::to_vec_pretty(&config) {
-        Ok(v) => v,
-        Err(err) => {
-            tracing::error!(
-                "failed to encode (HickoryDns global) config with (json) serde (report bug please): {err}"
-            );
-            return;
-        }
-    };
-    if let Err(err) = tokio::fs::write(&path, v).await {
-        tracing::error!("failed to write json-encoded (HickoryDns global) config to {path}: {err}");
-    } else {
-        tracing::debug!("wrote json-encoded (HickoryDns global) config to {path}");
-    }
-}
-
-/// Environment name that can be set by user of software built with Rama to write
-/// the used hickory DNS resolver config/opts to the given file as json.
-///
-/// This can be useful to inspect why DNS might not be resolved correctly.
-///
-/// It is only used if the global dns resolver is used as the global dns resolver,
-/// with none set by the user explicitly.
-///
-/// Use [`HickoryDnsResolver::config`] if you wish to write or use
-/// that same config for your own created HickoryDnsResolver's.
-pub const ENV_NAME_RAMA_DEBUG_HICKORY_DNS_RESOLVER_CONFIG: &str =
-    "RAMA_DEBUG_HICKORY_DNS_RESOLVER_CONFIG";
 
 #[inline(always)]
 /// Initialises the global [`DnsResolver`].

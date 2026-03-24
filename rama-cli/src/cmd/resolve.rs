@@ -2,7 +2,6 @@
 
 use std::{
     env::home_dir,
-    fs,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
@@ -10,7 +9,10 @@ use std::{
 };
 
 use clap::{ArgAction, Args};
-use hickory_resolver::{proto::xfer::Protocol, system_conf};
+use hickory_resolver::{
+    config::{CLOUDFLARE, ConnectionConfig, ProtocolConfig},
+    system_conf,
+};
 use rama::{
     dns::client::{
         HickoryDnsResolver,
@@ -48,9 +50,8 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
     let resolver = HickoryDnsResolver::builder()
         .with_config(dns_config)
         .with_options(dns_options)
-        .build();
-
-    maybe_emit_resolver_config(&resolver, &cfg)?;
+        .try_build()
+        .context("build hickory config")?;
 
     match record_type {
         Some(RecordType::A) => {
@@ -162,17 +163,15 @@ fn build_dns_config_and_options(
     cfg: &ResolveCommand,
 ) -> Result<(ResolverConfig, hickory::resolver::config::ResolverOpts), BoxError> {
     let (mut dns_config, mut dns_options) = if cfg.name_servers.is_empty() {
-        system_conf::read_system_conf()
-            .map_err(BoxError::from)
-            .unwrap_or_else(|err| {
-                tracing::debug!("failed to read system DNS configuration: {err:?}");
-                (
-                    ResolverConfig::cloudflare(),
-                    hickory::default_resolver_opts(),
-                )
-            })
+        system_conf::read_system_conf().unwrap_or_else(|err| {
+            tracing::debug!("failed to read system DNS configuration: {err:?}");
+            (
+                ResolverConfig::udp_and_tcp(&CLOUDFLARE),
+                hickory::default_resolver_opts(),
+            )
+        })
     } else {
-        (ResolverConfig::new(), hickory::default_resolver_opts())
+        (ResolverConfig::default(), hickory::default_resolver_opts())
     };
 
     apply_options(cfg, &mut dns_options)?;
@@ -211,7 +210,6 @@ fn apply_options(
     }
 
     if cfg.dnssec {
-        dns_options.validate = true;
         dns_options.edns0 = true;
     }
 
@@ -235,11 +233,13 @@ fn rewrite_name_servers(
         .iter()
         .cloned()
         .map(|mut server| {
-            if let Some(port) = cfg.port {
-                server.socket_addr = SocketAddr::new(server.socket_addr.ip(), port);
-            }
-            if cfg.tcp {
-                server.protocol = Protocol::Tcp;
+            for conn in server.connections.iter_mut() {
+                if let Some(port) = cfg.port {
+                    conn.port = port;
+                }
+                if cfg.tcp {
+                    conn.protocol = ProtocolConfig::Tcp;
+                }
             }
             server
         })
@@ -250,33 +250,6 @@ fn rewrite_name_servers(
         dns_config.search().to_vec(),
         name_servers,
     ))
-}
-
-fn maybe_emit_resolver_config(
-    resolver: &HickoryDnsResolver,
-    cfg: &ResolveCommand,
-) -> Result<(), BoxError> {
-    if !cfg.print_config && cfg.config_out.is_none() {
-        return Ok(());
-    }
-
-    let rendered = serde_json::to_string_pretty(&resolver.config())
-        .context("serialize resolver configuration as pretty json")?;
-
-    if cfg.print_config {
-        println!("{rendered}");
-    }
-
-    if let Some(path) = cfg.config_out.as_ref() {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create parent directory for config output: {path:?}"))?;
-        }
-        fs::write(path, rendered.as_bytes())
-            .with_context(|| format!("write resolver configuration to: {path:?}"))?;
-    }
-
-    Ok(())
 }
 
 rama::utils::macros::enums::enum_builder! {
@@ -301,12 +274,15 @@ impl NameServerArg {
         default_port: Option<u16>,
         tcp: bool,
     ) -> Result<NameServerConfig, BoxError> {
-        let port = self.port.or(default_port).unwrap_or(53);
-        let protocol = if tcp { Protocol::Tcp } else { Protocol::Udp };
-        Ok(NameServerConfig::new(
-            SocketAddr::new(self.ip, port),
-            protocol,
-        ))
+        let mut config = if tcp {
+            ConnectionConfig::tcp()
+        } else {
+            ConnectionConfig::udp()
+        };
+        if let Some(port) = self.port.or(default_port) {
+            config.port = port;
+        }
+        Ok(NameServerConfig::new(self.ip, true, vec![config]))
     }
 }
 
@@ -388,14 +364,6 @@ pub struct ResolveCommand {
     /// disable the recursion desired bit
     no_recurse: bool,
 
-    #[arg(long, action = ArgAction::SetTrue)]
-    /// print the resolver config as pretty json to stdout
-    print_config: bool,
-
-    #[arg(long, value_name = "PATH")]
-    /// write the resolver config as pretty json to a file
-    config_out: Option<PathBuf>,
-
     /// define custom path to trace to, by default logging happens to $HOME/.rama/resolve.log
     #[arg(long)]
     trace: Option<PathBuf>,
@@ -460,8 +428,6 @@ mod tests {
             edns0: false,
             dnssec: false,
             no_recurse: false,
-            print_config: false,
-            config_out: None,
             trace: None,
         };
 
@@ -485,8 +451,6 @@ mod tests {
             edns0: false,
             dnssec: false,
             no_recurse: false,
-            print_config: false,
-            config_out: None,
             trace: None,
         };
 
