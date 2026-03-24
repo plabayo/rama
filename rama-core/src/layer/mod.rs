@@ -942,6 +942,10 @@ mod map_result;
 #[doc(inline)]
 pub use map_result::{MapResult, MapResultLayer};
 
+mod graceful_io;
+#[doc(inline)]
+pub use graceful_io::{GracefulIoLayer, GracefulIoService};
+
 pub mod timeout;
 pub use timeout::{Timeout, TimeoutLayer};
 

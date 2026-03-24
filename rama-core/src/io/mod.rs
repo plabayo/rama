@@ -9,7 +9,7 @@ mod prefix;
 pub use prefix::PrefixedIo;
 
 mod graceful;
-pub use graceful::GracefulIo;
+pub use graceful::{CancelIo, GracefulIo};
 
 pub mod peek;
 pub mod rewind;

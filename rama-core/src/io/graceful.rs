@@ -6,8 +6,17 @@ use std::{
 
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio_util::sync::CancellationToken;
 
 use crate::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+
+/// Extension type that can be injected into an I/O stream to cancel it gracefully.
+///
+/// By itself it doesn't do anything. It can however be used by your own middleware.
+/// `rama-core` comes with `GracefulIoService` to make use of it for any Io,
+/// and `rama-net` makes use of it for a connector service.
+#[derive(Debug, Clone)]
+pub struct CancelIo(pub CancellationToken);
 
 pin_project! {
     /// An I/O wrapper that stops reading and writing once the cancel future resolves.
@@ -152,8 +161,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::GracefulIo;
+    use super::{CancelIo, GracefulIo};
+    use crate::extensions::Extensions;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn graceful_io_returns_eof_after_cancel() {
@@ -190,5 +201,19 @@ mod tests {
 
         let err = io.write_all(b"abc").await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn cancel_io_can_be_stored_in_extensions() {
+        let mut extensions = Extensions::new();
+        let token = CancellationToken::new();
+
+        extensions.insert(CancelIo(token.clone()));
+
+        let stored = extensions.get::<CancelIo>().unwrap();
+        assert!(!stored.0.is_cancelled());
+
+        token.cancel();
+        assert!(stored.0.is_cancelled());
     }
 }
