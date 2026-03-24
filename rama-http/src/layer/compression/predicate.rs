@@ -1,15 +1,19 @@
-//! Predicates for disabling compression of responses.
+//! Predicates for influencing compression of responses.
 
-use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
+use rama_core::{extensions::Extensions, extensions::ExtensionsMut, extensions::ExtensionsRef};
 use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 
+use crate::headers::encoding::Encoding;
 use crate::layer::decompression::DecompressedFrom;
 
 /// Predicate used to determine if a response should be compressed or not.
 pub trait Predicate: Clone {
     /// Should this response be compressed or not?
-    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    ///
+    /// The response is mutable so predicates can attach extensions used later
+    /// during response-time compression negotiation.
+    fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody;
 
@@ -30,17 +34,17 @@ pub trait Predicate: Clone {
 
 impl<F> Predicate for F
 where
-    F: Fn(StatusCode, Version, &HeaderMap, &Extensions) -> bool + Clone,
+    F: Fn(StatusCode, Version, &HeaderMap, &mut Extensions) -> bool + Clone,
 {
-    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody,
     {
         let status = response.status();
         let version = response.version();
-        let headers = response.headers();
-        let extensions = response.extensions();
-        self(status, version, headers, extensions)
+        let headers = response.headers().clone();
+        let extensions = response.extensions_mut();
+        self(status, version, &headers, extensions)
     }
 }
 
@@ -57,7 +61,7 @@ impl Always {
 }
 
 impl Predicate for Always {
-    fn should_compress<B>(&self, _response: &rama_http_types::Response<B>) -> bool
+    fn should_compress<B>(&self, _response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody,
     {
@@ -69,7 +73,7 @@ impl<T> Predicate for Option<T>
 where
     T: Predicate,
 {
-    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody,
     {
@@ -93,7 +97,7 @@ where
     Lhs: Predicate,
     Rhs: Predicate,
 {
-    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody,
     {
@@ -155,7 +159,7 @@ impl Default for DefaultPredicate {
 }
 
 impl Predicate for DefaultPredicate {
-    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody,
     {
@@ -182,7 +186,7 @@ impl Default for DefaultStreamPredicate {
 }
 
 impl Predicate for DefaultStreamPredicate {
-    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody,
     {
@@ -190,25 +194,57 @@ impl Predicate for DefaultStreamPredicate {
     }
 }
 
-/// [`Predicate`] that will only enable compression for responses previously
-/// decompressed by Rama's [`crate::layer::decompression::DecompressionLayer`].
+/// Preferred response encoding requested by a compression predicate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PreferredEncoding {
+    #[default]
+    Gzip,
+    Deflate,
+    Brotli,
+    Zstd,
+}
+
+impl PreferredEncoding {
+    #[must_use]
+    pub const fn as_encoding(self) -> Encoding {
+        match self {
+            Self::Gzip => Encoding::Gzip,
+            Self::Deflate => Encoding::Deflate,
+            Self::Brotli => Encoding::Brotli,
+            Self::Zstd => Encoding::Zstd,
+        }
+    }
+}
+
+/// [`Predicate`] that enables compression only for responses previously
+/// decompressed by Rama's [`crate::layer::decompression::DecompressionLayer`],
+/// while preferring the original upstream encoding for recompression.
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
-pub struct ForDecompressed;
+pub struct MirrorDecompressed;
 
-impl ForDecompressed {
+impl MirrorDecompressed {
     #[must_use]
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Predicate for ForDecompressed {
-    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+impl Predicate for MirrorDecompressed {
+    fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody,
     {
-        response.extensions().contains::<DecompressedFrom>()
+        let preferred = match response.extensions().get::<DecompressedFrom>() {
+            Some(DecompressedFrom::Gzip) => PreferredEncoding::Gzip,
+            Some(DecompressedFrom::Deflate) => PreferredEncoding::Deflate,
+            Some(DecompressedFrom::Brotli) => PreferredEncoding::Brotli,
+            Some(DecompressedFrom::Zstd) => PreferredEncoding::Zstd,
+            None => return false,
+        };
+
+        response.extensions_mut().insert(preferred);
+        true
     }
 }
 
@@ -237,7 +273,7 @@ impl Default for SizeAbove {
 }
 
 impl Predicate for SizeAbove {
-    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody,
     {
@@ -287,7 +323,7 @@ impl NotForContentType {
 }
 
 impl Predicate for NotForContentType {
-    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &mut rama_http_types::Response<B>) -> bool
     where
         B: StreamingBody,
     {

@@ -88,7 +88,7 @@ mod service;
 pub use self::{
     body::CompressionBody,
     layer::CompressionLayer,
-    predicate::{DefaultPredicate, ForDecompressed, Predicate},
+    predicate::{DefaultPredicate, MirrorDecompressed, Predicate, PreferredEncoding},
     service::Compression,
 };
 #[doc(inline)]
@@ -98,7 +98,7 @@ pub use crate::layer::util::compression::CompressionLevel;
 mod tests {
     use super::*;
 
-    use crate::layer::compression::predicate::{ForDecompressed, SizeAbove};
+    use crate::layer::compression::predicate::{MirrorDecompressed, PreferredEncoding, SizeAbove};
     use crate::layer::decompression::DecompressedFrom;
 
     use crate::header::{
@@ -108,7 +108,7 @@ mod tests {
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
     use rama_core::Service;
-    use rama_core::extensions::ExtensionsMut;
+    use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
     use rama_core::service::service_fn;
     use rama_core::stream::io::StreamReader;
     use rama_http_types::Body;
@@ -122,7 +122,7 @@ mod tests {
     struct Always;
 
     impl Predicate for Always {
-        fn should_compress<B>(&self, _: &rama_http_types::Response<B>) -> bool
+        fn should_compress<B>(&self, _: &mut rama_http_types::Response<B>) -> bool
         where
             B: StreamingBody,
         {
@@ -222,7 +222,7 @@ mod tests {
             res.extensions_mut().insert(DecompressedFrom::Gzip);
             Ok::<_, Infallible>(res)
         });
-        let svc = Compression::new(svc).with_compress_predicate(ForDecompressed::new());
+        let svc = Compression::new(svc).with_compress_predicate(MirrorDecompressed::new());
 
         let req = Request::builder()
             .header("accept-encoding", "gzip")
@@ -246,7 +246,7 @@ mod tests {
     async fn predicate_skips_responses_that_were_not_decompressed() {
         let svc =
             service_fn(async |_| Ok::<_, Infallible>(Response::new(Body::from("Hello, World!"))));
-        let svc = Compression::new(svc).with_compress_predicate(ForDecompressed::new());
+        let svc = Compression::new(svc).with_compress_predicate(MirrorDecompressed::new());
 
         let req = Request::builder()
             .header("accept-encoding", "gzip")
@@ -258,6 +258,41 @@ mod tests {
 
         let collected = res.into_body().collect().await.unwrap();
         assert_eq!(collected.to_bytes().as_ref(), b"Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn mirror_decompressed_sets_preferred_encoding() {
+        let mut res = Response::new(Body::from("Hello, World!"));
+        res.extensions_mut().insert(DecompressedFrom::Brotli);
+
+        let predicate = MirrorDecompressed::new();
+        assert!(predicate.should_compress(&mut res));
+        assert_eq!(
+            res.extensions().get::<PreferredEncoding>(),
+            Some(&PreferredEncoding::Brotli)
+        );
+    }
+
+    #[tokio::test]
+    async fn respect_content_encoding_overrides_predicate_preference() {
+        let svc = service_fn(async |_| {
+            let mut res = Response::new(Body::from("Hello, World! Hello, World! Hello, World!"));
+            res.headers_mut()
+                .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+            res.extensions_mut().insert(PreferredEncoding::Brotli);
+            Ok::<_, Infallible>(res)
+        });
+        let svc = Compression::new(svc)
+            .with_respect_content_encoding_if_possible()
+            .with_compress_predicate(Always);
+
+        let req = Request::builder()
+            .header("accept-encoding", "gzip, br")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.headers()[CONTENT_ENCODING], "gzip");
     }
 
     #[tokio::test]
@@ -345,7 +380,7 @@ mod tests {
 
         #[allow(clippy::dbg_macro)]
         impl Predicate for EveryOtherResponse {
-            fn should_compress<B>(&self, _: &rama_http_types::Response<B>) -> bool
+            fn should_compress<B>(&self, _: &mut rama_http_types::Response<B>) -> bool
             where
                 B: StreamingBody,
             {

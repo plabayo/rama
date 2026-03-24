@@ -107,8 +107,11 @@ impl StreamCompressionLayer {
 mod tests {
     use super::*;
 
+    use crate::layer::compression::predicate::MirrorDecompressed;
+    use crate::layer::decompression::DecompressedFrom;
     use crate::{Request, Response, body::util::BodyExt, header::ACCEPT_ENCODING};
     use rama_core::Service;
+    use rama_core::extensions::ExtensionsMut;
     use rama_core::service::service_fn;
     use rama_core::stream::io::ReaderStream;
     use rama_http_types::Body;
@@ -215,6 +218,29 @@ mod tests {
         dec.window_log_max(23)?; // Limit window size accepted by decoder to 2 ^ 23 bytes (8MiB)
 
         std::io::copy(&mut dec, &mut std::io::sink())?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mirror_decompressed_prefers_original_encoding()
+    -> Result<(), rama_core::error::BoxError> {
+        let service = StreamCompressionLayer::new()
+            .with_compress_predicate(MirrorDecompressed::new())
+            .into_layer(service_fn(|_: Request<Body>| async {
+                let mut res =
+                    Response::new(Body::from("Hello, World! Hello, World! Hello, World!"));
+                res.extensions_mut().insert(DecompressedFrom::Brotli);
+                Ok::<_, Infallible>(res)
+            }));
+
+        let request = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip, br")
+            .body(Body::empty())?;
+
+        let response = service.serve(request).await?;
+
+        assert_eq!(response.headers()["content-encoding"], "br");
 
         Ok(())
     }
