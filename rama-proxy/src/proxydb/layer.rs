@@ -2,7 +2,7 @@ use super::{Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyQueryPredicate};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt},
-    extensions::ExtensionsMut,
+    extensions::{Extensions, ExtensionsMut},
 };
 use rama_net::{
     Protocol,
@@ -210,6 +210,7 @@ where
                                 &proxy,
                                 &filter,
                                 basic.username(),
+                                input.extensions(),
                             ) {
                                 Some(username) => ProxyCredential::Basic(
                                     basic.clone_with_new_username(
@@ -418,7 +419,13 @@ where
 /// e.g. to allow proxy routers to have proxy config labels in the username.
 pub trait UsernameFormatter: Send + Sync + 'static {
     /// format the username based on the root properties of the given proxy.
-    fn fmt_username(&self, proxy: &Proxy, filter: &ProxyFilter, username: &str) -> Option<String>;
+    fn fmt_username(
+        &self,
+        proxy: &Proxy,
+        filter: &ProxyFilter,
+        username: &str,
+        extensions: &Extensions,
+    ) -> Option<String>;
 }
 
 impl UsernameFormatter for () {
@@ -427,6 +434,7 @@ impl UsernameFormatter for () {
         _proxy: &Proxy,
         _filter: &ProxyFilter,
         _username: &str,
+        _extensions: &Extensions,
     ) -> Option<String> {
         None
     }
@@ -436,7 +444,13 @@ impl<F> UsernameFormatter for F
 where
     F: Fn(&Proxy, &ProxyFilter, &str) -> Option<String> + Send + Sync + 'static,
 {
-    fn fmt_username(&self, proxy: &Proxy, filter: &ProxyFilter, username: &str) -> Option<String> {
+    fn fmt_username(
+        &self,
+        proxy: &Proxy,
+        filter: &ProxyFilter,
+        username: &str,
+        _extensions: &Extensions,
+    ) -> Option<String> {
         (self)(proxy, filter, username)
     }
 }
