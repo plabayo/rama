@@ -3,7 +3,7 @@ use rama::{
     http::body::util::BodyExt,
     http::client::EasyHttpWebClient,
     http::service::client::HttpClientExt,
-    http::{BodyExtractExt, StatusCode},
+    http::{BodyExtractExt, StatusCode, service::web::response::RobotsTxt},
 };
 
 const ADDRESS: &str = "127.0.0.1:62039";
@@ -29,8 +29,13 @@ async fn test_http_anti_bot_infinite_resource() {
         let req_uri = format!("http://{ADDRESS}/robots.txt");
         let response = runner.get(req_uri).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let homepage = response.try_into_string().await.unwrap();
-        assert!(homepage.contains("/internal/clients.csv"));
+        let robots_txt = response.try_into_string().await.unwrap();
+        let robots = RobotsTxt::parse(&robots_txt);
+        let rules = robots.rules_for("example-bot");
+
+        assert!(!rules.is_allowed("/internal/"));
+        assert!(!rules.is_allowed("/internal/clients.csv"));
+        assert!(rules.is_allowed("/"));
     }
 
     // test infinite resource
