@@ -40,7 +40,10 @@ use rama::{
         service::web::{
             Router,
             extract::{Extension, Query, State},
-            response::{Headers, Html, IntoResponse, RobotsGroup, RobotsTxt},
+            response::{
+                Headers, Html, IntoResponse,
+                robots_txt::{RobotsGroup, RobotsTxt},
+            },
         },
     },
     layer::ConsumeErrLayer,

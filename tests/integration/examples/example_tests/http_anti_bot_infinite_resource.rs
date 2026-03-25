@@ -3,7 +3,7 @@ use rama::{
     http::body::util::BodyExt,
     http::client::EasyHttpWebClient,
     http::service::client::HttpClientExt,
-    http::{BodyExtractExt, StatusCode, service::web::response::RobotsTxt},
+    http::{BodyExtractExt, StatusCode, service::web::response::robots_txt::RobotsTxt},
 };
 
 const ADDRESS: &str = "127.0.0.1:62039";

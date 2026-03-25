@@ -7,6 +7,8 @@ use std::{
 };
 
 pub use hickory_resolver as resolver;
+#[cfg(any(target_family = "unix", target_os = "windows"))]
+use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::{
     ResolverBuilder, TokioResolver,
     config::{CLOUDFLARE, GOOGLE, QUAD9, ResolverConfig},
@@ -110,6 +112,15 @@ impl HickoryDnsResolver {
     ///
     /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
     pub fn try_new_system() -> Result<Self, BoxError> {
+        Self::try_new_system_with_options(default_resolver_opts())
+    }
+
+    #[cfg(any(target_family = "unix", target_os = "windows"))]
+    /// Construct a new [`HickoryDnsResolver`] with the system configuration,
+    /// and provided (resolver) options...
+    ///
+    /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
+    pub fn try_new_system_with_options(options: ResolverOpts) -> Result<Self, BoxError> {
         tracing::trace!("try to create HickoryDnsResolver resolver using system config");
         Self::try_new_with_builder(
             TokioResolver::builder_tokio()
@@ -119,7 +130,7 @@ impl HickoryDnsResolver {
                         "failed to create HickoryDnsResolver resolver using system config: {err:?}"
                     )
                 })?
-                .with_options(default_resolver_opts()),
+                .with_options(options),
         )
     }
 

@@ -47,12 +47,7 @@ mod form;
 #[doc(inline)]
 pub use form::Form;
 
-mod robots_txt;
-#[doc(inline)]
-pub use robots_txt::{
-    RobotsClientRules, RobotsDirectiveParseError, RobotsGroup, RobotsRule, RobotsRuleKind,
-    RobotsTxt,
-};
+pub mod robots_txt;
 
 mod octet_stream;
 #[doc(inline)]

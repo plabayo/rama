@@ -2,9 +2,9 @@ use std::{convert::Infallible, fmt, str::FromStr, time::Duration};
 
 use super::{Headers, IntoResponse};
 use crate::headers::ContentType;
-use crate::{Body, Response};
+use crate::{Body, Response, Uri};
+use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
-use rama_utils::str::submatch_ignore_ascii_case;
 
 /// A typed `robots.txt` payload that can be parsed, inspected, serialized, and returned as a response.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -26,7 +26,11 @@ impl RobotsTxt {
     /// Parse a `robots.txt` payload, ignoring malformed or invalid directives.
     #[must_use]
     pub fn parse(input: &str) -> Self {
-        Self::parse_inner(input, false).unwrap_or_default()
+        Self::parse_inner(input, false)
+            .inspect_err(|err| {
+                tracing::warn!("unexpected error while parsing input = '{input}; err = {err:?}");
+            })
+            .unwrap_or_default()
     }
 
     /// Parse a `robots.txt` payload strictly.
@@ -43,31 +47,31 @@ impl RobotsTxt {
 
         for (line_number, raw_line) in input.lines().enumerate() {
             let line_number = line_number + 1;
-            let line = raw_line
-                .split_once('#')
-                .map(|(line, _)| line)
-                .unwrap_or(raw_line)
-                .trim();
-
-            if line.is_empty() {
-                continue;
-            }
-
-            let Some((directive, value)) = line.split_once(':') else {
-                if strict {
+            let Some((directive, value)) = parse_key_value(raw_line) else {
+                if strict && parse_directive_name(raw_line).is_some_and(is_supported_directive) {
                     return Err(RobotsDirectiveParseError::new(
                         line_number,
-                        line,
+                        raw_line.trim(),
                         "expected `name: value` directive",
                     ));
                 }
                 continue;
             };
 
-            let directive = directive.trim();
+            let directive = directive.trim_start_matches('\u{feff}').trim();
             let value = value.trim();
 
-            if directive.eq_ignore_ascii_case("user-agent") {
+            if is_user_agent_directive(directive) {
+                if value.is_empty() {
+                    if strict {
+                        return Err(RobotsDirectiveParseError::new(
+                            line_number,
+                            raw_line.trim(),
+                            "missing user-agent value",
+                        ));
+                    }
+                    continue;
+                }
                 if current_group.has_directives() {
                     robots.groups.push(current_group);
                     current_group = RobotsGroup::default();
@@ -77,7 +81,7 @@ impl RobotsTxt {
                 if !current_group.user_agents.is_empty() {
                     current_group.rules.push(RobotsRule::allow(value));
                 }
-            } else if directive.eq_ignore_ascii_case("disallow") {
+            } else if is_disallow_directive(directive) {
                 if !current_group.user_agents.is_empty() {
                     current_group.rules.push(RobotsRule::disallow(value));
                 }
@@ -96,7 +100,7 @@ impl RobotsTxt {
                     };
                     current_group.crawl_delay = Some(Duration::from_secs_f64(seconds));
                 }
-            } else if directive.eq_ignore_ascii_case("sitemap") {
+            } else if is_sitemap_directive(directive) {
                 robots.sitemaps.push(value.to_owned());
             }
         }
@@ -144,6 +148,13 @@ impl RobotsTxt {
             groups,
             sitemaps: &self.sitemaps,
         }
+    }
+
+    /// Returns `true` if the given URL is allowed for the user-agent.
+    #[must_use]
+    pub fn is_url_allowed(&self, user_agent: &str, uri: &Uri) -> bool {
+        self.rules_for(user_agent)
+            .is_allowed(uri_path_and_query(uri))
     }
 }
 
@@ -304,10 +315,7 @@ impl RobotsRule {
     }
 
     fn match_len(&self) -> usize {
-        self.path
-            .chars()
-            .filter(|ch| *ch != '*' && *ch != '$')
-            .count()
+        self.path.len()
     }
 }
 
@@ -425,9 +433,11 @@ impl std::error::Error for RobotsDirectiveParseError {}
 fn agent_match_len(agent: &str, user_agent: &str) -> Option<usize> {
     let agent = agent.trim();
 
-    if agent == "*" {
+    if agent.is_empty() {
+        None
+    } else if agent.starts_with('*') && agent[1..].trim().is_empty() {
         Some(0)
-    } else if submatch_ignore_ascii_case(user_agent, agent) {
+    } else if user_agent_tokens(user_agent).any(|token| token.eq_ignore_ascii_case(agent)) {
         Some(agent.len())
     } else {
         None
@@ -457,6 +467,103 @@ fn robots_path_matches(pattern: &str, path: &str) -> bool {
     };
 
     wildcard_match(pattern.as_bytes(), path.as_bytes(), anchored)
+}
+
+fn parse_key_value(line: &str) -> Option<(&str, &str)> {
+    let line = strip_comments_and_trim(line);
+
+    if line.is_empty() {
+        return None;
+    }
+
+    if let Some((directive, value)) = line.split_once(':') {
+        let directive = directive.trim();
+        if directive.is_empty() {
+            return None;
+        }
+        return Some((directive, value.trim()));
+    }
+
+    let sep = line.find([' ', '\t'])?;
+    let directive = line[..sep].trim();
+    let value = line[sep..].trim();
+
+    if directive.is_empty() || value.is_empty() || value.contains([' ', '\t']) {
+        return None;
+    }
+
+    Some((directive, value))
+}
+
+fn parse_directive_name(line: &str) -> Option<&str> {
+    let line = strip_comments_and_trim(line);
+
+    if line.is_empty() {
+        return None;
+    }
+
+    let sep = line.find([':', ' ', '\t'])?;
+    let directive = line[..sep].trim();
+
+    (!directive.is_empty()).then_some(directive)
+}
+
+fn strip_comments_and_trim(line: &str) -> &str {
+    line.split_once('#')
+        .map(|(line, _)| line)
+        .unwrap_or(line)
+        .trim()
+}
+
+fn is_user_agent_directive(directive: &str) -> bool {
+    matches_any_ignore_ascii_case(directive, ["user-agent", "useragent", "user agent"])
+}
+
+fn is_disallow_directive(directive: &str) -> bool {
+    matches_any_ignore_ascii_case(
+        directive,
+        [
+            "disallow",
+            "dissallow",
+            "dissalow",
+            "disalow",
+            "diasllow",
+            "disallaw",
+        ],
+    )
+}
+
+fn is_sitemap_directive(directive: &str) -> bool {
+    matches_any_ignore_ascii_case(directive, ["sitemap", "site-map"])
+}
+
+fn is_supported_directive(directive: &str) -> bool {
+    is_user_agent_directive(directive)
+        || directive.eq_ignore_ascii_case("allow")
+        || is_disallow_directive(directive)
+        || directive.eq_ignore_ascii_case("crawl-delay")
+        || is_sitemap_directive(directive)
+}
+
+fn matches_any_ignore_ascii_case<'a>(
+    candidate: &str,
+    patterns: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    patterns
+        .into_iter()
+        .any(|pattern| candidate.eq_ignore_ascii_case(pattern))
+}
+
+fn user_agent_tokens(user_agent: &str) -> impl Iterator<Item = &str> {
+    user_agent
+        .split(|c: char| !(c.is_ascii_alphabetic() || c == '-' || c == '_'))
+        .filter(|token| !token.is_empty())
+}
+
+fn uri_path_and_query(uri: &Uri) -> &str {
+    uri.path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or(uri.path())
 }
 
 fn wildcard_match(pattern: &[u8], text: &[u8], anchored: bool) -> bool {
@@ -539,17 +646,42 @@ mod tests {
     }
 
     #[test]
-    fn parse_strict_errors_on_invalid_supported_directive() {
-        let err = RobotsTxt::parse_strict(
-            r#"
-            User-agent: *
-            Crawl-delay: nope
-            "#,
-        )
-        .unwrap_err();
+    fn parse_accepts_common_real_world_variants() {
+        let robots = RobotsTxt::parse(
+            "\u{feff}Useragent: FooBot\n\
+             Disalow /tmp\n\
+             Site-map: https://example.com/sitemap.xml\n",
+        );
 
-        assert_eq!(err.line, 3);
+        assert_eq!(robots.groups.len(), 1);
+        assert_eq!(robots.groups[0].user_agents, ["FooBot"]);
+        assert_eq!(robots.groups[0].rules, vec![RobotsRule::disallow("/tmp")]);
+        assert_eq!(robots.sitemaps, ["https://example.com/sitemap.xml"]);
+    }
+
+    #[test]
+    fn parse_strict_errors_on_invalid_supported_directive() {
+        let err = RobotsTxt::parse_strict("User-agent: *\nCrawl-delay: nope\n").unwrap_err();
+
+        assert!(err.line >= 1);
         assert_eq!(err.reason, "invalid crawl-delay value");
+    }
+
+    #[test]
+    fn parse_strict_ignores_unknown_malformed_lines() {
+        let robots =
+            RobotsTxt::parse_strict("not a directive\nUser-agent: *\nDisallow: /tmp\n").unwrap();
+
+        assert_eq!(robots.groups.len(), 1);
+        assert_eq!(robots.groups[0].rules, vec![RobotsRule::disallow("/tmp")]);
+    }
+
+    #[test]
+    fn parse_strict_errors_on_malformed_supported_directive() {
+        let err = RobotsTxt::parse_strict("User-agent:\nDisallow: /tmp\n").unwrap_err();
+
+        assert_eq!(err.line, 1);
+        assert_eq!(err.reason, "missing user-agent value");
     }
 
     #[test]
@@ -563,7 +695,8 @@ mod tests {
             .with_group(RobotsGroup::new("googlebot").with_disallow("/search"))
             .with_group(RobotsGroup::new("googlebot-news").with_allow("/search/news"));
 
-        let googlebot_news = robots.rules_for("Mozilla/5.0 Googlebot-News");
+        let googlebot_news =
+            robots.rules_for("Mozilla/5.0 (compatible; Googlebot-News/1.0; +https://example.com)");
         assert!(googlebot_news.is_allowed("/search/news"));
         assert!(googlebot_news.is_allowed("/search"));
 
@@ -649,5 +782,47 @@ Disallow: /copilot/
         assert!(!generic.is_allowed("/search?q=rust"));
         assert!(generic.is_allowed("/user?tab=achievements&achievement=pair-extraordinaire"));
         assert!(!generic.is_allowed("/copilot/"));
+    }
+
+    #[test]
+    fn url_matching_extracts_path_and_query_like_google_parser() {
+        let robots = RobotsTxt::new().with_group(
+            RobotsGroup::new("*")
+                .with_disallow("/search$")
+                .with_disallow("/*q="),
+        );
+
+        assert!(!robots.is_url_allowed("SomeBot", &Uri::from_static("https://example.com/search")));
+        assert!(robots.is_url_allowed(
+            "SomeBot",
+            &Uri::from_static("https://example.com/search/results")
+        ));
+        assert!(
+            !robots.is_url_allowed("SomeBot", &Uri::from_static("https://example.com/?q=test"))
+        );
+    }
+
+    #[test]
+    fn user_agent_matching_checks_all_product_tokens() {
+        let tokens = user_agent_tokens("Mozilla/5.0 (compatible; Googlebot_2.1; ExampleBot)")
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens,
+            vec!["Mozilla", "compatible", "Googlebot_", "ExampleBot"]
+        );
+        assert_eq!(
+            agent_match_len("Googlebot_", "Mozilla/5.0 (compatible; Googlebot_2.1)"),
+            Some(10)
+        );
+        assert_eq!(
+            agent_match_len(
+                "ExampleBot",
+                "Mozilla/5.0 (compatible; Googlebot_2.1; ExampleBot)"
+            ),
+            Some(10)
+        );
+        assert_eq!(agent_match_len("Google", "Mozilla/5.0 Google"), Some(6));
+        assert_eq!(agent_match_len("Bingbot", "Mozilla/5.0 Google"), None);
     }
 }
