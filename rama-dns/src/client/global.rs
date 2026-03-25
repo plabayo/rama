@@ -1,14 +1,17 @@
-use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream, telemetry::tracing};
-use rama_net::address::Domain;
-
-use crate::client::{
-    DenyAllDnsResolver, HickoryDnsResolver,
-    resolver::{BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver},
-};
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     sync::OnceLock,
 };
+
+use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream};
+use rama_net::address::Domain;
+
+use crate::client::resolver::{BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver};
+
+#[cfg(not(target_vendor = "apple"))]
+use crate::client::{DenyAllDnsResolver, HickoryDnsResolver};
+#[cfg(not(target_vendor = "apple"))]
+use rama_core::telemetry::tracing;
 
 static GLOBAL_DNS_RESOLVER: OnceLock<BoxDnsResolver> = OnceLock::new();
 
@@ -112,30 +115,42 @@ impl DnsResolver for GlobalDnsResolver {
 /// the global [`DnsResolver`]. This has to be done as early as possible,
 /// as it fails if the global resolver was already initialised (e.g. using the default).
 fn global_dns_resolver() -> &'static BoxDnsResolver {
-    GLOBAL_DNS_RESOLVER.get_or_init(|| {
-        tracing::debug!("no global dns resolver configured by user: init (default) global (hickory) DNS resolver");
-        // TODO: is there no infallible default???
-        let resolver = match HickoryDnsResolver::try_new_system() {
-            Ok(system_resolver) => {
-                tracing::debug!("created system dns resolver");
-                system_resolver
-            },
-            Err(err) => {
-                tracing::warn!("failed to create system resolver, try cloudflare (err = {err})");
-                match HickoryDnsResolver::try_new_cloudflare() {
-                    Ok(cloudflare_resolver) => {
-                        tracing::debug!("created cloudflare dns resolver");
-                        cloudflare_resolver
-                    }
-                    Err(err) => {
-                        tracing::error!("failed to create resolvers: system, cloudflare (err = {err}); revert to deny all dns traffic...");
-                        return DenyAllDnsResolver::new().into_box_dns_resolver();
-                    }
+    GLOBAL_DNS_RESOLVER.get_or_init(init_default_global_dns_resolver)
+}
+
+#[cfg(target_vendor = "apple")]
+fn init_default_global_dns_resolver() -> BoxDnsResolver {
+    super::AppleDnsResolver::new().into_box_dns_resolver()
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn init_default_global_dns_resolver() -> BoxDnsResolver {
+    tracing::debug!(
+        "no global dns resolver configured by user: init (default) global (hickory) DNS resolver"
+    );
+    // TODO: is there no infallible default???
+    let resolver = match HickoryDnsResolver::try_new_system() {
+        Ok(system_resolver) => {
+            tracing::debug!("created system dns resolver");
+            system_resolver
+        }
+        Err(err) => {
+            tracing::warn!("failed to create system resolver, try cloudflare (err = {err})");
+            match HickoryDnsResolver::try_new_cloudflare() {
+                Ok(cloudflare_resolver) => {
+                    tracing::debug!("created cloudflare dns resolver");
+                    cloudflare_resolver
                 }
-            },
-        };
-        resolver.into_box_dns_resolver()
-    })
+                Err(err) => {
+                    tracing::error!(
+                        "failed to create resolvers: system, cloudflare (err = {err}); revert to deny all dns traffic..."
+                    );
+                    return DenyAllDnsResolver::new().into_box_dns_resolver();
+                }
+            }
+        }
+    };
+    resolver.into_box_dns_resolver()
 }
 
 #[inline(always)]
