@@ -403,6 +403,14 @@ final class HostController: NSObject, NSApplicationDelegate {
             proto.serverAddress = managerServerAddress
             changed = true
         }
+        
+        if !proto.disconnectOnSleep {
+            // to ensure we start fresh at wake up,
+            // as there can be otherwise lingering / outdated configuration,
+            // such as the global dns setup
+            proto.disconnectOnSleep = true
+            changed = true
+        }
 
         let expectedProviderConfiguration = currentProviderConfiguration()
         let existingEngineConfigJson = proto.providerConfiguration?["engineConfigJson"] as? String
