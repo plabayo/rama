@@ -227,7 +227,9 @@ impl TlsMitmRelayError {
             .unwrap_or_default()
             || ssl_err
                 .reason()
-                .map(|s| any_submatch_ignore_ascii_case(s, ["unknown_ca", "certificate"]))
+                .map(|s| {
+                    any_submatch_ignore_ascii_case(s, ["unknown_ca", "certificate", "handshake"])
+                })
                 .unwrap_or_default();
 
         Self {
