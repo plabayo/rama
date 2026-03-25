@@ -23,6 +23,7 @@ default = []
 [dependencies]
 ahash = { workspace = true }
 hickory-resolver = { workspace = true }
+libc = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
@@ -30,7 +31,7 @@ rama-utils = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net"] }
+tokio = { workspace = true, features = ["macros", "net", "sync"] }
 
 [dev-dependencies]
 

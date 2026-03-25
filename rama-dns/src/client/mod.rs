@@ -4,6 +4,12 @@ pub mod hickory;
 #[doc(inline)]
 pub use self::hickory::HickoryDnsResolver;
 
+#[cfg(target_vendor = "apple")]
+mod apple;
+#[cfg(target_vendor = "apple")]
+#[doc(inline)]
+pub use self::apple::AppleDnsResolver;
+
 mod deny_all;
 #[doc(inline)]
 pub use self::deny_all::{DenyAllDnsResolver, DnsDeniedError};
