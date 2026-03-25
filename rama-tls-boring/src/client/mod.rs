@@ -11,8 +11,8 @@ pub use rama_boring_tokio::SslStream as BoringTlsStream;
 mod connector;
 #[doc(inline)]
 pub use connector::{
-    ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnector, TlsConnectorLayer,
-    tls_connect,
+    ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnectError, TlsConnector,
+    TlsConnectorLayer, tls_connect,
 };
 
 mod connector_data;

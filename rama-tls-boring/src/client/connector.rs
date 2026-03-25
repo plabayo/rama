@@ -1,4 +1,4 @@
-use rama_boring_tokio::SslStream;
+use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsMut};
@@ -11,6 +11,7 @@ use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use rama_utils::macros::generate_set_and_with;
+use std::fmt;
 use std::sync::Arc;
 
 use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder};
@@ -416,10 +417,46 @@ impl<S, K> TlsConnector<S, K> {
     }
 }
 
+#[derive(Debug)]
+pub enum TlsConnectError<S> {
+    Builder(BoxError),
+    Handshake {
+        server_name: Option<Domain>,
+        error: HandshakeError<S>,
+    },
+}
+
+impl<S> fmt::Display for TlsConnectError<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Builder(error) => write!(f, "Builder: {error}"),
+            Self::Handshake { error, server_name } => {
+                write!(
+                    f,
+                    "Handshake: {error} (SNI = '{}')",
+                    server_name.as_ref().map(|d| d.as_str()).unwrap_or_default()
+                )
+            }
+        }
+    }
+}
+
+impl<S: std::fmt::Debug> std::error::Error for TlsConnectError<S> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Builder(error) => error.source(),
+            Self::Handshake {
+                error,
+                server_name: _,
+            } => error.source(),
+        }
+    }
+}
+
 pub async fn tls_connect<T>(
     stream: T,
     connector_data: Option<TlsConnectorData>,
-) -> Result<TlsStream<T>, BoxError>
+) -> Result<TlsStream<T>, TlsConnectError<T>>
 where
     T: Io + Unpin + ExtensionsMut,
 {
@@ -429,30 +466,15 @@ where
         server_name,
     } = match connector_data {
         Some(connector_data) => connector_data,
-        None => TlsConnectorDataBuilder::new().build()?,
+        None => TlsConnectorDataBuilder::new()
+            .build()
+            .map_err(TlsConnectError::Builder)?,
     };
 
     let sni = server_name.as_ref().map(|sni| sni.as_str());
     let stream: SslStream<T> = rama_boring_tokio::connect(config, sni, stream)
         .await
-        .map_err(|err| {
-            let maybe_ssl_code = err.code();
-            if let Some(io_err) = err.as_io_error() {
-                BoxError::from(format!(
-                    "boring ssl connector (connect): with io error: {io_err}"
-                ))
-                .context_debug_field("sni", server_name)
-                .context_debug_field("code", maybe_ssl_code)
-            } else if let Some(err) = err.as_ssl_error_stack() {
-                err.context("boring ssl connector (connect): with ssl-error info")
-                    .context_debug_field("sni", server_name)
-                    .context_debug_field("code", maybe_ssl_code)
-            } else {
-                BoxError::from("boring ssl connector (connect): without error info")
-                    .context_debug_field("sni", server_name)
-                    .context_debug_field("code", maybe_ssl_code)
-            }
-        })?;
+        .map_err(|error| TlsConnectError::Handshake { error, server_name })?;
     Ok(TlsStream::new(stream))
 }
 
@@ -464,7 +486,31 @@ where
     T: Io + Unpin + ExtensionsMut,
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
-    let TlsStream { inner: stream } = tls_connect(stream, Some(connector_data)).await?;
+    let TlsStream { inner: stream } =
+        tls_connect(stream, Some(connector_data))
+            .await
+            .map_err(|err| match err {
+                TlsConnectError::Builder(error) => error.context("tls connect builder error"),
+                TlsConnectError::Handshake { error, server_name } => {
+                    let maybe_ssl_code = error.code();
+                    if let Some(io_err) = error.as_io_error() {
+                        BoxError::from(format!(
+                            "boring ssl connector (connect): with io error: {io_err}"
+                        ))
+                        .context_debug_field("sni", server_name)
+                        .context_debug_field("code", maybe_ssl_code)
+                    } else if let Some(ssl_error) = error.as_ssl_error_stack() {
+                        ssl_error
+                            .context("boring ssl connector (connect): with ssl-error info")
+                            .context_debug_field("sni", server_name)
+                            .context_debug_field("code", maybe_ssl_code)
+                    } else {
+                        BoxError::from("boring ssl connector (connect): without error info")
+                            .context_debug_field("sni", server_name)
+                            .context_debug_field("code", maybe_ssl_code)
+                    }
+                }
+            })?;
 
     let params = match stream.ssl().session() {
         Some(ssl_session) => {

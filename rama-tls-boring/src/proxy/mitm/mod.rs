@@ -182,34 +182,19 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
-    fn egress(error: impl Into<BoxError>) -> Self {
-        Self {
-            kind: TlsMitmRelayErrorKind::Egress,
-            proxy_target: None,
-            sni: None,
-            inner: error.into(),
-        }
-    }
-
-    #[inline(always)]
-    fn ingress(error: impl Into<BoxError>, ssl_code: Option<ErrorCode>) -> Self {
-        let cert_related = ssl_code
+    fn handshake(
+        direction: TlsMitmRelayErrorDirection,
+        error: impl Into<BoxError>,
+        ssl_code: Option<ErrorCode>,
+    ) -> Self {
+        let maybe_relay_issue = ssl_code
             .map(|code| code == ErrorCode::SYSCALL)
             .unwrap_or_default();
 
         Self {
-            kind: TlsMitmRelayErrorKind::Ingress { cert_related },
-            proxy_target: None,
-            sni: None,
-            inner: error.into(),
-        }
-    }
-
-    #[inline(always)]
-    fn ingress_io(error: impl Into<BoxError>) -> Self {
-        Self {
-            kind: TlsMitmRelayErrorKind::Ingress {
-                cert_related: false,
+            kind: TlsMitmRelayErrorKind::Handshake {
+                direction,
+                maybe_relay_issue,
             },
             proxy_target: None,
             sni: None,
@@ -218,9 +203,26 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
-    fn ingress_ssl(err: SslErrorStack, ssl_code: Option<ErrorCode>) -> Self {
+    fn handshake_io(direction: TlsMitmRelayErrorDirection, error: impl Into<BoxError>) -> Self {
+        Self {
+            kind: TlsMitmRelayErrorKind::Handshake {
+                direction,
+                maybe_relay_issue: false,
+            },
+            proxy_target: None,
+            sni: None,
+            inner: error.into(),
+        }
+    }
+
+    #[inline(always)]
+    fn handshake_ssl(
+        direction: TlsMitmRelayErrorDirection,
+        err: SslErrorStack,
+        ssl_code: Option<ErrorCode>,
+    ) -> Self {
         let ssl_err = err.first();
-        let cert_related = ssl_code
+        let maybe_relay_issue = ssl_code
             .map(|code| code == ErrorCode::SYSCALL)
             .unwrap_or_default()
             || ssl_err
@@ -229,7 +231,10 @@ impl TlsMitmRelayError {
                 .unwrap_or_default();
 
         Self {
-            kind: TlsMitmRelayErrorKind::Ingress { cert_related },
+            kind: TlsMitmRelayErrorKind::Handshake {
+                direction,
+                maybe_relay_issue,
+            },
             proxy_target: None,
             sni: None,
             inner: BoxError::from(err).context("tls mitm relay: ingress tls accept ssl error"),
@@ -257,13 +262,17 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
-    /// Returns true in case the error can be classified as a certificate
-    /// related relay issue. In which case you probably want to filter out this
+    /// Returns true in case the error can be classified handshake setup issue,
+    /// e.g. certificates or config issues, stopping it from happening. In which case you probably want to filter out this
     /// traffic in your MITM flows.
-    pub fn is_relay_cert_issue(&self) -> bool {
+    pub fn is_handshake_relay_issue(&self) -> bool {
         matches!(
             self.kind,
-            TlsMitmRelayErrorKind::Config | TlsMitmRelayErrorKind::Ingress { cert_related: true }
+            TlsMitmRelayErrorKind::Config
+                | TlsMitmRelayErrorKind::Handshake {
+                    maybe_relay_issue: true,
+                    direction: _
+                }
         )
     }
 
@@ -301,9 +310,17 @@ impl std::error::Error for TlsMitmRelayError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TlsMitmRelayErrorKind {
     Config,
-    Egress,
-    Ingress { cert_related: bool },
+    Handshake {
+        direction: TlsMitmRelayErrorDirection,
+        maybe_relay_issue: bool,
+    },
     TlsServe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TlsMitmRelayErrorDirection {
+    Ingress,
+    Egress,
 }
 
 impl<Issuer> TlsMitmRelay<Issuer>
@@ -327,7 +344,42 @@ where
 
         let mut egress_tls_stream = crate::client::tls_connect(egress_stream, connector_data)
             .await
-            .map_err(TlsMitmRelayError::egress)?;
+            .map_err(|err| match err {
+                client::TlsConnectError::Builder(error) => TlsMitmRelayError::handshake(
+                    TlsMitmRelayErrorDirection::Egress,
+                    error.context("tls connect builder error"),
+                    None,
+                ),
+                client::TlsConnectError::Handshake { server_name, error } => {
+                    let maybe_ssl_code = error.code();
+                    if let Some(io_err) = error.as_io_error() {
+                        TlsMitmRelayError::handshake_io(
+                            TlsMitmRelayErrorDirection::Egress,
+                            BoxError::from(format!(
+                                "tls mitm relay: egress tls accept failed with io error: {io_err}"
+                            ))
+                            .context_debug_field("code", maybe_ssl_code)
+                            .context_debug_field("sni", server_name),
+                        )
+                    } else if let Some(err) = error.as_ssl_error_stack() {
+                        let mut relay_err = TlsMitmRelayError::handshake_ssl(
+                            TlsMitmRelayErrorDirection::Egress,
+                            err,
+                            maybe_ssl_code,
+                        );
+                        relay_err.sni = server_name;
+                        relay_err
+                    } else {
+                        TlsMitmRelayError::handshake(
+                            TlsMitmRelayErrorDirection::Egress,
+                            BoxError::from("tls mitm relay: egress tls accept failed")
+                                .context_debug_field("code", maybe_ssl_code)
+                                .context_debug_field("sni", server_name),
+                            maybe_ssl_code,
+                        )
+                    }
+                }
+            })?;
 
         let egress_ssl_ref = egress_tls_stream.ssl_ref();
         let source_cert = egress_ssl_ref
@@ -476,16 +528,22 @@ where
             .map_err(|err| {
                 let maybe_ssl_code = err.code();
                 if let Some(io_err) = err.as_io_error() {
-                    TlsMitmRelayError::ingress_io(
+                    TlsMitmRelayError::handshake_io(
+                        TlsMitmRelayErrorDirection::Ingress,
                         BoxError::from(format!(
                             "tls mitm relay: ingress tls accept failed with io error: {io_err}"
                         ))
                         .context_debug_field("code", maybe_ssl_code),
                     )
                 } else if let Some(err) = err.as_ssl_error_stack() {
-                    TlsMitmRelayError::ingress_ssl(err, maybe_ssl_code)
+                    TlsMitmRelayError::handshake_ssl(
+                        TlsMitmRelayErrorDirection::Ingress,
+                        err,
+                        maybe_ssl_code,
+                    )
                 } else {
-                    TlsMitmRelayError::ingress(
+                    TlsMitmRelayError::handshake(
+                        TlsMitmRelayErrorDirection::Ingress,
                         BoxError::from("tls mitm relay: ingress tls accept failed")
                             .context_debug_field("code", maybe_ssl_code),
                         maybe_ssl_code,

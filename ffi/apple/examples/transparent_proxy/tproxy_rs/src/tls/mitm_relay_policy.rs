@@ -188,7 +188,7 @@ where
                 client_hello,
             })
             .await
-            && err.is_relay_cert_issue()
+            && err.is_handshake_relay_issue()
         {
             if let Some(sni) = err.sni().cloned() {
                 tracing::debug!(
