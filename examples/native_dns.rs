@@ -10,12 +10,11 @@
 //! cargo run --example native_dns --features=dns -- TXT example.com
 //! ```
 
-use std::str::FromStr;
 use tracing_subscriber::{
     EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
 };
 
-use rama::{error::BoxError, net::address::Domain, telemetry::tracing};
+use rama::{error::BoxError, telemetry::tracing};
 
 #[cfg(target_vendor = "apple")]
 use ::{
@@ -28,7 +27,9 @@ use ::{
         },
         error::ErrorContext as _,
         futures::StreamExt as _,
+        net::address::Domain,
     },
+    std::str::FromStr,
     tokio::task::JoinSet,
 };
 
