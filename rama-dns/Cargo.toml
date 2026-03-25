@@ -24,6 +24,7 @@ default = []
 ahash = { workspace = true }
 hickory-resolver = { workspace = true }
 libc = { workspace = true }
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }

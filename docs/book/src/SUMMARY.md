@@ -7,6 +7,7 @@
 - [Do It Yourself](./diy.md)
 - [Web Servers](./web_servers.md)
 - [Transport Protocols](./transport.md)
+- [dns](./dns.md)
 
 # Rama 101
 

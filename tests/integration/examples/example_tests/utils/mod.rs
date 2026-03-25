@@ -8,7 +8,7 @@ use rama::telemetry::tracing::{
     subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
 use std::{
-    process::{Child, ExitStatus},
+    process::{Child, ExitStatus, Output},
     sync::Once,
 };
 
@@ -292,6 +292,41 @@ impl ExampleRunner {
                 )
                 .status()
                 .unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Run an example with arguments and capture its output.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the example process cannot be spawned
+    /// or if it fails while waiting for it to finish.
+    pub(super) async fn run_with_args_output(
+        example_name: impl AsRef<str>,
+        args: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Output {
+        let example_name = example_name.as_ref().to_owned();
+        let args = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_owned())
+            .collect::<Vec<_>>();
+        tokio::task::spawn_blocking(move || {
+            let mut command = escargot::CargoBuild::new()
+                .arg("--all-features")
+                .example(example_name)
+                .manifest_path("Cargo.toml")
+                .target_dir("./target/")
+                .run()
+                .unwrap()
+                .command();
+            command.env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+            command.args(args);
+            command.output().unwrap()
         })
         .await
         .unwrap()

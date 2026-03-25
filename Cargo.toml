@@ -534,6 +534,10 @@ name = "http_high_level_client"
 required-features = ["http-full"]
 
 [[example]]
+name = "native_dns"
+required-features = ["dns"]
+
+[[example]]
 name = "http_k8s_health"
 required-features = ["http-full"]
 

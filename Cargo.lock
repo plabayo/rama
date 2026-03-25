@@ -3062,6 +3062,7 @@ dependencies = [
  "ahash",
  "hickory-resolver",
  "libc",
+ "parking_lot",
  "pin-project-lite",
  "rama-core",
  "rama-net",

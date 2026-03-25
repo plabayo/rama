@@ -92,6 +92,8 @@ mod https_connect_proxy;
 mod https_web_service_with_hsts;
 #[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]
 mod mtls_tunnel_and_service;
+#[cfg(feature = "dns")]
+mod native_dns;
 #[cfg(all(feature = "tls", feature = "socks5", feature = "http-full",))]
 mod proxy_connectivity_check;
 #[cfg(all(feature = "http-full", target_family = "unix"))]

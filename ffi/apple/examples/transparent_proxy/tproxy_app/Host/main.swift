@@ -404,11 +404,9 @@ final class HostController: NSObject, NSApplicationDelegate {
             changed = true
         }
         
-        if !proto.disconnectOnSleep {
-            // to ensure we start fresh at wake up,
-            // as there can be otherwise lingering / outdated configuration,
-            // such as the global dns setup
-            proto.disconnectOnSleep = true
+        if proto.disconnectOnSleep {
+            // by default it is false, but just to be sure...
+            proto.disconnectOnSleep = false
             changed = true
         }
 
