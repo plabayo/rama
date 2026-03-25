@@ -54,7 +54,13 @@ typos:
     typos -w
 
 extra-checks:
+    @just _extra-checks-{{os_family()}}
+
+_extra-checks-unix:
     {{justfile_directory()}}/scripts/extra-checks.sh
+
+_extra-checks-windows:
+    @echo "Skipping extra checks on Windows"
 
 doc:
     cargo doc --all-features --no-deps --workspace --exclude rama-cli
