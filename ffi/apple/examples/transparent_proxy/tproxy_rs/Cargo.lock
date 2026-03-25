@@ -62,9 +62,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "apple-native-keyring-store"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6afd4ee68bf127d37d2eca62ec6ddb5871b58722273c8b6809119a51b4042111"
+checksum = "9cdab02b2a5e47c080382cb729e8fc53bedf4a498200fc72a4e6c691033a3f7b"
 dependencies = [
  "keyring-core",
  "log",
@@ -1485,9 +1485,9 @@ dependencies = [
 
 [[package]]
 name = "num-conv"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf97ec579c3c42f953ef76dbf8d55ac91fb219dde70e49aa4a6b7d74e9919050"
+checksum = "c6673768db2d862beb9b39a78fdcb1a69439615d5794a1be50caa9bc92c81967"
 
 [[package]]
 name = "num-integer"
@@ -2242,6 +2242,7 @@ dependencies = [
  "sha2",
  "socket2",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
