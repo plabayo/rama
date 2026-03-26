@@ -1,0 +1,19 @@
+Metadata-Version: 2.0
+Name: requests-viewer
+Version: 0.0.12
+Summary: requests_viewer!
+Home-page: https://github.com/kootenpv/requests_viewer
+Author: Pascal van Kooten
+Author-email: kootenpv@gmail.com
+License: MIT
+Description-Content-Type: UNKNOWN
+Platform: any
+Requires-Dist: requests
+Provides-Extra: fancy
+Requires-Dist: bs4; extra == 'fancy'
+Requires-Dist: lxml; extra == 'fancy'
+Requires-Dist: tldextract; extra == 'fancy'
+
+UNKNOWN
+
+

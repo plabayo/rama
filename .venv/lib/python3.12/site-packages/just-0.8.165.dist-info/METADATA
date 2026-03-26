@@ -1,0 +1,38 @@
+Metadata-Version: 2.4
+Name: just
+Version: 0.8.165
+Summary: Automatically just read and write files based on extension.
+Author-email: Pascal van Kooten <kootenpv@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/kootenpv/just
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Customer Service
+Classifier: Intended Audience :: System Administrators
+Classifier: Operating System :: Microsoft
+Classifier: Operating System :: MacOS :: MacOS X
+Classifier: Operating System :: Unix
+Classifier: Operating System :: POSIX
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.5
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Topic :: Software Development
+Classifier: Topic :: Software Development :: Libraries
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Topic :: System :: Software Distribution
+Classifier: Topic :: System :: Systems Administration
+Classifier: Topic :: Utilities
+Requires-Python: >=3.5
+Description-Content-Type: text/x-rst
+License-File: LICENSE
+Requires-Dist: pyyaml
+Requires-Dist: glob2
+Requires-Dist: orjson
+Requires-Dist: requests
+Requires-Dist: requests_viewer
+Requires-Dist: ciso8601
+Requires-Dist: lxml
+Dynamic: license-file
+
+Automatically just read and write files based on extension.

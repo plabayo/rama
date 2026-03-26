@@ -109,10 +109,46 @@ impl FromStr for DirectiveDateTime {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Try RFC3339 format first
         if let Ok(timestamp) = Timestamp::from_str(s) {
-            return Ok(Self {
-                value: timestamp,
-                parsed_format: Some(ParsedFormat::RFC3339),
-            });
+            // Validate timezone offset if present (but not for Z timezone)
+            if !s.ends_with('Z') && (s.contains('+') || s.contains('-')) {
+                if let Some(tz_part) = s.rfind('+').or_else(|| s.rfind('-')) {
+                    let tz_str = &s[tz_part..];
+                    // Check for invalid timezone offsets like +24:00
+                    if tz_str.len() >= 5 {
+                        if let Ok(hours) = tz_str[1..3].parse::<i32>() {
+                            if hours >= 24 {
+                                tracing::debug!("rejected RFC3339 with invalid timezone offset: {s}");
+                                // Continue to other parsers instead of returning this invalid timestamp
+                            } else {
+                                return Ok(Self {
+                                    value: timestamp,
+                                    parsed_format: Some(ParsedFormat::RFC3339),
+                                });
+                            }
+                        } else {
+                            return Ok(Self {
+                                value: timestamp,
+                                parsed_format: Some(ParsedFormat::RFC3339),
+                            });
+                        }
+                    } else {
+                        return Ok(Self {
+                            value: timestamp,
+                            parsed_format: Some(ParsedFormat::RFC3339),
+                        });
+                    }
+                } else {
+                    return Ok(Self {
+                        value: timestamp,
+                        parsed_format: Some(ParsedFormat::RFC3339),
+                    });
+                }
+            } else {
+                return Ok(Self {
+                    value: timestamp,
+                    parsed_format: Some(ParsedFormat::RFC3339),
+                });
+            }
         }
         // Try parsing as RFC2822 format
         if let Ok(zoned) = Zoned::strptime("%a, %d %b %Y %H:%M:%S %z", s)
@@ -120,6 +156,14 @@ impl FromStr for DirectiveDateTime {
             .or_else(|_| Zoned::strptime("%a, %d %b %Y %H:%M %z", s)) {
             return Ok(Self {
                 value: zoned.timestamp(),
+                parsed_format: Some(ParsedFormat::RFC2822),
+            });
+        }
+        
+        // Try parsing RFC2822 with timezone abbreviations
+        if let Ok(timestamp) = datetime_from_rfc2822_jiff(s) {
+            return Ok(Self {
+                value: timestamp,
                 parsed_format: Some(ParsedFormat::RFC2822),
             });
         }
@@ -140,16 +184,106 @@ impl Display for DirectiveDateTime {
         let zoned = self.value.to_zoned(jiff::tz::TimeZone::UTC);
         match self.parsed_format {
             Some(ParsedFormat::RFC2822) | None => {
-                write!(f, "{}", zoned.strftime("%a, %d %b %Y %H:%M:%S %z"))
+                let civil = zoned.datetime();
+                let weekday = match civil.weekday() {
+                    jiff::civil::Weekday::Monday => "Mon",
+                    jiff::civil::Weekday::Tuesday => "Tue",
+                    jiff::civil::Weekday::Wednesday => "Wed",
+                    jiff::civil::Weekday::Thursday => "Thu",
+                    jiff::civil::Weekday::Friday => "Fri",
+                    jiff::civil::Weekday::Saturday => "Sat",
+                    jiff::civil::Weekday::Sunday => "Sun",
+                };
+                let month = match civil.month() {
+                    1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
+                    5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
+                    9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
+                    _ => "???", // Should never happen
+                };
+                // Format timezone offset manually to ensure +0000 format
+                let offset_seconds = zoned.offset().seconds();
+                let offset_hours = offset_seconds / 3600;
+                let offset_minutes = (offset_seconds.abs() % 3600) / 60;
+                let offset_sign = if offset_seconds >= 0 { "+" } else { "-" };
+                
+                write!(f, "{}, {} {} {} {:02}:{:02}:{:02} {}{:02}{:02}",
+                    weekday,
+                    civil.day(),
+                    month,
+                    civil.year(),
+                    civil.hour(),
+                    civil.minute(),
+                    civil.second(),
+                    offset_sign,
+                    offset_hours.abs(),
+                    offset_minutes
+                )
             },
             Some(ParsedFormat::RFC3339) => {
-                write!(f, "{}", self.value)
+                // Format RFC3339 with Z for UTC timezone
+                let formatted = format!("{}", self.value);
+                if formatted.ends_with("+00:00") {
+                    write!(f, "{}Z", &formatted[..formatted.len()-6])
+                } else {
+                    write!(f, "{}", formatted)
+                }
             },
             Some(ParsedFormat::RFC850) => {
-                write!(f, "{}", zoned.strftime("%A, %d-%b-%y %H:%M:%S"))
+                let civil = zoned.datetime();
+                let weekday = match civil.weekday() {
+                    jiff::civil::Weekday::Monday => "Monday",
+                    jiff::civil::Weekday::Tuesday => "Tuesday",
+                    jiff::civil::Weekday::Wednesday => "Wednesday",
+                    jiff::civil::Weekday::Thursday => "Thursday",
+                    jiff::civil::Weekday::Friday => "Friday",
+                    jiff::civil::Weekday::Saturday => "Saturday",
+                    jiff::civil::Weekday::Sunday => "Sunday",
+                };
+                let month = match civil.month() {
+                    1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
+                    5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
+                    9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
+                    _ => "???", // Should never happen
+                };
+                write!(f, "{}, {:02}-{}-{:02} {:02}:{:02}:{:02}",
+                    weekday,
+                    civil.day(),
+                    month,
+                    civil.year() % 100,
+                    civil.hour(),
+                    civil.minute(),
+                    civil.second()
+                )
             },
         }
     }
+}
+
+fn datetime_from_rfc2822_jiff(s: &str) -> Result<Timestamp, BoxError> {
+    // Try to parse RFC2822 format with timezone abbreviations: "Wed, 02 Oct 2002 08:00:00 EST"
+    if let Some((datetime_part, tz_part)) = s.rsplit_once(' ') {
+        // Try patterns with and without day of week
+        let patterns = [
+            "%a, %d %b %Y %H:%M:%S",
+            "%d %b %Y %H:%M:%S",
+            "%a, %d %b %Y %H:%M",
+            "%d %b %Y %H:%M",
+        ];
+        
+        for pattern in &patterns {
+            if let Ok(civil_dt) = jiff::civil::DateTime::strptime(pattern, datetime_part) {
+                if let Some(&offset_str) = get_timezone_map().get(tz_part.trim()) {
+                    if let Ok(offset) = parse_offset_string(offset_str) {
+                        let zoned = civil_dt.to_zoned(jiff::tz::TimeZone::fixed(offset))
+                            .context("failed to create zoned datetime with offset")?;
+                        return Ok(zoned.timestamp());
+                    }
+                }
+            }
+        }
+    }
+    
+    Err(BoxError::from(format!("failed to parse RFC2822 datetime: {}", s)))
 }
 
 fn datetime_from_rfc_850_jiff(s: &str) -> Result<Timestamp, BoxError> {
@@ -192,6 +326,17 @@ fn parse_offset_string(offset_str: &str) -> Result<jiff::tz::Offset, BoxError> {
     let minutes: i8 = offset_str[3..5].parse()
         .context("failed to parse offset minutes")?;
     
+    // Validate timezone offset bounds
+    if hours < 0 || hours > 23 || minutes < 0 || minutes > 59 {
+        return Err(BoxError::from("invalid offset hours or minutes"));
+    }
+    
+    // Check for maximum valid offset (+/- 14 hours)
+    let total_offset_minutes = hours as i32 * 60 + minutes as i32;
+    if total_offset_minutes > 14 * 60 {
+        return Err(BoxError::from("offset exceeds maximum valid timezone offset"));
+    }
+    
     let total_seconds = sign * (hours as i32 * 3600 + minutes as i32 * 60);
     jiff::tz::Offset::from_seconds(total_seconds)
         .context("failed to create offset from seconds")
@@ -204,36 +349,36 @@ fn get_timezone_map() -> &'static HashMap<&'static str, &'static str> {
         [
             ("ACDT", "+1030"),
             ("ACST", "+0930"),
-            ("ACT", "−0500"),
+            ("ACT", "-0500"),
             ("ACWST", "+0845"),
-            ("ADT", "−0300"),
+            ("ADT", "-0300"),
             ("AEDT", "+1100"),
             ("AEST", "+1000"),
             ("AFT", "+0430"),
-            ("AKDT", "−0800"),
-            ("AKST", "−0900"),
+            ("AKDT", "-0800"),
+            ("AKST", "-0900"),
             ("ALMT", "+0600"),
-            ("AMST", "−0300"),
+            ("AMST", "-0300"),
             ("AMT", "+0400"),
             ("ANAT", "+1200"),
             ("AQTT", "+0500"),
-            ("ART", "−0300"),
-            ("AST", "−0400"),
+            ("ART", "-0300"),
+            ("AST", "-0400"),
             ("AWST", "+0800"),
             ("AZOST", "+0000"),
-            ("AZOT", "−0100"),
+            ("AZOT", "-0100"),
             ("AZT", "+0400"),
             ("BIOT", "+0600"),
-            ("BIT", "−1200"),
+            ("BIT", "-1200"),
             ("BNT", "+0800"),
-            ("BOT", "−0400"),
-            ("BRST", "−0200"),
-            ("BRT", "−0300"),
+            ("BOT", "-0400"),
+            ("BRST", "-0200"),
+            ("BRT", "-0300"),
             ("BST", "+0600"),
             ("BTT", "+0600"),
             ("CAT", "+0200"),
             ("CCT", "+0630"),
-            ("CDT", "−0500"),
+            ("CDT", "-0500"),
             ("CEST", "+0200"),
             ("CET", "+0100"),
             ("CHADT", "+1345"),
@@ -242,52 +387,52 @@ fn get_timezone_map() -> &'static HashMap<&'static str, &'static str> {
             ("CHOT", "+0800"),
             ("CHST", "+1000"),
             ("CHUT", "+1000"),
-            ("CIST", "−0800"),
-            ("CKT", "−1000"),
-            ("CLST", "−0300"),
-            ("CLT", "−0400"),
-            ("COST", "−0400"),
-            ("COT", "−0500"),
-            ("CST", "−0600"),
-            ("CVT", "−0100"),
+            ("CIST", "-0800"),
+            ("CKT", "-1000"),
+            ("CLST", "-0300"),
+            ("CLT", "-0400"),
+            ("COST", "-0400"),
+            ("COT", "-0500"),
+            ("CST", "-0600"),
+            ("CVT", "-0100"),
             ("CWST", "+0845"),
             ("CXT", "+0700"),
             ("DAVT", "+0700"),
             ("DDUT", "+1000"),
             ("DFT", "+0100"),
-            ("EASST", "−0500"),
-            ("EAST", "−0600"),
+            ("EASST", "-0500"),
+            ("EAST", "-0600"),
             ("EAT", "+0300"),
-            ("ECT", "−0500"),
-            ("EDT", "−0400"),
+            ("ECT", "-0500"),
+            ("EDT", "-0400"),
             ("EEST", "+0300"),
             ("EET", "+0200"),
             ("EGST", "+0000"),
-            ("EGT", "−0100"),
-            ("EST", "−0500"),
+            ("EGT", "-0100"),
+            ("EST", "-0500"),
             ("FET", "+0300"),
             ("FJT", "+1200"),
-            ("FKST", "−0300"),
-            ("FKT", "−0400"),
-            ("FNT", "−0200"),
-            ("GALT", "−0600"),
-            ("GAMT", "−0900"),
+            ("FKST", "-0300"),
+            ("FKT", "-0400"),
+            ("FNT", "-0200"),
+            ("GALT", "-0600"),
+            ("GAMT", "-0900"),
             ("GET", "+0400"),
-            ("GFT", "−0300"),
+            ("GFT", "-0300"),
             ("GILT", "+1200"),
-            ("GIT", "−0900"),
+            ("GIT", "-0900"),
             ("GMT", "+0000"),
             ("GST", "+0400"),
-            ("GYT", "−0400"),
+            ("GYT", "-0400"),
             ("HAEC", "+0200"),
-            ("HDT", "−0900"),
+            ("HDT", "-0900"),
             ("HKT", "+0800"),
             ("HMT", "+0500"),
             ("HOVST", "+0800"),
             ("HOVT", "+0700"),
-            ("HST", "−1000"),
+            ("HST", "-1000"),
             ("ICT", "+0700"),
-            ("IDLW", "−1200"),
+            ("IDLW", "-1200"),
             ("IDT", "+0300"),
             ("IOT", "+0600"),
             ("IRDT", "+0430"),
@@ -303,63 +448,63 @@ fn get_timezone_map() -> &'static HashMap<&'static str, &'static str> {
             ("LHST", "+1030"),
             ("LINT", "+1400"),
             ("MAGT", "+1200"),
-            ("MART", "−0930"),
+            ("MART", "-0930"),
             ("MAWT", "+0500"),
-            ("MDT", "−0600"),
+            ("MDT", "-0600"),
             ("MEST", "+0200"),
             ("MET", "+0100"),
             ("MHT", "+1200"),
             ("MIST", "+1100"),
-            ("MIT", "−0930"),
+            ("MIT", "-0930"),
             ("MMT", "+0630"),
             ("MSK", "+0300"),
-            ("MST", "+0800"),
+            ("MST", "-0700"),
             ("MUT", "+0400"),
             ("MVT", "+0500"),
             ("MYT", "+0800"),
             ("NCT", "+1100"),
-            ("NDT", "−0230"),
+            ("NDT", "-0230"),
             ("NFT", "+1100"),
             ("NOVT", "+0700"),
             ("NPT", "+0545"),
-            ("NST", "−0330"),
-            ("NT", "−0330"),
-            ("NUT", "−1100"),
+            ("NST", "-0330"),
+            ("NT", "-0330"),
+            ("NUT", "-1100"),
             ("NZDST", "+1300"),
             ("NZDT", "+1300"),
             ("NZST", "+1200"),
             ("OMST", "+0600"),
             ("ORAT", "+0500"),
-            ("PDT", "−0700"),
-            ("PET", "−0500"),
+            ("PDT", "-0700"),
+            ("PET", "-0500"),
             ("PETT", "+1200"),
             ("PGT", "+1000"),
             ("PHOT", "+1300"),
             ("PHST", "+0800"),
             ("PHT", "+0800"),
             ("PKT", "+0500"),
-            ("PMDT", "−0200"),
-            ("PMST", "−0300"),
+            ("PMDT", "-0200"),
+            ("PMST", "-0300"),
             ("PONT", "+1100"),
-            ("PST", "−0800"),
+            ("PST", "-0800"),
             ("PWT", "+0900"),
-            ("PYST", "−0300"),
-            ("PYT", "−0400"),
+            ("PYST", "-0300"),
+            ("PYT", "-0400"),
             ("RET", "+0400"),
-            ("ROTT", "−0300"),
+            ("ROTT", "-0300"),
             ("SAKT", "+1100"),
             ("SAMT", "+0400"),
             ("SAST", "+0200"),
             ("SBT", "+1100"),
             ("SCT", "+0400"),
-            ("SDT", "−1000"),
+            ("SDT", "-1000"),
             ("SGT", "+0800"),
             ("SLST", "+0530"),
             ("SRET", "+1100"),
-            ("SRT", "−0300"),
-            ("SST", "−1100"),
+            ("SRT", "-0300"),
+            ("SST", "-1100"),
             ("SYOT", "+0300"),
-            ("TAHT", "−1000"),
+            ("TAHT", "-1000"),
             ("TFT", "+0500"),
             ("THA", "+0700"),
             ("TJT", "+0500"),
@@ -373,10 +518,10 @@ fn get_timezone_map() -> &'static HashMap<&'static str, &'static str> {
             ("ULAST", "+0900"),
             ("ULAT", "+0800"),
             ("UTC", "+0000"),
-            ("UYST", "−0200"),
-            ("UYT", "−0300"),
+            ("UYST", "-0200"),
+            ("UYT", "-0300"),
             ("UZT", "+0500"),
-            ("VET", "−0400"),
+            ("VET", "-0400"),
             ("VLAT", "+1000"),
             ("VOLT", "+0300"),
             ("VOST", "+0600"),
@@ -386,14 +531,40 @@ fn get_timezone_map() -> &'static HashMap<&'static str, &'static str> {
             ("WAT", "+0100"),
             ("WEST", "+0100"),
             ("WET", "+0000"),
-            ("WGST", "−0200"),
-            ("WGT", "−0300"),
+            ("WGST", "-0200"),
+            ("WGT", "-0300"),
             ("WIB", "+0700"),
             ("WIT", "+0900"),
             ("WITA", "+0800"),
             ("WST", "+0800"),
             ("YAKT", "+0900"),
             ("YEKT", "+0500"),
+            // Military time zones
+            ("A", "+0100"),
+            ("B", "+0200"),
+            ("C", "+0300"),
+            ("D", "+0400"),
+            ("E", "+0500"),
+            ("F", "+0600"),
+            ("G", "+0700"),
+            ("H", "+0800"),
+            ("I", "+0900"),
+            ("K", "+1000"),
+            ("L", "+1100"),
+            ("M", "+1200"),
+            ("N", "-0100"),
+            ("O", "-0200"),
+            ("P", "-0300"),
+            ("Q", "-0400"),
+            ("R", "-0500"),
+            ("S", "-0600"),
+            ("T", "-0700"),
+            ("U", "-0800"),
+            ("V", "-0900"),
+            ("W", "-1000"),
+            ("X", "-1100"),
+            ("Y", "-1200"),
+            ("Z", "+0000"),
         ]
         .into_iter()
         .collect()

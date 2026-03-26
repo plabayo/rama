@@ -1,0 +1,20 @@
+   Compiling rama v0.3.0-rc1 (/home/xzenergy/Documents/PythonCode/Rust-Practice/rama/rama)
+   Compiling rama-grpc-examples v0.3.0-rc1 (/home/xzenergy/Documents/PythonCode/Rust-Practice/rama/rama/examples/grpc)
+   Compiling uuid1 v0.3.0-rc1 (/home/xzenergy/Documents/PythonCode/Rust-Practice/rama/rama/examples/grpc/tests/extern_path/uuid)
+   Compiling my_application v0.3.0-rc1 (/home/xzenergy/Documents/PythonCode/Rust-Practice/rama/rama/examples/grpc/tests/extern_path/my_application)
+   Compiling rama-cli v0.3.0-rc1 (/home/xzenergy/Documents/PythonCode/Rust-Practice/rama/rama/rama-cli)
+error[E0599]: no method named `num_milliseconds` found for struct `jiff::span::Span` in the current scope
+   --> examples/http_har_replay.rs:123:72
+    |
+123 |         let offset_millis = (entry.started_date_time - min_start_time).num_milliseconds();
+    |                                                                        ^^^^^^^^^^^^^^^^
+    |
+help: there is a method `milliseconds` with a similar name, but with different arguments
+   --> /home/xzenergy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jiff-0.2.23/src/span.rs:841:5
+    |
+841 |     pub fn milliseconds<I: Into<i64>>(self, milliseconds: I) -> Span {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `rama` (example "http_har_replay") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

@@ -52,7 +52,7 @@ const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62048);
 const HAR_REQ_ID_HEADER: &str = "x-har-req-id";
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_tracing();
 
     let (shutdown_txt, shutdown_rx) = oneshot::channel();
@@ -120,7 +120,12 @@ async fn main() {
         );
 
         let elapsed_millis = req_start_instant.elapsed().as_millis() as i64;
-        let offset_millis = (entry.started_date_time - min_start_time).num_milliseconds();
+        let span = entry.started_date_time - min_start_time;
+        let offset_millis = span.get_days() as i64 * 24 * 60 * 60 * 1000 + 
+                          span.get_hours() as i64 * 60 * 60 * 1000 + 
+                          span.get_minutes() as i64 * 60 * 1000 + 
+                          span.get_seconds() as i64 * 1000 + 
+                          span.get_milliseconds() as i64;
         if offset_millis > elapsed_millis {
             let emulation_delay_millis = (offset_millis - elapsed_millis) as u64;
             tracing::warn!("replay emulation: delay for {emulation_delay_millis}ms");
@@ -136,8 +141,8 @@ async fn main() {
 
     graceful
         .shutdown_with_limit(Duration::from_secs(1))
-        .await
-        .unwrap();
+        .await?;
+    Ok(())
 }
 
 fn rewrite_request_uri_to_local_server(req: &mut Request, addr: SocketAddress) {
