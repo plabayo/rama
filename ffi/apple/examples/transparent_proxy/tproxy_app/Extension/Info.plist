@@ -13,14 +13,19 @@
   <key>CFBundleVersion</key>
   <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>CFBundlePackageType</key>
-  <string>XPC!</string>
+  <string>SYSX</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+  <key>NSSystemExtensionUsageDescription</key>
+  <string>Installs the transparent proxy system extension used by the demo.</string>
 
-  <key>NSExtension</key>
+  <key>NetworkExtension</key>
   <dict>
-    <key>NSExtensionPointIdentifier</key>
-    <string>com.apple.networkextension.app-proxy</string>
-    <key>NSExtensionPrincipalClass</key>
-    <string>RamaAppleNetworkExtension.RamaTransparentProxyProvider</string>
+    <key>NEProviderClasses</key>
+    <dict>
+      <key>com.apple.networkextension.app-proxy</key>
+      <string>RamaAppleNetworkExtension.RamaTransparentProxyProvider</string>
+    </dict>
   </dict>
 </dict>
 </plist>

@@ -46,7 +46,7 @@ fn setup_tracing() -> Result<TraceContext, BoxError> {
         .with_span_list(true)
         .with_writer(std::io::stderr);
 
-    let oslog_layer = OsLogger::new("org.ramaproxy.example.tproxy", "transparent-proxy");
+    let oslog_layer = OsLogger::new("org.ramaproxy.example.tproxy", "extension-rust");
 
     subscriber::registry()
         .with(filter::LevelFilter::DEBUG) // TODO: make customisable log level
