@@ -4,7 +4,7 @@ use super::{
 };
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
-use chrono::{DateTime, Local};
+use jiff::Zoned;
 use http_range_header::RangeUnsatisfiableError;
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
@@ -676,8 +676,9 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
     let mut rows = vec![];
 
     for entry in entries {
-        let datetime: DateTime<Local> = entry.modified.into();
-        let modified_str = datetime.format("%Y-%m-%d %H:%M:%S %:z").to_string();
+        let timestamp = jiff::Timestamp::from(entry.modified);
+        let zoned = timestamp.to_zoned(jiff::tz::TimeZone::system());
+        let modified_str = zoned.strftime("%Y-%m-%d %H:%M:%S %z").to_string();
 
         let mime = if entry.is_dir {
             None

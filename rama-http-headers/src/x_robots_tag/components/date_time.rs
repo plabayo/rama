@@ -1,5 +1,5 @@
 use ahash::HashMap;
-use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
+use jiff::{Timestamp, Zoned, civil::DateTime as CivilDateTime, tz::{TimeZone, Offset}};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use std::fmt::{Display, Formatter};
@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirectiveDateTime {
-    value: DateTime<Utc>,
+    value: Timestamp,
     parsed_format: Option<ParsedFormat>,
 }
 
@@ -28,10 +28,15 @@ impl DirectiveDateTime {
         min: u32,
         sec: u32,
     ) -> Result<Self, BoxError> {
-        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
-            .single()
-            .context("invalid date-time input")
-            .map(Into::into)
+        let civil_dt = jiff::civil::DateTime::new(year, month as i8, day as i8, hour as i8, min as i8, sec as i8)
+            .context("invalid date-time input")?;
+        let timestamp = civil_dt.to_zoned(jiff::tz::TimeZone::UTC)
+            .context("failed to convert to UTC timestamp")?
+            .timestamp();
+        Ok(Self {
+            value: timestamp,
+            parsed_format: None,
+        })
     }
 
     pub fn try_new_ymd(year: i32, month: u32, day: u32) -> Result<Self, BoxError> {
@@ -67,24 +72,24 @@ impl DirectiveDateTime {
     }
 
     #[must_use]
-    pub fn date_time(&self) -> &DateTime<Utc> {
+    pub fn date_time(&self) -> &Timestamp {
         &self.value
     }
 
     #[must_use]
-    pub fn into_date_time(self) -> DateTime<Utc> {
+    pub fn into_date_time(self) -> Timestamp {
         self.value
     }
 }
 
-impl From<DirectiveDateTime> for DateTime<Utc> {
+impl From<DirectiveDateTime> for Timestamp {
     fn from(value: DirectiveDateTime) -> Self {
         value.value
     }
 }
 
-impl From<DateTime<Utc>> for DirectiveDateTime {
-    fn from(value: DateTime<Utc>) -> Self {
+impl From<Timestamp> for DirectiveDateTime {
+    fn from(value: Timestamp) -> Self {
         Self {
             value,
             parsed_format: None,
@@ -92,8 +97,8 @@ impl From<DateTime<Utc>> for DirectiveDateTime {
     }
 }
 
-impl AsRef<DateTime<Utc>> for DirectiveDateTime {
-    fn as_ref(&self) -> &DateTime<Utc> {
+impl AsRef<Timestamp> for DirectiveDateTime {
+    fn as_ref(&self) -> &Timestamp {
         &self.value
     }
 }
@@ -102,21 +107,26 @@ impl FromStr for DirectiveDateTime {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        // Try RFC3339 format first
+        if let Ok(timestamp) = Timestamp::from_str(s) {
             return Ok(Self {
-                value: dt.with_timezone(&Utc),
+                value: timestamp,
                 parsed_format: Some(ParsedFormat::RFC3339),
             });
         }
-        if let Ok(dt) = DateTime::parse_from_rfc2822(s) {
+        // Try parsing as RFC2822 format
+        if let Ok(zoned) = Zoned::strptime("%a, %d %b %Y %H:%M:%S %z", s)
+            .or_else(|_| Zoned::strptime("%d %b %Y %H:%M:%S %z", s))
+            .or_else(|_| Zoned::strptime("%a, %d %b %Y %H:%M %z", s)) {
             return Ok(Self {
-                value: dt.with_timezone(&Utc),
+                value: zoned.timestamp(),
                 parsed_format: Some(ParsedFormat::RFC2822),
             });
         }
-        if let Ok(dt) = datetime_from_rfc_850(s) {
+        // Try parsing RFC850 format
+        if let Ok(timestamp) = datetime_from_rfc_850_jiff(s) {
             return Ok(Self {
-                value: dt.with_timezone(&Utc),
+                value: timestamp,
                 parsed_format: Some(ParsedFormat::RFC850),
             });
         }
