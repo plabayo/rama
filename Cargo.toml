@@ -93,7 +93,6 @@ bitflags = "2.10"
 brotli = "8"
 byteorder = "1.5"
 bytes = "1"
-chrono = { version = "0.4", default-features = false, features = ["serde", "oldtime", "clock"] }
 clap = { version = "4.5", features = ["derive", "unstable-v5", "wrap_help"] }
 compression-codecs = "0.4"
 compression-core = "0.4"
@@ -121,6 +120,7 @@ indexmap = "2"
 ipnet = "2.11"
 iri-string = "0.7"
 itertools = "0.14"
+jiff = {version = "0.2", features = ["serde"] }
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 libc = "0.2"
@@ -403,7 +403,7 @@ serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tokio-util = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [target.'cfg(target_family = "unix")'.dependencies]
 rama-unix = { workspace = true }

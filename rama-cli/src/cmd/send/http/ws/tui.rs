@@ -11,7 +11,7 @@ use rama::{
     utils::{collections::NonEmptySmallVec, str::NonEmptyStr},
 };
 
-use chrono::{DateTime, Local};
+use jiff::Timestamp;
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     prelude::*,
@@ -59,7 +59,7 @@ struct ChatHistory {
 struct ChatMessage {
     role: Role,
     message: Utf8Bytes,
-    ts: DateTime<Local>,
+    ts: Timestamp,
 }
 
 impl ChatHistory {
@@ -67,7 +67,7 @@ impl ChatHistory {
         let msg = ChatMessage {
             role: Role::Client,
             message,
-            ts: Local::now(),
+            ts: Timestamp::now(),
         };
         self.items.push(msg);
         self.state.select_last();
@@ -77,7 +77,7 @@ impl ChatHistory {
         let msg = ChatMessage {
             role: Role::Server,
             message,
-            ts: Local::now(),
+            ts: Timestamp::now(),
         };
         self.items.push(msg);
         self.state.select_last();
@@ -360,7 +360,7 @@ impl From<&ChatMessage> for ListItem<'_> {
     fn from(value: &ChatMessage) -> Self {
         let line = Line::from(format!(
             "[{}] {} {} ",
-            value.ts.time(),
+            value.ts.strftime("%H:%M:%S"),
             match value.role {
                 Role::Server => "<<",
                 Role::Client => ">>",

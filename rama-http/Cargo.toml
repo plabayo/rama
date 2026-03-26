@@ -37,7 +37,6 @@ ahash = { workspace = true }
 async-compression = { workspace = true, features = ["tokio", "brotli", "zlib", "gzip", "zstd"], optional = true }
 base64 = { workspace = true }
 bitflags = { workspace = true }
-chrono = { workspace = true }
 compression-codecs = { workspace = true, features = ["brotli", "deflate", "gzip", "zstd"], optional = true }
 compression-core = { workspace = true, optional = true }
 const_format = { workspace = true }
@@ -47,6 +46,7 @@ http = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
+jiff = { workspace = true }
 matchit = { workspace = true }
 opentelemetry-http = { workspace = true, optional = true }
 parking_lot = { workspace = true }
