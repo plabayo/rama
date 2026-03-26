@@ -68,6 +68,7 @@ mod jiff_serializer {
     use jiff::Timestamp;
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
     use std::borrow::Cow;
+    use std::str::FromStr;
 
     pub(super) fn serialize<S>(dt: &Timestamp, s: S) -> Result<S::Ok, S::Error>
     where

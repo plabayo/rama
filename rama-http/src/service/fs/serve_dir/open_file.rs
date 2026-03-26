@@ -4,7 +4,6 @@ use super::{
 };
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
-use jiff::Zoned;
 use http_range_header::RangeUnsatisfiableError;
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
@@ -676,7 +675,10 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
     let mut rows = vec![];
 
     for entry in entries {
-        let timestamp = jiff::Timestamp::from(entry.modified);
+        let timestamp = match entry.modified.duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => jiff::Timestamp::from_second(duration.as_secs() as i64).unwrap_or(jiff::Timestamp::now()),
+            Err(_) => jiff::Timestamp::now(),
+        };
         let zoned = timestamp.to_zoned(jiff::tz::TimeZone::system());
         let modified_str = zoned.strftime("%Y-%m-%d %H:%M:%S %z").to_string();
 

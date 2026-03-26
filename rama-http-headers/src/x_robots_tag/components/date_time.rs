@@ -1,5 +1,5 @@
 use ahash::HashMap;
-use jiff::{Timestamp, Zoned, civil::DateTime as CivilDateTime, tz::{TimeZone, Offset}};
+use jiff::{Timestamp, Zoned};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use std::fmt::{Display, Formatter};
@@ -28,7 +28,7 @@ impl DirectiveDateTime {
         min: u32,
         sec: u32,
     ) -> Result<Self, BoxError> {
-        let civil_dt = jiff::civil::DateTime::new(year, month as i8, day as i8, hour as i8, min as i8, sec as i8)
+        let civil_dt = jiff::civil::DateTime::new(year as i16, month as i8, day as i8, hour as i8, min as i8, sec as i8, 0)
             .context("invalid date-time input")?;
         let timestamp = civil_dt.to_zoned(jiff::tz::TimeZone::UTC)
             .context("failed to convert to UTC timestamp")?
@@ -137,38 +137,64 @@ impl FromStr for DirectiveDateTime {
 
 impl Display for DirectiveDateTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let zoned = self.value.to_zoned(jiff::tz::TimeZone::UTC);
         match self.parsed_format {
-            Some(ParsedFormat::RFC2822) | None => self.value.to_rfc2822().fmt(f),
-            Some(ParsedFormat::RFC3339) => self.value.to_rfc3339().fmt(f),
-            Some(ParsedFormat::RFC850) => self.value.format("%A, %d-%b-%y %T").fmt(f),
+            Some(ParsedFormat::RFC2822) | None => {
+                write!(f, "{}", zoned.strftime("%a, %d %b %Y %H:%M:%S %z"))
+            },
+            Some(ParsedFormat::RFC3339) => {
+                write!(f, "{}", self.value)
+            },
+            Some(ParsedFormat::RFC850) => {
+                write!(f, "{}", zoned.strftime("%A, %d-%b-%y %H:%M:%S"))
+            },
         }
     }
 }
 
-fn datetime_from_rfc_850(s: &str) -> Result<DateTime<FixedOffset>, BoxError> {
-    let (naive_date_time, remainder) = NaiveDateTime::parse_and_remainder(s, "%A, %d-%b-%y %T")
-        .context("failed to parse naive datetime")
-        .context_str_field("str", s)?;
-
-    let fixed_offset = offset_from_abbreviation(remainder)?;
-
-    Ok(DateTime::from_naive_utc_and_offset(
-        naive_date_time,
-        fixed_offset,
-    ))
+fn datetime_from_rfc_850_jiff(s: &str) -> Result<Timestamp, BoxError> {
+    // Try to parse the RFC850 format: "Friday, 31-Dec-99 23:59:59 GMT"
+    if let Ok(zoned) = Zoned::strptime("%A, %d-%b-%y %H:%M:%S %Z", s)
+        .or_else(|_| Zoned::strptime("%A, %d-%b-%y %H:%M:%S %z", s)) {
+        return Ok(zoned.timestamp());
+    }
+    
+    // Fallback: try to parse with timezone abbreviation lookup
+    if let Some((datetime_part, tz_part)) = s.rsplit_once(' ') {
+        if let Ok(civil_dt) = jiff::civil::DateTime::strptime("%A, %d-%b-%y %H:%M:%S", datetime_part) {
+            if let Some(&offset_str) = get_timezone_map().get(tz_part.trim()) {
+                if let Ok(offset) = parse_offset_string(offset_str) {
+                    let zoned = civil_dt.to_zoned(jiff::tz::TimeZone::fixed(offset))
+                        .context("failed to create zoned datetime with offset")?;
+                    return Ok(zoned.timestamp());
+                }
+            }
+        }
+    }
+    
+    Err(BoxError::from(format!("failed to parse RFC850 datetime: {}", s)))
 }
 
-fn offset_from_abbreviation(remainder: &str) -> Result<FixedOffset, BoxError> {
-    let abbreviation = get_timezone_map()
-        .get(remainder.trim())
-        .context("invalid abbreviation")
-        .context_str_field("remainder", remainder)?;
-
-    abbreviation
-        .parse()
-        .context("failed to parse timezone abbreviation")
-        .context_str_field("abbreviation", *abbreviation)
-        .context_str_field("remainder", remainder)
+fn parse_offset_string(offset_str: &str) -> Result<jiff::tz::Offset, BoxError> {
+    // Parse offset strings like "+0500", "-0300", etc.
+    if offset_str.len() != 5 {
+        return Err(BoxError::from("invalid offset format"));
+    }
+    
+    let sign = match offset_str.chars().next() {
+        Some('+') => 1,
+        Some('−') | Some('-') => -1,
+        _ => return Err(BoxError::from("invalid offset sign")),
+    };
+    
+    let hours: i8 = offset_str[1..3].parse()
+        .context("failed to parse offset hours")?;
+    let minutes: i8 = offset_str[3..5].parse()
+        .context("failed to parse offset minutes")?;
+    
+    let total_seconds = sign * (hours as i32 * 3600 + minutes as i32 * 60);
+    jiff::tz::Offset::from_seconds(total_seconds)
+        .context("failed to create offset from seconds")
 }
 
 static TIMEZONE_MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
