@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import NetworkExtension
 import OSLog
+import SystemExtensions
 
 private struct DemoProxySettings: Equatable {
     var htmlBadgeEnabled = true
@@ -18,12 +19,20 @@ private struct DemoProxySettings: Equatable {
 }
 
 final class HostController: NSObject, NSApplicationDelegate {
-    private let extensionBundleId = "org.ramaproxy.example.tproxy.provider"
+    #if TPROXY_DEV_IDENTIFIERS
+        private let extensionBundleId = "org.ramaproxy.example.tproxy.dev.provider"
+    #else
+        private let extensionBundleId = "org.ramaproxy.example.tproxy.dist.provider"
+    #endif
     private let managerDescription = "Rama Transparent Proxy Example"
     private let managerServerAddress = "127.0.0.1"
-    private let logSubsystem = "org.ramaproxy.example.tproxy"
-    private let hostLogCategory = "host-app"
-    private lazy var hostLogger = Logger(subsystem: logSubsystem, category: hostLogCategory)
+    private lazy var hostLogger = Logger(
+        subsystem: "org.ramaproxy.example.tproxy", category: "host")
+    private lazy var logFileURL: URL = {
+        let base = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs", isDirectory: true)
+        return base.appendingPathComponent("RamaTransparentProxyExampleHost.log")
+    }()
 
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
@@ -41,6 +50,8 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var lastStatus: NEVPNStatus?
     private var lastLoggedDisconnectSignature: String?
     private var demoSettings = DemoProxySettings()
+    private var systemExtensionActivationCompletions: [(Bool) -> Void] = []
+    private var systemExtensionActivationInFlight = false
     private lazy var resetProfileOnLaunch =
         ProcessInfo.processInfo.arguments.contains("--reset-profile-on-launch")
 
@@ -50,7 +61,14 @@ final class HostController: NSObject, NSApplicationDelegate {
         if resetProfileOnLaunch {
             log("launch flag detected: resetting saved proxy profile before start")
         }
-        startProxy(forceReinstall: resetProfileOnLaunch)
+        ensureSystemExtensionActivated { [weak self] success in
+            guard let self else { return }
+            guard success else {
+                self.setStatus(status: .invalid, detail: "system extension unavailable")
+                return
+            }
+            self.startProxy(forceReinstall: self.resetProfileOnLaunch)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -96,11 +114,12 @@ final class HostController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func editBadgeLabelAction(_: Any?) {
-        guard let value = promptForText(
-            title: "Badge Label",
-            message: "Choose the HTML badge label shown on rewritten pages.",
-            defaultValue: demoSettings.htmlBadgeLabel
-        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard
+            let value = promptForText(
+                title: "Badge Label",
+                message: "Choose the HTML badge label shown on rewritten pages.",
+                defaultValue: demoSettings.htmlBadgeLabel
+            )?.trimmingCharacters(in: .whitespacesAndNewlines),
             !value.isEmpty
         else {
             return
@@ -113,16 +132,18 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     @objc private func editExcludeDomainsAction(_: Any?) {
         let defaultValue = demoSettings.excludeDomains.joined(separator: ", ")
-        guard let value = promptForText(
-            title: "Excluded Domains",
-            message: "Comma-separated domains that should bypass the demo MITM behavior.",
-            defaultValue: defaultValue
-        )
+        guard
+            let value = promptForText(
+                title: "Excluded Domains",
+                message: "Comma-separated domains that should bypass the demo MITM behavior.",
+                defaultValue: defaultValue
+            )
         else {
             return
         }
 
-        let domains = value
+        let domains =
+            value
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -253,7 +274,19 @@ final class HostController: NSObject, NSApplicationDelegate {
     }
 
     private func startProxy(forceReinstall: Bool = false) {
-        loadOrCreateAndConfigureManager(forceReinstall: forceReinstall) { [weak self] manager in
+        ensureSystemExtensionActivated { [weak self] success in
+            guard let self else { return }
+            guard success else {
+                self.setStatus(status: .invalid, detail: "system extension unavailable")
+                return
+            }
+            self.startProxyAfterProviderReady(forceReinstall: forceReinstall)
+        }
+    }
+
+    private func startProxyAfterProviderReady(forceReinstall: Bool = false) {
+        self.loadOrCreateAndConfigureManager(forceReinstall: forceReinstall) {
+            [weak self] manager in
             guard let self else { return }
             guard let manager else {
                 self.setStatus(status: .invalid, detail: "configuration failed")
@@ -309,6 +342,65 @@ final class HostController: NSObject, NSApplicationDelegate {
             self.setStatus(status: manager.connection.status, detail: nil)
             completion?()
         }
+    }
+
+    private func ensureSystemExtensionActivated(completion: @escaping (Bool) -> Void) {
+        systemExtensionActivationCompletions.append(completion)
+        guard !systemExtensionActivationInFlight else {
+            log("system extension activation already in flight")
+            return
+        }
+
+        systemExtensionActivationInFlight = true
+        log("submitting system extension activation request for \(extensionBundleId)")
+        let request = OSSystemExtensionRequest.activationRequest(
+            forExtensionWithIdentifier: extensionBundleId,
+            queue: .main
+        )
+        request.delegate = self
+        OSSystemExtensionManager.shared.submitRequest(request)
+    }
+
+    private func finishSystemExtensionActivation(success: Bool, detail: String) {
+        systemExtensionActivationInFlight = false
+        let completions = systemExtensionActivationCompletions
+        systemExtensionActivationCompletions.removeAll()
+        log(detail)
+        for completion in completions {
+            completion(success)
+        }
+    }
+
+    func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
+        log("system extension approval required for \(request.identifier)")
+        setStatus(status: .disconnected, detail: "approve system extension in System Settings")
+    }
+
+    func request(
+        _ request: OSSystemExtensionRequest,
+        actionForReplacingExtension existing: OSSystemExtensionProperties,
+        withExtension ext: OSSystemExtensionProperties
+    ) -> OSSystemExtensionRequest.ReplacementAction {
+        log(
+            "replacing system extension \(existing.bundleShortVersion) with \(ext.bundleShortVersion)"
+        )
+        return .replace
+    }
+
+    func request(
+        _ request: OSSystemExtensionRequest,
+        didFinishWithResult result: OSSystemExtensionRequest.Result
+    ) {
+        finishSystemExtensionActivation(
+            success: true,
+            detail: "system extension activation finished with result=\(result.rawValue)"
+        )
+    }
+
+    func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
+        logError("system extension activation failed", error)
+        finishSystemExtensionActivation(
+            success: false, detail: "system extension activation failed")
     }
 
     private func loadManager(completion: @escaping (NETransparentProxyManager?) -> Void) {
@@ -391,7 +483,8 @@ final class HostController: NSObject, NSApplicationDelegate {
     private func configure(manager: NETransparentProxyManager) -> Bool {
         var changed = false
 
-        let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol)
+        let proto =
+            (manager.protocolConfiguration as? NETunnelProviderProtocol)
             ?? NETunnelProviderProtocol()
 
         if proto.providerBundleIdentifier != extensionBundleId {
@@ -403,7 +496,7 @@ final class HostController: NSObject, NSApplicationDelegate {
             proto.serverAddress = managerServerAddress
             changed = true
         }
-        
+
         if proto.disconnectOnSleep {
             // by default it is false, but just to be sure...
             proto.disconnectOnSleep = false
@@ -426,7 +519,8 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
 
         if manager.protocolConfiguration == nil
-            || !self.protocolMatchesExpected(manager.protocolConfiguration as? NETunnelProviderProtocol)
+            || !self.protocolMatchesExpected(
+                manager.protocolConfiguration as? NETunnelProviderProtocol)
         {
             manager.protocolConfiguration = proto
             changed = true
@@ -505,7 +599,8 @@ final class HostController: NSObject, NSApplicationDelegate {
             settings.htmlBadgeLabel = htmlBadgeLabel
         }
         if let excludeDomains = object["exclude_domains"] as? [String] {
-            let domains = excludeDomains
+            let domains =
+                excludeDomains
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
             if !domains.isEmpty {
@@ -840,25 +935,50 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     private func log(_ message: String) {
         hostLogger.info("\(message, privacy: .public)")
+        appendLogLine("INFO", message)
+    }
+
+    private func appendLogLine(_ level: String, _ message: String) {
+        let formatter = ISO8601DateFormatter()
+        let line = "[\(formatter.string(from: Date()))] \(level): \(message)\n"
+        let data = Data(line.utf8)
+
+        do {
+            let dir = logFileURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: logFileURL.path) {
+                FileManager.default.createFile(atPath: logFileURL.path, contents: nil)
+            }
+            let handle = try FileHandle(forWritingTo: logFileURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch {
+            hostLogger.error(
+                "failed to append host log file: \(String(describing: error), privacy: .public)")
+        }
     }
 
     private func logDisconnectReason(_ error: Error) {
         let ns = error as NSError
         let classification = classifyDisconnectReason(ns)
-        hostLogger.error(
-            "status=disconnected reason: classification=\(classification, privacy: .public) domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) description=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
-        )
+        let message =
+            "status=disconnected reason: classification=\(classification) domain=\(ns.domain) code=\(ns.code) description=\(ns.localizedDescription) userInfo=\(String(describing: ns.userInfo))"
+        hostLogger.error("\(message, privacy: .public)")
+        appendLogLine("ERROR", message)
     }
 
     private func logError(_ prefix: String, _ error: Error) {
         let ns = error as NSError
-        hostLogger.error(
-            "\(prefix, privacy: .public): domain=\(ns.domain, privacy: .public) code=\(ns.code, privacy: .public) description=\(ns.localizedDescription, privacy: .public) userInfo=\(String(describing: ns.userInfo), privacy: .public)"
-        )
+        let message =
+            "\(prefix): domain=\(ns.domain) code=\(ns.code) description=\(ns.localizedDescription) userInfo=\(String(describing: ns.userInfo))"
+        hostLogger.error("\(message, privacy: .public)")
+        appendLogLine("ERROR", message)
     }
 
     private func logErrorText(_ message: String) {
         hostLogger.error("\(message, privacy: .public)")
+        appendLogLine("ERROR", message)
     }
 
     private func classifyDisconnectReason(_ error: NSError) -> String {
@@ -927,7 +1047,7 @@ final class HostController: NSObject, NSApplicationDelegate {
         let ns = error as NSError
         switch (ns.domain, ns.code) {
         case ("NEVPNConnectionErrorDomainPlugin", 6):
-            return "appex unavailable; reinstall app or reset profile"
+            return "extension unavailable; reinstall the app and verify `systemextensionsctl list`"
         case ("NEVPNConnectionErrorDomainPlugin", 7):
             return "provider crashed; inspect extension logs/crash report"
         case ("NEVPNConnectionErrorDomain", 12):
@@ -943,18 +1063,20 @@ final class HostController: NSObject, NSApplicationDelegate {
         switch (error.domain, error.code) {
         case ("NEVPNConnectionErrorDomainPlugin", 6):
             return
-                "run `just install-tproxy-with-signing`; then check `pluginkit -mAvv | rg org.ramaproxy.example.tproxy`"
+                "reinstall with `just install-tproxy-with-signing` or `just install-tproxy-with-developer-id-signing-reset-profile`, then run `systemextensionsctl list`"
         case ("NEVPNConnectionErrorDomainPlugin", 7), ("NEVPNConnectionErrorDomain", 12):
             return
                 "inspect `~/Library/Logs/DiagnosticReports/RamaTransparentProxyExampleExtension*.ips` and `log show --last 5m --style compact --predicate 'process == \"RamaTransparentProxyExampleExtension\" OR subsystem == \"org.ramaproxy.example.tproxy\"'`"
         case ("NEVPNConnectionErrorDomain", 14):
             return
-                "plugin was disabled after a failure; reinstall with `just install-tproxy-with-signing` to reset registration and profile"
+                "extension was disabled after a failure; reinstall the app, then run `systemextensionsctl list` and retry"
         default:
             return nil
         }
     }
 }
+
+extension HostController: OSSystemExtensionRequestDelegate {}
 
 let app = NSApplication.shared
 let delegate = HostController()

@@ -23,8 +23,4 @@ DerivedData/
 .swiftpm/
 Package.resolved
 *.xcodeproj
-
-.venv/
-venv/
-env/
-ENV/
+.xcode-derived/

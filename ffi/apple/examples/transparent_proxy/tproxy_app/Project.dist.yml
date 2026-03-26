@@ -20,22 +20,28 @@ targets:
         codeSign: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev
+        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dist
         CURRENT_PROJECT_VERSION: 1
         INFOPLIST_FILE: Host/Info.plist
         MARKETING_VERSION: 0.1
         CODE_SIGN_ENTITLEMENTS: Host/Host.entitlements
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
-        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_HOST_SIGNING_IDENTITY)"
         DEVELOPMENT_TEAM: "$(RAMA_TPROXY_DEVELOPMENT_TEAM)"
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_HOST_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
-        NE_ENTITLEMENT_SUFFIX: ""
+        NE_ENTITLEMENT_SUFFIX: "-systemextension"
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        GENERATE_PROVISIONING_PROFILE: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        OTHER_CODE_SIGN_FLAGS:
+          - "--timestamp"
+          - "--options=runtime"
         SWIFT_ACTIVE_COMPILATION_CONDITIONS:
           - "$(inherited)"
-          - TPROXY_DEV_IDENTIFIERS
+          - TPROXY_DIST_IDENTIFIERS
 
   RamaTransparentProxyExampleExtension:
     type: system-extension
@@ -47,20 +53,26 @@ targets:
         product: RamaAppleNetworkExtension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev.provider
-        PRODUCT_NAME: org.ramaproxy.example.tproxy.dev.provider
+        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dist.provider
+        PRODUCT_NAME: org.ramaproxy.example.tproxy.dist.provider
         CURRENT_PROJECT_VERSION: 1
         INFOPLIST_FILE: Extension/Info.plist
         MARKETING_VERSION: 0.1
         CODE_SIGN_ENTITLEMENTS: Extension/Extension.entitlements
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
-        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_EXTENSION_SIGNING_IDENTITY)"
         DEVELOPMENT_TEAM: "$(RAMA_TPROXY_DEVELOPMENT_TEAM)"
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
-        NE_ENTITLEMENT_SUFFIX: ""
+        NE_ENTITLEMENT_SUFFIX: "-systemextension"
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        GENERATE_PROVISIONING_PROFILE: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        OTHER_CODE_SIGN_FLAGS:
+          - "--timestamp"
+          - "--options=runtime"
         ENABLE_DEBUG_DYLIB: NO
         OTHER_LDFLAGS:
           - "$(SRCROOT)/../tproxy_rs/target/universal/librama_tproxy_example.a"

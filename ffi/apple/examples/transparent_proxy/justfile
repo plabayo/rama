@@ -1,67 +1,95 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 set working-directory := '.'
 
+xcode_derived_data_dev := "./.xcode-derived/tproxy-app-dev"
+xcode_derived_data_dist := "./.xcode-derived/tproxy-app-dist"
+tproxy_built_app_dev := xcode_derived_data_dev + "/Build/Products/Debug/RamaTransparentProxyExampleHost.app"
+tproxy_built_app_dist := xcode_derived_data_dist + "/Build/Products/Release/RamaTransparentProxyExampleHost.app"
+
 [working-directory: './tproxy_rs']
 build-tproxy-rs:
-    cargo build --target aarch64-apple-darwin && \
-    cargo build --target x86_64-apple-darwin && \
-    mkdir -p target/universal && \
-    lipo -create \
-        -output target/universal/librama_tproxy_example.a \
-        target/aarch64-apple-darwin/debug/librama_tproxy_example.a \
-        target/x86_64-apple-darwin/debug/librama_tproxy_example.a
+    cargo build --target aarch64-apple-darwin &&     cargo build --target x86_64-apple-darwin &&     mkdir -p target/universal &&     lipo -create         -output target/universal/librama_tproxy_example.a         target/aarch64-apple-darwin/debug/librama_tproxy_example.a         target/x86_64-apple-darwin/debug/librama_tproxy_example.a
 
-[working-directory: './tproxy_app']
-build-tproxy-app:
-    xcodegen generate && \
-    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+build-tproxy-app-dev:
+    ./scripts/build_tproxy_app_with_signing.sh
 
-[working-directory: './tproxy_app']
-build-tproxy-app-with-signing:
-    xcodegen generate && \
-    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug clean build
+build-tproxy-app-dist:
+    ./scripts/build_tproxy_app_with_developer_id_signing.sh
 
-[working-directory: './tproxy_app']
-install-tproxy-app-with-signing:
-    xcodegen generate
-    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug clean build
-    TARGET_BUILD_DIR="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/TARGET_BUILD_DIR/ {print $2; exit}')"; \
-    FULL_PRODUCT_NAME="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/FULL_PRODUCT_NAME/ {print $2; exit}')"; \
-    APP_PATH="$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME"; \
+notarize-tproxy-app-dist:
+    ./scripts/notarize_tproxy_app_with_developer_id_signing.sh
+
+install-tproxy-app-dev:
+    ./scripts/build_tproxy_app_with_signing.sh
     INSTALLED_APP=/Applications/RamaTransparentProxyExampleHost.app; \
-    INSTALLED_APPEX="$INSTALLED_APP/Contents/PlugIns/RamaTransparentProxyExampleExtension.appex"; \
+    INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.dev.provider.systemextension"; \
     pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true; \
     sleep 1; \
     rm -rf "$INSTALLED_APP"; \
-    ditto "$APP_PATH" "$INSTALLED_APP"; \
+    ditto "{{tproxy_built_app_dev}}" "$INSTALLED_APP"; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dev}}" || true; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dist}}" || true; \
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
-    pluginkit -a "$INSTALLED_APPEX" || true; \
+    echo "Installed Development system extension bundle at $INSTALLED_SYSEXT"; \
     open "$INSTALLED_APP"
 
-[working-directory: './tproxy_app']
-install-tproxy-app-with-signing-reset-profile:
-    xcodegen generate
-    xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -allowProvisioningUpdates -configuration Debug clean build
-    TARGET_BUILD_DIR="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/TARGET_BUILD_DIR/ {print $2; exit}')"; \
-    FULL_PRODUCT_NAME="$(xcodebuild -project RamaTransparentProxyExample.xcodeproj -scheme RamaTransparentProxyExampleHost -configuration Debug -showBuildSettings | awk -F' = ' '/FULL_PRODUCT_NAME/ {print $2; exit}')"; \
-    APP_PATH="$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME"; \
+install-tproxy-app-dist:
+    ./scripts/notarize_tproxy_app_with_developer_id_signing.sh
     INSTALLED_APP=/Applications/RamaTransparentProxyExampleHost.app; \
-    INSTALLED_APPEX="$INSTALLED_APP/Contents/PlugIns/RamaTransparentProxyExampleExtension.appex"; \
+    INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.provider.systemextension"; \
     pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true; \
     sleep 1; \
     rm -rf "$INSTALLED_APP"; \
-    ditto "$APP_PATH" "$INSTALLED_APP"; \
+    ditto "{{tproxy_built_app_dist}}" "$INSTALLED_APP"; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dev}}" || true; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dist}}" || true; \
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
-    pluginkit -a "$INSTALLED_APPEX" || true; \
+    echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"; \
+    open "$INSTALLED_APP"
+
+install-tproxy-app-dev-reset-profile:
+    ./scripts/build_tproxy_app_with_signing.sh
+    INSTALLED_APP=/Applications/RamaTransparentProxyExampleHost.app; \
+    INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.dev.provider.systemextension"; \
+    pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true; \
+    sleep 1; \
+    rm -rf "$INSTALLED_APP"; \
+    ditto "{{tproxy_built_app_dev}}" "$INSTALLED_APP"; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dev}}" || true; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dist}}" || true; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
+    echo "Installed Development system extension bundle at $INSTALLED_SYSEXT"; \
     open -a "$INSTALLED_APP" --args --reset-profile-on-launch
 
-build-tproxy: build-tproxy-rs build-tproxy-app
+install-tproxy-app-dist-reset-profile:
+    ./scripts/notarize_tproxy_app_with_developer_id_signing.sh
+    INSTALLED_APP=/Applications/RamaTransparentProxyExampleHost.app; \
+    INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.provider.systemextension"; \
+    pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true; \
+    sleep 1; \
+    rm -rf "$INSTALLED_APP"; \
+    ditto "{{tproxy_built_app_dist}}" "$INSTALLED_APP"; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dev}}" || true; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dist}}" || true; \
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
+    echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"; \
+    open -a "$INSTALLED_APP" --args --reset-profile-on-launch
 
-build-tproxy-with-signing: build-tproxy-rs build-tproxy-app-with-signing
+build-tproxy-dev: build-tproxy-rs build-tproxy-app-dev
 
-install-tproxy-with-signing: build-tproxy-rs install-tproxy-app-with-signing
+build-tproxy-dist: build-tproxy-rs build-tproxy-app-dist
 
-install-tproxy-with-signing-reset-profile: build-tproxy-rs install-tproxy-app-with-signing-reset-profile
+build-tproxy: build-tproxy-dev build-tproxy-dist
+
+notarize-tproxy-dist: build-tproxy-rs notarize-tproxy-app-dist
+
+install-tproxy-dev: build-tproxy-rs install-tproxy-app-dev
+
+install-tproxy-dev-reset-profile: build-tproxy-rs install-tproxy-app-dev-reset-profile
+
+install-tproxy-dist: build-tproxy-rs install-tproxy-app-dist
+
+install-tproxy-dist-reset-profile: build-tproxy-rs install-tproxy-app-dist-reset-profile
 
 [working-directory: './tproxy_rs']
 clean:
@@ -117,6 +145,6 @@ run-tproxy-ffi-e2e:
 
 qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 
-qa: qa-rust build-tproxy
+qa: qa-rust build-tproxy-dev
 
 test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e
