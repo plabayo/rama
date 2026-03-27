@@ -3341,6 +3341,7 @@ dependencies = [
 name = "rama-net-apple-networkextension"
 version = "0.3.0-rc1"
 dependencies = [
+ "libc",
  "parking_lot",
  "pin-project-lite",
  "rama-core",

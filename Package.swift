@@ -16,7 +16,11 @@ let package = Package(
     targets: [
         .target(
             name: "RamaAppleNEFFI",
-            path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI"
+            path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI",
+            linkerSettings: [
+                .linkedLibrary("bsm"),
+                .linkedLibrary("proc"),
+            ]
         ),
         .target(
             name: "RamaAppleNetworkExtension",

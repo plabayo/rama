@@ -776,7 +776,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             localHost: localEndpoint?.host,
             localPort: localEndpoint?.port ?? 0,
             sourceAppSigningIdentifier: appMeta.signingIdentifier,
-            sourceAppBundleIdentifier: appMeta.bundleIdentifier
+            sourceAppBundleIdentifier: appMeta.bundleIdentifier,
+            sourceAppAuditToken: appMeta.auditToken,
+            sourceAppPid: appMeta.pid
         )
     }
 
@@ -795,19 +797,33 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             localHost: local?.host,
             localPort: local?.port ?? 0,
             sourceAppSigningIdentifier: appMeta.signingIdentifier,
-            sourceAppBundleIdentifier: appMeta.bundleIdentifier
+            sourceAppBundleIdentifier: appMeta.bundleIdentifier,
+            sourceAppAuditToken: appMeta.auditToken,
+            sourceAppPid: appMeta.pid
         )
     }
 
     private static func sourceAppMeta(_ flow: NEAppProxyFlow?) -> (
-        signingIdentifier: String?, bundleIdentifier: String?
+        signingIdentifier: String?, bundleIdentifier: String?, auditToken: Data?, pid: Int32?
     ) {
-        guard let flow else { return (nil, nil) }
+        guard let flow else { return (nil, nil, nil, nil) }
         let raw = flow.metaData.sourceAppSigningIdentifier.trimmingCharacters(
             in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return (nil, nil) }
-        // Apple documents this as "almost always equivalent to bundle identifier".
-        return (raw, raw)
+        let signingIdentifier = raw.isEmpty ? nil : raw
+        let auditToken = flow.metaData.sourceAppAuditToken
+        let pid: Int32? =
+            auditToken.flatMap { token in
+                guard !token.isEmpty else { return nil }
+                let resolved = token.withUnsafeBytes { raw in
+                    rama_apple_audit_token_to_pid(
+                        raw.bindMemory(to: UInt8.self).baseAddress,
+                        raw.count
+                    )
+                }
+                return resolved >= 0 ? resolved : nil
+            }
+        // Apple documents signingIdentifier as "almost always equivalent to bundle identifier".
+        return (signingIdentifier, signingIdentifier, auditToken, pid)
     }
 
     private static func udpLocalEndpoint(flow: NEAppProxyUDPFlow) -> Any? {

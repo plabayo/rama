@@ -110,6 +110,15 @@ typedef struct {
     const char* source_app_bundle_identifier_utf8;
     /// Length of `source_app_bundle_identifier_utf8`.
     size_t source_app_bundle_identifier_utf8_len;
+    /// Source app audit token bytes. May be NULL.
+    const uint8_t* source_app_audit_token_bytes;
+    /// Length of `source_app_audit_token_bytes`.
+    size_t source_app_audit_token_bytes_len;
+    /// Source app PID resolved by Swift when available.
+    /// Only valid when `source_app_pid_is_set` is true.
+    int32_t source_app_pid;
+    /// Whether `source_app_pid` is explicitly set.
+    bool source_app_pid_is_set;
 } RamaTransparentProxyFlowMeta;
 
 /// One transparent-proxy network rule used to build Apple NE settings.
@@ -210,6 +219,11 @@ void rama_log(
     uint32_t level,
     RamaBytesView message
 );
+
+/// Resolve a macOS audit token to a PID.
+///
+/// Returns `-1` when `bytes/len` do not contain one complete `audit_token_t`.
+int32_t rama_apple_audit_token_to_pid(const uint8_t* bytes, size_t len);
 
 
 // Engine lifecycle

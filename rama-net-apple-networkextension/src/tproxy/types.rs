@@ -4,6 +4,8 @@ use rama_utils::{
     str::{NonEmptyStr, arcstr::ArcStr},
 };
 
+use crate::process::AuditToken;
+
 /// Protocol filter used by transparent-proxy network rules.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,6 +235,10 @@ pub struct TransparentProxyFlowMeta {
     pub source_app_signing_identifier: Option<NonEmptyStr>,
     /// Bundle identifier of the source app, if available.
     pub source_app_bundle_identifier: Option<NonEmptyStr>,
+    /// Raw audit token of the source app, if available.
+    pub source_app_audit_token: Option<AuditToken>,
+    /// Process identifier resolved from the source-app audit token, if available.
+    pub source_app_pid: Option<i32>,
 }
 
 impl TransparentProxyFlowMeta {
@@ -245,6 +251,8 @@ impl TransparentProxyFlowMeta {
             local_endpoint: None,
             source_app_signing_identifier: None,
             source_app_bundle_identifier: None,
+            source_app_audit_token: None,
+            source_app_pid: None,
         }
     }
 
@@ -276,6 +284,22 @@ impl TransparentProxyFlowMeta {
         /// Set source app bundle identifier.
         pub fn source_app_bundle_identifier(mut self, value: Option<NonEmptyStr>) -> Self {
             self.source_app_bundle_identifier = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set source app audit token.
+        pub fn source_app_audit_token(mut self, value: Option<AuditToken>) -> Self {
+            self.source_app_audit_token = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set source app pid.
+        pub fn source_app_pid(mut self, value: Option<i32>) -> Self {
+            self.source_app_pid = value;
             self
         }
     }

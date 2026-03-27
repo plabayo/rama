@@ -147,6 +147,10 @@ async fn serve_one_ingress_connection(
             source_app_signing_identifier_utf8_len: 0,
             source_app_bundle_identifier_utf8: ptr::null(),
             source_app_bundle_identifier_utf8_len: 0,
+            source_app_audit_token_bytes: ptr::null(),
+            source_app_audit_token_bytes_len: 0,
+            source_app_pid: 0,
+            source_app_pid_is_set: false,
         };
 
         let raw = unsafe {
