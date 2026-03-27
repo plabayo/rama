@@ -8,6 +8,7 @@ use rama_net::address::{Host, HostWithPort};
 use rama_utils::str::NonEmptyStr;
 
 use crate::ffi::BytesView;
+use crate::process::AuditToken;
 use crate::tproxy::{self, TransparentProxyFlowProtocol};
 
 #[repr(C)]
@@ -42,6 +43,10 @@ pub struct TransparentProxyFlowMeta {
     pub source_app_signing_identifier_utf8_len: usize,
     pub source_app_bundle_identifier_utf8: *const c_char,
     pub source_app_bundle_identifier_utf8_len: usize,
+    pub source_app_audit_token_bytes: *const u8,
+    pub source_app_audit_token_bytes_len: usize,
+    pub source_app_pid: i32,
+    pub source_app_pid_is_set: bool,
 }
 
 impl TransparentProxyFlowMeta {
@@ -50,6 +55,18 @@ impl TransparentProxyFlowMeta {
     /// All pointer + length fields in `self` must be valid for reads during
     /// this call.
     pub unsafe fn as_owned_rust_type(&self) -> tproxy::TransparentProxyFlowMeta {
+        let source_app_audit_token = unsafe {
+            opt_audit_token(
+                self.source_app_audit_token_bytes,
+                self.source_app_audit_token_bytes_len,
+            )
+        };
+        let source_app_pid = if self.source_app_pid_is_set {
+            Some(self.source_app_pid)
+        } else {
+            source_app_audit_token.as_ref().map(AuditToken::pid)
+        };
+
         tproxy::TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::from(self.protocol))
             .maybe_with_remote_endpoint(
                 // SAFETY: pointer + length validity is guaranteed by caller contract.
@@ -77,6 +94,8 @@ impl TransparentProxyFlowMeta {
                     )
                 },
             )
+            .maybe_with_source_app_audit_token(source_app_audit_token)
+            .maybe_with_source_app_pid(source_app_pid)
     }
 }
 
@@ -282,4 +301,55 @@ unsafe fn opt_utf8<'a>(ptr: *const c_char, len: usize) -> Option<&'a str> {
     let raw = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
     let text = std::str::from_utf8(raw).ok()?.trim();
     (!text.is_empty()).then_some(text)
+}
+
+/// # Safety
+///
+/// `ptr` must be null or readable for `len` bytes.
+unsafe fn opt_audit_token(ptr: *const u8, len: usize) -> Option<AuditToken> {
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+
+    // SAFETY: pointer + length validity is guaranteed by caller contract.
+    let raw = unsafe { std::slice::from_raw_parts(ptr, len) };
+    AuditToken::from_bytes(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ptr;
+
+    use crate::tproxy::TransparentProxyFlowProtocol;
+
+    use super::{TransparentFlowEndpoint, TransparentProxyFlowMeta};
+
+    #[test]
+    fn flow_meta_uses_explicit_pid_when_present() {
+        let meta = TransparentProxyFlowMeta {
+            protocol: TransparentProxyFlowProtocol::Tcp.as_u32(),
+            remote_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            local_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            source_app_signing_identifier_utf8: ptr::null(),
+            source_app_signing_identifier_utf8_len: 0,
+            source_app_bundle_identifier_utf8: ptr::null(),
+            source_app_bundle_identifier_utf8_len: 0,
+            source_app_audit_token_bytes: ptr::null(),
+            source_app_audit_token_bytes_len: 0,
+            source_app_pid: 4242,
+            source_app_pid_is_set: true,
+        };
+
+        let owned = unsafe { meta.as_owned_rust_type() };
+        assert_eq!(owned.source_app_pid, Some(4242));
+        assert!(owned.source_app_audit_token.is_none());
+    }
 }

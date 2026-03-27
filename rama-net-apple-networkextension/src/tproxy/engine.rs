@@ -331,11 +331,13 @@ impl TransparentProxyEngine {
         let datagram_sink: BytesSink = Arc::new(on_server_datagram);
         let closed_sink: ClosedSink = Arc::new(on_server_closed);
         let remote_endpoint = meta.remote_endpoint.clone();
+        let meta = Arc::new(meta);
 
         tracing::debug!(protocol = ?meta.protocol, "new udp session");
 
         let mut flow = UdpFlow::new(client_rx, datagram_sink);
         flow.extensions_mut().insert(guard.clone());
+        flow.extensions_mut().insert(meta);
         if let Some(remote) = remote_endpoint {
             flow.extensions_mut().insert(ProxyTarget(remote));
         }
@@ -560,7 +562,7 @@ async fn run_tcp_bridge(
 
 #[cfg(test)]
 mod tests {
-    use crate::tproxy::TransparentProxyFlowProtocol;
+    use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 
     use super::*;
     use parking_lot::Mutex;
@@ -705,5 +707,101 @@ mod tests {
 
         let lock = got.lock();
         assert_eq!(lock.as_slice(), b"ping");
+    }
+
+    #[test]
+    fn tcp_flow_exposes_meta_extension() {
+        let seen = Arc::new(Mutex::new(None::<Arc<TransparentProxyFlowMeta>>));
+        let seen_clone = seen.clone();
+        let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+        let engine = TransparentProxyEngineBuilder::new()
+            .with_runtime(
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap(),
+            )
+            .with_tcp_service_factory(move |_ctx| {
+                let seen_clone = seen_clone.clone();
+                let notify_tx = notify_tx.clone();
+                async move {
+                    Ok(service_fn(move |stream: TcpFlow| {
+                        let seen_clone = seen_clone.clone();
+                        let notify_tx = notify_tx.clone();
+                        async move {
+                            *seen_clone.lock() = stream
+                                .extensions()
+                                .get::<Arc<TransparentProxyFlowMeta>>()
+                                .cloned();
+                            let _ = notify_tx.send(());
+                            Ok(())
+                        }
+                    }))
+                }
+            })
+            .build();
+
+        engine.start().unwrap();
+        let _session = engine
+            .new_tcp_session(
+                TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+                    .with_source_app_pid(777),
+                |_| {},
+                || {},
+            )
+            .expect("session");
+        let _ = notify_rx.recv_timeout(std::time::Duration::from_secs(1));
+        engine.stop(0);
+
+        let meta = seen.lock().clone().expect("tcp flow meta");
+        assert_eq!(meta.source_app_pid, Some(777));
+    }
+
+    #[test]
+    fn udp_flow_exposes_meta_extension() {
+        let seen = Arc::new(Mutex::new(None::<Arc<TransparentProxyFlowMeta>>));
+        let seen_clone = seen.clone();
+        let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+        let engine = TransparentProxyEngineBuilder::new()
+            .with_runtime(
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap(),
+            )
+            .with_udp_service_factory(move |_ctx| {
+                let seen_clone = seen_clone.clone();
+                let notify_tx = notify_tx.clone();
+                async move {
+                    Ok(service_fn(move |flow: UdpFlow| {
+                        let seen_clone = seen_clone.clone();
+                        let notify_tx = notify_tx.clone();
+                        async move {
+                            *seen_clone.lock() = flow
+                                .extensions()
+                                .get::<Arc<TransparentProxyFlowMeta>>()
+                                .cloned();
+                            let _ = notify_tx.send(());
+                            Ok(())
+                        }
+                    }))
+                }
+            })
+            .build();
+
+        engine.start().unwrap();
+        let _session = engine
+            .new_udp_session(
+                TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
+                    .with_source_app_pid(888),
+                |_| {},
+                || {},
+            )
+            .expect("session");
+        let _ = notify_rx.recv_timeout(std::time::Duration::from_secs(1));
+        engine.stop(0);
+
+        let meta = seen.lock().clone().expect("udp flow meta");
+        assert_eq!(meta.source_app_pid, Some(888));
     }
 }

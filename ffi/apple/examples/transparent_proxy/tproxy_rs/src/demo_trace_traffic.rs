@@ -1,10 +1,15 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use rama::{
     Layer, Service,
+    extensions::ExtensionsRef,
     http::{
         Request, Response,
         ws::handshake::mitm::{WebSocketRelayDirection, WebSocketRelayInput},
+    },
+    net::apple::networkextension::{
+        process::{pid_arguments, pid_path},
+        tproxy::TransparentProxyFlowMeta,
     },
     telemetry::tracing,
 };
@@ -71,7 +76,28 @@ where
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let method = req.method().clone();
         let uri = req.uri().clone();
-        tracing::debug!("demo traffic logger: http ingress: {method} {uri}: request",);
+
+        let (app_bundle_id, pid, process_path, process_args) = req
+            .extensions()
+            .get::<Arc<TransparentProxyFlowMeta>>()
+            .map(|meta| {
+                let app_bundle_id = meta.source_app_bundle_identifier.as_deref();
+                let maybe_pid = meta.source_app_pid;
+                let (process_path, process_args) = maybe_pid
+                    .map(|pid| (lookup_process_path(pid), lookup_process_arguments(pid)))
+                    .unwrap_or_default();
+                (app_bundle_id, maybe_pid, process_path, process_args)
+            })
+            .unwrap_or_default();
+        let process_path_display = process_path.as_ref().map(|p| p.display());
+
+        tracing::debug!(
+            app_bundle_id,
+            pid,
+            ?process_path_display,
+            ?process_args,
+            "demo traffic logger: http ingress: {method} {uri}: request",
+        );
 
         let result = self.0.serve(req).await;
 
@@ -86,5 +112,25 @@ where
         }
 
         result
+    }
+}
+
+fn lookup_process_path(pid: i32) -> Option<std::path::PathBuf> {
+    match unsafe { pid_path(pid) } {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::warn!(pid, error = %err, "demo traffic logger: failed to resolve pid path");
+            None
+        }
+    }
+}
+
+fn lookup_process_arguments(pid: i32) -> Vec<String> {
+    match unsafe { pid_arguments(pid) } {
+        Ok(args) => args,
+        Err(err) => {
+            tracing::warn!(pid, error = %err, "demo traffic logger: failed to resolve pid arguments");
+            Vec::new()
+        }
     }
 }

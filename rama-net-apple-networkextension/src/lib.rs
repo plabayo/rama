@@ -28,6 +28,7 @@ pub mod ffi;
 #[macro_use]
 #[path = "macro.rs"]
 mod macros;
+pub mod process;
 pub mod tproxy;
 
 mod tcp;

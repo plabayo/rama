@@ -9,6 +9,8 @@ struct RamaTransparentProxyFlowMetaBridge {
     var localPort: UInt16
     var sourceAppSigningIdentifier: String?
     var sourceAppBundleIdentifier: String?
+    var sourceAppAuditToken: Data?
+    var sourceAppPid: Int32?
 }
 
 struct RamaTransparentProxyRuleBridge {
@@ -84,6 +86,19 @@ private func withUtf8OrNil<T>(
     }
 }
 
+private func withDataOrNil<T>(
+    _ value: Data?,
+    _ body: (UnsafePointer<UInt8>?, Int) -> T
+) -> T {
+    guard let value, !value.isEmpty else {
+        return body(nil, 0)
+    }
+
+    return value.withUnsafeBytes { raw in
+        body(raw.bindMemory(to: UInt8.self).baseAddress, raw.count)
+    }
+}
+
 private func withFlowMeta<T>(
     _ meta: RamaTransparentProxyFlowMetaBridge,
     _ body: (UnsafePointer<RamaTransparentProxyFlowMeta>) -> T
@@ -92,25 +107,31 @@ private func withFlowMeta<T>(
         withUtf8OrNil(meta.localHost) { localHostPtr, localHostLen in
             withUtf8OrNil(meta.sourceAppSigningIdentifier) { signingIdPtr, signingIdLen in
                 withUtf8OrNil(meta.sourceAppBundleIdentifier) { bundleIdPtr, bundleIdLen in
-                    var cMeta = RamaTransparentProxyFlowMeta(
-                        protocol: meta.protocolRaw,
-                        remote_endpoint: RamaTransparentProxyFlowEndpoint(
-                            host_utf8: remoteHostPtr,
-                            host_utf8_len: remoteHostLen,
-                            port: meta.remotePort,
-                        ),
-                        local_endpoint: RamaTransparentProxyFlowEndpoint(
-                            host_utf8: localHostPtr,
-                            host_utf8_len: localHostLen,
-                            port: meta.localPort,
-                        ),
-                        source_app_signing_identifier_utf8: signingIdPtr,
-                        source_app_signing_identifier_utf8_len: signingIdLen,
-                        source_app_bundle_identifier_utf8: bundleIdPtr,
-                        source_app_bundle_identifier_utf8_len: bundleIdLen
-                    )
-                    return withUnsafePointer(to: &cMeta) { metaPtr in
-                        body(metaPtr)
+                    withDataOrNil(meta.sourceAppAuditToken) { auditTokenPtr, auditTokenLen in
+                        var cMeta = RamaTransparentProxyFlowMeta(
+                            protocol: meta.protocolRaw,
+                            remote_endpoint: RamaTransparentProxyFlowEndpoint(
+                                host_utf8: remoteHostPtr,
+                                host_utf8_len: remoteHostLen,
+                                port: meta.remotePort,
+                            ),
+                            local_endpoint: RamaTransparentProxyFlowEndpoint(
+                                host_utf8: localHostPtr,
+                                host_utf8_len: localHostLen,
+                                port: meta.localPort,
+                            ),
+                            source_app_signing_identifier_utf8: signingIdPtr,
+                            source_app_signing_identifier_utf8_len: signingIdLen,
+                            source_app_bundle_identifier_utf8: bundleIdPtr,
+                            source_app_bundle_identifier_utf8_len: bundleIdLen,
+                            source_app_audit_token_bytes: auditTokenPtr,
+                            source_app_audit_token_bytes_len: auditTokenLen,
+                            source_app_pid: meta.sourceAppPid ?? 0,
+                            source_app_pid_is_set: meta.sourceAppPid != nil
+                        )
+                        return withUnsafePointer(to: &cMeta) { metaPtr in
+                            body(metaPtr)
+                        }
                     }
                 }
             }
