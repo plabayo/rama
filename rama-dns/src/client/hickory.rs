@@ -310,7 +310,7 @@ impl DnsTxtResolver for HickoryDnsResolver {
                     _ => None,
                 })
             {
-                for txt_part in txt.txt_data() {
+                for txt_part in txt.txt_data.iter() {
                     yielder.yield_item(Ok(Bytes::from(txt_part.clone()))).await;
                 }
             }

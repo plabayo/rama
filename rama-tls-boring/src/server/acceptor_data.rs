@@ -165,7 +165,8 @@ impl TlsCertSource {
                                 })?
                         }
                         (Some(cert_cache), Some(domain)) => cert_cache
-                            .try_get_with(domain.clone(), || {
+                            .entry_by_ref(domain)
+                            .or_try_insert_with(|| {
                                 issue_cert_for_ca(Some(domain), &ca_cert, &ca_key)
                             })
                             .map_err(|err| {
@@ -173,7 +174,8 @@ impl TlsCertSource {
                                     "boring: select certificate callback: issue failed: {err:?}"
                                 );
                                 SelectCertError::ERROR
-                            })?,
+                            })?
+                            .into_value(),
                     };
 
                     add_issued_cert_to_ssl_ref(maybe_domain.as_ref(), &issued_cert, ssl_ref)

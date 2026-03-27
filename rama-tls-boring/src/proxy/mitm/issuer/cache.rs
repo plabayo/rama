@@ -1,4 +1,4 @@
-use std::{fmt, num::NonZeroU64, time::Duration};
+use std::{fmt, num::NonZeroU64, sync::Arc, time::Duration};
 
 use moka::sync::Cache;
 use rama_boring::{
@@ -16,7 +16,7 @@ use super::BoringMitmCertIssuer;
 /// allowing to reuse previously issued certs.
 pub struct CachedBoringMitmCertIssuer<T> {
     issuer: T,
-    cache: Cache<Vec<u8>, IssuedCert>,
+    cache: Cache<Arc<[u8]>, IssuedCert>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,7 +100,7 @@ impl<T: BoringMitmCertIssuer> BoringMitmCertIssuer for CachedBoringMitmCertIssue
             return Ok((crt_chain, key));
         }
 
-        let signature = signature.to_vec();
+        let signature = Arc::from(signature);
         let (crt_chain, key) = self.issuer.issue_mitm_x509_cert(original).await?;
 
         tracing::debug!(
