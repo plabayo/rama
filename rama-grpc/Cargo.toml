@@ -23,6 +23,8 @@ full = ["protobuf", "transport", "compression"]
 protobuf = ["dep:prost", "dep:prost-types", "rama-grpc-build/protobuf"]
 transport = ["dep:rama-http-core"]
 compression = ["dep:flate2", "dep:zstd"]
+opentelemetry = ["protobuf", "rama-core/opentelemetry"]
+internal-logs = ["rama-core/opentelemetry"]
 
 [dependencies]
 base64 = { workspace = true }
@@ -31,6 +33,7 @@ pin-project-lite = { workspace = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 radix_trie = { workspace = true }
+parking_lot = { workspace = true }
 rama-core = { workspace = true }
 rama-grpc-build = { workspace = true }
 rama-http = { workspace = true }
