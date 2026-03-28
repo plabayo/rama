@@ -1,8 +1,9 @@
 //! Resolve one or more domains using Rama's native DNS support.
 //!
-//! On Apple platforms this example uses [`rama::dns::client::AppleDnsResolver`].
-//! On other platforms it exits successfully after printing that the example is
-//! Apple-only for now.
+//! - On Apple platforms this example uses `AppleDnsResolver`.
+//! - On Apple platforms this example uses `WindowsDnsResolver`.
+//! - On other platforms it exits successfully after printing
+//!   that the example is Apple/Windows only for now.
 //!
 //! ```sh
 //! cargo run --example native_dns --features=dns -- localhost
@@ -16,11 +17,10 @@ use tracing_subscriber::{
 
 use rama::{error::BoxError, telemetry::tracing};
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", target_os = "windows"))]
 use ::{
     rama::{
         dns::client::{
-            AppleDnsResolver,
             resolver::{
                 DnsAddressResolver as _, DnsTxtResolver as _, HappyEyeballAddressResolverExt,
             },
@@ -32,6 +32,12 @@ use ::{
     std::str::FromStr,
     tokio::task::JoinSet,
 };
+
+#[cfg(target_vendor =  "apple")]
+use rama::dns::client::AppleDnsResolver as NativeDnsResolver;
+
+#[cfg(target_os =  "windows")]
+use rama::dns::client::WindowsDnsResolver as NativeDnsResolver;
 
 #[derive(Debug, Clone, Copy)]
 enum RecordType {
@@ -83,9 +89,9 @@ async fn main() -> Result<(), BoxError> {
         std::process::exit(1);
     }
 
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "windows"))]
     {
-        let resolver = AppleDnsResolver::new();
+        let resolver = NativeDnsResolver::new();
         let domains = args
             .into_iter()
             .map(|arg| Domain::from_str(&arg))
@@ -104,11 +110,11 @@ async fn main() -> Result<(), BoxError> {
         }
     }
 
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
     {
         let _ = record_type;
         let _ = args;
-        println!("native_dns example is Apple-only for now");
+        println!("native_dns example is Apple/Windows only for now");
     }
 
     Ok(())
@@ -118,9 +124,9 @@ fn print_usage() {
     eprintln!("usage: native_dns [A|AAAA|TXT] <domain> [domain...]");
 }
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", target_os = "windows"))]
 async fn resolve_domain(
-    resolver: &AppleDnsResolver,
+    resolver: &NativeDnsResolver,
     record_type: RecordType,
     domain: Domain,
 ) -> Result<(), BoxError> {

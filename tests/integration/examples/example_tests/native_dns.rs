@@ -10,14 +10,14 @@ async fn test_native_dns() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "windows"))]
     {
         assert!(stdout.contains("localhost"));
         assert!(stdout.contains("127.0.0.1") || stdout.contains("::1"));
     }
 
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
     {
-        assert!(stdout.contains("Apple-only"));
+        assert!(stdout.contains("Apple/Windows only"));
     }
 }

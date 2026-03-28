@@ -153,7 +153,8 @@ where
 
             match tokio::time::timeout_at(deadline, state.notify.notified()).await {
                 Ok(()) => {}
-                Err(_) => {
+                Err(err) => {
+                    tracing::trace!("windows query record stream: timeout reached: {err}");
                     state.timed_out.store(true, Ordering::SeqCst);
                     request_cancel(&state);
                 }
@@ -289,7 +290,7 @@ fn cleanup_result(result: &mut ffi::DNS_QUERY_RESULT) {
     if !result.query_records.is_null() {
         // SAFETY: the returned record list is owned by the query result until freed.
         unsafe {
-            ffi::DnsRecordListFree(result.query_records.cast(), ffi::DnsFreeRecordList);
+            ffi::DnsRecordListFree(result.query_records.cast(), ffi::DNS_FREE_RECORD_LIST);
         }
         result.query_records = ptr::null_mut();
     }
@@ -377,7 +378,7 @@ where
     Ok(())
 }
 
-fn wide_ptr_to_string(mut ptr: *const u16) -> String {
+fn wide_ptr_to_string(ptr: *const u16) -> String {
     if ptr.is_null() {
         return String::new();
     }
@@ -553,10 +554,10 @@ mod ffi {
     pub(super) const DNS_QUERY_REQUEST_VERSION1: u32 = 1;
     pub(super) const DNS_QUERY_RESULTS_VERSION1: u32 = 1;
 
-    pub(super) const DnsFreeRecordList: DNS_FREE_TYPE = 1;
+    pub(super) const DNS_FREE_RECORD_LIST: DnsFreeType = 1;
 
-    pub(super) type DNS_FREE_TYPE = u32;
-    pub(super) type PDNS_QUERY_COMPLETION_ROUTINE =
+    pub(super) type DnsFreeType = u32;
+    pub(super) type PdnsQueryCompletionRoutine =
         Option<unsafe extern "system" fn(*mut c_void, *mut DNS_QUERY_RESULT)>;
 
     /// DNS_QUERY_REQUEST:
@@ -577,13 +578,13 @@ mod ffi {
         pub(super) query_name: PCWSTR,
         /// A value that represents the Resource Record (RR) DNS Record Type
         /// that is queried. QueryType determines the format of data pointed to by
-        /// pQueryRecords returned in the DNS_QUERY_RESULT structure.
+        /// pQueryRecords returned in the [`DNS_QUERY_RESULT`] structure.
         ///
         /// For example, if the value of wType is [`DNS_TYPE_A`],
-        /// the format of data pointed to by pQueryRecords is DNS_A_DATA.
+        /// the format of data pointed to by pQueryRecords is [`DNS_A_DATA`].
         pub(super) query_type: u16,
         /// A value that contains a bitmap of DNS Query Options to use in the DNS query.
-        /// Options can be combined and all options override DNS_QUERY_STANDARD.
+        /// Options can be combined and all options override [`DNS_QUERY_STANDARD`].
         ///
         /// See for more info:
         /// <https://learn.microsoft.com/en-us/windows/desktop/DNS/dns-constants>
@@ -602,8 +603,8 @@ mod ffi {
         ///
         /// ## Note
         ///
-        /// If NULL, DnsQueryEx is called synchronously.
-        pub(super) query_completion_callback: PDNS_QUERY_COMPLETION_ROUTINE,
+        /// If NULL, [`DnsQueryEx`] is called synchronously.
+        pub(super) query_completion_callback: PdnsQueryCompletionRoutine,
         /// A pointer to a user context.
         pub(super) query_context: *mut c_void,
     }
@@ -671,7 +672,7 @@ mod ffi {
     #[repr(C)]
     pub(super) struct DnsRecord {
         /// A pointer to the next DNS_RECORD structure.
-        pub(super) next: *mut DnsRecord,
+        pub(super) next: *mut Self,
         /// A pointer to a string that represents the domain name of the record set.
         /// This must be in the string format that corresponds to the function called,
         /// such as ANSI, Unicode, or UTF8.
@@ -768,28 +769,28 @@ mod ffi {
         /// Rust projection reference:
         /// <https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/NetworkManagement/Dns/fn.DnsQueryEx.html>
         pub(super) fn DnsQueryEx(
-            /// A pointer to a DNS_QUERY_REQUEST or DNS_QUERY_REQUEST3 structure
-            /// that contains the query request information.
-            ///
-            /// ## Note
-            ///
-            /// By omitting the DNS_QUERY_COMPLETION_ROUTINE callback from
-            /// the pQueryCompleteCallback member of this structure,
-            /// DnsQueryEx is called synchronously.
+            // A pointer to a DNS_QUERY_REQUEST or DNS_QUERY_REQUEST3 structure
+            // that contains the query request information.
+            //
+            // ## Note
+            //
+            // By omitting the DNS_QUERY_COMPLETION_ROUTINE callback from
+            // the pQueryCompleteCallback member of this structure,
+            // DnsQueryEx is called synchronously.
             query_request: *const DNS_QUERY_REQUEST,
-            /// A pointer to a DNS_QUERY_RESULT structure that contains
-            /// the results of the query. On input,
-            /// the version member of pQueryResults must be [`DNS_QUERY_RESULTS_VERSION1`]
-            /// and all other members should be NULL. On output, the remaining members
-            /// will be filled as part of the query complete
+            // A pointer to a DNS_QUERY_RESULT structure that contains
+            // the results of the query. On input,
+            // the version member of pQueryResults must be [`DNS_QUERY_RESULTS_VERSION1`]
+            // and all other members should be NULL. On output, the remaining members
+            // will be filled as part of the query complete
             query_result: *mut DNS_QUERY_RESULT,
-            /// A pointer to a DNS_QUERY_CANCEL structure tha
-            /// can be used to cancel a pending asynchronous query.
-            ///
-            /// ## Note
-            ///
-            /// An application should not free this structure until
-            /// the DNS_QUERY_COMPLETION_ROUTINE callback is invoked.
+            // A pointer to a DNS_QUERY_CANCEL structure tha
+            // can be used to cancel a pending asynchronous query.
+            //
+            // ## Note
+            //
+            // An application should not free this structure until
+            // the DNS_QUERY_COMPLETION_ROUTINE callback is invoked.
             cancel_handle: *mut DNS_QUERY_CANCEL,
         ) -> u32;
 
@@ -801,6 +802,6 @@ mod ffi {
         /// DnsRecordListFree:
         /// Official docs:
         /// <https://learn.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnsrecordlistfree>
-        pub(super) fn DnsRecordListFree(record_list: *mut c_void, free_type: DNS_FREE_TYPE);
+        pub(super) fn DnsRecordListFree(record_list: *mut c_void, free_type: DnsFreeType);
     }
 }

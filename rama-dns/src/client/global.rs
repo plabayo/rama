@@ -8,9 +8,9 @@ use rama_net::address::Domain;
 
 use crate::client::resolver::{BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver};
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
 use crate::client::{DenyAllDnsResolver, HickoryDnsResolver};
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
 use rama_core::telemetry::tracing;
 
 static GLOBAL_DNS_RESOLVER: OnceLock<BoxDnsResolver> = OnceLock::new();
@@ -123,12 +123,12 @@ fn init_default_global_dns_resolver() -> BoxDnsResolver {
     super::AppleDnsResolver::new().into_box_dns_resolver()
 }
 
-#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn init_default_global_dns_resolver() -> BoxDnsResolver {
     super::WindowsDnsResolver::new().into_box_dns_resolver()
 }
 
-#[cfg(all(not(target_vendor = "apple"), not(target_os = "windows")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
 fn init_default_global_dns_resolver() -> BoxDnsResolver {
     tracing::debug!(
         "no global dns resolver configured by user: init (default) global (hickory) DNS resolver"
