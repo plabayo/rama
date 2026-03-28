@@ -10,9 +10,8 @@ use super::proto::{
     ProtoMetric, ProtoResource, ProtoResourceMetrics, ProtoScopeMetrics, ProtoSum, ResourceSpans,
     ScopeSpans, Span, Status,
 };
-use rama_core::telemetry::opentelemetry;
 use rama_core::telemetry::opentelemetry::{
-    Array, Value,
+    self, Array, Value,
     sdk::{
         Resource,
         metrics::{
@@ -29,6 +28,8 @@ use rama_core::telemetry::opentelemetry::{
     },
     trace as otrace,
 };
+use rama_core::telemetry::tracing;
+
 use std::{
     collections::HashMap,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -50,32 +51,40 @@ fn to_nanos(time: SystemTime) -> u64 {
 // Common: attributes + values
 // ──────────────────────────────────────────────
 
-fn key_value_from(kv: opentelemetry::KeyValue) -> KeyValue {
-    KeyValue {
-        key: kv.key.as_str().to_owned(),
-        value: Some(value_into_any(kv.value)),
+fn key_value_from(kv: opentelemetry::KeyValue) -> Option<KeyValue> {
+    let key = kv.key.as_str().to_owned();
+    let value = value_into_any(kv.value).or_else(|| {
+        tracing::debug!("dropping unsupported otel attribute key={key}");
+        None
+    })?;
+
+    Some(KeyValue {
+        key,
+        value: Some(value),
         ..Default::default()
-    }
+    })
 }
 
-fn key_value_from_ref(key: &opentelemetry::Key, value: &Value) -> KeyValue {
-    KeyValue {
-        key: key.as_str().to_owned(),
-        value: Some(value_into_any(value.clone())),
+fn key_value_from_ref(key: &opentelemetry::Key, value: &Value) -> Option<KeyValue> {
+    let key = key.as_str().to_owned();
+    let value = value_into_any(value.clone()).or_else(|| {
+        tracing::debug!("dropping unsupported otel attribute key={key}");
+        None
+    })?;
+
+    Some(KeyValue {
+        key,
+        value: Some(value),
         ..Default::default()
-    }
+    })
 }
 
-fn key_value_from_kv_ref(kv: &opentelemetry::KeyValue) -> KeyValue {
-    KeyValue {
-        key: kv.key.as_str().to_owned(),
-        value: Some(value_into_any(kv.value.clone())),
-        ..Default::default()
-    }
+fn key_value_from_kv_ref(kv: &opentelemetry::KeyValue) -> Option<KeyValue> {
+    key_value_from_ref(&kv.key, &kv.value)
 }
 
-fn value_into_any(value: Value) -> AnyValue {
-    AnyValue {
+fn value_into_any(value: Value) -> Option<AnyValue> {
+    Some(AnyValue {
         value: match value {
             Value::Bool(val) => Some(proto::any_value::Value::BoolValue(val)),
             Value::I64(val) => Some(proto::any_value::Value::IntValue(val)),
@@ -86,11 +95,17 @@ fn value_into_any(value: Value) -> AnyValue {
                 Array::I64(vals) => array_into_proto(vals),
                 Array::F64(vals) => array_into_proto(vals),
                 Array::String(vals) => array_into_proto(vals),
-                _ => unreachable!("nonexistent array type"),
+                other => {
+                    tracing::debug!("unkown array value ({other:?}): please report bug in rama");
+                    return None;
+                }
             })),
-            _ => unreachable!("nonexistent value type"),
+            other => {
+                tracing::debug!("unkown value value ({other:?}): please report bug in rama");
+                return None;
+            }
         },
-    }
+    })
 }
 
 fn array_into_proto<T>(vals: Vec<T>) -> ArrayValue
@@ -99,19 +114,19 @@ where
 {
     let values = vals
         .into_iter()
-        .map(|val| value_into_any(Value::from(val)))
+        .filter_map(|val| value_into_any(Value::from(val)))
         .collect();
     ArrayValue { values }
 }
 
 fn attributes_from_iter<I: IntoIterator<Item = opentelemetry::KeyValue>>(kvs: I) -> Vec<KeyValue> {
-    kvs.into_iter().map(key_value_from).collect()
+    kvs.into_iter().filter_map(key_value_from).collect()
 }
 
 fn resource_attributes(resource: &Resource) -> Vec<KeyValue> {
     resource
         .iter()
-        .map(|(k, v)| key_value_from(opentelemetry::KeyValue::new(k.clone(), v.clone())))
+        .filter_map(|(k, v)| key_value_from(opentelemetry::KeyValue::new(k.clone(), v.clone())))
         .collect()
 }
 
@@ -308,7 +323,7 @@ fn sdk_resource_into(resource: &Resource) -> ProtoResource {
     ProtoResource {
         attributes: resource
             .iter()
-            .map(|(k, v)| key_value_from_ref(k, v))
+            .filter_map(|(k, v)| key_value_from_ref(k, v))
             .collect(),
         dropped_attributes_count: 0,
         ..Default::default()
@@ -352,10 +367,10 @@ impl Numeric for u64 {
         self as f64
     }
     fn into_exemplar_value(self) -> proto::exemplar::Value {
-        proto::exemplar::Value::AsInt(i64::try_from(self).unwrap_or_default())
+        proto::exemplar::Value::AsInt(saturating_u64_to_i64(self))
     }
     fn into_data_point_value(self) -> proto::number_data_point::Value {
-        proto::number_data_point::Value::AsInt(i64::try_from(self).unwrap_or_default())
+        proto::number_data_point::Value::AsInt(saturating_u64_to_i64(self))
     }
 }
 
@@ -394,12 +409,34 @@ fn metric_data_into<T: Numeric + std::fmt::Debug>(data: &SdkMetricData<T>) -> pr
     }
 }
 
+#[allow(clippy::match_same_arms)]
 fn temporality_into(t: Temporality) -> i32 {
     use proto::AggregationTemporality;
     match t {
         Temporality::Delta => AggregationTemporality::Delta as i32,
-        _ => AggregationTemporality::Cumulative as i32,
+        Temporality::Cumulative => AggregationTemporality::Cumulative as i32,
+        // LowMemory is an exporter preference. By the time metrics reach this
+        // transform, the SDK has already normalized it to a concrete temporality
+        // per instrument kind.
+        Temporality::LowMemory => AggregationTemporality::Cumulative as i32,
+        other => {
+            tracing::debug!(
+                "unknown temporality {:?}, defaulting to cumulative for otlp export",
+                other
+            );
+            AggregationTemporality::Cumulative as i32
+        }
     }
+}
+
+fn saturating_u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or_else(|err| {
+        tracing::debug!(
+            %err,
+            "saturating otlp integer value from u64 to i64::MAX: original={value}"
+        );
+        i64::MAX
+    })
 }
 
 fn gauge_into<T: Numeric>(gauge: &SdkGauge<T>) -> ProtoGauge {
@@ -407,7 +444,7 @@ fn gauge_into<T: Numeric>(gauge: &SdkGauge<T>) -> ProtoGauge {
         data_points: gauge
             .data_points()
             .map(|dp| NumberDataPoint {
-                attributes: dp.attributes().map(key_value_from_kv_ref).collect(),
+                attributes: dp.attributes().filter_map(key_value_from_kv_ref).collect(),
                 start_time_unix_nano: gauge.start_time().map(to_nanos).unwrap_or_default(),
                 time_unix_nano: to_nanos(gauge.time()),
                 exemplars: dp.exemplars().map(exemplar_into).collect(),
@@ -423,7 +460,7 @@ fn sum_into<T: Numeric>(sum: &SdkSum<T>) -> ProtoSum {
         data_points: sum
             .data_points()
             .map(|dp| NumberDataPoint {
-                attributes: dp.attributes().map(key_value_from_kv_ref).collect(),
+                attributes: dp.attributes().filter_map(key_value_from_kv_ref).collect(),
                 start_time_unix_nano: to_nanos(sum.start_time()),
                 time_unix_nano: to_nanos(sum.time()),
                 exemplars: dp.exemplars().map(exemplar_into).collect(),
@@ -441,7 +478,7 @@ fn histogram_into<T: Numeric>(hist: &SdkHistogram<T>) -> ProtoHistogram {
         data_points: hist
             .data_points()
             .map(|dp| HistogramDataPoint {
-                attributes: dp.attributes().map(key_value_from_kv_ref).collect(),
+                attributes: dp.attributes().filter_map(key_value_from_kv_ref).collect(),
                 start_time_unix_nano: to_nanos(hist.start_time()),
                 time_unix_nano: to_nanos(hist.time()),
                 count: dp.count(),
@@ -463,7 +500,7 @@ fn exp_histogram_into<T: Numeric>(hist: &SdkExponentialHistogram<T>) -> ProtoExp
         data_points: hist
             .data_points()
             .map(|dp| ExponentialHistogramDataPoint {
-                attributes: dp.attributes().map(key_value_from_kv_ref).collect(),
+                attributes: dp.attributes().filter_map(key_value_from_kv_ref).collect(),
                 start_time_unix_nano: to_nanos(hist.start_time()),
                 time_unix_nano: to_nanos(hist.time()),
                 count: u64::try_from(dp.count()).unwrap_or(u64::MAX),
@@ -493,11 +530,67 @@ fn exemplar_into<T: Numeric>(ex: &SdkExemplar<T>) -> ProtoExemplar {
     ProtoExemplar {
         filtered_attributes: ex
             .filtered_attributes()
-            .map(|kv| key_value_from_ref(&kv.key, &kv.value))
+            .filter_map(|kv| key_value_from_ref(&kv.key, &kv.value))
             .collect(),
         time_unix_nano: to_nanos(ex.time()),
         span_id: ex.span_id().into(),
         trace_id: ex.trace_id().into(),
         value: Some(ex.value.into_exemplar_value()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{attributes_from_iter, key_value_from, saturating_u64_to_i64, temporality_into};
+    use crate::service::opentelemetry::proto;
+    use rama_core::telemetry::opentelemetry::{self, sdk::metrics::Temporality};
+
+    #[test]
+    fn attributes_keep_supported_values() {
+        let attrs = attributes_from_iter([opentelemetry::KeyValue::new("a", "b")]);
+
+        assert_eq!(attrs.len(), 1);
+        assert!(attrs[0].value.is_some());
+    }
+
+    #[test]
+    fn key_value_from_sets_value_for_supported_attribute() {
+        let attr = key_value_from(opentelemetry::KeyValue::new("answer", 42_i64))
+            .expect("supported attribute should be converted");
+
+        assert_eq!(attr.key, "answer");
+        assert!(matches!(
+            attr.value.and_then(|v| v.value),
+            Some(proto::any_value::Value::IntValue(42))
+        ));
+    }
+
+    #[test]
+    fn saturating_u64_to_i64_caps_at_i64_max() {
+        assert_eq!(saturating_u64_to_i64(u64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn temporality_into_maps_delta() {
+        assert_eq!(
+            temporality_into(Temporality::Delta),
+            proto::AggregationTemporality::Delta as i32
+        );
+    }
+
+    #[test]
+    fn temporality_into_maps_cumulative() {
+        assert_eq!(
+            temporality_into(Temporality::Cumulative),
+            proto::AggregationTemporality::Cumulative as i32
+        );
+    }
+
+    #[test]
+    fn temporality_into_maps_low_memory_to_cumulative() {
+        assert_eq!(
+            temporality_into(Temporality::LowMemory),
+            proto::AggregationTemporality::Cumulative as i32
+        );
     }
 }
