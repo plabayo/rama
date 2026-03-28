@@ -1,7 +1,7 @@
 //! Resolve one or more domains using Rama's native DNS support.
 //!
 //! - On Apple platforms this example uses `AppleDnsResolver`.
-//! - On Apple platforms this example uses `WindowsDnsResolver`.
+//! - On Windows platforms this example uses `WindowsDnsResolver`.
 //! - On other platforms it exits successfully after printing
 //!   that the example is Apple/Windows only for now.
 //!

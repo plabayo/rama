@@ -120,11 +120,17 @@ fn global_dns_resolver() -> &'static BoxDnsResolver {
 
 #[cfg(target_vendor = "apple")]
 fn init_default_global_dns_resolver() -> BoxDnsResolver {
+    tracing::debug!(
+        "no global dns resolver configured by user: init (default) global (Apple Native) DNS resolver"
+    );
     super::AppleDnsResolver::new().into_box_dns_resolver()
 }
 
 #[cfg(target_os = "windows")]
 fn init_default_global_dns_resolver() -> BoxDnsResolver {
+    tracing::debug!(
+        "no global dns resolver configured by user: init (default) global (Windows Native) DNS resolver"
+    );
     super::WindowsDnsResolver::new().into_box_dns_resolver()
 }
 
