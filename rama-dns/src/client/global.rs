@@ -123,7 +123,12 @@ fn init_default_global_dns_resolver() -> BoxDnsResolver {
     super::AppleDnsResolver::new().into_box_dns_resolver()
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
+fn init_default_global_dns_resolver() -> BoxDnsResolver {
+    super::WindowsDnsResolver::new().into_box_dns_resolver()
+}
+
+#[cfg(all(not(target_vendor = "apple"), not(target_os = "windows")))]
 fn init_default_global_dns_resolver() -> BoxDnsResolver {
     tracing::debug!(
         "no global dns resolver configured by user: init (default) global (hickory) DNS resolver"

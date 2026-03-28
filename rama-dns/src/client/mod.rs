@@ -10,6 +10,12 @@ mod apple;
 #[doc(inline)]
 pub use self::apple::AppleDnsResolver;
 
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+#[doc(inline)]
+pub use self::windows::WindowsDnsResolver;
+
 mod deny_all;
 #[doc(inline)]
 pub use self::deny_all::{DenyAllDnsResolver, DnsDeniedError};
