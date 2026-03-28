@@ -140,7 +140,6 @@ opentelemetry-otlp = { version = "0.31", default-features = false, features = ["
 opentelemetry-semantic-conventions = { version = "0.31", features = ["semconv_experimental"] }
 opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
 parking_lot = "0.12"
-windows-sys = "0.61"
 percent-encoding = "2.3"
 pin-project-lite = "0.2"
 prettyplease = "0.2"
@@ -236,6 +235,7 @@ walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
 wildcard = "0.3"
+windows-sys = "0.61"
 x509-parser = { version = "0.18", default-features = false }
 zstd = "0.13"
 

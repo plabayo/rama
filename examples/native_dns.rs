@@ -20,10 +20,8 @@ use rama::{error::BoxError, telemetry::tracing};
 #[cfg(any(target_vendor = "apple", target_os = "windows"))]
 use ::{
     rama::{
-        dns::client::{
-            resolver::{
-                DnsAddressResolver as _, DnsTxtResolver as _, HappyEyeballAddressResolverExt,
-            },
+        dns::client::resolver::{
+            DnsAddressResolver as _, DnsTxtResolver as _, HappyEyeballAddressResolverExt,
         },
         error::ErrorContext as _,
         futures::StreamExt as _,
@@ -33,10 +31,10 @@ use ::{
     tokio::task::JoinSet,
 };
 
-#[cfg(target_vendor =  "apple")]
+#[cfg(target_vendor = "apple")]
 use rama::dns::client::AppleDnsResolver as NativeDnsResolver;
 
-#[cfg(target_os =  "windows")]
+#[cfg(target_os = "windows")]
 use rama::dns::client::WindowsDnsResolver as NativeDnsResolver;
 
 #[derive(Debug, Clone, Copy)]
