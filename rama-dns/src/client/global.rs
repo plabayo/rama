@@ -3,15 +3,13 @@ use std::{
     sync::OnceLock,
 };
 
-use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream};
+use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream, telemetry::tracing};
 use rama_net::address::Domain;
 
 use crate::client::resolver::{BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver};
 
 #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
 use crate::client::{DenyAllDnsResolver, HickoryDnsResolver};
-#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
-use rama_core::telemetry::tracing;
 
 static GLOBAL_DNS_RESOLVER: OnceLock<BoxDnsResolver> = OnceLock::new();
 
