@@ -1,5 +1,9 @@
 use ahash::HashMap;
-use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
+use jiff::{
+    Timestamp, civil,
+    fmt::{rfc2822, strtime},
+    tz::TimeZone,
+};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use std::fmt::{Display, Formatter};
@@ -8,7 +12,7 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirectiveDateTime {
-    value: DateTime<Utc>,
+    value: Timestamp,
     parsed_format: Option<ParsedFormat>,
 }
 
@@ -28,8 +32,15 @@ impl DirectiveDateTime {
         min: u32,
         sec: u32,
     ) -> Result<Self, BoxError> {
-        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
-            .single()
+        let year = i16::try_from(year).context("invalid date-time input")?;
+        let month = i8::try_from(month).context("invalid date-time input")?;
+        let day = i8::try_from(day).context("invalid date-time input")?;
+        let hour = i8::try_from(hour).context("invalid date-time input")?;
+        let min = i8::try_from(min).context("invalid date-time input")?;
+        let sec = i8::try_from(sec).context("invalid date-time input")?;
+
+        TimeZone::UTC
+            .to_timestamp(civil::date(year, month, day).at(hour, min, sec, 0))
             .context("invalid date-time input")
             .map(Into::into)
     }
@@ -67,24 +78,24 @@ impl DirectiveDateTime {
     }
 
     #[must_use]
-    pub fn date_time(&self) -> &DateTime<Utc> {
+    pub fn date_time(&self) -> &Timestamp {
         &self.value
     }
 
     #[must_use]
-    pub fn into_date_time(self) -> DateTime<Utc> {
+    pub fn into_date_time(self) -> Timestamp {
         self.value
     }
 }
 
-impl From<DirectiveDateTime> for DateTime<Utc> {
+impl From<DirectiveDateTime> for Timestamp {
     fn from(value: DirectiveDateTime) -> Self {
         value.value
     }
 }
 
-impl From<DateTime<Utc>> for DirectiveDateTime {
-    fn from(value: DateTime<Utc>) -> Self {
+impl From<Timestamp> for DirectiveDateTime {
+    fn from(value: Timestamp) -> Self {
         Self {
             value,
             parsed_format: None,
@@ -92,8 +103,8 @@ impl From<DateTime<Utc>> for DirectiveDateTime {
     }
 }
 
-impl AsRef<DateTime<Utc>> for DirectiveDateTime {
-    fn as_ref(&self) -> &DateTime<Utc> {
+impl AsRef<Timestamp> for DirectiveDateTime {
+    fn as_ref(&self) -> &Timestamp {
         &self.value
     }
 }
@@ -102,21 +113,21 @@ impl FromStr for DirectiveDateTime {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        if let Ok(dt) = datetime_from_rfc3339(s) {
             return Ok(Self {
-                value: dt.with_timezone(&Utc),
+                value: dt,
                 parsed_format: Some(ParsedFormat::RFC3339),
             });
         }
-        if let Ok(dt) = DateTime::parse_from_rfc2822(s) {
+        if let Ok(dt) = rfc2822::DateTimeParser::new().parse_timestamp(s) {
             return Ok(Self {
-                value: dt.with_timezone(&Utc),
+                value: dt,
                 parsed_format: Some(ParsedFormat::RFC2822),
             });
         }
         if let Ok(dt) = datetime_from_rfc_850(s) {
             return Ok(Self {
-                value: dt.with_timezone(&Utc),
+                value: dt,
                 parsed_format: Some(ParsedFormat::RFC850),
             });
         }
@@ -128,37 +139,92 @@ impl FromStr for DirectiveDateTime {
 impl Display for DirectiveDateTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.parsed_format {
-            Some(ParsedFormat::RFC2822) | None => self.value.to_rfc2822().fmt(f),
-            Some(ParsedFormat::RFC3339) => self.value.to_rfc3339().fmt(f),
-            Some(ParsedFormat::RFC850) => self.value.format("%A, %d-%b-%y %T").fmt(f),
+            Some(ParsedFormat::RFC2822) | None => {
+                rfc2822::to_string(&self.value.to_zoned(TimeZone::UTC))
+                    .map_err(|_| std::fmt::Error)?
+                    .fmt(f)
+            }
+            Some(ParsedFormat::RFC3339) => self
+                .value
+                .to_zoned(TimeZone::UTC)
+                .strftime("%Y-%m-%dT%H:%M:%S+00:00")
+                .fmt(f),
+            Some(ParsedFormat::RFC850) => self
+                .value
+                .to_zoned(TimeZone::UTC)
+                .strftime("%A, %d-%b-%y %H:%M:%S")
+                .fmt(f),
         }
     }
 }
 
-fn datetime_from_rfc_850(s: &str) -> Result<DateTime<FixedOffset>, BoxError> {
-    let (naive_date_time, remainder) = NaiveDateTime::parse_and_remainder(s, "%A, %d-%b-%y %T")
-        .context("failed to parse naive datetime")
-        .context_str_field("str", s)?;
-
-    let fixed_offset = offset_from_abbreviation(remainder)?;
-
-    Ok(DateTime::from_naive_utc_and_offset(
-        naive_date_time,
-        fixed_offset,
-    ))
+fn datetime_from_rfc3339(s: &str) -> Result<Timestamp, BoxError> {
+    validate_rfc3339_offset(s)?;
+    s.parse::<Timestamp>()
+        .context("failed to parse RFC 3339 datetime")
+        .context_str_field("str", s)
 }
 
-fn offset_from_abbreviation(remainder: &str) -> Result<FixedOffset, BoxError> {
+fn datetime_from_rfc_850(s: &str) -> Result<Timestamp, BoxError> {
+    let (datetime, remainder) = s
+        .rsplit_once(' ')
+        .context("failed to split datetime and timezone abbreviation")
+        .context_str_field("str", s)?;
+
+    let datetime = civil::DateTime::strptime("%A, %d-%b-%y %H:%M:%S", datetime)
+        .context("failed to parse RFC 850 date-time")
+        .context_str_field("str", s)?;
+    let offset = offset_from_abbreviation(remainder)?;
+    let offset = strtime::parse("%z", &offset)
+        .context("failed to parse RFC 850 timezone offset")
+        .context_str_field("str", s)?
+        .offset()
+        .context("missing RFC 850 timezone offset")
+        .context_str_field("str", s)?;
+
+    offset
+        .to_timestamp(datetime)
+        .context("failed to parse RFC 850 datetime")
+        .context_str_field("str", s)
+}
+
+fn validate_rfc3339_offset(s: &str) -> Result<(), BoxError> {
+    if s.ends_with('Z') {
+        return Ok(());
+    }
+
+    let suffix = s
+        .get(s.len().saturating_sub(6)..)
+        .context("missing RFC 3339 offset suffix")
+        .context_str_field("str", s)?;
+    let bytes = suffix.as_bytes();
+
+    match bytes {
+        [b'+' | b'-', h1, h2, b':', m1, m2]
+            if h1.is_ascii_digit()
+                && h2.is_ascii_digit()
+                && m1.is_ascii_digit()
+                && m2.is_ascii_digit() =>
+        {
+            let hour = (h1 - b'0') * 10 + (h2 - b'0');
+            let minute = (m1 - b'0') * 10 + (m2 - b'0');
+            if hour < 24 && minute < 60 {
+                Ok(())
+            } else {
+                Err(BoxError::from("invalid RFC 3339 offset"))
+            }
+        }
+        _ => Err(BoxError::from("invalid RFC 3339 offset")),
+    }
+}
+
+fn offset_from_abbreviation(remainder: &str) -> Result<String, BoxError> {
     let abbreviation = get_timezone_map()
         .get(remainder.trim())
         .context("invalid abbreviation")
         .context_str_field("remainder", remainder)?;
 
-    abbreviation
-        .parse()
-        .context("failed to parse timezone abbreviation")
-        .context_str_field("abbreviation", *abbreviation)
-        .context_str_field("remainder", remainder)
+    Ok(abbreviation.replace('−', "-"))
 }
 
 static TIMEZONE_MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();

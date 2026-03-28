@@ -20,9 +20,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 ahash = { workspace = true }
 base64 = { workspace = true }
-chrono = { workspace = true }
 const_format = { workspace = true }
 httpdate = { workspace = true }
+jiff = { workspace = true }
 rama-core = { workspace = true }
 rama-http-types = { workspace = true }
 rama-macros = { workspace = true }
