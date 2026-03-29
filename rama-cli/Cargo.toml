@@ -28,6 +28,7 @@ mimalloc = { workspace = true, optional = true }
 rama = { version = "0.3.0-rc1", path = "..", features = [
     "boring",
     "cli",
+    "dns-hickory",
     "tcp",
     "udp",
     "http-full",

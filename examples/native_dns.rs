@@ -1,8 +1,9 @@
 //! Resolve one or more domains using Rama's native DNS support.
 //!
-//! On Apple platforms this example uses [`rama::dns::client::AppleDnsResolver`].
-//! On other platforms it exits successfully after printing that the example is
-//! Apple-only for now.
+//! - On Apple platforms this example uses `AppleDnsResolver`.
+//! - On Windows platforms this example uses `WindowsDnsResolver`.
+//! - On other platforms it exits successfully after printing
+//!   that the example is Apple/Windows only for now.
 //!
 //! ```sh
 //! cargo run --example native_dns --features=dns -- localhost
@@ -10,24 +11,25 @@
 //! cargo run --example native_dns --features=dns -- TXT example.com
 //! ```
 
-use tracing_subscriber::{
-    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
-};
-
-use rama::{error::BoxError, telemetry::tracing};
-
-#[cfg(target_vendor = "apple")]
 use ::{
     rama::{
         dns::client::{
-            AppleDnsResolver,
+            NativeDnsResolver,
             resolver::{
                 DnsAddressResolver as _, DnsTxtResolver as _, HappyEyeballAddressResolverExt,
             },
         },
+        error::BoxError,
         error::ErrorContext as _,
         futures::StreamExt as _,
         net::address::Domain,
+        telemetry::tracing::{
+            self,
+            subscriber::{
+                EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt as _,
+                util::SubscriberInitExt as _,
+            },
+        },
     },
     std::str::FromStr,
     tokio::task::JoinSet,
@@ -83,32 +85,22 @@ async fn main() -> Result<(), BoxError> {
         std::process::exit(1);
     }
 
-    #[cfg(target_vendor = "apple")]
-    {
-        let resolver = AppleDnsResolver::new();
-        let domains = args
-            .into_iter()
-            .map(|arg| Domain::from_str(&arg))
-            .collect::<Result<Vec<_>, _>>()?;
+    let resolver = NativeDnsResolver::new();
+    let domains = args
+        .into_iter()
+        .map(|arg| Domain::from_str(&arg))
+        .collect::<Result<Vec<_>, _>>()?;
 
-        let mut join_set = JoinSet::new();
-        for domain in domains {
-            let resolver = resolver.clone();
-            join_set.spawn(async move { resolve_domain(&resolver, record_type, domain).await });
-        }
-
-        while let Some(result) = join_set.join_next().await {
-            result
-                .context("wait for resolve task")?
-                .context("resolve")?;
-        }
+    let mut join_set = JoinSet::new();
+    for domain in domains {
+        let resolver = resolver.clone();
+        join_set.spawn(async move { resolve_domain(&resolver, record_type, domain).await });
     }
 
-    #[cfg(not(target_vendor = "apple"))]
-    {
-        let _ = record_type;
-        let _ = args;
-        println!("native_dns example is Apple-only for now");
+    while let Some(result) = join_set.join_next().await {
+        result
+            .context("wait for resolve task")?
+            .context("resolve")?;
     }
 
     Ok(())
@@ -118,9 +110,8 @@ fn print_usage() {
     eprintln!("usage: native_dns [A|AAAA|TXT] <domain> [domain...]");
 }
 
-#[cfg(target_vendor = "apple")]
 async fn resolve_domain(
-    resolver: &AppleDnsResolver,
+    resolver: &NativeDnsResolver,
     record_type: RecordType,
     domain: Domain,
 ) -> Result<(), BoxError> {

@@ -29,11 +29,11 @@ internal-logs = ["rama-core/opentelemetry"]
 [dependencies]
 base64 = { workspace = true }
 flate2 = { workspace = true, optional = true }
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 radix_trie = { workspace = true }
-parking_lot = { workspace = true }
 rama-core = { workspace = true }
 rama-grpc-build = { workspace = true }
 rama-http = { workspace = true }

@@ -3060,8 +3060,10 @@ name = "rama-dns"
 version = "0.3.0-rc1"
 dependencies = [
  "ahash",
+ "bindgen",
  "hickory-resolver",
  "libc",
+ "moka",
  "parking_lot",
  "pin-project-lite",
  "rama-core",
@@ -3071,6 +3073,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
