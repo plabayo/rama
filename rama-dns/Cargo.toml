@@ -38,7 +38,7 @@ parking_lot = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 ahash = { workspace = true }
 libc = { workspace = true }
-moka = { workspace = true }
+moka = { workspace = true, features = ["sync"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_Dns"] }

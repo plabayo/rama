@@ -11,6 +11,7 @@ use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo};
 use rama_core::{
     error::BoxError,
     futures::{Stream, async_stream::stream_fn},
+    stream::{StreamExt, wrappers::ReceiverStream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
@@ -47,14 +48,22 @@ where
     stream_fn(async move |mut yielder| {
         tracing::debug!(?timeout, %domain, family, "dns::linux: getaddrinfo query");
 
-        let (tx, mut rx) = mpsc::channel(8);
+        let (tx, rx) = mpsc::channel(8);
         let join = tokio::task::spawn_blocking(move || lookup(domain, family, tx));
 
-        loop {
-            match tokio::time::timeout(timeout, rx.recv()).await {
-                Ok(Some(item)) => yielder.yield_item(item).await,
-                Ok(None) => break,
-                Err(_) => {
+        let mut stream = std::pin::pin!(ReceiverStream::new(rx).timeout(timeout));
+
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(item) => yielder.yield_item(item).await,
+                Err(err) => {
+                    tracing::debug!(
+                        %err,
+                        "linux::getaddrinfo: item failed to resolve on time: return timeout error",
+                    );
+                    // `res_nquery` is a blocking libc call, so timing out here only stops
+                    // waiting for the worker result; it does not cancel the underlying OS
+                    // resolver call once it has started.
                     yielder
                         .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
                         .await;
