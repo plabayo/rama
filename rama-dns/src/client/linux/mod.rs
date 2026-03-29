@@ -164,7 +164,9 @@ impl DnsAddressResolver for LinuxDnsResolver {
             domain,
             self.timeout,
             self.cache_ttl,
-            self.cache.ipv4.clone(),
+            self.cache.clone(),
+            move |cache, domain| cache.get_ipv4(domain),
+            move |cache, domain, values| cache.insert_ipv4(domain, values),
             lookup_ipv4_uncached_stream,
         )
     }
@@ -177,7 +179,9 @@ impl DnsAddressResolver for LinuxDnsResolver {
             domain,
             self.timeout,
             self.cache_ttl,
-            self.cache.ipv6.clone(),
+            self.cache.clone(),
+            move |cache, domain| cache.get_ipv6(domain),
+            move |cache, domain, values| cache.insert_ipv6(domain, values),
             lookup_ipv6_uncached_stream,
         )
     }
@@ -194,7 +198,9 @@ impl DnsTxtResolver for LinuxDnsResolver {
             domain,
             self.timeout,
             self.cache_ttl,
-            self.cache.txt.clone(),
+            self.cache.clone(),
+            move |cache, domain| cache.get_txt(domain),
+            move |cache, domain, values| cache.insert_txt(domain, values),
             lookup_txt_uncached_stream,
         )
     }
@@ -202,20 +208,24 @@ impl DnsTxtResolver for LinuxDnsResolver {
 
 impl DnsResolver for LinuxDnsResolver {}
 
-fn lookup_cached_stream<T, S, F>(
+fn lookup_cached_stream<T, S, G, I, F>(
     domain: Domain,
     timeout: Duration,
     cache_ttl: Duration,
-    cache: cache::RecordCache<T>,
+    cache: Arc<cache::LinuxDnsCache>,
+    get_cached: G,
+    insert_cached: I,
     lookup: F,
 ) -> impl Stream<Item = Result<T, BoxError>> + Send
 where
     T: Clone + Send + Sync + 'static,
     S: Stream<Item = Result<T, BoxError>> + Send + 'static,
+    G: Fn(&cache::LinuxDnsCache, &Domain) -> Option<Arc<[T]>> + Send + 'static,
+    I: Fn(&cache::LinuxDnsCache, Domain, Vec<T>) + Send + 'static,
     F: FnOnce(Domain, Duration) -> S + Send + 'static,
 {
     stream_fn(async move |mut yielder| {
-        if let Some(values) = cache.get(&domain) {
+        if let Some(values) = get_cached(&cache, &domain) {
             tracing::debug!(?cache_ttl, %domain, "dns::linux: cache hit");
             for value in values.iter().cloned() {
                 yielder.yield_item(Ok(value)).await;
@@ -238,7 +248,7 @@ where
             }
         }
 
-        cache.insert(domain, values);
+        insert_cached(&cache, domain, values);
     })
 }
 
