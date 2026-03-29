@@ -43,11 +43,11 @@ moka = { workspace = true }
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_Dns"] }
 
-[dev-dependencies]
-ahash = { workspace = true }
-
 [build-dependencies]
 bindgen = "0.72"
+
+[dev-dependencies]
+ahash = { workspace = true }
 
 [lints]
 workspace = true
