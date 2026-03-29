@@ -140,6 +140,13 @@ impl LinuxDnsResolver {
         self.cache_capacity
     }
 
+    generate_set_and_with! {
+        pub fn timeout(mut self, timeout: Duration) -> Self {
+            self.timeout = timeout;
+            self
+        }
+    }
+
     #[must_use]
     pub fn builder() -> LinuxDnsResolverBuilder {
         LinuxDnsResolverBuilder::default()

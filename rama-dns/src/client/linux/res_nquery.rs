@@ -106,7 +106,7 @@ where
 #[allow(clippy::needless_pass_by_value)]
 fn lookup_record_packet(domain: Domain, rrtype: libc::c_int) -> Result<Option<Vec<u8>>, BoxError> {
     let name = dns_name_from_domain(domain.as_str())?;
-    let mut state: ffi::__res_state = unsafe { mem::zeroed() };
+    let mut state: ffi::res_state = unsafe { mem::zeroed() };
 
     // SAFETY: `state` points to writable resolver context storage.
     if unsafe { ffi::res_ninit(&mut state) } != 0 {
@@ -147,7 +147,7 @@ fn lookup_record_packet(domain: Domain, rrtype: libc::c_int) -> Result<Option<Ve
     Ok(Some(buffer))
 }
 
-struct ResStateGuard(*mut ffi::__res_state);
+struct ResStateGuard(*mut ffi::res_state);
 
 impl Drop for ResStateGuard {
     fn drop(&mut self) {
@@ -322,7 +322,7 @@ mod ffi {
     }
 
     #[repr(C)]
-    pub(super) struct __res_state {
+    pub(super) struct res_state {
         retrans: c_int,
         retry: c_int,
         options: libc::c_ulong,
@@ -349,11 +349,11 @@ mod ffi {
     #[link(name = "resolv")]
     unsafe extern "C" {
         #[link_name = "__res_ninit"]
-        pub(super) fn res_ninit(state: *mut __res_state) -> c_int;
+        pub(super) fn res_ninit(state: *mut res_state) -> c_int;
         #[link_name = "__res_nclose"]
-        pub(super) fn res_nclose(state: *mut __res_state);
+        pub(super) fn res_nclose(state: *mut res_state);
         pub(super) fn res_nquery(
-            state: *mut __res_state,
+            state: *mut res_state,
             dname: *const c_char,
             class: c_int,
             typ: c_int,
@@ -365,10 +365,10 @@ mod ffi {
     #[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
     #[link(name = "resolv")]
     unsafe extern "C" {
-        pub(super) fn res_ninit(state: *mut __res_state) -> c_int;
-        pub(super) fn res_nclose(state: *mut __res_state);
+        pub(super) fn res_ninit(state: *mut res_state) -> c_int;
+        pub(super) fn res_nclose(state: *mut res_state);
         pub(super) fn res_nquery(
-            state: *mut __res_state,
+            state: *mut res_state,
             dname: *const c_char,
             class: c_int,
             typ: c_int,

@@ -19,13 +19,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
+hickory = ["dep:hickory-resolver"]
 
 [dependencies]
-ahash = { workspace = true }
-hickory-resolver = { workspace = true }
-libc = { workspace = true }
-moka = { workspace = true }
-parking_lot = { workspace = true }
+hickory-resolver = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
@@ -35,10 +32,19 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "sync"] }
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(any(target_vendor = "apple", target_os = "windows"))'.dependencies]
+parking_lot = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ahash = { workspace = true }
+libc = { workspace = true }
+moka = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_Dns"] }
 
 [dev-dependencies]
+ahash = { workspace = true }
 
 [lints]
 workspace = true

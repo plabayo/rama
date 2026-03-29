@@ -1,6 +1,8 @@
 pub mod resolver;
 
+#[cfg(feature = "hickory")]
 pub mod hickory;
+#[cfg(feature = "hickory")]
 #[doc(inline)]
 pub use self::hickory::HickoryDnsResolver;
 
