@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 
 use super::{LinuxDnsResolverError, dns_name_from_domain};
 
+// Large enough for the common UDP path, but not an upper bound for all resolver
+// responses. We explicitly error if libresolv reports a larger answer.
 const RESPONSE_BUFFER_SIZE: usize = 4096;
 
 pub(super) fn lookup_ipv4_stream(
@@ -73,6 +75,9 @@ where
                 Ok(Some(item)) => yielder.yield_item(item).await,
                 Ok(None) => break,
                 Err(_) => {
+                    // `res_nquery` is a blocking libc call, so timing out here only stops
+                    // waiting for the worker result; it does not cancel the underlying OS
+                    // resolver call once it has started.
                     yielder
                         .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
                         .await;
@@ -139,6 +144,14 @@ fn lookup_record_packet(domain: Domain, rrtype: libc::c_int) -> Result<Option<Ve
         }
         return Err(LinuxDnsResolverError::message(format!(
             "res_nquery failed (h_errno={h_errno})",
+        ))
+        .into());
+    }
+
+    if response_len as usize > buffer.len() {
+        return Err(LinuxDnsResolverError::message(format!(
+            "res_nquery response exceeds buffer: required={response_len} capacity={}",
+            buffer.len()
         ))
         .into());
     }
@@ -285,17 +298,48 @@ fn skip_dns_name(packet: &[u8], mut offset: usize) -> Result<usize, BoxError> {
 mod ffi {
     use libc::{c_char, c_int, sockaddr_in, sockaddr_in6};
 
+    // DNS class/type constants mirrored from glibc's resolver headers.
+    //
+    // Sources:
+    // - https://codebrowser.dev/glibc/glibc/resolv/arpa/nameser_compat.h.html
+    // - https://codebrowser.dev/glibc/glibc/resolv/arpa/nameser.h.html
+
+    /// Internet
     pub(super) const NS_C_IN: u16 = 1;
+
+    /// A (IPv4)
     pub(super) const NS_T_A: u16 = 1;
+    /// TXT
     pub(super) const NS_T_TXT: u16 = 16;
+    /// AAAA (IPv6)
     pub(super) const NS_T_AAAA: u16 = 28;
+
+    // Resolver h_errno values from <netdb.h>.
+    //
+    // Source:
+    // - https://codebrowser.dev/glibc/glibc/resolv/netdb.h.html
+
+    /// Authoritative Answer Host not found.
     pub(super) const HOST_NOT_FOUND: c_int = 1;
+    /// Valid name, no data record of requested type.
     pub(super) const NO_DATA: c_int = 4;
 
+    // Resolver limits from <resolv.h>.
+    //
+    // Source:
+    // - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
+
+    /// Max configured nameservers in `res_state.nsaddr_list` / `ResExt.nsaddrs`.
     const MAXNS: usize = 3;
+    /// Max search domains in `res_state.dnsrch`.
     const MAXDNSRCH: usize = 6;
+    /// Max sortlist entries in `res_state.sort_list`.
     const MAXRESOLVSORT: usize = 10;
 
+    /// Sort address entry embedded in `struct __res_state`.
+    ///
+    /// Source:
+    /// - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct SortAddr {
@@ -303,6 +347,10 @@ mod ffi {
         mask: u32,
     }
 
+    /// Resolver extension block embedded in `struct __res_state`.
+    ///
+    /// Source:
+    /// - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct ResExt {
@@ -315,12 +363,23 @@ mod ffi {
         __glibc_reserved: [u32; 2],
     }
 
+    /// Union used by glibc's resolver state for the trailing extension payload.
+    ///
+    /// Source:
+    /// - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
     #[repr(C)]
     union U {
         pad: [c_char; 52],
         ext: ResExt,
     }
 
+    /// Thread-safe resolver state used by `res_ninit` / `res_nquery`.
+    ///
+    /// This mirrors glibc's resolver state layout so we can call the re-entrant
+    /// libresolv APIs without relying on generated bindings.
+    ///
+    /// Source:
+    /// - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
     #[repr(C)]
     pub(super) struct res_state {
         retrans: c_int,
@@ -345,6 +404,16 @@ mod ffi {
         _u: U,
     }
 
+    // GNU/Linux symbol mapping:
+    // - `res_ninit` is exported as `__res_ninit`
+    // - `res_nclose` is exported as `__res_nclose`
+    // - `res_nquery` is exported as `res_nquery`
+    //
+    // Sources:
+    // - https://codebrowser.dev/glibc/glibc/resolv/res_init.c.html
+    // - https://codebrowser.dev/glibc/glibc/resolv/res-close.c.html
+    // - https://codebrowser.dev/glibc/glibc/resolv/res_query.c.html
+    // - https://man7.org/linux/man-pages/man3/resolver.3.html
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[link(name = "resolv")]
     unsafe extern "C" {
@@ -362,6 +431,13 @@ mod ffi {
         ) -> c_int;
     }
 
+    // BSDs expose the re-entrant libresolv APIs under their public `res_n*`
+    // symbol names.
+    //
+    // Sources:
+    // - https://man.freebsd.org/cgi/man.cgi?query=resolver&sektion=3
+    // - https://man.openbsd.org/resolver.3
+    // - https://man.netbsd.org/resolver.3
     #[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
     #[link(name = "resolv")]
     unsafe extern "C" {
