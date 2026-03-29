@@ -17,11 +17,14 @@ use tracing_subscriber::{
 
 use rama::{error::BoxError, telemetry::tracing};
 
-#[cfg(any(target_vendor = "apple", target_os = "windows"))]
+#[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "linux"))]
 use ::{
     rama::{
-        dns::client::resolver::{
-            DnsAddressResolver as _, DnsTxtResolver as _, HappyEyeballAddressResolverExt,
+        dns::client::{
+            NativeDnsResolver,
+            resolver::{
+                DnsAddressResolver as _, DnsTxtResolver as _, HappyEyeballAddressResolverExt,
+            },
         },
         error::ErrorContext as _,
         futures::StreamExt as _,
@@ -30,12 +33,6 @@ use ::{
     std::str::FromStr,
     tokio::task::JoinSet,
 };
-
-#[cfg(target_vendor = "apple")]
-use rama::dns::client::AppleDnsResolver as NativeDnsResolver;
-
-#[cfg(target_os = "windows")]
-use rama::dns::client::WindowsDnsResolver as NativeDnsResolver;
 
 #[derive(Debug, Clone, Copy)]
 enum RecordType {
@@ -87,7 +84,7 @@ async fn main() -> Result<(), BoxError> {
         std::process::exit(1);
     }
 
-    #[cfg(any(target_vendor = "apple", target_os = "windows"))]
+    #[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "linux"))]
     {
         let resolver = NativeDnsResolver::new();
         let domains = args
@@ -108,11 +105,11 @@ async fn main() -> Result<(), BoxError> {
         }
     }
 
-    #[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+    #[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "linux")))]
     {
         let _ = record_type;
         let _ = args;
-        println!("native_dns example is Apple/Windows only for now");
+        println!("native_dns example is Apple/Windows/Linux only for now");
     }
 
     Ok(())
@@ -122,7 +119,7 @@ fn print_usage() {
     eprintln!("usage: native_dns [A|AAAA|TXT] <domain> [domain...]");
 }
 
-#[cfg(any(target_vendor = "apple", target_os = "windows"))]
+#[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "linux"))]
 async fn resolve_domain(
     resolver: &NativeDnsResolver,
     record_type: RecordType,

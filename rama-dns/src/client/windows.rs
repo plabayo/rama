@@ -1,21 +1,26 @@
 //! Windows-native DNS resolver backed by `DnsQueryEx` from `Dnsapi.dll`.
 
-use std::collections::VecDeque;
-use std::ffi::c_void;
-use std::fmt;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::ptr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    ffi::c_void,
+    fmt,
+    net::{Ipv4Addr, Ipv6Addr},
+    ptr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
-use rama_core::bytes::Bytes;
-use rama_core::error::BoxError;
-use rama_core::futures::{Stream, async_stream::stream_fn};
-use rama_core::telemetry::tracing;
+use rama_core::{
+    bytes::Bytes,
+    error::BoxError,
+    futures::{Stream, async_stream::stream_fn},
+    telemetry::tracing,
+};
 use rama_net::address::Domain;
-use rama_utils::macros::generate_set_and_with;
-use rama_utils::str::arcstr::ArcStr;
+use rama_utils::{macros::generate_set_and_with, str::arcstr::ArcStr};
 
 use parking_lot::Mutex;
 use tokio::sync::Notify;

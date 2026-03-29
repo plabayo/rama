@@ -3062,6 +3062,7 @@ dependencies = [
  "ahash",
  "hickory-resolver",
  "libc",
+ "moka",
  "parking_lot",
  "pin-project-lite",
  "rama-core",

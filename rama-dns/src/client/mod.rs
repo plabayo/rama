@@ -9,12 +9,24 @@ mod apple;
 #[cfg(target_vendor = "apple")]
 #[doc(inline)]
 pub use self::apple::AppleDnsResolver;
+#[cfg(target_vendor = "apple")]
+pub type NativeDnsResolver = AppleDnsResolver;
 
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
 #[doc(inline)]
 pub use self::windows::WindowsDnsResolver;
+#[cfg(target_os = "windows")]
+pub type NativeDnsResolver = WindowsDnsResolver;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+#[doc(inline)]
+pub use self::linux::LinuxDnsResolver;
+#[cfg(target_os = "linux")]
+pub type NativeDnsResolver = LinuxDnsResolver;
 
 mod deny_all;
 #[doc(inline)]
