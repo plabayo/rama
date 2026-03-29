@@ -111,7 +111,7 @@ where
 #[allow(clippy::needless_pass_by_value)]
 fn lookup_record_packet(domain: Domain, rrtype: libc::c_int) -> Result<Option<Vec<u8>>, BoxError> {
     let name = dns_name_from_domain(domain.as_str())?;
-    let mut state: ffi::res_state = unsafe { mem::zeroed() };
+    let mut state: ffi::ResState = unsafe { mem::zeroed() };
 
     // SAFETY: `state` points to writable resolver context storage.
     if unsafe { ffi::res_ninit(&mut state) } != 0 {
@@ -160,7 +160,7 @@ fn lookup_record_packet(domain: Domain, rrtype: libc::c_int) -> Result<Option<Ve
     Ok(Some(buffer))
 }
 
-struct ResStateGuard(*mut ffi::res_state);
+struct ResStateGuard(*mut ffi::ResState);
 
 impl Drop for ResStateGuard {
     fn drop(&mut self) {
@@ -296,7 +296,20 @@ fn skip_dns_name(packet: &[u8], mut offset: usize) -> Result<usize, BoxError> {
 }
 
 mod ffi {
-    use libc::{c_char, c_int, sockaddr_in, sockaddr_in6};
+    use libc::{c_char, c_int};
+
+    #[allow(
+        clippy::all,
+        non_camel_case_types,
+        non_snake_case,
+        non_upper_case_globals,
+        unsafe_op_in_unsafe_fn,
+        unreachable_pub,
+        unused
+    )]
+    mod bindings {
+        include!(concat!(env!("OUT_DIR"), "/resolv_bindings.rs"));
+    }
 
     // DNS class/type constants mirrored from glibc's resolver headers.
     //
@@ -324,85 +337,16 @@ mod ffi {
     /// Valid name, no data record of requested type.
     pub(super) const NO_DATA: c_int = 4;
 
-    // Resolver limits from <resolv.h>.
+    // Thread-safe resolver state generated from the target platform's
+    // `<resolv.h>` definition via bindgen.
     //
-    // Source:
+    // Sources:
     // - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
-
-    /// Max configured nameservers in `res_state.nsaddr_list` / `ResExt.nsaddrs`.
-    const MAXNS: usize = 3;
-    /// Max search domains in `res_state.dnsrch`.
-    const MAXDNSRCH: usize = 6;
-    /// Max sortlist entries in `res_state.sort_list`.
-    const MAXRESOLVSORT: usize = 10;
-
-    /// Sort address entry embedded in `struct __res_state`.
-    ///
-    /// Source:
-    /// - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct SortAddr {
-        addr: libc::in_addr,
-        mask: u32,
-    }
-
-    /// Resolver extension block embedded in `struct __res_state`.
-    ///
-    /// Source:
-    /// - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct ResExt {
-        nscount: u16,
-        nsmap: [u16; MAXNS],
-        nssocks: [c_int; MAXNS],
-        nscount6: u16,
-        nsinit: u16,
-        nsaddrs: [*mut sockaddr_in6; MAXNS],
-        __glibc_reserved: [u32; 2],
-    }
-
-    /// Union used by glibc's resolver state for the trailing extension payload.
-    ///
-    /// Source:
-    /// - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
-    #[repr(C)]
-    union U {
-        pad: [c_char; 52],
-        ext: ResExt,
-    }
-
-    /// Thread-safe resolver state used by `res_ninit` / `res_nquery`.
-    ///
-    /// This mirrors glibc's resolver state layout so we can call the re-entrant
-    /// libresolv APIs without relying on generated bindings.
-    ///
-    /// Source:
-    /// - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
-    #[repr(C)]
-    pub(super) struct res_state {
-        retrans: c_int,
-        retry: c_int,
-        options: libc::c_ulong,
-        nscount: c_int,
-        nsaddr_list: [sockaddr_in; MAXNS],
-        id: u16,
-        dnsrch: [*mut c_char; MAXDNSRCH + 1],
-        defdname: [c_char; 256],
-        pfcode: libc::c_ulong,
-        ndots: u32,
-        nsort: u32,
-        ipv6_unavail: u32,
-        unused: u32,
-        sort_list: [SortAddr; MAXRESOLVSORT],
-        __glibc_unused_qhook: *mut libc::c_void,
-        __glibc_unused_rhook: *mut libc::c_void,
-        pub(super) res_h_errno: c_int,
-        _vcsock: c_int,
-        _flags: u32,
-        _u: U,
-    }
+    // - https://man7.org/linux/man-pages/man3/resolver.3.html
+    // - https://man.freebsd.org/cgi/man.cgi?query=resolver&sektion=3
+    // - https://man.openbsd.org/resolver.3
+    // - https://man.netbsd.org/resolver.3
+    pub(super) type ResState = bindings::__res_state;
 
     // GNU/Linux symbol mapping:
     // - `res_ninit` is exported as `__res_ninit`
@@ -418,11 +362,11 @@ mod ffi {
     #[link(name = "resolv")]
     unsafe extern "C" {
         #[link_name = "__res_ninit"]
-        pub(super) fn res_ninit(state: *mut res_state) -> c_int;
+        pub(super) fn res_ninit(state: *mut ResState) -> c_int;
         #[link_name = "__res_nclose"]
-        pub(super) fn res_nclose(state: *mut res_state);
+        pub(super) fn res_nclose(state: *mut ResState);
         pub(super) fn res_nquery(
-            state: *mut res_state,
+            state: *mut ResState,
             dname: *const c_char,
             class: c_int,
             typ: c_int,
@@ -441,10 +385,10 @@ mod ffi {
     #[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
     #[link(name = "resolv")]
     unsafe extern "C" {
-        pub(super) fn res_ninit(state: *mut res_state) -> c_int;
-        pub(super) fn res_nclose(state: *mut res_state);
+        pub(super) fn res_ninit(state: *mut ResState) -> c_int;
+        pub(super) fn res_nclose(state: *mut ResState);
         pub(super) fn res_nquery(
-            state: *mut res_state,
+            state: *mut ResState,
             dname: *const c_char,
             class: c_int,
             typ: c_int,

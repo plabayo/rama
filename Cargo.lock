@@ -3060,6 +3060,7 @@ name = "rama-dns"
 version = "0.3.0-rc1"
 dependencies = [
  "ahash",
+ "bindgen",
  "hickory-resolver",
  "libc",
  "moka",
