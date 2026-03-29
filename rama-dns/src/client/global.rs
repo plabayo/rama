@@ -13,7 +13,7 @@ use crate::client::resolver::{BoxDnsResolver, DnsAddressResolver, DnsResolver, D
     not(target_os = "windows"),
     not(target_os = "linux")
 ))]
-use crate::client::{DenyAllDnsResolver, HickoryDnsResolver};
+use crate::client::TokioDnsResolver;
 
 static GLOBAL_DNS_RESOLVER: OnceLock<BoxDnsResolver> = OnceLock::new();
 
@@ -111,7 +111,8 @@ impl DnsResolver for GlobalDnsResolver {
 /// Get the global [`DnsResolver`].
 ///
 /// This is a shared once-time init dns resolver used by default in rama.
-/// By default it is created in a lazy fashion using [`HickoryDns::default`].
+/// By default it is created in a lazy fashion using the best available native
+/// or host-backed resolver for the current platform.
 ///
 /// Use [`init_global_dns_resolver`] or [`try_init_global_dns_resolver`] to overwrite
 /// the global [`DnsResolver`]. This has to be done as early as possible,
@@ -147,31 +148,9 @@ fn init_default_global_dns_resolver() -> BoxDnsResolver {
 #[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "linux")))]
 fn init_default_global_dns_resolver() -> BoxDnsResolver {
     tracing::debug!(
-        "no global dns resolver configured by user: init (default) global (hickory) DNS resolver"
+        "no global dns resolver configured by user: init (default) global (Tokio host-backed) DNS resolver"
     );
-    // TODO: is there no infallible default???
-    let resolver = match HickoryDnsResolver::try_new_system() {
-        Ok(system_resolver) => {
-            tracing::debug!("created system dns resolver");
-            system_resolver
-        }
-        Err(err) => {
-            tracing::warn!("failed to create system resolver, try cloudflare (err = {err})");
-            match HickoryDnsResolver::try_new_cloudflare() {
-                Ok(cloudflare_resolver) => {
-                    tracing::debug!("created cloudflare dns resolver");
-                    cloudflare_resolver
-                }
-                Err(err) => {
-                    tracing::error!(
-                        "failed to create resolvers: system, cloudflare (err = {err}); revert to deny all dns traffic..."
-                    );
-                    return DenyAllDnsResolver::new().into_box_dns_resolver();
-                }
-            }
-        }
-    };
-    resolver.into_box_dns_resolver()
+    TokioDnsResolver::new().into_box_dns_resolver()
 }
 
 #[inline(always)]

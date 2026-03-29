@@ -11,13 +11,6 @@
 //! cargo run --example native_dns --features=dns -- TXT example.com
 //! ```
 
-use tracing_subscriber::{
-    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
-};
-
-use rama::{error::BoxError, telemetry::tracing};
-
-#[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "linux"))]
 use ::{
     rama::{
         dns::client::{
@@ -26,9 +19,17 @@ use ::{
                 DnsAddressResolver as _, DnsTxtResolver as _, HappyEyeballAddressResolverExt,
             },
         },
+        error::BoxError,
         error::ErrorContext as _,
         futures::StreamExt as _,
         net::address::Domain,
+        telemetry::tracing::{
+            self,
+            subscriber::{
+                EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt as _,
+                util::SubscriberInitExt as _,
+            },
+        },
     },
     std::str::FromStr,
     tokio::task::JoinSet,
@@ -84,32 +85,22 @@ async fn main() -> Result<(), BoxError> {
         std::process::exit(1);
     }
 
-    #[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "linux"))]
-    {
-        let resolver = NativeDnsResolver::new();
-        let domains = args
-            .into_iter()
-            .map(|arg| Domain::from_str(&arg))
-            .collect::<Result<Vec<_>, _>>()?;
+    let resolver = NativeDnsResolver::new();
+    let domains = args
+        .into_iter()
+        .map(|arg| Domain::from_str(&arg))
+        .collect::<Result<Vec<_>, _>>()?;
 
-        let mut join_set = JoinSet::new();
-        for domain in domains {
-            let resolver = resolver.clone();
-            join_set.spawn(async move { resolve_domain(&resolver, record_type, domain).await });
-        }
-
-        while let Some(result) = join_set.join_next().await {
-            result
-                .context("wait for resolve task")?
-                .context("resolve")?;
-        }
+    let mut join_set = JoinSet::new();
+    for domain in domains {
+        let resolver = resolver.clone();
+        join_set.spawn(async move { resolve_domain(&resolver, record_type, domain).await });
     }
 
-    #[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "linux")))]
-    {
-        let _ = record_type;
-        let _ = args;
-        println!("native_dns example is Apple/Windows/Linux only for now");
+    while let Some(result) = join_set.join_next().await {
+        result
+            .context("wait for resolve task")?
+            .context("resolve")?;
     }
 
     Ok(())
@@ -119,7 +110,6 @@ fn print_usage() {
     eprintln!("usage: native_dns [A|AAAA|TXT] <domain> [domain...]");
 }
 
-#[cfg(any(target_vendor = "apple", target_os = "windows", target_os = "linux"))]
 async fn resolve_domain(
     resolver: &NativeDnsResolver,
     record_type: RecordType,

@@ -4,6 +4,10 @@ pub mod hickory;
 #[doc(inline)]
 pub use self::hickory::HickoryDnsResolver;
 
+mod tokio;
+#[doc(inline)]
+pub use self::tokio::{TokioDnsResolver, TokioDnsTxtUnsupportedError};
+
 #[cfg(target_vendor = "apple")]
 mod apple;
 #[cfg(target_vendor = "apple")]
@@ -27,6 +31,9 @@ mod linux;
 pub use self::linux::LinuxDnsResolver;
 #[cfg(target_os = "linux")]
 pub type NativeDnsResolver = LinuxDnsResolver;
+
+#[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "linux")))]
+pub type NativeDnsResolver = TokioDnsResolver;
 
 mod deny_all;
 #[doc(inline)]
