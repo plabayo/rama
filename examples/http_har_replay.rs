@@ -120,7 +120,8 @@ async fn main() {
         );
 
         let elapsed_millis = req_start_instant.elapsed().as_millis() as i64;
-        let offset_millis = (entry.started_date_time - min_start_time).num_milliseconds();
+        let offset_millis =
+            entry.started_date_time.as_millisecond() - min_start_time.as_millisecond();
         if offset_millis > elapsed_millis {
             let emulation_delay_millis = (offset_millis - elapsed_millis) as u64;
             tracing::warn!("replay emulation: delay for {emulation_delay_millis}ms");

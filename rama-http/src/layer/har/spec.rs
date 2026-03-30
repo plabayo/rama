@@ -28,7 +28,7 @@ use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1Hea
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rama_utils::str::arcstr::ArcStr;
 use rama_utils::str::smol_str::{ToSmolStr, format_smolstr};
 use rama_utils::str::{NonEmptyStr, non_empty_str};
@@ -61,29 +61,6 @@ mod mime_serde {
         } else {
             Ok(None)
         }
-    }
-}
-
-mod chrono_serializer {
-    use chrono::{DateTime, Utc};
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
-    use std::borrow::Cow;
-
-    pub(super) fn serialize<S>(dt: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        s.serialize_str(&dt.to_rfc3339())
-    }
-
-    pub(super) fn deserialize<'de, D>(d: D) -> Result<DateTime<Utc>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <Cow<'de, str>>::deserialize(d)?;
-        Ok(DateTime::parse_from_rfc3339(&s)
-            .map_err(Error::custom)?
-            .to_utc())
     }
 }
 
@@ -244,8 +221,8 @@ pub struct Browser {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page {
     /// Date and time stamp of the request start (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
-    #[serde(with = "chrono_serializer", rename = "startedDateTime")]
-    pub started_date_time: DateTime<Utc>,
+    #[serde(rename = "startedDateTime")]
+    pub started_date_time: Timestamp,
     /// Unique identifier of a page within the [Log]. Entries use it to refer the parent page.
     pub id: ArcStr,
     /// Page title
@@ -288,8 +265,8 @@ pub struct Entry {
     #[serde(rename = "pageref")]
     pub page_ref: Option<ArcStr>,
     /// Date and time stamp of the request start (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
-    #[serde(with = "chrono_serializer", rename = "startedDateTime")]
-    pub started_date_time: DateTime<Utc>,
+    #[serde(rename = "startedDateTime")]
+    pub started_date_time: Timestamp,
     /// Total elapsed time of the request in milliseconds.
     ///
     /// This is the sum of all timings available in the timings object (i.e. not including -1 values).
@@ -675,7 +652,7 @@ pub struct Cookie {
     /// Date and time stamp of the request start
     ///
     /// (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
-    pub expires: Option<DateTime<Utc>>,
+    pub expires: Option<Timestamp>,
     /// Set to true if the cookie is HTTP only, false otherwise.
     #[serde(rename = "httpOnly")]
     pub http_only: Option<bool>,
@@ -801,9 +778,8 @@ pub struct CacheState {
     /// Date and time stamp of the request start
     ///
     /// (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
-    #[serde(with = "chrono_serializer")]
     /// Expiration time of the cache entry.
-    pub expires: DateTime<Utc>,
+    pub expires: Timestamp,
     /// The last time the cache entry was opened.
     #[serde(rename = "lastAccess")]
     pub last_access: Option<ArcStr>,
