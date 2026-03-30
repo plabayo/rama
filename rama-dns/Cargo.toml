@@ -28,8 +28,6 @@ rama-core = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 rand = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "sync"] }
 
 [target.'cfg(any(target_vendor = "apple", target_os = "windows"))'.dependencies]
@@ -44,10 +42,13 @@ moka = { workspace = true, features = ["sync"] }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_Dns"] }
 
 [build-dependencies]
-bindgen = "0.72"
+bindgen = { workspace = true }
 
 [dev-dependencies]
 ahash = { workspace = true }
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["bindgen"]

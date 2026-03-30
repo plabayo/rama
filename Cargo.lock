@@ -3129,8 +3129,6 @@ dependencies = [
  "rama-net",
  "rama-utils",
  "rand 0.10.0",
- "serde",
- "serde_json",
  "tokio",
  "windows-sys 0.61.2",
 ]
