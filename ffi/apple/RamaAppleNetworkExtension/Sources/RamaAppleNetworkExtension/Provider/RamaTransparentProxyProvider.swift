@@ -220,7 +220,9 @@ private final class TcpClientWritePump {
     private let queue = DispatchQueue(label: "rama.tproxy.tcp.write", qos: .utility)
     private var pending: [Data] = []
     private var writing = false
+    private var closeRequested = false
     private var closed = false
+    private var onDrainedClose: (() -> Void)?
 
     init(flow: NEAppProxyTCPFlow, logger: @escaping (FlowLogMessage) -> Void) {
         self.flow = flow
@@ -230,21 +232,28 @@ private final class TcpClientWritePump {
     func enqueue(_ data: Data) {
         guard !data.isEmpty else { return }
         queue.async {
-            if self.closed { return }
+            if self.closed || self.closeRequested { return }
             self.pending.append(data)
             self.flushLocked()
         }
     }
 
-    func close() {
+    func closeWhenDrained(_ onDrainedClose: @escaping () -> Void) {
         queue.async {
-            self.closed = true
-            self.pending.removeAll(keepingCapacity: false)
+            if self.closed {
+                onDrainedClose()
+                return
+            }
+
+            self.closeRequested = true
+            self.onDrainedClose = onDrainedClose
+            self.finishCloseIfDrainedLocked()
         }
     }
 
     private func flushLocked() {
         if writing || pending.isEmpty || closed {
+            finishCloseIfDrainedLocked()
             return
         }
 
@@ -262,7 +271,9 @@ private final class TcpClientWritePump {
                         )
                     )
                     self.closed = true
+                    self.closeRequested = true
                     self.pending.removeAll(keepingCapacity: false)
+                    self.onDrainedClose = nil
                     self.flow.closeReadWithError(error)
                     self.flow.closeWriteWithError(error)
                     return
@@ -271,6 +282,15 @@ private final class TcpClientWritePump {
                 self.flushLocked()
             }
         }
+    }
+
+    private func finishCloseIfDrainedLocked() {
+        guard closeRequested, !closed, !writing, pending.isEmpty else { return }
+
+        closed = true
+        let onDrainedClose = self.onDrainedClose
+        self.onDrainedClose = nil
+        onDrainedClose?()
     }
 }
 
@@ -503,11 +523,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     writer.enqueue(data)
                 },
                 onServerClosed: { [weak self] in
-                    writer.close()
-                    flow.closeReadWithError(nil)
-                    flow.closeWriteWithError(nil)
-                    self?.stateQueue.async {
-                        self?.tcpSessions.removeValue(forKey: flowId)
+                    writer.closeWhenDrained { [weak self] in
+                        flow.closeReadWithError(nil)
+                        flow.closeWriteWithError(nil)
+                        self?.stateQueue.async {
+                            self?.tcpSessions.removeValue(forKey: flowId)
+                        }
                     }
                 }
             )
