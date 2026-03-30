@@ -3090,6 +3090,7 @@ dependencies = [
 name = "rama-grpc"
 version = "0.3.0-rc1"
 dependencies = [
+ "arc-swap",
  "base64",
  "flate2",
  "parking_lot",

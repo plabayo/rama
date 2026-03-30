@@ -14,7 +14,7 @@ use crate::{
     },
     service::opentelemetry::proto::{ExportMetricsServiceResponse, ExportTraceServiceResponse},
 };
-use parking_lot::RwLock;
+use arc_swap::ArcSwap;
 use prost::Message;
 use rama_core::{
     Service,
@@ -33,7 +33,7 @@ use rama_core::{
 };
 use rama_http::{
     Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Uri,
-    body::util::BodyExt as _, header::CONTENT_TYPE,
+    body::util::BodyExt as _, header::CONTENT_TYPE, uri::PathAndQuery,
 };
 use rama_utils::macros::generate_set_and_with;
 use std::{
@@ -64,7 +64,7 @@ pub struct HttpExporter<S = ()> {
     metrics: SignalSettings,
     env: EnvSettings,
     temporality: Temporality,
-    resource: Arc<RwLock<transform::ResourceAttributesWithSchema>>,
+    resource: Arc<ArcSwap<transform::ResourceAttributesWithSchema>>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -108,7 +108,7 @@ impl<S> HttpExporter<S> {
             metrics: SignalSettings::default(),
             env: EnvSettings::default(),
             temporality: Temporality::Cumulative,
-            resource: Arc::new(RwLock::new(
+            resource: Arc::new(ArcSwap::from_pointee(
                 transform::ResourceAttributesWithSchema::default(),
             )),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -301,7 +301,7 @@ where
         Req: Message,
         Resp: Message + Default,
     {
-        if self.shutdown.load(Ordering::SeqCst) {
+        if self.shutdown.load(Ordering::Acquire) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -353,8 +353,8 @@ where
 {
     async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
         let request_body = {
-            let guard = self.resource.read();
-            transform::span_batch_to_request(&batch, &guard)
+            let resource = self.resource.load();
+            transform::span_batch_to_request(&batch, &resource)
         };
         let response: ExportTraceServiceResponse = self
             .export_request(SignalKind::Traces, request_body)
@@ -376,7 +376,7 @@ where
     }
 
     fn shutdown_with_timeout(&mut self, _timeout: Duration) -> OTelSdkResult {
-        if self.shutdown.swap(true, Ordering::SeqCst) {
+        if self.shutdown.swap(true, Ordering::AcqRel) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -384,7 +384,7 @@ where
     }
 
     fn force_flush(&mut self) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::SeqCst) {
+        if self.shutdown.load(Ordering::Acquire) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -392,8 +392,7 @@ where
     }
 
     fn set_resource(&mut self, resource: &sdk::Resource) {
-        let mut guard = self.resource.write();
-        *guard = resource.into();
+        self.resource.store(Arc::new(resource.into()));
     }
 }
 
@@ -425,7 +424,7 @@ where
     }
 
     fn force_flush(&self) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::SeqCst) {
+        if self.shutdown.load(Ordering::Acquire) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -433,7 +432,7 @@ where
     }
 
     fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
-        if self.shutdown.swap(true, Ordering::SeqCst) {
+        if self.shutdown.swap(true, Ordering::AcqRel) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -501,12 +500,40 @@ impl ResolvedConfig {
 }
 
 fn append_signal_path(base: Uri, signal_path: &str) -> Result<Uri, OtelExporterConfigError> {
-    let base = base.to_string();
-    let mut endpoint = base.trim_end_matches('/').to_owned();
-    endpoint.push_str(signal_path);
-    Uri::from_str(&endpoint).map_err(|err| {
+    // TODO: this manual `Uri::into_parts` / `PathAndQuery` surgery is only here because
+    // Rama does not yet expose a nicer native URI composition API for this use case.
+    // Once that lands in rama-net, revisit this path-joining logic and simplify it.
+    // See: https://github.com/plabayo/rama/issues/724
+    let base_str = base.to_string();
+    let mut parts = base.into_parts();
+    let path_and_query = parts
+        .path_and_query
+        .as_ref()
+        .map(PathAndQuery::as_str)
+        .unwrap_or("/");
+    let (path, query) = match path_and_query.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (path_and_query, None),
+    };
+
+    let mut joined_path = path.trim_end_matches('/').to_owned();
+    joined_path.push_str(signal_path);
+    let joined_path_and_query = match query {
+        Some(query) => format!("{joined_path}?{query}"),
+        None => joined_path,
+    };
+
+    parts.path_and_query = Some(
+        PathAndQuery::from_str(&joined_path_and_query).map_err(|err| {
+            OtelExporterConfigError::new(format!(
+                "invalid OTLP HTTP endpoint derived from {base_str:?}: {err}"
+            ))
+        })?,
+    );
+
+    Uri::from_parts(parts).map_err(|err| {
         OtelExporterConfigError::new(format!(
-            "invalid OTLP HTTP endpoint derived from {base:?}: {err}"
+            "invalid OTLP HTTP endpoint derived from {base_str:?}: {err}"
         ))
     })
 }
