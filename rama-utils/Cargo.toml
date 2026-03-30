@@ -25,7 +25,7 @@ rama-macros = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 smallvec = { workspace = true, features = ["write", "serde", "const_generics", "const_new"] }
-smol_str = { workspace = true }
+smol_str = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["time", "macros"] }
 wildcard = { workspace = true }
 

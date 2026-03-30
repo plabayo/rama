@@ -4,16 +4,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
+import shlex
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_CMD = (
-    "cargo bench --bench e2e_http_client_server --features http-full,rustls,boring"
-)
+DEFAULT_CMD = "cargo bench --bench e2e_http_client_server --features http-full,rustls,aws-lc,boring,socks5"
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 UNITS_TIME = {"ns": 1e-9, "µs": 1e-6, "us": 1e-6, "ms": 1e-3, "s": 1.0}
@@ -141,6 +143,13 @@ def status_done() -> None:
     sys.stderr.flush()
 
 
+def shorten_status_label(label: str, max_len: int = 72) -> str:
+    label = re.sub(r"\s+", " ", label).strip()
+    if len(label) <= max_len:
+        return label
+    return label[: max_len - 3] + "..."
+
+
 @dataclass
 class StatRow:
     fastest: Optional[float] = None
@@ -188,11 +197,49 @@ def run_command_streaming(
 
     assert proc.stdout is not None
     collected: List[str] = []
+    line_queue: "queue.Queue[Optional[str]]" = queue.Queue()
 
     phase = "starting"
     running = False
+    bench_rows_seen = 0
+    last_case_label: Optional[str] = None
+    started_at = time.monotonic()
+    last_status_update = started_at
 
-    for line in proc.stdout:
+    def enqueue_stdout() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line_queue.put(line)
+        line_queue.put(None)
+
+    reader = threading.Thread(target=enqueue_stdout, daemon=True)
+    reader.start()
+
+    while True:
+        try:
+            line = line_queue.get(timeout=0.5)
+        except queue.Empty:
+            if show_progress and running:
+                now = time.monotonic()
+                if now - last_status_update >= 1.0:
+                    elapsed = now - started_at
+                    if last_case_label:
+                        status_line(
+                            f"Phase: running benches [{bench_rows_seen} cases completed, {elapsed:.0f}s elapsed] "
+                            f"last completed: {shorten_status_label(last_case_label)}"
+                        )
+                    else:
+                        status_line(
+                            f"Phase: running benches [{elapsed:.0f}s elapsed, waiting for first completed case]"
+                        )
+                    last_status_update = now
+            if proc.poll() is not None:
+                break
+            continue
+
+        if line is None:
+            break
+
         if debug:
             sys.stdout.write(line)
             sys.stdout.flush()
@@ -215,14 +262,24 @@ def run_command_streaming(
             running = True
             phase = "running"
             status_line("Phase: running benches")
+            last_status_update = time.monotonic()
+        elif running and "TestParameters" in s and s.startswith(("├─", "╰─")):
+            bench_rows_seen += 1
+            last_case_label = s
+            status_line(
+                f"Phase: running benches [{bench_rows_seen} cases completed] {shorten_status_label(s)}"
+            )
+            last_status_update = time.monotonic()
         elif any(k in s.lower() for k in ["timer precision", "tracing will be piped"]):
             if running:
                 status_line("Phase: running benches, collecting results")
+                last_status_update = time.monotonic()
         elif all(
             k in s.lower()
             for k in ["fastest", "slowest", "median", "mean", "samples", "iters"]
         ):
             status_line("Phase: benchmark table detected")
+            last_status_update = time.monotonic()
 
     proc.wait()
 
@@ -398,6 +455,29 @@ def payload_bucket(case_name: str) -> str:
     return "mixed"
 
 
+def extract_case_field(case_name: str, field: str) -> Optional[str]:
+    pattern = rf"\b{re.escape(field)}:\s*([A-Za-z0-9_]+)\b"
+    m = re.search(pattern, case_name)
+    if not m:
+        return None
+    return m.group(1)
+
+
+def proxy_bucket(case_name: str) -> str:
+    proxy = extract_case_field(case_name, "proxy")
+    if proxy is None:
+        return "unknown"
+    return proxy.lower()
+
+
+def short_case_label(case_name: str) -> str:
+    version = extract_case_field(case_name, "version") or "?"
+    tls = extract_case_field(case_name, "tls") or "?"
+    server = extract_case_field(case_name, "server") or "?"
+    client = extract_case_field(case_name, "client") or "?"
+    return f"{version} {tls} s:{server} c:{client}"
+
+
 def case_key(case_name: str) -> str:
     return re.sub(r"\s+", " ", case_name).strip()
 
@@ -449,11 +529,12 @@ def print_group_charts(
         print("Mean time (lower is better)\n")
         for c, new_v, old_v in sorted(time_rows, key=lambda x: x[1]):
             bar = human_bar(new_v, max_time, width=28)
+            label = short_case_label(c.name)
             if old_v is not None:
                 delta = pct_change(new_v, old_v)
-                print(f"{fmt_seconds(new_v):>10}  {bar}  {pct_fmt(delta):>9}  {c.name}")
+                print(f"{fmt_seconds(new_v):>10}  {bar}  {pct_fmt(delta):>9}  {label}")
             else:
-                print(f"{fmt_seconds(new_v):>10}  {bar}  {'':>9}  {c.name}")
+                print(f"{fmt_seconds(new_v):>10}  {bar}  {'':>9}  {label}")
 
     tp_rows: List[Tuple[BenchCase, float, Optional[float]]] = []
     for c in cases:
@@ -471,11 +552,12 @@ def print_group_charts(
         print("\nMean throughput (higher is better)\n")
         for c, new_v, old_v in sorted(tp_rows, key=lambda x: x[1], reverse=True):
             bar = human_bar(new_v, max_tp, width=28)
+            label = short_case_label(c.name)
             if old_v is not None:
                 delta = pct_change(new_v, old_v)
-                print(f"{fmt_bytes(new_v):>10}/s  {bar}  {pct_fmt(delta):>9}  {c.name}")
+                print(f"{fmt_bytes(new_v):>10}/s  {bar}  {pct_fmt(delta):>9}  {label}")
             else:
-                print(f"{fmt_bytes(new_v):>10}/s  {bar}  {'':>9}  {c.name}")
+                print(f"{fmt_bytes(new_v):>10}/s  {bar}  {'':>9}  {label}")
 
 
 def print_ascii_charts(run: BenchRun, baseline_json_path: Optional[str]) -> None:
@@ -483,25 +565,46 @@ def print_ascii_charts(run: BenchRun, baseline_json_path: Optional[str]) -> None
     if baseline_json_path:
         baseline_map = baseline_index(load_baseline(baseline_json_path))
 
-    buckets: Dict[str, List[BenchCase]] = {
-        "small/small": [],
-        "mixed": [],
-        "big/big": [],
-        "unknown": [],
-    }
+    buckets: Dict[Tuple[str, str], List[BenchCase]] = {}
     for c in run.cases:
-        buckets[payload_bucket(c.name)].append(c)
+        key = (payload_bucket(c.name), proxy_bucket(c.name))
+        buckets.setdefault(key, []).append(c)
 
-    print_group_charts(
-        "Payload group: small / small", buckets["small/small"], baseline_map
-    )
-    print_group_charts(
-        "Payload group: small / big or big / small", buckets["mixed"], baseline_map
-    )
-    print_group_charts("Payload group: big / big", buckets["big/big"], baseline_map)
+    payload_titles = {
+        "small/small": "Payload group: small / small",
+        "mixed": "Payload group: small / big or big / small",
+        "big/big": "Payload group: big / big",
+        "unknown": "Payload group: unknown",
+    }
+    proxy_titles = {
+        "none": "proxy: none",
+        "http": "proxy: http",
+        "socks5": "proxy: socks5",
+        "unknown": "proxy: unknown",
+    }
 
-    if buckets["unknown"]:
-        print_group_charts("Payload group: unknown", buckets["unknown"], baseline_map)
+    ordered_keys = [
+        ("small/small", "none"),
+        ("small/small", "http"),
+        ("small/small", "socks5"),
+        ("mixed", "none"),
+        ("mixed", "http"),
+        ("mixed", "socks5"),
+        ("big/big", "none"),
+        ("big/big", "http"),
+        ("big/big", "socks5"),
+        ("unknown", "unknown"),
+    ]
+
+    for payload_key, proxy_key in ordered_keys:
+        cases = buckets.get((payload_key, proxy_key))
+        if not cases:
+            continue
+        print_group_charts(
+            f"{payload_titles.get(payload_key, payload_key)} | {proxy_titles.get(proxy_key, proxy_key)}",
+            cases,
+            baseline_map,
+        )
 
 
 def run_to_jsonable(run: BenchRun) -> Dict[str, Any]:
@@ -537,6 +640,28 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cmd", default=DEFAULT_CMD)
     ap.add_argument(
+        "--sample-count",
+        type=int,
+        default=None,
+        help="Override Divan sample count for faster exploratory runs",
+    )
+    ap.add_argument(
+        "--max-time",
+        default=None,
+        help="Pass through Divan --max-time (for example 2s or 500ms)",
+    )
+    ap.add_argument(
+        "--min-time",
+        default=None,
+        help="Pass through Divan --min-time",
+    )
+    ap.add_argument(
+        "--filter",
+        action="append",
+        default=[],
+        help="Pass through Divan --filter; may be repeated",
+    )
+    ap.add_argument(
         "--json-out",
         default=None,
         help="Write parsed JSON to this path instead of printing charts",
@@ -553,10 +678,24 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    show_progress = (not args.no_progress) and args.debug
-    rc, out = run_command_streaming(
-        args.cmd, debug=args.debug, show_progress=show_progress
-    )
+    cmd = args.cmd
+    bench_args: List[str] = []
+    if args.sample_count is not None:
+        bench_args.extend(["--sample-count", str(args.sample_count)])
+    if args.max_time:
+        bench_args.extend(["--max-time", args.max_time])
+    if args.min_time:
+        bench_args.extend(["--min-time", args.min_time])
+    positional_filters = list(args.filter)
+    if bench_args:
+        cmd += " -- " + " ".join(shlex.quote(arg) for arg in bench_args)
+        if positional_filters:
+            cmd += " " + " ".join(shlex.quote(arg) for arg in positional_filters)
+    elif positional_filters:
+        cmd += " -- " + " ".join(shlex.quote(arg) for arg in positional_filters)
+
+    show_progress = not args.no_progress
+    rc, out = run_command_streaming(cmd, debug=args.debug, show_progress=show_progress)
 
     if rc != 0 and not args.allow_nonzero:
         if show_progress:
@@ -568,7 +707,7 @@ def main() -> int:
 
     if show_progress:
         status_line("Phase: parsing output")
-    run = parse_bench_output(out, cmd=args.cmd, cwd=os.getcwd(), debug=args.debug)
+    run = parse_bench_output(out, cmd=cmd, cwd=os.getcwd(), debug=args.debug)
 
     if args.json_out:
         if show_progress:

@@ -1,14 +1,8 @@
 //! ```sh
-//! cargo bench --bench e2e_http_client_server --features http-full,rustls,boring
+//! cargo bench --bench e2e_http_client_server --features http-full,rustls,aws-lc,boring,socks5
 //! ```
 
-use std::{
-    convert::Infallible,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{convert::Infallible, slice, sync::mpsc, time::Duration};
 
 use rama::{
     Layer, Service,
@@ -24,27 +18,36 @@ use rama::{
             cors::CorsLayer,
             decompression::DecompressionLayer,
             map_response_body::MapResponseBodyLayer,
+            remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             required_header::{AddRequiredRequestHeadersLayer, AddRequiredResponseHeadersLayer},
             set_header::SetResponseHeaderLayer,
             trace::TraceLayer,
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
         },
+        matcher::MethodMatcher,
         server::HttpServer,
         service::{
             client::HttpClientExt as _,
             web::{WebService, response::IntoResponse as _},
         },
     },
+    layer::ConsumeErrLayer,
     net::{
-        address::SocketAddress,
+        Protocol,
+        address::{ProxyAddress, SocketAddress},
+        proxy::IoForwardService,
         tls::{
             ApplicationProtocol,
             client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
+        user::credentials::{ProxyCredential, basic},
     },
+    proxy::socks5::Socks5Acceptor,
     rt::Executor,
-    service::BoxService,
-    tcp::server::TcpListener,
+    service::{BoxService, service_fn},
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    telemetry::tracing::{self},
     tls::{boring, rustls},
 };
 
@@ -65,18 +68,13 @@ enum Size {
 impl Size {
     fn rnd_bytes(self) -> Bytes {
         let mut rng = rand::rng();
-        match self {
-            Self::Small => {
-                let mut bytes = [0u8; 5_000];
-                rng.fill_bytes(&mut bytes);
-                Bytes::from(bytes.to_vec())
-            }
-            Self::Large => {
-                let mut bytes = [0u8; 1_000_000];
-                rng.fill_bytes(&mut bytes);
-                Bytes::from(bytes.to_vec())
-            }
-        }
+        let len = match self {
+            Self::Small => 5_000,
+            Self::Large => 1_000_000,
+        };
+        let mut bytes = vec![0u8; len];
+        rng.fill_bytes(&mut bytes);
+        Bytes::from(bytes)
     }
 }
 
@@ -93,24 +91,34 @@ enum Tls {
     Boring,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Proxy {
+    None,
+    Http,
+    Socks5,
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct TestParameters {
     version: HttpVersion,
     tls: Tls,
+    proxy: Proxy,
     server: Size,
     client: Size,
 }
 
 const VERSIONS: [HttpVersion; 2] = [HttpVersion::Http1, HttpVersion::Http2];
 const TLSES: [Tls; 3] = [Tls::None, Tls::Rustls, Tls::Boring];
+const PROXIES: [Proxy; 3] = [Proxy::None, Proxy::Http, Proxy::Socks5];
 const SIZES: [Size; 2] = [Size::Small, Size::Large];
 
-const N: usize = VERSIONS.len() * TLSES.len() * SIZES.len() * SIZES.len();
+const N: usize = VERSIONS.len() * TLSES.len() * PROXIES.len() * SIZES.len() * SIZES.len();
 
 const fn build_test_matrix() -> [TestParameters; N] {
     let placeholder = TestParameters {
         version: VERSIONS[0],
         tls: TLSES[0],
+        proxy: PROXIES[0],
         server: SIZES[0],
         client: SIZES[0],
     };
@@ -122,20 +130,25 @@ const fn build_test_matrix() -> [TestParameters; N] {
     while vi < VERSIONS.len() {
         let mut ti = 0usize;
         while ti < TLSES.len() {
-            let mut si = 0usize;
-            while si < SIZES.len() {
-                let mut ci = 0usize;
-                while ci < SIZES.len() {
-                    out[i] = TestParameters {
-                        version: VERSIONS[vi],
-                        tls: TLSES[ti],
-                        server: SIZES[si],
-                        client: SIZES[ci],
-                    };
-                    i += 1;
-                    ci += 1;
+            let mut pi = 0usize;
+            while pi < PROXIES.len() {
+                let mut si = 0usize;
+                while si < SIZES.len() {
+                    let mut ci = 0usize;
+                    while ci < SIZES.len() {
+                        out[i] = TestParameters {
+                            version: VERSIONS[vi],
+                            tls: TLSES[ti],
+                            proxy: PROXIES[pi],
+                            server: SIZES[si],
+                            client: SIZES[ci],
+                        };
+                        i += 1;
+                        ci += 1;
+                    }
+                    si += 1;
                 }
-                si += 1;
+                pi += 1;
             }
             ti += 1;
         }
@@ -146,6 +159,8 @@ const fn build_test_matrix() -> [TestParameters; N] {
 }
 
 const TEST_MATRIX: [TestParameters; N] = build_test_matrix();
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn main() {
     let _appender_guard = e2e_utils::setup_tracing("e2e_http_client_server");
@@ -196,11 +211,119 @@ where
     }
 }
 
+fn get_rustls_tls_data(params: TestParameters) -> rustls::server::TlsAcceptorData {
+    let proto = match params.version {
+        HttpVersion::Http1 => ApplicationProtocol::HTTP_11,
+        HttpVersion::Http2 => ApplicationProtocol::HTTP_2,
+    };
+
+    rustls::server::TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData::default())
+        .unwrap()
+        .with_alpn_protocols(&[proto])
+        .build()
+}
+
+fn get_boring_tls_data(params: TestParameters) -> boring::server::TlsAcceptorData {
+    let proto = match params.version {
+        HttpVersion::Http1 => ApplicationProtocol::HTTP_11,
+        HttpVersion::Http2 => ApplicationProtocol::HTTP_2,
+    };
+
+    let config = ServerConfig {
+        application_layer_protocol_negotiation: Some(vec![proto]),
+        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
+    };
+    boring::server::TlsAcceptorData::try_from(config).unwrap()
+}
+
+fn get_http_proxy_service_boxed<Input>(params: TestParameters) -> BoxService<Input, (), BoxError>
+where
+    Input: ExtensionsMut + AsyncRead + AsyncWrite + Send + 'static,
+{
+    let handler = move |req: Request| async move {
+        let client = get_inner_client(params.version, params.tls);
+        match client.serve(req).await {
+            Ok(resp) => {
+                tracing::info!(status_code = %resp.status(), "proxy received response");
+                Ok(resp)
+            }
+            Err(err) => {
+                tracing::error!("error in client request: {err:?}");
+                Ok(rama::http::StatusCode::INTERNAL_SERVER_ERROR.into_response())
+            }
+        }
+    };
+
+    let http_service = (
+        TraceLayer::new_for_http(),
+        CompressionLayer::new(),
+        UpgradeLayer::new(
+            Executor::default(),
+            MethodMatcher::CONNECT,
+            DefaultHttpProxyConnectReplyService::new(),
+            (
+                ConsumeErrLayer::default(),
+                IoToProxyBridgeIoLayer::extension_proxy_target(Executor::default()),
+            )
+                .into_layer(IoForwardService::new()),
+        ),
+        RemoveResponseHeaderLayer::hop_by_hop(),
+        RemoveRequestHeaderLayer::hop_by_hop(),
+    )
+        .layer(service_fn(handler));
+
+    HttpServer::auto(Executor::default())
+        .service(http_service)
+        .boxed()
+}
+
+fn spawn_http_proxy(params: TestParameters) -> SocketAddress {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let async_listener =
+                TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
+            ready_tx.send(Ok(())).unwrap();
+
+            match params.proxy {
+                Proxy::Http => {
+                    let service = get_http_proxy_service_boxed(params);
+                    async_listener.serve(service).await
+                }
+                Proxy::Socks5 => {
+                    let socks5_acceptor = Socks5Acceptor::new(Executor::default())
+                        .with_authorizer(basic!("john", "secret").into_authorizer())
+                        .with_default_connector();
+                    async_listener.serve(socks5_acceptor).await
+                }
+                Proxy::None => unreachable!("proxy listener only spawned for proxy rows"),
+            }
+        });
+    });
+
+    match ready_rx.recv_timeout(STARTUP_TIMEOUT) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("proxy failed to start: {err}"),
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("proxy startup timed out"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("proxy thread exited before signaling readiness")
+        }
+    }
+    addr.into()
+}
+
 fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddress {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let ready = Arc::new(AtomicBool::new(false));
-    let ready_worker = ready.clone();
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -212,30 +335,20 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddre
             let async_listener =
                 TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
 
-            let proto = match params.version {
-                HttpVersion::Http1 => ApplicationProtocol::HTTP_11,
-                HttpVersion::Http2 => ApplicationProtocol::HTTP_2,
-            };
-
             match params.tls {
                 Tls::None => {
                     let service = get_http_service_boxed(params, body_content);
 
-                    ready_worker.store(true, Ordering::Release);
+                    ready_tx.send(Ok(())).unwrap();
 
                     async_listener.serve(service).await
                 }
                 Tls::Rustls => {
                     let service = get_http_service_boxed(params, body_content);
 
-                    let data = rustls::server::TlsAcceptorDataBuilder::try_new_self_signed(
-                        SelfSignedData::default(),
-                    )
-                    .unwrap()
-                    .with_alpn_protocols(&[proto])
-                    .build();
+                    let data = get_rustls_tls_data(params);
 
-                    ready_worker.store(true, Ordering::Release);
+                    ready_tx.send(Ok(())).unwrap();
 
                     async_listener
                         .serve(rustls::server::TlsAcceptorLayer::new(data).into_layer(service))
@@ -244,13 +357,9 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddre
                 Tls::Boring => {
                     let service = get_http_service_boxed(params, body_content);
 
-                    let config = ServerConfig {
-                        application_layer_protocol_negotiation: Some(vec![proto]),
-                        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-                    };
-                    let data = boring::server::TlsAcceptorData::try_from(config).unwrap();
+                    let data = get_boring_tls_data(params);
 
-                    ready_worker.store(true, Ordering::Release);
+                    ready_tx.send(Ok(())).unwrap();
 
                     async_listener
                         .serve(boring::server::TlsAcceptorLayer::new(data).into_layer(service))
@@ -260,8 +369,13 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddre
         });
     });
 
-    while !ready.load(Ordering::Acquire) {
-        std::thread::yield_now();
+    match ready_rx.recv_timeout(STARTUP_TIMEOUT) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("server failed to start: {err}"),
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("server startup timed out"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("server thread exited before signaling readiness")
+        }
     }
     addr.into()
 }
@@ -270,10 +384,7 @@ fn get_inner_client(
     http: HttpVersion,
     tls: Tls,
 ) -> impl Service<Request, Output = Response, Error = OpaqueError> {
-    let b = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
-        .without_tls_proxy_support()
-        .without_proxy_support();
+    let b = EasyHttpWebClient::connector_builder().with_default_transport_connector();
 
     let proto = match http {
         HttpVersion::Http1 => ApplicationProtocol::HTTP_11,
@@ -282,30 +393,38 @@ fn get_inner_client(
 
     match tls {
         Tls::None => b
+            .without_tls_proxy_support()
+            .with_proxy_support()
             .without_tls_support()
             .with_default_http_connector(Executor::default())
             .build_client(),
-        Tls::Rustls => b
-            .with_tls_support_using_rustls(Some(
-                rustls::client::TlsConnectorDataBuilder::new()
-                    .try_with_env_key_logger()
-                    .unwrap()
-                    .with_alpn_protocols(&[proto])
-                    .with_no_cert_verifier()
-                    .build(),
-            ))
-            .with_default_http_connector(Executor::default())
-            .build_client(),
-        Tls::Boring => b
-            .with_tls_support_using_boringssl(Some(
-                boring::client::TlsConnectorDataBuilder::new()
-                    .try_with_rama_alpn_protos(&[proto])
-                    .unwrap()
-                    .with_server_verify_mode(ServerVerifyMode::Disable)
-                    .into_shared_builder(),
-            ))
-            .with_default_http_connector(Executor::default())
-            .build_client(),
+        Tls::Rustls => {
+            let tls_config = rustls::client::TlsConnectorDataBuilder::new()
+                .try_with_env_key_logger()
+                .unwrap()
+                .with_alpn_protocols(slice::from_ref(&proto))
+                .with_no_cert_verifier()
+                .with_store_server_certificate_chain(true)
+                .build();
+            b.without_tls_proxy_support()
+                .with_proxy_support()
+                .with_tls_support_using_rustls(Some(tls_config))
+                .with_default_http_connector(Executor::default())
+                .build_client()
+        }
+        Tls::Boring => {
+            let tls_config = boring::client::TlsConnectorDataBuilder::new()
+                .try_with_rama_alpn_protos(slice::from_ref(&proto))
+                .unwrap()
+                .with_server_verify_mode(ServerVerifyMode::Disable)
+                .with_store_server_certificate_chain(true)
+                .into_shared_builder();
+            b.without_tls_proxy_support()
+                .with_proxy_support()
+                .with_tls_support_using_boringssl(Some(tls_config))
+                .with_default_http_connector(Executor::default())
+                .build_client()
+        }
     }
 }
 
@@ -322,7 +441,6 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
     let client_bytes = params.client.rnd_bytes();
     let client_bytes_count = client_bytes.len();
 
-    let address = spawn_http_server(params, server_bytes);
     let scheme = if matches!(params.tls, Tls::None) {
         "http"
     } else {
@@ -333,7 +451,14 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
     } else {
         "large"
     };
+
+    let address = spawn_http_server(params, server_bytes);
     let url = format!("{scheme}://{address}/{endpoint}");
+
+    let mut address_proxy = SocketAddress::default_ipv4(0);
+    if params.proxy != Proxy::None {
+        address_proxy = spawn_http_proxy(params);
+    }
 
     bencher
         .with_inputs(|| {
@@ -351,17 +476,34 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
         })
         .bench_local_values(|(client, body)| {
             rt.block_on(async {
-                let resp = client
+                let req = client
                     .post(&url)
                     .version(match params.version {
                         HttpVersion::Http1 => Version::HTTP_11,
                         HttpVersion::Http2 => Version::HTTP_2,
                     })
-                    .body(body)
-                    .send()
+                    .body(body);
+
+                let req_with_maybe_proxy = match params.proxy {
+                    Proxy::None => req,
+                    Proxy::Http => req.extension(
+                        ProxyAddress::try_from(format!("http://{}", address_proxy.clone()))
+                            .unwrap(),
+                    ),
+                    Proxy::Socks5 => req.extension(ProxyAddress {
+                        protocol: Some(Protocol::SOCKS5),
+                        address: address_proxy.into(),
+                        credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
+                    }),
+                };
+
+                let resp = tokio::time::timeout(REQUEST_TIMEOUT, req_with_maybe_proxy.send())
                     .await
+                    .expect("request timed out")
                     .expect("Request failed");
-                let _ = resp.into_body().collect().await;
+                let _ = tokio::time::timeout(REQUEST_TIMEOUT, resp.into_body().collect())
+                    .await
+                    .expect("response body collection timed out");
             });
         });
 }
