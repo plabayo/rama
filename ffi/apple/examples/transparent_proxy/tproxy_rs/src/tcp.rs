@@ -160,7 +160,7 @@ where
             .with_enabled(demo_config.html_badge_enabled)
             .with_badge_label(&demo_config.html_badge_label)
             .with_excluded_domains(excluded_domains),
-        DecompressionLayer::new(),
+        DecompressionLayer::new().with_insert_accept_encoding_header(false),
         SetResponseHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),

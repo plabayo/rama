@@ -307,7 +307,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
         MapResponseBodyLayer::new_boxed_streaming_body(),
-        DecompressionLayer::new(),
+        DecompressionLayer::new().with_insert_accept_encoding_header(false),
     )
         .into_layer(client);
 

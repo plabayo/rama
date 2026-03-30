@@ -7,6 +7,7 @@ use crate::{
 
 use super::{ServiceMatch, ServiceMatcher};
 
+#[derive(Debug, Clone)]
 /// Couples a plain [`crate::matcher::Matcher`] with a concrete service.
 ///
 /// This wrapper exists because `(M, S)` cannot be implemented directly

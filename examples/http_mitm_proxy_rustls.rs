@@ -219,7 +219,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 
     let client = (
         MapResponseBodyLayer::new_boxed_streaming_body(),
-        DecompressionLayer::new(),
+        DecompressionLayer::new().with_insert_accept_encoding_header(false),
     )
         .into_layer(client);
 

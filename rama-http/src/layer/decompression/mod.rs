@@ -112,7 +112,11 @@ pub enum DecompressedFrom {
 }
 
 #[doc(inline)]
-pub use self::{body::DecompressionBody, layer::DecompressionLayer, service::Decompression};
+pub use self::{
+    body::DecompressionBody,
+    layer::DecompressionLayer,
+    service::{Decompression, DefaultDecompressionMatcher},
+};
 
 #[doc(inline)]
 pub use self::request::layer::RequestDecompressionLayer;
@@ -130,9 +134,10 @@ mod tests {
     use crate::{Body, HeaderMap, HeaderName, Request, Response, body::util::BodyExt};
     use rama_core::Service;
     use rama_core::extensions::ExtensionsRef;
+    use rama_core::matcher::service::MatcherServicePair;
     use rama_core::service::service_fn;
 
-    use rama_http_types::BodyExtractExt;
+    use rama_http_types::{BodyExtractExt, header};
 
     #[tokio::test]
     async fn works() {
@@ -247,5 +252,38 @@ mod tests {
             .header("content-encoding", "gzip")
             .body(body)
             .unwrap())
+    }
+
+    #[tokio::test]
+    async fn does_not_insert_accept_encoding_when_disabled() {
+        let client = Decompression::new(service_fn(|req: Request<Body>| async move {
+            assert!(!req.headers().contains_key(header::ACCEPT_ENCODING));
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }))
+        .with_insert_accept_encoding_header(false);
+
+        let req = Request::new(Body::empty());
+        let _ = client.serve(req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn response_matcher_can_disable_decompression() {
+        let client = Decompression::new(Compression::new(service_fn(handle)))
+            .with_matcher(MatcherServicePair(true, MatcherServicePair(false, ())));
+
+        let req = Request::builder()
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = client.serve(req).await.unwrap();
+
+        assert!(res.extensions().get::<DecompressedFrom>().is_none());
+        assert_eq!(res.headers().get(header::CONTENT_ENCODING).unwrap(), "gzip");
+
+        let compressed = res.into_body().collect().await.unwrap().to_bytes();
+        assert_ne!(
+            std::str::from_utf8(&compressed).unwrap_or_default(),
+            "Hello, World! Hello, World! Hello, World!"
+        );
     }
 }

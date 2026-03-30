@@ -333,7 +333,7 @@ mod tests {
         let svc = (
             StreamCompressionLayer::new().with_compress_predicate(Always::new()),
             HtmlBadgeLayer::new(),
-            DecompressionLayer::new(),
+            DecompressionLayer::new().with_insert_accept_encoding_header(false),
         )
             .into_layer(service_fn(move |_req: Request<Body>| {
                 let html = html.clone();
