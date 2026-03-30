@@ -15,12 +15,15 @@ use hickory_resolver::{
 };
 use rama::{
     dns::client::{
-        HickoryDnsResolver,
+        HickoryDnsResolver, NativeDnsResolver,
         hickory::{
             self,
             resolver::config::{NameServerConfig, ResolverConfig},
         },
-        resolver::{DnsAddressResolver, DnsTxtResolver, HappyEyeballAddressResolverExt},
+        resolver::{
+            BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver,
+            HappyEyeballAddressResolverExt,
+        },
     },
     error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::Extensions,
@@ -45,13 +48,7 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
 
     let domain = cfg.domain()?;
     let record_type = cfg.record_type()?;
-    let (dns_config, dns_options) = build_dns_config_and_options(&cfg)?;
-
-    let resolver = HickoryDnsResolver::builder()
-        .with_config(dns_config)
-        .with_options(dns_options)
-        .try_build()
-        .context("build hickory config")?;
+    let resolver = build_resolver(&cfg)?;
 
     match record_type {
         Some(RecordType::A) => {
@@ -157,6 +154,34 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
     }
 
     Ok(())
+}
+
+fn build_resolver(cfg: &ResolveCommand) -> Result<BoxDnsResolver, BoxError> {
+    if cfg.hickory || config_requires_hickory(cfg) {
+        let (dns_config, dns_options) = build_dns_config_and_options(cfg)?;
+        let resolver = HickoryDnsResolver::builder()
+            .with_config(dns_config)
+            .with_options(dns_options)
+            .try_build()
+            .context("build hickory resolver")?;
+        return Ok(resolver.into_box_dns_resolver());
+    }
+
+    let mut resolver = NativeDnsResolver::new();
+    if let Some(timeout_secs) = cfg.timeout_secs {
+        resolver.set_timeout(Duration::from_secs(timeout_secs));
+    }
+    Ok(resolver.into_box_dns_resolver())
+}
+
+fn config_requires_hickory(cfg: &ResolveCommand) -> bool {
+    !cfg.name_servers.is_empty()
+        || cfg.port.is_some()
+        || cfg.tcp
+        || cfg.tries.is_some()
+        || cfg.edns0
+        || cfg.dnssec
+        || cfg.no_recurse
 }
 
 fn build_dns_config_and_options(
@@ -341,6 +366,10 @@ pub struct ResolveCommand {
     name_servers: Vec<NameServerArg>,
 
     #[arg(long, action = ArgAction::SetTrue)]
+    /// force the use of the Hickory resolver even when the native resolver would suffice
+    hickory: bool,
+
+    #[arg(long, action = ArgAction::SetTrue)]
     /// prefer TCP queries for upstream DNS servers
     tcp: bool,
 
@@ -422,6 +451,7 @@ mod tests {
             ipv6_only: false,
             port: None,
             name_servers: Vec::new(),
+            hickory: false,
             tcp: false,
             timeout_secs: None,
             tries: None,
@@ -445,6 +475,7 @@ mod tests {
             ipv6_only: false,
             port: None,
             name_servers: Vec::new(),
+            hickory: false,
             tcp: false,
             timeout_secs: None,
             tries: None,
@@ -455,5 +486,56 @@ mod tests {
         };
 
         assert!(cmd.record_type().expect("resolve type").is_none());
+    }
+
+    #[test]
+    fn timeout_only_config_does_not_require_hickory() {
+        let cmd = ResolveCommand {
+            domain: Some(Domain::from_static("example.com")),
+            record_type: Some(RecordType::A),
+            query_name: None,
+            query_type: None,
+            ipv4_only: false,
+            ipv6_only: false,
+            port: None,
+            name_servers: Vec::new(),
+            hickory: false,
+            tcp: false,
+            timeout_secs: Some(5),
+            tries: None,
+            edns0: false,
+            dnssec: false,
+            no_recurse: false,
+            trace: None,
+        };
+
+        assert!(!config_requires_hickory(&cmd));
+    }
+
+    #[test]
+    fn custom_nameserver_requires_hickory() {
+        let cmd = ResolveCommand {
+            domain: Some(Domain::from_static("example.com")),
+            record_type: Some(RecordType::A),
+            query_name: None,
+            query_type: None,
+            ipv4_only: false,
+            ipv6_only: false,
+            port: None,
+            name_servers: vec![NameServerArg {
+                ip: IpAddr::from([1, 1, 1, 1]),
+                port: None,
+            }],
+            hickory: false,
+            tcp: false,
+            timeout_secs: None,
+            tries: None,
+            edns0: false,
+            dnssec: false,
+            no_recurse: false,
+            trace: None,
+        };
+
+        assert!(config_requires_hickory(&cmd));
     }
 }

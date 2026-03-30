@@ -89,6 +89,7 @@ aws-lc-sys = { version = "0.39", features = ["bindgen"] }
 base64 = "0.22"
 bb8 = "0.9"
 bb8-postgres = "0.9"
+bindgen = "0.72"
 bitflags = "2.10"
 brotli = "8"
 byteorder = "1.5"
@@ -135,8 +136,6 @@ mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 nom = "8.0.0"
 opentelemetry = { version = "0.31", default-features = false, features = ["trace", "internal-logs"] }
-opentelemetry-http = { version = "0.31", default-features = false }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["internal-logs", "logs", "metrics", "trace"] }
 opentelemetry-semantic-conventions = { version = "0.31", features = ["semconv_experimental"] }
 opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
 parking_lot = "0.12"
@@ -235,6 +234,7 @@ walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
 wildcard = "0.3"
+windows-sys = "0.61"
 x509-parser = { version = "0.18", default-features = false }
 zstd = "0.13"
 
@@ -325,6 +325,7 @@ cli = [
 net = ["dep:rama-net"]
 net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
 dns = ["net", "dep:rama-dns"]
+dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
@@ -339,7 +340,6 @@ http = [
     "rama-tls-boring?/ua",
     "rama-tls-boring?/http",
     "rama-tls-rustls?/http",
-    "opentelemetry-otlp?/http-proto",
 ]
 http-full = [
     "http",
@@ -366,8 +366,8 @@ opentelemetry = [
     "rama-core/opentelemetry",
     "rama-http?/opentelemetry",
     "rama-net?/opentelemetry",
+    "grpc",
     "rama-grpc?/opentelemetry",
-    "dep:opentelemetry-otlp",
 ]
 
 [dependencies]
@@ -375,7 +375,6 @@ ahash = { workspace = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
-opentelemetry-otlp = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }

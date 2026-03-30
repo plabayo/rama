@@ -1,12 +1,12 @@
 use rama::{
     error::{BoxError, ErrorContext as _},
-    http::{client::EasyHttpWebClient, service::opentelemetry::OtelExporter},
+    http::client::EasyHttpWebClient,
     net::client::pool::http::HttpPooledConnectorConfig,
     rt::Executor,
     telemetry::{
         opentelemetry::{
             KeyValue,
-            collector::{SpanExporter, WithHttpConfig},
+            collector::HttpExporter,
             sdk::{Resource, trace::SdkTracerProvider},
             semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION},
             trace::TracerProvider,
@@ -58,13 +58,7 @@ fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxErr
         .try_with_connection_pool(HttpPooledConnectorConfig::default())
         .context("build http exporter client service")?
         .build_client();
-    let client = OtelExporter::new(svc);
-
-    let exportor = SpanExporter::builder()
-        .with_http()
-        .with_http_client(client)
-        .build()
-        .context("build span exporter w/ rama http client")?;
+    let exportor = HttpExporter::from_env(svc).context("build OTLP HTTP span exporter")?;
 
     let resource = Resource::builder()
         .with_attribute(KeyValue::new(

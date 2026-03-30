@@ -22,7 +22,7 @@ ignored = ["tracing-subscriber"]
 
 [features]
 default = []
-opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry", "dep:opentelemetry-http"]
+opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 compression = [
     "dep:async-compression",
     "dep:compression-codecs",
@@ -48,7 +48,6 @@ httpdate = { workspace = true }
 iri-string = { workspace = true }
 jiff = { workspace = true }
 matchit = { workspace = true }
-opentelemetry-http = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 radix_trie = { workspace = true }

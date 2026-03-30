@@ -33,14 +33,17 @@ use std::{
     time::Duration,
 };
 
+mod http;
 pub(crate) mod proto;
 mod transform;
+
+pub use http::HttpExporter;
 
 use proto::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse, ExportTraceServiceRequest,
     ExportTraceServiceResponse,
 };
-use transform::{ResourceAttributesWithSchema, group_spans_by_resource_and_scope};
+use transform::{ResourceAttributesWithSchema, span_batch_to_request};
 
 const DEFAULT_OTLP_GRPC_ENDPOINT: &str = "http://localhost:4317";
 
@@ -406,12 +409,12 @@ where
                         .with_accept_compressed(compression);
                 }
 
-                let resource_spans = {
+                let request_body = {
                     let guard = resource.read();
-                    group_spans_by_resource_and_scope(&batch, &guard)
+                    span_batch_to_request(&batch, &guard)
                 };
 
-                let mut request = Request::new(ExportTraceServiceRequest { resource_spans });
+                let mut request = Request::new(request_body);
                 *request.metadata_mut() = config.metadata;
                 if let Some(timeout) = config.timeout {
                     request

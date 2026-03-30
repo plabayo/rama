@@ -24,3 +24,4 @@ DerivedData/
 Package.resolved
 *.xcodeproj
 .xcode-derived/
+.DS_Store
