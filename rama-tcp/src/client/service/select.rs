@@ -58,7 +58,7 @@ impl TcpStreamConnectorFactory for () {
 /// This struct cannot be created by third party crates
 /// and instead is to be used via other API's provided by this crate.
 #[derive(Debug, Clone)]
-pub struct TcpStreamConnectorCloneFactory<C>(pub(super) C);
+pub struct TcpStreamConnectorCloneFactory<C>(pub(crate) C);
 
 impl<C> TcpStreamConnectorFactory for TcpStreamConnectorCloneFactory<C>
 where

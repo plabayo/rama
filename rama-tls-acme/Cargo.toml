@@ -21,7 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 base64 = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true }
-rama-crypto = { workspace = true }
+rama-crypto = { workspace = true, features = ["aws-lc"] }
 rama-http = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }

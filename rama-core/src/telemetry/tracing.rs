@@ -226,7 +226,7 @@ macro_rules! __root_span {
     (target: $target:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
         {
             use $crate::telemetry::tracing::OpenTelemetrySpanExt as _;
-            use $crate::telemetry::opentelemetry::{trace::{get_active_span}, KeyValue};
+            use $crate::telemetry::opentelemetry::{trace::{get_active_span, TraceContextExt}, KeyValue};
 
             let src_span = $crate::telemetry::tracing::Span::current();
 
@@ -236,6 +236,11 @@ macro_rules! __root_span {
                 $lvl,
                 $name,
                 $($fields)*
+            );
+
+            src_span.add_link_with_attributes(
+                span.context().span().span_context().clone(),
+                vec![KeyValue::new("opentracing.ref_type", "child_of")],
             );
 
             span.follows_from(src_span);

@@ -27,10 +27,10 @@ mod unix_example {
         error::BoxError,
         extensions::ExtensionsRef,
         graceful::ShutdownGuard,
+        io::Io,
         layer::AddInputExtensionLayer,
         rt::Executor,
         service::service_fn,
-        stream::Stream,
         telemetry::tracing::{
             self,
             level_filters::LevelFilter,
@@ -62,9 +62,7 @@ mod unix_example {
             .expect("bind Unix socket");
 
         graceful.spawn_task_fn(async |guard| {
-            async fn handle(
-                mut stream: impl Stream + Unpin + ExtensionsRef,
-            ) -> Result<(), BoxError> {
+            async fn handle(mut stream: impl Io + Unpin + ExtensionsRef) -> Result<(), BoxError> {
                 let mut buf = [0u8; 1024];
 
                 let mut cancelled = Box::pin(

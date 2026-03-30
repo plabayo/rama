@@ -2,13 +2,16 @@ use super::CompressionLevel;
 use super::body::StreamCompressionBody;
 use crate::HeaderValue;
 use crate::StreamingBody;
-use crate::headers::encoding::{AcceptEncoding, Encoding};
-use crate::layer::compression::predicate::{DefaultStreamPredicate, Predicate};
+use crate::headers::encoding::{AcceptEncoding, Encoding, parse_accept_encoding_headers};
+use crate::layer::compression::predicate::{DefaultStreamPredicate, Predicate, PreferredEncoding};
 use crate::{Request, Response, header};
 use rama_core::Service;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_http_headers::HeaderMapExt;
 use rama_http_headers::TransferEncoding;
+use rama_http_headers::specifier::QualityValue;
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::submatch_ignore_ascii_case;
 
@@ -115,15 +118,21 @@ where
 
     #[allow(unreachable_code, unused_mut, unused_variables, unreachable_patterns)]
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let encoding = Encoding::from_accept_encoding_headers(req.headers(), self.accept);
+        let accepted_encodings: SmallVec<[QualityValue<Encoding>; 4]> =
+            parse_accept_encoding_headers(req.headers(), self.accept).collect();
 
-        let res = self.inner.serve(req).await?;
+        let mut res = self.inner.serve(req).await?;
 
         // never recompress responses that are already compressed
         let should_compress = !res.headers().contains_key(header::CONTENT_ENCODING)
             // never compress responses that are ranges
             && !res.headers().contains_key(header::CONTENT_RANGE)
-            && self.predicate.should_compress(&res);
+            && self.predicate.should_compress(&mut res);
+
+        let encoding = negotiate_response_encoding(
+            &accepted_encodings,
+            res.extensions().get::<PreferredEncoding>().copied(),
+        );
 
         let (mut parts, body) = res.into_parts();
 
@@ -181,6 +190,22 @@ where
         let res = Response::from_parts(parts, body);
         Ok(res)
     }
+}
+
+fn negotiate_response_encoding(
+    accepted_encodings: &[QualityValue<Encoding>],
+    preferred: Option<PreferredEncoding>,
+) -> Encoding {
+    if let Some(preferred) = preferred.map(PreferredEncoding::as_encoding)
+        && accepted_encodings
+            .iter()
+            .any(|qval| qval.value == preferred && qval.quality.as_u16() > 0)
+    {
+        return preferred;
+    }
+
+    Encoding::maybe_preferred_encoding(accepted_encodings.iter().copied())
+        .unwrap_or(Encoding::Identity)
 }
 
 fn is_streaming_content_type(headers: &header::HeaderMap) -> bool {

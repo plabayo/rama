@@ -1,7 +1,7 @@
 use super::{LruDropPool, PooledConnector, ReqToConnID};
 use crate::{Protocol, address::HostWithOptPort, http::RequestContext};
 use rama_core::error::BoxError;
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::ExtensionsMut;
 use rama_http_types::Request;
 use std::time::Duration;
 
@@ -27,12 +27,12 @@ impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
     type ID = BasicHttpConId;
 
     fn id(&self, req: &Request<Body>) -> Result<Self::ID, BoxError> {
-        let req_ctx = match req.extensions().get::<RequestContext>() {
-            Some(ctx) => ctx,
-            None => &RequestContext::try_from(req)?,
-        };
-
-        Ok((req_ctx.protocol.clone(), req_ctx.authority.clone()))
+        let RequestContext {
+            http_version: _,
+            protocol,
+            authority,
+        } = RequestContext::try_from(req)?;
+        Ok((protocol, authority))
     }
 }
 

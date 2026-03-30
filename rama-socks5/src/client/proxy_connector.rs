@@ -6,28 +6,25 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _, ErrorExt},
     extensions::ExtensionsMut,
-    stream::Stream,
+    io::Io,
     telemetry::tracing,
 };
+use rama_dns::client::{
+    GlobalDnsResolver,
+    resolver::{BoxDnsAddressResolver, DnsAddressResolver},
+};
 use rama_net::{
+    Protocol,
+    address::Host,
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
+    mode::DnsResolveIpMode,
     transport::TryRefIntoTransportContext,
     user::ProxyCredential,
 };
-use rama_utils::macros::define_inner_service_accessors;
-
-#[cfg(feature = "dns")]
-use ::{
-    rama_dns::client::{
-        GlobalDnsResolver,
-        resolver::{BoxDnsAddressResolver, DnsAddressResolver},
-    },
-    rama_net::{Protocol, address::Host, mode::DnsResolveIpMode},
-    rama_utils::macros::generate_set_and_with,
-    std::net::IpAddr,
-    tokio::sync::mpsc,
-};
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use std::net::IpAddr;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which wraps the given service with a [`Socks5ProxyConnector`].
@@ -35,7 +32,6 @@ use ::{
 /// See [`Socks5ProxyConnector`] for more information.
 pub struct Socks5ProxyConnectorLayer {
     required: bool,
-    #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
@@ -50,7 +46,6 @@ impl Socks5ProxyConnectorLayer {
     pub fn optional() -> Self {
         Self {
             required: false,
-            #[cfg(feature = "dns")]
             dns_resolver: None,
         }
     }
@@ -65,13 +60,11 @@ impl Socks5ProxyConnectorLayer {
     pub fn required() -> Self {
         Self {
             required: true,
-            #[cfg(feature = "dns")]
             dns_resolver: None,
         }
     }
 }
 
-#[cfg(feature = "dns")]
 impl Socks5ProxyConnectorLayer {
     generate_set_and_with! {
         /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
@@ -81,7 +74,6 @@ impl Socks5ProxyConnectorLayer {
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
-        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn default_dns_resolver(mut self) -> Self {
             self.dns_resolver = Some(GlobalDnsResolver::new().into_box_dns_address_resolver());
             self
@@ -96,7 +88,6 @@ impl Socks5ProxyConnectorLayer {
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
-        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
             self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
             self
@@ -111,7 +102,6 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
         Socks5ProxyConnector {
             inner,
             required: self.required,
-            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver.clone(),
         }
     }
@@ -120,7 +110,6 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
         Socks5ProxyConnector {
             inner,
             required: self.required,
-            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
         }
     }
@@ -136,7 +125,6 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 pub struct Socks5ProxyConnector<S> {
     inner: S,
     required: bool,
-    #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
@@ -146,7 +134,6 @@ impl<S> Socks5ProxyConnector<S> {
         Self {
             inner,
             required,
-            #[cfg(feature = "dns")]
             dns_resolver: None,
         }
     }
@@ -166,7 +153,6 @@ impl<S> Socks5ProxyConnector<S> {
     define_inner_service_accessors!();
 }
 
-#[cfg(feature = "dns")]
 impl<S> Socks5ProxyConnector<S> {
     generate_set_and_with! {
         /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnector`].
@@ -176,7 +162,6 @@ impl<S> Socks5ProxyConnector<S> {
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
-        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn default_dns_resolver(mut self) -> Self {
             self.dns_resolver = Some(GlobalDnsResolver::default().into_box_dns_address_resolver());
             self
@@ -191,7 +176,6 @@ impl<S> Socks5ProxyConnector<S> {
         ///
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
-        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
             self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
             self
@@ -199,7 +183,6 @@ impl<S> Socks5ProxyConnector<S> {
     }
 }
 
-#[cfg(feature = "dns")]
 impl<S> Socks5ProxyConnector<S> {
     async fn normalize_socks5_proxy_addr(
         &self,
@@ -340,7 +323,7 @@ impl<S> Socks5ProxyConnector<S> {
 
 impl<S, Input> Service<Input> for Socks5ProxyConnector<S>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
@@ -362,7 +345,6 @@ where
             ));
         }
 
-        #[cfg(feature = "dns")]
         let address = match address {
             Some(addr) => {
                 let addr = self

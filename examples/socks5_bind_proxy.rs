@@ -108,9 +108,10 @@ async fn main() {
 }
 
 async fn spawn_socks5_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::local_ipv4(63010), Executor::default())
-        .await
-        .expect("bind socks5 BIND proxy on open port");
+    let tcp_service =
+        TcpListener::bind_address(SocketAddress::local_ipv4(63010), Executor::default())
+            .await
+            .expect("bind socks5 BIND proxy on open port");
 
     let bind_addr = tcp_service
         .local_addr()
@@ -119,7 +120,7 @@ async fn spawn_socks5_server() -> SocketAddress {
 
     let socks5_acceptor = Socks5Acceptor::new(Executor::default())
         .with_authorizer(basic!("john", "secret").into_authorizer())
-        .with_binder(DefaultBinder::default().with_bind_interface(SocketAddress::local_ipv4(0)));
+        .with_binder(DefaultBinder::default().with_bind_address(SocketAddress::local_ipv4(0)));
 
     tokio::spawn(tcp_service.serve(socks5_acceptor));
 

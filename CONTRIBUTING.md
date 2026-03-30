@@ -1,4 +1,34 @@
-# Contributing
+# Contributing to rama
+
+**Thank you for your interest in contributing to rama!**
+
+This document will outline the basics of where to start if you wish to contribute to the project. There are many ways to help us out and and we appreciate all of them. We look forward to **your contribution!**
+
+**Please read this document until the end**
+
+## Code Of Conduct
+
+Please read the
+[Code of Conduct](./CODE_OF_CONDUCT.md) document as well
+
+## Contribution Terms
+
+When making a contribution you agree to the following terms:
+
+- I understand these changes in full and will be able to respond to review comments.
+- I have read the [Developer Certificate of Origin](https://developercertificate.org/) and certify my contribution under its conditions.
+
+## Chat
+
+You can join in our chat platforms to discuss development, issues or ask questions.
+
+### [Discord](https://discord.gg/29EetaSYCD)
+
+We have a Discord server, feel free to join it
+if you wish to char with us, ask questions or discuss
+anything rama related.
+
+## Process
 
 1. [File an issue](https://github.com/plabayo/rama/issues/new).
    The issue will be used to discuss the bug or feature and should be created before opening an MR.
@@ -48,7 +78,7 @@ just qa
 
 Before you can do this you do require the following to be installed:
 
-* `Rust`, version 1.91 or beyond: <https://www.rust-lang.org/tools/install>
+* `Rust`, version 1.93 or beyond: <https://www.rust-lang.org/tools/install>
 * `just` (to run _just_ (config) files): <https://just.systems/man/en/packages.html>
 
 What you will also need to have installed is:
@@ -61,4 +91,4 @@ When all these pass you can be pretty certain that all tests in the GitHub CI st
 will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV and three platforms in total:
 
 - Tier 1 platforms: MacOS, Linux and Windows
-- Tier 2 platforms: Android and Linux
+- Tier 2 platforms: Android and iOS

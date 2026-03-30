@@ -1,6 +1,8 @@
 use super::utils;
-use rama::{extensions::Extensions, rt::Executor, tcp::client::default_tcp_connect};
-use rama_net::address::HostWithPort;
+use rama::{
+    extensions::Extensions, net::address::HostWithPort, rt::Executor,
+    tcp::client::default_tcp_connect,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]

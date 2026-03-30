@@ -107,7 +107,7 @@ async fn run_server(addr: &str, ready: Sender<()>) {
         HttpServer::default().service(WebService::default().with_get("/", "Hello, World!"));
 
     let serve = TcpListener::build(Executor::default())
-        .bind(addr)
+        .bind_address(addr)
         .await
         .expect("bind TCP Listener")
         .serve(LimitLayer::new(FirstConnOnly::new()).into_layer(http_service));

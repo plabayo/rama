@@ -1,4 +1,4 @@
-use chrono::Utc;
+use jiff::Timestamp;
 use rama::{
     error::{BoxError, ErrorContext},
     http::proto::h1::Http1HeaderMap,
@@ -41,6 +41,10 @@ macro_rules! insert_stmt {
 }
 
 impl Storage {
+    fn updated_at() -> Timestamp {
+        Timestamp::now()
+    }
+
     pub(super) async fn store_h1_settings(
         &self,
         ua: String,
@@ -52,7 +56,7 @@ impl Storage {
             "store h1 settings for UA: {settings:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -84,7 +88,7 @@ impl Storage {
             "store h1 navigateheaders for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -116,7 +120,7 @@ impl Storage {
             "store h1 fetch headers for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -148,7 +152,7 @@ impl Storage {
             "store h1 xhr headers for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -180,7 +184,7 @@ impl Storage {
             "store h1 form headers for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -212,7 +216,7 @@ impl Storage {
             "store h1 ws headers for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -244,7 +248,7 @@ impl Storage {
             "store h2 settings for UA: {settings:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -276,7 +280,7 @@ impl Storage {
             "store h2 navigate headers for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -308,7 +312,7 @@ impl Storage {
             "store h2 fetch headers for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -340,7 +344,7 @@ impl Storage {
             "store h2 xhr headers for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -372,7 +376,7 @@ impl Storage {
             "store h2 form headers for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -404,7 +408,7 @@ impl Storage {
             "store h2 ws headers for UA: {headers:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -436,7 +440,7 @@ impl Storage {
             "store tls client hello for UA: {tls_client_hello:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -468,7 +472,7 @@ impl Storage {
             "store tls ws client config overwritesfor UA: {tls_client_hello:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let overwrites = WsClientConfigOverwrites {
             alpn: tls_client_hello.ext_alpn().map(ToOwned::to_owned),
@@ -504,7 +508,7 @@ impl Storage {
             "store js web apis for UA: {js_web_apis:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
@@ -536,7 +540,7 @@ impl Storage {
             "store source info for UA: {source_info:?}",
         );
 
-        let updated_at = Utc::now();
+        let updated_at = Self::updated_at();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(

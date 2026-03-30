@@ -48,3 +48,19 @@ service unhealthy (responded with "NOT_SERVING")
 status: SERVING
 ...
 ```
+
+## OTLP Exporter
+
+Demonstrates exporting OpenTelemetry metrics over gRPC using the OTLP protocol.
+
+Requires a running OpenTelemetry collector:
+
+```bash
+docker run -p 127.0.0.1:4317:4317 otel/opentelemetry-collector:latest
+```
+
+Then run:
+
+```bash
+cargo run -p rama-grpc-examples --features opentelemetry --bin otel-exporter
+```

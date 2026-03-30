@@ -101,9 +101,8 @@ impl<F> MapErrLayer<F> {
     }
 }
 
-impl<Error: std::error::Error + Send + Sync + 'static> MapErrLayer<fn(Error) -> BoxError>
+impl<Error> MapErrLayer<fn(Error) -> BoxError>
 where
-    Error: std::error::Error + Send + Sync + 'static,
     BoxError: From<Error>,
 {
     /// Turn the error into a [`BoxError`].
@@ -116,7 +115,6 @@ where
 
 impl<Error> MapErrLayer<fn(Error) -> OpaqueError>
 where
-    Error: std::error::Error + Send + Sync + 'static,
     BoxError: From<Error>,
 {
     /// Turn the error into a [`OpaqueError`].

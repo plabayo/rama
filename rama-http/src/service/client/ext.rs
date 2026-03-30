@@ -195,7 +195,7 @@ where
 
 /// A trait to try to convert some type into a [`Url`].
 ///
-/// This trait is “sealed”, such that only types within rama can implement it.
+/// This trait is "sealed", such that only types within rama can implement it.
 ///
 /// [`Url`]: crate::Uri
 pub trait IntoUrl: private::IntoUrlSealed {}
@@ -207,7 +207,7 @@ impl IntoUrl for &String {}
 
 /// A trait to try to convert some type into a [`HeaderName`].
 ///
-/// This trait is “sealed”, such that only types within rama can implement it.
+/// This trait is "sealed", such that only types within rama can implement it.
 ///
 /// [`HeaderName`]: crate::HeaderName
 pub trait IntoHeaderName: private::IntoHeaderNameSealed {}
@@ -221,7 +221,7 @@ impl IntoHeaderName for &[u8] {}
 
 /// A trait to try to convert some type into a [`HeaderValue`].
 ///
-/// This trait is “sealed”, such that only types within rama can implement it.
+/// This trait is "sealed", such that only types within rama can implement it.
 ///
 /// [`HeaderValue`]: crate::HeaderValue
 pub trait IntoHeaderValue: private::IntoHeaderValueSealed {}

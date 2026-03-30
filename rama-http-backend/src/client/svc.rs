@@ -73,15 +73,45 @@ where
         let mut resp = match &self.sender {
             SendRequest::Http1(sender) => {
                 let mut sender = sender.lock().await;
-                sender.ready().await?;
-                sender.send_request(req).await
+                if let Err(err) = sender.ready().await {
+                    tracing::debug!(
+                        sender_closed = sender.is_closed(),
+                        "http1 upstream sender ready failed: {err}"
+                    );
+                    return Err(err.into());
+                }
+                match sender.send_request(req).await {
+                    Ok(resp) => resp,
+                    Err(err) => {
+                        tracing::debug!(
+                            sender_closed = sender.is_closed(),
+                            "http1 upstream send_request failed: {err}"
+                        );
+                        return Err(err.into());
+                    }
+                }
             }
             SendRequest::Http2(sender) => {
                 let mut sender = sender.clone();
-                sender.ready().await?;
-                sender.send_request(req).await
+                if let Err(err) = sender.ready().await {
+                    tracing::debug!(
+                        sender_closed = sender.is_closed(),
+                        "http2 upstream sender ready failed: {err}"
+                    );
+                    return Err(err.into());
+                }
+                match sender.send_request(req).await {
+                    Ok(resp) => resp,
+                    Err(err) => {
+                        tracing::debug!(
+                            sender_closed = sender.is_closed(),
+                            "http2 upstream send_request failed: {err}"
+                        );
+                        return Err(err.into());
+                    }
+                }
             }
-        }?;
+        };
 
         resp.extensions_mut()
             .insert(InputExtensions(req_extensions));

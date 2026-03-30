@@ -108,7 +108,7 @@ impl DefaultOnResponse {
 }
 
 impl<B> OnResponse<B> for DefaultOnResponse {
-    fn on_response(self, response: &Response<B>, latency: Duration, _: &Span) {
+    fn on_response(self, response: &Response<B>, latency: Duration, span: &Span) {
         let latency = Latency {
             unit: self.latency_unit,
             duration: latency,
@@ -117,13 +117,15 @@ impl<B> OnResponse<B> for DefaultOnResponse {
             .include_headers
             .then(|| tracing::field::debug(response.headers()));
 
-        event_dynamic_lvl!(
-            self.level,
-            %latency,
-            status = status(response),
-            response_headers,
-            "finished processing request"
-        );
+        span.in_scope(|| {
+            event_dynamic_lvl!(
+                self.level,
+                %latency,
+                status = status(response),
+                response_headers,
+                "finished processing request"
+            );
+        })
     }
 }
 

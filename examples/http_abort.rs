@@ -79,7 +79,7 @@ async fn main() {
     graceful.spawn_task_fn(async |guard| {
         tracing::info!("running service at: {ADDRESS}");
         let exec = Executor::graceful(guard);
-        TcpListener::bind(ADDRESS, exec)
+        TcpListener::bind_address(ADDRESS, exec)
             .await
             .unwrap()
             .serve(tcp_svc)

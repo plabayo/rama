@@ -10,7 +10,7 @@ use rama_http_types::{
 /// Embedded version of a recent enough datastar frontend script
 /// compatible with the datastar support embedded in rama.
 ///
-/// Source: <https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js>
+/// Source: <https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.8/bundles/datastar.js>
 ///
 /// Learn more about datastar at <https://data-star.dev/>
 /// or in the book: <https://ramaproxy.org/book/web_servers.html#datastar>.
@@ -44,7 +44,7 @@ impl IntoResponse for DatastarScript {
 /// Embedded version of the datastar source map file
 /// for improved debugging experience.
 ///
-/// Source: <https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js.map>
+/// Source: <https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.8/bundles/datastar.js.map>
 ///
 /// Learn more about datastar at <https://data-star.dev/>
 /// or in the book: <https://ramaproxy.org/book/web_servers.html#datastar>.

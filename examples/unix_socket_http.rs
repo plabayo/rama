@@ -61,7 +61,7 @@ mod unix_example {
             );
             listener
                 .serve(
-                    HttpServer::http1(exec)
+                    HttpServer::new_http1(exec)
                         .service(Arc::new(Router::new().with_get("/ping", "pong"))),
                 )
                 .await;

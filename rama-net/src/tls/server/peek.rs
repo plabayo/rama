@@ -1,12 +1,15 @@
+use std::time::Duration;
+
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    io::{
+        PeekIoProvider, PrefixedIo, StackReader,
+        peek::{PeekOutput, peek_input_until},
+    },
     service::RejectService,
-    stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
-use tokio::io::AsyncReadExt;
 
 /// A [`Service`] router that can be used to support
 /// tls traffic as well as non-tls traffic.
@@ -17,6 +20,7 @@ use tokio::io::AsyncReadExt;
 pub struct TlsPeekRouter<T, F = RejectService<(), NoTlsRejectError>> {
     tls_acceptor: T,
     fallback: F,
+    peek_timeout: Option<Duration>,
 }
 
 rama_utils::macros::error::static_str_error! {
@@ -30,6 +34,7 @@ impl<T> TlsPeekRouter<T> {
         Self {
             tls_acceptor,
             fallback: RejectService::new(NoTlsRejectError),
+            peek_timeout: None,
         }
     }
 
@@ -38,53 +43,83 @@ impl<T> TlsPeekRouter<T> {
         TlsPeekRouter {
             tls_acceptor: self.tls_acceptor,
             fallback,
+            peek_timeout: self.peek_timeout,
         }
     }
 }
 
-impl<Stream, Output, T, F> Service<Stream> for TlsPeekRouter<T, F>
+impl<T, F> TlsPeekRouter<T, F> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the peek window to timeout on
+        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
+            self.peek_timeout = peek_timeout;
+            self
+        }
+    }
+}
+
+impl<PeekableInput, Output, T, F> Service<PeekableInput> for TlsPeekRouter<T, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
     Output: Send + 'static,
-    T: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<
+            PeekableInput::Mapped<TlsPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    F: Service<
+            PeekableInput::Mapped<TlsPrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
-        let n = stream
-            .read(&mut peek_buf)
-            .await
-            .context("try to read tls prefix header")?;
+        let peek_reader = input.peek_io_mut();
 
-        let is_tls = n == TLS_HEADER_PEEK_LEN && matches!(peek_buf, [0x16, 0x03, 0x00..=0x04, ..]);
+        let PeekOutput { data, peek_size } =
+            peek_input_until(peek_reader, &mut peek_buf, self.peek_timeout, |buffer| {
+                if buffer.len() == TLS_HEADER_PEEK_LEN
+                    && matches!(buffer, [0x16, 0x03, 0x00..=0x04, ..])
+                {
+                    Some(())
+                } else {
+                    None
+                }
+            })
+            .await;
+        let is_tls = data.is_some();
+
         tracing::trace!(%is_tls, "tls prefix header read: is tls: {is_tls}");
 
-        let offset = TLS_HEADER_PEEK_LEN - n;
+        let offset = TLS_HEADER_PEEK_LEN - peek_size;
         if offset > 0 {
-            tracing::trace!("move tls peek buffer cursor due to reading not enough: (read: {n})");
-            peek_buf.copy_within(0..n, offset);
+            tracing::trace!(
+                "move tls peek buffer cursor due to reading not enough: (read: {peek_size})"
+            );
+            peek_buf.copy_within(0..peek_size, offset);
         }
 
-        let mut peek = StackReader::new(peek_buf);
-        peek.skip(offset);
+        let mut peek_stack_data = StackReader::new(peek_buf);
+        peek_stack_data.skip(offset);
 
-        let stream = PeekStream::new(peek, stream);
+        let mapped_input = input.map_peek_io(|io| PrefixedIo::new(peek_stack_data, io));
 
         if is_tls {
-            self.tls_acceptor.serve(stream).await.into_box_error()
+            self.tls_acceptor.serve(mapped_input).await.into_box_error()
         } else {
-            self.fallback.serve(stream).await.into_box_error()
+            self.fallback.serve(mapped_input).await.into_box_error()
         }
     }
 }
 
 const TLS_HEADER_PEEK_LEN: usize = 5;
 
-/// [`PeekStream`] alias used by [`TlsPeekRouter`].
-pub type TlsPeekStream<S> = PeekStream<StackReader<TLS_HEADER_PEEK_LEN>, S>;
+/// [`PrefixedIo`] alias used by [`TlsPeekRouter`].
+pub type TlsPrefixedIo<S> = PrefixedIo<StackReader<TLS_HEADER_PEEK_LEN>, S>;
 
 #[cfg(test)]
 mod test {
@@ -93,8 +128,9 @@ mod test {
         service::{RejectError, service_fn},
     };
     use std::convert::Infallible;
+    use tokio::io::AsyncReadExt as _;
 
-    use rama_core::stream::Stream;
+    use rama_core::io::Io;
 
     use super::*;
 
@@ -136,7 +172,7 @@ mod test {
     async fn test_peek_router_read_eof() {
         const CONTENT: &[u8] = b"\x16\x03\x03\x00\x2afoo";
 
-        async fn tls_service_fn(mut stream: impl Stream + Unpin) -> Result<&'static str, BoxError> {
+        async fn tls_service_fn(mut stream: impl Io + Unpin) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
             let _ = stream.read_to_end(&mut v).await?;
             assert_eq!(CONTENT, v);
@@ -166,9 +202,7 @@ mod test {
             }
             let tls_service = service_fn(tls_service_fn);
 
-            async fn plain_service_fn(
-                mut stream: impl Stream + Unpin,
-            ) -> Result<Vec<u8>, BoxError> {
+            async fn plain_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
                 let _ = stream.read_to_end(&mut v).await?;
                 Ok(v)

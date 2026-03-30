@@ -8,7 +8,6 @@ use rama_core::{Service, error::BoxError};
 use rama_net::address::SocketAddress;
 use rama_udp::UdpSocket;
 
-#[cfg(feature = "dns")]
 use ::rama_dns::client::resolver::BoxDnsAddressResolver;
 
 #[allow(clippy::too_many_arguments)]
@@ -22,7 +21,7 @@ pub(super) trait UdpPacketProxy: Send + Sync + 'static {
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsAddressResolver>,
+        dns_resolver: Option<BoxDnsAddressResolver>,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
@@ -34,13 +33,13 @@ pub struct DirectUdpRelay;
 impl UdpPacketProxy for DirectUdpRelay {
     async fn proxy_udp_packets(
         &self,
-        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] extensions: Extensions,
+        extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsAddressResolver>,
+        dns_resolver: Option<BoxDnsAddressResolver>,
     ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -50,7 +49,6 @@ impl UdpPacketProxy for DirectUdpRelay {
             south_read_buf_size,
         );
 
-        #[cfg(feature = "dns")]
         let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;
@@ -147,7 +145,7 @@ where
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsAddressResolver>,
+        dns_resolver: Option<BoxDnsAddressResolver>,
     ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -157,7 +155,6 @@ where
             south_read_buf_size,
         );
 
-        #[cfg(feature = "dns")]
         let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;
@@ -313,13 +310,13 @@ where
 {
     async fn proxy_udp_packets(
         &self,
-        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] extensions: Extensions,
+        extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsAddressResolver>,
+        dns_resolver: Option<BoxDnsAddressResolver>,
     ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -329,7 +326,6 @@ where
             south_read_buf_size,
         );
 
-        #[cfg(feature = "dns")]
         let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;

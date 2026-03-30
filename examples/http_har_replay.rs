@@ -19,6 +19,7 @@ use rama::{
     graceful::Shutdown,
     http::{
         Request, Response, Uri,
+        body::util::BodyExt,
         client::EasyHttpWebClient,
         layer::{
             compression::{CompressionLayer, predicate::Always},
@@ -43,7 +44,6 @@ use rama::{
     },
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_http::body::util::BodyExt;
 
 use std::{convert::Infallible, fs, sync::Arc, time::Duration};
 use tokio::sync::oneshot;
@@ -81,8 +81,8 @@ async fn main() {
     let exec = Executor::graceful(graceful.guard());
     let traffic_writer = BidirectionalWriter::stdout_unbounded(
         &exec,
-        Some(rama_http::layer::traffic_writer::WriterMode::All),
-        Some(rama_http::layer::traffic_writer::WriterMode::All),
+        Some(rama::http::layer::traffic_writer::WriterMode::All),
+        Some(rama::http::layer::traffic_writer::WriterMode::All),
     );
 
     let client = (
@@ -120,7 +120,8 @@ async fn main() {
         );
 
         let elapsed_millis = req_start_instant.elapsed().as_millis() as i64;
-        let offset_millis = (entry.started_date_time - min_start_time).num_milliseconds();
+        let offset_millis =
+            entry.started_date_time.as_millisecond() - min_start_time.as_millisecond();
         if offset_millis > elapsed_millis {
             let emulation_delay_millis = (offset_millis - elapsed_millis) as u64;
             tracing::warn!("replay emulation: delay for {emulation_delay_millis}ms");
@@ -215,7 +216,7 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
             })),
     );
 
-    TcpListener::bind(ADDRESS, exec)
+    TcpListener::bind_address(ADDRESS, exec)
         .await
         .unwrap()
         .serve(Abortable::new(http_svc))

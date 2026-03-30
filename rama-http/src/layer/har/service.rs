@@ -6,7 +6,7 @@ use crate::layer::har::spec::{
 use crate::layer::har::toggle::Toggle;
 use crate::{Body, Request, Response, StreamingBody};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::ExtensionsMut;
@@ -54,13 +54,13 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         struct EntryStartInfo {
-            start_time: DateTime<Utc>,
+            start_time: Timestamp,
             begin: Instant, // TODO: replace with total time
             request: HarRequest,
         }
 
         let (request, maybe_entry_start_info) = if self.toggle.status().await {
-            let start_time = Utc::now();
+            let start_time = Timestamp::now();
             // need to collect it first as bodies are (potentially) streaming
             let (req_parts, req_body) = req.into_parts();
             let req_body_bytes = req_body

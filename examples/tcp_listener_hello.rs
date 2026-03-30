@@ -17,10 +17,10 @@
 //! You should see a response with `HTTP/1.1 200 OK` and a body with the source code of this example.
 
 use rama::{
+    io::Io,
     net::{address::SocketAddress, stream::Socket},
     rt::Executor,
     service::service_fn,
-    stream::Stream,
     tcp::server::TcpListener,
 };
 
@@ -35,14 +35,14 @@ const ADDR: SocketAddress = SocketAddress::local_ipv4(62500);
 #[tokio::main]
 async fn main() {
     println!("Listening on: {ADDR}");
-    TcpListener::bind(ADDR, Executor::default())
+    TcpListener::bind_address(ADDR, Executor::default())
         .await
         .expect("bind TCP Listener")
         .serve(service_fn(handle))
         .await;
 }
 
-async fn handle(mut stream: impl Socket + Stream + Unpin) -> Result<(), Infallible> {
+async fn handle(mut stream: impl Socket + Io + Unpin) -> Result<(), Infallible> {
     println!(
         "Incoming connection from: {}",
         stream

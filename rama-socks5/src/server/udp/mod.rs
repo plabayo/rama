@@ -1,17 +1,16 @@
 use std::time::Duration;
 
 use rama_core::{
-    Service, combinators::Either, error::BoxError, extensions::ExtensionsMut,
-    layer::timeout::DefaultTimeout, stream::Stream, telemetry::tracing,
+    Service, combinators::Either, error::BoxError, extensions::ExtensionsMut, io::Io,
+    layer::timeout::DefaultTimeout, telemetry::tracing,
 };
 use rama_net::{
     address::{Host, HostWithPort, SocketAddress},
-    socket::{Interface, SocketService},
+    socket::SocketService,
 };
-use rama_udp::{UdpSocket, bind_udp};
+use rama_udp::{UdpSocket, bind_udp_with_address};
 use rama_utils::macros::generate_set_and_with;
 
-#[cfg(feature = "dns")]
 use ::rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver};
 
 use super::Error;
@@ -47,12 +46,12 @@ pub trait Socks5UdpAssociatorSeal<S>: Send + Sync + 'static {
         destination: HostWithPort,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_
     where
-        S: Stream + Unpin;
+        S: Io + Unpin;
 }
 
 impl<S> Socks5UdpAssociatorSeal<S> for ()
 where
-    S: Stream + Unpin,
+    S: Io + Unpin,
 {
     async fn accept_udp_associate(
         &self,
@@ -80,12 +79,12 @@ where
 /// [`Default`] binder [`Service`] implementation.
 pub struct DefaultUdpBinder;
 
-impl Service<Interface> for DefaultUdpBinder {
+impl Service<SocketAddress> for DefaultUdpBinder {
     type Output = UdpSocket;
     type Error = BoxError;
 
-    async fn serve(&self, interface: Interface) -> Result<Self::Output, Self::Error> {
-        let socket = bind_udp(interface).await?;
+    async fn serve(&self, addr: SocketAddress) -> Result<Self::Output, Self::Error> {
+        let socket = bind_udp_with_address(addr).await?;
         Ok(socket)
     }
 }
@@ -110,11 +109,10 @@ pub struct UdpRelay<B, I> {
     binder: B,
     inspector: I,
 
-    #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 
-    bind_north_interface: Interface,
-    bind_south_interface: Interface,
+    bind_north_address: SocketAddress,
+    bind_south_address: SocketAddress,
 
     north_buffer_size: usize,
     south_buffer_size: usize,
@@ -128,10 +126,9 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         Self {
             binder,
             inspector: DirectUdpRelay::default(),
-            #[cfg(feature = "dns")]
             dns_resolver: None,
-            bind_north_interface: Interface::default_ipv4(0),
-            bind_south_interface: Interface::default_ipv4(0),
+            bind_north_address: SocketAddress::default_ipv4(0),
+            bind_south_address: SocketAddress::default_ipv4(0),
             north_buffer_size: 2048,
             south_buffer_size: 2048,
             relay_timeout: None,
@@ -144,10 +141,9 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         UdpRelay {
             binder: self.binder,
             inspector: SyncUdpInspector(inspector),
-            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
-            bind_north_interface: self.bind_north_interface,
-            bind_south_interface: self.bind_south_interface,
+            bind_north_address: self.bind_north_address,
+            bind_south_address: self.bind_south_address,
             north_buffer_size: self.north_buffer_size,
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
@@ -160,10 +156,9 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
         UdpRelay {
             binder: self.binder,
             inspector: AsyncUdpInspector(inspector),
-            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
-            bind_north_interface: self.bind_north_interface,
-            bind_south_interface: self.bind_south_interface,
+            bind_north_address: self.bind_north_address,
+            bind_south_address: self.bind_south_address,
             north_buffer_size: self.north_buffer_size,
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
@@ -179,10 +174,9 @@ impl<B, I> UdpRelay<B, I> {
         UdpRelay {
             binder,
             inspector: self.inspector,
-            #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
-            bind_north_interface: self.bind_north_interface,
-            bind_south_interface: self.bind_south_interface,
+            bind_north_address: self.bind_north_address,
+            bind_south_address: self.bind_south_address,
             north_buffer_size: self.north_buffer_size,
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
@@ -190,33 +184,33 @@ impl<B, I> UdpRelay<B, I> {
     }
 
     generate_set_and_with! {
-        /// Define the (network) [`Interface`] to bind to, for both north and south direction.
+        /// Define the [`SocketAddress`] to bind to, for both north and south direction.
         ///
         /// By default it binds the udp sockets at `0.0.0.0:0`.
-        pub fn bind_interface(mut self, interface: impl Into<Interface>) -> Self {
-            let interface = interface.into();
-            self.bind_north_interface = interface.clone();
-            self.bind_south_interface = interface;
+        pub fn bind_address(mut self, address: impl Into<SocketAddress>) -> Self {
+            let address = address.into();
+            self.bind_north_address = address;
+            self.bind_south_address = address;
             self
         }
     }
 
     generate_set_and_with! {
-        /// Define the (network) [`Interface`] to bind to, for the north direction.
+        /// Define the [`SocketAddress`] to bind to, for the north direction.
         ///
         /// By default it binds the udp sockets at `0.0.0.0:0`.
-        pub fn bind_north_interface(mut self, interface: impl Into<Interface>) -> Self {
-            self.bind_north_interface = interface.into();
+        pub fn bind_north_address(mut self, address: impl Into<SocketAddress>) -> Self {
+            self.bind_north_address = address.into();
             self
         }
     }
 
     generate_set_and_with! {
-        /// Define the (network) [`Interface`] to bind to, for the south direction.
+        /// Define the [`SocketAddress`] to bind to, for the south direction.
         ///
         /// By default it binds the udp sockets at `0.0.0.0:0`.
-        pub fn bind_south_interface(mut self, interface: impl Into<Interface>) -> Self {
-            self.bind_south_interface = interface.into();
+        pub fn bind_south_address(mut self, address: impl Into<SocketAddress>) -> Self {
+            self.bind_south_address = address.into();
             self
         }
     }
@@ -255,14 +249,12 @@ impl<B, I> UdpRelay<B, I> {
     }
 }
 
-#[cfg(feature = "dns")]
 impl<B, I> UdpRelay<B, I> {
     generate_set_and_with! {
         /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
         ///
         /// It will be used to best-effort resolve the domain name,
         /// in case a domain name is passed to forward to the target server.
-        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn default_dns_resolver(mut self) -> Self {
             self.dns_resolver = None;
             self
@@ -274,7 +266,6 @@ impl<B, I> UdpRelay<B, I> {
         ///
         /// It will be used to best-effort resolve the domain name,
         /// in case a domain name is passed to forward to the target server.
-        #[cfg_attr(docsrs, doc(cfg(feature = "dns")))]
         pub fn dns_resolver(mut self, resolver: impl DnsAddressResolver) -> Self {
             self.dns_resolver = Some(resolver.into_box_dns_address_resolver());
             self
@@ -284,16 +275,11 @@ impl<B, I> UdpRelay<B, I> {
 
 impl Default for DefaultUdpRelay {
     fn default() -> Self {
-        let relay = Self::new(DefaultTimeout::new(
+        Self::new(DefaultTimeout::new(
             DefaultUdpBinder::default(),
             Duration::from_secs(30),
-        ));
-        #[cfg(feature = "dns")]
-        {
-            relay.with_default_dns_resolver()
-        }
-        #[cfg(not(feature = "dns"))]
-        relay
+        ))
+        .with_default_dns_resolver()
     }
 }
 
@@ -301,7 +287,7 @@ impl<B, I, S> Socks5UdpAssociatorSeal<S> for UdpRelay<B, I>
 where
     B: SocketService<Socket = UdpSocket>,
     I: UdpPacketProxy,
-    S: Stream + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsMut,
 {
     async fn accept_udp_associate(
         &self,
@@ -337,7 +323,11 @@ where
         };
         let client_address = SocketAddress::new(dest_addr, dest_port);
 
-        let socket_north = match self.binder.bind(self.bind_north_interface.clone()).await {
+        let socket_north = match self
+            .binder
+            .bind_socket_with_address(self.bind_north_address)
+            .await
+        {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();
@@ -376,7 +366,11 @@ where
             }
         };
 
-        let socket_south = match self.binder.bind(self.bind_south_interface.clone()).await {
+        let socket_south = match self
+            .binder
+            .bind_socket_with_address(self.bind_south_address)
+            .await
+        {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();
@@ -419,7 +413,6 @@ where
             self.north_buffer_size,
             socket_south,
             self.south_buffer_size,
-            #[cfg(feature = "dns")]
             self.dns_resolver.clone(),
         );
 

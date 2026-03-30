@@ -8,7 +8,7 @@ use rama::telemetry::tracing::{
     subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
 use std::{
-    process::{Child, ExitStatus},
+    process::{Child, ExitStatus, Output},
     sync::Once,
 };
 
@@ -44,10 +44,18 @@ use rama::http::layer::decompression::DecompressionLayer;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 use rama::{net::tls::client::ServerVerifyMode, tls::boring::client as boring_client};
 
-#[cfg(all(feature = "http-full", feature = "rustls", not(feature = "boring")))]
+#[cfg(all(
+    feature = "http-full",
+    feature = "rustls",
+    feature = "aws-lc",
+    not(feature = "boring")
+))]
 use rama::tls::rustls::client as rustls_client;
 
-#[cfg(all(feature = "http-full", any(feature = "rustls", feature = "boring")))]
+#[cfg(all(
+    feature = "http-full",
+    any(all(feature = "rustls", feature = "aws-lc"), feature = "boring")
+))]
 use rama::rt::Executor;
 
 #[cfg(feature = "http-full")]
@@ -157,7 +165,7 @@ impl ExampleRunner {
                     .build_client()
             };
 
-            #[cfg(all(feature = "rustls", not(feature = "boring")))]
+            #[cfg(all(feature = "rustls", feature = "aws-lc", not(feature = "boring")))]
             let inner_client = {
                 let tls_config = rustls_client::TlsConnectorDataBuilder::new()
                     .with_no_cert_verifier()
@@ -284,6 +292,41 @@ impl ExampleRunner {
                 )
                 .status()
                 .unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Run an example with arguments and capture its output.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the example process cannot be spawned
+    /// or if it fails while waiting for it to finish.
+    pub(super) async fn run_with_args_output(
+        example_name: impl AsRef<str>,
+        args: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Output {
+        let example_name = example_name.as_ref().to_owned();
+        let args = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_owned())
+            .collect::<Vec<_>>();
+        tokio::task::spawn_blocking(move || {
+            let mut command = escargot::CargoBuild::new()
+                .arg("--all-features")
+                .example(example_name)
+                .manifest_path("Cargo.toml")
+                .target_dir("./target/")
+                .run()
+                .unwrap()
+                .command();
+            command.env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+            command.args(args);
+            command.output().unwrap()
         })
         .await
         .unwrap()

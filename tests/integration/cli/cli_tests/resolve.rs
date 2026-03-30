@@ -7,10 +7,13 @@ async fn test_resolve_default() {
     let output = utils::RamaService::resolve("localhost", None).unwrap();
 
     assert!(
-        output.contains("Resolving A for domain: localhost"),
+        output.contains("Resolving IP for domain: localhost"),
         "output: {output}"
     );
-    assert!(output.contains("* 127.0.0.1"), "output: {output}");
+    assert!(
+        output.contains("* 127.0.0.1") || output.contains("* ::1"),
+        "output: {output}"
+    );
 }
 
 #[tokio::test]

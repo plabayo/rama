@@ -1,20 +1,21 @@
-use rama_boring_tokio::SslStream;
+use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsMut};
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
-use rama_net::address::Host;
+use rama_net::address::Domain;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use rama_utils::macros::generate_set_and_with;
+use std::fmt;
 use std::sync::Arc;
 
-use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder, TlsStream};
-use crate::types::TlsTunnel;
+use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder};
+use crate::{TlsStream, types::TlsTunnel};
 
 #[cfg(feature = "http")]
 use rama_http_types::{Version, conn::TargetHttpVersion};
@@ -79,10 +80,10 @@ impl TlsConnectorLayer<ConnectorKindTunnel> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request is to be tunneled.
     #[must_use]
-    pub fn tunnel(host: Option<Host>) -> Self {
+    pub fn tunnel(sni: Option<Domain>) -> Self {
         Self {
             connector_data: None,
-            kind: ConnectorKindTunnel { host },
+            kind: ConnectorKindTunnel { sni },
         }
     }
 }
@@ -178,8 +179,8 @@ impl<S> TlsConnector<S, ConnectorKindSecure> {
 impl<S> TlsConnector<S, ConnectorKindTunnel> {
     /// Creates a new [`TlsConnector`] which will establish
     /// a secure connection if the request is to be tunneled.
-    pub const fn tunnel(inner: S, host: Option<Host>) -> Self {
-        Self::new(inner, ConnectorKindTunnel { host })
+    pub const fn tunnel(inner: S, sni: Option<Domain>) -> Self {
+        Self::new(inner, ConnectorKindTunnel { sni })
     }
 }
 
@@ -187,7 +188,7 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
@@ -221,10 +222,13 @@ where
             });
         }
 
-        let host = transport_ctx.authority.host.clone();
+        let (connector_data, connector_data_builder) =
+            self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
 
-        let connector_data = self.connector_data(input.extensions_mut())?;
-        let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
+        // We dont have to insert, but it's nice to have...
+        input.extensions_mut().insert(connector_data_builder);
+
+        let (stream, negotiated_params) = handshake(connector_data, conn).await?;
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
@@ -248,7 +252,7 @@ where
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
@@ -271,10 +275,13 @@ where
             transport_ctx.app_protocol,
         );
 
-        let host = transport_ctx.authority.host.clone();
+        let (connector_data, connector_data_builder) =
+            self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
 
-        let connector_data = self.connector_data(input.extensions_mut())?;
-        let (conn, negotiated_params) = handshake(connector_data, host, conn).await?;
+        // We dont have to insert, but it's nice to have...
+        input.extensions_mut().insert(connector_data_builder);
+
+        let (conn, negotiated_params) = handshake(connector_data, conn).await?;
         let mut conn = TlsStream::new(conn);
 
         #[cfg(feature = "http")]
@@ -291,7 +298,7 @@ where
 
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: Send + ExtensionsMut + 'static,
 {
     type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
@@ -301,14 +308,12 @@ where
         let EstablishedClientConnection { mut input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let host = if let Some(host) = input
-            .extensions()
-            .get::<TlsTunnel>()
-            .as_ref()
-            .map(|t| &t.server_host)
-            .or(self.kind.host.as_ref())
-        {
-            host.clone()
+        let maybe_sni_overwrite = if let Some(tunnel) = input.extensions().get::<TlsTunnel>() {
+            tunnel
+                .sni
+                .as_ref()
+                .and_then(|h| h.as_domain())
+                .or(self.kind.sni.as_ref())
         } else {
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
@@ -319,8 +324,13 @@ where
             });
         };
 
-        let connector_data = self.connector_data(input.extensions_mut())?;
-        let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
+        let (connector_data, connector_data_builder) =
+            self.connector_data(input.extensions(), maybe_sni_overwrite)?;
+
+        // We dont have to insert, but it's nice to have...
+        input.extensions_mut().insert(connector_data_builder);
+
+        let (stream, negotiated_params) = handshake(connector_data, conn).await?;
         let mut conn = AutoTlsStream::secure(stream);
 
         #[cfg(feature = "http")]
@@ -364,7 +374,11 @@ fn set_target_http_version(
 }
 
 impl<S, K> TlsConnector<S, K> {
-    fn connector_data(&self, extensions: &mut Extensions) -> Result<TlsConnectorData, BoxError> {
+    fn connector_data(
+        &self,
+        extensions: &Extensions,
+        maybe_sni_overwrite: Option<&Domain>,
+    ) -> Result<(TlsConnectorData, TlsConnectorDataBuilder), BoxError> {
         #[cfg(feature = "http")]
         let target_version = extensions
             .get::<TargetHttpVersion>()
@@ -383,10 +397,15 @@ impl<S, K> TlsConnector<S, K> {
                 );
                 TlsConnectorDataBuilder::default()
             };
+        let has_custom_sni = builder.server_name().is_some();
 
         if let Some(base_builder) = self.connector_data.clone() {
             tracing::trace!("prepend connector data (base) config to TlsConnectorDataBuilder");
             builder.prepend_base_config(base_builder);
+        }
+
+        if !has_custom_sni && let Some(sni_overwrite) = maybe_sni_overwrite.cloned() {
+            builder.set_server_name(sni_overwrite);
         }
 
         #[cfg(feature = "http")]
@@ -394,61 +413,104 @@ impl<S, K> TlsConnector<S, K> {
             builder.try_set_rama_alpn_protos(&[target_version])?;
         }
 
-        // We dont have to insert, but it's nice to have...
-        extensions.insert(builder.clone());
-        builder.build()
+        builder.build().map(|cfg| (cfg, builder))
+    }
+}
+
+#[derive(Debug)]
+pub enum TlsConnectError<S> {
+    Builder(BoxError),
+    Handshake {
+        server_name: Option<Domain>,
+        error: HandshakeError<S>,
+    },
+}
+
+impl<S> fmt::Display for TlsConnectError<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Builder(error) => write!(f, "Builder: {error}"),
+            Self::Handshake { error, server_name } => {
+                write!(
+                    f,
+                    "Handshake: {error} (SNI = '{}')",
+                    server_name.as_ref().map(|d| d.as_str()).unwrap_or_default()
+                )
+            }
+        }
+    }
+}
+
+impl<S: std::fmt::Debug> std::error::Error for TlsConnectError<S> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Builder(error) => error.source(),
+            Self::Handshake {
+                error,
+                server_name: _,
+            } => error.source(),
+        }
     }
 }
 
 pub async fn tls_connect<T>(
-    server_host: Host,
     stream: T,
     connector_data: Option<TlsConnectorData>,
-) -> Result<TlsStream<T>, BoxError>
+) -> Result<TlsStream<T>, TlsConnectError<T>>
 where
-    T: Stream + Unpin + ExtensionsMut,
+    T: Io + Unpin + ExtensionsMut,
 {
-    let data = match connector_data {
+    let TlsConnectorData {
+        config,
+        store_server_certificate_chain: _,
+        server_name,
+    } = match connector_data {
         Some(connector_data) => connector_data,
-        None => TlsConnectorDataBuilder::new().build()?,
+        None => TlsConnectorDataBuilder::new()
+            .build()
+            .map_err(TlsConnectError::Builder)?,
     };
 
-    let server_host = data.server_name.map(Host::Name).unwrap_or(server_host);
-    let stream: SslStream<T> =
-        rama_boring_tokio::connect(data.config, &server_host.to_str(), stream)
-            .await
-            .map_err(|err| {
-                let maybe_ssl_code = err.code();
-                if let Some(io_err) = err.as_io_error() {
-                    BoxError::from(format!(
-                        "boring ssl connector (connect): with io error: {io_err}"
-                    ))
-                    .context_field("domain", server_host)
-                    .context_debug_field("code", maybe_ssl_code)
-                } else if let Some(err) = err.as_ssl_error_stack() {
-                    err.context("boring ssl connector (connect): with ssl-error info")
-                        .context_field("domain", server_host)
-                        .context_debug_field("code", maybe_ssl_code)
-                } else {
-                    BoxError::from("boring ssl connector (connect): without error info")
-                        .context_field("domain", server_host)
-                        .context_debug_field("code", maybe_ssl_code)
-                }
-            })?;
+    let sni = server_name.as_ref().map(|sni| sni.as_str());
+    let stream: SslStream<T> = rama_boring_tokio::connect(config, sni, stream)
+        .await
+        .map_err(|error| TlsConnectError::Handshake { error, server_name })?;
     Ok(TlsStream::new(stream))
 }
 
 async fn handshake<T>(
     connector_data: TlsConnectorData,
-    server_host: Host,
     stream: T,
 ) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
 where
-    T: Stream + Unpin + ExtensionsMut,
+    T: Io + Unpin + ExtensionsMut,
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
     let TlsStream { inner: stream } =
-        tls_connect(server_host, stream, Some(connector_data)).await?;
+        tls_connect(stream, Some(connector_data))
+            .await
+            .map_err(|err| match err {
+                TlsConnectError::Builder(error) => error.context("tls connect builder error"),
+                TlsConnectError::Handshake { error, server_name } => {
+                    let maybe_ssl_code = error.code();
+                    if let Some(io_err) = error.as_io_error() {
+                        BoxError::from(format!(
+                            "boring ssl connector (connect): with io error: {io_err}"
+                        ))
+                        .context_debug_field("sni", server_name)
+                        .context_debug_field("code", maybe_ssl_code)
+                    } else if let Some(ssl_error) = error.as_ssl_error_stack() {
+                        ssl_error
+                            .context("boring ssl connector (connect): with ssl-error info")
+                            .context_debug_field("sni", server_name)
+                            .context_debug_field("code", maybe_ssl_code)
+                    } else {
+                        BoxError::from("boring ssl connector (connect): without error info")
+                            .context_debug_field("sni", server_name)
+                            .context_debug_field("code", maybe_ssl_code)
+                    }
+                }
+            })?;
 
     let params = match stream.ssl().session() {
         Some(ssl_session) => {
@@ -513,12 +575,12 @@ pub struct ConnectorKindSecure;
 ///
 /// The connections will only be done if the [`TlsTunnel`]
 /// is present in the context for optional versions,
-/// and using the hardcoded host otherwise.
+/// and using the hardcoded domain otherwise.
 /// Context always overwrites though.
 ///
 /// [`TlsTunnel`]: rama_net::tls::TlsTunnel
 pub struct ConnectorKindTunnel {
-    host: Option<Host>,
+    sni: Option<Domain>,
 }
 
 #[cfg(test)]

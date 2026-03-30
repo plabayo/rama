@@ -31,10 +31,27 @@ mod http_k8s_health;
 mod http_key_value_store;
 #[cfg(feature = "http-full")]
 mod http_listener_hello;
-#[cfg(all(feature = "http-full", feature = "rustls", feature = "boring"))]
+#[cfg(all(
+    feature = "http-full",
+    feature = "rustls",
+    feature = "aws-lc",
+    feature = "boring",
+))]
 mod http_mitm_proxy_boring;
-#[cfg(all(feature = "http-full", feature = "rustls"))]
+#[cfg(all(
+    feature = "http-full",
+    feature = "rustls",
+    feature = "aws-lc",
+    feature = "ring"
+))]
 mod http_mitm_proxy_rustls;
+#[cfg(all(
+    feature = "http-full",
+    feature = "rustls",
+    feature = "aws-lc",
+    feature = "boring"
+))]
+mod http_mitm_relay_proxy_boring;
 #[cfg(feature = "http-full")]
 mod http_nd_json;
 #[cfg(feature = "http-full")]
@@ -69,12 +86,14 @@ mod http_user_agent_classifier;
 mod http_web_router;
 #[cfg(feature = "http-full")]
 mod http_web_service_dir_and_api;
-#[cfg(all(feature = "http-full", feature = "rustls"))]
+#[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]
 mod https_connect_proxy;
-#[cfg(all(feature = "http-full", feature = "rustls",))]
+#[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]
 mod https_web_service_with_hsts;
-#[cfg(all(feature = "http-full", feature = "rustls"))]
+#[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]
 mod mtls_tunnel_and_service;
+#[cfg(feature = "dns")]
+mod native_dns;
 #[cfg(all(feature = "tls", feature = "socks5", feature = "http-full",))]
 mod proxy_connectivity_check;
 #[cfg(all(feature = "http-full", target_family = "unix"))]
@@ -147,5 +166,10 @@ mod tls_rustls_dynamic_config;
 #[cfg(all(feature = "boring", feature = "haproxy", feature = "http-full"))]
 mod tls_boring_termination;
 
-#[cfg(all(feature = "rustls", feature = "haproxy", feature = "http-full"))]
+#[cfg(all(
+    feature = "rustls",
+    feature = "aws-lc",
+    feature = "haproxy",
+    feature = "http-full"
+))]
 mod tls_rustls_termination;

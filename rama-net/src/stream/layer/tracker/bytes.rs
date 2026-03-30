@@ -6,8 +6,8 @@
 //! is consumed by a protocol consumer, which is for example the case when you wish
 //! to track the bytes read and/or written for a Tcp stream that is owned by a Tls stream.
 //!
-//! [`AsyncRead`]: crate::stream::AsyncRead
-//! [`AsyncWrite`]: crate::stream::AsyncWrite
+//! [`AsyncRead`]: tokio::io::AsyncRead
+//! [`AsyncWrite`]: tokio::io::AsyncWrite
 
 use pin_project_lite::pin_project;
 use rama_core::{
@@ -33,8 +33,8 @@ pin_project! {
     /// to get the number of bytes read and/or written even though the [`BytesRWTracker`]
     /// is consumed by a protocol consumer.
     ///
-    /// [`AsyncRead`]: crate::stream::AsyncRead
-    /// [`AsyncWrite`]: crate::stream::AsyncWrite
+    /// [`AsyncRead`]: tokio::io::AsyncRead
+    /// [`AsyncWrite`]: tokio::io::AsyncWrite
     pub struct BytesRWTracker<S> {
         read: Arc<AtomicUsize>,
         written: Arc<AtomicUsize>,
@@ -69,8 +69,8 @@ impl<S: ExtensionsMut> BytesRWTracker<S> {
     /// Create a new [`BytesRWTracker`] that wraps the
     /// given [`AsyncRead`] and/or [`AsyncWrite`].
     ///
-    /// [`AsyncRead`]: crate::stream::AsyncRead
-    /// [`AsyncWrite`]: crate::stream::AsyncWrite
+    /// [`AsyncRead`]: tokio::io::AsyncRead
+    /// [`AsyncWrite`]: tokio::io::AsyncWrite
     pub fn new(stream: S) -> Self {
         Self {
             read: Arc::new(AtomicUsize::new(0)),
@@ -108,8 +108,8 @@ impl<S> BytesRWTracker<S> {
     /// be updated but will still report the number of bytes read and/or
     /// written up to the point where this method was called.
     ///
-    /// [`AsyncRead`]: crate::stream::AsyncRead
-    /// [`AsyncWrite`]: crate::stream::AsyncWrite
+    /// [`AsyncRead`]: tokio::io::AsyncRead
+    /// [`AsyncWrite`]: tokio::io::AsyncWrite
     pub fn into_inner(self) -> S {
         self.stream
     }

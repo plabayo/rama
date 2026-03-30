@@ -6,6 +6,6 @@ pub use svc::HttpClientService;
 
 mod conn;
 #[doc(inline)]
-pub use conn::{HttpConnector, HttpConnectorLayer};
+pub use conn::{HttpConnector, HttpConnectorLayer, http_connect};
 
 pub mod proxy;

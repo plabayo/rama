@@ -5,7 +5,6 @@ use rama::{
     Layer, Service,
     combinators::Either,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
     graceful::ShutdownGuard,
     http::{
         Request, Response, StatusCode,
@@ -13,7 +12,7 @@ use rama::{
         layer::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::UpgradeLayer,
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
         },
         matcher::MethodMatcher,
         server::HttpServer,
@@ -23,13 +22,10 @@ use rama::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
-    net::{
-        http::RequestContext, proxy::ProxyTarget, socket::Interface,
-        stream::layer::http::BodyLimitLayer,
-    },
+    net::{address::SocketAddress, proxy::IoForwardService, stream::layer::http::BodyLimitLayer},
     rt::Executor,
     service::service_fn,
-    tcp::{client::service::Forwarder, server::TcpListener},
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
 };
 use std::{convert::Infallible, time::Duration};
@@ -37,9 +33,9 @@ use std::{convert::Infallible, time::Duration};
 #[derive(Debug, Args)]
 /// rama proxy server
 pub struct CliCommandProxy {
-    /// the interface to bind to
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: Interface,
+    /// the address to bind to
+    #[arg(long, default_value_t = SocketAddress::local_ipv4(8080))]
+    bind: SocketAddress,
 
     #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow (0 = no limit)
@@ -56,7 +52,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
     let exec = Executor::graceful(graceful);
 
     let tcp_service = TcpListener::build(exec.clone())
-        .bind(cfg.bind.clone())
+        .bind_address(cfg.bind)
         .await
         .context("bind proxy service")?;
 
@@ -71,8 +67,12 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                 UpgradeLayer::new(
                     exec.clone(),
                     MethodMatcher::CONNECT,
-                    service_fn(http_connect_accept),
-                    ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
+                    DefaultHttpProxyConnectReplyService::new(),
+                    (
+                        ConsumeErrLayer::default(),
+                        IoToProxyBridgeIoLayer::extension_proxy_target(exec),
+                    )
+                        .into_layer(IoForwardService::new()),
                 ),
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 RemoveRequestHeaderLayer::hop_by_hop(),
@@ -107,25 +107,6 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
     });
 
     Ok(())
-}
-
-async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
-        Ok(authority) => {
-            tracing::info!(
-                server.address = %authority.host,
-                server.port = authority.port,
-                "accept CONNECT (lazy): insert proxy target into context",
-            );
-            req.extensions_mut().insert(ProxyTarget(authority));
-        }
-        Err(err) => {
-            tracing::error!("error extracting authority: {err:?}");
-            return Err(StatusCode::BAD_REQUEST.into_response());
-        }
-    }
-
-    Ok((StatusCode::OK.into_response(), req))
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {

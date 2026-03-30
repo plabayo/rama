@@ -81,6 +81,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`http_connect_proxy.rs`](./http_connect_proxy.rs) - HTTP CONNECT proxy implementation
 - [`http_mitm_proxy_rustls.rs`](./http_mitm_proxy_rustls.rs) - MITM proxy using Rustls
 - [`http_mitm_proxy_boring.rs`](./http_mitm_proxy_boring.rs) - MITM proxy using BoringSSL
+- [`http_mitm_relay_proxy_boring.rs`](./http_mitm_relay_proxy_boring.rs) - MITM proxy using BoringSSL with a more advanced relay approach
 
 ### Http within TLS Proxies
 
@@ -138,6 +139,12 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation
 
 ## Network and Transport
+- [`native_dns.rs`](./native_dns.rs) - Resolve domains using Rama's native DNS resolver,
+  - with Apple-native DNS-SD support on Apple platforms
+  - `DnsQueryEx` on Windows
+  - `res_nquery` on gnu/bsd
+  - `getaddrinfo` on other Linux platforms,
+  - and tokio's basic `lookup_host` on everything else
 - [`tcp_listener_fd_passing.rs`](./tcp_listener_fd_passing.rs) - FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
 - [`tcp_listener_hello.rs`](./tcp_listener_hello.rs) - Basic TCP listener example
 - [`tcp_listener_layers.rs`](./tcp_listener_layers.rs) - TCP listener with layers

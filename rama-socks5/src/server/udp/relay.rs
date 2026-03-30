@@ -8,7 +8,6 @@ use rama_udp::UdpSocket;
 
 use crate::proto::udp::UdpHeader;
 
-#[cfg(feature = "dns")]
 use ::{
     rama_core::{error::ErrorContext, extensions::Extensions},
     rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver},
@@ -31,9 +30,7 @@ pub(super) struct UdpSocketRelay {
 
     north_write_buf: BytesMut,
 
-    #[cfg(feature = "dns")]
     dns_resolve_mode: DnsResolveIpMode,
-    #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
@@ -71,9 +68,7 @@ impl UdpSocketRelay {
                 b
             },
 
-            #[cfg(feature = "dns")]
             dns_resolve_mode: DnsResolveIpMode::default(),
-            #[cfg(feature = "dns")]
             dns_resolver: None,
         }
     }
@@ -366,27 +361,6 @@ fn is_fatal_io_error(err: &std::io::Error) -> bool {
     )
 }
 
-#[cfg(not(feature = "dns"))]
-impl UdpSocketRelay {
-    pub(super) async fn authority_to_socket_address(
-        &self,
-        authority: HostWithPort,
-    ) -> Result<SocketAddress, BoxError> {
-        let HostWithPort { host, port } = authority;
-        let ip_addr = match host {
-            Host::Name(domain) => {
-                return Err(BoxError::from(
-                    "dns names as target not supported: no dns server defined",
-                )
-                .context_field("domain", domain));
-            }
-            Host::Address(ip_addr) => ip_addr,
-        };
-        Ok((ip_addr, port).into())
-    }
-}
-
-#[cfg(feature = "dns")]
 impl UdpSocketRelay {
     pub(super) fn maybe_with_dns_resolver(
         mut self,

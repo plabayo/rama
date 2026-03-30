@@ -5,8 +5,8 @@ use rama_core::futures::Stream;
 use rama_core::stream::codec::{Decoder, Encoder};
 use rama_core::telemetry::tracing;
 use rama_net::address::HostWithPort;
-use rama_net::{address::SocketAddress, socket::Interface};
-use rama_udp::{UdpSocket, bind_udp};
+use rama_net::address::SocketAddress;
+use rama_udp::{UdpSocket, bind_udp_with_address};
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::{fmt, io, net::SocketAddr};
@@ -23,20 +23,20 @@ pub struct UdpSocketRelayBinder<S> {
     stream: S,
 }
 
-impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
+impl<S: rama_core::io::Io + Unpin> UdpSocketRelayBinder<S> {
     pub(crate) fn new(stream: S) -> Self {
         Self { stream }
     }
 
-    /// Bind the relay as an Udp socket on the given interface,
+    /// Bind the relay as an Udp socket on the given address,
     /// and complete the association handshake with as goal
     /// to have a relay proxy udp connection established at the end
     /// of this bind fn call.
-    pub async fn bind(
+    pub async fn bind_address(
         mut self,
-        interface: impl TryInto<Interface, Error: Into<BoxError>>,
+        address: impl TryInto<SocketAddress, Error: Into<BoxError>>,
     ) -> Result<UdpSocketRelay<S>, HandshakeError> {
-        let socket = bind_udp(interface).await.map_err(|err| {
+        let socket = bind_udp_with_address(address).await.map_err(|err| {
             HandshakeError::other(err).with_context("bind udp socket ready for sending")
         })?;
 
@@ -124,7 +124,7 @@ impl<S: fmt::Debug> fmt::Debug for UdpSocketRelay<S> {
     }
 }
 
-impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelay<S> {
+impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
     /// Returns the local address that this socket is bound to.
     #[inline]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -307,7 +307,7 @@ pub struct UdpFramedRelay<C, S> {
     current_addr: Option<SocketAddress>,
 }
 
-impl<C, S: rama_core::stream::Stream + Unpin> UdpFramedRelay<C, S> {
+impl<C, S: rama_core::io::Io + Unpin> UdpFramedRelay<C, S> {
     /// Returns the local address that this relay's underlying [`UdpSocket`] is bound to.
     #[inline]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -355,7 +355,7 @@ impl<C, S: Unpin> Unpin for UdpFramedRelay<C, S> {}
 impl<C, S> Stream for UdpFramedRelay<C, S>
 where
     C: Decoder<Error: Into<BoxError>>,
-    S: rama_core::stream::Stream + Unpin,
+    S: rama_core::io::Io + Unpin,
 {
     type Item = Result<(C::Item, SocketAddress), BoxError>;
 
@@ -404,7 +404,7 @@ where
 impl<I, C, S> Sink<(I, SocketAddr)> for UdpFramedRelay<C, S>
 where
     C: Encoder<I, Error: Into<BoxError>>,
-    S: rama_core::stream::Stream + Unpin,
+    S: rama_core::io::Io + Unpin,
 {
     type Error = BoxError;
 

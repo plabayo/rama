@@ -271,9 +271,9 @@ where
         );
 
         let http_transport_service = match self.http_version {
-            Some(Version::HTTP_2) => Either3::A(HttpServer::h2(executor).service(http_service)),
+            Some(Version::HTTP_2) => Either3::A(HttpServer::new_h2(executor).service(http_service)),
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
-                Either3::B(HttpServer::http1(executor).service(http_service))
+                Either3::B(HttpServer::new_http1(executor).service(http_service))
             }
             Some(version) => {
                 return Err(BoxError::from("unsupported http version")

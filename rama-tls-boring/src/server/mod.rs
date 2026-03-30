@@ -14,11 +14,7 @@ mod acceptor_data;
 #[doc(inline)]
 pub use acceptor_data::TlsAcceptorData;
 
-pub mod utils {
-    //! Server Utilities
-
-    pub use super::acceptor_data::{self_signed_server_auth_gen_cert, self_signed_server_ca};
-}
+pub mod utils;
 
 mod service;
 #[doc(inline)]
@@ -27,6 +23,3 @@ pub use service::TlsAcceptorService;
 mod layer;
 #[doc(inline)]
 pub use layer::TlsAcceptorLayer;
-
-mod tls_stream;
-pub use tls_stream::TlsStream;

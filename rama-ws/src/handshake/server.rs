@@ -8,8 +8,7 @@ use std::{
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
-    matcher::Matcher,
+    extensions::{ExtensionsMut, ExtensionsRef},
     rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
@@ -36,109 +35,6 @@ use crate::{
     protocol::{Role, WebSocketConfig},
     runtime::AsyncWebSocket,
 };
-
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-/// WebSocket [`Matcher`] to match on incoming WebSocket requests.
-///
-/// The [`Default`] ws matcher does already out of the box the basic checks:
-///
-/// - for http/1.1: require GET method and `Upgrade: websocket` + `Connection: upgrade` headers
-/// - for h2: require CONNECT method and `:protocol: websocket` pseudo header
-pub struct WebSocketMatcher;
-
-impl WebSocketMatcher {
-    #[inline]
-    /// Create a new default [`WebSocketMatcher`].
-    #[must_use]
-    pub fn new() -> Self {
-        Default::default()
-    }
-}
-
-impl<Body> Matcher<Request<Body>> for WebSocketMatcher
-where
-    Body: Send + 'static,
-{
-    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
-        match req.version() {
-            version @ (Version::HTTP_10 | Version::HTTP_11) => {
-                match req.method() {
-                    &Method::GET => (),
-                    method => {
-                        tracing::debug!(
-                            http.version = ?version,
-                            http.request.method = %method,
-                            "WebSocketMatcher: h1: unexpected method found: no match",
-                        );
-                        return false;
-                    }
-                }
-
-                if !req
-                    .headers()
-                    .typed_get::<headers::Upgrade>()
-                    .map(|u| u.is_websocket())
-                    .unwrap_or_default()
-                {
-                    tracing::trace!(
-                        http.version = ?version,
-                        "WebSocketMatcher: h1: no websocket upgrade header found: no match"
-                    );
-                    return false;
-                }
-
-                if !req
-                    .headers()
-                    .typed_get::<headers::Connection>()
-                    .map(|c| c.contains_upgrade())
-                    .unwrap_or_default()
-                {
-                    tracing::trace!(
-                        http.version = ?version,
-                        "WebSocketMatcher: h1: no connection upgrade header found: no match",
-                    );
-                    return false;
-                }
-            }
-            version @ Version::HTTP_2 => {
-                match req.method() {
-                    &Method::CONNECT => (),
-                    method => {
-                        tracing::debug!(
-                            http.version = ?version,
-                            http.request.method = %method,
-                            "WebSocketMatcher: h2: unexpected method found: no match",
-                        );
-                        return false;
-                    }
-                }
-
-                if !req
-                    .extensions()
-                    .get::<Protocol>()
-                    .map(|p| p.as_str().trim().eq_ignore_ascii_case("websocket"))
-                    .unwrap_or_default()
-                {
-                    tracing::trace!(
-                        http.version = ?version,
-                        "WebSocketMatcher: h2: no websocket protocol (pseudo ext) found",
-                    );
-                    return false;
-                }
-            }
-            version => {
-                tracing::debug!(
-                    http.version = ?version,
-                    "WebSocketMatcher: unexpected http version found: no match",
-                );
-                return false;
-            }
-        }
-
-        true
-    }
-}
 
 #[derive(Debug)]
 /// Server error which can be triggered in case the request validation failed
@@ -969,6 +865,49 @@ mod tests {
 
     use super::*;
 
+    async fn assert_websocket_acceptor_ok(
+        request: Request,
+        acceptor: &WebSocketAcceptor,
+        expected_accepted_protocol: Option<AcceptedWebSocketProtocol>,
+    ) {
+        let (resp, req) = acceptor.serve(request).await.unwrap();
+        match req.version() {
+            Version::HTTP_10 | Version::HTTP_11 => {
+                assert_eq!(StatusCode::SWITCHING_PROTOCOLS, resp.status())
+            }
+            Version::HTTP_2 => assert_eq!(StatusCode::OK, resp.status()),
+            _ => unreachable!(),
+        }
+        let accepted_protocol = resp
+            .headers()
+            .typed_get::<headers::SecWebSocketProtocol>()
+            .map(|p| p.accept_first_protocol());
+        if let Some(expected_accepted_protocol) = expected_accepted_protocol {
+            assert_eq!(
+                accepted_protocol.as_ref(),
+                Some(&expected_accepted_protocol),
+                "request = {req:?}"
+            );
+            assert_eq!(
+                req.extensions().get::<AcceptedWebSocketProtocol>(),
+                Some(&expected_accepted_protocol),
+                "request = {req:?}"
+            );
+        } else {
+            assert!(accepted_protocol.is_none());
+            assert!(
+                req.extensions()
+                    .get::<AcceptedWebSocketProtocol>()
+                    .is_none()
+            );
+        }
+    }
+
+    async fn assert_websocket_acceptor_bad_request(request: Request, acceptor: &WebSocketAcceptor) {
+        let resp = acceptor.serve(request).await.unwrap_err();
+        assert_eq!(StatusCode::BAD_REQUEST, resp.status());
+    }
+
     macro_rules! request {
         (
             $method:literal $version:literal $uri:literal
@@ -1017,131 +956,6 @@ mod tests {
                 req.body(Body::empty()).unwrap()
             }
         };
-    }
-
-    fn assert_websocket_no_match(request: &Request, matcher: &WebSocketMatcher) {
-        assert!(
-            !matcher.matches(None, request),
-            "!({matcher:?}).matches({request:?})"
-        );
-    }
-
-    fn assert_websocket_match(request: &Request, matcher: &WebSocketMatcher) {
-        assert!(
-            matcher.matches(None, request),
-            "({matcher:?}).matches({request:?})"
-        );
-    }
-
-    #[test]
-    fn test_websocket_match_default_http_11() {
-        let matcher = WebSocketMatcher::default();
-
-        assert_websocket_no_match(
-            &request! {
-                "GET" "HTTP/1.1" "/"
-            },
-            &matcher,
-        );
-        assert_websocket_no_match(
-            &request! {
-                "GET" "HTTP/1.1" "/"
-                "Upgrade": "websocket"
-            },
-            &matcher,
-        );
-        assert_websocket_no_match(
-            &request! {
-                "GET" "HTTP/1.1" "/"
-                "Connection": "upgrade"
-            },
-            &matcher,
-        );
-        assert_websocket_match(
-            &request! {
-                "GET" "HTTP/1.1" "/"
-                "Connection": "upgrade"
-                "Upgrade": "websocket"
-            },
-            &matcher,
-        );
-    }
-
-    #[test]
-    fn test_websocket_match_default_http_2() {
-        let matcher = WebSocketMatcher::default();
-
-        assert_websocket_no_match(
-            &request! {
-                "GET" "HTTP/2" "/"
-                "Connection": "upgrade"
-                "Upgrade": "websocket"
-                "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "foobar"
-            },
-            &matcher,
-        );
-        assert_websocket_match(
-            &request! {
-                "CONNECT" "HTTP/2" "/"
-                w/ [
-                    Protocol::from_static("websocket"),
-                ]
-            },
-            &matcher,
-        );
-        assert_websocket_no_match(
-            &request! {
-                "GET" "HTTP/2" "/"
-                w/ [
-                    Protocol::from_static("websocket"),
-                ]
-            },
-            &matcher,
-        );
-    }
-
-    async fn assert_websocket_acceptor_ok(
-        request: Request,
-        acceptor: &WebSocketAcceptor,
-        expected_accepted_protocol: Option<AcceptedWebSocketProtocol>,
-    ) {
-        let (resp, req) = acceptor.serve(request).await.unwrap();
-        match req.version() {
-            Version::HTTP_10 | Version::HTTP_11 => {
-                assert_eq!(StatusCode::SWITCHING_PROTOCOLS, resp.status())
-            }
-            Version::HTTP_2 => assert_eq!(StatusCode::OK, resp.status()),
-            _ => unreachable!(),
-        }
-        let accepted_protocol = resp
-            .headers()
-            .typed_get::<headers::SecWebSocketProtocol>()
-            .map(|p| p.accept_first_protocol());
-        if let Some(expected_accepted_protocol) = expected_accepted_protocol {
-            assert_eq!(
-                accepted_protocol.as_ref(),
-                Some(&expected_accepted_protocol),
-                "request = {req:?}"
-            );
-            assert_eq!(
-                req.extensions().get::<AcceptedWebSocketProtocol>(),
-                Some(&expected_accepted_protocol),
-                "request = {req:?}"
-            );
-        } else {
-            assert!(accepted_protocol.is_none());
-            assert!(
-                req.extensions()
-                    .get::<AcceptedWebSocketProtocol>()
-                    .is_none()
-            );
-        }
-    }
-
-    async fn assert_websocket_acceptor_bad_request(request: Request, acceptor: &WebSocketAcceptor) {
-        let resp = acceptor.serve(request).await.unwrap_err();
-        assert_eq!(StatusCode::BAD_REQUEST, resp.status());
     }
 
     #[tokio::test]

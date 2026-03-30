@@ -6,7 +6,7 @@ use rama_core::{
     bytes::Bytes,
     error::{BoxError, ErrorContext},
     extensions::{ChainableExtensions, ExtensionsRef},
-    stream::Stream,
+    io::Io,
 };
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
@@ -205,7 +205,7 @@ impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
 
 impl<S, P, Input> Service<Input> for HaProxyService<S, P, version::One>
 where
-    S: ConnectorService<Input, Connection: Stream + Socket + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Socket + Unpin>,
     P: Send + 'static,
     Input: Send + ExtensionsRef + 'static,
 {
@@ -250,7 +250,7 @@ where
 
 impl<S, P, Input> Service<Input> for HaProxyService<S, P, version::Two>
 where
-    S: ConnectorService<Input, Connection: Stream + Socket + Unpin>,
+    S: ConnectorService<Input, Connection: Io + Socket + Unpin>,
     P: protocol::Protocol + Send + 'static,
     Input: Send + ExtensionsRef + 'static,
 {

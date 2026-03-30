@@ -78,7 +78,7 @@ async fn main() {
             )),
         ));
 
-        TcpListener::bind("127.0.0.1:62025", exec)
+        TcpListener::bind_address("127.0.0.1:62025", exec)
             .await
             .expect("bind TCP Listener")
             .serve(

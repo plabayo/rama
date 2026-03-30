@@ -193,7 +193,7 @@ impl<S, F, Stream> Service<Stream> for NetworkMetricsService<S, F>
 where
     S: Service<Stream>,
     F: AttributesFactory,
-    Stream: rama_core::stream::Stream + ExtensionsRef,
+    Stream: rama_core::io::Io + ExtensionsRef,
 {
     type Output = S::Output;
     type Error = S::Error;

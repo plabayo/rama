@@ -740,9 +740,9 @@ impl RamaGrpcProtoBuilder {
             config.include_file(path);
         }
 
-        // Note: We don't pass self.disable_comments to prost Config here
-        // because those are meant for service/method paths which are handled
-        // by the ServiceGenerator, not for message paths
+        if !self.disable_comments.is_empty() {
+            config.disable_comments(self.disable_comments.clone());
+        }
 
         if !self.skip_debug.is_empty() {
             config.skip_debug(self.skip_debug.clone());
@@ -853,6 +853,10 @@ impl RamaGrpcProtoBuilder {
         // Note: We don't pass self.disable_comments to prost Config here
         // because those are meant for service/method paths which are handled
         // by the ServiceGenerator, not for message paths
+
+        if !self.disable_comments.is_empty() {
+            config.disable_comments(self.disable_comments.clone());
+        }
 
         if !self.skip_debug.is_empty() {
             config.skip_debug(self.skip_debug.clone());

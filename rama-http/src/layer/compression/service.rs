@@ -1,17 +1,16 @@
 use super::CompressionBody;
 use super::CompressionLevel;
 use super::body::BodyInner;
-use super::predicate::{DefaultPredicate, Predicate};
-use crate::headers::encoding::{AcceptEncoding, Encoding};
+use super::predicate::{DefaultPredicate, Predicate, PreferredEncoding};
+use crate::headers::encoding::{AcceptEncoding, Encoding, parse_accept_encoding_headers};
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
 use rama_core::Service;
-use rama_core::telemetry::tracing;
-use rama_http_headers::ContentEncoding;
-use rama_http_headers::HeaderDecode;
+use rama_core::extensions::ExtensionsRef;
+use rama_http_headers::specifier::QualityValue;
 use rama_http_types::HeaderValue;
 use rama_http_types::StreamingBody;
-use rama_http_types::header::Entry;
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::submatch_ignore_ascii_case;
 
@@ -161,29 +160,29 @@ where
 
     #[allow(unreachable_code, unused_mut, unused_variables, unreachable_patterns)]
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let mut selected_encoding =
-            Encoding::from_accept_encoding_headers(req.headers(), self.accept);
+        let accepted_encodings: SmallVec<[QualityValue<Encoding>; 4]> =
+            parse_accept_encoding_headers(req.headers(), self.accept).collect();
 
         let mut res = self.inner.serve(req).await?;
+        let mut respected_encoding = None;
 
         let should_compress =
             //never compress responses that are ranges
             !res.headers().contains_key(header::CONTENT_RANGE) &&
-            self.predicate.should_compress(&res) && if self.respect_content_encoding_if_possible {
-                if let Entry::Occupied(entry) =  res.headers_mut().entry(header::CONTENT_ENCODING) {
-                    let mut opt = entry.remove_entry_mult().1.next();
-                    tracing::trace!("detected response content-encoding: {opt:?}");
-                    if let Ok(encoding) = ContentEncoding::decode(&mut opt.iter())
-                        && let Some(overwrite) = Encoding::maybe_from_content_encoding_directive(&encoding.0.head, self.accept) {
-                            tracing::debug!("overwrite req encoding {selected_encoding:?} with respected content-encoding: {overwrite:?}");
-                            selected_encoding = overwrite;
-                    }
-                }
+            self.predicate.should_compress(&mut res) &&
+            if self.respect_content_encoding_if_possible {
+                respected_encoding = Encoding::maybe_from_content_encoding_header(res.headers(), self.accept);
                 true
             } else {
                 // unless requested do not recompress responses that are already compressed
                 !res.headers().contains_key(header::CONTENT_ENCODING)
             };
+
+        let selected_encoding = negotiate_response_encoding(
+            &accepted_encodings,
+            respected_encoding,
+            res.extensions().get::<PreferredEncoding>().copied(),
+        );
 
         let (mut parts, body) = res.into_parts();
 
@@ -255,4 +254,29 @@ where
         let res = Response::from_parts(parts, body);
         Ok(res)
     }
+}
+
+fn negotiate_response_encoding(
+    accepted_encodings: &[QualityValue<Encoding>],
+    respected: Option<Encoding>,
+    preferred: Option<PreferredEncoding>,
+) -> Encoding {
+    if let Some(respected) = respected
+        && accepted_encodings
+            .iter()
+            .any(|qval| qval.value == respected && qval.quality.as_u16() > 0)
+    {
+        return respected;
+    }
+
+    if let Some(preferred) = preferred.map(PreferredEncoding::as_encoding)
+        && accepted_encodings
+            .iter()
+            .any(|qval| qval.value == preferred && qval.quality.as_u16() > 0)
+    {
+        return preferred;
+    }
+
+    Encoding::maybe_preferred_encoding(accepted_encodings.iter().copied())
+        .unwrap_or(Encoding::Identity)
 }

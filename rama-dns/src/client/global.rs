@@ -1,14 +1,19 @@
-use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream};
-use rama_net::address::Domain;
-
-use crate::client::{
-    HickoryDnsResolver,
-    resolver::{BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver},
-};
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     sync::OnceLock,
 };
+
+use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream, telemetry::tracing};
+use rama_net::address::Domain;
+
+use crate::client::resolver::{BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver};
+
+#[cfg(all(
+    not(target_vendor = "apple"),
+    not(target_os = "windows"),
+    not(target_os = "linux")
+))]
+use crate::client::TokioDnsResolver;
 
 static GLOBAL_DNS_RESOLVER: OnceLock<BoxDnsResolver> = OnceLock::new();
 
@@ -106,13 +111,46 @@ impl DnsResolver for GlobalDnsResolver {
 /// Get the global [`DnsResolver`].
 ///
 /// This is a shared once-time init dns resolver used by default in rama.
-/// By default it is created in a lazy fashion using [`HickoryDns::default`].
+/// By default it is created in a lazy fashion using the best available native
+/// or host-backed resolver for the current platform.
 ///
 /// Use [`init_global_dns_resolver`] or [`try_init_global_dns_resolver`] to overwrite
 /// the global [`DnsResolver`]. This has to be done as early as possible,
 /// as it fails if the global resolver was already initialised (e.g. using the default).
 fn global_dns_resolver() -> &'static BoxDnsResolver {
-    GLOBAL_DNS_RESOLVER.get_or_init(|| HickoryDnsResolver::default().into_box_dns_resolver())
+    GLOBAL_DNS_RESOLVER.get_or_init(init_default_global_dns_resolver)
+}
+
+#[cfg(target_vendor = "apple")]
+fn init_default_global_dns_resolver() -> BoxDnsResolver {
+    tracing::debug!(
+        "no global dns resolver configured by user: init (default) global (Apple Native) DNS resolver"
+    );
+    super::AppleDnsResolver::new().into_box_dns_resolver()
+}
+
+#[cfg(target_os = "windows")]
+fn init_default_global_dns_resolver() -> BoxDnsResolver {
+    tracing::debug!(
+        "no global dns resolver configured by user: init (default) global (Windows Native) DNS resolver"
+    );
+    super::WindowsDnsResolver::new().into_box_dns_resolver()
+}
+
+#[cfg(target_os = "linux")]
+fn init_default_global_dns_resolver() -> BoxDnsResolver {
+    tracing::debug!(
+        "no global dns resolver configured by user: init (default) global (Linux Native) DNS resolver"
+    );
+    super::LinuxDnsResolver::new().into_box_dns_resolver()
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "windows", target_os = "linux")))]
+fn init_default_global_dns_resolver() -> BoxDnsResolver {
+    tracing::debug!(
+        "no global dns resolver configured by user: init (default) global (Tokio host-backed) DNS resolver"
+    );
+    TokioDnsResolver::new().into_box_dns_resolver()
 }
 
 #[inline(always)]

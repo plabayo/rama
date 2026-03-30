@@ -1,7 +1,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
-    stream::Stream,
+    io::Io,
 };
 
 /// An async service which echoes the incoming bytes back on the same stream.
@@ -44,7 +44,7 @@ impl Default for EchoService {
 
 impl<S> Service<S> for EchoService
 where
-    S: Stream + 'static,
+    S: Io + 'static,
 {
     type Output = u64;
     type Error = BoxError;

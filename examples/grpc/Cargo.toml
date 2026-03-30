@@ -44,7 +44,13 @@ path = "src/compression/client.rs"
 name = "health-server"
 path = "src/health/server.rs"
 
+[[bin]]
+name = "otel-exporter"
+path = "src/otel_exporter.rs"
+required-features = ["opentelemetry"]
+
 [features]
+opentelemetry = ["rama/opentelemetry"]
 
 [dependencies]
 base64 = { workspace = true }

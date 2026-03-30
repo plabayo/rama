@@ -47,6 +47,8 @@ mod form;
 #[doc(inline)]
 pub use form::Form;
 
+pub mod robots_txt;
+
 mod octet_stream;
 #[doc(inline)]
 pub use octet_stream::OctetStream;

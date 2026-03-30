@@ -40,7 +40,10 @@ use rama::{
         service::web::{
             Router,
             extract::{Extension, Query, State},
-            response::{Headers, Html, IntoResponse},
+            response::{
+                Headers, Html, IntoResponse,
+                robots_txt::{RobotsGroup, RobotsTxt},
+            },
         },
     },
     layer::ConsumeErrLayer,
@@ -78,7 +81,7 @@ async fn main() {
 
     let router = Router::new_with_state(state.clone())
         .with_get("/", Html(r##"<h1>Hello, Human!?</h1>"##.to_owned()))
-        .with_get("/robots.txt", ROBOTS_TXT)
+        .with_get("/robots.txt", robots_txt())
         .with_get("/internal/clients.csv", infinite_resource);
 
     let exec = Executor::graceful(graceful.guard());
@@ -101,7 +104,7 @@ async fn main() {
 
     let exec = Executor::graceful(graceful.guard());
     let tcp_server = TcpListener::build(exec)
-        .bind(address)
+        .bind_address(address)
         .await
         .expect("bind tcp server");
 
@@ -123,10 +126,13 @@ struct BlockList(Arc<Mutex<HashSet<IpAddr>>>);
 
 impl_deref!(BlockList: Arc<Mutex<HashSet<IpAddr>>>);
 
-const ROBOTS_TXT: &str = r##"User-agent: *
-Disallow: /internal/
-Disallow: /internal/clients.csv
-"##;
+fn robots_txt() -> RobotsTxt {
+    RobotsTxt::new().with_group(
+        RobotsGroup::new("*")
+            .with_disallow("/internal/")
+            .with_disallow("/internal/clients.csv"),
+    )
+}
 
 #[derive(Debug, Deserialize)]
 struct InfiniteResourceParameters {

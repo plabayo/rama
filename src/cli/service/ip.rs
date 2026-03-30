@@ -22,13 +22,13 @@ use crate::{
         server::HttpServer,
         service::web::response::{Html, IntoResponse, Json, Redirect},
     },
+    io::Io,
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
-    stream::Stream,
     tcp::TcpStream,
     telemetry::tracing,
 };
@@ -253,7 +253,7 @@ struct TcpIpService;
 
 impl<Input> Service<Input> for TcpIpService
 where
-    Input: Stream + Unpin + ExtensionsRef,
+    Input: Io + Unpin + ExtensionsRef,
 {
     type Output = ();
     type Error = BoxError;
@@ -322,7 +322,7 @@ impl IpServiceBuilder<mode::Transport> {
 }
 
 impl<M> IpServiceBuilder<M> {
-    fn build_tcp<S: Stream + ExtensionsMut + Unpin + Send + Sync + 'static>(
+    fn build_tcp<S: Io + ExtensionsMut + Unpin + Sync>(
         self,
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
             TlsAcceptorLayer,
@@ -357,7 +357,7 @@ impl<M> IpServiceBuilder<M> {
         Ok(tcp_service_builder.into_layer(TcpIpService))
     }
 
-    fn build_http<S: Stream + Unpin + Send + Sync + ExtensionsMut + 'static>(
+    fn build_http<S: Io + Unpin + Sync + ExtensionsMut>(
         self,
         executor: Executor,
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<

@@ -1,7 +1,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
-    stream::Stream,
+    io::Io,
 };
 
 /// An async service which discard all the incoming bytes,
@@ -47,7 +47,7 @@ impl Default for DiscardService {
 
 impl<S> Service<S> for DiscardService
 where
-    S: Stream + 'static,
+    S: Io + 'static,
 {
     type Output = u64;
     type Error = BoxError;

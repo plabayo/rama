@@ -10,15 +10,15 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
+    io::{HeapReader, PrefixedIo, StackReader},
     service::RejectService,
-    stream::{HeapReader, PeekStream, StackReader},
     telemetry::tracing,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 use crate::{address::Domain, tls::client::extract_sni_from_client_hello_handshake};
 
-use super::{NoTlsRejectError, TlsPeekStream};
+use super::{NoTlsRejectError, TlsPrefixedIo};
 
 /// A [`Service`] router that can be used to support
 /// routing of tls traffic as well as non-tls traffic.
@@ -61,10 +61,10 @@ impl<S> SniRouter<S> {
 
 impl<Stream, Output, S, F> Service<Stream> for SniRouter<S, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
     Output: Send + 'static,
     S: Service<SniRequest<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<TlsPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
     type Output = Output;
     type Error = BoxError;
@@ -90,7 +90,7 @@ where
 
             let mut peek = StackReader::new(peek_buf);
             peek.skip(offset);
-            let stream = PeekStream::new(peek, stream);
+            let stream = PrefixedIo::new(peek, stream);
 
             tracing::trace!("fallback to non-tls service");
             return self.fallback.serve(stream).await.into_box_error();
@@ -117,7 +117,7 @@ where
             .context("parse client hello handshake bytes and extract SNI")?;
 
         let mem_reader = HeapReader::from(v);
-        let peek_stream = PeekStream::new(mem_reader, stream);
+        let peek_stream = PrefixedIo::new(mem_reader, stream);
 
         self.service
             .serve(SniRequest {
@@ -131,8 +131,8 @@ where
 
 const TLS_HEADER_PEEK_LEN: usize = 5;
 
-/// [`PeekStream`] alias used by [`SniRouter`].
-pub type SniPeekStream<S> = PeekStream<HeapReader, S>;
+/// [`PrefixedIo`] alias used by [`SniRouter`].
+pub type SniPrefixedIo<S> = PrefixedIo<HeapReader, S>;
 
 pin_project! {
     /// A request ready for SNI routing,
@@ -140,7 +140,7 @@ pin_project! {
     #[derive(Debug, Clone)]
     pub struct SniRequest<S> {
         #[pin]
-        pub stream: SniPeekStream<S>,
+        pub stream: SniPrefixedIo<S>,
         pub sni: Option<Domain>,
     }
 }
@@ -289,7 +289,7 @@ mod test {
     };
     use std::convert::Infallible;
 
-    use rama_core::stream::Stream;
+    use rama_core::io::Io;
 
     use super::*;
 
@@ -417,7 +417,7 @@ mod test {
     #[tokio::test]
     async fn test_peek_router_read_eof() {
         async fn tls_service_fn(
-            SniRequest { mut stream, sni }: SniRequest<impl Stream + Unpin>,
+            SniRequest { mut stream, sni }: SniRequest<impl Io + Unpin>,
         ) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
             let _ = stream.read_to_end(&mut v).await?;
@@ -451,9 +451,7 @@ mod test {
             }
             let tls_service = service_fn(tls_service_fn);
 
-            async fn plain_service_fn(
-                mut stream: impl Stream + Unpin,
-            ) -> Result<Vec<u8>, BoxError> {
+            async fn plain_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
                 let _ = stream.read_to_end(&mut v).await?;
                 Ok(v)
@@ -476,7 +474,7 @@ mod test {
     #[tokio::test]
     async fn test_peek_router_read_tls_no_sni_eof() {
         async fn tls_service_fn(
-            SniRequest { mut stream, sni }: SniRequest<impl Stream + Unpin>,
+            SniRequest { mut stream, sni }: SniRequest<impl Io + Unpin>,
         ) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
             let _ = stream.read_to_end(&mut v).await?;

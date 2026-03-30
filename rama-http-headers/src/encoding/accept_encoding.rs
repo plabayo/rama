@@ -1,6 +1,8 @@
 use super::SupportedEncodings;
 use rama_http_types::HeaderValue;
 
+/// TODO: support this as typed header...
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcceptEncoding {
     gzip: bool,

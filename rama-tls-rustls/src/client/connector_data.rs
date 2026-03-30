@@ -1,14 +1,18 @@
-use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use crate::dep::rcgen::{self, KeyPair};
+use crate::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
 use crate::key_log::KeyLogFile;
 use crate::verify::NoServerCertVerifier;
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::BoxError;
 use rama_net::address::Host;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
 use rustls::client::danger::ServerCertVerifier;
 use std::sync::{Arc, OnceLock};
+
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+use crate::dep::pki_types::PrivatePkcs8KeyDer;
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+use ::rama_core::error::ErrorContext;
 
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::TlsConnector`].
@@ -39,32 +43,73 @@ impl From<Arc<ClientConfig>> for TlsConnectorData {
 }
 
 impl TlsConnectorData {
+    /// Create a default [`TlsConnectorData`] without configuring ALPN.
+    pub fn try_new() -> Result<Self, BoxError> {
+        Ok(TlsConnectorDataBuilder::new()
+            .try_with_env_key_logger()?
+            .build())
+    }
+
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.
     pub fn try_new_http_auto() -> Result<Self, BoxError> {
-        Ok(TlsConnectorDataBuilder::new()
-            .try_with_env_key_logger()?
-            .with_alpn_protocols_http_auto()
-            .build())
+        Ok(Self::try_new()?.with_alpn_protocols_http_auto())
     }
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing http/1.1 connections.
     pub fn try_new_http_1() -> Result<Self, BoxError> {
-        Ok(TlsConnectorDataBuilder::new()
-            .try_with_env_key_logger()?
-            .with_alpn_protocols(&[ApplicationProtocol::HTTP_11])
-            .build())
+        Ok(Self::try_new()?.with_alpn_protocols_http_1())
     }
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing h2 connections.
     pub fn try_new_http_2() -> Result<Self, BoxError> {
-        Ok(TlsConnectorDataBuilder::new()
-            .try_with_env_key_logger()?
-            .with_alpn_protocols(&[ApplicationProtocol::HTTP_2])
-            .build())
+        Ok(Self::try_new()?.with_alpn_protocols_http_2())
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`ApplicationProtocol`]s supported in alpn extension
+        pub fn alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
+            let protos: Vec<Vec<u8>> = protos
+                .iter()
+                .map(|proto| proto.as_bytes().to_vec())
+                .collect();
+
+            if self.client_config.alpn_protocols != protos {
+                let mut client_config = (*self.client_config).clone();
+                client_config.alpn_protocols = protos;
+                self.client_config = Arc::new(client_config);
+            }
+
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to most commonly used http protocols:
+        /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
+        pub fn alpn_protocols_http_auto(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_11`].
+        pub fn alpn_protocols_http_1(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_11]);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_2`].
+        pub fn alpn_protocols_http_2(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2]);
+            self
+        }
     }
 }
 
@@ -97,6 +142,7 @@ impl TlsConnectorDataBuilder {
     /// certificate store, and no client auth
     #[must_use]
     pub fn new() -> Self {
+        crate::ensure_default_crypto_provider();
         let config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_root_certificates(client_root_certs())
             .with_no_client_auth();
@@ -113,6 +159,7 @@ impl TlsConnectorDataBuilder {
         client_cert_chain: Vec<CertificateDer<'static>>,
         client_priv_key: PrivateKeyDer<'static>,
     ) -> Result<Self, BoxError> {
+        crate::ensure_default_crypto_provider();
         let config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_root_certificates(client_root_certs())
             .with_client_auth_cert(client_cert_chain, client_priv_key)
@@ -153,6 +200,22 @@ impl TlsConnectorDataBuilder {
         /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
         pub fn alpn_protocols_http_auto(mut self) -> Self {
             self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_11`].
+        pub fn alpn_protocols_http_1(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_11]);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_2`].
+        pub fn alpn_protocols_http_2(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2]);
             self
         }
     }
@@ -214,12 +277,21 @@ pub fn client_root_certs() -> Arc<RootCertStore> {
         .clone()
 }
 
+#[cfg(not(any(feature = "aws-lc", feature = "ring")))]
+pub fn self_signed_client_auth()
+-> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    Err(BoxError::from(
+        "enable aws-lc or ring feature to use fn self_signed_client_auth",
+    ))
+}
+
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
 pub fn self_signed_client_auth()
 -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     // Create a client end entity cert.
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-    let client_key_pair =
-        KeyPair::generate_for(alg).context("self-signed client auth: generate client key pair")?;
+    let client_key_pair = rcgen::KeyPair::generate_for(alg)
+        .context("self-signed client auth: generate client key pair")?;
     let mut client_ee_params = rcgen::CertificateParams::new(vec![])
         .context("self-signed client auth: create client EE Params")?;
     client_ee_params.is_ca = rcgen::IsCa::NoCa;

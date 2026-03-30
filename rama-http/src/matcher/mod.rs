@@ -874,6 +874,47 @@ impl<Body> HttpMatcher<Body> {
             negate: true,
         }
     }
+
+    /// Returns the set of HTTP methods this matcher explicitly allows, as a [`MethodMatcher`].
+    ///
+    /// Returns `None` when the matcher imposes no method restriction
+    /// (e.g. a Path, Domain, or Custom matcher).
+    ///
+    /// Negation is applied uniformly: if `self` is negated the raw method set is
+    /// complemented, so `NOT GET` yields every known method except GET.
+    pub fn allowed_methods(&self) -> Option<MethodMatcher> {
+        let m = self.kind.allowed_methods();
+        if self.negate {
+            m.map(|m| m.complement())
+        } else {
+            m
+        }
+    }
+}
+
+impl<Body> HttpMatcherKind<Body> {
+    fn allowed_methods(&self) -> Option<MethodMatcher> {
+        match self {
+            Self::Method(m) => Some(*m),
+            Self::All(matchers) => {
+                // Intersect: AND together every child that has a method constraint.
+                // Non-method children (None) are skipped — they don't restrict methods.
+                matchers
+                    .iter()
+                    .filter_map(|m| m.allowed_methods())
+                    .reduce(|acc, next| acc.and_method(next))
+            }
+            Self::Any(matchers) => {
+                // Union: OR together all children.
+                // If any child is unconstrained (None), the union is unbounded → None.
+                matchers.iter().try_fold(MethodMatcher::NONE, |acc, m| {
+                    Some(acc.or_method(m.allowed_methods()?))
+                })
+            }
+            // All other variants impose no method constraint.
+            _ => None,
+        }
+    }
 }
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for HttpMatcher<Body>

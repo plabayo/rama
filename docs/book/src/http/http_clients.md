@@ -10,6 +10,12 @@ Rama provides an [`EasyHttpWebClient`](https://ramaproxy.org/docs/rama/http/clie
 
 As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramaproxy.org/docs/rama/http/service/client/trait.HttpClientExt.html) trait in your Rust module to be able to use your _Http_ Client [`Service`][rama-service] stack using a high level API to build and send requests with ease.
 
+> [!NOTE]
+> The same client-side composition model is also used by
+> Rama's gRPC support. See the dedicated [gRPC chapter](./grpc.md)
+> for how a regular Rama HTTP client can act as the transport
+> substrate for typed gRPC clients.
+
 ## Http Client Example
 
 See for a full and tested "high level" example of _a_ http client at <https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs>.

@@ -125,7 +125,7 @@ async fn main() {
 
         let tcp_http_service = HttpServer::auto(exec.clone()).service(Arc::new(http_service));
 
-        TcpListener::bind("127.0.0.1:62010", exec)
+        TcpListener::bind_address("127.0.0.1:62010", exec)
             .await
             .expect("bind TCP Listener")
             .serve(

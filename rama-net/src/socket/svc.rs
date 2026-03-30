@@ -1,5 +1,6 @@
-use super::Interface;
 use rama_core::{Service, error::BoxError};
+
+use crate::address::SocketAddress;
 
 /// Glue trait that is used as the trait bound for
 /// code creating/preparing a socket on one layer or another.
@@ -13,24 +14,24 @@ pub trait SocketService: Send + Sync + 'static {
     type Error: Into<BoxError> + Send + 'static;
 
     /// Create a binding to a Unix/Linux/Windows socket.
-    fn bind(
+    fn bind_socket_with_address(
         &self,
-        interface: impl Into<Interface>,
+        addr: impl Into<SocketAddress>,
     ) -> impl Future<Output = Result<Self::Socket, Self::Error>> + Send + '_;
 }
 
 impl<S, Socket> SocketService for S
 where
-    S: Service<Interface, Output = Socket, Error: Into<BoxError> + Send + 'static>,
+    S: Service<SocketAddress, Output = Socket, Error: Into<BoxError> + Send + 'static>,
     Socket: Send + 'static,
 {
     type Socket = Socket;
     type Error = S::Error;
 
-    fn bind(
+    fn bind_socket_with_address(
         &self,
-        interface: impl Into<Interface>,
+        addr: impl Into<SocketAddress>,
     ) -> impl Future<Output = Result<Self::Socket, Self::Error>> + Send + '_ {
-        self.serve(interface.into())
+        self.serve(addr.into())
     }
 }

@@ -38,14 +38,63 @@ impl MethodMatcher {
         Self(bits)
     }
 
-    pub(crate) const fn contains(self, other: Self) -> bool {
+    /// An empty matcher that matches no methods — the identity element for [`or`].
+    pub(crate) const NONE: Self = Self::from_bits(0);
+    pub(crate) const ALL_KNOWN: Self = Self::CONNECT
+        .or_method(Self::DELETE)
+        .or_method(Self::GET)
+        .or_method(Self::HEAD)
+        .or_method(Self::OPTIONS)
+        .or_method(Self::PATCH)
+        .or_method(Self::POST)
+        .or_method(Self::PUT)
+        .or_method(Self::TRACE);
+
+    /// Returns `true` if `self` contains all bits set in `other`.
+    pub const fn contains(self, other: Self) -> bool {
         self.bits() & other.bits() == other.bits()
     }
 
     /// Performs the OR operation between the [`MethodMatcher`] in `self` with `other`.
     #[must_use]
-    pub const fn or(self, other: Self) -> Self {
+    pub const fn or_method(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    /// Performs the AND operation between the [`MethodMatcher`] in `self` with `other`.
+    ///
+    /// Useful for intersecting two method sets (e.g. inside an `All` compound matcher).
+    #[must_use]
+    pub const fn and_method(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// Returns the complement: all known methods NOT in `self`.
+    ///
+    /// Used when a method matcher is negated — e.g. `NOT GET` → every known method except GET.
+    #[must_use]
+    pub const fn complement(self) -> Self {
+        Self(Self::ALL_KNOWN.bits() & !self.bits())
+    }
+
+    /// Returns an iterator over the [`Method`] variants represented by this matcher.
+    ///
+    /// Yields methods in declaration order (CONNECT, DELETE, GET, HEAD, OPTIONS,
+    /// PATCH, POST, PUT, TRACE) for only the bits that are set.
+    pub fn iter(self) -> impl Iterator<Item = Method> {
+        [
+            (Self::CONNECT, Method::CONNECT),
+            (Self::DELETE, Method::DELETE),
+            (Self::GET, Method::GET),
+            (Self::HEAD, Method::HEAD),
+            (Self::OPTIONS, Method::OPTIONS),
+            (Self::PATCH, Method::PATCH),
+            (Self::POST, Method::POST),
+            (Self::PUT, Method::PUT),
+            (Self::TRACE, Method::TRACE),
+        ]
+        .into_iter()
+        .filter_map(move |(m, method)| self.contains(m).then_some(method))
     }
 }
 

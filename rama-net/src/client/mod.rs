@@ -4,6 +4,10 @@ mod conn;
 #[doc(inline)]
 pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};
 
+mod graceful;
+#[doc(inline)]
+pub use graceful::GracefulConnectorService;
+
 pub mod pool;
 
 mod either_conn;

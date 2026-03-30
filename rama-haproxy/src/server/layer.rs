@@ -3,7 +3,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt},
     extensions::ExtensionsMut,
-    stream::{HeapReader, PeekStream, Stream},
+    io::{HeapReader, Io, PrefixedIo},
     telemetry::tracing,
 };
 use rama_net::forwarded::{Forwarded, ForwardedElement};
@@ -80,8 +80,8 @@ impl<S> HaProxyService<S> {
 
 impl<S, IO> Service<IO> for HaProxyService<S>
 where
-    S: Service<PeekStream<HeapReader, IO>, Error: Into<BoxError>>,
-    IO: Stream + Unpin + ExtensionsMut,
+    S: Service<PrefixedIo<HeapReader, IO>, Error: Into<BoxError>>,
+    IO: Io + Unpin + ExtensionsMut,
 {
     type Output = S::Output;
     type Error = BoxError;
@@ -121,7 +121,7 @@ where
                 );
 
                 let mem = HeapReader::new(peek_buf[..n].into());
-                let stream = PeekStream::new(mem, stream);
+                let stream = PrefixedIo::new(mem, stream);
                 return self.inner.serve(stream).await.into_box_error();
             }
         } else {
@@ -225,7 +225,7 @@ where
 
         // put back the data that is read too much
         let mem: HeapReader = buffer[consumed..read].into();
-        let stream = PeekStream::new(mem, stream);
+        let stream = PrefixedIo::new(mem, stream);
 
         // read the rest of the data
         self.inner.serve(stream).await.into_box_error()
@@ -238,7 +238,7 @@ mod test {
 
     use super::*;
 
-    async fn echo(mut stream: impl Stream + Unpin) -> Result<Vec<u8>, BoxError> {
+    async fn echo(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
         let mut v = Vec::default();
         let _ = stream.read_to_end(&mut v).await?;
         Ok(v)

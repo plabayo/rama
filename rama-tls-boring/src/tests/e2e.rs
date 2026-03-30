@@ -3,7 +3,6 @@ use std::sync::Arc;
 use rama_boring::ssl::SslCurve;
 use rama_core::{Layer, Service as _, ServiceInput, telemetry::tracing};
 use rama_net::{
-    address::Host,
     stream::service::EchoService,
     tls::{
         client::ServerVerifyMode,
@@ -56,7 +55,6 @@ async fn test_assumed_default_group_id_support() {
         });
 
         let mut stream = tls_connect(
-            Host::EXAMPLE_NAME,
             ServiceInput::new(stream_client),
             Some(
                 TlsConnectorDataBuilder::new()

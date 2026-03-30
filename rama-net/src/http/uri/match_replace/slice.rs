@@ -90,7 +90,7 @@ mod tests {
     /// Assert that for every container view the output equals `want`.
     fn expect_all_views_eq(rules: &[UriMatchReplaceRule], input: &str, want: Option<&str>) {
         let got = apply_multiple_views(rules, input);
-        let want = want.map(str::to_string);
+        let want = want.map(str::to_owned);
         for (i, g) in got.into_iter().enumerate() {
             assert_eq!(g, want, "container idx {i} wrong result for input: {input}");
         }

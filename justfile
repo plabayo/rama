@@ -25,11 +25,21 @@ check:
 check-crate CRATE:
     cargo check -p {{CRATE}} --all-targets --all-features
 
+check-crate-linux CRATE:
+  cargo check -p {{CRATE}} --target x86_64-unknown-linux-gnu --all-features
+  cargo check -p {{CRATE}} --target aarch64-unknown-linux-gnu --all-features
+
 check-links:
     lychee .
 
 clippy:
     cargo clippy --workspace --all-targets --all-features
+
+clippy-beta:
+    cargo +beta clippy --workspace --all-targets --all-features
+
+clippy-beta-crate CRATE:
+    cargo +beta clippy -p {{CRATE}} --all-targets --all-features
 
 clippy-crate CRATE:
     cargo clippy -p {{CRATE}} --all-targets --all-features
@@ -44,7 +54,13 @@ typos:
     typos -w
 
 extra-checks:
+    @just _extra-checks-{{os_family()}}
+
+_extra-checks-unix:
     {{justfile_directory()}}/scripts/extra-checks.sh
+
+_extra-checks-windows:
+    @echo "Skipping extra checks on Windows"
 
 doc:
     cargo doc --all-features --no-deps --workspace --exclude rama-cli
@@ -99,6 +115,12 @@ qa-crate CRATE:
     just test-crate {{CRATE}}
     just test-doc-crate {{CRATE}}
 
+qa-ffi-apple:
+    just ./ffi/apple/examples/transparent_proxy/qa
+
+test-e2e-ffi-apple:
+    just ./ffi/apple/examples/transparent_proxy/test-e2e
+
 qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:
@@ -106,10 +128,7 @@ bench-e2e-http-client-server *ARGS:
 
 clean:
     cargo clean
-
-upgrades:
-    @cargo install cargo-upgrades
-    cargo upgrades
+    just ./ffi/apple/examples/transparent_proxy/clean
 
 watch-docs:
     @cargo install cargo-watch
@@ -214,8 +233,11 @@ publish *ARGS:
     wingetcreate submit -p 'Plabayo.Rama.Preview version bump' .
 
 update-deps:
-    cargo upgrades
+    @cargo install cargo-outdated --locked
+    cargo outdated
     cargo update
+    just ./ffi/apple/examples/transparent_proxy/clean
+    just ./ffi/apple/examples/transparent_proxy/update-deps
 
 oss-endpoint-healthcheck:
     bash rama-fp/infra/scripts/remote-healthcheck.sh

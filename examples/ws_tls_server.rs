@@ -57,7 +57,7 @@ async fn main() {
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Arc::new(
+        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(Arc::new(
             Router::new().with_get("/", Html(INDEX)).with_get(
                 "/echo",
                 ConsumeErrLayer::trace_as_debug()
@@ -69,7 +69,7 @@ async fn main() {
 
         info!("open web echo chat @ https://127.0.0.1:62034");
         info!("or connect directly to wss://127.0.0.1:62034/echo (via 'rama')");
-        TcpListener::bind("127.0.0.1:62034", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:62034", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
             .serve(tls_server)

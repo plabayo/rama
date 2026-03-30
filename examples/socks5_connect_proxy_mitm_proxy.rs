@@ -29,7 +29,7 @@ use rama::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
-            compression::CompressionLayer,
+            compression::{CompressionLayer, MirrorDecompressed},
             decompression::DecompressionLayer,
             map_response_body::MapResponseBodyLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -89,7 +89,7 @@ async fn main() {
 
     let auto_https_service = TlsPeekRouter::new(https_service).with_fallback(http_service);
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62022", exec.clone())
+    let tcp_service = TcpListener::bind_address("127.0.0.1:62022", exec.clone())
         .await
         .expect("bind proxy to 127.0.0.1:62022");
     let socks5_acceptor = Socks5Acceptor::new(exec)
@@ -113,7 +113,7 @@ fn new_http_mitm_proxy(
             ConsumeErrLayer::default(),
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),
-            CompressionLayer::new(),
+            CompressionLayer::new().with_compress_predicate(MirrorDecompressed::new()),
             AddRequiredRequestHeadersLayer::new(),
         )
             .into_layer(HttpMitmProxy { exec }),

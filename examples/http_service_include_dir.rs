@@ -33,7 +33,7 @@ const ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/test-files");
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:62037", Executor::default())
+    let listener = TcpListener::bind_address("127.0.0.1:62037", Executor::default())
         .await
         .expect("bind TCP Listener");
 

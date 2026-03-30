@@ -3,14 +3,20 @@
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
+    time::Duration,
 };
 
 pub use hickory_resolver as resolver;
+#[cfg(any(target_family = "unix", target_os = "windows"))]
+use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::{
-    Name, TokioResolver,
-    config::ResolverConfig,
-    name_server::TokioConnectionProvider,
-    proto::rr::rdata::{A, AAAA},
+    ResolverBuilder, TokioResolver,
+    config::{CLOUDFLARE, GOOGLE, QUAD9, ResolverConfig},
+    net::runtime::TokioRuntimeProvider,
+    proto::rr::{
+        Name, RData,
+        rdata::{A, AAAA},
+    },
 };
 
 use rama_core::{
@@ -28,37 +34,28 @@ use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
 /// DNS Resolver using the [`hickory_resolver`] crate
 pub struct HickoryDnsResolver(Arc<TokioResolver>);
 
-impl Default for HickoryDnsResolver {
-    #[cfg(any(target_family = "unix", target_os = "windows"))]
-    fn default() -> Self {
-        Self::try_new_system().unwrap_or_else(|err| {
-            tracing::warn!(
-                "fail to create system HickoryDnsResolver client: fallback to cloudflare: {err}"
-            );
-            Self::new_cloudflare()
-        })
-    }
-
-    #[cfg(not(any(target_family = "unix", target_os = "windows")))]
-    fn default() -> Self {
-        Self::new_cloudflare()
-    }
+/// Rama defined overwrites of HickoryDNS [`ResolverOpts`].
+///
+/// [`ResolverOpts`]: self::resolver::config::ResolverOpts
+pub fn default_resolver_opts() -> self::resolver::config::ResolverOpts {
+    let mut opts = self::resolver::config::ResolverOpts::default();
+    opts.cache_size = 32_000;
+    opts.timeout = Duration::from_secs(3);
+    opts.num_concurrent_reqs = std::thread::available_parallelism()
+        .map(|n| (n.get() / 2).clamp(2, 8))
+        .unwrap_or(2);
+    opts.try_tcp_on_error = true;
+    opts
 }
 
 impl HickoryDnsResolver {
     #[inline]
     /// Construct a [`HickoryDnsBuilder`] used to build
-    /// a custom [`HickoryDnsResolver`] instead of the default [`HickoryDnsResolver::new`].
+    /// a custom [`HickoryDnsResolver`] instead of one of the predefined
+    /// (fallible) constructors.
     #[must_use]
     pub fn builder() -> HickoryDnsBuilder {
         HickoryDnsBuilder::default()
-    }
-
-    #[inline]
-    /// Construct a new [`HickoryDnsResolver`] instance with the [`Default`] setup.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
     }
 
     #[inline]
@@ -72,11 +69,11 @@ impl HickoryDnsResolver {
     /// about what they track, many ISP's track similar information in DNS.
     ///
     /// To use the system configuration see: [`Self::try_new_system`].
-    pub fn new_google() -> Self {
+    pub fn try_new_google() -> Result<Self, BoxError> {
         tracing::trace!("create HickoryDnsResolver resolver using default google config");
         Self::builder()
-            .with_config(ResolverConfig::google())
-            .build()
+            .with_config(ResolverConfig::udp_and_tcp(&GOOGLE))
+            .try_build()
     }
 
     #[inline]
@@ -87,11 +84,11 @@ impl HickoryDnsResolver {
     /// Please see: <https://www.cloudflare.com/dns/>
     ///
     /// To use the system configuration see: [`Self::try_new_system`].
-    pub fn new_cloudflare() -> Self {
+    pub fn try_new_cloudflare() -> Result<Self, BoxError> {
         tracing::trace!("create HickoryDnsResolver resolver using default cloudflare config");
         Self::builder()
-            .with_config(ResolverConfig::cloudflare())
-            .build()
+            .with_config(ResolverConfig::udp_and_tcp(&CLOUDFLARE))
+            .try_build()
     }
 
     #[inline]
@@ -103,9 +100,11 @@ impl HickoryDnsResolver {
     /// Please see: <https://www.quad9.net/faq/>
     ///
     /// To use the system configuration see: [`Self::try_new_system`].
-    pub fn new_quad9() -> Self {
+    pub fn try_new_quad9() -> Result<Self, BoxError> {
         tracing::trace!("create HickoryDnsResolver resolver using default quad9 config");
-        Self::builder().with_config(ResolverConfig::quad9()).build()
+        Self::builder()
+            .with_config(ResolverConfig::udp_and_tcp(&QUAD9))
+            .try_build()
     }
 
     #[cfg(any(target_family = "unix", target_os = "windows"))]
@@ -113,16 +112,38 @@ impl HickoryDnsResolver {
     ///
     /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
     pub fn try_new_system() -> Result<Self, BoxError> {
+        Self::try_new_system_with_options(default_resolver_opts())
+    }
+
+    #[cfg(any(target_family = "unix", target_os = "windows"))]
+    /// Construct a new [`HickoryDnsResolver`] with the system configuration,
+    /// and provided (resolver) options...
+    ///
+    /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
+    pub fn try_new_system_with_options(options: ResolverOpts) -> Result<Self, BoxError> {
         tracing::trace!("try to create HickoryDnsResolver resolver using system config");
-        Ok(TokioResolver::builder_tokio()
-            .context("build async dns resolver with system conf")
-            .inspect_err(|err| {
-                tracing::debug!(
-                    "failed to create HickoryDnsResolver resolver using system config: {err:?}"
-                )
-            })?
+        Self::try_new_with_builder(
+            TokioResolver::builder_tokio()
+                .context("build async dns resolver with system conf")
+                .inspect_err(|err| {
+                    tracing::debug!(
+                        "failed to create HickoryDnsResolver resolver using system config: {err:?}"
+                    )
+                })?
+                .with_options(options),
+        )
+    }
+
+    #[inline(always)]
+    fn try_new_with_builder(
+        builder: ResolverBuilder<TokioRuntimeProvider>,
+    ) -> Result<Self, BoxError> {
+        let resolver = builder
             .build()
-            .into())
+            .context("build rsolver from provided builder")?;
+        // NOTE: in future this central loc can be used
+        // to do any optimizations or sanitizations if ever required
+        Ok(resolver.into())
     }
 }
 
@@ -132,11 +153,21 @@ impl From<TokioResolver> for HickoryDnsResolver {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-/// Used to [`build`][`Self::build`] a [`HickoryDnsResolver`] instance.
+#[derive(Debug, Clone)]
+/// Used to [`build`][`Self::try_build`] a [`HickoryDnsResolver`] instance.
 pub struct HickoryDnsBuilder {
     config: Option<self::resolver::config::ResolverConfig>,
     options: Option<self::resolver::config::ResolverOpts>,
+}
+
+impl Default for HickoryDnsBuilder {
+    #[inline(always)]
+    fn default() -> Self {
+        Self {
+            config: None,
+            options: Some(default_resolver_opts()),
+        }
+    }
 }
 
 impl HickoryDnsBuilder {
@@ -161,16 +192,17 @@ impl HickoryDnsBuilder {
     ///
     /// [`Clone`] the [`HickoryDnsBuilder`] prior to calling this method in case you
     /// still need the builder afterwards.
-    pub fn build(self) -> HickoryDnsResolver {
+    pub fn try_build(self) -> Result<HickoryDnsResolver, BoxError> {
         let mut resolver_builder = TokioResolver::builder_with_config(
-            self.config
-                .unwrap_or_else(self::resolver::config::ResolverConfig::cloudflare),
-            TokioConnectionProvider::default(),
+            self.config.unwrap_or_else(|| {
+                self::resolver::config::ResolverConfig::udp_and_tcp(&CLOUDFLARE)
+            }),
+            TokioRuntimeProvider::default(),
         );
         if let Some(options) = self.options {
             *resolver_builder.options_mut() = options;
         }
-        HickoryDnsResolver(Arc::new(resolver_builder.build()))
+        HickoryDnsResolver::try_new_with_builder(resolver_builder)
     }
 }
 
@@ -205,7 +237,15 @@ impl DnsAddressResolver for HickoryDnsResolver {
                 "resolve A record(s) for name",
                 "name" = name
             );
-            for A(ip) in lookup {
+            for ip in lookup
+                .answers()
+                .iter()
+                .map(|a| a.data())
+                .filter_map(|data| match data {
+                    RData::A(A(ip)) => Some(*ip),
+                    _ => None,
+                })
+            {
                 yielder.yield_item(Ok(ip)).await;
             }
         })
@@ -227,7 +267,15 @@ impl DnsAddressResolver for HickoryDnsResolver {
                 "resolve AAAA record(s) for name",
                 "name" = name
             );
-            for AAAA(ip) in lookup {
+            for ip in lookup
+                .answers()
+                .iter()
+                .map(|a| a.data())
+                .filter_map(|data| match data {
+                    RData::AAAA(AAAA(ip)) => Some(*ip),
+                    _ => None,
+                })
+            {
                 yielder.yield_item(Ok(ip)).await;
             }
         })
@@ -253,9 +301,17 @@ impl DnsTxtResolver for HickoryDnsResolver {
                 "resolve TXT record(s) for name",
                 "name" = name
             );
-            for txt in lookup {
-                for part in txt.txt_data() {
-                    yielder.yield_item(Ok(Bytes::from(part.clone()))).await;
+            for txt in lookup
+                .answers()
+                .iter()
+                .map(|a| a.data())
+                .filter_map(|data| match data {
+                    RData::TXT(txt) => Some(txt),
+                    _ => None,
+                })
+            {
+                for txt_part in txt.txt_data.iter() {
+                    yielder.yield_item(Ok(Bytes::from(txt_part.clone()))).await;
                 }
             }
         })
@@ -276,7 +332,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_box_hickory_dns_resolver() {
-        let _ = HickoryDnsResolver::default().into_box_dns_resolver();
+    fn test_box_hickory_system_dns_resolver() {
+        let _ = HickoryDnsResolver::try_new_system()
+            .unwrap()
+            .into_box_dns_resolver();
+    }
+
+    #[test]
+    fn test_box_hickory_cloudflare_dns_resolver() {
+        let _ = HickoryDnsResolver::try_new_cloudflare()
+            .unwrap()
+            .into_box_dns_resolver();
     }
 }

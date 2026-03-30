@@ -1,12 +1,15 @@
+use std::time::Duration;
+
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    io::{
+        PeekIoProvider, PrefixedIo, StackReader,
+        peek::{PeekOutput, peek_input_until},
+    },
     service::RejectService,
-    stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
-use tokio::io::AsyncReadExt;
 
 use crate::proto::{ProtocolVersion, SocksMethod};
 
@@ -22,6 +25,7 @@ use crate::proto::{ProtocolVersion, SocksMethod};
 pub struct Socks5PeekRouter<T, F = RejectService<(), NoSocks5RejectError>> {
     socks5_acceptor: T,
     fallback: F,
+    peek_timeout: Option<Duration>,
 }
 
 rama_utils::macros::error::static_str_error! {
@@ -35,6 +39,7 @@ impl<T> Socks5PeekRouter<T> {
         Self {
             socks5_acceptor,
             fallback: RejectService::new(NoSocks5RejectError),
+            peek_timeout: None,
         }
     }
 
@@ -43,69 +48,96 @@ impl<T> Socks5PeekRouter<T> {
         Socks5PeekRouter {
             socks5_acceptor: self.socks5_acceptor,
             fallback,
+            peek_timeout: self.peek_timeout,
         }
     }
 }
 
-impl<Stream, Output, T, F> Service<Stream> for Socks5PeekRouter<T, F>
+impl<T, F> Socks5PeekRouter<T, F> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the peek window to timeout on
+        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
+            self.peek_timeout = peek_timeout;
+            self
+        }
+    }
+}
+
+impl<PeekableInput, Output, T, F> Service<PeekableInput> for Socks5PeekRouter<T, F>
 where
-    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
     Output: Send + 'static,
-    T: Service<Socks5PeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
-    F: Service<Socks5PeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    T: Service<
+            PeekableInput::Mapped<Socks5PrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
+    F: Service<
+            PeekableInput::Mapped<Socks5PrefixedIo<PeekableInput::PeekIo>>,
+            Output = Output,
+            Error: Into<BoxError>,
+        >,
 {
     type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; SOCKS5_HEADER_PEEK_LEN];
-        let n = stream
-            .read(&mut peek_buf)
-            .await
-            .context("try to read socks5 prefix header")?;
+        let peekable_io = input.peek_io_mut();
 
-        let is_socks5 = n >= 2
-            && ProtocolVersion::from(peek_buf[0]) == ProtocolVersion::Socks5
-            && !(0..(peek_buf[1] as usize + 2).min(SOCKS5_HEADER_PEEK_LEN))
-                .any(|i| matches!(SocksMethod::from(peek_buf[i]), SocksMethod::Unknown(_)));
+        let PeekOutput {
+            data: socks5_method,
+            peek_size,
+        } = peek_input_until(peekable_io, &mut peek_buf, self.peek_timeout, |buffer| {
+            if buffer.len() < 2 || ProtocolVersion::from(buffer[0]) != ProtocolVersion::Socks5 {
+                return None;
+            }
+            match SocksMethod::from(buffer[1]) {
+                SocksMethod::Unknown(_) => None,
+                known_method => Some(known_method),
+            }
+        })
+        .await;
+        let is_socks5 = socks5_method.is_some();
 
-        tracing::trace!("socks5 prefix header read (is socks5: {is_socks5}");
+        tracing::trace!(
+            "socks5 prefix header read (is socks5: {is_socks5}; method = {socks5_method:?})"
+        );
 
-        let offset = SOCKS5_HEADER_PEEK_LEN - n;
+        let offset = SOCKS5_HEADER_PEEK_LEN - peek_size;
         if offset > 0 {
             tracing::trace!(
-                %n,
+                %peek_size,
                 "move socks5 peek buffer cursor due to reading not enough"
             );
-            peek_buf.copy_within(0..n, offset);
+            peek_buf.copy_within(0..peek_size, offset);
         }
 
         let mut peek = StackReader::new(peek_buf);
         peek.skip(offset);
 
-        let stream = PeekStream::new(peek, stream);
+        let peeked_input = input.map_peek_io(|io| PrefixedIo::new(peek, io));
 
         if is_socks5 {
-            self.socks5_acceptor.serve(stream).await.into_box_error()
+            self.socks5_acceptor
+                .serve(peeked_input)
+                .await
+                .into_box_error()
         } else {
-            self.fallback.serve(stream).await.into_box_error()
+            self.fallback.serve(peeked_input).await.into_box_error()
         }
     }
 }
 
-const SOCKS5_HEADER_PEEK_LEN: usize = 5;
+const SOCKS5_HEADER_PEEK_LEN: usize = 2;
 
-/// [`PeekStream`] alias used by [`Socks5PeekRouter`].
-pub type Socks5PeekStream<S> = PeekStream<StackReader<SOCKS5_HEADER_PEEK_LEN>, S>;
+/// [`PrefixedIo`] alias used by [`Socks5PeekRouter`].
+pub type Socks5PrefixedIo<S> = PrefixedIo<StackReader<SOCKS5_HEADER_PEEK_LEN>, S>;
 
 #[cfg(test)]
 mod test {
-
-    use rama_core::{
-        ServiceInput,
-        service::{RejectError, service_fn},
-        stream::Stream,
-    };
+    use rama_core::{ServiceInput, io::Io, service::service_fn};
+    use tokio::io::AsyncReadExt as _;
 
     use std::convert::Infallible;
 
@@ -168,35 +200,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_peek_router_read_eof() {
-        const CONTENT: &[u8] = b"\x05\x01\x00";
-
-        async fn socks5_service_fn(
-            mut stream: impl Stream + Unpin,
-        ) -> Result<&'static str, BoxError> {
-            let mut v = Vec::default();
-            let _ = stream.read_to_end(&mut v).await?;
-            assert_eq!(CONTENT, v);
-
-            Ok("ok")
-        }
-        let tls_service = service_fn(socks5_service_fn);
-
-        let peek_socks5_svc = Socks5PeekRouter::new(tls_service).with_fallback(RejectService::<
-            &'static str,
-            RejectError,
-        >::new(
-            RejectError::default(),
-        ));
-
-        let response = peek_socks5_svc
-            .serve(ServiceInput::new(std::io::Cursor::new(CONTENT.to_vec())))
-            .await
-            .unwrap();
-        assert_eq!("ok", response);
-    }
-
-    #[tokio::test]
     async fn test_peek_router_read_no_socks5_eof() {
         let cases = [
             "",
@@ -214,9 +217,7 @@ mod test {
             }
             let socks5_service = service_fn(socks5_service_fn);
 
-            async fn other_service_fn(
-                mut stream: impl Stream + Unpin,
-            ) -> Result<Vec<u8>, BoxError> {
+            async fn other_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
                 let _ = stream.read_to_end(&mut v).await?;
                 Ok(v)

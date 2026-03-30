@@ -34,7 +34,7 @@
 
 use rama::{
     Layer, Service,
-    extensions::{ExtensionsMut, ExtensionsRef, InputExtensions},
+    extensions::{ExtensionsRef, InputExtensions},
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -42,23 +42,16 @@ use rama::{
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::UpgradeLayer,
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
         },
         matcher::{DomainMatcher, MethodMatcher},
         server::HttpServer,
-        service::web::{
-            StaticService,
-            response::{Html, IntoResponse},
-        },
+        service::web::{StaticService, response::Html},
     },
     layer::{ConsumeErrLayer, HijackLayer},
     net::{
-        address::SocketAddress,
-        http::{RequestContext, server::HttpPeekRouter},
-        proxy::ProxyTarget,
-        stream::ClientSocketInfo,
-        tls::SecureTransport,
-        user::credentials::basic,
+        address::SocketAddress, http::server::HttpPeekRouter, proxy::IoForwardService,
+        stream::ClientSocketInfo, user::credentials::basic,
     },
     proxy::socks5::{
         Socks5Acceptor,
@@ -66,7 +59,7 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    tcp::{client::service::Forwarder, server::TcpListener},
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -144,7 +137,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(62030), exec.clone())
+    let tcp_service = TcpListener::bind_address(SocketAddress::default_ipv4(62030), exec.clone())
         .await
         .expect("bind tcp interface for connectivity example");
 
@@ -166,15 +159,22 @@ async fn main() {
             UpgradeLayer::new(
                 exec.clone(),
                 MethodMatcher::CONNECT,
-                service_fn(http_connect_accept),
-                ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec.clone())),
+                DefaultHttpProxyConnectReplyService::new(),
+                (
+                    ConsumeErrLayer::default(),
+                    IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone()),
+                )
+                    .into_layer(IoForwardService::new()),
             ),
         )
             .into_layer(proxy_service.clone()),
     );
 
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
-        .with_fallback(Forwarder::ctx(exec.clone()));
+        .with_fallback(
+            IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
+                .into_layer(IoForwardService::new()),
+        );
     let socks5_acceptor = Socks5Acceptor::new(exec.clone())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(LazyConnector::new(socks5_svc));
@@ -187,30 +187,6 @@ async fn main() {
         .shutdown_with_limit(Duration::from_secs(30))
         .await
         .expect("graceful shutdown");
-}
-
-async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
-        Ok(authority) => {
-            tracing::info!(
-                server.address = %authority.host,
-                server.port = authority.port,
-                "accept CONNECT (lazy): insert proxy target into context",
-            );
-            req.extensions_mut().insert(ProxyTarget(authority));
-        }
-        Err(err) => {
-            tracing::error!("error extracting authority: {err:?}");
-            return Err(StatusCode::BAD_REQUEST.into_response());
-        }
-    }
-
-    tracing::info!(
-        "proxy secure transport ingress: {:?}",
-        req.extensions().get::<SecureTransport>()
-    );
-
-    Ok((StatusCode::OK.into_response(), req))
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {

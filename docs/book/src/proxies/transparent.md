@@ -7,7 +7,11 @@ A transparent proxy, also known as an intercepting proxy, inline proxy, or force
 </div>
 </div>
 
-> TODO: add Rama examples once we have them (it's on roadmap... todo)
+[Examples](https://github.com/plabayo/rama/tree/main/ffi/apple/examples):
+
+- [ffi/apple/examples/transparent_proxy](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy):
+  This MacOS-only example shows how to link a Rust staticlib that implements
+  the Rama NetworkExtension "C" ABI into a macOS Transparent Proxy extension.
 
 ## Description
 

@@ -56,7 +56,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Arc::new(Router::new().with_get("/", Html(INDEX)).with_get(
+        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(Arc::new(Router::new().with_get("/", Html(INDEX)).with_get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
                 async |mut ws: ServerWebSocket| {
@@ -122,7 +122,7 @@ async fn main() {
         info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama')");
 
 
-        TcpListener::bind("127.0.0.1:62033", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:62033", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
             .serve(AddInputExtensionLayer::new(State::default()).into_layer(server))

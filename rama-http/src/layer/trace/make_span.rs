@@ -3,6 +3,7 @@ use crate::header::USER_AGENT;
 use crate::opentelemetry::version_as_protocol_version;
 use rama_core::telemetry::tracing::{self, Level, Span};
 use rama_net::http::RequestContext;
+use rama_utils::str::arcstr::{ArcStr, arcstr};
 
 use super::DEFAULT_MESSAGE_LEVEL;
 
@@ -39,6 +40,7 @@ where
 pub struct DefaultMakeSpan {
     level: Level,
     include_headers: bool,
+    otel_name: ArcStr,
 }
 
 impl DefaultMakeSpan {
@@ -48,6 +50,7 @@ impl DefaultMakeSpan {
         Self {
             level: DEFAULT_MESSAGE_LEVEL,
             include_headers: false,
+            otel_name: arcstr!("request"),
         }
     }
 
@@ -67,10 +70,17 @@ impl DefaultMakeSpan {
         /// Include request headers on the [`Span`].
         ///
         /// By default headers are not included.
-        ///
-        /// [`Span`]: tracing::Span
+
         pub fn include_headers(mut self, include_headers: bool) -> Self {
             self.include_headers = include_headers;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the otel.name field of this [`Span`].
+        pub fn name(mut self, otel_name: ArcStr) -> Self {
+            self.otel_name = otel_name;
             self
         }
     }
@@ -114,6 +124,7 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                     tracing::span!(
                         $level,
                         "request",
+                        otel.name = self.otel_name.as_str(),
                         http.request.method = %request.method(),
                         url.full = %request.uri(),
                         url.domain = found_domain_str,
@@ -130,6 +141,7 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                     tracing::span!(
                         $level,
                         "request",
+                        otel.name = self.otel_name.as_str(),
                         http.request.method = %request.method(),
                         url.full = %request.uri(),
                         url.domain = found_domain_str,

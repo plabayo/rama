@@ -2,7 +2,7 @@ use crate::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt};
 
-use sealed::{DefaultOutput, StaticOutput, Trace};
+use sealed::DefaultOutput;
 
 /// Consumes this service's error value and returns [`Infallible`].
 #[derive(Clone)]
@@ -318,21 +318,21 @@ where
     }
 }
 
-mod sealed {
-    #[derive(Debug, Clone)]
-    /// A sealed new type to prevent downstream users from
-    /// passing the trace level directly to the [`ConsumeErr::new`] method.
-    ///
-    /// [`ConsumeErr::new`]: crate::layer::ConsumeErr::new
-    pub struct Trace(pub tracing::Level);
+#[derive(Debug, Clone)]
+/// A sealed new type to prevent downstream users from
+/// passing the trace level directly to the [`ConsumeErr::new`] method.
+///
+/// [`ConsumeErr::new`]: crate::layer::ConsumeErr::new
+pub struct Trace(tracing::Level);
 
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+/// A sealed type to indicate static output is to be used.
+pub struct StaticOutput<R>(R);
+
+mod sealed {
     #[derive(Debug, Clone)]
     #[non_exhaustive]
     /// A sealed type to indicate default output is to be used.
     pub struct DefaultOutput;
-
-    #[derive(Debug, Clone)]
-    #[non_exhaustive]
-    /// A sealed type to indicate static output is to be used.
-    pub struct StaticOutput<R>(pub(super) R);
 }

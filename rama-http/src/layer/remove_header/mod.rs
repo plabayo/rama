@@ -159,12 +159,9 @@ pub fn remove_sensitive_response_headers(headers: &mut HeaderMap) {
 /// such as decompression, aggregation, or content rewriting.
 pub fn remove_payload_metadata_headers(headers: &mut HeaderMap) {
     for header in [
-        &header::CONNECTION,
-        &header::KEEP_ALIVE,
-        &header::PROXY_AUTHENTICATE,
-        &header::TRAILER,
+        &header::CONTENT_ENCODING,
         &header::TRANSFER_ENCODING,
-        &header::UPGRADE,
+        &header::CONTENT_LENGTH,
     ] {
         while headers.remove(header).is_some() {
             tracing::trace!("removed payload header for name: {header}");

@@ -17,6 +17,10 @@ use tokio::time::Instant;
 
 use crate::client::EmptyDnsResolver;
 
+mod happy_eyeball;
+#[doc(inline)]
+pub use self::happy_eyeball::{HappyEyeballAddressResolver, HappyEyeballAddressResolverExt};
+
 mod overwrite;
 #[doc(inline)]
 pub use self::overwrite::DnsAddresssResolverOverwrite;

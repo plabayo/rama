@@ -26,7 +26,7 @@ use rama::{
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:62009", Executor::default())
+    let listener = TcpListener::bind_address("127.0.0.1:62009", Executor::default())
         .await
         .expect("bind TCP Listener");
 

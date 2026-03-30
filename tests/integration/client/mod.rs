@@ -25,7 +25,7 @@ use std::{convert::Infallible, time::Duration};
 #[tokio::test]
 async fn h2_with_connection_pooling() {
     let http_server =
-        HttpServer::h2(Executor::default()).service(service_fn(async |req: Request| {
+        HttpServer::new_h2(Executor::default()).service(service_fn(async |req: Request| {
             // We are actually quite forgiving when we receive a http1 request instead of H2,
             // if we see a Host header here it means we received http1, something we don't expect.
             assert_eq!(req.headers().get(HOST), None);
@@ -75,7 +75,7 @@ async fn h2_with_connection_pooling() {
 #[tokio::test]
 async fn h1_with_connection_pooling_detects_closed_connections() {
     let http_server =
-        HttpServer::http1(Executor::default()).service(service_fn(async |_req: Request| {
+        HttpServer::new_http1(Executor::default()).service(service_fn(async |_req: Request| {
             let mut resp = Response::new(Body::empty());
             resp.headers_mut()
                 .insert(header::CONNECTION, HeaderValue::from_static("close"));

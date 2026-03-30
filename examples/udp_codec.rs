@@ -31,7 +31,7 @@ use rama::{
     futures::{FutureExt, SinkExt, StreamExt},
     net::address::SocketAddress,
     stream::codec::BytesCodec,
-    udp::{UdpFramed, bind_udp},
+    udp::{UdpFramed, bind_udp_with_address},
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -43,11 +43,11 @@ use tokio::{io, time};
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     let mut a = UdpFramed::new(
-        bind_udp(SocketAddress::local_ipv4(0)).await?,
+        bind_udp_with_address(SocketAddress::local_ipv4(0)).await?,
         BytesCodec::new(),
     );
     let mut b = UdpFramed::new(
-        bind_udp(SocketAddress::local_ipv4(0)).await?,
+        bind_udp_with_address(SocketAddress::local_ipv4(0)).await?,
         BytesCodec::new(),
     );
 

@@ -3,7 +3,7 @@ use std::pin::Pin;
 use rama::{
     futures::stream::{self, Stream},
     http::grpc::{Request, Response, Status, Streaming},
-    stream::StreamExt,
+    stream::StreamExt as _,
     telemetry::tracing,
 };
 

@@ -1,4 +1,4 @@
-use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
+use rama_core::{Layer, Service, extensions::ExtensionsMut, io::Io};
 use rama_http_types::BodyLimit;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -9,7 +9,7 @@ use std::fmt;
 /// it only is used to add the [`BodyLimit`] value to input [`Extensions`],
 /// such that the L7 http service can apply the limit when found in those [`Extensions`].
 ///
-/// [`Stream`]: rama_core::stream::Stream
+/// [`Stream`]: rama_core::io::Io
 /// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone)]
 pub struct BodyLimitLayer {
@@ -120,7 +120,7 @@ impl<S> BodyLimitService<S> {
 impl<S, IO> Service<IO> for BodyLimitService<S>
 where
     S: Service<IO>,
-    IO: Stream + ExtensionsMut,
+    IO: Io + ExtensionsMut,
 {
     type Output = S::Output;
     type Error = S::Error;

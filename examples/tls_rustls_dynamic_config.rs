@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_rustls_dynamic_config --features=rustls,http-full
+//! cargo run --example tls_rustls_dynamic_config --features=rustls,aws-lc,http-full
 //! ```
 //!
 //! Test if the correct certificates are returned by making curl resolve example and second.example to
@@ -99,7 +99,7 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind("127.0.0.1:64804", exec)
+        TcpListener::bind_address("127.0.0.1:64804", exec)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

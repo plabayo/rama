@@ -48,7 +48,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind("0.0.0.0:62501", exec)
+    let listener = TcpListener::bind_address("0.0.0.0:62501", exec)
         .await
         .expect("bind TCP Listener");
 

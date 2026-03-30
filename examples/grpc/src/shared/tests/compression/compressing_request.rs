@@ -114,7 +114,7 @@ async fn client_enabled_server_enabled_multi_encoding(encoding: CompressionEncod
         )
             .into_layer(svc);
 
-        HttpServer::h2(Executor::default()).service(grpc_svc)
+        HttpServer::new_h2(Executor::default()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(

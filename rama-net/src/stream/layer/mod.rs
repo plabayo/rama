@@ -1,11 +1,11 @@
-//! Rama middleware services that operate directly on network [`rama_core::stream::Stream`] types.
+//! Rama middleware services that operate directly on network [`rama_core::io::Io`] types.
 //!
 //! Examples are services that can operate directly on a `TCP`, `TLS` or `UDP` stream.
 
 mod tracker;
 #[doc(inline)]
 pub use tracker::{
-    BytesRWTrackerHandle, IncomingBytesTrackerLayer, IncomingBytesTrackerService,
+    BytesRWTracker, BytesRWTrackerHandle, IncomingBytesTrackerLayer, IncomingBytesTrackerService,
     OutgoingBytesTrackerLayer, OutgoingBytesTrackerService,
 };
 

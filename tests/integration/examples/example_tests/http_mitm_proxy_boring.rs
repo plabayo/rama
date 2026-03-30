@@ -21,7 +21,7 @@ use rama::{
             Router,
             response::{Headers, IntoResponse as _, Json},
         },
-        ws::handshake::server::{WebSocketAcceptor, WebSocketMatcher},
+        ws::handshake::{matcher::WebSocketMatcher, server::WebSocketAcceptor},
     },
     layer::ConsumeErrLayer,
     net::{address::ProxyAddress, tls::ApplicationProtocol, tls::server::SelfSignedData},
@@ -64,7 +64,7 @@ async fn test_http_mitm_proxy() {
     });
 
     tokio::spawn(async {
-        HttpServer::http1(Executor::default())
+        HttpServer::new_http1(Executor::default())
             .listen(
                 "127.0.0.1:63013",
                 Arc::new((
@@ -153,7 +153,7 @@ async fn test_http_mitm_proxy() {
     );
 
     tokio::spawn(async {
-        TcpListener::bind("127.0.0.1:63004", Executor::default())
+        TcpListener::bind_address("127.0.0.1:63004", Executor::default())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)
@@ -169,13 +169,13 @@ async fn test_http_mitm_proxy() {
     .expect("with env key logger")
     .build();
 
-    let http_1_over_tls_server = HttpServer::http1(Executor::default());
+    let http_1_over_tls_server = HttpServer::new_http1(Executor::default());
     let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn).into_layer(
         http_1_over_tls_server.service(Arc::new(Router::new().with_get("/ping", "pong"))),
     );
 
     tokio::spawn(async {
-        TcpListener::bind("127.0.0.1:63008", Executor::default())
+        TcpListener::bind_address("127.0.0.1:63008", Executor::default())
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener: secure web service (for h1 traffic): {e}")

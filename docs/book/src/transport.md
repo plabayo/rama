@@ -55,6 +55,8 @@ Each protocol has its place in the network programming toolbox. In Rama, your ch
 Note that typical uses do not mean that these are the only uses or that a use mentioned for 1 protocol
 cannot be served by another one. As usually it's a set of trade offs.
 
+This transport-first model is also part of why Rama's [gRPC support](./http/grpc.md) fits naturally in the framework: gRPC often runs over HTTP/2, but the transport and lower networking concerns remain fully programmable.
+
 ## Integration in Rama
 
 - For both TCP and Unix (stream) sockets there are listeners that are the servers in this kind of relationship:

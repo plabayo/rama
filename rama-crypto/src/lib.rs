@@ -27,6 +27,7 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
+#[cfg(feature = "aws-lc")]
 pub mod jose;
 
 pub mod dep {
@@ -34,6 +35,7 @@ pub mod dep {
     //!
     //! Exported for your convenience
 
+    #[cfg(feature = "aws-lc")]
     pub mod aws_lc_rs {
         //! Re-export of the [`aws-lc-rs`] crate.
         //!
@@ -43,6 +45,7 @@ pub mod dep {
         pub use aws_lc_rs::*;
     }
 
+    #[cfg(any(feature = "aws-lc", feature = "ring"))]
     pub mod rcgen {
         //! Re-export of the [`rcgen`] crate.
         //!

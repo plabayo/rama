@@ -17,6 +17,11 @@
   proxying them to the target host using Boring for TLS.
   - Similar to [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_connect_proxy.rs)
     but with MITM capabilities for both HTTP and HTTPS requests.
+  
+- [/examples/http_mitm_relay_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_relay_proxy_boring.rs):
+  Similar to [/examples/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy_boring.rs), but with a more advanced flow,
+  and usually the kind of approach more desired for MITM proxies,
+  especially transparent proxies.
 
 - [/examples/http_mitm_proxy_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy_rustls.rs):
   A minimal HTTP proxy that accepts both HTTP/1.1 and HTTP/2 connections,
