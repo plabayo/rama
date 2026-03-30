@@ -40,6 +40,7 @@ use rama::{
     Layer,
     extensions::Extensions,
     http::{
+        Uri,
         client::EasyHttpWebClient,
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
         server::HttpServer,

@@ -366,7 +366,7 @@ opentelemetry = [
     "rama-core/opentelemetry",
     "rama-http?/opentelemetry",
     "rama-net?/opentelemetry",
-    "dep:rama-grpc",
+    "grpc",
     "rama-grpc?/opentelemetry",
 ]
 
