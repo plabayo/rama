@@ -14,7 +14,7 @@
 //!
 //! ```
 //! docker run \
-//!   -p 127.0.0.1:4317:4317 \
+//!   -p 127.0.0.1:4318:4318 \
 //!   otel/opentelemetry-collector:latest
 //! ```
 //!
@@ -34,7 +34,7 @@
 //!
 //! With the seecoresponse you should see a response with `HTTP/1.1 200` and a greeting.
 //!
-//! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4317 over GRPC.
+//! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4318 over OTLP HTTP.
 
 use rama::{
     Layer,
@@ -43,10 +43,7 @@ use rama::{
         client::EasyHttpWebClient,
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
         server::HttpServer,
-        service::{
-            opentelemetry::OtelExporter,
-            web::{WebService, response::Html},
-        },
+        service::web::{WebService, response::Html},
     },
     layer::AddInputExtensionLayer,
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
@@ -55,7 +52,7 @@ use rama::{
     telemetry::{
         opentelemetry::{
             self, InstrumentationScope, KeyValue,
-            collector::{MetricExporter, WithExportConfig, WithHttpConfig},
+            collector::HttpExporter,
             metrics::UpDownCounter,
             sdk::{
                 Resource,
@@ -112,15 +109,9 @@ async fn main() {
         .init();
 
     let exporter_http_svc = EasyHttpWebClient::default();
-    let exporter_http_client = OtelExporter::new(exporter_http_svc);
-
-    let meter_exporter = MetricExporter::builder()
-        .with_http()
-        .with_http_client(exporter_http_client)
-        .with_endpoint("http://localhost:4317")
-        .with_timeout(Duration::from_secs(10))
-        .build()
-        .expect("build OT exporter");
+    let meter_exporter = HttpExporter::new(exporter_http_svc)
+        .with_endpoint(Uri::from_static("http://localhost:4318"))
+        .with_timeout(Duration::from_secs(10));
 
     let meter_reader = PeriodicReader::builder(meter_exporter)
         .with_interval(Duration::from_secs(3))

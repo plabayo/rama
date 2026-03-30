@@ -5,10 +5,10 @@
 
 use super::proto::{
     self, AnyValue, ArrayValue, ExponentialHistogramDataPoint, ExportMetricsServiceRequest,
-    HistogramDataPoint, InstrumentationScope as ProtoInstrumentationScope, KeyValue,
-    NumberDataPoint, ProtoExemplar, ProtoExponentialHistogram, ProtoGauge, ProtoHistogram,
-    ProtoMetric, ProtoResource, ProtoResourceMetrics, ProtoScopeMetrics, ProtoSum, ResourceSpans,
-    ScopeSpans, Span, Status,
+    ExportTraceServiceRequest, HistogramDataPoint,
+    InstrumentationScope as ProtoInstrumentationScope, KeyValue, NumberDataPoint, ProtoExemplar,
+    ProtoExponentialHistogram, ProtoGauge, ProtoHistogram, ProtoMetric, ProtoResource,
+    ProtoResourceMetrics, ProtoScopeMetrics, ProtoSum, ResourceSpans, ScopeSpans, Span, Status,
 };
 use rama_core::telemetry::opentelemetry::{
     self, Array, Value,
@@ -299,6 +299,15 @@ pub(crate) fn group_spans_by_resource_and_scope(
         scope_spans,
         schema_url: resource.schema_url.clone().unwrap_or_default(),
     }]
+}
+
+pub(crate) fn span_batch_to_request(
+    spans: &[SpanData],
+    resource: &ResourceAttributesWithSchema,
+) -> ExportTraceServiceRequest {
+    ExportTraceServiceRequest {
+        resource_spans: group_spans_by_resource_and_scope(spans, resource),
+    }
 }
 
 // ──────────────────────────────────────────────
