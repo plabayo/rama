@@ -4,6 +4,7 @@ use crate::HeaderValue;
 use crate::StreamingBody;
 use crate::headers::encoding::{AcceptEncoding, Encoding, parse_accept_encoding_headers};
 use crate::layer::compression::predicate::{DefaultStreamPredicate, Predicate, PreferredEncoding};
+use crate::layer::remove_header::remove_payload_metadata_headers;
 use crate::{Request, Response, header};
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
@@ -180,8 +181,7 @@ where
             (true, Encoding::Zstd) => StreamCompressionBody::zstd(body, self.quality, always_flush),
         };
 
-        parts.headers.remove(header::ACCEPT_RANGES);
-        parts.headers.remove(header::CONTENT_LENGTH);
+        remove_payload_metadata_headers(&mut parts.headers);
 
         parts
             .headers

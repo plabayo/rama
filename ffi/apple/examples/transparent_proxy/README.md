@@ -42,14 +42,14 @@ just install-tproxy-with-developer-id-signing-reset-profile
 That distribution command now performs the full shipping flow: build, sign, notarize, staple, install, then launch.
 Before replacing the installed app, the install helper uninstalls both the developer and distribution system-extension bundle IDs first, so switching between Apple Development and Developer ID signing does not leave the old extension active.
 
-Developer mode uses the default Xcode spec at [Project.yml](/Users/glendc/code/github.com/plabayo/rama/ffi/apple/examples/transparent_proxy/tproxy_app/Project.yml).
-Developer ID distribution mode uses [Project.dist.yml](/Users/glendc/code/github.com/plabayo/rama/ffi/apple/examples/transparent_proxy/tproxy_app/Project.dist.yml).
+Developer mode uses the default Xcode spec at [Project.yml](./tproxy_app/Project.yml).
+Developer ID distribution mode uses [Project.dist.yml](./tproxy_app/Project.dist.yml).
 The example now follows a Proton-style layout: one transparent proxy system-extension implementation is shared by both modes, and the entitlement difference is controlled by `NE_ENTITLEMENT_SUFFIX` in the Xcode spec. To avoid local code-signature collisions when switching between Apple Development and Developer ID on the same Mac, the developer and distribution modes use different bundle IDs.
 The build helpers are:
 
-- [build_tproxy_app_with_signing.sh](/Users/glendc/code/github.com/plabayo/rama/ffi/apple/examples/transparent_proxy/scripts/build_tproxy_app_with_signing.sh) for developer mode
-- [build_tproxy_app_with_developer_id_signing.sh](/Users/glendc/code/github.com/plabayo/rama/ffi/apple/examples/transparent_proxy/scripts/build_tproxy_app_with_developer_id_signing.sh) for the raw Developer ID signed build
-- [notarize_tproxy_app_with_developer_id_signing.sh](/Users/glendc/code/github.com/plabayo/rama/ffi/apple/examples/transparent_proxy/scripts/notarize_tproxy_app_with_developer_id_signing.sh) for the full Developer ID distribution flow
+- [build_tproxy_app_with_signing.sh](./scripts/build_tproxy_app_with_signing.sh) for developer mode
+- [build_tproxy_app_with_developer_id_signing.sh](./scripts/build_tproxy_app_with_developer_id_signing.sh) for the raw Developer ID signed build
+- [notarize_tproxy_app_with_developer_id_signing.sh](./scripts/notarize_tproxy_app_with_developer_id_signing.sh) for the full Developer ID distribution flow
 
 Both modes use the real system-extension product type. Developer mode uses the plain `app-proxy-provider` entitlement payload, while distribution mode switches the same entitlement template to `app-proxy-provider-systemextension`.
 

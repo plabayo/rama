@@ -161,6 +161,7 @@ pub fn remove_payload_metadata_headers(headers: &mut HeaderMap) {
     for header in [
         &header::CONTENT_ENCODING,
         &header::TRANSFER_ENCODING,
+        &header::ACCEPT_RANGES,
         &header::CONTENT_LENGTH,
     ] {
         while headers.remove(header).is_some() {

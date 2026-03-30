@@ -3,6 +3,7 @@ use super::CompressionLevel;
 use super::body::BodyInner;
 use super::predicate::{DefaultPredicate, Predicate, PreferredEncoding};
 use crate::headers::encoding::{AcceptEncoding, Encoding, parse_accept_encoding_headers};
+use crate::layer::remove_header::remove_payload_metadata_headers;
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
 use rama_core::Service;
@@ -243,8 +244,7 @@ where
             }
         };
 
-        parts.headers.remove(header::ACCEPT_RANGES);
-        parts.headers.remove(header::CONTENT_LENGTH);
+        remove_payload_metadata_headers(&mut parts.headers);
 
         parts.headers.insert(
             header::CONTENT_ENCODING,
