@@ -595,6 +595,7 @@ where
     T::decode(body).map_err(|err| OTelSdkError::InternalFailure(err.to_string()))
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn encode_body<T>(
     message: T,
     compression: Option<CompressionEncoding>,
