@@ -1215,9 +1215,13 @@ impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
     type Error = BoxError;
 
     fn try_from(value: ClientHello) -> Result<Self, Self::Error> {
+        let legacy_protocol_version = value.protocol_version();
+        let has_supported_versions_extension = value.supported_versions().is_some();
         let tls13_facts = Tls13ClientHelloFacts::from_client_hello(&value);
 
         debug!(
+            ?legacy_protocol_version,
+            has_supported_versions_extension,
             tls13_supported = tls13_facts.supported,
             tls13_cipher_suites_present = tls13_facts.cipher_suites_present,
             tls13_capable_signature_algorithms_present =
@@ -1227,6 +1231,22 @@ impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
 
         let client_config = rama_net::tls::client::ClientConfig::from(value);
         let mut builder = Self::try_from(&client_config)?;
+
+        if !has_supported_versions_extension {
+            let max_ssl_version =
+                legacy_protocol_version.rama_try_into().map_err(|v| {
+                    BoxError::from(
+                        "build boring ssl connector: cast max proto version from legacy ClientHello version",
+                    )
+                    .context_field("protocol_version", v)
+                })?;
+            debug!(
+                ?legacy_protocol_version,
+                ?max_ssl_version,
+                "TlsConnectorData: builder: mirrored ingress ClientHello has no supported_versions extension; cap egress connector to legacy ClientHello protocol version"
+            );
+            builder.max_ssl_version = Some(max_ssl_version);
+        }
 
         // This is a targeted safeguard for mirrored ingress hellos that advertise TLS 1.3
         // but are not viable as TLS 1.3 on egress. We clamp to TLS 1.2 rather than sending
