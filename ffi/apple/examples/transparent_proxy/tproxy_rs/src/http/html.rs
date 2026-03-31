@@ -2,6 +2,7 @@ use rama::{
     Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef as _,
     http::{
         Body, Method, Request, Response,
         body::util::BodyExt,
@@ -12,10 +13,12 @@ use rama::{
         },
         mime,
     },
-    net::http::RequestContext,
+    matcher::service::{ServiceMatch, ServiceMatcher},
+    net::{address::Domain, http::RequestContext, proxy::ProxyTarget},
     telemetry::tracing,
     utils::str::{contains_ignore_ascii_case, submatch_ignore_ascii_case},
 };
+use std::{borrow::Cow, convert::Infallible};
 
 use crate::policy::DomainExclusionList;
 
@@ -55,6 +58,13 @@ impl HtmlBadgeLayer {
     pub fn with_excluded_domains(mut self, excluded_domains: DomainExclusionList) -> Self {
         self.excluded_domains = excluded_domains;
         self
+    }
+
+    pub fn decompression_matcher(&self) -> HtmlBadgeDecompressionMatcher {
+        HtmlBadgeDecompressionMatcher {
+            enabled: self.enabled,
+            excluded_domains: self.excluded_domains.clone(),
+        }
     }
 }
 
@@ -175,11 +185,24 @@ where
 }
 
 fn should_rewrite<B>(response: &Response<B>) -> bool {
-    let headers = response.headers();
-
-    if headers.contains_key(CONTENT_ENCODING) {
+    if response.headers().contains_key(CONTENT_ENCODING) {
         return false;
     }
+
+    is_html_rewrite_candidate(response)
+}
+
+fn is_request_eligible_for_html_rewrite(
+    enabled: bool,
+    method: &Method,
+    domain: Option<&Domain>,
+    excluded_domains: &DomainExclusionList,
+) -> bool {
+    enabled && *method != Method::HEAD && !domain.is_some_and(|d| excluded_domains.is_excluded(d))
+}
+
+fn is_html_rewrite_candidate<B>(response: &Response<B>) -> bool {
+    let headers = response.headers();
 
     let Some(content_type) = headers.typed_get::<ContentType>() else {
         return false;
@@ -197,6 +220,63 @@ fn should_rewrite<B>(response: &Response<B>) -> bool {
     };
 
     content_length.0 <= MAX_CONTENT_LENGTH_BYTES as u64
+}
+
+#[derive(Debug, Clone)]
+pub struct HtmlBadgeDecompressionMatcher {
+    enabled: bool,
+    excluded_domains: DomainExclusionList,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct HtmlBadgeResponseDecompressionMatcher;
+
+impl<ReqBody> ServiceMatcher<Request<ReqBody>> for HtmlBadgeDecompressionMatcher
+where
+    ReqBody: Send + 'static,
+{
+    type Service = HtmlBadgeResponseDecompressionMatcher;
+    type Error = Infallible;
+    type ModifiedInput = Request<ReqBody>;
+
+    async fn match_service(
+        &self,
+        req: Request<ReqBody>,
+    ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error> {
+        let req_domain = try_get_domain_for_req(&req);
+
+        let enabled = is_request_eligible_for_html_rewrite(
+            self.enabled,
+            req.method(),
+            req_domain.as_deref(),
+            &self.excluded_domains,
+        );
+
+        Ok(ServiceMatch {
+            input: req,
+            service: enabled.then_some(HtmlBadgeResponseDecompressionMatcher),
+        })
+    }
+}
+
+impl<ResBody> ServiceMatcher<Response<ResBody>> for HtmlBadgeResponseDecompressionMatcher
+where
+    ResBody: Send + 'static,
+{
+    type Service = ();
+    type Error = Infallible;
+    type ModifiedInput = Response<ResBody>;
+
+    async fn match_service(
+        &self,
+        input: Response<ResBody>,
+    ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error> {
+        Ok(ServiceMatch {
+            service: is_html_rewrite_candidate(&input).then_some(()),
+            input,
+        })
+    }
 }
 
 fn inject_badge(html: &[u8], badge_html: &[u8]) -> Option<Vec<u8>> {
@@ -231,6 +311,20 @@ fn badge_html(label: &str) -> Vec<u8> {
         r#"<div id="rama-proxy-badge" style="position:fixed;top:16px;right:16px;z-index:2147483647;padding:10px 14px;background:rgba(17,17,17,0.92);color:#fff;font:700 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;border-radius:999px;box-shadow:0 4px 18px rgba(0,0,0,0.25);pointer-events:none">{label}</div>"#,
     )
     .into_bytes()
+}
+
+fn try_get_domain_for_req<Body>(req: &Request<Body>) -> Option<Cow<'_, Domain>> {
+    if let Some(ProxyTarget(target)) = req.extensions().get()
+        && let Some(domain) = target.host.as_domain()
+    {
+        Some(Cow::Borrowed(domain))
+    } else {
+        RequestContext::try_from(req)
+            .ok()
+            .map(|ctx| ctx.host_with_port())
+            .and_then(|v| v.host.into_domain())
+            .map(Cow::Owned)
+    }
 }
 
 #[cfg(test)]

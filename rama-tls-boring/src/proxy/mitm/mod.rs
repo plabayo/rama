@@ -239,7 +239,7 @@ impl TlsMitmRelayError {
             },
             proxy_target: None,
             sni: None,
-            inner: BoxError::from(err).context("tls mitm relay: ingress tls accept ssl error"),
+            inner: BoxError::from(err).context("tls mitm relay: tls accept ssl error"),
         }
     }
 

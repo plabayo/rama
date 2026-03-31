@@ -153,14 +153,20 @@ where
 {
     let excluded_domains =
         crate::policy::DomainExclusionList::new(demo_config.exclude_domains.iter());
+    let html_badge_layer = crate::http::html::HtmlBadgeLayer::new()
+        .with_enabled(demo_config.html_badge_enabled)
+        .with_badge_label(&demo_config.html_badge_label)
+        .with_excluded_domains(excluded_domains);
+
+    let decompressor_matcher = html_badge_layer.decompression_matcher();
+
     (
         MapResponseBodyLayer::new_boxed_streaming_body(),
         StreamCompressionLayer::new().with_compress_predicate(MirrorDecompressed::new()),
-        crate::http::html::HtmlBadgeLayer::new()
-            .with_enabled(demo_config.html_badge_enabled)
-            .with_badge_label(&demo_config.html_badge_label)
-            .with_excluded_domains(excluded_domains),
-        DecompressionLayer::new().with_insert_accept_encoding_header(false),
+        html_badge_layer,
+        DecompressionLayer::new()
+            .with_insert_accept_encoding_header(false)
+            .with_matcher(decompressor_matcher),
         SetResponseHeaderLayer::if_not_present_typed(
             crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
         ),

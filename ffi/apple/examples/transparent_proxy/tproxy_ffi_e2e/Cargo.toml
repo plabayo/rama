@@ -5,6 +5,9 @@ edition = "2024"
 publish = false
 build = "build.rs"
 
+[package.metadata.cargo-machete]
+ignored = ["bindgen"]
+
 [workspace]
 
 [dependencies]
@@ -77,6 +80,3 @@ fallible_impl_from = "warn"
 
 [lints.rustdoc]
 broken_intra_doc_links = "deny"
-
-[package.metadata.cargo-machete]
-ignored = ["bindgen"]
