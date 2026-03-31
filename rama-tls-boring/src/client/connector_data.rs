@@ -20,7 +20,7 @@ use rama_core::{
 };
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
-    client::ClientHello,
+    ProtocolVersion, client::ClientHello,
 };
 use rama_net::tls::{
     DataEncoding,
@@ -1125,7 +1125,7 @@ impl TlsConnectorDataBuilder {
             .map(|auth| auth.clone().try_into())
             .transpose()?;
 
-        Ok(Self {
+        let builder = Self {
             base_builders: vec![],
             keylog_intent: keylog_intent.cloned(),
             extension_order,
@@ -1148,7 +1148,50 @@ impl TlsConnectorDataBuilder {
             record_size_limit,
             encrypted_client_hello,
             server_name,
-        })
+        };
+
+        Ok(builder)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Tls13ClientHelloFacts {
+    supported: bool,
+    cipher_suites_present: bool,
+    capable_signature_algorithms_present: bool,
+}
+
+impl Tls13ClientHelloFacts {
+    fn from_client_hello(client_hello: &ClientHello) -> Self {
+        Self {
+            supported: client_hello.supported_versions().is_some_and(|versions| {
+                versions
+                    .iter()
+                    .filter(|v| !v.is_grease())
+                    .any(|v| *v == ProtocolVersion::TLSv1_3)
+            }),
+            cipher_suites_present: client_hello
+                .cipher_suites()
+                .iter()
+                .filter(|suite| !suite.is_grease())
+                .any(|suite| suite.is_tls13()),
+            capable_signature_algorithms_present: client_hello
+                .ext_signature_algorithms()
+                .is_some_and(|schemes| {
+                    schemes
+                        .iter()
+                        .filter(|scheme| !scheme.is_grease())
+                        .any(|scheme| scheme.is_tls13_capable())
+                }),
+        }
+    }
+
+    fn requires_tls12_clamp(self) -> bool {
+        // TLS 1.3 cipher suites are required for a coherent TLS 1.3 offer, and
+        // TLS 1.3-capable signature algorithms are also required in practice for
+        // successful negotiation with modern servers.
+        self.supported
+            && (!self.cipher_suites_present || !self.capable_signature_algorithms_present)
     }
 }
 
@@ -1172,8 +1215,33 @@ impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
     type Error = BoxError;
 
     fn try_from(value: ClientHello) -> Result<Self, Self::Error> {
+        let tls13_facts = Tls13ClientHelloFacts::from_client_hello(&value);
+
+        debug!(
+            tls13_supported = tls13_facts.supported,
+            tls13_cipher_suites_present = tls13_facts.cipher_suites_present,
+            tls13_capable_signature_algorithms_present =
+                tls13_facts.capable_signature_algorithms_present,
+            "TlsConnectorData: builder: construct from mirrored ingress ClientHello"
+        );
+
         let client_config = rama_net::tls::client::ClientConfig::from(value);
-        Self::try_from(&client_config)
+        let mut builder = Self::try_from(&client_config)?;
+
+        // This is a targeted safeguard for mirrored ingress hellos that advertise TLS 1.3
+        // but are not viable as TLS 1.3 on egress. We clamp to TLS 1.2 rather than sending
+        // an internally inconsistent ClientHello that servers may reject immediately.
+        if tls13_facts.requires_tls12_clamp() {
+            debug!(
+                tls13_cipher_suites_present = tls13_facts.cipher_suites_present,
+                tls13_capable_signature_algorithms_present =
+                    tls13_facts.capable_signature_algorithms_present,
+                "TlsConnectorData: builder: mirrored ClientHello advertises TLS 1.3 but is not viable as TLS 1.3; clamp egress connector to TLS 1.2"
+            );
+            builder.max_ssl_version = Some(SslVersion::TLS1_2);
+        }
+
+        Ok(builder)
     }
 }
 

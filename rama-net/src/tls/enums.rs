@@ -481,6 +481,27 @@ enum_builder! {
 
 impl_u16_is_grease!(CipherSuite);
 
+impl CipherSuite {
+    /// Returns `true` if this cipher suite is one of the TLS 1.3 cipher suites.
+    ///
+    /// These values are the cipher suites defined by TLS 1.3 itself in
+    /// RFC 8446 Appendix B.4 and the related IANA TLS Cipher Suites registry.
+    ///
+    /// Reference:
+    /// <https://www.rfc-editor.org/rfc/rfc8446#appendix-B.4>
+    #[must_use]
+    pub const fn is_tls13(self) -> bool {
+        matches!(
+            self,
+            Self::TLS13_AES_128_GCM_SHA256
+                | Self::TLS13_AES_256_GCM_SHA384
+                | Self::TLS13_CHACHA20_POLY1305_SHA256
+                | Self::TLS13_AES_128_CCM_SHA256
+                | Self::TLS13_AES_128_CCM_8_SHA256
+        )
+    }
+}
+
 enum_builder! {
     /// The `SignatureScheme` TLS protocol enum.  Values in this enum are taken
     /// from the various RFCs covering TLS, and are listed by IANA.
@@ -533,6 +554,44 @@ enum_builder! {
 }
 
 impl_u16_is_grease!(SignatureScheme);
+
+impl SignatureScheme {
+    /// Returns `true` if this signature scheme is usable in a TLS 1.3 ClientHello.
+    ///
+    /// This is intentionally a capability check, not a statement that the scheme is
+    /// exclusive to TLS 1.3. It is meant for validating whether a ClientHello that
+    /// advertises TLS 1.3 has at least one signature algorithm that can participate
+    /// in a TLS 1.3 handshake.
+    ///
+    /// The main references are RFC 8446 section 4.2.3 and the SignatureScheme registry.
+    /// The `SM2SIG_SM3` entry is included because it is also defined for TLS 1.3-style
+    /// use by RFC 8998.
+    ///
+    /// References:
+    /// <https://www.rfc-editor.org/rfc/rfc8446#section-4.2.3>
+    /// <https://www.rfc-editor.org/rfc/rfc8998>
+    #[must_use]
+    pub const fn is_tls13_capable(self) -> bool {
+        matches!(
+            self,
+            Self::RSA_PSS_SHA256
+                | Self::RSA_PSS_SHA384
+                | Self::RSA_PSS_SHA512
+                | Self::RSA_PSS_PSS_SHA256
+                | Self::RSA_PSS_PSS_SHA384
+                | Self::RSA_PSS_PSS_SHA512
+                | Self::ED25519
+                | Self::ED448
+                | Self::ECDSA_NISTP256_SHA256
+                | Self::ECDSA_NISTP384_SHA384
+                | Self::ECDSA_NISTP521_SHA512
+                | Self::ECDSA_BRAINPOOLP256R1TLS13_SHA256
+                | Self::ECDSA_BRAINPOOLP384R1TLS13_SHA384
+                | Self::ECDSA_BRAINPOOLP512R1TLS13_SHA512
+                | Self::SM2SIG_SM3
+        )
+    }
+}
 
 enum_builder! {
     /// The `ExtensionId` enum.  Values in this enum are taken
