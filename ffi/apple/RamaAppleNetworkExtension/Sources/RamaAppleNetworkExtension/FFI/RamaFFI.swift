@@ -26,6 +26,12 @@ struct RamaTransparentProxyConfigBridge {
     var rules: [RamaTransparentProxyRuleBridge]
 }
 
+enum RamaTransparentProxyFlowActionBridge: UInt32 {
+    case intercept = 1
+    case passthrough = 2
+    case blocked = 3
+}
+
 final class TcpSessionCallbackBox {
     let onServerBytes: (Data) -> Void
     let onServerClosed: () -> Void
@@ -263,18 +269,20 @@ final class RamaTransparentProxyEngineHandle {
         )
     }
 
-    static func shouldIntercept(meta: RamaTransparentProxyFlowMetaBridge) -> Bool {
+    static func flowAction(meta: RamaTransparentProxyFlowMetaBridge) -> RamaTransparentProxyFlowActionBridge {
         RamaTransparentProxyEngineHandle.log(
             level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
             message:
-                "shouldIntercept call protocol=\(meta.protocolRaw) remote=\(meta.remoteHost ?? "<nil>"):\(meta.remotePort) local=\(meta.localHost ?? "<nil>"):\(meta.localPort)"
+                "flowAction call protocol=\(meta.protocolRaw) remote=\(meta.remoteHost ?? "<nil>"):\(meta.remotePort) local=\(meta.localHost ?? "<nil>"):\(meta.localPort)"
         )
-        let result = withFlowMeta(meta) { metaPtr in
-            rama_transparent_proxy_should_intercept_flow(metaPtr)
+        let resultRaw = withFlowMeta(meta) { metaPtr in
+            rama_transparent_proxy_flow_action(metaPtr).rawValue
         }
+        let result = RamaTransparentProxyFlowActionBridge(rawValue: resultRaw)
+            ?? .passthrough
         RamaTransparentProxyEngineHandle.log(
             level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-            message: "shouldIntercept result=\(result)"
+            message: "flowAction result=\(result)"
         )
         return result
     }

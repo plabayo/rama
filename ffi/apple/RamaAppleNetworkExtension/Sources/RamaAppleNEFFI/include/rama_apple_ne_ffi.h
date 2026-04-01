@@ -59,6 +59,16 @@ typedef enum {
     RAMA_FLOW_PROTOCOL_UDP = 2,
 } RamaTransparentProxyFlowProtocol;
 
+/// Flow policy action returned by Rust transparent-proxy policy code.
+typedef enum {
+    /// Intercept the flow and route it through the Rust engine.
+    RAMA_FLOW_ACTION_INTERCEPT = 1,
+    /// Leave the flow untouched and let the system handle it normally.
+    RAMA_FLOW_ACTION_PASSTHROUGH = 2,
+    /// Explicitly reject the flow.
+    RAMA_FLOW_ACTION_BLOCKED = 3,
+} RamaTransparentProxyFlowAction;
+
 /// Protocol filter used by network interception rules.
 typedef enum {
     /// Match any protocol.
@@ -246,10 +256,10 @@ void rama_transparent_proxy_config_free(
     RamaTransparentProxyConfig* config
 );
 
-/// Ask Rust whether a flow should be intercepted.
+/// Ask Rust what to do with a flow.
 ///
-/// Returns false if `meta` is NULL.
-bool rama_transparent_proxy_should_intercept_flow(
+/// Returns `RAMA_FLOW_ACTION_PASSTHROUGH` if `meta` is NULL.
+RamaTransparentProxyFlowAction rama_transparent_proxy_flow_action(
     const RamaTransparentProxyFlowMeta* meta
 );
 

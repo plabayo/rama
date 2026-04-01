@@ -2,8 +2,8 @@
 
 use rama_net_apple_networkextension::{
     tproxy::{
-        TransparentProxyConfig, TransparentProxyFlowMeta, TransparentProxyNetworkRule,
-        TransparentProxyRuleProtocol,
+        TransparentProxyConfig, TransparentProxyFlowAction, TransparentProxyFlowMeta,
+        TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
     },
     transparent_proxy_ffi,
 };
@@ -20,14 +20,14 @@ fn proxy_config() -> TransparentProxyConfig {
     ])
 }
 
-fn should_intercept_flow(_meta: &TransparentProxyFlowMeta) -> bool {
-    true
+fn flow_action(_meta: &TransparentProxyFlowMeta) -> TransparentProxyFlowAction {
+    TransparentProxyFlowAction::Intercept
 }
 
 transparent_proxy_ffi! {
     init = init,
     config = proxy_config,
-    should_intercept_flow = should_intercept_flow,
+    flow_action = flow_action,
 }
 
 #[test]

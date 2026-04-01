@@ -9,7 +9,10 @@ use rama_utils::str::NonEmptyStr;
 
 use crate::ffi::BytesView;
 use crate::process::AuditToken;
-use crate::tproxy::{self, TransparentProxyFlowProtocol};
+use crate::tproxy::{
+    self, TransparentProxyFlowAction as RustTransparentProxyFlowAction,
+    TransparentProxyFlowProtocol,
+};
 
 #[repr(C)]
 pub struct TransparentFlowEndpoint {
@@ -47,6 +50,24 @@ pub struct TransparentProxyFlowMeta {
     pub source_app_audit_token_bytes_len: usize,
     pub source_app_pid: i32,
     pub source_app_pid_is_set: bool,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransparentProxyFlowAction {
+    Intercept = 1,
+    Passthrough = 2,
+    Blocked = 3,
+}
+
+impl From<RustTransparentProxyFlowAction> for TransparentProxyFlowAction {
+    fn from(value: RustTransparentProxyFlowAction) -> Self {
+        match value {
+            RustTransparentProxyFlowAction::Intercept => Self::Intercept,
+            RustTransparentProxyFlowAction::Passthrough => Self::Passthrough,
+            RustTransparentProxyFlowAction::Blocked => Self::Blocked,
+        }
+    }
 }
 
 impl TransparentProxyFlowMeta {

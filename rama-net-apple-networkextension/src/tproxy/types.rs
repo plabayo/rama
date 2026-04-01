@@ -67,6 +67,49 @@ impl From<u32> for TransparentProxyFlowProtocol {
     }
 }
 
+/// Flow policy action returned by transparent-proxy policy logic.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransparentProxyFlowAction {
+    /// Intercept the flow and route it through the Rust transparent-proxy engine.
+    Intercept = 1,
+    /// Leave the flow alone and let the system handle it normally.
+    Passthrough = 2,
+    /// Explicitly reject the flow.
+    Blocked = 3,
+}
+
+impl TransparentProxyFlowAction {
+    #[inline(always)]
+    pub fn as_u32(self) -> u32 {
+        self as u32
+    }
+}
+
+impl From<u32> for TransparentProxyFlowAction {
+    fn from(value: u32) -> Self {
+        if (Self::Intercept as u32..=Self::Blocked as u32).contains(&value) {
+            // SAFETY: repr(u32) and valid range
+            unsafe { ::std::mem::transmute::<u32, Self>(value) }
+        } else {
+            tracing::debug!(
+                "invalid raw u32 value transmuted as TransparentProxyFlowAction: {value} (defaulting it to Passthrough)"
+            );
+            Self::Passthrough
+        }
+    }
+}
+
+impl From<bool> for TransparentProxyFlowAction {
+    fn from(value: bool) -> Self {
+        if value {
+            Self::Intercept
+        } else {
+            Self::Passthrough
+        }
+    }
+}
+
 /// One network interception rule for transparent proxy settings.
 #[derive(Clone, Debug)]
 pub struct TransparentProxyNetworkRule {

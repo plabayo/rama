@@ -7,8 +7,8 @@ pub use self::{
         TransparentProxyTcpSession, TransparentProxyUdpSession,
     },
     types::{
-        TransparentProxyConfig, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
-        TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+        TransparentProxyConfig, TransparentProxyFlowAction, TransparentProxyFlowMeta,
+        TransparentProxyFlowProtocol, TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
     },
 };
 pub use crate::process::AuditToken;

@@ -4,7 +4,7 @@ macro_rules! transparent_proxy_ffi {
         $crate::__transparent_proxy_ffi_parse! {
             [init: ()]
             [config: ()]
-            [should_intercept_flow: ()]
+            [flow_action: ()]
             [tcp_service: none]
             [udp_service: none]
             [runtime: none]
@@ -20,7 +20,7 @@ macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
         [config: $config:tt]
-        [should_intercept_flow: $should_intercept_flow:tt]
+        [flow_action: $flow_action:tt]
         [tcp_service: $tcp_service:tt]
         [udp_service: $udp_service:tt]
         [runtime: $runtime:tt]
@@ -28,11 +28,11 @@ macro_rules! __transparent_proxy_ffi_parse {
     ) => {
         $crate::__transparent_proxy_ffi_require_init!($init);
         $crate::__transparent_proxy_ffi_require_config!($config);
-        $crate::__transparent_proxy_ffi_require_should_intercept_flow!($should_intercept_flow);
+        $crate::__transparent_proxy_ffi_require_flow_action!($flow_action);
         $crate::__transparent_proxy_ffi_emit! {
             $init,
             $config,
-            $should_intercept_flow,
+            $flow_action,
             $tcp_service,
             $udp_service,
             $runtime,
@@ -42,7 +42,7 @@ macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
         [config: $config:tt]
-        [should_intercept_flow: $should_intercept_flow:tt]
+        [flow_action: $flow_action:tt]
         [tcp_service: $tcp_service:tt]
         [udp_service: $udp_service:tt]
         [runtime: $runtime:tt]
@@ -53,7 +53,7 @@ macro_rules! __transparent_proxy_ffi_parse {
         $crate::__transparent_proxy_ffi_parse! {
             [init: $init]
             [config: $config]
-            [should_intercept_flow: $should_intercept_flow]
+            [flow_action: $flow_action]
             [tcp_service: $tcp_service]
             [udp_service: $udp_service]
             [runtime: $runtime]
@@ -64,7 +64,7 @@ macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
         [config: $config:tt]
-        [should_intercept_flow: $should_intercept_flow:tt]
+        [flow_action: $flow_action:tt]
         [tcp_service: $tcp_service:tt]
         [udp_service: $udp_service:tt]
         [runtime: $runtime:tt]
@@ -74,7 +74,7 @@ macro_rules! __transparent_proxy_ffi_parse {
         $crate::__transparent_proxy_ffi_parse! {
             [init: ($value)]
             [config: $config]
-            [should_intercept_flow: $should_intercept_flow]
+            [flow_action: $flow_action]
             [tcp_service: $tcp_service]
             [udp_service: $udp_service]
             [runtime: $runtime]
@@ -85,7 +85,7 @@ macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
         [config: $config:tt]
-        [should_intercept_flow: $should_intercept_flow:tt]
+        [flow_action: $flow_action:tt]
         [tcp_service: $tcp_service:tt]
         [udp_service: $udp_service:tt]
         [runtime: $runtime:tt]
@@ -95,7 +95,7 @@ macro_rules! __transparent_proxy_ffi_parse {
         $crate::__transparent_proxy_ffi_parse! {
             [init: $init]
             [config: ($value)]
-            [should_intercept_flow: $should_intercept_flow]
+            [flow_action: $flow_action]
             [tcp_service: $tcp_service]
             [udp_service: $udp_service]
             [runtime: $runtime]
@@ -106,17 +106,17 @@ macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
         [config: $config:tt]
-        [should_intercept_flow: $should_intercept_flow:tt]
+        [flow_action: $flow_action:tt]
         [tcp_service: $tcp_service:tt]
         [udp_service: $udp_service:tt]
         [runtime: $runtime:tt]
         [tcp_buffer_size: $tcp_buffer_size:tt]
-        should_intercept_flow = $value:expr $(, $($rest:tt)*)?
+        flow_action = $value:expr $(, $($rest:tt)*)?
     ) => {
         $crate::__transparent_proxy_ffi_parse! {
             [init: $init]
             [config: $config]
-            [should_intercept_flow: ($value)]
+            [flow_action: ($value)]
             [tcp_service: $tcp_service]
             [udp_service: $udp_service]
             [runtime: $runtime]
@@ -127,7 +127,7 @@ macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
         [config: $config:tt]
-        [should_intercept_flow: $should_intercept_flow:tt]
+        [flow_action: $flow_action:tt]
         [tcp_service: $tcp_service:tt]
         [udp_service: $udp_service:tt]
         [runtime: $runtime:tt]
@@ -137,7 +137,7 @@ macro_rules! __transparent_proxy_ffi_parse {
         $crate::__transparent_proxy_ffi_parse! {
             [init: $init]
             [config: $config]
-            [should_intercept_flow: $should_intercept_flow]
+            [flow_action: $flow_action]
             [tcp_service: ($value)]
             [udp_service: $udp_service]
             [runtime: $runtime]
@@ -148,7 +148,7 @@ macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
         [config: $config:tt]
-        [should_intercept_flow: $should_intercept_flow:tt]
+        [flow_action: $flow_action:tt]
         [tcp_service: $tcp_service:tt]
         [udp_service: $udp_service:tt]
         [runtime: $runtime:tt]
@@ -158,7 +158,7 @@ macro_rules! __transparent_proxy_ffi_parse {
         $crate::__transparent_proxy_ffi_parse! {
             [init: $init]
             [config: $config]
-            [should_intercept_flow: $should_intercept_flow]
+            [flow_action: $flow_action]
             [tcp_service: $tcp_service]
             [udp_service: ($value)]
             [runtime: $runtime]
@@ -169,7 +169,7 @@ macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
         [config: $config:tt]
-        [should_intercept_flow: $should_intercept_flow:tt]
+        [flow_action: $flow_action:tt]
         [tcp_service: $tcp_service:tt]
         [udp_service: $udp_service:tt]
         [runtime: $runtime:tt]
@@ -179,7 +179,7 @@ macro_rules! __transparent_proxy_ffi_parse {
         $crate::__transparent_proxy_ffi_parse! {
             [init: $init]
             [config: $config]
-            [should_intercept_flow: $should_intercept_flow]
+            [flow_action: $flow_action]
             [tcp_service: $tcp_service]
             [udp_service: $udp_service]
             [runtime: ($value)]
@@ -190,7 +190,7 @@ macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
         [config: $config:tt]
-        [should_intercept_flow: $should_intercept_flow:tt]
+        [flow_action: $flow_action:tt]
         [tcp_service: $tcp_service:tt]
         [udp_service: $udp_service:tt]
         [runtime: $runtime:tt]
@@ -200,7 +200,7 @@ macro_rules! __transparent_proxy_ffi_parse {
         $crate::__transparent_proxy_ffi_parse! {
             [init: $init]
             [config: $config]
-            [should_intercept_flow: $should_intercept_flow]
+            [flow_action: $flow_action]
             [tcp_service: $tcp_service]
             [udp_service: $udp_service]
             [runtime: $runtime]
@@ -230,11 +230,9 @@ macro_rules! __transparent_proxy_ffi_require_config {
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __transparent_proxy_ffi_require_should_intercept_flow {
+macro_rules! __transparent_proxy_ffi_require_flow_action {
     (()) => {
-        compile_error!(
-            "transparent_proxy_ffi!: missing required `should_intercept_flow = ...` entry"
-        );
+        compile_error!("transparent_proxy_ffi!: missing required `flow_action = ...` entry");
     };
     (($value:expr)) => {};
 }
@@ -281,7 +279,7 @@ macro_rules! __transparent_proxy_ffi_emit {
     (
         ($init:expr),
         ($config:expr),
-        ($should_intercept_flow:expr),
+        ($flow_action:expr),
         $tcp_service:tt,
         $udp_service:tt,
         $runtime:tt,
@@ -292,6 +290,7 @@ macro_rules! __transparent_proxy_ffi_emit {
         pub type RamaTransparentProxyUdpSession = $crate::tproxy::TransparentProxyUdpSession;
 
         pub type RamaTransparentProxyFlowMeta = $crate::ffi::tproxy::TransparentProxyFlowMeta;
+        pub type RamaTransparentProxyFlowAction = $crate::ffi::tproxy::TransparentProxyFlowAction;
         pub type RamaTransparentProxyConfig = $crate::ffi::tproxy::TransparentProxyConfig;
         pub type RamaTransparentProxyInitConfig = $crate::ffi::tproxy::TransparentProxyInitConfig;
         pub type RamaTransparentProxyTcpSessionCallbacks =
@@ -346,15 +345,18 @@ macro_rules! __transparent_proxy_ffi_emit {
         /// # Safety
         ///
         /// `meta` must be either null or a valid pointer to `RamaTransparentProxyFlowMeta`.
-        pub unsafe extern "C" fn rama_transparent_proxy_should_intercept_flow(
+        pub unsafe extern "C" fn rama_transparent_proxy_flow_action(
             meta: *const RamaTransparentProxyFlowMeta,
-        ) -> bool {
+        ) -> RamaTransparentProxyFlowAction {
             if meta.is_null() {
-                return false;
+                return RamaTransparentProxyFlowAction::Passthrough;
             }
 
             let meta = unsafe { (*meta).as_owned_rust_type() };
-            ($should_intercept_flow)(&meta)
+            ::std::convert::Into::<$crate::tproxy::TransparentProxyFlowAction>::into(
+                ($flow_action)(&meta),
+            )
+            .into()
         }
 
         #[unsafe(no_mangle)]

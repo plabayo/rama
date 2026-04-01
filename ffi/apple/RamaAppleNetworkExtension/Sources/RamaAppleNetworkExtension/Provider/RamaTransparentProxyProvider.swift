@@ -136,6 +136,18 @@ private let expectedDisconnectPosixCodes: Set<Int32> = [
     EPIPE,
 ]
 
+private func blockedFlowError() -> NSError {
+    NSError(
+        domain: "NEAppProxyFlowErrorDomain",
+        code: AppProxyFlowErrorCode.refused.rawValue,
+        userInfo: [
+            NSLocalizedDescriptionKey: "Flow blocked by transparent proxy policy",
+            NSLocalizedFailureReasonErrorKey:
+                "The transparent proxy policy rejected this flow.",
+        ]
+    )
+}
+
 /// Classify callback errors from `NEAppProxyFlow` read/write operations into expected
 /// disconnects versus actionable failures.
 ///
@@ -483,12 +495,18 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
         if let tcp = flow as? NEAppProxyTCPFlow {
             let meta = Self.tcpMeta(flow: tcp)
-            if !RamaTransparentProxyEngineHandle.shouldIntercept(meta: meta) {
-                logDebug("handleNewFlow tcp bypassed by rust callback")
+            switch RamaTransparentProxyEngineHandle.flowAction(meta: meta) {
+            case .intercept:
+                handleTcpFlow(tcp, meta: meta)
+                return true
+            case .passthrough:
+                logDebug("handleNewFlow tcp bypassed by rust flow policy")
                 return false
+            case .blocked:
+                logInfo("handleNewFlow tcp blocked by rust flow policy")
+                blockFlow(tcp)
+                return true
             }
-            handleTcpFlow(tcp, meta: meta)
-            return true
         }
 
         if let udp = flow as? NEAppProxyUDPFlow {
@@ -497,12 +515,18 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 remoteEndpoint: nil,
                 localEndpoint: Self.udpLocalEndpoint(flow: udp)
             )
-            if !RamaTransparentProxyEngineHandle.shouldIntercept(meta: meta) {
-                logDebug("handleNewFlow udp bypassed by rust callback")
+            switch RamaTransparentProxyEngineHandle.flowAction(meta: meta) {
+            case .intercept:
+                handleUdpFlow(udp)
+                return true
+            case .passthrough:
+                logDebug("handleNewFlow udp bypassed by rust flow policy")
                 return false
+            case .blocked:
+                logInfo("handleNewFlow udp blocked by rust flow policy")
+                blockFlow(udp)
+                return true
             }
-            handleUdpFlow(udp)
-            return true
         }
 
         logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
@@ -633,10 +657,19 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     remoteEndpoint: endpoint,
                     localEndpoint: Self.udpLocalEndpoint(flow: flow)
                 )
-                if !RamaTransparentProxyEngineHandle.shouldIntercept(meta: meta) {
-                    self.logTrace("udp flow bypassed by rust callback")
+                switch RamaTransparentProxyEngineHandle.flowAction(meta: meta) {
+                case .intercept:
+                    break
+                case .passthrough:
+                    self.logDebug(
+                        "udp flow policy switched to passthrough after interception already started; closing flow"
+                    )
                     flow.closeReadWithError(nil)
                     flow.closeWriteWithError(nil)
+                    return
+                case .blocked:
+                    self.logInfo("udp flow blocked by rust flow policy")
+                    self.blockFlow(flow)
                     return
                 }
 
@@ -679,6 +712,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
             self.udpReadLoop(flow: flow, writer: writer, session: activeSession, flowId: flowId)
         }
+    }
+
+    private func blockFlow(_ flow: NEAppProxyFlow) {
+        let error = blockedFlowError()
+        flow.closeReadWithError(error)
+        flow.closeWriteWithError(error)
     }
 
     private static func makeNetworkRule(_ rule: RamaTransparentProxyRuleBridge)

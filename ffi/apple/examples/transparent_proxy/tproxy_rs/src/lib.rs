@@ -6,7 +6,8 @@ use rama::{
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
-                TransparentProxyConfig, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
+                TransparentProxyConfig, TransparentProxyFlowAction, TransparentProxyFlowMeta,
+                TransparentProxyFlowProtocol,
                 TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
             },
         },
@@ -50,38 +51,52 @@ fn proxy_config() -> TransparentProxyConfig {
     ])
 }
 
-fn should_intercept_flow(meta: &TransparentProxyFlowMeta) -> bool {
+fn flow_action(meta: &TransparentProxyFlowMeta) -> TransparentProxyFlowAction {
     tracing::trace!(
         protocol = ?meta.protocol,
         remote = ?meta.remote_endpoint,
         local = ?meta.local_endpoint,
-        "flow intercept decision: evaluating (rust callback entered)"
+        "flow policy action: evaluating (rust callback entered)"
     );
 
     if meta.protocol != TransparentProxyFlowProtocol::Tcp {
-        return false;
+        return TransparentProxyFlowAction::Passthrough;
     }
 
-    should_intercept_remote_endpoint(meta.remote_endpoint.as_ref())
+    flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref())
 }
 
 #[inline(always)]
-fn should_intercept_remote_endpoint(remote_endpoint: Option<&HostWithPort>) -> bool {
+fn flow_action_for_remote_endpoint(
+    remote_endpoint: Option<&HostWithPort>
+) -> TransparentProxyFlowAction {
     let Some(target) = remote_endpoint else {
-        return false;
+        return TransparentProxyFlowAction::Passthrough;
     };
 
     match &target.host {
-        Host::Name(_) => true,
-        Host::Address(IpAddr::V4(addr)) => !addr.is_loopback() && !addr.is_private(),
-        Host::Address(IpAddr::V6(addr)) => !addr.is_loopback() && !addr.is_unique_local(),
+        Host::Name(_) => TransparentProxyFlowAction::Intercept,
+        Host::Address(IpAddr::V4(addr)) => {
+            if !addr.is_loopback() && !addr.is_private() {
+                TransparentProxyFlowAction::Intercept
+            } else {
+                TransparentProxyFlowAction::Passthrough
+            }
+        }
+        Host::Address(IpAddr::V6(addr)) => {
+            if !addr.is_loopback() && !addr.is_unique_local() {
+                TransparentProxyFlowAction::Intercept
+            } else {
+                TransparentProxyFlowAction::Passthrough
+            }
+        }
     }
 }
 
 apple_ne::transparent_proxy_ffi! {
     init = init,
     config = proxy_config,
-    should_intercept_flow = should_intercept_flow,
+    flow_action = flow_action,
     tcp_service = self::tcp::try_new_service,
     udp_service = self::udp::new_service,
 }
