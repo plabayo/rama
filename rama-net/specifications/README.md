@@ -41,3 +41,10 @@ and as such it can also reflect upon the wider selection of specifications inclu
 
 * [rfc5705.txt](./tls/rfc5705.txt)  
   Defines keying material exporters for TLS.
+
+#### Misc
+
+* [rfc863.txt](./misc/rfc863.txt)  
+  This RFC specifies a standard for the ARPA Internet community.  Hosts on
+  the ARPA Internet that choose to implement a Discard Protocol are
+  expected to adopt and implement this standard.

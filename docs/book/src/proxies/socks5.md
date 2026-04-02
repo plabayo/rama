@@ -50,8 +50,8 @@ It can even go further and actively mold the packets and therefore be more of
 Rama's implementation of the SOCKS5 Protocols [RFC 1928] and [RFC 1929]
 can be found here: <https://ramaproxy.org/docs/rama/proxy/socks5/proto/index.html>
 
-[RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
-[RFC 1929]: https://datatracker.ietf.org/doc/html/1929
+[RFC 1928]: https://github.com/plabayo/rama/blob/main/rama-socks5/specifications/rfc1928.txt
+[RFC 1929]: https://github.com/plabayo/rama/blob/main/rama-socks5/specifications/rfc1929.txt
 
 ## Transport Proxies
 

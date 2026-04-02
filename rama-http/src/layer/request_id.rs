@@ -72,7 +72,7 @@ use rama_utils::str::smol_str::ToSmolStr as _;
 use rand::RngExt as _;
 use uuid::Uuid;
 
-/// cfr: <https://www.rfc-editor.org/rfc/rfc6648>
+/// cfr: <https://github.com/plabayo/rama/blob/main/rama-http/specifications/rfc6648.txt>
 pub(crate) const REQUEST_ID: HeaderName = HeaderName::from_static("request-id");
 
 pub(crate) const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");

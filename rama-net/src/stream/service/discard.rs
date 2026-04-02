@@ -10,7 +10,7 @@ use rama_core::{
 /// This service is often used when accepting TCP or UDP
 /// services on port `9`, as an implementation of [RFC 863].
 ///
-/// [RFC 863]: https://datatracker.ietf.org/doc/html/rfc863
+/// [RFC 863]: https://github.com/plabayo/rama/blob/main/rama-net/specifications/misc/rfc863.txt
 ///
 /// ## TCP Based Discard Service
 ///

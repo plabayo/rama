@@ -70,8 +70,7 @@ impl RemoveResponseHeaderLayer {
 
     /// Create a new [`RemoveResponseHeaderLayer`].
     ///
-    /// Removes all hop-by-hop response headers as specified in [RFC 2616](https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1).
-    /// This does not support other hop-by-hop headers defined in [section-14.10](https://datatracker.ietf.org/doc/html/rfc2616#section-14.10).
+    /// Removes all hop-by-hop request headers as specified in [RFC 9110](https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9110.txt#section-7.6.1).
     #[must_use]
     pub fn hop_by_hop() -> Self {
         Self {
@@ -132,8 +131,7 @@ impl<S> RemoveResponseHeader<S> {
 
     /// Create a new [`RemoveResponseHeader`].
     ///
-    /// Removes all hop-by-hop response headers as specified in [RFC 2616](https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1).
-    /// This does not support other hop-by-hop headers defined in [section-14.10](https://datatracker.ietf.org/doc/html/rfc2616#section-14.10).
+    /// Removes all hop-by-hop request headers as specified in [RFC 9110](https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9110.txt#section-7.6.1).
     pub fn hop_by_hop(inner: S) -> Self {
         RemoveResponseHeaderLayer::hop_by_hop().into_layer(inner)
     }

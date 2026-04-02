@@ -1,7 +1,7 @@
 //! Discard [RFC 863] service which discards the incomoing TCP/UDP
 //! bytes and sents no response back.
 //!
-//! [RFC 863]: https://datatracker.ietf.org/doc/html/rfc863
+//! [RFC 863]: https://github.com/plabayo/rama/blob/main/rama-net/specifications/misc/rfc863.txt
 
 use rama::{
     Layer, Service, ServiceInput,

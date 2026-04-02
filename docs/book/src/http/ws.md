@@ -16,7 +16,7 @@
 
 ## Description
 
-> RFC:  The WebSocket Protocol: <https://datatracker.ietf.org/doc/html/rfc6455>
+> RFC:  The WebSocket Protocol: <https://github.com/plabayo/rama/blob/main/rama-ws/specifications/rfc6455.txt>
 
 The WebSocket protocol (`ws://` or `wss://` for TLS) upgrades a standard HTTP connection into a persistent, bidirectional channel. Once established, either side can send arbitrary binary or text messages at any time—without the overhead of HTTP headers or reconnection logic.
 
@@ -85,7 +85,7 @@ Messages can be either text or binary.
 
 ### h2 WebSocket support
 
-> RFC: Bootstrapping WebSockets with HTTP/2: <https://datatracker.ietf.org/doc/rfc8441/>
+> RFC: Bootstrapping WebSockets with HTTP/2: <https://github.com/plabayo/rama/blob/main/rama-ws/specifications/rfc8441.txt>
 
 While traditional WebSockets rely on HTTP/1.1's `Upgrade` and `Connection: upgrade` headers to switch protocols,
 HTTP/2 doesn’t support these connection-wide semantics due to its stream-multiplexing architecture.

@@ -17,11 +17,11 @@ use std::marker::PhantomData;
 ///
 /// The following headers are supported by default:
 ///
-/// - [`GetForwardedHeaderLayer::forwarded`]: The standard [`Forwarded`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239).
-/// - [`GetForwardedHeaderLayer::via`]: The canonical [`Via`] header [`RFC 7230`](https://tools.ietf.org/html/rfc7230#section-5.7.1).
-/// - [`GetForwardedHeaderLayer::x_forwarded_for`]: The canonical [`X-Forwarded-For`][XForwardedFor] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.2).
-/// - [`GetForwardedHeaderLayer::x_forwarded_host`]: The canonical [`X-Forwarded-Host`][XForwardedHost] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.4).
-/// - [`GetForwardedHeaderLayer::x_forwarded_proto`]: The canonical [`X-Forwarded-Proto`][XForwardedProto] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.3).
+/// - [`GetForwardedHeaderLayer::forwarded`]: The standard [`Forwarded`] header [`RFC 7239`](https://github.com/plabayo/rama/blob/main/rama-http-headers/specifications/rfc7239.txt).
+/// - [`GetForwardedHeaderLayer::via`]: The canonical [`Via`] header [`RFC 9110`](https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9110.txt#section-7.6.3).
+/// - [`GetForwardedHeaderLayer::x_forwarded_for`]: The canonical [`X-Forwarded-For`][XForwardedFor] header [`RFC 7239`](https://github.com/plabayo/rama/blob/main/rama-http-headers/specifications/rfc7239.txt#section-5.2).
+/// - [`GetForwardedHeaderLayer::x_forwarded_host`]: The canonical [`X-Forwarded-Host`][XForwardedHost] header [`RFC 7239`](https://github.com/plabayo/rama/blob/main/rama-http-headers/specifications/rfc7239.txt#section-5.4).
+/// - [`GetForwardedHeaderLayer::x_forwarded_proto`]: The canonical [`X-Forwarded-Proto`][XForwardedProto] header [`RFC 7239`](https://github.com/plabayo/rama/blob/main/rama-http-headers/specifications/rfc7239.txt#section-5.3).
 ///
 /// Rama also has the following headers already implemented for you to use:
 ///

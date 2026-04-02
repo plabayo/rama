@@ -1,6 +1,6 @@
 //! Client Http Proxy Connector
 //!
-//! As defined in <https://www.ietf.org/rfc/rfc2068.txt>.
+//! As defined in <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9112.txt>.
 
 use std::fmt::Debug;
 

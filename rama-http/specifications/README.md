@@ -13,6 +13,10 @@ and even rama net crates.
 * [rfc6265.txt](./rfc6265.txt)  
   HTTP State Management Mechanism (Cookies)
 
+* [rfc6648.txt](./rfc6648.txt)  
+  Deprecating the "X-" Prefix
+  and Similar Constructs in Application Protocols
+
 * [rfc7838.txt](./rfc7838.txt)  
   HTTP Alternative Services (ALTSVC / Alt-Svc)
 

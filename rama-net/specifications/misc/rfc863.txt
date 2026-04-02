@@ -1,0 +1,57 @@
+
+
+Network Working Group                                          J. Postel
+Request for Comments: 863                                            ISI
+                                                                May 1983
+
+
+
+                            Discard Protocol
+
+
+
+
+This RFC specifies a standard for the ARPA Internet community.  Hosts on
+the ARPA Internet that choose to implement a Discard Protocol are
+expected to adopt and implement this standard.
+
+A useful debugging and measurement tool is a discard service.  A discard
+service simply throws away any data it receives.
+
+TCP Based Discard Service
+
+   One discard service is defined as a connection based application on
+   TCP.  A server listens for TCP connections on TCP port 9.  Once a
+   connection is established any data received is thrown away.  No
+   response is sent.  This continues until the calling user terminates
+   the connection.
+
+UDP Based Discard Service
+
+   Another discard service is defined as a datagram based application on
+   UDP.  A server listens for UDP datagrams on UDP port 9.  When a
+   datagram is received, it is thrown away.  No response is sent.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Postel                                                          [Page 1]

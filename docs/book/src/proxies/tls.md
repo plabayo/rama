@@ -39,7 +39,7 @@ to also terminate the TLS tunnel.
 ## HTTP Strict Transport Security (HSTS)
 
 HTTP Strict Transport Security (HSTS), defined in
-[RFC 6797](https://www.rfc-editor.org/rfc/rfc6797),
+[RFC 6797](https://github.com/plabayo/rama/blob/main/rama-http-headers/specifications/rfc6797.txt),
 lets a website declare that it must only be accessed over HTTPS.
 A server does this by sending a
 [`Strict-Transport-Security` response header](https://ramaproxy.org/docs/rama/http/headers/struct.StrictTransportSecurity.html)

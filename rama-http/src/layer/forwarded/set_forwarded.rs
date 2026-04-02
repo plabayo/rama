@@ -23,7 +23,7 @@ use std::marker::PhantomData;
 ///
 /// The following headers are supported out of the box with each their own constructor:
 ///
-/// - [`SetForwardedHeaderLayer::forwarded`]: the standard [`Forwarded`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239);
+/// - [`SetForwardedHeaderLayer::forwarded`]: the standard [`Forwarded`] header [`RFC 7239`](https://github.com/plabayo/rama/blob/main/rama-http-headers/specifications/rfc7239.txt);
 /// - [`SetForwardedHeaderLayer::via`]: the canonical [`Via`] header (non-standard);
 /// - [`SetForwardedHeaderLayer::x_forwarded_for`]: the canonical [`X-Forwarded-For`][`XForwardedFor`] header (non-standard);
 /// - [`SetForwardedHeaderLayer::x_forwarded_host`]: the canonical [`X-Forwarded-Host`][`XForwardedHost`] header (non-standard);
