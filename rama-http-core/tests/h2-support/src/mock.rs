@@ -1,6 +1,6 @@
 use crate::SendFrame;
 
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_http_core::h2::SendError;
 use rama_http_core::h2::frame::{self, Frame};
 use rama_http_core::h2::proto::Error;
@@ -28,12 +28,6 @@ pub struct Mock {
 impl ExtensionsRef for Mock {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for Mock {
-    fn extensions_mut(&mut self) -> &mut rama_core::extensions::Extensions {
-        &mut self.extensions
     }
 }
 

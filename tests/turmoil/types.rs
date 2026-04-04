@@ -1,5 +1,5 @@
 use super::stream::TcpStream;
-use rama::{Service, error::BoxError, extensions::ExtensionsMut, telemetry::tracing};
+use rama::{Service, error::BoxError, extensions::ExtensionsRef, telemetry::tracing};
 use rama::{
     error::ErrorContext as _,
     net::{
@@ -47,8 +47,8 @@ where
             addr.into(),
         ));
 
-        let mut conn = TcpStream::new(conn);
-        conn.extensions_mut().insert(info);
+        let conn = TcpStream::new(conn);
+        conn.extensions().insert(info);
 
         Ok(EstablishedClientConnection {
             input,

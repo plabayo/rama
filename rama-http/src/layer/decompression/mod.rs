@@ -150,7 +150,7 @@ mod tests {
         let res = client.serve(req).await.unwrap();
 
         assert_eq!(
-            res.extensions().get::<DecompressedFrom>(),
+            res.extensions().get_ref::<DecompressedFrom>(),
             Some(&DecompressedFrom::Gzip)
         );
 
@@ -277,7 +277,7 @@ mod tests {
             .unwrap();
         let res = client.serve(req).await.unwrap();
 
-        assert!(res.extensions().get::<DecompressedFrom>().is_none());
+        assert!(res.extensions().get_ref::<DecompressedFrom>().is_none());
         assert_eq!(res.headers().get(header::CONTENT_ENCODING).unwrap(), "gzip");
 
         let compressed = res.into_body().collect().await.unwrap().to_bytes();

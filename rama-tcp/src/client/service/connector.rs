@@ -1,7 +1,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     rt::Executor,
     telemetry::tracing,
 };
@@ -89,7 +89,7 @@ impl Default for TcpConnector {
 
 impl<Input, Dns, ConnectorFactory> Service<Input> for TcpConnector<Dns, ConnectorFactory>
 where
-    Input: TryRefIntoTransportContext + Send + ExtensionsMut + 'static,
+    Input: TryRefIntoTransportContext + Send + ExtensionsRef + 'static,
     Input::Error: Into<BoxError> + Send + Sync + 'static,
     Dns: DnsAddressResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
@@ -107,8 +107,8 @@ where
             .await
             .into_box_error()?;
 
-        if let Some(proxy) = input.extensions().get::<ProxyAddress>() {
-            let (mut conn, addr) = crate::client::tcp_connect(
+        if let Some(proxy) = input.extensions().get_ref::<ProxyAddress>() {
+            let (conn, addr) = crate::client::tcp_connect(
                 input.extensions(),
                 proxy.address.clone(),
                 self.dns.clone(),
@@ -128,14 +128,15 @@ where
                     .ok(),
                 addr.into(),
             ));
-            conn.extensions_mut().insert(socket_info);
+            conn.extensions().insert(socket_info);
 
             return Ok(EstablishedClientConnection { input, conn });
         }
 
-        if let Some(ConnectorTarget(target)) = input.extensions().get::<ConnectorTarget>().cloned()
+        if let Some(ConnectorTarget(target)) =
+            input.extensions().get_ref::<ConnectorTarget>().cloned()
         {
-            let (mut conn, addr) = crate::client::tcp_connect(
+            let (conn, addr) = crate::client::tcp_connect(
                 input.extensions(),
                 target,
                 self.dns.clone(),
@@ -155,7 +156,7 @@ where
                     .ok(),
                 addr.into(),
             ));
-            conn.extensions_mut().insert(socket_info);
+            conn.extensions().insert(socket_info);
 
             return Ok(EstablishedClientConnection { input, conn });
         }
@@ -177,7 +178,7 @@ where
         let authority = transport_ctx
             .host_with_port()
             .context("get host:port from transport ctx")?;
-        let (mut conn, addr) = crate::client::tcp_connect(
+        let (conn, addr) = crate::client::tcp_connect(
             input.extensions(),
             authority,
             self.dns.clone(),
@@ -197,7 +198,7 @@ where
                 .ok(),
             addr.into(),
         ));
-        conn.extensions_mut().insert(socket_info);
+        conn.extensions().insert(socket_info);
 
         Ok(EstablishedClientConnection { input, conn })
     }

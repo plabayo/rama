@@ -17,7 +17,7 @@ fn serve(
 `rama` supports two kinds of states:
 
 1. static state: this state can be a part of the service struct or captured by a closure
-2. dynamic state: these can be injected as [`Extensions`]s using methods such as [`Extensions::insert`] or [`request.extensions_mut().insert`]
+2. dynamic state: these can be injected as [`Extensions`]s using methods such as [`Extensions::insert`] or [`request.extensions().insert`]
 
 Any state that is optional, and especially optional state injected by middleware, can be inserted using extensions.
 It is however important to try as much as possible to then also consume this state in an approach that deals
@@ -33,4 +33,4 @@ It might of course still mean the app returns an error response when it is absen
 
 [`Extensions`]: https://ramaproxy.org/docs/rama/extensions/struct.Extensions.html
 [`Extensions::insert`]: https://ramaproxy.org/docs/rama/extensions/struct.Extensions.html#method.insert
-[`request.extensions_mut().insert`]: https://ramaproxy.org/docs/rama/extensions/trait.ExtensionsMut.html#tymethod.extensions_mut
+[`request.extensions().insert`]: https://ramaproxy.org/docs/rama/extensions/trait.ExtensionsRef.html#tymethod.extensions

@@ -9,7 +9,7 @@ use crate::{Body, Request, Response, StreamingBody};
 use jiff::Timestamp;
 
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Service, bytes::Bytes};
 use tokio::time::Instant;
@@ -165,9 +165,9 @@ where
             let maybe_resp_extensions = self.recorder.record(log_line).await;
 
             let result = match (result, maybe_resp_extensions) {
-                (Ok(mut resp), Some(resp_extensions)) => {
+                (Ok(resp), Some(resp_extensions)) => {
                     tracing::trace!("extend (ok) response with HAR recorder extensions");
-                    resp.extensions_mut().extend(resp_extensions);
+                    resp.extensions().extend(&resp_extensions);
                     Ok(resp)
                 }
                 (result, _) => result,

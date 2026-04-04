@@ -28,7 +28,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     http::{
         HeaderName, HeaderValue,
         client::EasyHttpWebClient,
@@ -132,7 +132,7 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsMut>(
+fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsRef>(
     exec: Executor,
 ) -> Result<impl Service<Ingress, Output = (), Error = Infallible> + Clone, BoxError> {
     let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((

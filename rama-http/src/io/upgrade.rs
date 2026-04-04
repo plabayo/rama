@@ -46,7 +46,6 @@ use tokio::sync::oneshot;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::extensions::Extensions;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::io::rewind::Rewind;
@@ -107,7 +106,7 @@ pub struct Parts<T> {
 pub fn handle_upgrade<T: ExtensionsRef>(
     msg: T,
 ) -> impl Future<Output = Result<Upgraded, BoxError>> + 'static {
-    let on_upgrade = match msg.extensions().get::<OnUpgrade>().cloned() {
+    let on_upgrade = match msg.extensions().get_ref::<OnUpgrade>().cloned() {
         Some(on_upgrade) => {
             trace!("upgrading this: {:?}", on_upgrade);
             if on_upgrade.has_handled_upgrade() {
@@ -151,7 +150,7 @@ impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
     pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
-        T: Io + Unpin + ExtensionsMut,
+        T: Io + Unpin + ExtensionsRef,
     {
         Self {
             extensions: io.extensions().clone(),
@@ -209,12 +208,6 @@ impl dyn UpgradeIo {
 impl ExtensionsRef for Upgraded {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for Upgraded {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

@@ -1,7 +1,7 @@
 use super::DnsResolveMode;
 use crate::{HeaderName, Request};
 use rama_core::error::ErrorContext;
-use rama_core::{Service, error::BoxError, extensions::ExtensionsMut};
+use rama_core::{Service, error::BoxError, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Service to support configuring the DNS resolve mode.
@@ -36,10 +36,10 @@ where
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, request: Request<Body>) -> Result<Self::Output, Self::Error> {
         if let Some(header_value) = request.headers().get(&self.header_name) {
             let dns_resolve_mode: DnsResolveMode = header_value.try_into()?;
-            request.extensions_mut().insert(dns_resolve_mode);
+            request.extensions().insert(dns_resolve_mode);
         }
 
         self.inner.serve(request).await.into_box_error()

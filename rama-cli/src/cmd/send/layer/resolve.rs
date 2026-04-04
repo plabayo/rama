@@ -1,7 +1,7 @@
 use rama::{
     Layer, Service,
     dns::client::resolver::DnsAddresssResolverOverwrite,
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     net::{address::DomainTrie, transport::TryRefIntoTransportContext},
     telemetry::tracing,
 };
@@ -44,13 +44,13 @@ pub(in crate::cmd::send) struct OptDnsOverwriteService<S> {
 
 impl<Input, S> Service<Input> for OptDnsOverwriteService<S>
 where
-    Input: TryRefIntoTransportContext<Error: fmt::Debug> + ExtensionsMut + Send + 'static,
+    Input: TryRefIntoTransportContext<Error: fmt::Debug> + ExtensionsRef + Send + 'static,
     S: Service<Input>,
 {
     type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let Some(ref info) = self.info else {
             return self.inner.serve(input).await;
         };
@@ -75,7 +75,7 @@ where
                 }
                 None => DnsAddresssResolverOverwrite::new(addresses),
             };
-            input.extensions_mut().insert(overwrite);
+            input.extensions().insert(overwrite);
         }
 
         self.inner.serve(input).await

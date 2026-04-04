@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData};
 
 use rama_core::{
     Layer, Service,
-    extensions::{Extensions, ExtensionsMut},
+    extensions::{Extensions, ExtensionsRef},
     telemetry::tracing,
     username::{UsernameLabelParser, parse_username},
 };
@@ -95,26 +95,26 @@ impl<S, P, Input> Service<Input> for UsernameLabelParserService<S, P>
 where
     S: Service<Input>,
     P: UsernameLabelParser,
-    Input: ExtensionsMut,
+    Input: ExtensionsRef,
 {
     type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
-        mut input: Input,
+        input: Input,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        let extensions = input.extensions_mut();
-        match extensions.get() {
+        let extensions = input.extensions();
+        match extensions.get_ref() {
             Some(UserId::Username(username)) => {
-                let mut label_extensions = Extensions::new();
-                match parse_username(&mut label_extensions, P::default(), username) {
+                let label_extensions = Extensions::new();
+                match parse_username(&label_extensions, P::default(), username) {
                     Ok(new_username) => {
                         tracing::debug!(
                             "username label parser: success: overwrite id username '{username}' with '{new_username}'"
                         );
                         extensions.insert(UserId::Username(new_username));
-                        extensions.extend(label_extensions);
+                        extensions.extend(&label_extensions);
                     }
                     Err(err) => {
                         tracing::debug!(

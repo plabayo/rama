@@ -921,7 +921,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for HttpMatcher<Body>
 where
     Body: Send + 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         let matches = self.kind.matches(ext, req);
         if self.negate { !matches } else { matches }
     }
@@ -931,7 +931,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for HttpMatcherKind<Body>
 where
     Body: Send + 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         match self {
             Self::All(all) => all.iter().matches_and(ext, req),
             Self::Method(method) => method.matches(ext, req),
@@ -959,7 +959,7 @@ mod test {
     struct BooleanMatcher(bool);
 
     impl Matcher<Request<()>> for BooleanMatcher {
-        fn matches(&self, _ext: Option<&mut Extensions>, _req: &Request<()>) -> bool {
+        fn matches(&self, _ext: Option<&Extensions>, _req: &Request<()>) -> bool {
             self.0
         }
     }

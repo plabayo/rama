@@ -14,7 +14,7 @@ use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, w
 use rama_core::{bytes::Bytes, combinators::Either};
 use rama_core::{error::BoxError, futures::future::FusedFuture};
 use rama_core::{
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     futures::{Stream, stream::FusedStream},
 };
 use rama_http::{
@@ -173,7 +173,7 @@ pub(crate) async fn handshake<T, B>(
     exec: Executor,
 ) -> crate::Result<ClientTask<B, T>>
 where
-    T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+    T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     handshake_with_builder(new_builder(config), io, req_rx, config, exec).await
@@ -187,7 +187,7 @@ pub(crate) async fn handshake_with_builder<T, B>(
     exec: Executor,
 ) -> crate::Result<ClientTask<B, T>>
 where
-    T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+    T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     let (h2_tx, mut conn) = builder
@@ -280,7 +280,7 @@ where
 impl<T, B> Future for Conn<T, B>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsRef + 'static,
 {
     type Output = Result<(), crate::h2::Error>;
 
@@ -328,7 +328,7 @@ pin_project! {
 impl<T, B> Future for ConnMapErr<T, B>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsRef,
 {
     type Output = Result<(), ()>;
 
@@ -351,7 +351,7 @@ where
 impl<T, B> FusedFuture for ConnMapErr<T, B>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsRef + 'static,
 {
     fn is_terminated(&self) -> bool {
         self.is_terminated
@@ -404,7 +404,7 @@ where
 impl<T, B> Future for ConnTask<T, B>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsRef + 'static,
 {
     type Output = ();
 
@@ -467,7 +467,7 @@ pin_project! {
 impl<B, T> Future for H2ClientFuture<B, T>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsRef + 'static,
 {
     type Output = ();
 
@@ -578,7 +578,7 @@ where
 impl<B, T> ClientTask<B, T>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut,
+    T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef,
 {
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn poll_pipe(&mut self, f: FutCtx<B>, cx: &mut Context<'_>) {
@@ -707,7 +707,7 @@ where
                         )));
                     }
                     let (parts, recv_stream) = res.into_parts();
-                    let mut res = Response::from_parts(parts, IncomingBody::empty());
+                    let res = Response::from_parts(parts, IncomingBody::empty());
 
                     let (pending, on_upgrade) = upgrade::pending();
 
@@ -721,7 +721,7 @@ where
                     let upgraded = Upgraded::new(h2_up, Bytes::new());
 
                     pending.fulfill(upgraded);
-                    res.extensions_mut().insert(on_upgrade);
+                    res.extensions().insert(on_upgrade);
 
                     Poll::Ready(Ok(res))
                 } else {
@@ -745,7 +745,7 @@ where
 impl<B, T> Future for ClientTask<B, T>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsRef,
 {
     type Output = crate::Result<Dispatched>;
 

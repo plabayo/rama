@@ -120,8 +120,8 @@ where
     Issuer: BoringMitmCertIssuer<Error: Into<BoxError>>,
     Inner: Service<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, Output = (), Error: Into<BoxError>>,
     F: Service<BridgeIo<Ingress, Egress>, Output = (), Error: Into<BoxError>>,
-    Ingress: Io + Unpin + extensions::ExtensionsMut,
-    Egress: Io + Unpin + extensions::ExtensionsMut,
+    Ingress: Io + Unpin + extensions::ExtensionsRef,
+    Egress: Io + Unpin + extensions::ExtensionsRef,
 {
     type Output = ();
     type Error = BoxError;
@@ -164,7 +164,7 @@ where
             }
         }
 
-        if let Some(ProxyTarget(target)) = bridge_io.extensions().get().cloned()
+        if let Some(ProxyTarget(target)) = bridge_io.extensions().get_ref().cloned()
             && self
                 .cache
                 .get(&PolicyKey::Target(target.host.clone()))

@@ -20,7 +20,7 @@
 //!                 // For production-like code you should prefer a custom type
 //!                 // to avoid possible conflicts. Ideally these are also as
 //!                 // cheap as possible to allocate.
-//!                 let labels: &Vec<String> = req.extensions().get().unwrap();
+//!                 let labels: &Vec<String> = req.extensions().get_ref().unwrap();
 //!                 assert_eq!("a+b+c", labels.join("+"));
 //!             }),
 //!         );
@@ -42,7 +42,7 @@ use crate::{
     utils::{HeaderValueErr, HeaderValueGetter},
 };
 use rama_core::error::ErrorContext as _;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::iter::FromIterator;
@@ -149,7 +149,7 @@ where
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, request: Request<Body>) -> Result<Self::Output, Self::Error> {
         if self.repeat {
             let headers = request.headers().get_all(&self.header_name);
             let mut parsed_values = headers
@@ -173,13 +173,13 @@ where
                 }
             } else {
                 let values = parsed_values.collect::<Result<C, _>>()?;
-                request.extensions_mut().insert(values);
+                request.extensions().insert(values);
             }
         } else {
             match request.header_str(&self.header_name) {
                 Ok(s) => {
                     let cfg: T = s.parse().into_box_error()?;
-                    request.extensions_mut().insert(cfg);
+                    request.extensions().insert(cfg);
                 }
                 Err(HeaderValueErr::HeaderMissing(_)) if self.optional => (),
                 Err(err) => {
@@ -306,7 +306,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let id: &usize = req.extensions().get().unwrap();
+            let id: &usize = req.extensions().get_ref().unwrap();
             assert_eq!(*id, 42);
 
             Ok::<_, std::convert::Infallible>(())
@@ -330,7 +330,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &Vec<String> = req.extensions().get().unwrap();
+            let labels: &Vec<String> = req.extensions().get_ref().unwrap();
             assert_eq!("foo+bar+baz+fin", labels.join("+"));
 
             Ok::<_, std::convert::Infallible>(())
@@ -355,7 +355,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &HashSet<String> = req.extensions().get().unwrap();
+            let labels: &HashSet<String> = req.extensions().get_ref().unwrap();
             assert_eq!(3, labels.len());
             assert!(labels.contains("foo"));
             assert!(labels.contains("bar"));
@@ -383,7 +383,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &LinkedList<String> = req.extensions().get().unwrap();
+            let labels: &LinkedList<String> = req.extensions().get_ref().unwrap();
             let mut iter = labels.iter();
             assert_eq!(Some("foo"), iter.next().map(|x| x.as_str()));
             assert_eq!(Some("bar"), iter.next().map(|x| x.as_str()));
@@ -414,7 +414,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &Vec<String> = req.extensions().get().unwrap();
+            let labels: &Vec<String> = req.extensions().get_ref().unwrap();
             assert_eq!("foo+bar+baz+fin", labels.join("+"));
 
             Ok::<_, std::convert::Infallible>(())
@@ -439,7 +439,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let id: usize = *req.extensions().get().unwrap();
+            let id: usize = *req.extensions().get_ref().unwrap();
             assert_eq!(id, 42);
 
             Ok::<_, std::convert::Infallible>(())
@@ -463,7 +463,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &Vec<String> = req.extensions().get().unwrap();
+            let labels: &Vec<String> = req.extensions().get_ref().unwrap();
             assert_eq!("foo+bar+baz+fin", labels.join("+"));
 
             Ok::<_, std::convert::Infallible>(())
@@ -487,7 +487,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get::<usize>().is_none());
+            assert!(req.extensions().get_ref::<usize>().is_none());
             Ok::<_, std::convert::Infallible>(())
         });
 
@@ -508,7 +508,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get::<Vec<String>>().is_none());
+            assert!(req.extensions().get_ref::<Vec<String>>().is_none());
 
             Ok::<_, std::convert::Infallible>(())
         });
@@ -552,7 +552,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get::<Vec<String>>().is_none());
+            assert!(req.extensions().get_ref::<Vec<String>>().is_none());
 
             Ok::<_, std::convert::Infallible>(())
         });
@@ -599,7 +599,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get::<Vec<String>>().is_none());
+            assert!(req.extensions().get_ref::<Vec<String>>().is_none());
 
             Ok::<_, std::convert::Infallible>(())
         });
@@ -646,7 +646,7 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get::<Vec<String>>().is_none());
+            assert!(req.extensions().get_ref::<Vec<String>>().is_none());
 
             Ok::<_, std::convert::Infallible>(())
         });

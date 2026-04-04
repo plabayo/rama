@@ -5,10 +5,7 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-};
+use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 #[cfg(any(target_os = "windows", target_family = "unix"))]
 use rama_net::socket;
 use rama_net::{address::SocketAddress, stream::Socket};
@@ -73,12 +70,6 @@ impl From<TcpStream> for TokioTcpStream {
 impl ExtensionsRef for TcpStream {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for TcpStream {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

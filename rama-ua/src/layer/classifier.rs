@@ -17,7 +17,7 @@
 //! const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 //!
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
-//!     let ua: &UserAgent = req.extensions().get().unwrap();
+//!     let ua: &UserAgent = req.extensions().get_ref().unwrap();
 //!
 //!     assert_eq!(ua.header_str(), UA);
 //!     assert_eq!(ua.info(), Some(UserAgentInfo{ kind: UserAgentKind::Chromium, version: Some(124) }));
@@ -39,7 +39,7 @@
 //! # }
 //! ```
 
-use rama_core::{Layer, Service, extensions::ExtensionsMut};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http::{
     HeaderName, Request,
     headers::{self, HeaderMapExt},
@@ -82,7 +82,7 @@ where
 
     fn serve(
         &self,
-        mut req: Request<Body>,
+        req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let overwrites = self
             .overwrite_header
@@ -111,7 +111,7 @@ where
                 }
             }
 
-            req.extensions_mut().insert(ua);
+            req.extensions().insert(ua);
         }
 
         self.inner.serve(req)
@@ -173,7 +173,7 @@ mod tests {
     #[tokio::test]
     async fn test_user_agent_classifier_layer_ua_rama() {
         async fn handle(req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = req.extensions().get().unwrap();
+            let ua: &UserAgent = req.extensions().get_ref().unwrap();
 
             assert_eq!(
                 ua.header_str(),
@@ -199,7 +199,7 @@ mod tests {
         const UA: &str = "iPhone App/1.0";
 
         async fn handle(req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = req.extensions().get().unwrap();
+            let ua: &UserAgent = req.extensions().get_ref().unwrap();
 
             assert_eq!(ua.header_str(), UA);
             assert!(ua.info().is_none());
@@ -225,7 +225,7 @@ mod tests {
         const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 
         async fn handle(req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = req.extensions().get().unwrap();
+            let ua: &UserAgent = req.extensions().get_ref().unwrap();
 
             assert_eq!(ua.header_str(), UA);
             let ua_info = ua.info().unwrap();
@@ -251,7 +251,7 @@ mod tests {
         const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 
         async fn handle(req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = req.extensions().get().unwrap();
+            let ua: &UserAgent = req.extensions().get_ref().unwrap();
 
             assert_eq!(ua.header_str(), UA);
             let ua_info = ua.info().unwrap();
@@ -286,7 +286,7 @@ mod tests {
         const UA: &str = "iPhone App/1.0";
 
         async fn handle(req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = req.extensions().get().unwrap();
+            let ua: &UserAgent = req.extensions().get_ref().unwrap();
 
             assert_eq!(ua.header_str(), UA);
             assert!(ua.info().is_none());

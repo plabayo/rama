@@ -93,7 +93,7 @@ pub fn is_http_req_websocket_handshake<Body>(req: &Request<Body>) -> bool {
 
             if !req
                 .extensions()
-                .get::<Protocol>()
+                .get_ref::<Protocol>()
                 .map(|p| p.as_str().trim().eq_ignore_ascii_case("websocket"))
                 .unwrap_or_default()
             {
@@ -121,7 +121,7 @@ where
     Body: Send + 'static,
 {
     #[inline(always)]
-    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         is_http_req_websocket_handshake(req)
     }
 }

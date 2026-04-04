@@ -40,7 +40,7 @@ where
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
-        match parts.extensions.get::<UriParams>() {
+        match parts.extensions.get_ref::<UriParams>() {
             Some(params) => {
                 let params = params.deserialize::<T>()?;
                 Ok(Self(params))

@@ -64,11 +64,11 @@ async fn main() {
                 async |req: Request| -> Result<String, (StatusCode, String)> {
                     let client_ip = req
                         .extensions()
-                        .get::<Forwarded>()
+                        .get_ref::<Forwarded>()
                         .and_then(|f| f.client_ip())
                         .or_else(|| {
                             req.extensions()
-                                .get::<SocketInfo>()
+                                .get_ref::<SocketInfo>()
                                 .map(|info| info.peer_addr().ip_addr)
                         })
                         .context("failed to fetch client IP")

@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::{debug, trace};
 use std::task::ready;
@@ -62,15 +61,9 @@ impl<T: ExtensionsRef, B> ExtensionsRef for Buffered<T, B> {
     }
 }
 
-impl<T: ExtensionsMut, B> ExtensionsMut for Buffered<T, B> {
-    fn extensions_mut(&mut self) -> &mut rama_core::extensions::Extensions {
-        self.io.extensions_mut()
-    }
-}
-
 impl<T, B> Buffered<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     B: Buf,
 {
     pub(crate) fn new(io: T) -> Self {
@@ -341,7 +334,7 @@ pub(crate) trait MemRead {
 
 impl<T, B> MemRead for Buffered<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     B: Buf,
 {
     fn read_mem(&mut self, cx: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {

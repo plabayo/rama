@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use pin_project_lite::pin_project;
 use rama_core::Service;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_http::{Request, Response};
 use std::task::ready;
@@ -57,7 +57,7 @@ where
 impl<I, S> Connection<I, S>
 where
     S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -77,7 +77,7 @@ where
 impl<I, S> Future for Connection<I, S>
 where
     S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
-    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
 {
     type Output = crate::Result<()>;
 
@@ -285,7 +285,7 @@ impl Builder {
     pub fn serve_connection<S, I>(&self, io: I, service: S) -> Connection<I, S>
     where
         S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     {
         let proto = proto::h2::Server::new(io, service, &self.h2_builder, self.exec.clone());
         Connection { conn: proto }

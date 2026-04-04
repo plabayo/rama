@@ -345,7 +345,7 @@ impl PathMatcher {
         }
     }
 
-    pub fn matches_path(&self, ext: Option<&mut Extensions>, path: impl AsRef<str>) -> bool {
+    pub fn matches_path(&self, ext: Option<&Extensions>, path: impl AsRef<str>) -> bool {
         match self.matches_path_inner(path) {
             PathMatch::None => false,
             PathMatch::Literal => true,
@@ -427,7 +427,7 @@ impl PathMatcher {
 }
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for PathMatcher {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         self.matches_path(ext, req.uri().path())
     }
 }

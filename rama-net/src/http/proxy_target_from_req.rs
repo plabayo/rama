@@ -1,6 +1,6 @@
 use std::fmt;
 
-use rama_core::{Layer, Service, extensions::ExtensionsMut, telemetry::tracing};
+use rama_core::{Layer, Service, extensions::ExtensionsRef, telemetry::tracing};
 
 use crate::{http::RequestContext, proxy::ProxyTarget};
 
@@ -41,13 +41,13 @@ pub struct ProxyTargetFromRequestContext<S>(S);
 impl<S, Input> Service<Input> for ProxyTargetFromRequestContext<S>
 where
     S: Service<Input>,
-    Input: ExtensionsMut + Send + 'static,
+    Input: ExtensionsRef + Send + 'static,
     RequestContext: for<'a> TryFrom<&'a Input, Error: fmt::Debug>,
 {
     type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let maybe_target = match RequestContext::try_from(&input) {
             Ok(req_ctx) => Some(req_ctx.host_with_port()),
             Err(err) => {
@@ -57,7 +57,7 @@ where
         };
 
         if let Some(target) = maybe_target {
-            input.extensions_mut().insert(ProxyTarget(target));
+            input.extensions().insert(ProxyTarget(target));
         }
 
         self.0.serve(input).await

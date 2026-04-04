@@ -12,14 +12,14 @@ use std::fmt;
 /// # Example
 ///
 /// ```rust
-/// use rama_core::extensions::ExtensionsMut;
+/// use rama_core::extensions::ExtensionsRef;
 /// use rama_http_types::proto::h2::ext::Protocol;
 /// use rama_http_types::{Request, Method, Version};
 ///
 /// let mut req = Request::new(());
 /// *req.method_mut() = Method::CONNECT;
 /// *req.version_mut() = Version::HTTP_2;
-/// req.extensions_mut().insert(Protocol::from_static("websocket"));
+/// req.extensions().insert(Protocol::from_static("websocket"));
 /// // Now the request will include the `:protocol` pseudo-header with value "websocket"
 /// ```
 #[derive(Clone, Eq, PartialEq)]

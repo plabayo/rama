@@ -40,7 +40,7 @@ impl PeetPrint {
     /// As specified by <https://github.com/pagpeter/TrackMe?tab=readme-ov-file#custom-fingerpint-peetprint>
     pub fn compute(ext: &Extensions) -> Result<Self, PeetComputeError> {
         let client_hello = ext
-            .get::<SecureTransport>()
+            .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .ok_or(PeetComputeError::MissingClientHello)?;
         Self::compute_from_client_hello(client_hello)
@@ -604,7 +604,7 @@ mod tests {
             },
         ];
         for test_case in test_cases {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(SecureTransport::with_client_hello(
                 parse_client_hello(&test_case.client_hello).expect(test_case.pcap),
             ));

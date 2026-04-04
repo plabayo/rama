@@ -61,11 +61,7 @@ use crate::{
     Request, Response,
     header::{HeaderName, HeaderValue},
 };
-use rama_core::{
-    Layer, Service,
-    extensions::{ExtensionsMut, ExtensionsRef},
-    telemetry::tracing,
-};
+use rama_core::{Layer, Service, extensions::ExtensionsRef, telemetry::tracing};
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::smol_str::ToSmolStr as _;
 
@@ -231,12 +227,12 @@ where
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let Some(request_id) = req.headers().get(&self.header_name) {
-            if req.extensions().get::<RequestId>().is_none() {
+            if req.extensions().get_ref::<RequestId>().is_none() {
                 let request_id = request_id.clone();
-                req.extensions_mut().insert(RequestId::new(request_id));
+                req.extensions().insert(RequestId::new(request_id));
             }
         } else if let Some(request_id) = self.make_request_id.make_request_id(&req) {
-            req.extensions_mut().insert(request_id.clone());
+            req.extensions().insert(request_id.clone());
             req.headers_mut()
                 .insert(self.header_name.clone(), request_id.0);
         }
@@ -330,15 +326,15 @@ where
         let mut response = self.inner.serve(req).await?;
 
         if let Some(current_id) = response.headers().get(&self.header_name) {
-            if response.extensions().get::<RequestId>().is_none() {
+            if response.extensions().get_ref::<RequestId>().is_none() {
                 let current_id = current_id.clone();
-                response.extensions_mut().insert(RequestId::new(current_id));
+                response.extensions().insert(RequestId::new(current_id));
             }
         } else if let Some(request_id) = request_id {
             response
                 .headers_mut()
                 .insert(self.header_name.clone(), request_id.0.clone());
-            response.extensions_mut().insert(request_id);
+            response.extensions().insert(request_id);
         }
 
         Ok(response)
@@ -451,7 +447,7 @@ mod tests {
         // extension propagated
         let req = Request::builder().body(Body::empty()).unwrap();
         let res = svc.serve(req).await.unwrap();
-        assert_eq!(res.extensions().get::<RequestId>().unwrap().0, "2");
+        assert_eq!(res.extensions().get_ref::<RequestId>().unwrap().0, "2");
     }
 
     #[tokio::test]
@@ -482,7 +478,7 @@ mod tests {
         // extension propagated
         let req = Request::builder().body(Body::empty()).unwrap();
         let res = svc.serve(req).await.unwrap();
-        assert_eq!(res.extensions().get::<RequestId>().unwrap().0, "2");
+        assert_eq!(res.extensions().get_ref::<RequestId>().unwrap().0, "2");
     }
 
     #[tokio::test]
@@ -503,7 +499,7 @@ mod tests {
             .unwrap();
         let res = svc.serve(req).await.unwrap();
         assert_eq!(res.headers()["x-request-id"], "foo");
-        assert_eq!(res.extensions().get::<RequestId>().unwrap().0, "foo");
+        assert_eq!(res.extensions().get_ref::<RequestId>().unwrap().0, "foo");
     }
 
     #[derive(Clone, Default)]

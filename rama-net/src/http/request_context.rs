@@ -106,7 +106,7 @@ pub fn try_request_ctx_from_http_parts(
         .or_else(|| {
             parts
                 .extensions()
-                .get::<ProxyTarget>()
+                .get_ref::<ProxyTarget>()
                 .and_then(|t| {
                     t.0.host.is_domain().then(|| {
                         let authority = t.0.clone().into();
@@ -118,7 +118,7 @@ pub fn try_request_ctx_from_http_parts(
         .or_else(|| {
             parts
                 .extensions()
-                .get()
+                .get_ref()
                 .and_then(try_get_sni_from_secure_transport)
                 .map(|host| {
                     tracing::trace!(url.full = %uri, "request context: detected host {host} from SNI");
@@ -126,7 +126,7 @@ pub fn try_request_ctx_from_http_parts(
                 })
         })
         .or_else(|| {
-            parts.extensions().get::<Forwarded>().and_then(|f| {
+            parts.extensions().get_ref::<Forwarded>().and_then(|f| {
                 f.client_host().map(|fauth| {
                     let HostWithOptPort { host, port } = fauth.0.clone();
                     let port = port.unwrap_or(default_port);
@@ -150,7 +150,7 @@ pub fn try_request_ctx_from_http_parts(
 
     let http_version = parts
         .extensions()
-        .get::<Forwarded>()
+        .get_ref::<Forwarded>()
         .and_then(|f| {
             f.client_version().map(|v| match v {
                 crate::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
@@ -177,8 +177,8 @@ fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri) -> Protocol {
         // This is especially useful for marking a HTTPS server as HTTPS,
         // despite it not showing up anywhere due to a non-default port
         // and it being http/1
-        ext.get::<Protocol>().cloned()
-    }).or_else(|| ext.get::<Forwarded>()
+        ext.get_ref::<Protocol>().cloned()
+    }).or_else(|| ext.get_ref::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
             tracing::trace!(url.furi = %uri, "request context: detected protocol from forwarded client proto");
             p.into()
@@ -254,7 +254,7 @@ impl TryRefIntoTransportContext for rama_http_types::request::Parts {
 mod tests {
     use super::*;
     use crate::forwarded::{Forwarded, ForwardedElement, NodeId};
-    use rama_core::extensions::ExtensionsMut;
+    use rama_core::extensions::ExtensionsRef;
     use rama_http_types::{Request, header::FORWARDED};
 
     #[test]
@@ -348,10 +348,10 @@ mod tests {
                 req_builder = req_builder.header(FORWARDED, header);
             }
 
-            let mut req = req_builder.body(()).unwrap();
+            let req = req_builder.body(()).unwrap();
 
             let forwarded: Forwarded = req.headers().get(FORWARDED).unwrap().try_into().unwrap();
-            req.extensions_mut().insert(forwarded);
+            req.extensions().insert(forwarded);
 
             let req_ctx = RequestContext::try_from(&req).unwrap();
 
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_request_ctx_https_request_behind_haproxy_plain() {
-        let mut req = Request::builder()
+        let req = Request::builder()
             .uri("/en/reservation/roomdetails")
             .version(Version::HTTP_11)
             .header("host", "echo.ramaproxy.org")
@@ -370,7 +370,7 @@ mod tests {
             .body(())
             .unwrap();
 
-        req.extensions_mut()
+        req.extensions()
             .insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                 NodeId::try_from("127.0.0.1:61234").unwrap(),
             )));

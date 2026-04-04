@@ -1,4 +1,4 @@
-use rama_core::{Service, error::BoxError, extensions::ExtensionsMut, service::BoxService};
+use rama_core::{Service, error::BoxError, extensions::ExtensionsRef, service::BoxService};
 use std::fmt;
 
 #[derive(Clone)]
@@ -26,7 +26,7 @@ impl<S: fmt::Debug, Input: fmt::Debug> fmt::Debug for EstablishedClientConnectio
 /// but from a Rama POV it is mostly used for UX trait bounds.
 pub trait ConnectorService<Input>: Send + Sync + 'static {
     /// Connection returned by the [`ConnectorService`]
-    type Connection: Send + ExtensionsMut;
+    type Connection: Send + ExtensionsRef;
     /// Error returned in case of connection / setup failure
     type Error: Into<BoxError> + Send + 'static;
 
@@ -48,7 +48,7 @@ where
             Output = EstablishedClientConnection<Connection, Input>,
             Error: Into<BoxError>,
         >,
-    Connection: Send + ExtensionsMut,
+    Connection: Send + ExtensionsRef,
 {
     type Connection = Connection;
     type Error = S::Error;

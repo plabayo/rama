@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use rama_core::{
     Service,
     error::BoxError,
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
     rt::Executor,
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
@@ -96,12 +96,6 @@ impl MockSocket {
 impl ExtensionsRef for MockSocket {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for MockSocket {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

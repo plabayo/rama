@@ -57,7 +57,7 @@ where
         &self,
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        if let Some(pa) = req.extensions().get::<ProxyAddress>()
+        if let Some(pa) = req.extensions().get_ref::<ProxyAddress>()
             && let Some(credential) = pa.credential.clone()
         {
             match credential {

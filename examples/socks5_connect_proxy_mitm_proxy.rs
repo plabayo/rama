@@ -138,7 +138,7 @@ impl Service<Request> for HttpMitmProxy {
 
         let base_tls_config = if let Some(hello) = req
             .extensions()
-            .get::<SecureTransport>()
+            .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .cloned()
         {

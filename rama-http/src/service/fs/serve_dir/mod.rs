@@ -6,7 +6,7 @@ use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::include_dir::Dir;
@@ -283,7 +283,7 @@ impl<F> ServeDir<F> {
             *fallback_req.method_mut() = req.method().clone();
             *fallback_req.uri_mut() = req.uri().clone();
             *fallback_req.headers_mut() = req.headers().clone();
-            *fallback_req.extensions_mut() = extensions;
+            fallback_req.extensions().extend(&extensions);
 
             (fallback, fallback_req)
         });

@@ -5,7 +5,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _, ErrorExt},
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
     io::Io,
     telemetry::tracing,
 };
@@ -106,14 +106,14 @@ where
     S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
-        + ExtensionsMut
+        + ExtensionsRef
         + 'static,
 {
     type Output = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let proxy_info = input.extensions().get::<ProxyAddress>().cloned();
+        let proxy_info = input.extensions().get_ref::<ProxyAddress>().cloned();
         if !proxy_info
             .as_ref()
             .and_then(|addr| addr.protocol.as_ref())
@@ -130,7 +130,7 @@ where
             .context("http proxy connector: get transport context")?;
 
         #[cfg(feature = "tls")]
-        let mut input = input;
+        let input = input;
 
         #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
@@ -146,7 +146,7 @@ where
                 server.port = proxy_info.address.port,
                 "http proxy connector: preparing proxy connection for tls tunnel",
             );
-            input.extensions_mut().insert(TlsTunnel {
+            input.extensions().insert(TlsTunnel {
                 sni: Some(proxy_info.address.host.clone()),
             });
         }
@@ -238,10 +238,10 @@ where
             .await
             .context("http proxy handshake")?;
 
-        let mut conn = MaybeHttpProxiedConnection::upgraded_proxy(conn);
+        let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn);
 
         tracing::trace!("inserting HttpProxyHeaders in context");
-        conn.extensions_mut()
+        conn.extensions()
             .insert(HttpProxyConnectResponseHeaders::new(headers));
 
         tracing::trace!(
@@ -289,7 +289,7 @@ pin_project! {
     }
 }
 
-impl<S: ExtensionsMut + Unpin + Io> MaybeHttpProxiedConnection<S> {
+impl<S: ExtensionsRef + Unpin + Io> MaybeHttpProxiedConnection<S> {
     fn direct(conn: S) -> Self {
         Self {
             inner: Connection::Direct { conn },
@@ -343,15 +343,6 @@ impl<S: ExtensionsRef> ExtensionsRef for MaybeHttpProxiedConnection<S> {
         match &self.inner {
             Connection::Direct { conn } | Connection::Proxied { conn } => conn.extensions(),
             Connection::UpgradedProxy { conn } => conn.extensions(),
-        }
-    }
-}
-
-impl<S: ExtensionsMut> ExtensionsMut for MaybeHttpProxiedConnection<S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        match &mut self.inner {
-            Connection::Direct { conn } | Connection::Proxied { conn } => conn.extensions_mut(),
-            Connection::UpgradedProxy { conn } => conn.extensions_mut(),
         }
     }
 }

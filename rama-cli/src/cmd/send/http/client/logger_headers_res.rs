@@ -34,13 +34,13 @@ where
                 "* {:?} {} {}",
                 res.version(),
                 res.status().as_u16(),
-                match res.extensions().get::<ReasonPhrase>() {
+                match res.extensions().get_ref::<ReasonPhrase>() {
                     Some(reason) => String::from_utf8_lossy(reason.as_bytes()),
                     None => res.status().canonical_reason().unwrap_or_default().into(),
                 },
             );
 
-            if let Some(pseudo_headers) = res.extensions().get::<PseudoHeaderOrder>() {
+            if let Some(pseudo_headers) = res.extensions().get_ref::<PseudoHeaderOrder>() {
                 for header in pseudo_headers.iter() {
                     eprintln!(
                         "* [HTTP/2] [{}: {}]",
@@ -51,7 +51,7 @@ where
                             }
                             PseudoHeader::Protocol => {
                                 res.extensions()
-                                    .get::<h2::ext::Protocol>()
+                                    .get_ref::<h2::ext::Protocol>()
                                     .map(|p| p.as_str())
                                     .unwrap_or("<???>")
                                     .to_owned()

@@ -1,5 +1,5 @@
 use crate::bytes::{Buf, Bytes};
-use crate::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use crate::extensions::{Extensions, ExtensionsRef};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::{cmp, io};
@@ -46,12 +46,6 @@ impl<T> Rewind<T> {
 impl<T: ExtensionsRef> ExtensionsRef for Rewind<T> {
     fn extensions(&self) -> &Extensions {
         self.inner.extensions()
-    }
-}
-
-impl<T: ExtensionsMut> ExtensionsMut for Rewind<T> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.inner.extensions_mut()
     }
 }
 

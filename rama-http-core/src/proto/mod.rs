@@ -1,7 +1,7 @@
 //! Pieces pertaining to the HTTP message protocol.
 
 use rama_core::extensions::Extensions;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_http::io::upgrade;
 use rama_http_types::{HeaderMap, Method, Response, StatusCode, Uri, Version};
 
@@ -57,7 +57,7 @@ impl MessageHead<StatusCode> {
         *res.status_mut() = self.subject;
         *res.headers_mut() = self.headers;
         *res.version_mut() = self.version;
-        *res.extensions_mut() = self.extensions;
+        res.extensions().extend(&self.extensions);
         res
     }
 }

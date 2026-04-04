@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use crate::extensions::{Extensions, ExtensionsRef};
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -38,12 +38,6 @@ impl<T> ServiceInput<T> {
 impl<T> ExtensionsRef for ServiceInput<T> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl<T> ExtensionsMut for ServiceInput<T> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

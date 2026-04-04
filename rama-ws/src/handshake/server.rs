@@ -8,7 +8,7 @@ use std::{
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
@@ -158,7 +158,7 @@ pub fn validate_http_client_request<Body>(
                 method => return Err(RequestValidateError::UnexpectedHttpMethod(method.clone())),
             }
 
-            match request.extensions().get::<Protocol>() {
+            match request.extensions().get_ref::<Protocol>() {
                 None => return Err(RequestValidateError::UnexpectedPseudoProtocolHeader(None)),
                 Some(protocol) => {
                     if !protocol.as_str().trim().eq_ignore_ascii_case("websocket") {
@@ -400,7 +400,7 @@ where
     type Output = (Response, Request<Body>);
     type Error = Response;
 
-    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         match validate_http_client_request(&req) {
             Ok(request_data) => {
                 let accepted_protocol = match (
@@ -518,7 +518,7 @@ where
                 let protocols_header = match accepted_protocol {
                     Some(p) => {
                         tracing::trace!("inject accepted ws protocol in cfg: {p:?}");
-                        req.extensions_mut().insert(p.clone());
+                        req.extensions().insert(p.clone());
                         Some(p.into_header())
                     }
                     None => None,
@@ -527,7 +527,7 @@ where
                 let extensions_header = match accepted_extension {
                     Some(ext) => {
                         tracing::trace!("inject accepted ws extension in cfg: {ext:?}");
-                        req.extensions_mut().insert(ext.clone());
+                        req.extensions().insert(ext.clone());
                         Some(ext.into_header())
                     }
                     None => None,
@@ -674,7 +674,7 @@ where
         match self.acceptor.serve(req).await {
             Ok((resp, req)) => {
                 #[cfg(not(feature = "compression"))]
-                if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get() {
+                if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get_ref() {
                     tracing::error!(
                         "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension."
                     );
@@ -703,7 +703,7 @@ where
 
                                     tracing::trace!("check if pmd settings have to be applied to WS cfg...");
 
-                                    if let Some(Extension::PerMessageDeflate(pmd_cfg)) = req.extensions().get() {
+                                    if let Some(Extension::PerMessageDeflate(pmd_cfg)) = req.extensions().get_ref() {
                                         tracing::trace!(
                                             "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
                                         );
@@ -776,7 +776,7 @@ impl Service<AsyncWebSocket> for WebSocketEchoService {
     async fn serve(&self, mut socket: AsyncWebSocket) -> Result<Self::Output, Self::Error> {
         let protocol = socket
             .extensions()
-            .get::<headers::sec_websocket_protocol::AcceptedWebSocketProtocol>()
+            .get_ref::<headers::sec_websocket_protocol::AcceptedWebSocketProtocol>()
             .map(|p| p.0.as_ref())
             .unwrap_or(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT_STR);
 
@@ -825,7 +825,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
     async fn serve(&self, io: upgrade::Upgraded) -> Result<Self::Output, Self::Error> {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
-            if let Some(Extension::PerMessageDeflate(_)) = io.extensions().get() {
+            if let Some(Extension::PerMessageDeflate(_)) = io.extensions().get_ref() {
                 return Err(BoxError::from(
                     "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension.",
                 ));
@@ -839,7 +839,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
 
             tracing::debug!("check if pmd settings have to be applied to WS cfg...");
 
-            if let Some(Extension::PerMessageDeflate(pmd_cfg)) = io.extensions().get() {
+            if let Some(Extension::PerMessageDeflate(pmd_cfg)) = io.extensions().get_ref() {
                 tracing::debug!(
                     "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
                 );
@@ -889,7 +889,7 @@ mod tests {
                 "request = {req:?}"
             );
             assert_eq!(
-                req.extensions().get::<AcceptedWebSocketProtocol>(),
+                req.extensions().get_ref::<AcceptedWebSocketProtocol>(),
                 Some(&expected_accepted_protocol),
                 "request = {req:?}"
             );
@@ -897,7 +897,7 @@ mod tests {
             assert!(accepted_protocol.is_none());
             assert!(
                 req.extensions()
-                    .get::<AcceptedWebSocketProtocol>()
+                    .get_ref::<AcceptedWebSocketProtocol>()
                     .is_none()
             );
         }

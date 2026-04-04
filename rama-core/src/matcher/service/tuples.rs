@@ -1,6 +1,6 @@
 use rama_error::{BoxError, ErrorContext};
 
-use crate::extensions::ExtensionsMut;
+use crate::extensions::ExtensionsRef;
 
 use super::{ServiceMatch, ServiceMatcher};
 
@@ -9,7 +9,7 @@ macro_rules! impl_service_matcher_tuple {
         impl<Input, ModifiedInput, $first_ty, $($rest_ty),+> ServiceMatcher<Input>
             for ($first_ty, $($rest_ty),+)
         where
-            Input: Send + ExtensionsMut + 'static,
+            Input: Send + ExtensionsRef + 'static,
             ModifiedInput: Send + 'static,
             $first_ty: ServiceMatcher<Input, Error: Into<BoxError>, ModifiedInput = ModifiedInput>,
             $(

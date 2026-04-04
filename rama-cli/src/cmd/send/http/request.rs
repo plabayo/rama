@@ -1,7 +1,7 @@
 use rama::{
     bytes::Bytes,
     error::{BoxError, ErrorContext as _},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     futures::{StreamExt, stream},
     http::{
         Body, Method, Request, Uri, Version,
@@ -47,9 +47,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         ))?,
     } {
         *request.version_mut() = http_version;
-        request
-            .extensions_mut()
-            .insert(TargetHttpVersion(http_version));
+        request.extensions().insert(TargetHttpVersion(http_version));
     }
 
     *request.method_mut() = if let Some(ref method) = cfg.request {
@@ -71,29 +69,23 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
             .headers_mut()
             .insert(header.name.header_name().clone(), header.value.clone());
     }
-    request
-        .extensions_mut()
-        .insert(OriginalHttp1Headers::from_iter(
-            cfg.header.iter().map(|header| header.name.clone()),
-        ));
+    request.extensions().insert(OriginalHttp1Headers::from_iter(
+        cfg.header.iter().map(|header| header.name.clone()),
+    ));
 
     if cfg.verbose {
-        request.extensions_mut().insert(super::client::VerboseLogs);
+        request.extensions().insert(super::client::VerboseLogs);
     }
 
     match (cfg.ipv4, cfg.ipv6) {
         (true, true) => Err(BoxError::from("--ipv4, --ipv6 are mutually exclusive"))?,
         (true, false) => {
-            request
-                .extensions_mut()
-                .insert(DnsResolveIpMode::SingleIpV4);
-            request.extensions_mut().insert(ConnectIpMode::Ipv4);
+            request.extensions().insert(DnsResolveIpMode::SingleIpV4);
+            request.extensions().insert(ConnectIpMode::Ipv4);
         }
         (false, true) => {
-            request
-                .extensions_mut()
-                .insert(DnsResolveIpMode::SingleIpV6);
-            request.extensions_mut().insert(ConnectIpMode::Ipv6);
+            request.extensions().insert(DnsResolveIpMode::SingleIpV6);
+            request.extensions().insert(ConnectIpMode::Ipv6);
         }
         (false, false) => (), // allow both ipv4 and ipv6, nothing to do this is the default
     }

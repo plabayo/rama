@@ -24,7 +24,7 @@ pub(super) async fn new_service(
 /// This resolves the remote target, binds a local UDP socket, connects it to the upstream,
 /// then forwards datagrams in both directions until either side closes or an error occurs.
 async fn service(mut flow: UdpFlow) -> Result<(), Infallible> {
-    let Some(ProxyTarget(target_addr)) = flow.extensions().get().cloned() else {
+    let Some(ProxyTarget(target_addr)) = flow.extensions().get_ref().cloned() else {
         tracing::error!("tproxy udp missing target endpoint, draining flow");
         while flow.recv().await.is_some() {}
         return Ok(());

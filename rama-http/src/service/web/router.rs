@@ -16,7 +16,7 @@ use crate::{
 };
 
 use rama_core::{
-    extensions::{Extensions, ExtensionsMut},
+    extensions::{Extensions, ExtensionsRef},
     matcher::Matcher,
     service::{BoxService, Service},
     telemetry::tracing,
@@ -586,7 +586,7 @@ where
     type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let path = req.uri().path().to_lowercase_smolstr();
 
         // Collect allowed methods when a path matches but no method matches.
@@ -597,7 +597,7 @@ where
         if let Ok(matched) = self.routes.at(path.as_str()) {
             let uri_params = matched.params.iter();
 
-            let params = match req.extensions_mut().get::<UriParams>() {
+            let params = match req.extensions().get_ref::<UriParams>() {
                 Some(params) => {
                     let mut params = params.clone();
                     params.extend(uri_params);
@@ -606,12 +606,12 @@ where
                 None => uri_params.collect::<UriParams>(),
             };
 
-            req.extensions_mut().insert(params);
+            req.extensions().insert(params);
 
             for (matcher, service) in matched.value.iter() {
-                let mut ext = Extensions::new();
-                if matcher.matches(Some(&mut ext), &req) {
-                    req.extensions_mut().extend(ext);
+                let ext = Extensions::new();
+                if matcher.matches(Some(&ext), &req) {
+                    req.extensions().extend(&ext);
                     return service.serve(req).await;
                 }
             }
@@ -657,8 +657,8 @@ where
 
                     let fragments_path = &path[..pos];
 
-                    let mut ext = Extensions::new();
-                    if matcher.matches_path(Some(&mut ext), fragments_path) {
+                    let ext = Extensions::new();
+                    if matcher.matches_path(Some(&ext), fragments_path) {
                         let full_prefix = format_smolstr!("{prefix}/{fragments_path}",);
                         let modified_uri = match try_to_strip_path_prefix_from_uri(
                             &parts.uri,
@@ -673,7 +673,7 @@ where
                             }
                         };
 
-                        parts.extensions.extend(ext);
+                        parts.extensions.extend(&ext);
                         parts
                             .extensions
                             .insert(OriginalRouterUri(Arc::new(parts.uri)));
@@ -776,7 +776,7 @@ mod tests {
 
     fn get_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
-            let uri_params = req.extensions().get::<UriParams>().unwrap();
+            let uri_params = req.extensions().get_ref::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
                 .status(200)
@@ -787,7 +787,7 @@ mod tests {
 
     fn delete_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
-            let uri_params = req.extensions().get::<UriParams>().unwrap();
+            let uri_params = req.extensions().get_ref::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
                 .status(200)
@@ -798,7 +798,7 @@ mod tests {
 
     fn serve_assets_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
-            let uri_params = req.extensions().get::<UriParams>().unwrap();
+            let uri_params = req.extensions().get_ref::<UriParams>().unwrap();
             let path = uri_params.get("path").unwrap();
             Ok(Response::builder()
                 .status(200)
@@ -818,7 +818,7 @@ mod tests {
 
     fn get_user_order_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
-            let uri_params = req.extensions().get::<UriParams>().unwrap();
+            let uri_params = req.extensions().get_ref::<UriParams>().unwrap();
             let user_id = uri_params.get("user_id").unwrap();
             let order_id = uri_params.get("order_id").unwrap();
             Ok(Response::builder()

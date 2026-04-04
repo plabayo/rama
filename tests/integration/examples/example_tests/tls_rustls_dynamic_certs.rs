@@ -73,8 +73,8 @@ async fn test_tls_rustls_dynamic_certs() {
 
         let certificates = response
             .extensions()
-            .get()
-            .and_then(|InputExtensions(ext)| ext.get::<NegotiatedTlsParameters>())
+            .get_ref()
+            .and_then(|InputExtensions(ext)| ext.get_ref::<NegotiatedTlsParameters>())
             .unwrap()
             .peer_certificate_chain
             .clone()

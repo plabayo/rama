@@ -98,7 +98,7 @@
 //! Setting a header based on the incoming Context and response combined.
 //!
 //! ```
-//! use rama_core::{extensions::{ExtensionsRef, ExtensionsMut}, service::service_fn, Service};
+//! use rama_core::{extensions::{ExtensionsRef}, service::service_fn, Service};
 //! use rama_http::{
 //!     layer::set_header::{response::BoxMakeHeaderValueFn, SetResponseHeader},
 //!     Body, HeaderName, HeaderValue, Request, Response,
@@ -117,14 +117,14 @@
 //!     let svc = SetResponseHeader::overriding_fn(
 //!         service_fn(async || {
 //!             let mut res = ().into_response();
-//!             res.extensions_mut().insert(Success);
+//!             res.extensions().insert(Success);
 //!             Ok::<_, Infallible>(res)
 //!         }),
 //!         HeaderName::from_static("x-used-request-id"),
 //!         async |req: Request| {
-//!             let factory = req.extensions().get::<RequestID>().cloned().map(|id| {
+//!             let factory = req.extensions().get_ref::<RequestID>().cloned().map(|id| {
 //!                 BoxMakeHeaderValueFn::new(async move |res: Response| {
-//!                     let header_value = res.extensions().get::<Success>().map(|_| {
+//!                     let header_value = res.extensions().get_ref::<Success>().map(|_| {
 //!                         HeaderValue::from_str(id.0.as_str()).unwrap()
 //!                     });
 //!                     (res, header_value)
@@ -137,7 +137,7 @@
 //!     const FAKE_USER_ID: &str = "abc123";
 //!
 //!     let mut req = Request::new(Body::empty());
-//!     req.extensions_mut().insert(RequestID(FAKE_USER_ID.to_owned()));
+//!     req.extensions().insert(RequestID(FAKE_USER_ID.to_owned()));
 //!
 //!     let res = svc.serve(req).await.unwrap();
 //!

@@ -219,9 +219,13 @@ where
         let src = {
             let ext_chain = (&conn, &input);
             ext_chain
-                .get::<Forwarded>()
+                .get_ref::<Forwarded>()
                 .and_then(|f| f.client_socket_addr())
-                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| info.peer_addr()))
+                .or_else(|| {
+                    ext_chain
+                        .get_ref::<SocketInfo>()
+                        .map(|info| info.peer_addr())
+                })
                 .ok_or_else(|| BoxError::from("PROXY client (v1): missing src socket address"))?
         };
 
@@ -264,9 +268,13 @@ where
         let src = {
             let ext_chain = (&conn, &input);
             ext_chain
-                .get::<Forwarded>()
+                .get_ref::<Forwarded>()
                 .and_then(|f| f.client_socket_addr())
-                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| info.peer_addr()))
+                .or_else(|| {
+                    ext_chain
+                        .get_ref::<SocketInfo>()
+                        .map(|info| info.peer_addr())
+                })
                 .ok_or_else(|| BoxError::from("PROXY client (v2): missing src socket address"))?
         };
 
@@ -368,7 +376,7 @@ pub mod protocol {
 mod tests {
     use super::*;
     use rama_core::{
-        Layer, ServiceInput, extensions::Extensions, extensions::ExtensionsMut, service::service_fn,
+        Layer, ServiceInput, extensions::Extensions, extensions::ExtensionsRef, service::service_fn,
     };
     use rama_net::{
         address::SocketAddress,
@@ -387,12 +395,6 @@ mod tests {
     impl ExtensionsRef for SocketConnection {
         fn extensions(&self) -> &Extensions {
             &self.extensions
-        }
-    }
-
-    impl ExtensionsMut for SocketConnection {
-        fn extensions_mut(&mut self) -> &mut Extensions {
-            &mut self.extensions
         }
     }
 
@@ -460,7 +462,7 @@ mod tests {
             (
                 "PROXY TCP4 127.0.1.2 192.168.1.101 80 443\r\n",
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext
                 },
@@ -469,7 +471,7 @@ mod tests {
             (
                 "PROXY TCP4 127.0.1.2 192.168.1.101 80 443\r\n",
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
@@ -486,7 +488,7 @@ mod tests {
             (
                 "PROXY TCP6 1234:5678:90ab:cdef:fedc:ba09:8765:4321 4321:8765:ba09:fedc:cdef:90ab:5678:1234 443 65535\r\n",
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
@@ -500,7 +502,7 @@ mod tests {
             (
                 "PROXY TCP6 1234:5678:90ab:cdef:fedc:ba09:8765:4321 4321:8765:ba09:fedc:cdef:90ab:5678:1234 443 65535\r\n",
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443").unwrap(),
@@ -523,8 +525,9 @@ mod tests {
                             },
                         })
                     }));
-            let mut input = ServiceInput::new(());
-            *input.extensions_mut() = ext;
+
+            let input = ServiceInput::new(());
+            input.extensions().extend(&ext);
             svc.serve(input).await.unwrap();
         }
     }
@@ -534,7 +537,7 @@ mod tests {
         for (ext, target_addr) in [
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -547,7 +550,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
@@ -558,7 +561,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext
                 },
@@ -566,7 +569,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -595,8 +598,8 @@ mod tests {
                         })
                     }));
 
-            let mut input = ServiceInput::new(());
-            *input.extensions_mut() = ext;
+            let input = ServiceInput::new(());
+            input.extensions().extend(&ext);
             assert!(svc.serve(input).await.is_err());
         }
     }
@@ -627,12 +630,12 @@ mod tests {
     async fn test_v2_tcp4() {
         for ext in [
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
                 ext
             },
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
@@ -664,8 +667,8 @@ mod tests {
                 },
             ));
 
-            let mut input = ServiceInput::new(());
-            *input.extensions_mut() = ext;
+            let input = ServiceInput::new(());
+            input.extensions().extend(&ext);
             svc.serve(input).await.unwrap();
         }
     }
@@ -674,12 +677,12 @@ mod tests {
     async fn test_v2_udp4() {
         for ext in [
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
                 ext
             },
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
@@ -711,8 +714,8 @@ mod tests {
                 },
             ));
 
-            let mut input = ServiceInput::new(());
-            *input.extensions_mut() = ext;
+            let input = ServiceInput::new(());
+            input.extensions().extend(&ext);
             svc.serve(input).await.unwrap();
         }
     }
@@ -721,7 +724,7 @@ mod tests {
     async fn test_v2_tcp6() {
         for ext in [
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -731,7 +734,7 @@ mod tests {
                 ext
             },
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
                 ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                     NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
@@ -763,8 +766,8 @@ mod tests {
                 },
             ));
 
-            let mut input = ServiceInput::new(());
-            *input.extensions_mut() = ext;
+            let input = ServiceInput::new(());
+            input.extensions().extend(&ext);
             svc.serve(input).await.unwrap();
         }
     }
@@ -773,7 +776,7 @@ mod tests {
     async fn test_v2_udp6() {
         for ext in [
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -783,7 +786,7 @@ mod tests {
                 ext
             },
             {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
                 ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                     NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
@@ -815,8 +818,8 @@ mod tests {
                 },
             ));
 
-            let mut input = ServiceInput::new(());
-            *input.extensions_mut() = ext;
+            let input = ServiceInput::new(());
+            input.extensions().extend(&ext);
             svc.serve(input).await.unwrap();
         }
     }
@@ -826,7 +829,7 @@ mod tests {
         for (ext, target_addr) in [
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -839,7 +842,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
@@ -850,7 +853,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
                     ext
                 },
@@ -858,7 +861,7 @@ mod tests {
             ),
             (
                 {
-                    let mut ext = Extensions::new();
+                    let ext = Extensions::new();
                     ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
@@ -886,8 +889,8 @@ mod tests {
                 })
             }));
 
-            let mut input = ServiceInput::new(());
-            *input.extensions_mut() = ext.clone();
+            let input = ServiceInput::new(());
+            input.extensions().extend(&ext);
             assert!(svc.serve(input).await.is_err());
 
             // UDP
@@ -903,8 +906,8 @@ mod tests {
                 })
             }));
 
-            let mut input = ServiceInput::new(());
-            *input.extensions_mut() = ext;
+            let input = ServiceInput::new(());
+            input.extensions().extend(&ext);
             assert!(svc.serve(input).await.is_err());
         }
     }

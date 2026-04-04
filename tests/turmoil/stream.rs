@@ -7,7 +7,7 @@ use std::{
 use pin_project_lite::pin_project;
 use rama::{
     extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     net::{address::SocketAddress, stream::Socket},
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -45,12 +45,6 @@ impl From<TcpStream> for TurmoilTcpStream {
 impl ExtensionsRef for TcpStream {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for TcpStream {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

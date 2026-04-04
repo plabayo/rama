@@ -2,7 +2,7 @@ use super::BoringTlsStream;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
 use rama_core::{
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
     io::Io,
 };
 use std::fmt;
@@ -16,7 +16,7 @@ pin_project! {
     }
 }
 
-impl<S: ExtensionsMut> AutoTlsStream<S> {
+impl<S: ExtensionsRef> AutoTlsStream<S> {
     #[must_use]
     pub fn secure(inner: BoringTlsStream<S>) -> Self {
         Self {
@@ -72,15 +72,6 @@ impl<S: ExtensionsRef> ExtensionsRef for AutoTlsStream<S> {
         match &self.inner {
             AutoTlsStreamData::Secure { inner } => inner.get_ref().extensions(),
             AutoTlsStreamData::Plain { inner } => inner.extensions(),
-        }
-    }
-}
-
-impl<S: ExtensionsMut> ExtensionsMut for AutoTlsStream<S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        match &mut self.inner {
-            AutoTlsStreamData::Secure { inner } => inner.get_mut().extensions_mut(),
-            AutoTlsStreamData::Plain { inner } => inner.extensions_mut(),
         }
     }
 }

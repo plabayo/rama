@@ -5,7 +5,7 @@ use std::{
 };
 
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::{debug, error, trace};
 use rama_core::{
     Service,
@@ -73,7 +73,7 @@ where
             RecvItem = MessageHead<T::Incoming>,
         > + Unpin,
     D::PollError: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
+    I: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     T: Http1Transaction + Unpin,
     Bs: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
@@ -278,7 +278,7 @@ where
 
         // dispatch is ready for a message, try to read one
         match ready!(self.conn.poll_read_head(cx)) {
-            Some(Ok((mut head, body_len, wants))) => {
+            Some(Ok((head, body_len, wants))) => {
                 let body = match body_len {
                     DecodedLength::ZERO => IncomingBody::empty(),
                     other => {
@@ -450,7 +450,7 @@ where
             RecvItem = MessageHead<T::Incoming>,
         > + Unpin,
     D::PollError: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
+    I: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     T: Http1Transaction + Unpin,
     Bs: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
@@ -557,7 +557,7 @@ where
         *req.uri_mut() = msg.subject.1;
         *req.headers_mut() = msg.headers;
         *req.version_mut() = msg.version;
-        *req.extensions_mut() = msg.extensions;
+        req.extensions().extend(&msg.extensions);
         let fut = {
             let svc = self.service.clone();
             async move { svc.serve(req).await }

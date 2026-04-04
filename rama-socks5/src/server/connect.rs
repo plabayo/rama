@@ -1,4 +1,4 @@
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::io::BridgeIo;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
@@ -183,7 +183,7 @@ impl Default for DefaultConnector {
 impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
-    S: Io + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsRef,
     InnerConnector: ConnectorService<TcpRequest, Connection: Io + Socket + Unpin>,
     StreamService:
         Service<BridgeIo<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
@@ -326,7 +326,7 @@ impl Default for LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
 
 impl<S, StreamService> Socks5ConnectorSeal<S> for LazyConnector<StreamService>
 where
-    S: Io + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsRef,
     StreamService: Service<S, Output = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
@@ -343,7 +343,7 @@ where
             "socks5 server w/ destination {destination}: lazy connect: reply sent, delegate to inner stream service",
         );
 
-        stream.extensions_mut().insert(ProxyTarget(destination));
+        stream.extensions().insert(ProxyTarget(destination));
 
         self.service
             .serve(stream)

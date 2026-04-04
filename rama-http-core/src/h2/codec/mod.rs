@@ -10,7 +10,7 @@ use self::framed_write::FramedWrite;
 use crate::h2::proto::Error;
 
 use rama_core::bytes::Buf;
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::Sink;
 use rama_core::futures::Stream;
 use rama_core::stream::codec::length_delimited;
@@ -164,12 +164,6 @@ where
 impl<T: ExtensionsRef, B> ExtensionsRef for Codec<T, B> {
     fn extensions(&self) -> &rama_core::extensions::Extensions {
         self.inner.extensions()
-    }
-}
-
-impl<T: ExtensionsMut, B> ExtensionsMut for Codec<T, B> {
-    fn extensions_mut(&mut self) -> &mut rama_core::extensions::Extensions {
-        self.inner.extensions_mut()
     }
 }
 

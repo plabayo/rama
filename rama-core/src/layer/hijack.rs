@@ -7,7 +7,7 @@
 //! [`Service`]: crate
 //! [`Matcher`]: crate::matcher::Matcher
 
-use crate::{Layer, Service, extensions::Extensions, extensions::ExtensionsMut, matcher::Matcher};
+use crate::{Layer, Service, extensions::Extensions, extensions::ExtensionsRef, matcher::Matcher};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Middleware to hijack inputs to a [`Service`] which match using a [`Matcher`].
@@ -43,15 +43,15 @@ where
     S: Service<Input>,
     H: Service<Input, Output: Into<S::Output>, Error: Into<S::Error>>,
     M: Matcher<Input>,
-    Input: Send + ExtensionsMut + 'static,
+    Input: Send + ExtensionsRef + 'static,
 {
     type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
-        let mut ext = Extensions::new();
-        if self.matcher.matches(Some(&mut ext), &input) {
-            input.extensions_mut().extend(ext);
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let ext = Extensions::new();
+        if self.matcher.matches(Some(&ext), &input) {
+            input.extensions().extend(&ext);
             match self.hijack.serve(input).await {
                 Ok(response) => Ok(response.into()),
                 Err(err) => Err(err.into()),

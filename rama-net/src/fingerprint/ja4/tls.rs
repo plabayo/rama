@@ -33,11 +33,11 @@ impl Ja4 {
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
     pub fn compute(ext: &Extensions) -> Result<Self, Ja4ComputeError> {
         let client_hello = ext
-            .get::<SecureTransport>()
+            .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .ok_or(Ja4ComputeError::MissingClientHello)?;
         let negotiated_tls_version = ext
-            .get::<NegotiatedTlsParameters>()
+            .get_ref::<NegotiatedTlsParameters>()
             .map(|param| param.protocol_version);
         Self::compute_from_client_hello(client_hello, negotiated_tls_version)
     }
@@ -630,7 +630,7 @@ mod tests {
             },
         ];
         for test_case in test_cases {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(SecureTransport::with_client_hello(
                 parse_client_hello(&test_case.client_hello).expect(test_case.pcap),
             ));

@@ -133,12 +133,16 @@ async fn http_service(req: Request) -> Result<Response, Infallible> {
     // REMARK: builds on the assumption that we are using the haproxy protocol
     let client_addr = req
         .extensions()
-        .get::<Forwarded>()
+        .get_ref::<Forwarded>()
         .unwrap()
         .client_socket_addr()
         .unwrap();
     // REMARK: builds on the assumption that rama's TCP service sets this for you :)
-    let proxy_addr = req.extensions().get::<SocketInfo>().unwrap().peer_addr();
+    let proxy_addr = req
+        .extensions()
+        .get_ref::<SocketInfo>()
+        .unwrap()
+        .peer_addr();
 
     Ok(Response::new(
         format!(

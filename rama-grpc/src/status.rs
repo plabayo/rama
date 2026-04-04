@@ -7,7 +7,7 @@ use rama_utils::str::arcstr::ArcStr;
 use ::{
     rama_core::{
         bytes::Bytes,
-        extensions::ExtensionsMut as _,
+        extensions::ExtensionsRef as _,
         telemetry::tracing::{debug, trace, warn},
     },
     rama_http_types::{
@@ -620,7 +620,7 @@ impl Status {
             .headers_mut()
             .insert(rama_http_types::header::CONTENT_TYPE, GRPC_CONTENT_TYPE);
         self.add_header(response.headers_mut())?;
-        response.extensions_mut().insert(self);
+        response.extensions().insert(self);
         Ok(response)
     }
 

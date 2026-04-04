@@ -3,11 +3,7 @@ use std::fmt;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
 use rama_boring_tokio::SslStream;
-use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-    io::Io,
-};
+use rama_core::{extensions::Extensions, extensions::ExtensionsRef, io::Io};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
@@ -18,7 +14,7 @@ pin_project! {
     }
 }
 
-impl<S: ExtensionsMut> TlsStream<S> {
+impl<S: ExtensionsRef> TlsStream<S> {
     #[must_use]
     pub fn new(inner: SslStream<S>) -> Self {
         Self { inner }
@@ -41,12 +37,6 @@ impl<S: fmt::Debug> fmt::Debug for TlsStream<S> {
 impl<S: ExtensionsRef> ExtensionsRef for TlsStream<S> {
     fn extensions(&self) -> &Extensions {
         self.inner.get_ref().extensions()
-    }
-}
-
-impl<S: ExtensionsMut> ExtensionsMut for TlsStream<S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.inner.get_mut().extensions_mut()
     }
 }
 

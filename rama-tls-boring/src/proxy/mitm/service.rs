@@ -41,8 +41,8 @@ impl<Issuer, Inner, Ingress, Egress> Service<BridgeIo<Ingress, Egress>>
 where
     Issuer: super::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
     Inner: Service<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, Output = (), Error: Into<BoxError>>,
-    Ingress: Io + Unpin + extensions::ExtensionsMut,
-    Egress: Io + Unpin + extensions::ExtensionsMut,
+    Ingress: Io + Unpin + extensions::ExtensionsRef,
+    Egress: Io + Unpin + extensions::ExtensionsRef,
 {
     type Output = ();
     type Error = TlsMitmRelayError;
@@ -58,7 +58,7 @@ where
             })
             .ok();
 
-        let proxy_target = input.extensions().get::<ProxyTarget>().cloned();
+        let proxy_target = input.extensions().get_ref::<ProxyTarget>().cloned();
         let tls_input = self
             .relay
             .handshake(input, maybe_connector_data)
@@ -77,8 +77,8 @@ impl<Issuer, Inner, Ingress, Egress> Service<InputWithClientHello<BridgeIo<Ingre
 where
     Issuer: super::issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
     Inner: Service<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, Output = (), Error: Into<BoxError>>,
-    Ingress: Io + Unpin + extensions::ExtensionsMut,
-    Egress: Io + Unpin + extensions::ExtensionsMut,
+    Ingress: Io + Unpin + extensions::ExtensionsRef,
+    Egress: Io + Unpin + extensions::ExtensionsRef,
 {
     type Output = ();
     type Error = TlsMitmRelayError;
@@ -102,7 +102,7 @@ where
             })
             .ok();
 
-        let proxy_target = input.extensions().get::<ProxyTarget>().cloned();
+        let proxy_target = input.extensions().get_ref::<ProxyTarget>().cloned();
         let tls_input = self
             .relay
             .handshake(input, maybe_connector_data)

@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use rama_core::{
     Service, bytes,
     error::BoxError,
-    extensions::{ExtensionsMut, ExtensionsRef as _},
+    extensions::ExtensionsRef as _,
     io::BridgeIo,
     matcher::service::{ServiceMatch, ServiceMatcher},
     rt::Executor,
@@ -121,7 +121,7 @@ where
                         "HttpUpgradeMitmRelay: spawned task active"
                     );
 
-                    let (mut ingress_stream, mut egress_stream) = match tokio::try_join!(on_upgrade_ingress, on_upgrade_egress) {
+                    let (ingress_stream, egress_stream) = match tokio::try_join!(on_upgrade_ingress, on_upgrade_egress) {
                         Ok(streams) => streams,
                         Err(err) => {
                             tracing::debug!("HttpUpgradeMitmRelay: relay task: one or both sides filed to upgrade: {err}");
@@ -129,8 +129,8 @@ where
                         }
                     };
 
-                    ingress_stream.extensions_mut().extend(req_extensions);
-                    egress_stream.extensions_mut().extend(res_extensions);
+                    ingress_stream.extensions().extend(&req_extensions);
+                    egress_stream.extensions().extend(&res_extensions);
 
                     tracing::trace!(
                         "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"

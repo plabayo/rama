@@ -1,6 +1,6 @@
 use crate::h2::proto::Error;
 
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_http_types::proto::h2::frame::{self, Frame, Kind, Reason};
 use rama_http_types::proto::h2::frame::{
     DEFAULT_MAX_FRAME_SIZE, DEFAULT_SETTINGS_HEADER_TABLE_SIZE, MAX_MAX_FRAME_SIZE,
@@ -112,12 +112,6 @@ impl<T> FramedRead<T> {
 impl<T: ExtensionsRef> ExtensionsRef for FramedRead<T> {
     fn extensions(&self) -> &rama_core::extensions::Extensions {
         self.inner.get_ref().extensions()
-    }
-}
-
-impl<T: ExtensionsMut> ExtensionsMut for FramedRead<T> {
-    fn extensions_mut(&mut self) -> &mut rama_core::extensions::Extensions {
-        self.inner.get_mut().extensions_mut()
     }
 }
 

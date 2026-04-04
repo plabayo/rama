@@ -4,7 +4,7 @@ use rama::{
     Layer, Service,
     combinators::Either,
     error::{BoxError, ErrorContext as _},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     http::{
         Request, Response,
         layer::{
@@ -98,8 +98,8 @@ fn new_tcp_service_inner<Issuer, Ingress, Egress>(
 ) -> impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone
 where
     Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone,
-    Ingress: Io + Unpin + ExtensionsMut,
-    Egress: Io + Unpin + ExtensionsMut,
+    Ingress: Io + Unpin + ExtensionsRef,
+    Egress: Io + Unpin + ExtensionsRef,
 {
     let peek_duration = Duration::from_secs_f64(demo_config.peek_duration_s.max(0.5));
 
