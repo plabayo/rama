@@ -2,11 +2,9 @@
 //!
 //! As defined in <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9112.txt>.
 
-use std::fmt::Debug;
-
 use super::HttpProxyError;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
@@ -63,7 +61,7 @@ impl InnerHttpProxyConnector {
         /// Add a header to the request.
         pub(super) fn extension(
             mut self,
-            value: impl Clone + Send + Sync + Debug + 'static,
+            value: impl Extension,
         ) -> Self {
             self.req.extensions().insert(value);
             self

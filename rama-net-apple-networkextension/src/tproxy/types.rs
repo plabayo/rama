@@ -1,3 +1,4 @@
+use rama_core::extensions::Extension;
 use rama_net::address::{Host, HostWithPort};
 use rama_utils::{
     macros::generate_set_and_with,
@@ -266,7 +267,7 @@ impl Default for TransparentProxyConfig {
 ///
 /// This metadata is specific to one intercepted flow and is injected into the
 /// flow input extensions for user services.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Extension)]
 pub struct TransparentProxyFlowMeta {
     /// Transport protocol for this flow.
     pub protocol: TransparentProxyFlowProtocol,

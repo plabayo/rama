@@ -6,6 +6,7 @@
 use std::{fmt, str::FromStr};
 
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
+use rama_core::extensions::Extension as ExtensionTrait;
 use rama_core::telemetry::tracing;
 use rama_utils::str::arcstr::ArcStr;
 
@@ -77,6 +78,8 @@ pub enum Extension {
     /// Up to the user to parse and handle it appropriately, if at all.
     Unknown(ArcStr),
 }
+
+impl ExtensionTrait for Extension {}
 
 impl Extension {
     #[must_use]

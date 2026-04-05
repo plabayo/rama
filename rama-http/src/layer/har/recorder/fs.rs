@@ -1,7 +1,7 @@
 use super::Recorder;
 use crate::layer::har::spec;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::Extensions;
+use rama_core::extensions::{Extension, Extensions};
 use rama_core::telemetry::tracing;
 use rama_utils::time::now_unix;
 use std::io::Write;
@@ -20,7 +20,7 @@ pub struct FileRecorder {
     tx: mpsc::Sender<FileRecorderMessage>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Path to (HAR) file that the [`FileRecorder`] is recording into.
 ///
 /// Inserted into the response extensions.

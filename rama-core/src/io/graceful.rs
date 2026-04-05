@@ -8,14 +8,14 @@ use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::sync::CancellationToken;
 
-use crate::extensions::{Extensions, ExtensionsRef};
+use crate::extensions::{Extension, Extensions, ExtensionsRef};
 
 /// Extension type that can be injected into an I/O stream to cancel it gracefully.
 ///
 /// By itself it doesn't do anything. It can however be used by your own middleware.
 /// `rama-core` comes with `GracefulIoService` to make use of it for any Io,
 /// and `rama-net` makes use of it for a connector service.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct CancelIo(pub CancellationToken);
 
 pin_project! {

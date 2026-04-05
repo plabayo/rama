@@ -95,10 +95,10 @@ mod test {
 
     use super::*;
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
     struct MyMarker(i32);
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
     struct MyOtherMarker(i32);
 
     #[test]

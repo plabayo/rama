@@ -236,7 +236,7 @@ impl<T, S> Layer<S> for HeaderConfigLayer<T> {
 
 #[cfg(test)]
 mod test {
-    use rama_core::extensions::ExtensionsRef;
+    use rama_core::extensions::{Extension, ExtensionsRef};
     use serde::Deserialize;
 
     use crate::Method;
@@ -384,7 +384,7 @@ mod test {
         assert!(result.is_err());
     }
 
-    #[derive(Debug, Deserialize, Clone)]
+    #[derive(Debug, Deserialize, Clone, Extension)]
     struct Config {
         s: String,
         n: i32,

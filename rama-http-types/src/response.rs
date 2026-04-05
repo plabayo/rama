@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::convert::TryInto;
 use std::fmt::{self, Display};
 
-use crate::dep::hyperium::http::Extensions as HyperExtensions;
+use crate::dep::hyperium::http::Extensions as HttpExtensions;
 use crate::dep::hyperium::http::response::{Parts as HyperiumParts, Response as HyperiumResponse};
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::proto::h1::ext::ReasonPhrase;
@@ -10,6 +10,9 @@ use crate::status::StatusCode;
 use crate::version::Version;
 use crate::{Body, Result};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+
+#[derive(Clone, Debug, Extension)]
+struct HyperExtensions(HttpExtensions);
 
 /// Represents an HTTP response
 ///
@@ -132,7 +135,7 @@ impl<T> From<Response<T>> for HyperiumResponse<T> {
         let mut hyper_extensions = parts
             .extensions
             .get_ref::<HyperExtensions>()
-            .cloned()
+            .map(|ext| ext.0.clone())
             .unwrap_or_default();
 
         hyper_extensions.insert(parts.extensions);
@@ -170,7 +173,7 @@ pub struct Parts {
 impl From<HyperiumParts> for Parts {
     fn from(mut value: HyperiumParts) -> Self {
         let rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
-        rama_extensions.insert(value.extensions);
+        rama_extensions.insert(HyperExtensions(value.extensions));
 
         Self {
             extensions: rama_extensions,

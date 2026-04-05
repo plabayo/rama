@@ -3,6 +3,7 @@ use std::{borrow::Cow, fmt};
 use rama_core::{
     bytes::{Buf, BufMut, BytesMut},
     error::{BoxError, ErrorContext as _},
+    extensions::Extension,
 };
 
 #[cfg(feature = "compression")]
@@ -319,7 +320,7 @@ pub(crate) fn decompress(
 }
 
 /// Controls compression behavior for individual messages within a stream.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Extension)]
 pub enum SingleMessageCompressionOverride {
     /// Inherit whatever compression is already configured. If the stream is compressed this
     /// message will also be configured.

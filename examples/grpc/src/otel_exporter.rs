@@ -38,7 +38,7 @@
 
 use rama::{
     Layer,
-    extensions::Extensions,
+    extensions::{Extension, Extensions},
     http::{
         client::EasyHttpWebClient,
         grpc,
@@ -73,7 +73,7 @@ use rama::{
 
 use std::{sync::Arc, time::Duration};
 
-#[derive(Debug)]
+#[derive(Debug, Extension)]
 struct Metrics {
     counter: UpDownCounter<i64>,
 }
@@ -141,7 +141,7 @@ async fn main() {
         let http_service = HttpServer::auto(exec.clone()).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
                 WebService::default().with_get("/", async |ext: Extensions| {
-                    ext.get_ref::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
+                    ext.get_ref::<Metrics>().unwrap().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),
             ),
@@ -154,7 +154,7 @@ async fn main() {
             .unwrap()
             .serve(
                 (
-                    AddInputExtensionLayer::new(state),
+                    AddInputExtensionLayer::new_arc(state),
                     NetworkMetricsLayer::default(),
                 )
                     .into_layer(http_service),

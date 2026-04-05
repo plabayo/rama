@@ -54,18 +54,21 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Extension as RequestExtension;
     use crate::service::web::IntoEndpointService;
     use rama_core::Service;
+    use rama_core::extensions::Extension;
     use rama_http_types::{Body, Request, Response};
     use std::convert::Infallible;
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Clone, Debug, Default, Extension)]
     struct TestExtension(String);
 
     #[tokio::test]
     async fn should_extract_extension() {
-        async fn handler(Extension(ext): Extension<TestExtension>) -> Result<Response, Infallible> {
+        async fn handler(
+            RequestExtension(ext): RequestExtension<TestExtension>,
+        ) -> Result<Response, Infallible> {
             assert_eq!(ext.0, "test");
             Ok(Response::new(Body::empty()))
         }
@@ -85,7 +88,7 @@ mod tests {
     #[tokio::test]
     async fn should_extract_optional_extension() {
         async fn is_missing_handler(
-            ext: Option<Extension<TestExtension>>,
+            ext: Option<RequestExtension<TestExtension>>,
         ) -> Result<Response, Infallible> {
             assert!(ext.is_none());
             Ok(Response::new(Body::empty()))
@@ -98,7 +101,7 @@ mod tests {
             .unwrap();
 
         async fn is_present_handler(
-            ext: Option<Extension<TestExtension>>,
+            ext: Option<RequestExtension<TestExtension>>,
         ) -> Result<Response, Infallible> {
             assert_eq!(ext.unwrap().0.0, "test");
             Ok(Response::new(Body::empty()))

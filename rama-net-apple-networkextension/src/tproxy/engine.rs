@@ -296,7 +296,7 @@ impl TransparentProxyEngine {
         ));
 
         let stream = TcpFlow::new(user_stream);
-        stream.extensions().insert(Arc::new(meta));
+        stream.extensions().insert_arc(Arc::new(meta));
         if let Some(remote) = remote_endpoint {
             stream.extensions().insert(ProxyTarget(remote));
         }
@@ -337,7 +337,7 @@ impl TransparentProxyEngine {
 
         let flow = UdpFlow::new(client_rx, datagram_sink);
         flow.extensions().insert(guard.clone());
-        flow.extensions().insert(meta);
+        flow.extensions().insert_arc(meta);
         if let Some(remote) = remote_endpoint {
             flow.extensions().insert(ProxyTarget(remote));
         }
@@ -729,10 +729,8 @@ mod tests {
                         let seen_clone = seen_clone.clone();
                         let notify_tx = notify_tx.clone();
                         async move {
-                            *seen_clone.lock() = stream
-                                .extensions()
-                                .get_ref::<Arc<TransparentProxyFlowMeta>>()
-                                .cloned();
+                            *seen_clone.lock() =
+                                stream.extensions().get_arc::<TransparentProxyFlowMeta>();
                             let _ = notify_tx.send(());
                             Ok(())
                         }
@@ -777,10 +775,8 @@ mod tests {
                         let seen_clone = seen_clone.clone();
                         let notify_tx = notify_tx.clone();
                         async move {
-                            *seen_clone.lock() = flow
-                                .extensions()
-                                .get_ref::<Arc<TransparentProxyFlowMeta>>()
-                                .cloned();
+                            *seen_clone.lock() =
+                                flow.extensions().get_arc::<TransparentProxyFlowMeta>();
                             let _ = notify_tx.send(());
                             Ok(())
                         }

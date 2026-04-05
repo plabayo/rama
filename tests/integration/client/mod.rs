@@ -1,5 +1,6 @@
 use rama::{
     Layer, Service,
+    extensions::Extension,
     graceful::Shutdown,
     http::{
         Body, HeaderValue, Request, Response, Version, client::EasyHttpWebClient, header,
@@ -123,6 +124,11 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
 }
 
 async fn connection_pooling_detects_closed_connections(version: Version, delay: Option<Duration>) {
+    #[derive(Debug, Clone, Extension)]
+    struct GracefulExecutor {
+        _executor: Executor,
+    }
+
     let direct_connection = MockConnectorService::new(move || {
         let token = CancellationToken::new();
         let shutdown = Shutdown::new(token.clone().cancelled_owned());
@@ -163,7 +169,9 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
         };
 
         (
-            AddInputExtensionLayer::new(executor),
+            AddInputExtensionLayer::new(GracefulExecutor {
+                _executor: executor,
+            }),
             TlsAcceptorLayer::new(tls_service_data),
         )
             .into_layer(http_server)

@@ -33,6 +33,8 @@ use std::sync::Arc;
 
 use rama_utils::collections::AppendOnlyVec;
 
+pub use rama_macros::Extension;
+
 #[derive(Debug, Clone, Default)]
 /// A type map of protocol extensions.
 ///
@@ -286,25 +288,25 @@ impl TypeErasedExtension {
 
 // TODO remove this once we start using input<>
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Wrapper type that can be inserted by leaf-like services
 /// when returning an output, to have the input extensions be accessible and preserved.
 pub struct InputExtensions(pub Extensions);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct Ingress<T>(pub T);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct Egress<T>(pub T);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct Connection<T>(pub T);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct Stream<T>(pub T);
 
 #[derive(Debug, Clone)]
-pub struct Input<T>(pub T);
+pub struct Input<T>(T);
 
 /// [`Extension`] is type which can be stored inside an [`Extensions`] store
 ///
@@ -313,8 +315,6 @@ pub struct Input<T>(pub T);
 /// is still usefull because it shows all the [`Extension`]s we have grouped in
 /// the exported rust-docs.
 pub trait Extension: Any + Send + Sync + std::fmt::Debug + 'static {}
-
-impl<T> Extension for T where T: Any + Send + Sync + std::fmt::Debug + 'static {}
 
 pub trait ExtensionsRef {
     /// Get reference to the underlying [`Extensions`] store
@@ -428,116 +428,150 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct TraceNote(String);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+    struct RetryBudget(u32);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+    struct ConnectionTimeoutMs(u64);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+    struct WorkerId(i32);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+    struct HealthSignal(u8);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+    struct FeatureToggle(bool);
+
     #[test]
     fn get_ref_returns_last_inserted() {
         let ext = Extensions::new();
-        ext.insert("first".to_owned());
-        ext.insert("second".to_owned());
-        ext.insert("third".to_owned());
+        ext.insert(TraceNote("first".to_owned()));
+        ext.insert(TraceNote("second".to_owned()));
+        ext.insert(TraceNote("third".to_owned()));
 
-        assert_eq!(ext.get_ref::<String>(), Some(&"third".to_owned()));
+        assert_eq!(
+            ext.get_ref::<TraceNote>(),
+            Some(&TraceNote("third".to_owned()))
+        );
     }
 
     #[test]
     fn clone_shares_backing_store() {
         let ext = Extensions::new();
-        ext.insert("first".to_owned());
+        ext.insert(TraceNote("first".to_owned()));
 
         let clone = ext.clone();
-        clone.insert("second".to_owned());
+        clone.insert(TraceNote("second".to_owned()));
 
-        assert_eq!(ext.get_ref::<String>(), Some(&"second".to_owned()));
-        assert_eq!(clone.get_ref::<String>(), Some(&"second".to_owned()));
+        assert_eq!(
+            ext.get_ref::<TraceNote>(),
+            Some(&TraceNote("second".to_owned()))
+        );
+        assert_eq!(
+            clone.get_ref::<TraceNote>(),
+            Some(&TraceNote("second".to_owned()))
+        );
     }
 
     #[test]
     fn get_ref_none_when_absent() {
         let ext = Extensions::new();
-        assert_eq!(ext.get_ref::<String>(), None);
+        assert_eq!(ext.get_ref::<TraceNote>(), None);
     }
 
     #[test]
     fn get_arc_none_when_absent() {
         let ext = Extensions::new();
-        assert!(ext.get_arc::<String>().is_none());
+        assert!(ext.get_arc::<TraceNote>().is_none());
     }
 
     #[test]
     fn first_ref_none_when_absent() {
         let ext = Extensions::new();
-        assert_eq!(ext.first_ref::<String>(), None);
+        assert_eq!(ext.first_ref::<TraceNote>(), None);
     }
 
     #[test]
     fn first_arc_none_when_absent() {
         let ext = Extensions::new();
-        assert!(ext.first_arc::<String>().is_none());
+        assert!(ext.first_arc::<TraceNote>().is_none());
     }
 
     #[test]
     fn first_ref_returns_first_inserted() {
         let ext = Extensions::new();
-        ext.insert("first".to_owned());
-        ext.insert("second".to_owned());
+        ext.insert(TraceNote("first".to_owned()));
+        ext.insert(TraceNote("second".to_owned()));
 
-        assert_eq!(ext.first_ref::<String>(), Some(&"first".to_owned()));
+        assert_eq!(
+            ext.first_ref::<TraceNote>(),
+            Some(&TraceNote("first".to_owned()))
+        );
     }
 
     #[test]
     fn extend_appends_other_extensions() {
-        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-        struct MyType(i32);
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Extension)]
+        struct DerivedMetric(i32);
 
         let source = Extensions::new();
-        source.insert(5i32);
-        source.insert(MyType(10));
+        source.insert(WorkerId(5));
+        source.insert(DerivedMetric(10));
 
         let target = Extensions::new();
         target.extend(&source);
 
-        assert_eq!(target.get_ref::<i32>(), Some(&5i32));
-        assert_eq!(target.get_ref::<MyType>(), Some(&MyType(10)));
+        assert_eq!(target.get_ref::<WorkerId>(), Some(&WorkerId(5)));
+        assert_eq!(target.get_ref::<DerivedMetric>(), Some(&DerivedMetric(10)));
     }
 
     #[test]
     fn insert_arc_can_be_retrieved_via_get_arc() {
         let ext = Extensions::new();
-        let inserted = ext.insert_arc(Arc::new(String::from("hello")));
-        let retrieved = ext.get_arc::<String>();
+        let inserted = ext.insert_arc(Arc::new(TraceNote(String::from("hello"))));
+        let retrieved = ext.get_arc::<TraceNote>();
 
-        assert_eq!(inserted.as_str(), "hello");
-        assert_eq!(retrieved.as_deref().map(String::as_str), Some("hello"));
+        assert_eq!(inserted.0.as_str(), "hello");
+        assert_eq!(retrieved.as_deref().map(|it| it.0.as_str()), Some("hello"));
     }
 
     #[test]
     fn insert_arc_can_be_retrieved_via_get_ref() {
         let ext = Extensions::new();
-        ext.insert_arc(Arc::new(99i32));
-        assert_eq!(ext.get_ref::<i32>(), Some(&99));
+        ext.insert_arc(Arc::new(WorkerId(99)));
+        assert_eq!(ext.get_ref::<WorkerId>(), Some(&WorkerId(99)));
     }
 
     #[test]
     fn contains_reports_presence_and_absence() {
         let ext = Extensions::new();
-        assert!(!ext.contains::<u32>());
+        assert!(!ext.contains::<RetryBudget>());
 
-        ext.insert(1u32);
-        assert!(ext.contains::<u32>());
-        assert!(!ext.contains::<u64>());
+        ext.insert(RetryBudget(1));
+        assert!(ext.contains::<RetryBudget>());
+        assert!(!ext.contains::<ConnectionTimeoutMs>());
     }
 
     #[test]
     fn get_arc_and_first_arc_report_latest_and_oldest() {
         let ext = Extensions::new();
-        ext.insert_arc(Arc::new(String::from("first")));
-        ext.insert_arc(Arc::new(String::from("second")));
+        ext.insert_arc(Arc::new(TraceNote(String::from("first"))));
+        ext.insert_arc(Arc::new(TraceNote(String::from("second"))));
 
         assert_eq!(
-            ext.first_arc::<String>().as_deref().map(String::as_str),
+            ext.first_arc::<TraceNote>()
+                .as_deref()
+                .map(|it| it.0.as_str()),
             Some("first")
         );
         assert_eq!(
-            ext.get_arc::<String>().as_deref().map(String::as_str),
+            ext.get_arc::<TraceNote>()
+                .as_deref()
+                .map(|it| it.0.as_str()),
             Some("second")
         );
     }
@@ -545,195 +579,223 @@ mod tests {
     #[test]
     fn get_ref_or_insert_uses_existing_or_inserts_once() {
         let ext = Extensions::new();
-        ext.insert(5u32);
+        ext.insert(RetryBudget(5));
 
         let calls = AtomicUsize::new(0);
         let existing = ext.get_ref_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
-            6u32
+            RetryBudget(6)
         });
-        assert_eq!(*existing, 5u32);
+        assert_eq!(existing.0, 5u32);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         let missing = ext.get_ref_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
-            7u64
+            ConnectionTimeoutMs(7)
         });
-        assert_eq!(*missing, 7u64);
+        assert_eq!(missing.0, 7u64);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn get_arc_or_insert_uses_existing_or_inserts_once() {
         let ext = Extensions::new();
-        ext.insert_arc(Arc::new(String::from("stored")));
+        ext.insert_arc(Arc::new(TraceNote(String::from("stored"))));
 
         let calls = AtomicUsize::new(0);
         let existing = ext.get_arc_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
-            Arc::new(String::from("new"))
+            Arc::new(TraceNote(String::from("new")))
         });
-        assert_eq!(existing.as_str(), "stored");
+        assert_eq!(existing.0.as_str(), "stored");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         let missing = ext.get_arc_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
-            Arc::new(11u32)
+            Arc::new(RetryBudget(11))
         });
-        assert_eq!(*missing, 11u32);
+        assert_eq!(missing.0, 11u32);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn iter_all_exposes_all_items_in_insert_order() {
         let ext = Extensions::new();
-        ext.insert(1u8);
-        ext.insert(true);
-        ext.insert(2u8);
+        ext.insert(HealthSignal(1));
+        ext.insert(FeatureToggle(true));
+        ext.insert(HealthSignal(2));
 
         let type_ids: Vec<TypeId> = ext.iter_all().map(TypeErasedExtension::type_id).collect();
         assert_eq!(
             type_ids,
-            vec![TypeId::of::<u8>(), TypeId::of::<bool>(), TypeId::of::<u8>()]
+            vec![
+                TypeId::of::<HealthSignal>(),
+                TypeId::of::<FeatureToggle>(),
+                TypeId::of::<HealthSignal>()
+            ]
         );
     }
 
     #[test]
     fn iter_for_missing_type_is_empty() {
         let ext = Extensions::new();
-        ext.insert(1u8);
+        ext.insert(HealthSignal(1));
 
-        assert_eq!(ext.iter_ref::<String>().count(), 0);
-        assert_eq!(ext.iter_arc::<String>().count(), 0);
+        assert_eq!(ext.iter_ref::<TraceNote>().count(), 0);
+        assert_eq!(ext.iter_arc::<TraceNote>().count(), 0);
     }
 
     #[test]
     fn iter_ref_returns_items_for_present_type_in_oldest_to_newest_order() {
         let ext = Extensions::new();
-        ext.insert(String::from("first"));
-        ext.insert(9u8);
-        ext.insert(String::from("second"));
+        ext.insert(TraceNote(String::from("first")));
+        ext.insert(HealthSignal(9));
+        ext.insert(TraceNote(String::from("second")));
 
-        let output: Vec<&str> = ext.iter_ref::<String>().map(String::as_str).collect();
+        let output: Vec<&str> = ext
+            .iter_ref::<TraceNote>()
+            .map(|it| it.0.as_str())
+            .collect();
         assert_eq!(output, vec!["first", "second"]);
     }
 
     #[test]
     fn iter_arc_returns_items_for_present_type_in_oldest_to_newest_order() {
         let ext = Extensions::new();
-        ext.insert(String::from("first"));
-        ext.insert(9u8);
-        ext.insert(String::from("second"));
+        ext.insert(TraceNote(String::from("first")));
+        ext.insert(HealthSignal(9));
+        ext.insert(TraceNote(String::from("second")));
 
-        let output: Vec<String> = ext.iter_arc::<String>().map(|arc| (*arc).clone()).collect();
+        let output: Vec<String> = ext
+            .iter_arc::<TraceNote>()
+            .map(|arc| arc.0.clone())
+            .collect();
         assert_eq!(output, vec!["first".to_owned(), "second".to_owned()]);
     }
 
     #[test]
     fn type_erased_new_supports_downcast_ref_and_cloned_downcast() {
-        let ext = TypeErasedExtension::new(String::from("hello"));
+        let ext = TypeErasedExtension::new(TraceNote(String::from("hello")));
 
-        assert_eq!(ext.type_id(), TypeId::of::<String>());
+        assert_eq!(ext.type_id(), TypeId::of::<TraceNote>());
         assert_eq!(
-            ext.downcast_ref::<String>().map(String::as_str),
+            ext.downcast_ref::<TraceNote>().map(|it| it.0.as_str()),
             Some("hello")
         );
         assert_eq!(
-            ext.cloned_downcast::<String>()
+            ext.cloned_downcast::<TraceNote>()
                 .as_deref()
-                .map(String::as_str),
+                .map(|it| it.0.as_str()),
             Some("hello")
         );
-        assert!(ext.downcast_ref::<u32>().is_none());
-        assert!(ext.cloned_downcast::<u32>().is_none());
+        assert!(ext.downcast_ref::<RetryBudget>().is_none());
+        assert!(ext.cloned_downcast::<RetryBudget>().is_none());
     }
 
     #[test]
     fn type_erased_new_arc_supports_all_downcasts() {
-        let ext = TypeErasedExtension::new_arc(Arc::new(String::from("hello")));
+        let ext = TypeErasedExtension::new_arc(Arc::new(TraceNote(String::from("hello"))));
 
-        assert_eq!(ext.type_id(), TypeId::of::<String>());
+        assert_eq!(ext.type_id(), TypeId::of::<TraceNote>());
         assert_eq!(
-            ext.downcast_ref::<String>().map(String::as_str),
+            ext.downcast_ref::<TraceNote>().map(|it| it.0.as_str()),
             Some("hello")
         );
         assert_eq!(
-            ext.cloned_downcast::<String>()
+            ext.cloned_downcast::<TraceNote>()
                 .as_deref()
-                .map(String::as_str),
+                .map(|it| it.0.as_str()),
             Some("hello")
         );
-        assert!(ext.downcast_ref::<u32>().is_none());
-        assert!(ext.cloned_downcast::<u32>().is_none());
+        assert!(ext.downcast_ref::<RetryBudget>().is_none());
+        assert!(ext.cloned_downcast::<RetryBudget>().is_none());
     }
 
     #[test]
     fn chainable_extensions_queries_both_sources() {
         let left = Extensions::new();
         let right = Extensions::new();
-        left.insert(1u32);
-        right.insert(2u64);
+        left.insert(RetryBudget(1));
+        right.insert(ConnectionTimeoutMs(2));
 
         let chain = (&left, &right);
-        assert!(chain.contains::<u32>());
-        assert!(chain.contains::<u64>());
-        assert!(!chain.contains::<u16>());
-        assert_eq!(chain.get_ref::<u32>(), Some(&1u32));
-        assert_eq!(chain.get_ref::<u64>(), Some(&2u64));
-        assert!(chain.get_arc::<u32>().is_some());
+        assert!(chain.contains::<RetryBudget>());
+        assert!(chain.contains::<ConnectionTimeoutMs>());
+        assert!(!chain.contains::<HealthSignal>());
+        assert_eq!(chain.get_ref::<RetryBudget>(), Some(&RetryBudget(1)));
+        assert_eq!(
+            chain.get_ref::<ConnectionTimeoutMs>(),
+            Some(&ConnectionTimeoutMs(2))
+        );
+        assert!(chain.get_arc::<RetryBudget>().is_some());
     }
 
     #[test]
     fn chainable_get_ref_prefers_first() {
         let left = Extensions::new();
         let right = Extensions::new();
-        left.insert(1i32);
-        right.insert(2i32);
+        left.insert(WorkerId(1));
+        right.insert(WorkerId(2));
 
         let chain = (&left, &right);
-        assert_eq!(chain.get_ref::<i32>(), Some(&1));
+        assert_eq!(chain.get_ref::<WorkerId>(), Some(&WorkerId(1)));
     }
 
     #[test]
     fn chainable_get_ref_falls_back_to_second() {
         let left = Extensions::new();
         let right = Extensions::new();
-        right.insert(2i32);
+        right.insert(WorkerId(2));
 
         let chain = (&left, &right);
-        assert_eq!(chain.get_ref::<i32>(), Some(&2));
+        assert_eq!(chain.get_ref::<WorkerId>(), Some(&WorkerId(2)));
     }
 
     #[test]
     fn chainable_get_arc_falls_back_to_second() {
         let left = Extensions::new();
         let right = Extensions::new();
-        right.insert(2i32);
+        right.insert(WorkerId(2));
 
         let chain = (&left, &right);
-        let arc = chain.get_arc::<i32>().unwrap();
-        assert_eq!(*arc, 2);
+        let arc = chain.get_arc::<WorkerId>().unwrap();
+        assert_eq!(*arc, WorkerId(2));
     }
 
     #[test]
     fn extensions_ref_blanket_impls_forward_to_underlying_extensions() {
         let base = Extensions::new();
-        base.insert(7u32);
+        base.insert(RetryBudget(7));
 
         let by_ref: &Extensions = &base;
-        assert_eq!(by_ref.extensions().get_ref::<u32>(), Some(&7u32));
+        assert_eq!(
+            by_ref.extensions().get_ref::<RetryBudget>(),
+            Some(&RetryBudget(7))
+        );
 
         let mut base_for_mut = base.clone();
         let by_mut_ref: &mut Extensions = &mut base_for_mut;
-        assert_eq!(by_mut_ref.extensions().get_ref::<u32>(), Some(&7u32));
+        assert_eq!(
+            by_mut_ref.extensions().get_ref::<RetryBudget>(),
+            Some(&RetryBudget(7))
+        );
 
         let boxed = Box::new(base.clone());
-        assert_eq!(boxed.extensions().get_ref::<u32>(), Some(&7u32));
+        assert_eq!(
+            boxed.extensions().get_ref::<RetryBudget>(),
+            Some(&RetryBudget(7))
+        );
 
         let pinned = Pin::new(Box::new(base.clone()));
-        assert_eq!(pinned.extensions().get_ref::<u32>(), Some(&7u32));
+        assert_eq!(
+            pinned.extensions().get_ref::<RetryBudget>(),
+            Some(&RetryBudget(7))
+        );
 
         let arced = Arc::new(base);
-        assert_eq!(arced.extensions().get_ref::<u32>(), Some(&7u32));
+        assert_eq!(
+            arced.extensions().get_ref::<RetryBudget>(),
+            Some(&RetryBudget(7))
+        );
     }
 }

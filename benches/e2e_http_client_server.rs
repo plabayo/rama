@@ -31,6 +31,7 @@ use rama::{
             web::{WebService, response::IntoResponse as _},
         },
     },
+    io::Io,
     layer::ConsumeErrLayer,
     net::{
         Protocol,
@@ -52,7 +53,6 @@ use rama::{
 };
 
 use rand::prelude::*;
-use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod e2e_utils;
 
@@ -172,7 +172,7 @@ fn get_http_service_boxed<Input>(
     body_content: Bytes,
 ) -> BoxService<Input, (), BoxError>
 where
-    Input: ExtensionsRef + AsyncRead + AsyncWrite + Send + 'static,
+    Input: ExtensionsRef + Io,
 {
     let handler = move |req: Request| {
         let body_content = body_content.clone();
@@ -238,7 +238,7 @@ fn get_boring_tls_data(params: TestParameters) -> boring::server::TlsAcceptorDat
 
 fn get_http_proxy_service_boxed<Input>(params: TestParameters) -> BoxService<Input, (), BoxError>
 where
-    Input: ExtensionsRef + AsyncRead + AsyncWrite + Send + 'static,
+    Input: ExtensionsRef + Io,
 {
     let handler = move |req: Request| async move {
         let client = get_inner_client(params.version, params.tls);

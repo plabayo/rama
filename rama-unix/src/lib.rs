@@ -22,6 +22,7 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
+use rama_core::extensions::Extension;
 use std::ops::{Deref, DerefMut};
 
 mod address;
@@ -42,7 +43,7 @@ pub use frame::UnixDatagramFramed;
 pub use tokio::net::unix::SocketAddr as TokioSocketAddress;
 pub use tokio::net::{UnixDatagram, UnixSocket};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Information about the socket on the egress end.
 pub struct ClientUnixSocketInfo(pub UnixSocketInfo);
 
@@ -71,7 +72,7 @@ impl DerefMut for ClientUnixSocketInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Connected unix socket information.
 pub struct UnixSocketInfo {
     local_addr: Option<UnixSocketAddress>,

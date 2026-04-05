@@ -3,7 +3,7 @@ use crate::io::write_http_response;
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Layer, Service};
@@ -41,7 +41,7 @@ pub trait ResponseWriter: Send + Sync + 'static {
 }
 
 /// Marker struct to indicate that the response should not be printed.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Extension)]
 #[non_exhaustive]
 pub struct DoNotWriteResponse;
 

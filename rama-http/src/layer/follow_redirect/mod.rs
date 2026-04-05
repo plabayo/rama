@@ -103,7 +103,10 @@ pub mod policy;
 
 use crate::{Method, Request, Response, StatusCode, StreamingBody, Uri, header::LOCATION};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
-use rama_core::{Layer, Service, extensions::ExtensionsRef};
+use rama_core::{
+    Layer, Service,
+    extensions::{Extension, ExtensionsRef},
+};
 use rama_http_types::{
     HeaderMap,
     header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
@@ -306,7 +309,7 @@ where
 ///
 /// The value differs from the original request's effective URI if the middleware has followed
 /// redirections.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct RequestUri(pub Uri);
 
 #[derive(Debug)]

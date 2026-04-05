@@ -192,12 +192,12 @@ impl<T, S> Layer<S> for HeaderOptionValueLayer<T> {
 
 #[cfg(test)]
 mod test {
-    use rama_core::extensions::ExtensionsRef;
+    use rama_core::extensions::{Extension, ExtensionsRef};
 
     use super::*;
     use crate::Method;
 
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Default, Extension)]
     struct UnitValue;
 
     #[tokio::test]

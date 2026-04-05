@@ -1,7 +1,10 @@
 #![deny(warnings)]
 
 use h2_support::prelude::*;
-use rama::{ServiceInput, extensions::ExtensionsRef};
+use rama::{
+    ServiceInput,
+    extensions::{Extension, ExtensionsRef},
+};
 use rama_core::futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 
@@ -1215,6 +1218,12 @@ async fn request_without_authority() {
 #[ignore]
 async fn serve_when_request_in_response_extensions() {
     use std::sync::Arc;
+
+    #[derive(Debug, Clone, Extension)]
+    struct OriginRequestSnapshot {
+        _request: Arc<http::Request<RecvStream>>,
+    }
+
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -1238,7 +1247,9 @@ async fn serve_when_request_in_response_extensions() {
         let (req, mut stream) = srv.next().await.unwrap().unwrap();
 
         let rsp = http::Response::new(());
-        rsp.extensions().insert(Arc::new(req));
+        rsp.extensions().insert(OriginRequestSnapshot {
+            _request: Arc::new(req),
+        });
         stream.send_response(rsp, true).unwrap();
 
         assert!(srv.next().await.is_none());

@@ -3,6 +3,7 @@
 use crate::proto::h2::hpack::BytesStr;
 
 use rama_core::bytes::Bytes;
+use rama_core::extensions::Extension;
 use std::fmt;
 
 /// The `Protocol` extension allows access to the value of the `:protocol` pseudo-header
@@ -22,7 +23,7 @@ use std::fmt;
 /// req.extensions().insert(Protocol::from_static("websocket"));
 /// // Now the request will include the `:protocol` pseudo-header with value "websocket"
 /// ```
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Extension)]
 pub struct Protocol {
     value: BytesStr,
 }

@@ -41,7 +41,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     http::{
         Body, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
@@ -78,7 +78,7 @@ use rama::{
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 struct State {
     mitm_tls_service_data: TlsAcceptorData,
     exec: Executor,

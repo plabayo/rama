@@ -73,7 +73,7 @@ pub struct DefaultInputCounter(Arc<DefaultInputCounterData>);
 
 /// The default tracker extension inserted into input extensions by [`CountInput`]
 /// when using [`DefaultInputCounter`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct InputCounterExtension {
     data: Arc<DefaultInputCounterData>,
     input_count: u64,

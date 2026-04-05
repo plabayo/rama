@@ -32,7 +32,7 @@ use crate::{
     HttpAgent, UserAgent,
     profile::{
         CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
-        RequestInitiator,
+        RequestClientHints, RequestInitiator,
     },
 };
 
@@ -413,8 +413,8 @@ where
                             protocol,
                             Some(req.method()),
                             req.extensions()
-                                .get_ref::<Vec<ClientHint>>()
-                                .map(|v| v.as_slice()),
+                                .get_ref::<RequestClientHints>()
+                                .map(AsRef::as_ref),
                         );
 
                         tracing::trace!("user agent emulation: http emulated");

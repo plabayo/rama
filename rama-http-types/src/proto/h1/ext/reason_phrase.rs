@@ -1,4 +1,5 @@
 use rama_core::bytes::Bytes;
+use rama_core::extensions::Extension;
 
 /// A reason phrase in an HTTP/1 response.
 ///
@@ -14,7 +15,7 @@ use rama_core::bytes::Bytes;
 ///
 /// When a `ReasonPhrase` is present in the extensions of the `http::Response` written by a server,
 /// its contents will be written in place of the canonical reason phrase when responding via HTTP/1.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 pub struct ReasonPhrase(Bytes);
 
 impl ReasonPhrase {

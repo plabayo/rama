@@ -3,6 +3,7 @@
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
 use rama_core::error::BoxError;
+use rama_core::extensions::Extension;
 
 use std::fmt;
 use std::net::IpAddr;
@@ -32,7 +33,7 @@ pub use version::ForwardedVersion;
 
 use crate::address::SocketAddress;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
 /// Forwarding information stored as a chain.
 ///
 /// This extension (which can be stored and modified via the [`Extensions`])

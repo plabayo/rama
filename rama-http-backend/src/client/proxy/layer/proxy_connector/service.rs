@@ -5,7 +5,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _, ErrorExt},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef},
     io::Io,
     telemetry::tracing,
 };
@@ -253,7 +253,7 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Extension)]
 /// Extension added to the [`Extensions`] by [`HttpProxyConnector`] to record the
 /// headers from a successful CONNECT response.
 ///

@@ -97,13 +97,15 @@
 
 mod request;
 
+use rama_core::extensions::Extension;
+
 pub(crate) mod body;
 mod layer;
 mod service;
 
 /// Marker extension inserted into a response when [`Decompression`] unwraps a
 /// compressed response body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 pub enum DecompressedFrom {
     Gzip,
     Deflate,

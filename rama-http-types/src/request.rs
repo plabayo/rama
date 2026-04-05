@@ -1,10 +1,13 @@
 use std::fmt;
 
 use crate::Result;
-use crate::dep::hyperium::http::Extensions as HyperExtensions;
+use crate::dep::hyperium::http::Extensions as HttpExtensions;
 use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+
+#[derive(Clone, Debug, Extension)]
+struct HyperExtensions(HttpExtensions);
 
 /// Represents an HTTP request.
 ///
@@ -114,7 +117,7 @@ impl<T> From<Request<T>> for HyperiumRequest<T> {
         let mut hyper_extensions = parts
             .extensions
             .get_ref::<HyperExtensions>()
-            .cloned()
+            .map(|ext| ext.0.clone())
             .unwrap_or_default();
 
         hyper_extensions.insert(parts.extensions);
@@ -152,7 +155,7 @@ pub struct Parts {
 impl From<HyperiumParts> for Parts {
     fn from(mut value: HyperiumParts) -> Self {
         let rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
-        rama_extensions.insert(value.extensions);
+        rama_extensions.insert(HyperExtensions(value.extensions));
 
         Self {
             extensions: rama_extensions,
@@ -1197,6 +1200,13 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use rama_core::extensions::Extension;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct ConversionTraceLabel(String);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+    struct HyperBoolFlag(bool);
 
     #[test]
     fn it_can_map_a_body_from_one_type_to_another() {
@@ -1228,7 +1238,7 @@ mod tests {
             .headers_mut()
             .insert(header_key, header_value.clone());
 
-        let extension = "test extensions".to_owned();
+        let extension = ConversionTraceLabel("test extensions".to_owned());
         rama_request.extensions().insert(extension.clone());
 
         let mut hyper_request = HyperiumRequest::from(rama_request);
@@ -1255,10 +1265,12 @@ mod tests {
             .get_mut::<Extensions>()
             .unwrap();
         assert_eq!(
-            *rama_wrapped_extensions.get_ref::<String>().unwrap(),
+            *rama_wrapped_extensions
+                .get_ref::<ConversionTraceLabel>()
+                .unwrap(),
             extension
         );
-        rama_wrapped_extensions.insert(Arc::new(true));
+        rama_wrapped_extensions.insert_arc(Arc::new(HyperBoolFlag(true)));
 
         let rama_request = Request::from(hyper_request);
 
@@ -1272,7 +1284,10 @@ mod tests {
         );
         // Original rama extension
         assert_eq!(
-            *rama_request.extensions().get_ref::<String>().unwrap(),
+            *rama_request
+                .extensions()
+                .get_ref::<ConversionTraceLabel>()
+                .unwrap(),
             extension
         );
         // Hyper extension
@@ -1280,11 +1295,14 @@ mod tests {
             .extensions()
             .get_ref::<HyperExtensions>()
             .unwrap();
-        assert_eq!(*hyper_wrapper_extensions.get::<usize>().unwrap(), 4);
+        assert_eq!(*hyper_wrapper_extensions.0.get::<usize>().unwrap(), 4);
         // Rama extension inserted into hyper request
         assert_eq!(
-            *rama_request.extensions().get_ref::<Arc<bool>>().unwrap(),
-            Arc::new(true)
+            *rama_request
+                .extensions()
+                .get_ref::<HyperBoolFlag>()
+                .unwrap(),
+            HyperBoolFlag(true)
         );
     }
 }

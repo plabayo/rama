@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use crate::Version;
 use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture};
+use rama_core::extensions::Extension;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Extension)]
 /// Optional parameters that can be set in the [`Extensions`] of a (h1) request
 /// to customise the connection of the h1 connection.
 ///
@@ -21,7 +22,7 @@ pub struct Http1ClientContextParams {
     pub title_header_case: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Extension)]
 /// Optional parameters that can be set in the [`Extensions`] of a (h2) request
 /// to customise the connection of the h2 connection.
 ///
@@ -60,7 +61,7 @@ pub struct H2ClientContextParams {
     pub adaptive_window: Option<bool>,
 }
 
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Extension)]
 /// Target http version
 ///
 /// This can be set manually to enforce a specific version,

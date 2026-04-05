@@ -215,7 +215,7 @@ mod tests {
     use crate::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
     use std::convert::Infallible;
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, Extension)]
     struct Counter(i32);
 
     #[tokio::test]

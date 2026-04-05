@@ -3,7 +3,10 @@
 //! This is similar to a timeout but based on any kind of external condition.
 
 use super::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
-use crate::{Service, extensions::ExtensionsRef};
+use crate::{
+    Service,
+    extensions::{Extension, ExtensionsRef},
+};
 use rama_utils::macros::define_inner_service_accessors;
 use tokio::sync::{mpsc, oneshot};
 
@@ -15,7 +18,7 @@ mod layer;
 #[doc(inline)]
 pub use layer::AbortableLayer;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Controller used to abort a connected [`Abortable`].
 ///
 /// Use [`AbortController::abort`] to abort the connected [`Abortable`].
