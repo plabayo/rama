@@ -1463,9 +1463,13 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
 mod tests {
     use httparse::ParserConfig;
     use rama_core::bytes::BytesMut;
+    use rama_core::extensions::Extension;
     use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+    struct UpstreamRequestId(u64);
 
     #[test]
     fn test_parse_request() {
@@ -1909,7 +1913,7 @@ mod tests {
     fn test_decoder_response_request_extensions() {
         let request_exts = Extensions::new();
 
-        request_exts.insert(42u64);
+        request_exts.insert(UpstreamRequestId(42));
 
         let mut bytes = BytesMut::from(
             "\
@@ -1937,8 +1941,8 @@ mod tests {
                 .extensions
                 .get_ref::<RequestExtensions>()
                 .unwrap()
-                .get_ref::<u64>()
-                .copied()
+                .get_ref::<UpstreamRequestId>()
+                .map(|request_id| request_id.0)
                 .unwrap()
         );
     }

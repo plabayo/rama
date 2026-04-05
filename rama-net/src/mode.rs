@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+use rama_core::extensions::Extension;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Extension)]
 /// Enum representing the IP modes that can be used by the DNS resolver.
 pub enum DnsResolveIpMode {
     #[default]
@@ -22,7 +24,7 @@ impl DnsResolveIpMode {
     }
 }
 ///Mode for establishing a connection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Extension)]
 pub enum ConnectIpMode {
     #[default]
     Dual,

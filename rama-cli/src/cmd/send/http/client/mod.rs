@@ -1,6 +1,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    extensions::Extension,
     http::{
         Request, Response, StreamingBody,
         client::{
@@ -205,7 +206,7 @@ fn new_inner_client(
     Ok(client)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Extension)]
 pub(super) struct VerboseLogs;
 
 fn map_internal_client_error<E, Body>(

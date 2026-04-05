@@ -1,6 +1,6 @@
 //! Predicates for influencing compression of responses.
 
-use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 
@@ -195,7 +195,7 @@ impl Predicate for DefaultStreamPredicate {
 }
 
 /// Preferred response encoding requested by a compression predicate.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Extension)]
 pub enum PreferredEncoding {
     #[default]
     Gzip,

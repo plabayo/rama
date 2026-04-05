@@ -61,7 +61,11 @@ use crate::{
     Request, Response,
     header::{HeaderName, HeaderValue},
 };
-use rama_core::{Layer, Service, extensions::ExtensionsRef, telemetry::tracing};
+use rama_core::{
+    Layer, Service,
+    extensions::{Extension, ExtensionsRef},
+    telemetry::tracing,
+};
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::smol_str::ToSmolStr as _;
 
@@ -82,7 +86,7 @@ pub trait MakeRequestId: Send + Sync + 'static {
 }
 
 /// An identifier for a request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct RequestId(HeaderValue);
 
 impl RequestId {

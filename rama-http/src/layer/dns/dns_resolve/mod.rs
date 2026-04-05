@@ -7,6 +7,7 @@
 
 use crate::HeaderValue;
 use rama_core::error::{BoxError, ErrorExt};
+use rama_core::extensions::Extension;
 use rama_core::username::{ComposeError, Composer, UsernameLabelWriter};
 use rama_utils::macros::match_ignore_ascii_case_str;
 use std::fmt;
@@ -23,7 +24,7 @@ mod username_parser;
 #[doc(inline)]
 pub use username_parser::DnsResolveModeUsernameParser;
 
-#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 /// A vanity [`Extensions`] type for others to easily check if eager DNS resolution is enabled.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions

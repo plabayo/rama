@@ -1,6 +1,6 @@
 use super::DEFAULT_USERNAME_LABEL_SEPARATOR;
 use crate::error::BoxError;
-use crate::extensions::Extensions;
+use crate::extensions::{Extension, Extensions};
 use rama_error::{ErrorContext as _, ErrorExt};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::convert::Infallible;
@@ -196,7 +196,7 @@ impl UsernameLabelParser for () {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Extension)]
 /// Opaque string labels parsed collected using the [`UsernameOpaqueLabelParser`].
 ///
 /// Useful in case you want to collect all labels from the username,
@@ -301,7 +301,7 @@ mod test {
         labels: Vec<String>,
     }
 
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Default, Extension)]
     struct MyLabels(Vec<String>);
 
     impl UsernameLabelParser for MyLabelParser {

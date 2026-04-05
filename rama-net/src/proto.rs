@@ -2,13 +2,14 @@ use std::cmp::min;
 use std::str::FromStr;
 
 use rama_core::error::{BoxError, ErrorContext};
+use rama_core::extensions::Extension;
 use rama_utils::macros::str::eq_ignore_ascii_case;
 use rama_utils::str::smol_str::SmolStr;
 
 #[cfg(feature = "http")]
 use rama_http_types::Scheme;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 /// Web protocols that are relevant to Rama.
 ///
 /// Please [file an issue or open a PR][repo] if you need support for more protocols.

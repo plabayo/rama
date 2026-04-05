@@ -5,6 +5,7 @@ use rama::{
     cli::ForwardKind,
     combinators::{Either, Either7},
     error::{BoxError, ErrorContext},
+    extensions::Extension,
     extensions::ExtensionsRef,
     graceful::ShutdownGuard,
     http::{
@@ -58,7 +59,7 @@ use state::State;
 
 use crate::utils::{http::HttpVersion, tls::try_new_server_config};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Extension)]
 pub struct StorageAuthorized;
 
 #[derive(Debug, Args)]

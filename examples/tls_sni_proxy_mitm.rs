@@ -88,7 +88,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, extra::OpaqueError},
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     graceful::Shutdown,
     http::{
         HeaderValue, Request, Response,
@@ -243,7 +243,7 @@ async fn main() -> Result<(), BoxError> {
 const DOMAIN_EXAMPLE: Domain = Domain::example();
 const DOMAIN_RAMAPROXY_ORG: Domain = Domain::from_static("ramaproxy.org");
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 struct IngressSNI(Domain);
 
 #[derive(Debug, Clone)]

@@ -1,4 +1,5 @@
 use rama_core::error::{BoxError, ErrorContext};
+use rama_core::extensions::Extension;
 use rama_net::asn::Asn;
 use rama_utils::str::NonEmptyStr;
 use serde::{Deserialize, Serialize};
@@ -32,7 +33,7 @@ mod str;
 #[doc(inline)]
 pub use str::StringFilter;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 /// `ID` of the selected proxy. To be inserted into the `Context`,
 /// only if that proxy is selected.
 pub struct ProxyID(NonEmptyStr);
@@ -63,7 +64,7 @@ impl From<NonEmptyStr> for ProxyID {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Extension)]
 /// Filter to select a specific kind of proxy.
 ///
 /// If the `id` is specified the other fields are used

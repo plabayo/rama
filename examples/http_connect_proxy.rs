@@ -58,7 +58,7 @@
 
 use rama::{
     Layer, Service,
-    extensions::{Extensions, ExtensionsRef, InputExtensions},
+    extensions::{Extension, Extensions, ExtensionsRef, InputExtensions},
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -211,7 +211,7 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 pub enum Priority {
     High,
     Medium,

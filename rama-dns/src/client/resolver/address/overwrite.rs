@@ -1,11 +1,11 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use rama_core::{error::extra::OpaqueError, futures::Stream};
+use rama_core::{error::extra::OpaqueError, extensions::Extension, futures::Stream};
 use rama_net::address::Domain;
 
 use super::{BoxDnsAddressResolver, DnsAddressResolver};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Wrapper struct that can be used to add
 /// dns address overwrites to an input as an extension.
 ///

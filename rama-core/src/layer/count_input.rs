@@ -34,7 +34,7 @@ use std::sync::{
 /// A tracker is inserted into the input extensions by [`CountInput`]
 /// for each input that enters the service. The inner service can then read
 /// this tracker from extensions to observe total and concurrent counts.
-pub trait InputCounterTracker: Extension + Clone {
+pub trait InputCounterTracker: Extension {
     /// Live concurrent count of inputs actively being served.
     fn concurrent_active_input_count(&self) -> u64;
 
@@ -73,7 +73,7 @@ pub struct DefaultInputCounter(Arc<DefaultInputCounterData>);
 
 /// The default tracker extension inserted into input extensions by [`CountInput`]
 /// when using [`DefaultInputCounter`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct InputCounterExtension {
     data: Arc<DefaultInputCounterData>,
     input_count: u64,

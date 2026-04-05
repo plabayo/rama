@@ -5,8 +5,9 @@
 //! ordering or makes use of capitals... *sigh* what a painful design mistake
 
 use super::{Http1HeaderName, IntoHttp1HeaderName};
+use rama_core::extensions::Extension;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 // Keeps track of the order and casing
 // of the inserted header names, usually used in combination
 // with [`crate::proto::h1::Http1HeaderMap`].

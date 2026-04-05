@@ -5,16 +5,16 @@
 
 use std::{ops::Deref, sync::Arc};
 
-use rama_core::extensions::Extensions;
+use rama_core::extensions::{Extension, Extensions};
 
 pub mod h1;
 pub mod h2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Extension)]
 /// Byte length of the raw bytes of the request/response headers (excl. trailers).
 pub struct HeaderByteLength(pub usize);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Read-only copy of the parent request headers.
 ///
 /// This extension can be made available in [`RequestHeaders`].
@@ -34,7 +34,7 @@ impl Deref for RequestHeaders {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Read-only copy of the parent request extensions.
 ///
 /// This extension can be made available as part of a response.

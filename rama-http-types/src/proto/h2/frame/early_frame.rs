@@ -1,4 +1,5 @@
 use crate::proto::h2::frame::{Frame, Priority, Settings, StreamId, WindowUpdate};
+use rama_core::extensions::Extension;
 use rama_core::telemetry::tracing;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -159,7 +160,7 @@ struct EarlyFrameRecorder {
     frozen: Option<Arc<[EarlyFrame]>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct EarlyFrameCapture(Arc<[EarlyFrame]>);
 
 impl EarlyFrameCapture {

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use rama_core::extensions::Extension;
 use rama_net::fingerprint::{PeetComputeError, PeetPrint};
 use rama_net::tls::ApplicationProtocol;
 use rama_net::{
@@ -11,7 +12,7 @@ use rama_net::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Profile of the user-agent's TLS (client) configuration.
 ///
 /// It is used to emulate the TLS configuration of the user-agent.

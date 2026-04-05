@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+use rama_core::extensions::Extension;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 /// The identifier of a user.
 ///
 /// Usually created by the layer which authenticates the user.

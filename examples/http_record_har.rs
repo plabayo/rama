@@ -36,7 +36,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     http::{
         HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -97,7 +97,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 struct State {
     mitm_tls_service_data: TlsAcceptorData,
     ua_db: Arc<UserAgentDatabase>,

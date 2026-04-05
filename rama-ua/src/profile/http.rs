@@ -1,3 +1,4 @@
+use rama_core::extensions::Extension;
 use rama_http::{
     HeaderName, Method, Version,
     proto::{
@@ -28,7 +29,7 @@ use std::sync::Arc;
 pub static CUSTOM_HEADER_MARKER: HeaderName =
     HeaderName::from_static("x-rama-custom-header-marker");
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// A User Agent (UA) profile for HTTP.
 ///
 /// This profile contains the HTTP profiles for

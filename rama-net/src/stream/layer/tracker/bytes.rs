@@ -11,7 +11,7 @@
 
 use pin_project_lite::pin_project;
 use rama_core::{
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef},
     telemetry::tracing,
 };
 use std::{
@@ -190,7 +190,7 @@ where
 /// A handle to a tracker that can be used to get the number of bytes
 /// read and/or written even though the tracker is consumed by a protocol
 /// consumer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct BytesRWTrackerHandle {
     read: Arc<AtomicUsize>,
     written: Arc<AtomicUsize>,

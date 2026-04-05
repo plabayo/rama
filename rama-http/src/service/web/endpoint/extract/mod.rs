@@ -27,10 +27,6 @@ mod request;
 mod state;
 pub use state::State;
 
-pub mod extension;
-#[doc(inline)]
-pub use extension::Extension;
-
 mod extensions;
 
 pub mod typed_header;

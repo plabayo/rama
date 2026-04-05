@@ -1,8 +1,9 @@
 //! Register callbacks for 1xx HTTP/1 responses on the client.
 
+use rama_core::extensions::Extension;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Extension)]
 pub struct OnInformational(Arc<dyn OnInformationalCallback + Send + Sync>);
 
 impl OnInformational {

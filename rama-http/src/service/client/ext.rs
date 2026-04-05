@@ -567,7 +567,7 @@ where
     #[must_use]
     pub fn extension<T>(mut self, extension: T) -> Self
     where
-        T: Extension + Clone,
+        T: Extension,
     {
         match self.state {
             RequestBuilderState::PreBody(builder) => {

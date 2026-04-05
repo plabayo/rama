@@ -11,7 +11,9 @@
 //! use rama_core::{extensions::Extensions, Service, Layer};
 //! use serde::Deserialize;
 //!
-//! #[derive(Debug, Deserialize, Clone)]
+//! use rama_core::extensions::Extension;
+//!
+//! #[derive(Debug, Deserialize, Clone, Extension)]
 //! struct Config {
 //!     s: String,
 //!     n: i32,
@@ -59,7 +61,7 @@ use std::{fmt, marker::PhantomData};
 pub fn extract_header_config<H, T, G>(request: &G, header_name: H) -> Result<T, HeaderValueErr>
 where
     H: AsHeaderName + Copy,
-    T: DeserializeOwned + Clone + Send + Sync + 'static,
+    T: DeserializeOwned + Send + Sync + 'static,
     G: HeaderValueGetter,
 {
     let value = request.header_str(header_name)?;
@@ -141,7 +143,7 @@ where
 impl<T, S, Body, E> Service<Request<Body>> for HeaderConfigService<T, S>
 where
     S: Service<Request<Body>, Error = E>,
-    T: DeserializeOwned + Extension + Clone,
+    T: DeserializeOwned + Extension,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
@@ -236,7 +238,7 @@ impl<T, S> Layer<S> for HeaderConfigLayer<T> {
 
 #[cfg(test)]
 mod test {
-    use rama_core::extensions::ExtensionsRef;
+    use rama_core::extensions::{Extension, ExtensionsRef};
     use serde::Deserialize;
 
     use crate::Method;
@@ -384,7 +386,7 @@ mod test {
         assert!(result.is_err());
     }
 
-    #[derive(Debug, Deserialize, Clone)]
+    #[derive(Debug, Deserialize, Clone, Extension)]
     struct Config {
         s: String,
         n: i32,

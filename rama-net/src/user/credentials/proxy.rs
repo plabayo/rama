@@ -1,8 +1,9 @@
 use std::fmt;
 
 use super::{Basic, Bearer};
+use rama_core::extensions::Extension;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Extension wrapper that can be used by
 /// Deep Protocol Inspection (DPI) services which
 /// processed an exchanged [`ProxyCredential`].

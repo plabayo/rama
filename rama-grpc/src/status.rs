@@ -1,7 +1,7 @@
 use std::{borrow::Cow, error::Error, fmt, sync::Arc};
 
 use base64::Engine as _;
-use rama_core::{error::BoxError, telemetry::tracing};
+use rama_core::{error::BoxError, extensions::Extension, telemetry::tracing};
 use rama_utils::str::arcstr::ArcStr;
 
 use ::{
@@ -69,6 +69,8 @@ impl StatusInner {
         Status(Box::new(self))
     }
 }
+
+impl Extension for Status {}
 
 /// gRPC status codes used by [`Status`].
 ///

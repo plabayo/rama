@@ -1,5 +1,5 @@
 use std::{
-    fmt, io,
+    io,
     os::windows::io::{AsRawSocket, RawSocket},
     ptr,
 };
@@ -7,7 +7,7 @@ use std::{
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
 };
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
@@ -30,7 +30,7 @@ pub struct ProxyTargetFromWfpContextLayer<D> {
 }
 
 pub trait WfpContextDecoder: Send + Sync + 'static {
-    type Context: fmt::Debug + Clone + Send + Sync + 'static;
+    type Context: Extension;
     type Error: Into<BoxError>;
 
     fn decode(&self, bytes: &[u8]) -> Result<(Self::Context, ProxyTarget), Self::Error>;

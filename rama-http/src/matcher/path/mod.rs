@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::service::web::response::IntoResponse;
 use crate::{Request, StatusCode};
 use ahash::{HashMap, HashMapExt as _};
-use rama_core::extensions::Extensions;
+use rama_core::extensions::{Extension, Extensions};
 use rama_net::uri::util::percent_encoding;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::str::arcstr::ArcStr;
@@ -12,7 +12,7 @@ use rama_utils::str::starts_with_ignore_ascii_case;
 
 mod de;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Extension)]
 /// parameters that are inserted in the [`Extensions`],
 /// in case the [`PathMatcher`] found a match for the given [`Request`].
 pub struct UriParams {

@@ -18,12 +18,12 @@
 
 use rama::{
     Layer,
+    extensions::Extensions,
     http::{
         HeaderName,
         server::HttpServer,
         service::web::{
             IntoEndpointService,
-            extract::Extension,
             response::{IntoResponse, Json},
         },
     },
@@ -45,7 +45,8 @@ async fn main() {
         .unwrap();
 }
 
-async fn handle(Extension(ua): Extension<UserAgent>) -> impl IntoResponse {
+async fn handle(ext: Extensions) -> impl IntoResponse {
+    let ua = ext.get_ref::<UserAgent>().unwrap();
     Json(json!({
         "ua": ua.header_str(),
         "kind": ua.info().map(|info| info.kind.to_string()),

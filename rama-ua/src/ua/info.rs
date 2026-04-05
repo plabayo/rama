@@ -1,5 +1,6 @@
 use super::parse_http_user_agent_header;
 use rama_core::error::{BoxError, ErrorExt};
+use rama_core::extensions::Extension;
 use rama_utils::{macros::match_ignore_ascii_case_str, str::arcstr::ArcStr};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{convert::Infallible, fmt, str::FromStr};
@@ -7,7 +8,7 @@ use std::{convert::Infallible, fmt, str::FromStr};
 /// User Agent (UA) information.
 ///
 /// See [the module level documentation](crate) for more information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct UserAgent {
     pub(super) header: ArcStr,
     pub(super) data: UserAgentData,
