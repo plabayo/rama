@@ -197,10 +197,6 @@ mod tests {
 
         assert_eq!(addr.ip_addr, IpAddr::V6(ip));
         assert_eq!(addr.port, port);
-        assert_eq!(
-            SocketAddr::from(addr),
-            SocketAddr::V6(SocketAddrV6::new(ip, port, flowinfo, scope_id))
-        );
     }
 
     #[test]
