@@ -3341,6 +3341,7 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "venndb",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

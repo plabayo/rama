@@ -156,3 +156,23 @@ mod unix {
         }
     }
 }
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use super::TcpStream;
+    use std::os::windows::io::{AsRawSocket, AsSocket, BorrowedSocket, RawSocket};
+
+    impl AsSocket for TcpStream {
+        #[inline(always)]
+        fn as_socket(&self) -> BorrowedSocket<'_> {
+            self.stream.as_socket()
+        }
+    }
+
+    impl AsRawSocket for TcpStream {
+        #[inline(always)]
+        fn as_raw_socket(&self) -> RawSocket {
+            self.stream.as_raw_socket()
+        }
+    }
+}
