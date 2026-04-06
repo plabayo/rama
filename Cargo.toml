@@ -680,6 +680,10 @@ name = "tcp_listener_layers"
 required-features = ["tcp"]
 
 [[example]]
+name = "linux_tproxy_tcp"
+required-features = ["tcp"]
+
+[[example]]
 name = "tcp_nd_json"
 required-features = ["tcp"]
 

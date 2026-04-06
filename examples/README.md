@@ -2,7 +2,14 @@
 
 This directory contains example implementations demonstrating various features and capabilities of the Rama framework. The examples are organized by category below.
 
-All these examples are tested. This validates that all tests are functional
+Other example locations in this repository:
+
+- [./grpc](./grpc) for gRPC-focused examples
+- [../ffi/apple/examples](../ffi/apple/examples) for Apple FFI and Network Extension examples
+
+All these examples are tested, except where not easily possible.
+If an example is not tested it will be mentioned in the module doc of that example.
+Otherwise you can assume it has tests, which validates that all tests are functional
 at any time and it can also serve as an additional example on how the client-side
 counterpart of a server-like example looks like.
 
@@ -110,6 +117,17 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`proxy_connectivity_check.rs`](./proxy_connectivity_check.rs) -
   combines an http and socks5 proxy, but mostly is about how you can add a connectivity check,
   used by humans as a sanity check for whether or not they are connected (via) "the" proxy.
+
+### Transparent Proxies
+
+- [`linux_tproxy_tcp.rs`](./linux_tproxy_tcp.rs) -
+  Linux-only transparent TCP proxy example using TPROXY, `IP_TRANSPARENT`,
+  original-destination recovery via `getsockname`, and byte-for-byte forwarding
+
+Other locations that demonstrate how to make and run a Transparent Proxy:
+
+- [../ffi/apple/examples/transparent_proxy](../ffi/apple/transparent_proxy)
+  NetworkExtension (NE) Transparent Proxy for on MacOS (Apple)
 
 ### HaProxy
 

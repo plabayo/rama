@@ -3321,6 +3321,7 @@ dependencies = [
  "hex",
  "ipnet",
  "itertools 0.14.0",
+ "libc",
  "md5",
  "nom 8.0.0",
  "parking_lot",

@@ -9,11 +9,12 @@ use rama_core::{
     extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
-#[cfg(any(target_os = "windows", target_family = "unix"))]
-use rama_net::socket;
 use rama_net::{address::SocketAddress, stream::Socket};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub use tokio::net::TcpStream as TokioTcpStream;
+
+#[cfg(any(target_os = "windows", target_family = "unix"))]
+use rama_net::socket;
 
 pin_project! {
     #[non_exhaustive]
@@ -133,5 +134,25 @@ impl Socket for TcpStream {
     #[inline]
     fn peer_addr(&self) -> std::io::Result<SocketAddress> {
         self.stream.peer_addr().map(Into::into)
+    }
+}
+
+#[cfg(target_family = "unix")]
+mod unix {
+    use super::TcpStream;
+    use std::os::fd::{AsFd, AsRawFd};
+
+    impl AsFd for TcpStream {
+        #[inline(always)]
+        fn as_fd(&self) -> std::os::unix::prelude::BorrowedFd<'_> {
+            self.stream.as_fd()
+        }
+    }
+
+    impl AsRawFd for TcpStream {
+        #[inline(always)]
+        fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
+            self.stream.as_raw_fd()
+        }
     }
 }
