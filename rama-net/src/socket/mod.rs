@@ -1,4 +1,4 @@
-pub use ::socket2 as core;
+pub use socket2 as core;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 mod device_name;
@@ -18,3 +18,9 @@ pub use opts::SocketOptions;
 mod svc;
 #[doc(inline)]
 pub use svc::SocketService;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
+
+#[cfg(target_os = "windows")]
+pub mod windows;

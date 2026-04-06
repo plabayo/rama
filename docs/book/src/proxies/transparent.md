@@ -7,11 +7,16 @@ A transparent proxy, also known as an intercepting proxy, inline proxy, or force
 </div>
 </div>
 
-[Examples](https://github.com/plabayo/rama/tree/main/ffi/apple/examples):
+[Examples](https://github.com/plabayo/rama/tree/main/examples):
 
+- [/examples/linux_tproxy_tcp.rs](https://github.com/plabayo/rama/tree/main/examples/linux_tproxy_tcp.rs):
+  Linux-only transparent TCP proxy example using TPROXY, `IP_TRANSPARENT`,
+  original-destination recovery via `getsockname`, and byte-for-byte forwarding.
+  The example file also documents the required `ip rule` and `iptables` or
+  `nftables` setup.
 - [ffi/apple/examples/transparent_proxy](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy):
-  This MacOS-only example shows how to link a Rust staticlib that implements
-  the Rama NetworkExtension "C" ABI into a macOS Transparent Proxy extension.
+  macOS-only example showing how to link a Rust staticlib that implements
+  the Rama NetworkExtension "C" ABI into a transparent proxy extension.
 
 ## Description
 
