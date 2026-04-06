@@ -1,5 +1,7 @@
 use std::{
-    fmt, io, os::windows::io::{AsRawSocket, RawSocket}, ptr
+    fmt, io,
+    os::windows::io::{AsRawSocket, RawSocket},
+    ptr,
 };
 
 use rama_core::{
@@ -7,25 +9,24 @@ use rama_core::{
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsMut,
 };
-use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
+use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::Networking::WinSock::{
-    SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT, SOCKET, SOCKET_ERROR, WSAGetLastError, WSAIoctl,
+    SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT, SOCKET, SOCKET_ERROR, WSAEFAULT, WSAGetLastError,
+    WSAIoctl,
 };
 
-use crate::{proxy::ProxyTarget};
+use crate::proxy::ProxyTarget;
+
+const WFP_CONTEXT_BUFFER_STACK_LEN: usize = 128;
+
+/// The internal buffer type used for WFP context.
+type WfpContextBuffer = SmallVec<[u8; WFP_CONTEXT_BUFFER_STACK_LEN]>;
 
 #[derive(Debug, Clone)]
-/// Layer to create [`ProxyTargetFromWfpContext`] middleware.
-///
-/// This middleware is intended for Windows transparent proxy setups where a
-/// WFP-based redirector or driver stores per-socket redirect context retrievable
-/// via `WSAIoctl(SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT, ...)`.
-///
-/// The queried bytes are decoded into a context value using the configured
-/// decoder. That context is inserted into the input extensions, and
-/// [`ProxyTarget`] is derived from it using `TryFrom<&T>`.
 pub struct ProxyTargetFromWfpContextLayer<D> {
     decoder: D,
+    context_optional: bool,
 }
 
 pub trait WfpContextDecoder: Send + Sync + 'static {
@@ -36,14 +37,20 @@ pub trait WfpContextDecoder: Send + Sync + 'static {
 }
 
 impl<D> ProxyTargetFromWfpContextLayer<D> {
-    #[inline(always)]
-    /// Create a new [`ProxyTargetFromWfpContextLayer`] using
-    /// the provided WFP Context Decoder.
     pub fn new(decoder: D) -> Self {
-        Self { decoder }
+        Self {
+            decoder,
+            context_optional: false,
+        }
+    }
+
+    generate_set_and_with! {
+        pub fn optional(mut self, optional: bool) -> Self {
+            self.context_optional = optional;
+            self
+        }
     }
 }
-
 
 impl<S, D> Layer<S> for ProxyTargetFromWfpContextLayer<D>
 where
@@ -55,18 +62,16 @@ where
         ProxyTargetFromWfpContext {
             inner,
             decoder: self.decoder.clone(),
+            context_optional: self.context_optional,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-/// Middleware that queries WFP redirect context, decodes it, stores it in
-/// extensions, and inserts the corresponding [`ProxyTarget`].
-///
-/// Created using [`ProxyTargetFromWfpContextLayer`].
 pub struct ProxyTargetFromWfpContext<S, D> {
     inner: S,
     decoder: D,
+    context_optional: bool,
 }
 
 impl<S, Input, D> Service<Input> for ProxyTargetFromWfpContext<S, D>
@@ -79,8 +84,25 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
-        let context_bytes = query_wfp_redirect_context(input.as_raw_socket())
-            .context("query WFP context from input stream")?;
+        let context_bytes = match query_wfp_redirect_context(input.as_raw_socket())
+            .context("query WFP context from input stream")?
+        {
+            Some(context_bytes) => context_bytes,
+            None if self.context_optional => {
+                return self
+                    .inner
+                    .serve(input)
+                    .await
+                    .context("inner service failed");
+            }
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "missing WFP redirect context",
+                )
+                .into());
+            }
+        };
 
         let (context, proxy_target) = self
             .decoder
@@ -90,45 +112,27 @@ where
         input.extensions_mut().insert(context);
         input.extensions_mut().insert(proxy_target);
 
-        self.inner.serve(input).await.context("inner serve tcp")
+        self.inner
+            .serve(input)
+            .await
+            .context("inner service failed")
     }
 }
 
-fn query_wfp_redirect_context(socket: RawSocket) -> io::Result<Box<[u8]>> {
+fn query_wfp_redirect_context(socket: RawSocket) -> io::Result<Option<WfpContextBuffer>> {
     let socket = socket as SOCKET;
     let mut bytes_returned = 0u32;
 
-    let first_rc = unsafe {
-        // SAFETY: the socket value comes from `AsRawSocket`; this is a synchronous
-        // `WSAIoctl` query with no input buffer, no output buffer, and valid
-        // pointers for `bytes_returned`; overlapped parameters are null.
-        WSAIoctl(
-            socket,
-            SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT,
-            ptr::null(),
-            0,
-            ptr::null_mut(),
-            0,
-            &mut bytes_returned,
-            ptr::null_mut(),
-            None,
-        )
-    };
+    // Start with our stack allocated capacity.
+    let mut buffer = WfpContextBuffer::from_elem(0u8, WFP_CONTEXT_BUFFER_STACK_LEN);
 
-    if first_rc == 0 && bytes_returned == 0 {
-        return Ok(Box::default());
-    }
-
-    if bytes_returned == 0 {
-        return Err(last_wsa_error());
-    }
-
-    let mut buffer: SmallVec<[u8; 64]> = SmallVec::with_capacity(bytes_returned as usize);
-    let mut final_bytes_returned = 0u32;
-    let second_rc = unsafe {
-        // SAFETY: the output buffer is valid for `buffer.len()` bytes and
-        // writable; `final_bytes_returned` is a valid out-pointer; overlapped
-        // parameters are null for synchronous operation.
+    // SAFETY:
+    // 1. `socket` is a raw socket handle obtained from `AsRawSocket`.
+    // 2. `SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT` is used as a synchronous IOCTL.
+    // 3. `buffer.as_mut_ptr()` points to writable memory for `buffer.len()` bytes.
+    // 4. `bytes_returned` is a valid out pointer for the result size.
+    // 5. Overlapped and completion routine parameters are null for synchronous operation.
+    let rc = unsafe {
         WSAIoctl(
             socket,
             SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT,
@@ -136,23 +140,64 @@ fn query_wfp_redirect_context(socket: RawSocket) -> io::Result<Box<[u8]>> {
             0,
             buffer.as_mut_ptr().cast(),
             buffer.len() as u32,
-            &mut final_bytes_returned,
+            &mut bytes_returned,
             ptr::null_mut(),
             None,
         )
     };
 
-    if second_rc == SOCKET_ERROR {
+    if rc == 0 {
+        buffer.truncate(bytes_returned as usize);
+        return Ok(Some(buffer));
+    }
+
+    let err_code = unsafe { WSAGetLastError() };
+
+    // Retry if the initial buffer was too small and the required size was returned.
+    if (err_code == ERROR_INSUFFICIENT_BUFFER as i32 || err_code == WSAEFAULT) && bytes_returned > 0
+    {
+        buffer.resize(bytes_returned as usize, 0u8);
+        let mut final_bytes = 0u32;
+
+        // SAFETY:
+        // 1. `buffer` has been resized, so `buffer.as_mut_ptr()` is valid for `buffer.len()` bytes.
+        // 2. All other pointer and handle requirements remain the same as above.
+        let second_rc = unsafe {
+            WSAIoctl(
+                socket,
+                SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT,
+                ptr::null(),
+                0,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                &mut final_bytes,
+                ptr::null_mut(),
+                None,
+            )
+        };
+
+        if second_rc == 0 {
+            buffer.truncate(final_bytes as usize);
+            return Ok(Some(buffer));
+        }
+
         return Err(last_wsa_error());
     }
 
-    buffer.truncate(final_bytes_returned as usize);
-    Ok(buffer.into_boxed_slice())
+    // Treat missing redirect context as absence, not as an error.
+    // Other failures are returned to the caller.
+    if is_no_wfp_redirect_context_error(err_code) {
+        return Ok(None);
+    }
+
+    Err(io::Error::from_raw_os_error(err_code))
 }
 
 fn last_wsa_error() -> io::Error {
-    io::Error::from_raw_os_error(unsafe {
-        // SAFETY: `WSAGetLastError` has no preconditions.
-        WSAGetLastError()
-    })
+    // SAFETY: `WSAGetLastError` is thread local and has no preconditions.
+    io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
+}
+
+fn is_no_wfp_redirect_context_error(err_code: i32) -> bool {
+    err_code == SOCKET_ERROR
 }
