@@ -36,7 +36,8 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example linux_tproxy_tcp --features=tcp
+//! cargo build --example linux_tproxy_tcp --features=tcp,http && \
+//!     sudo target/debug/examples/linux_tproxy_tcp
 //! ```
 //!
 //! The proxy listens on `0.0.0.0:62052`.
@@ -116,22 +117,29 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
-use rama::{
-    Layer, Service,
-    net::{
-        address::SocketAddress,
-        proxy::IoForwardService,
-        socket::{SocketOptions, linux::ProxyTargetFromGetSocketnameLayer, opts::Domain},
-        stream::Socket,
+use ::{
+    rama::{
+        Layer, Service,
+        net::{
+            address::SocketAddress,
+            proxy::IoForwardService,
+            socket::{
+                SocketOptions,
+                linux::ProxyTargetFromGetSocketnameLayer,
+                opts::{Domain, TcpKeepAlive},
+            },
+            stream::Socket,
+        },
+        rt::Executor,
+        service::service_fn,
+        tcp::{TcpStream, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+        telemetry::tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
     },
-    rt::Executor,
-    service::service_fn,
-    tcp::{TcpStream, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
-    telemetry::tracing::{
-        self,
-        level_filters::LevelFilter,
-        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
-    },
+    std::time::Duration,
 };
 
 #[cfg(target_os = "linux")]
@@ -158,14 +166,24 @@ async fn main() {
 #[cfg(target_os = "linux")]
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let exec = Executor::default();
+
     let socket = SocketOptions {
         address: Some(LISTEN_ADDR),
         ip_transparent: Some(true),
+        freebind: Some(true),
         reuse_address: Some(true),
+        reuse_port: Some(true),
+        tcp_no_delay: Some(true),
+        tcp_keep_alive: Some(TcpKeepAlive {
+            time: Some(Duration::from_mins(2)),
+            interval: Some(Duration::from_secs(30)),
+            #[cfg(not(target_os = "windows"))]
+            retries: Some(5),
+        }),
         ..SocketOptions::default_tcp()
     }
     .try_build_socket(Domain::IPv4)?;
-    socket.listen(4096)?;
+    socket.listen(32_768)?;
 
     let listener = TcpListener::bind_socket(socket, exec.clone()).await?;
 
