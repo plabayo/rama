@@ -2,7 +2,7 @@ use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     io::{HeapReader, Io, PrefixedIo},
     telemetry::tracing,
 };
@@ -81,7 +81,7 @@ impl<S> HaProxyService<S> {
 impl<S, IO> Service<IO> for HaProxyService<S>
 where
     S: Service<PrefixedIo<HeapReader, IO>, Error: Into<BoxError>>,
-    IO: Io + Unpin + ExtensionsMut,
+    IO: Io + Unpin + ExtensionsRef,
 {
     type Output = S::Output;
     type Error = BoxError;
@@ -157,27 +157,27 @@ where
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::new_forwarded_for(peer_addr);
                         let forwarded = if let Some(mut forwarded) =
-                            stream.extensions_mut().get::<Forwarded>().cloned()
+                            stream.extensions().get_ref::<Forwarded>().cloned()
                         {
                             forwarded.append(el);
                             forwarded
                         } else {
                             Forwarded::new(el)
                         };
-                        stream.extensions_mut().insert(forwarded);
+                        stream.extensions().insert(forwarded);
                     }
                     v1::Addresses::Tcp6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::new_forwarded_for(peer_addr);
                         let forwarded = if let Some(mut forwarded) =
-                            stream.extensions_mut().get::<Forwarded>().cloned()
+                            stream.extensions().get_ref::<Forwarded>().cloned()
                         {
                             forwarded.append(el);
                             forwarded
                         } else {
                             Forwarded::new(el)
                         };
-                        stream.extensions_mut().insert(forwarded);
+                        stream.extensions().insert(forwarded);
                     }
                     v1::Addresses::Unknown => (),
                 };
@@ -189,27 +189,27 @@ where
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::new_forwarded_for(peer_addr);
                         let forwarded = if let Some(mut forwarded) =
-                            stream.extensions_mut().get::<Forwarded>().cloned()
+                            stream.extensions().get_ref::<Forwarded>().cloned()
                         {
                             forwarded.append(el);
                             forwarded
                         } else {
                             Forwarded::new(el)
                         };
-                        stream.extensions_mut().insert(forwarded);
+                        stream.extensions().insert(forwarded);
                     }
                     v2::Addresses::IPv6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::new_forwarded_for(peer_addr);
                         let forwarded = if let Some(mut forwarded) =
-                            stream.extensions_mut().get::<Forwarded>().cloned()
+                            stream.extensions().get_ref::<Forwarded>().cloned()
                         {
                             forwarded.append(el);
                             forwarded
                         } else {
                             Forwarded::new(el)
                         };
-                        stream.extensions_mut().insert(forwarded);
+                        stream.extensions().insert(forwarded);
                     }
                     v2::Addresses::Unix(_) | v2::Addresses::Unspecified => (),
                 };

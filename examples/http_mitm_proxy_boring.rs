@@ -207,7 +207,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     // as we otherwise might not be able to define the scheme/authority
     // for upstream http requests.
 
-    let state = upgraded.extensions().get::<State>().unwrap();
+    let state = upgraded.extensions().get_ref::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
     let executor = state.exec.clone();
@@ -256,7 +256,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 
     let base_tls_config = if let Some(hello) = req
         .extensions()
-        .get::<SecureTransport>()
+        .get_ref::<SecureTransport>()
         .and_then(|st| st.client_hello())
         .cloned()
     {
@@ -267,7 +267,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
-    let state = req.extensions().get::<State>().unwrap();
+    let state = req.extensions().get_ref::<State>().unwrap();
     let executor = state.exec.clone();
 
     // NOTE: in a production proxy you most likely
@@ -345,12 +345,14 @@ where
 {
     tracing::debug!("detected websocket request: starting MITM WS upgrade...");
 
+    let ingress_upgrade = upgrade::handle_upgrade(&req);
+
     let (parts, body) = req.into_parts();
     let parts_copy = parts.clone();
 
     let req = Request::from_parts(parts, body);
 
-    let state = req.extensions().get::<State>().unwrap();
+    let state = req.extensions().get_ref::<State>().unwrap();
     let guard = state.exec.guard().cloned();
 
     let cancel = async move {
@@ -367,7 +369,7 @@ where
     // In a better way this should be handled behind the scenes similar to tls alpn works
     // Now that we can pass extensions all around this will probably just work, but needs
     // to be looked at individually
-    let mut extensions = Extensions::new();
+    let extensions = Extensions::new();
     extensions.insert(TargetHttpVersion(target_version));
 
     let mut handshake = match client
@@ -382,7 +384,7 @@ where
         }
     };
 
-    if let Some(orig_req_headers) = handshake.response.extensions().get::<RequestHeaders>() {
+    if let Some(orig_req_headers) = handshake.response.extensions().get_ref::<RequestHeaders>() {
         let req_extensions = orig_req_headers
             .headers()
             .typed_get::<SecWebSocketExtensions>();
@@ -433,9 +435,8 @@ where
 
     tokio::spawn(async move {
         tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
-        let request = Request::from_parts(parts_copy, Body::empty());
 
-        let ingress_socket = match upgrade::handle_upgrade(&request).await {
+        let ingress_socket = match ingress_upgrade.await {
             Ok(upgraded) => {
                 AsyncWebSocket::from_raw_socket(upgraded, Role::Server, Some(ingress_socket_cfg))
                     .await

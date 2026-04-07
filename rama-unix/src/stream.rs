@@ -5,10 +5,7 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-};
+use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub use tokio::net::UnixStream as TokioUnixStream;
 
@@ -46,12 +43,6 @@ impl From<UnixStream> for TokioUnixStream {
 impl ExtensionsRef for UnixStream {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for UnixStream {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

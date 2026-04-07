@@ -226,10 +226,12 @@ where
 {
     let HostWithPort { host, port } = address;
 
-    let maybe_dns_overwrite = extensions.get::<DnsAddresssResolverOverwrite>().cloned();
+    let maybe_dns_overwrite = extensions
+        .get_ref::<DnsAddresssResolverOverwrite>()
+        .cloned();
     let dns_resolver = (maybe_dns_overwrite, dns);
 
-    let connect_ip_mode = extensions.get().copied().unwrap_or(ConnectIpMode::Dual);
+    let connect_ip_mode = extensions.get_ref().copied().unwrap_or(ConnectIpMode::Dual);
 
     let ip_stream = dns_resolver
         .happy_eyeballs_resolver(host.clone())
@@ -444,13 +446,13 @@ mod tests {
     #[tokio::test]
     async fn test_default_tcp_connect_with_incompatible_dns_mode_and_connector_return_dummy() {
         test_generic_err(Ipv4Addr::LOCALHOST, PanicTcpConnector, {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(DnsResolveIpMode::SingleIpV6);
             Some(ext)
         })
         .await;
         test_generic_err(Ipv6Addr::LOCALHOST, PanicTcpConnector, {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(DnsResolveIpMode::SingleIpV4);
             Some(ext)
         })
@@ -461,13 +463,13 @@ mod tests {
     async fn test_default_tcp_connect_with_incompatible_connect_ip_mode_and_connector_return_dummy()
     {
         test_generic_err(Ipv4Addr::LOCALHOST, PanicTcpConnector, {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(ConnectIpMode::Ipv6);
             Some(ext)
         })
         .await;
         test_generic_err(Ipv6Addr::LOCALHOST, PanicTcpConnector, {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(ConnectIpMode::Ipv4);
             Some(ext)
         })
@@ -543,7 +545,7 @@ mod unix_windows_tests {
             DnsResolveIpMode::DualPreferIpV4,
         ] {
             test_generic_ok(Ipv4Addr::LOCALHOST, {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(dns_resolve_ip_mode);
                 Some(ext)
             })
@@ -552,7 +554,7 @@ mod unix_windows_tests {
 
         for dns_resolve_ip_mode in [DnsResolveIpMode::SingleIpV6, DnsResolveIpMode::Dual] {
             test_generic_ok(Ipv6Addr::LOCALHOST, {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(dns_resolve_ip_mode);
                 Some(ext)
             })
@@ -564,7 +566,7 @@ mod unix_windows_tests {
     async fn test_default_tcp_connect_happy_path_explicit_connect_ip_mode() {
         for connect_ip_mode in [ConnectIpMode::Ipv4, ConnectIpMode::Dual] {
             test_generic_ok(Ipv4Addr::LOCALHOST, {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(connect_ip_mode);
                 Some(ext)
             })
@@ -573,7 +575,7 @@ mod unix_windows_tests {
 
         for connect_ip_mode in [ConnectIpMode::Ipv6, ConnectIpMode::Dual] {
             test_generic_ok(Ipv6Addr::LOCALHOST, {
-                let mut ext = Extensions::new();
+                let ext = Extensions::new();
                 ext.insert(connect_ip_mode);
                 Some(ext)
             })
@@ -584,14 +586,14 @@ mod unix_windows_tests {
     #[tokio::test]
     async fn test_default_tcp_connect_happy_path_with_dns_overwrite() {
         test_generic_ok(DenyAllDnsResolver::new(), {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(DnsAddresssResolverOverwrite::new(Ipv4Addr::LOCALHOST));
             Some(ext)
         })
         .await;
 
         test_generic_ok(DenyAllDnsResolver::new(), {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(DnsAddresssResolverOverwrite::new(Ipv6Addr::LOCALHOST));
             Some(ext)
         })

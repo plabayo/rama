@@ -45,7 +45,7 @@
 use rama::{
     Layer, Service,
     error::BoxError,
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     graceful::{Shutdown, ShutdownGuard},
     http::{layer::trace::TraceLayer, server::HttpServer, service::web::Router},
     io::Io,
@@ -125,7 +125,7 @@ struct SniRouterSvc {
 
 impl<S> Service<SniRequest<S>> for SniRouterSvc
 where
-    S: Io + ExtensionsMut + Unpin,
+    S: Io + ExtensionsRef + Unpin,
 {
     type Output = ();
     type Error = BoxError;

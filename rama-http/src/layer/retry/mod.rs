@@ -139,16 +139,10 @@ mod test {
         service::web::response::IntoResponse,
     };
     use rama_core::{
-        Layer,
-        extensions::Extensions,
-        extensions::{ExtensionsMut, ExtensionsRef},
-        service::service_fn,
+        Layer, extensions::Extensions, extensions::ExtensionsRef, service::service_fn,
     };
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
-    use std::{
-        sync::{Arc, atomic::AtomicUsize},
-        time::Duration,
-    };
+    use std::{sync::atomic::AtomicUsize, time::Duration};
 
     #[tokio::test]
     async fn test_service_with_managed_retry() {
@@ -160,9 +154,9 @@ mod test {
         )
         .unwrap();
 
-        #[derive(Debug, Clone)]
+        #[derive(Debug)]
         struct State {
-            retry_counter: Arc<AtomicUsize>,
+            retry_counter: AtomicUsize,
         }
 
         async fn retry<Body, E>(
@@ -176,7 +170,7 @@ mod test {
             if let Ok(ref res) = result {
                 if res.status().is_server_error() {
                     req.extensions()
-                        .get::<State>()
+                        .get_ref::<State>()
                         .unwrap()
                         .retry_counter
                         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -186,7 +180,7 @@ mod test {
                 }
             } else {
                 req.extensions()
-                    .get::<State>()
+                    .get_ref::<State>()
                     .unwrap()
                     .retry_counter
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -212,15 +206,15 @@ mod test {
         }
 
         fn extensions() -> Extensions {
-            let mut extensions = Extensions::new();
+            let extensions = Extensions::new();
             extensions.insert(State {
-                retry_counter: Arc::new(AtomicUsize::new(0)),
+                retry_counter: AtomicUsize::new(0),
             });
             extensions
         }
 
         fn do_not_retry_extensions() -> Extensions {
-            let mut extensions = extensions();
+            let extensions = extensions();
             extensions.insert(DoNotRetry::default());
             extensions
         }
@@ -233,10 +227,10 @@ mod test {
             retried: bool,
             service: &impl Service<Request, Output = Response, Error = E>,
         ) {
-            let state = extensions.get::<State>().unwrap().clone();
+            let state = extensions.get_arc::<State>().unwrap();
 
-            let mut request = request(input);
-            *request.extensions_mut() = extensions;
+            let request = request(input);
+            request.extensions().extend(&extensions);
 
             let fut = service.serve(request);
             let res = fut.await.unwrap();
@@ -269,10 +263,10 @@ mod test {
             retried: bool,
             service: &impl Service<Request, Output = Response, Error = E>,
         ) {
-            let state = extensions.get::<State>().unwrap().clone();
+            let state = extensions.get_arc::<State>().unwrap();
 
-            let mut request = request(input);
-            *request.extensions_mut() = extensions;
+            let request = request(input);
+            request.extensions().extend(&extensions);
 
             let fut = service.serve(request);
             let res = fut.await;

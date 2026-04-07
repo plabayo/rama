@@ -4,7 +4,7 @@ use rama_core::bytes::BytesMut;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_core::extensions::ChainableExtensions;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_http_headers::HeaderMapExt;
 use rama_http_headers::Upgrade;
@@ -56,13 +56,13 @@ where
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection {
-            mut conn,
+            conn,
             input: mut req,
         } = self.inner.connect(req).await.into_box_error()?;
 
         let ext_chain = (&conn, &req);
         let version = ext_chain
-            .get::<TargetHttpVersion>()
+            .get_ref::<TargetHttpVersion>()
             .map(|version| version.0);
 
         match (version, self.default_http_version) {
@@ -84,7 +84,7 @@ where
 
                 // Since this default is now the actual target, also store this on the connection so other components
                 // can see this. This is needed in case this adapter is used twice e.g. with connection pooling
-                conn.extensions_mut().insert(TargetHttpVersion(version));
+                conn.extensions().insert(TargetHttpVersion(version));
             }
             (None, None) => {
                 tracing::trace!(

@@ -11,7 +11,7 @@
 
 use pin_project_lite::pin_project;
 use rama_core::{
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
     telemetry::tracing,
 };
 use std::{
@@ -49,12 +49,6 @@ impl<S: ExtensionsRef> ExtensionsRef for BytesRWTracker<S> {
     }
 }
 
-impl<S: ExtensionsMut> ExtensionsMut for BytesRWTracker<S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.stream.extensions_mut()
-    }
-}
-
 impl<S: fmt::Debug> fmt::Debug for BytesRWTracker<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BytesRWTracker")
@@ -65,7 +59,7 @@ impl<S: fmt::Debug> fmt::Debug for BytesRWTracker<S> {
     }
 }
 
-impl<S: ExtensionsMut> BytesRWTracker<S> {
+impl<S: ExtensionsRef> BytesRWTracker<S> {
     /// Create a new [`BytesRWTracker`] that wraps the
     /// given [`AsyncRead`] and/or [`AsyncWrite`].
     ///

@@ -7,7 +7,7 @@ use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_core::extensions::{Extension, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::{Layer, Service};
 use rama_http_types::body::OptionalBody;
 use rama_net::user::UserId;
@@ -174,15 +174,15 @@ where
     type Output = Response<OptionalBody<ResBody>>;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let Some(credentials) = req
             .headers()
             .typed_get::<ProxyAuthorization<C>>()
             .map(|h| h.0)
-            .or_else(|| req.extensions().get::<C>().cloned())
+            .or_else(|| req.extensions().get_ref::<C>().cloned())
         {
             if let Some(ext) = self.proxy_auth.authorized(credentials).await {
-                req.extensions_mut().extend(ext);
+                req.extensions().extend(&ext);
                 Ok(self
                     .inner
                     .serve(req)
@@ -197,7 +197,7 @@ where
                     .context("create auth-required response")?)
             }
         } else if self.allow_anonymous {
-            req.extensions_mut().insert(UserId::Anonymous);
+            req.extensions().insert(UserId::Anonymous);
             Ok(self
                 .inner
                 .serve(req)

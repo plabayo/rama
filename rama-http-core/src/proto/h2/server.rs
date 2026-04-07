@@ -9,7 +9,7 @@ use pin_project_lite::pin_project;
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_http::StreamingBody;
@@ -107,7 +107,7 @@ struct Serving<T> {
 
 impl<T, S> Server<T, S>
 where
-    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
 {
     pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Self {
@@ -173,7 +173,7 @@ where
 
 impl<T, S> Future for Server<T, S>
 where
-    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
 {
     type Output = crate::Result<Dispatched>;
@@ -220,7 +220,7 @@ where
 
 impl<T> Serving<T>
 where
-    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
 {
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn poll_server<S>(
@@ -249,7 +249,7 @@ where
                     ping.record_non_data();
 
                     let is_connect = req.method() == Method::CONNECT;
-                    let (mut parts, stream) = req.into_parts();
+                    let (parts, stream) = req.into_parts();
                     let (req, connect_parts) = if !is_connect {
                         (
                             Request::from_parts(

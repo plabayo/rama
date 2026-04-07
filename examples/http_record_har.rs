@@ -161,7 +161,7 @@ async fn main() -> Result<(), BoxError> {
                 HijackLayer::new(
                     DomainMatcher::exact("har.toggle.internal"),
                     Arc::new(WebService::default().with_post("/switch", async |req: Request| {
-                        let state = req.extensions().get::<State>().unwrap();
+                        let state = req.extensions().get_ref::<State>().unwrap();
                         if let Err(err) = state.har_toggle_ctl.send(()).await {
                             tracing::error!("failed to toggle HAR Recording: {err}");
                             return StatusCode::INTERNAL_SERVER_ERROR;
@@ -216,7 +216,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     // as we otherwise might not be able to define the scheme/authority
     // for upstream http requests.
 
-    let state = upgraded.extensions().get::<State>().unwrap();
+    let state = upgraded.extensions().get_ref::<State>().unwrap();
     let http_service = Arc::new(new_http_mitm_proxy(state));
 
     let executor = state.exec.clone();
@@ -261,7 +261,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 
     let base_tls_config = if let Some(hello) = req
         .extensions()
-        .get::<SecureTransport>()
+        .get_ref::<SecureTransport>()
         .and_then(|st| st.client_hello())
         .cloned()
     {
@@ -272,7 +272,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
-    let state = req.extensions().get::<State>().unwrap();
+    let state = req.extensions().get_ref::<State>().unwrap();
 
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
@@ -301,7 +301,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         Ok(mut resp) => {
             if let Some(har_fp) = resp
                 .extensions()
-                .get::<HarFilePath>()
+                .get_ref::<HarFilePath>()
                 .map(|fp| fp.display().to_string())
                 .map(|fp| HeaderValue::try_from(fp).unwrap())
             {

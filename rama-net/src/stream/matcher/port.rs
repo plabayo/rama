@@ -46,9 +46,9 @@ impl PortMatcher {
 
 #[cfg(feature = "http")]
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for PortMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         req.extensions()
-            .get::<SocketInfo>()
+            .get_ref::<SocketInfo>()
             .map(|info| info.peer_addr().port == self.port)
             .unwrap_or(self.optional)
     }
@@ -58,7 +58,7 @@ impl<Socket> rama_core::matcher::Matcher<Socket> for PortMatcher
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(&self, _ext: Option<&mut Extensions>, stream: &Socket) -> bool {
+    fn matches(&self, _ext: Option<&Extensions>, stream: &Socket) -> bool {
         stream
             .peer_addr()
             .map(|addr| addr.port == self.port)
@@ -76,11 +76,11 @@ mod test {
     #[cfg(feature = "http")]
     #[test]
     fn test_port_matcher_http() {
-        use rama_core::extensions::ExtensionsMut;
+        use rama_core::extensions::ExtensionsRef;
 
         let matcher = PortMatcher::new(8080);
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method("GET")
             .uri("/hello")
             .body(())
@@ -90,17 +90,17 @@ mod test {
         assert!(!matcher.matches(None, &req));
 
         // test #2: no match: test with different socket info (port difference)
-        req.extensions_mut()
+        req.extensions()
             .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8081).into()));
         assert!(!matcher.matches(None, &req));
 
         // test #3: match: test with matching port
-        req.extensions_mut()
+        req.extensions()
             .insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
         assert!(matcher.matches(None, &req));
 
         // test #4: match: test with different ip, same port
-        req.extensions_mut()
+        req.extensions()
             .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
         assert!(matcher.matches(None, &req));
 

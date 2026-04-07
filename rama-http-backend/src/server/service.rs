@@ -4,7 +4,7 @@ use super::HttpServeResult;
 use super::core_conn::HttpCoreConnServer;
 use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::io::Io;
 use rama_core::rt::Executor;
@@ -142,7 +142,7 @@ where
     where
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
-        IO: Io + ExtensionsMut,
+        IO: Io + ExtensionsRef,
     {
         self.builder
             .http_core_serve_connection(stream, service, self.exec.guard().cloned())
@@ -226,7 +226,7 @@ where
     B: HttpCoreConnServer,
     S: Service<Request, Output = Response, Error = Infallible> + Clone,
     Response: IntoResponse + Send + 'static,
-    IO: Io + ExtensionsMut,
+    IO: Io + ExtensionsRef,
 {
     type Output = ();
     type Error = rama_core::error::BoxError;

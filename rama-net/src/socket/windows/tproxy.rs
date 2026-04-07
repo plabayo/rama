@@ -7,7 +7,7 @@ use std::{
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
 };
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
@@ -77,13 +77,13 @@ pub struct ProxyTargetFromWfpContext<S, D> {
 impl<S, Input, D> Service<Input> for ProxyTargetFromWfpContext<S, D>
 where
     S: Service<Input, Error: Into<BoxError>>,
-    Input: AsRawSocket + ExtensionsMut + Send + 'static,
+    Input: AsRawSocket + ExtensionsRef + Send + 'static,
     D: WfpContextDecoder,
 {
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let context_bytes = match query_wfp_redirect_context(input.as_raw_socket())
             .context("query WFP context from input stream")?
         {
@@ -109,8 +109,8 @@ where
             .decode(&context_bytes)
             .context("decode WFP context")?;
 
-        input.extensions_mut().insert(context);
-        input.extensions_mut().insert(proxy_target);
+        input.extensions().insert(context);
+        input.extensions().insert(proxy_target);
 
         self.inner
             .serve(input)

@@ -314,7 +314,7 @@ fn badge_html(label: &str) -> Vec<u8> {
 }
 
 fn try_get_domain_for_req<Body>(req: &Request<Body>) -> Option<Cow<'_, Domain>> {
-    if let Some(ProxyTarget(target)) = req.extensions().get()
+    if let Some(ProxyTarget(target)) = req.extensions().get_ref()
         && let Some(domain) = target.host.as_domain()
     {
         Some(Cow::Borrowed(domain))

@@ -22,7 +22,7 @@
 
 use rama::{
     Layer as _, Service,
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     http::{
         Body, BodyExtractExt, Request, client::HttpConnectorLayer, server::HttpServer,
         service::web::Router,
@@ -90,27 +90,26 @@ async fn main() {
         "try to establish proxied connection over SOCKS5 within a TLS Tunnel",
     );
 
-    let mut request = Request::builder()
+    let request = Request::builder()
         .uri(uri.clone())
         .body(Body::empty())
         .expect("build simple GET request");
 
-    request.extensions_mut().insert(ProxyAddress {
+    request.extensions().insert(ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
         address: proxy_socket_addr.into(),
         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
     });
 
     let EstablishedClientConnection {
-        input: mut req,
+        input: req,
         conn: http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a proxied connection ready to make http requests");
 
-    req.extensions_mut()
-        .extend(http_service.extensions().clone());
+    req.extensions().extend(http_service.extensions());
 
     tracing::info!(
         url.full = %uri,

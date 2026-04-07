@@ -1,7 +1,7 @@
 use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
-use rama_core::extensions::{Extensions, ExtensionsMut};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
@@ -191,14 +191,14 @@ where
     S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
-        + ExtensionsMut
+        + ExtensionsRef
         + 'static,
 {
     type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { mut input, conn } =
+        let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
         let transport_ctx = input
@@ -226,7 +226,7 @@ where
             self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
 
         // We dont have to insert, but it's nice to have...
-        input.extensions_mut().insert(connector_data_builder);
+        input.extensions().insert(connector_data_builder);
 
         let (stream, negotiated_params) = handshake(connector_data, conn).await?;
 
@@ -236,16 +236,12 @@ where
             "TlsConnector(auto): protocol secure, established tls connection",
         );
 
-        let mut conn = AutoTlsStream::secure(stream);
+        let conn = AutoTlsStream::secure(stream);
 
         #[cfg(feature = "http")]
-        set_target_http_version(
-            input.extensions(),
-            conn.extensions_mut(),
-            &negotiated_params,
-        )?;
+        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
-        conn.extensions_mut().insert(negotiated_params);
+        conn.extensions().insert(negotiated_params);
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -255,14 +251,14 @@ where
     S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
-        + ExtensionsMut
+        + ExtensionsRef
         + 'static,
 {
     type Output = EstablishedClientConnection<TlsStream<S::Connection>, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { mut input, conn } =
+        let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
         let transport_ctx = input
@@ -279,19 +275,15 @@ where
             self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
 
         // We dont have to insert, but it's nice to have...
-        input.extensions_mut().insert(connector_data_builder);
+        input.extensions().insert(connector_data_builder);
 
         let (conn, negotiated_params) = handshake(connector_data, conn).await?;
-        let mut conn = TlsStream::new(conn);
+        let conn = TlsStream::new(conn);
 
         #[cfg(feature = "http")]
-        set_target_http_version(
-            input.extensions(),
-            conn.extensions_mut(),
-            &negotiated_params,
-        )?;
+        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
-        conn.extensions_mut().insert(negotiated_params);
+        conn.extensions().insert(negotiated_params);
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -299,16 +291,16 @@ where
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindTunnel>
 where
     S: ConnectorService<Input, Connection: Io + Unpin>,
-    Input: Send + ExtensionsMut + 'static,
+    Input: Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection { mut input, conn } =
+        let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let maybe_sni_overwrite = if let Some(tunnel) = input.extensions().get::<TlsTunnel>() {
+        let maybe_sni_overwrite = if let Some(tunnel) = input.extensions().get_ref::<TlsTunnel>() {
             tunnel
                 .sni
                 .as_ref()
@@ -328,19 +320,15 @@ where
             self.connector_data(input.extensions(), maybe_sni_overwrite)?;
 
         // We dont have to insert, but it's nice to have...
-        input.extensions_mut().insert(connector_data_builder);
+        input.extensions().insert(connector_data_builder);
 
         let (stream, negotiated_params) = handshake(connector_data, conn).await?;
-        let mut conn = AutoTlsStream::secure(stream);
+        let conn = AutoTlsStream::secure(stream);
 
         #[cfg(feature = "http")]
-        set_target_http_version(
-            input.extensions(),
-            conn.extensions_mut(),
-            &negotiated_params,
-        )?;
+        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
-        conn.extensions_mut().insert(negotiated_params);
+        conn.extensions().insert(negotiated_params);
         tracing::trace!("TlsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection { input, conn })
     }
@@ -349,12 +337,12 @@ where
 #[cfg(feature = "http")]
 fn set_target_http_version(
     request_extensions: &Extensions,
-    conn_extensions: &mut Extensions,
+    conn_extensions: &Extensions,
     tls_params: &NegotiatedTlsParameters,
 ) -> Result<(), BoxError> {
     if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
         let neg_version: Version = proto.try_into()?;
-        if let Some(target_version) = request_extensions.get::<TargetHttpVersion>()
+        if let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>()
             && target_version.0 != neg_version
         {
             return Err(BoxError::from(
@@ -381,12 +369,12 @@ impl<S, K> TlsConnector<S, K> {
     ) -> Result<(TlsConnectorData, TlsConnectorDataBuilder), BoxError> {
         #[cfg(feature = "http")]
         let target_version = extensions
-            .get::<TargetHttpVersion>()
+            .get_ref::<TargetHttpVersion>()
             .map(|version| ApplicationProtocol::try_from(version.0))
             .transpose()?;
 
         let mut builder =
-            if let Some(builder) = extensions.get::<TlsConnectorDataBuilder>().cloned() {
+            if let Some(builder) = extensions.get_ref::<TlsConnectorDataBuilder>().cloned() {
                 tracing::trace!(
                     "use TlsConnectorDataBuilder from extensions as foundation for connector cfg"
                 );
@@ -458,7 +446,7 @@ pub async fn tls_connect<T>(
     connector_data: Option<TlsConnectorData>,
 ) -> Result<TlsStream<T>, TlsConnectError<T>>
 where
-    T: Io + Unpin + ExtensionsMut,
+    T: Io + Unpin + ExtensionsRef,
 {
     let TlsConnectorData {
         config,
@@ -483,7 +471,7 @@ async fn handshake<T>(
     stream: T,
 ) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
 where
-    T: Io + Unpin + ExtensionsMut,
+    T: Io + Unpin + ExtensionsRef,
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
     let TlsStream { inner: stream } =

@@ -7,7 +7,7 @@ use crate::{HeaderName, Request, utils::HeaderValueGetter};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _, ErrorExt},
-    extensions::{Extension, ExtensionsMut},
+    extensions::{Extension, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -92,12 +92,12 @@ where
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, request: Request<Body>) -> Result<Self::Output, Self::Error> {
         match request.header_str(&self.header_name) {
             Ok(str_value) => {
                 let str_value = str_value.trim();
                 if str_value == "1" || str_value.eq_ignore_ascii_case("true") {
-                    request.extensions_mut().insert(T::default());
+                    request.extensions().insert(T::default());
                 } else if str_value != "0" && !str_value.eq_ignore_ascii_case("false") {
                     return Err(BoxError::from("invalid header option")
                         .context_field("header_name", self.header_name.clone())

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use rama_core::{
-    Service, combinators::Either, error::BoxError, extensions::ExtensionsMut, io::Io,
+    Service, combinators::Either, error::BoxError, extensions::ExtensionsRef, io::Io,
     layer::timeout::DefaultTimeout, telemetry::tracing,
 };
 use rama_net::{
@@ -287,7 +287,7 @@ impl<B, I, S> Socks5UdpAssociatorSeal<S> for UdpRelay<B, I>
 where
     B: SocketService<Socket = UdpSocket>,
     I: UdpPacketProxy,
-    S: Io + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsRef,
 {
     async fn accept_udp_associate(
         &self,

@@ -41,7 +41,7 @@ impl Http1HeaderMap {
 
     pub fn copy_from_req<B>(req: &Request<B>) -> Self {
         let headers = req.headers().clone();
-        let original_headers = req.extensions().get().cloned().unwrap_or_default();
+        let original_headers = req.extensions().get_ref().cloned().unwrap_or_default();
         Self {
             headers,
             original_headers,
@@ -50,7 +50,10 @@ impl Http1HeaderMap {
 
     #[must_use]
     pub fn new(headers: HeaderMap, ext: Option<&Extensions>) -> Self {
-        let original_headers = ext.and_then(|ext| ext.get()).cloned().unwrap_or_default();
+        let original_headers = ext
+            .and_then(|ext| ext.get_ref())
+            .cloned()
+            .unwrap_or_default();
         Self {
             headers,
             original_headers,
@@ -85,7 +88,7 @@ impl Http1HeaderMap {
 
     /// use [`Self::into_headers`] if you do not care about
     /// the original headers.
-    pub fn consume(self, ext: &mut Extensions) -> HeaderMap {
+    pub fn consume(self, ext: &Extensions) -> HeaderMap {
         ext.insert(self.original_headers);
         self.headers
     }

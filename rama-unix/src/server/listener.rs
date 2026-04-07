@@ -1,5 +1,5 @@
 use rama_core::Service;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use std::io;
@@ -263,8 +263,8 @@ impl UnixListener {
                                 network.protocol.name = "uds",
                             );
 
-                            let mut socket = UnixStream::new(socket);
-                            socket.extensions_mut().insert(UnixSocketInfo::new(local_addr, peer_addr));
+                            let socket = UnixStream::new(socket);
+                            socket.extensions().insert(UnixSocketInfo::new(local_addr, peer_addr));
 
                             self.exec.spawn_task(async move {
                                 let _ = service.serve(socket).await;

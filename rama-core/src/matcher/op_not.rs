@@ -16,7 +16,7 @@ impl<Request, T> Matcher<Request> for Not<T>
 where
     T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&Extensions>, req: &Request) -> bool {
         !self.0.matches(ext, req)
     }
 }

@@ -132,7 +132,7 @@ where
 
         let encoding = negotiate_response_encoding(
             &accepted_encodings,
-            res.extensions().get::<PreferredEncoding>().copied(),
+            res.extensions().get_ref::<PreferredEncoding>().copied(),
         );
 
         let (mut parts, body) = res.into_parts();

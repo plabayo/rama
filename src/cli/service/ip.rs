@@ -8,7 +8,7 @@ use crate::{
     combinators::Either,
     combinators::Either7,
     error::BoxError,
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     http::{
         Request, Response, StatusCode,
         headers::exotic::XClacksOverhead,
@@ -192,11 +192,11 @@ impl Service<Request> for HttpIpService {
 
         let peer_ip = req
             .extensions()
-            .get::<Forwarded>()
+            .get_ref::<Forwarded>()
             .and_then(|f| f.client_ip())
             .or_else(|| {
                 req.extensions()
-                    .get::<SocketInfo>()
+                    .get_ref::<SocketInfo>()
                     .map(|s| s.peer_addr().ip_addr)
             });
 
@@ -262,12 +262,12 @@ where
         tracing::info!("connection received");
         let peer_ip = stream
             .extensions()
-            .get::<Forwarded>()
+            .get_ref::<Forwarded>()
             .and_then(|f| f.client_ip())
             .or_else(|| {
                 stream
                     .extensions()
-                    .get::<SocketInfo>()
+                    .get_ref::<SocketInfo>()
                     .map(|s| s.peer_addr().ip_addr)
             });
         let Some(peer_ip) = peer_ip else {
@@ -322,7 +322,7 @@ impl IpServiceBuilder<mode::Transport> {
 }
 
 impl<M> IpServiceBuilder<M> {
-    fn build_tcp<S: Io + ExtensionsMut + Unpin + Sync>(
+    fn build_tcp<S: Io + ExtensionsRef + Unpin + Sync>(
         self,
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
             TlsAcceptorLayer,
@@ -357,7 +357,7 @@ impl<M> IpServiceBuilder<M> {
         Ok(tcp_service_builder.into_layer(TcpIpService))
     }
 
-    fn build_http<S: Io + Unpin + Sync + ExtensionsMut>(
+    fn build_http<S: Io + Unpin + Sync + ExtensionsRef>(
         self,
         executor: Executor,
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<

@@ -3,7 +3,7 @@ use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
@@ -226,15 +226,11 @@ where
             transport_ctx.app_protocol,
         );
 
-        let mut conn = AutoTlsStream::secure(stream);
+        let conn = AutoTlsStream::secure(stream);
         #[cfg(feature = "http")]
-        set_target_http_version(
-            input.extensions(),
-            conn.extensions_mut(),
-            &negotiated_params,
-        )?;
+        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
-        conn.extensions_mut().insert(negotiated_params);
+        conn.extensions().insert(negotiated_params);
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -272,15 +268,11 @@ where
             .handshake(connector_data, Some(server_host), conn)
             .await?;
 
-        let mut conn = TlsStream::new(conn);
+        let conn = TlsStream::new(conn);
         #[cfg(feature = "http")]
-        set_target_http_version(
-            input.extensions(),
-            conn.extensions_mut(),
-            &negotiated_params,
-        )?;
+        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
-        conn.extensions_mut().insert(negotiated_params);
+        conn.extensions().insert(negotiated_params);
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -297,7 +289,7 @@ where
         let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let maybe_server_host = if let Some(tunnel) = input.extensions().get::<TlsTunnel>() {
+        let maybe_server_host = if let Some(tunnel) = input.extensions().get_ref::<TlsTunnel>() {
             tunnel.sni.as_ref()
         } else if let Some(hardcoded_sni) = self.kind.host.as_ref() {
             Some(hardcoded_sni)
@@ -317,16 +309,12 @@ where
         let (conn, negotiated_params) = self
             .handshake(connector_data, maybe_server_host, conn)
             .await?;
-        let mut conn = AutoTlsStream::secure(conn);
+        let conn = AutoTlsStream::secure(conn);
 
         #[cfg(feature = "http")]
-        set_target_http_version(
-            input.extensions(),
-            conn.extensions_mut(),
-            &negotiated_params,
-        )?;
+        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
-        conn.extensions_mut().insert(negotiated_params);
+        conn.extensions().insert(negotiated_params);
         tracing::trace!("TlsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection { input, conn })
     }
@@ -339,7 +327,7 @@ impl<S, K> TlsConnector<S, K> {
     {
         let request_extensions = input.extensions();
         let connector_data = request_extensions
-            .get::<TlsConnectorData>()
+            .get_ref::<TlsConnectorData>()
             .cloned()
             .or(self.connector_data.clone());
 
@@ -356,7 +344,7 @@ impl<S, K> TlsConnector<S, K> {
         stream: T,
     ) -> Result<(RustlsTlsStream<T>, NegotiatedTlsParameters), BoxError>
     where
-        T: Io + ExtensionsMut + Unpin,
+        T: Io + ExtensionsRef + Unpin,
     {
         let connector_data = connector_data.unwrap_or(TlsConnectorData::try_new()?);
 
@@ -404,7 +392,7 @@ fn resolve_http_connector_data(
     request_extensions: &Extensions,
     connector_data: Option<TlsConnectorData>,
 ) -> Result<Option<TlsConnectorData>, BoxError> {
-    let Some(target_version) = request_extensions.get::<TargetHttpVersion>() else {
+    let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>() else {
         return Ok(connector_data);
     };
 
@@ -426,12 +414,12 @@ fn resolve_http_connector_data(
 #[cfg(feature = "http")]
 fn set_target_http_version(
     request_extensions: &Extensions,
-    conn_extensions: &mut Extensions,
+    conn_extensions: &Extensions,
     tls_params: &NegotiatedTlsParameters,
 ) -> Result<(), BoxError> {
     if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
         let neg_version: Version = proto.try_into()?;
-        if let Some(target_version) = request_extensions.get::<TargetHttpVersion>()
+        if let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>()
             && target_version.0 != neg_version
         {
             return Err(BoxError::from(
@@ -522,7 +510,7 @@ mod tests {
 
         #[test]
         fn creates_http11_connector_data_when_missing() {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_11));
 
             assert_eq!(
@@ -537,7 +525,7 @@ mod tests {
 
         #[test]
         fn creates_http2_connector_data_when_missing() {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_2));
 
             assert_eq!(
@@ -571,7 +559,7 @@ mod tests {
 
         #[test]
         fn constrains_existing_connector_data_to_h1_when_target_is_http11() {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_11));
 
             let data = make_http_auto();
@@ -595,7 +583,7 @@ mod tests {
 
         #[test]
         fn does_not_clone_when_existing_h1_alpn_already_matches() {
-            let mut ext = Extensions::new();
+            let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_11));
 
             let data = make_http_1();

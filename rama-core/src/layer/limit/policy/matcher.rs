@@ -1,5 +1,5 @@
 use crate::{
-    extensions::{Extensions, ExtensionsMut},
+    extensions::{Extensions, ExtensionsRef},
     matcher::Matcher,
 };
 
@@ -9,16 +9,16 @@ impl<M, P, Input> Policy<Input> for Vec<(M, P)>
 where
     M: Matcher<Input>,
     P: Policy<Input>,
-    Input: Send + ExtensionsMut + 'static,
+    Input: Send + ExtensionsRef + 'static,
 {
     type Guard = Option<P::Guard>;
     type Error = P::Error;
 
-    async fn check(&self, mut input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
+    async fn check(&self, input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         for (matcher, policy) in self.iter() {
-            let mut ext = Extensions::new();
-            if matcher.matches(Some(&mut ext), &input) {
-                input.extensions_mut().extend(ext);
+            let ext = Extensions::new();
+            if matcher.matches(Some(&ext), &input) {
+                input.extensions().extend(&ext);
                 let result = policy.check(input).await;
                 return match result.output {
                     PolicyOutput::Ready(guard) => {
@@ -50,17 +50,17 @@ impl<M, P, Input> Policy<Input> for (Vec<(M, P)>, P)
 where
     M: Matcher<Input>,
     P: Policy<Input>,
-    Input: Send + ExtensionsMut + 'static,
+    Input: Send + ExtensionsRef + 'static,
 {
     type Guard = P::Guard;
     type Error = P::Error;
 
-    async fn check(&self, mut input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
+    async fn check(&self, input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         let (matchers, default_policy) = self;
         for (matcher, policy) in matchers.iter() {
-            let mut ext = Extensions::new();
-            if matcher.matches(Some(&mut ext), &input) {
-                input.extensions_mut().extend(ext);
+            let ext = Extensions::new();
+            if matcher.matches(Some(&ext), &input) {
+                input.extensions().extend(&ext);
                 return policy.check(input).await;
             }
         }
@@ -136,7 +136,7 @@ mod tests {
     }
 
     impl Matcher<NumberedInput> for TestMatchers {
-        fn matches(&self, _ext: Option<&mut Extensions>, req: &NumberedInput) -> bool {
+        fn matches(&self, _ext: Option<&Extensions>, req: &NumberedInput) -> bool {
             match self {
                 Self::Const(n) => *n == req.input,
                 Self::Odd => req.input % 2 == 1,

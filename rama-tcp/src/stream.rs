@@ -5,10 +5,7 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-};
+use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_net::{address::SocketAddress, stream::Socket};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub use tokio::net::TcpStream as TokioTcpStream;
@@ -74,12 +71,6 @@ impl From<TcpStream> for TokioTcpStream {
 impl ExtensionsRef for TcpStream {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for TcpStream {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

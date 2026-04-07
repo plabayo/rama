@@ -9,7 +9,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     io::{HeapReader, PrefixedIo, StackReader},
     service::RejectService,
     telemetry::tracing,
@@ -61,7 +61,7 @@ impl<S> SniRouter<S> {
 
 impl<Stream, Output, S, F> Service<Stream> for SniRouter<S, F>
 where
-    Stream: rama_core::io::Io + Unpin + ExtensionsMut,
+    Stream: rama_core::io::Io + Unpin + ExtensionsRef,
     Output: Send + 'static,
     S: Service<SniRequest<Stream>, Output = Output, Error: Into<BoxError>>,
     F: Service<TlsPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,

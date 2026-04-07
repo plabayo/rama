@@ -409,7 +409,7 @@ fn compression_override_from_response<B, E>(
         .and_then(|response| {
             response
                 .extensions()
-                .get::<SingleMessageCompressionOverride>()
+                .get_ref::<SingleMessageCompressionOverride>()
                 .copied()
         })
         .unwrap_or_default()

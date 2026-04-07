@@ -31,7 +31,7 @@ impl SubdomainTrieMatcher {
 }
 
 impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
-    fn matches(&self, _: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+    fn matches(&self, _: Option<&Extensions>, req: &Request<Body>) -> bool {
         let req_ctx = match RequestContext::try_from(req) {
             Ok(rc) => rc,
             Err(err) => {

@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use crate::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use crate::extensions::{Extensions, ExtensionsRef};
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
@@ -31,7 +31,7 @@ pin_project! {
 
 impl<P, S> PrefixedIo<P, S> {
     /// Create a new [`PrefixedIo`] for the given prefix
-    /// [`AsyncRead`] and inner [`Io`] which implements [`ExtensionsMut`].
+    /// [`AsyncRead`] and inner [`Io`] which implements [`ExtensionsRef`].
     ///
     /// [`Io`]: super::Io
     pub fn new(prefix: P, inner: S) -> Self {
@@ -46,12 +46,6 @@ impl<P, S> PrefixedIo<P, S> {
 impl<P, S: ExtensionsRef> ExtensionsRef for PrefixedIo<P, S> {
     fn extensions(&self) -> &Extensions {
         self.inner.extensions()
-    }
-}
-
-impl<P, S: ExtensionsMut> ExtensionsMut for PrefixedIo<P, S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.inner.extensions_mut()
     }
 }
 

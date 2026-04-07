@@ -68,7 +68,7 @@ mod unix_example {
                 let mut cancelled = Box::pin(
                     stream
                         .extensions()
-                        .get::<ShutdownGuard>()
+                        .get_ref::<ShutdownGuard>()
                         .map(|guard| Either::A(guard.clone_weak().into_cancelled()))
                         .unwrap_or_else(|| Either::B(std::future::pending())),
                 );

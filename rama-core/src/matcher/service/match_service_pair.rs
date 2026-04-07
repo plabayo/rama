@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 
 use crate::{
-    extensions::{Extensions, ExtensionsMut},
+    extensions::{Extensions, ExtensionsRef},
     matcher::Matcher,
 };
 
@@ -30,7 +30,7 @@ impl<M, S> From<(M, S)> for MatcherServicePair<M, S> {
 
 impl<Input, M, S> ServiceMatcher<Input> for MatcherServicePair<M, S>
 where
-    Input: Send + ExtensionsMut + 'static,
+    Input: Send + ExtensionsRef + 'static,
     S: Send + Sync + Clone + 'static,
     M: Matcher<Input>,
 {
@@ -40,12 +40,12 @@ where
 
     async fn match_service(
         &self,
-        mut input: Input,
+        input: Input,
     ) -> Result<ServiceMatch<Input, Self::Service>, Self::Error> {
         let Self(matcher, service) = self;
-        let mut ext = Extensions::new();
-        if matcher.matches(Some(&mut ext), &input) {
-            input.extensions_mut().extend(ext);
+        let ext = Extensions::new();
+        if matcher.matches(Some(&ext), &input) {
+            input.extensions().extend(&ext);
             Ok(ServiceMatch {
                 input,
                 service: Some(service.clone()),
@@ -60,15 +60,15 @@ where
 
     async fn into_match_service(
         self,
-        mut input: Input,
+        input: Input,
     ) -> Result<ServiceMatch<Input, Self::Service>, Self::Error>
     where
         Input: Send,
     {
         let Self(matcher, service) = self;
-        let mut ext = Extensions::new();
-        if matcher.matches(Some(&mut ext), &input) {
-            input.extensions_mut().extend(ext);
+        let ext = Extensions::new();
+        if matcher.matches(Some(&ext), &input) {
+            input.extensions().extend(&ext);
             Ok(ServiceMatch {
                 input,
                 service: Some(service),

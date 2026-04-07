@@ -1,6 +1,6 @@
 use super::bytes::BytesRWTracker;
 use crate::client::{ConnectorService, EstablishedClientConnection};
-use rama_core::{Layer, Service, extensions::ExtensionsMut, io::Io};
+use rama_core::{Layer, Service, extensions::ExtensionsRef, io::Io};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// A [`Service`] that wraps a [`Service`]'s output IO [`Stream`] with an atomic R/W tracker.
@@ -33,9 +33,9 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
-        let mut conn = BytesRWTracker::new(conn);
+        let conn = BytesRWTracker::new(conn);
         let handle = conn.handle();
-        conn.extensions_mut().insert(handle);
+        conn.extensions().insert(handle);
         Ok(EstablishedClientConnection { input, conn })
     }
 }

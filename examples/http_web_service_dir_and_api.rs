@@ -98,7 +98,7 @@ async fn main() {
 
 async fn coin_page(State(state): State<Arc<AppState>>, ext: Extensions) -> Html<String> {
     let emoji = if ext
-        .get::<SocketInfo>()
+        .get_ref::<SocketInfo>()
         .unwrap()
         .peer_addr()
         .ip_addr

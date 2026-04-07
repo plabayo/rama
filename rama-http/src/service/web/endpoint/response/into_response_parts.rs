@@ -3,7 +3,7 @@ use crate::{
     Response, StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{convert::Infallible, fmt};
 
@@ -123,11 +123,6 @@ impl ResponseParts {
     #[must_use]
     pub fn extensions(&self) -> &Extensions {
         self.res.extensions()
-    }
-
-    /// Gets a mutable reference to the response extensions.
-    pub fn extensions_mut(&mut self) -> &mut Extensions {
-        self.res.extensions_mut()
     }
 }
 
@@ -272,8 +267,8 @@ all_the_tuples_no_last_special_case!(impl_into_response_parts);
 impl IntoResponseParts for Extensions {
     type Error = Infallible;
 
-    fn into_response_parts(self, mut res: ResponseParts) -> Result<ResponseParts, Self::Error> {
-        res.extensions_mut().extend(self);
+    fn into_response_parts(self, res: ResponseParts) -> Result<ResponseParts, Self::Error> {
+        res.extensions().extend(&self);
         Ok(res)
     }
 }

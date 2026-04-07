@@ -20,6 +20,9 @@ use loom::{
 /// all the data it stores. This also means that we can add items to the
 /// vec without having a mutable reference to it.
 ///
+/// This vec has a fixed maximum capacity as configured by the const generic
+/// parameters. Calling [`Self::push`] after that capacity is exhausted will panic.
+///
 ///
 /// AMOUNT_OF_BINS is total amount of item bins (=arrays). Each bin has double
 /// the capacity then the one before, so even with a low number here,
@@ -71,6 +74,12 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         }
     }
 
+    /// Pushes an element and returns its index.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixed maximum capacity is exceeded.
+    /// Use [`Self::capacity`] to inspect the configured limit.
     pub fn push(&self, element: T) -> usize {
         let idx = self.reserved.fetch_add(1, Ordering::Relaxed);
         if idx >= Self::capacity() {
@@ -570,6 +579,48 @@ mod tests {
         let vec: AppendOnlyVec<NoSize> = AppendOnlyVec::new();
         vec.push(NoSize);
         vec.push(NoSize);
+    }
+
+    #[test]
+    fn push_crosses_bin_boundaries_with_stable_order() {
+        let vec: AppendOnlyVec<usize, 4, 3> = AppendOnlyVec::new();
+
+        for i in 0..26 {
+            assert_eq!(vec.push(i), i);
+        }
+
+        assert_eq!(vec.len(), 26);
+        assert_eq!(vec[7], 7);
+        assert_eq!(vec[8], 8);
+        assert_eq!(vec[23], 23);
+        assert_eq!(vec[24], 24);
+
+        let items: Vec<usize> = vec.iter().copied().collect();
+        assert_eq!(items, (0..26).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn iter_is_a_snapshot_of_length_at_creation() {
+        let vec: AppendOnlyVec<usize, 3, 1> = AppendOnlyVec::new();
+        vec.push(1);
+
+        let iter = vec.iter();
+        vec.push(2);
+
+        let items: Vec<usize> = iter.copied().collect();
+        assert_eq!(items, vec![1]);
+        assert_eq!(vec.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "append only vec has exceeded max capacity")]
+    fn push_panics_when_capacity_is_exceeded() {
+        let vec: AppendOnlyVec<u8, 1, 1> = AppendOnlyVec::new();
+        assert_eq!(AppendOnlyVec::<u8, 1, 1>::capacity(), 2);
+
+        vec.push(1);
+        vec.push(2);
+        vec.push(3);
     }
 }
 

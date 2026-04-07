@@ -6,7 +6,7 @@ use std::fmt::Debug;
 
 use super::HttpProxyError;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
@@ -65,7 +65,7 @@ impl InnerHttpProxyConnector {
             mut self,
             value: impl Clone + Send + Sync + Debug + 'static,
         ) -> Self {
-            self.req.extensions_mut().insert(value);
+            self.req.extensions().insert(value);
             self
         }
     }
@@ -79,7 +79,7 @@ impl InnerHttpProxyConnector {
     }
 
     /// Connect to the proxy server.
-    pub(super) async fn handshake<S: Io + ExtensionsMut + Unpin>(
+    pub(super) async fn handshake<S: Io + ExtensionsRef + Unpin>(
         self,
         stream: S,
     ) -> Result<(HeaderMap, upgrade::Upgraded), HttpProxyError> {
@@ -109,7 +109,7 @@ impl InnerHttpProxyConnector {
         }
     }
 
-    async fn handshake_h1<S: Io + ExtensionsMut + Unpin>(
+    async fn handshake_h1<S: Io + ExtensionsRef + Unpin>(
         req: Request,
         stream: S,
     ) -> Result<Response<Incoming>, HttpProxyError> {
@@ -130,7 +130,7 @@ impl InnerHttpProxyConnector {
             .map_err(|err| HttpProxyError::Transport(BoxError::from(err)))
     }
 
-    async fn handshake_h2<S: Io + ExtensionsMut + Unpin>(
+    async fn handshake_h2<S: Io + ExtensionsRef + Unpin>(
         req: Request,
         stream: S,
     ) -> Result<Response<Incoming>, HttpProxyError> {

@@ -49,8 +49,8 @@ impl<I, F, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for Socks5MitmRel
 where
     I: Service<BridgeIo<Ingress, Egress>, Output = (), Error: Into<BoxError>>,
     F: Service<BridgeIo<Ingress, Egress>, Output = (), Error: Into<BoxError>>,
-    Ingress: Io + Unpin + extensions::ExtensionsMut,
-    Egress: Io + Unpin + extensions::ExtensionsMut,
+    Ingress: Io + Unpin + extensions::ExtensionsRef,
+    Egress: Io + Unpin + extensions::ExtensionsRef,
 {
     type Output = ();
     type Error = BoxError;

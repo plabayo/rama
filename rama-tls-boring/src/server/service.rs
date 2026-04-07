@@ -10,7 +10,7 @@ use rama_core::{
     Service,
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt},
-    extensions::ExtensionsMut,
+    extensions::ExtensionsRef,
     io::Io,
     telemetry::tracing::{debug, trace},
 };
@@ -45,7 +45,7 @@ impl<S> TlsAcceptorService<S> {
 
 impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
-    IO: Io + Unpin + ExtensionsMut + 'static,
+    IO: Io + Unpin + ExtensionsRef + 'static,
     S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
     type Output = S::Output;
@@ -57,7 +57,7 @@ where
         // is updated at runtime, be it infrequent
         let tls_config = stream
             .extensions()
-            .get::<TlsAcceptorData>()
+            .get_ref::<TlsAcceptorData>()
             .unwrap_or(&self.data)
             .config
             .clone();
@@ -72,7 +72,7 @@ where
 
         let server_domain = stream
             .extensions()
-            .get::<SecureTransport>()
+            .get_ref::<SecureTransport>()
             .and_then(|t| t.client_hello())
             .and_then(|c| c.ext_server_name().cloned());
 
@@ -241,9 +241,9 @@ where
             .map(SecureTransport::with_client_hello)
             .unwrap_or_default();
 
-        let mut stream = TlsStream::new(stream);
-        stream.extensions_mut().insert(secure_transport);
-        stream.extensions_mut().insert(negotiated_tls_params);
+        let stream = TlsStream::new(stream);
+        stream.extensions().insert(secure_transport);
+        stream.extensions().insert(negotiated_tls_params);
 
         self.inner
             .serve(stream)

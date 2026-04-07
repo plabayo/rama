@@ -6,7 +6,7 @@ use futures_channel::{mpsc, oneshot};
 use pin_project_lite::pin_project;
 
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::futures::{Stream, ready};
 use rama_core::telemetry::tracing::trace;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -51,12 +51,6 @@ pub(super) struct H2Upgraded {
 impl ExtensionsRef for H2Upgraded {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for H2Upgraded {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

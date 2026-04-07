@@ -14,7 +14,7 @@ use crate::response::Parts as RespParts;
 use crate::service::web::extract::Query;
 
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_http_headers::{
     ContentEncoding, ContentEncodingDirective, ContentType, Cookie as RamaCookie, HeaderMapExt,
@@ -378,10 +378,10 @@ impl TryFrom<Request> for crate::Request {
             .context("build http request from HAR data")?;
 
         *req.headers_mut() = headers;
-        req.extensions_mut().insert(orig_headers);
+        req.extensions().insert(orig_headers);
 
         if let Some(comment) = har_request.comment {
-            req.extensions_mut().insert(RequestComment(comment));
+            req.extensions().insert(RequestComment(comment));
         }
 
         Ok(req)
@@ -423,7 +423,7 @@ impl Request {
 
         let comment = parts
             .extensions
-            .get::<RequestComment>()
+            .get_ref::<RequestComment>()
             .map(|req_comment| req_comment.0.clone());
 
         let cookies = parts
@@ -446,7 +446,7 @@ impl Request {
             .unwrap_or_default();
 
         let query_string = into_query_string(parts);
-        let headers_order = parts.extensions.get().cloned().unwrap_or_default();
+        let headers_order = parts.extensions.get_ref().cloned().unwrap_or_default();
 
         let mut headers = parts.headers.clone();
         if !preserve_sensitive {
@@ -455,7 +455,7 @@ impl Request {
 
         let header_map = Http1HeaderMap::from_parts(headers, headers_order);
 
-        let headers_size_ext = parts.extensions.get::<HeaderByteLength>();
+        let headers_size_ext = parts.extensions.get_ref::<HeaderByteLength>();
         let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);
 
         Ok(Self {
@@ -551,7 +551,7 @@ impl TryFrom<Response> for crate::Response {
             .context("build http response from HAR data")?;
 
         *res.headers_mut() = headers;
-        res.extensions_mut().insert(orig_headers);
+        res.extensions().insert(orig_headers);
 
         Ok(res)
     }
@@ -599,7 +599,7 @@ impl Response {
             })
             .unwrap_or_default();
 
-        let headers_order = parts.extensions.get().cloned().unwrap_or_default();
+        let headers_order = parts.extensions.get_ref().cloned().unwrap_or_default();
 
         let mut headers = parts.headers.clone();
         if !preserve_sensitive {
@@ -608,12 +608,12 @@ impl Response {
 
         let header_map = Http1HeaderMap::from_parts(headers, headers_order);
 
-        let headers_size_ext = parts.extensions.get::<HeaderByteLength>();
+        let headers_size_ext = parts.extensions.get_ref::<HeaderByteLength>();
         let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);
 
         Ok(Self {
             status: parts.status.as_u16(),
-            status_text: match parts.extensions.get::<ReasonPhrase>() {
+            status_text: match parts.extensions.get_ref::<ReasonPhrase>() {
                 Some(reason) => Some(
                     String::from_utf8_lossy(reason.as_bytes())
                         .into_owned()

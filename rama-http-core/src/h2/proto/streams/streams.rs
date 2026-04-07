@@ -7,7 +7,7 @@ use crate::h2::{client, proto, server};
 
 use parking_lot::Mutex;
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
 use rama_http::proto::h1::Http1HeaderMap;
@@ -299,14 +299,14 @@ where
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_request(
         &mut self,
-        mut request: Request<()>,
+        request: Request<()>,
         end_of_stream: bool,
         pending: Option<&OpaqueStreamRef>,
     ) -> Result<(StreamRef<B>, bool), crate::h2::Error> {
         use super::stream::ContentLength;
         use rama_http_types::Method;
 
-        let protocol = request.extensions_mut().get::<Protocol>().cloned();
+        let protocol = request.extensions().get_ref::<Protocol>().cloned();
 
         // TODO: There is a hazard with assigning a stream ID before the
         // prioritize layer. If prioritization reorders new streams, this
@@ -345,7 +345,7 @@ where
         let request_headers = request.headers().clone();
         let request_headers = Http1HeaderMap::new(request_headers, Some(request.extensions()));
         request
-            .extensions_mut()
+            .extensions()
             .insert(RequestHeaders::from(request_headers));
 
         let stream_id = me.actions.send.open()?;
@@ -756,7 +756,7 @@ impl Inner {
 
         let actions = &mut self.actions;
 
-        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
+        if let Some(health) = self.extensions.get_ref::<ConnectionHealth>() {
             health.set_status(ConnectionHealthStatus::Broken)
         }
 
@@ -825,7 +825,7 @@ impl Inner {
 
         let last_processed_id = actions.recv.last_processed_id();
 
-        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
+        if let Some(health) = self.extensions.get_ref::<ConnectionHealth>() {
             health.set_status(ConnectionHealthStatus::Broken)
         }
 
@@ -854,7 +854,7 @@ impl Inner {
 
         let last_stream_id = frame.last_stream_id();
 
-        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
+        if let Some(health) = self.extensions.get_ref::<ConnectionHealth>() {
             health.set_status(ConnectionHealthStatus::Broken)
         }
 
@@ -1433,9 +1433,9 @@ impl<B> StreamRef<B> {
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.opaque.key);
-        let mut request = me.actions.recv.take_request(&mut stream);
+        let request = me.actions.recv.take_request(&mut stream);
         if let Some(capture) = me.early_frame_ctx.freeze_recorder() {
-            request.extensions_mut().insert(capture);
+            request.extensions().insert(capture);
         }
         request
     }

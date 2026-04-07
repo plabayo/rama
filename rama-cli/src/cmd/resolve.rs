@@ -114,7 +114,7 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
         }
         None => {
             println!("Resolving IP for domain: {domain}");
-            let mut extensions = Extensions::new();
+            let extensions = Extensions::new();
             let dns_mode = match (cfg.ipv4_only, cfg.ipv6_only) {
                 (true, false) => DnsResolveIpMode::SingleIpV4,
                 (false, true) => DnsResolveIpMode::SingleIpV6,

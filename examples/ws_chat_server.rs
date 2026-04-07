@@ -60,7 +60,7 @@ async fn main() {
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
                 async |mut ws: ServerWebSocket| {
-                    let state = ws.extensions().get::<State>().unwrap().clone();
+                    let state = ws.extensions().get_ref::<State>().unwrap().clone();
                     let mut handler = WsHandler {
                         nickname: None,
                         broadcast_tx: state.broadcast_tx,

@@ -1,7 +1,7 @@
 use rama_core::{
     bytes::Bytes,
     error::BoxError,
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsRef,
     graceful::{Shutdown, ShutdownGuard},
     io::BridgeIo,
     rt::Executor,
@@ -295,14 +295,14 @@ impl TransparentProxyEngine {
             closed_sink,
         ));
 
-        let mut stream = TcpFlow::new(user_stream);
-        stream.extensions_mut().insert(Arc::new(meta));
+        let stream = TcpFlow::new(user_stream);
+        stream.extensions().insert(Arc::new(meta));
         if let Some(remote) = remote_endpoint {
-            stream.extensions_mut().insert(ProxyTarget(remote));
+            stream.extensions().insert(ProxyTarget(remote));
         }
 
         guard.spawn_task_fn(async move |guard| {
-            stream.extensions_mut().insert(guard);
+            stream.extensions().insert(guard);
             let _ = service.serve(stream).await;
         });
 
@@ -335,16 +335,16 @@ impl TransparentProxyEngine {
 
         tracing::debug!(protocol = ?meta.protocol, "new udp session");
 
-        let mut flow = UdpFlow::new(client_rx, datagram_sink);
-        flow.extensions_mut().insert(guard.clone());
-        flow.extensions_mut().insert(meta);
+        let flow = UdpFlow::new(client_rx, datagram_sink);
+        flow.extensions().insert(guard.clone());
+        flow.extensions().insert(meta);
         if let Some(remote) = remote_endpoint {
-            flow.extensions_mut().insert(ProxyTarget(remote));
+            flow.extensions().insert(ProxyTarget(remote));
         }
 
         let _enter = self.rt.enter();
         guard.spawn_task_fn(async move |guard| {
-            flow.extensions_mut().insert(guard);
+            flow.extensions().insert(guard);
             let _ = service.serve(flow).await;
             closed_sink();
         });
@@ -420,14 +420,14 @@ async fn default_tcp_service(
 ) -> Result<TcpFlowService, BoxError> {
     tracing::debug!("using default tcp service (dumb L4 forward)");
     Ok(service_fn(|ingress_stream: TcpFlow| async move {
-        let Some(ProxyTarget(target)) = ingress_stream.extensions().get().cloned() else {
+        let Some(ProxyTarget(target)) = ingress_stream.extensions().get_ref().cloned() else {
             tracing::warn!("default tcp service missing target endpoint");
             return Ok(());
         };
 
         let extensions = ingress_stream.extensions();
         let exec = extensions
-            .get()
+            .get_ref()
             .cloned()
             .map(Executor::graceful)
             .unwrap_or_default();
@@ -452,7 +452,7 @@ async fn default_udp_service(
 ) -> Result<UdpFlowService, BoxError> {
     tracing::debug!("using default udp service (dumb L4 forward)");
     Ok(service_fn(|mut flow: UdpFlow| async move {
-        let Some(ProxyTarget(target_addr)) = flow.extensions().get().cloned() else {
+        let Some(ProxyTarget(target_addr)) = flow.extensions().get_ref().cloned() else {
             tracing::warn!("default udp service missing target endpoint");
             while flow.recv().await.is_some() {}
             return Ok(());
@@ -731,7 +731,7 @@ mod tests {
                         async move {
                             *seen_clone.lock() = stream
                                 .extensions()
-                                .get::<Arc<TransparentProxyFlowMeta>>()
+                                .get_ref::<Arc<TransparentProxyFlowMeta>>()
                                 .cloned();
                             let _ = notify_tx.send(());
                             Ok(())
@@ -779,7 +779,7 @@ mod tests {
                         async move {
                             *seen_clone.lock() = flow
                                 .extensions()
-                                .get::<Arc<TransparentProxyFlowMeta>>()
+                                .get_ref::<Arc<TransparentProxyFlowMeta>>()
                                 .cloned();
                             let _ = notify_tx.send(());
                             Ok(())

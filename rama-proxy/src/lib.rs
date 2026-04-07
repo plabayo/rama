@@ -63,7 +63,7 @@
 //! };
 //! use rama_core::{
 //!    service::service_fn,
-//!    extensions::{ExtensionsRef, ExtensionsMut},
+//!    extensions::{ExtensionsRef},
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
@@ -120,7 +120,7 @@
 //!     let service =
 //!         ProxyDBLayer::new(Arc::new(db)).with_filter_mode(ProxyFilterMode::Default)
 //!         .into_layer(service_fn(async  |req: Request| {
-//!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+//!             Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
 //!         }));
 //!
 //!     let mut req = Request::builder()
@@ -130,7 +130,7 @@
 //!         .body(Body::empty())
 //!         .unwrap();
 //!
-//!     req.extensions_mut().insert(ProxyFilter {
+//!     req.extensions().insert(ProxyFilter {
 //!         country: Some(vec!["BE".into()]),
 //!         mobile: Some(true),
 //!         residential: Some(true),
@@ -160,7 +160,7 @@
 //! };
 //! use rama_core::{
 //!    service::service_fn,
-//!    extensions::{ExtensionsRef, ExtensionsMut},
+//!    extensions::{ExtensionsRef},
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
@@ -212,7 +212,7 @@
 //!             (!output.is_empty()).then(|| format!("{username}-{output}"))
 //!         })
 //!         .into_layer(service_fn(async |req: Request| {
-//!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
+//!             Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
 //!         }));
 //!
 //!     let mut req = Request::builder()
@@ -221,7 +221,7 @@
 //!         .uri("https://example.com")
 //!         .body(Body::empty())
 //!         .unwrap();
-//!     req.extensions_mut().insert(ProxyFilter {
+//!     req.extensions().insert(ProxyFilter {
 //!         country: Some(vec!["BE".into()]),
 //!         residential: Some(true),
 //!         ..Default::default()
