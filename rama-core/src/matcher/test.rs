@@ -14,13 +14,15 @@ fn test_not_builder() {
 }
 
 mod marker {
-    #[derive(Debug, Clone)]
+    use crate::extensions::Extension;
+
+    #[derive(Debug, Clone, Extension)]
     pub(super) struct Odd;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Extension)]
     pub(super) struct Even;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Extension)]
     pub(super) struct Const;
 }
 

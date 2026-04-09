@@ -6,11 +6,11 @@
 
 use super::{Policy, PolicyResult, RetryBody};
 use crate::{Request, Response};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_utils::backoff::Backoff;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Extension)]
 /// A metadata value that can be added to the [`Extensions`]
 /// of a [`Request`] to signal that the request should not be retried.
 ///

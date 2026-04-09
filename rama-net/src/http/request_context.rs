@@ -7,7 +7,7 @@ use crate::{
     address::{Domain, Host},
 };
 use rama_core::error::BoxError;
-use rama_core::extensions::Extensions;
+use rama_core::extensions::{Extension, Extensions};
 use rama_core::telemetry::tracing;
 use rama_http_types::request::Parts;
 use rama_http_types::{HttpRequestParts, Request};
@@ -29,7 +29,7 @@ fn try_get_sni_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
 }
 
 #[cfg(not(feature = "tls"))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 #[non_exhaustive]
 struct SecureTransport;
 
@@ -38,7 +38,7 @@ fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
     None
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
 /// The context of the [`Request`].
 pub struct RequestContext {
     /// The HTTP Version.

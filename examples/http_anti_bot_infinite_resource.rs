@@ -31,7 +31,7 @@ use rama::{
     Layer, Service,
     conversion::FromRef,
     error::{BoxError, ErrorContext as _, ErrorExt},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     http::{
         InfiniteReader,
         headers::ContentType,
@@ -39,7 +39,7 @@ use rama::{
         server::HttpServer,
         service::web::{
             Router,
-            extract::{Extension, Query, State},
+            extract::{Query, State},
             response::{
                 Headers, Html, IntoResponse,
                 robots_txt::{RobotsGroup, RobotsTxt},
@@ -142,16 +142,15 @@ struct InfiniteResourceParameters {
 async fn infinite_resource(
     // We can access global state like this, the easy option for fast prototyping
     State(_global_state): State<AppState>,
-    // request will fail with status 500 in case extension is not available,
-    // use Option<Extension<_>> in case you deem it an optional value
-    Extension(socket_info): Extension<SocketInfo>,
     // But for production usage we should only use the specific state this handler needs by implementing:
     // `FromRef<AppState> for BlockList`. This is considered better practise because
     // handlers only take what they need and never need to know what to GlobalState is.
     State(block_list): State<BlockList>,
     Query(parameters): Query<InfiniteResourceParameters>,
+    ext: Extensions,
 ) -> impl IntoResponse {
-    let ip_addr = socket_info.peer_addr().ip_addr;
+    // This will panic if this is not injected into extensions (but rama always does this for you)
+    let ip_addr = ext.get_ref::<SocketInfo>().unwrap().peer_addr().ip_addr;
     let mut block_list = block_list.lock().await;
     block_list.insert(ip_addr);
     tracing::info!(

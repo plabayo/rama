@@ -1,4 +1,4 @@
-use rama::extensions::{Extensions, ExtensionsRef};
+use rama::extensions::{Extension, Extensions, ExtensionsRef};
 use rama::http::Request;
 use rama::http::client::HttpConnectorLayer;
 use rama::http::proto::h1::Http1HeaderMap;
@@ -252,7 +252,7 @@ async fn test_ua_emulation() {
         let expected = test_case.expected;
         let description = test_case.description;
 
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, Extension)]
         struct State {
             expected: TestCaseExpected,
             description: &'static str,
@@ -357,7 +357,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
         let counter = counter.clone();
 
         handles.spawn(async move {
-            #[derive(Debug, Clone)]
+            #[derive(Debug, Clone, Extension)]
             struct State {
                 counter: Arc<AtomicUsize>,
             }
@@ -450,7 +450,7 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, Extension)]
 /// [`ServerExtensions`] will be transfered from the client extensions to the server side
 struct ServerExtensions(Extensions);
 

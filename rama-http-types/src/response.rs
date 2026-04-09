@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::convert::TryInto;
 use std::fmt::{self, Display};
 
-use crate::dep::hyperium::http::Extensions as HyperExtensions;
+use crate::dep::hyperium::http::Extensions as HttpExtensions;
 use crate::dep::hyperium::http::response::{Parts as HyperiumParts, Response as HyperiumResponse};
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::proto::h1::ext::ReasonPhrase;
@@ -10,6 +10,9 @@ use crate::status::StatusCode;
 use crate::version::Version;
 use crate::{Body, Result};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+
+#[derive(Clone, Debug, Extension)]
+struct HyperExtensions(HttpExtensions);
 
 /// Represents an HTTP response
 ///
@@ -132,7 +135,7 @@ impl<T> From<Response<T>> for HyperiumResponse<T> {
         let mut hyper_extensions = parts
             .extensions
             .get_ref::<HyperExtensions>()
-            .cloned()
+            .map(|ext| ext.0.clone())
             .unwrap_or_default();
 
         hyper_extensions.insert(parts.extensions);
@@ -170,7 +173,7 @@ pub struct Parts {
 impl From<HyperiumParts> for Parts {
     fn from(mut value: HyperiumParts) -> Self {
         let rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
-        rama_extensions.insert(value.extensions);
+        rama_extensions.insert(HyperExtensions(value.extensions));
 
         Self {
             extensions: rama_extensions,
@@ -796,19 +799,23 @@ impl Builder {
     ///
     /// ```
     /// # use rama_http_types::Response;
-    /// # use rama_core::extensions::ExtensionsRef as _;
+    /// # use rama_core::extensions::{Extension, ExtensionsRef as _};
+    ///
+    /// #[derive(Debug, Clone, PartialEq)]
+    /// struct MyExtension(&'static str);
+    /// impl Extension for MyExtension {}
     ///
     /// let response = Response::builder()
-    ///     .extension("My Extension")
+    ///     .extension(MyExtension("My Extension"))
     ///     .body(())
     ///     .unwrap();
     ///
-    /// assert_eq!(response.extensions().get_ref::<&'static str>(),
-    ///            Some(&"My Extension"));
+    /// assert_eq!(response.extensions().get_ref::<MyExtension>(),
+    ///            Some(&MyExtension("My Extension")));
     /// ```
     pub fn extension<T>(self, extension: T) -> Self
     where
-        T: Extension + Clone,
+        T: Extension,
     {
         self.and_then(move |head| {
             head.extensions.insert(extension);
@@ -824,10 +831,19 @@ impl Builder {
     ///
     /// ```
     /// # use rama_http_types::Response;
-    /// let res = Response::builder().extension("My Extension").extension(5u32);
+    /// # use rama_core::extensions::Extension;
+    /// #[derive(Debug, Clone, PartialEq)]
+    /// struct MyExtension(&'static str);
+    /// impl Extension for MyExtension {}
+    ///
+    /// #[derive(Debug, Clone, PartialEq)]
+    /// struct MyCount(u32);
+    /// impl Extension for MyCount {}
+    ///
+    /// let res = Response::builder().extension(MyExtension("My Extension")).extension(MyCount(5));
     /// let extensions = res.extensions().unwrap();
-    /// assert_eq!(extensions.get_ref::<&'static str>(), Some(&"My Extension"));
-    /// assert_eq!(extensions.get_ref::<u32>(), Some(&5u32));
+    /// assert_eq!(extensions.get_ref::<MyExtension>(), Some(&MyExtension("My Extension")));
+    /// assert_eq!(extensions.get_ref::<MyCount>(), Some(&MyCount(5)));
     /// ```
     #[must_use]
     pub fn extensions(&self) -> Option<&Extensions> {

@@ -139,7 +139,8 @@ mod test {
         service::web::response::IntoResponse,
     };
     use rama_core::{
-        Layer, extensions::Extensions, extensions::ExtensionsRef, service::service_fn,
+        Layer, extensions::Extension, extensions::Extensions, extensions::ExtensionsRef,
+        service::service_fn,
     };
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::{sync::atomic::AtomicUsize, time::Duration};
@@ -154,7 +155,7 @@ mod test {
         )
         .unwrap();
 
-        #[derive(Debug)]
+        #[derive(Debug, Extension)]
         struct State {
             retry_counter: AtomicUsize,
         }

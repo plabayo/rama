@@ -147,6 +147,7 @@
 
 use proc_macro::TokenStream;
 
+mod extension_macro;
 mod from_ref_macro;
 mod include_dir_macro;
 mod paste_macro;
@@ -183,4 +184,13 @@ pub fn include_dir(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(FromRef, attributes(from_ref))]
 pub fn derive_from_ref(item: TokenStream) -> TokenStream {
     from_ref_macro::expand_with(item, from_ref_macro::from_ref::expand)
+}
+
+/// Derive an implementation of `rama_core::extensions::Extension` for a type.
+///
+/// Note that all type parameters of the derived type must satisfy:
+/// `Any + Send + Sync + Debug + 'static`.
+#[proc_macro_derive(Extension)]
+pub fn derive_extension(item: TokenStream) -> TokenStream {
+    from_ref_macro::expand_with(item, extension_macro::extension::expand)
 }

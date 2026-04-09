@@ -45,6 +45,7 @@ use tokio::sync::oneshot;
 
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::extensions::Extension;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
@@ -67,7 +68,7 @@ pub struct Upgraded {
 /// A future for a possible HTTP upgrade.
 ///
 /// If no upgrade was available, or it doesn't succeed, yields an `Error`.
-#[derive(Clone)]
+#[derive(Clone, Extension)]
 pub struct OnUpgrade {
     rx: Arc<Mutex<oneshot::Receiver<Result<Upgraded, BoxError>>>>,
 }

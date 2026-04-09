@@ -5,7 +5,6 @@ use rama::{
         Body, HeaderValue, Request, Response, Version, client::EasyHttpWebClient, header,
         header::HOST, server::HttpServer,
     },
-    layer::AddInputExtensionLayer,
     net::{
         test_utils::client::MockConnectorService,
         tls::{
@@ -128,22 +127,21 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
         let shutdown = Shutdown::new(token.clone().cancelled_owned());
 
         let executor = Executor::graceful(shutdown.guard());
-        let http_server =
-            HttpServer::auto(executor.clone()).service(service_fn(move |_req: Request| {
-                // Trigger graceful shutdown after single response
-                let token = token.clone();
-                tokio::spawn(async move {
-                    if let Some(delay) = delay {
-                        sleep(delay).await;
-                    }
-                    token.cancel();
-                });
-
-                async move {
-                    let resp = Response::new(Body::empty());
-                    Ok::<_, Infallible>(resp)
+        let http_server = HttpServer::auto(executor).service(service_fn(move |_req: Request| {
+            // Trigger graceful shutdown after single response
+            let token = token.clone();
+            tokio::spawn(async move {
+                if let Some(delay) = delay {
+                    sleep(delay).await;
                 }
-            }));
+                token.cancel();
+            });
+
+            async move {
+                let resp = Response::new(Body::empty());
+                Ok::<_, Infallible>(resp)
+            }
+        }));
 
         let tls_service_data = {
             let tls_server_config = ServerConfig {
@@ -162,11 +160,7 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
                 .expect("create tls server config")
         };
 
-        (
-            AddInputExtensionLayer::new(executor),
-            TlsAcceptorLayer::new(tls_service_data),
-        )
-            .into_layer(http_server)
+        TlsAcceptorLayer::new(tls_service_data).into_layer(http_server)
     });
 
     let tls_config = TlsConnectorDataBuilder::new_http_auto()

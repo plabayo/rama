@@ -1,3 +1,5 @@
+use rama_core::extensions::Extension;
+
 /// A gRPC Method info extension.
 #[derive(Debug, Clone)]
 pub struct GrpcMethod<'a> {
@@ -24,3 +26,5 @@ impl<'a> GrpcMethod<'a> {
         self.method
     }
 }
+
+impl<'a> Extension for GrpcMethod<'a> where 'a: 'static {}

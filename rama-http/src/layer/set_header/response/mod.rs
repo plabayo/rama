@@ -98,7 +98,7 @@
 //! Setting a header based on the incoming Context and response combined.
 //!
 //! ```
-//! use rama_core::{extensions::{ExtensionsRef}, service::service_fn, Service};
+//! use rama_core::{extensions::{Extension, ExtensionsRef}, service::service_fn, Service};
 //! use rama_http::{
 //!     layer::set_header::{response::BoxMakeHeaderValueFn, SetResponseHeader},
 //!     Body, HeaderName, HeaderValue, Request, Response,
@@ -108,10 +108,10 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     #[derive(Debug, Clone)]
+//!     #[derive(Debug, Clone, Extension)]
 //!     struct RequestID(String);
 //!
-//!     #[derive(Debug, Clone)]
+//!     #[derive(Debug, Clone, Extension)]
 //!     struct Success;
 //!
 //!     let svc = SetResponseHeader::overriding_fn(

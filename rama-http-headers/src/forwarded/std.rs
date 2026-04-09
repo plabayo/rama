@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+use rama_core::extensions::Extension;
 use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue, header::FORWARDED};
 use rama_net::forwarded::ForwardedElement;
@@ -8,7 +9,7 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 use super::ForwardHeader;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
 /// Typed header wrapper for [`rama_net::forwarded::Forwarded`];
 pub struct Forwarded(rama_net::forwarded::Forwarded);
 

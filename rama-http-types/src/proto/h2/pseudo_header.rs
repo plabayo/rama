@@ -1,3 +1,4 @@
+use rama_core::extensions::Extension;
 use rama_core::telemetry::tracing;
 use rama_utils::collections::smallvec::SmallVec;
 use serde::{Deserialize, Serialize, de::Error};
@@ -89,7 +90,7 @@ impl<'de> Deserialize<'de> for PseudoHeader {
 
 const PSEUDO_HEADERS_STACK_SIZE: usize = 5;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Extension)]
 pub struct PseudoHeaderOrder {
     headers: SmallVec<[PseudoHeader; PSEUDO_HEADERS_STACK_SIZE]>,
     mask: u8,

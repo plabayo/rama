@@ -2,6 +2,7 @@ use std::io::Result;
 use std::ops::{Deref, DerefMut};
 
 use rama_core::ServiceInput;
+use rama_core::extensions::Extension;
 
 use crate::address::SocketAddress;
 
@@ -77,7 +78,7 @@ impl<T: Socket> Socket for ServiceInput<T> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Information about the socket on the egress end.
 pub struct ClientSocketInfo(pub SocketInfo);
 
@@ -106,7 +107,7 @@ impl DerefMut for ClientSocketInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Connected socket information.
 pub struct SocketInfo {
     local_addr: Option<SocketAddress>,

@@ -556,7 +556,7 @@ mod tests {
         },
     };
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Extension)]
     struct State(i32);
 
     #[tokio::test]

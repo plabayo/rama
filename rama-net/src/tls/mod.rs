@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 
+use rama_core::extensions::Extension;
 use rama_utils::str::NonEmptyStr;
 
 mod enums;
@@ -15,7 +16,7 @@ pub mod client;
 pub mod keylog;
 pub mod server;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Context information that can be provided by `tls` connectors`,
 /// to configure the connection in function on an tls tunnel.
 pub struct TlsTunnel {
@@ -23,7 +24,7 @@ pub struct TlsTunnel {
     pub sni: Option<crate::address::Host>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Extension)]
 /// Metadata that can be added to the [`Extensions`]
 /// of a transport layer to signal that the transport is secure.
 ///

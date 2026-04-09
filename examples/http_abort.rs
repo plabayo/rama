@@ -22,13 +22,13 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer,
+    extensions::Extensions,
     http::{
         StatusCode,
         headers::exotic::XClacksOverhead,
         layer::{set_header::SetResponseHeaderLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::Router,
-        service::web::extract::Extension,
     },
     layer::{AbortableLayer, abort::AbortController},
     rt::Executor,
@@ -58,13 +58,13 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let router = Router::new().with_get("/", StatusCode::OK).with_get(
-        "/abort",
-        async |Extension(controller): Extension<AbortController>| {
-            controller.abort().await;
-            StatusCode::INTERNAL_SERVER_ERROR
-        },
-    );
+    let router =
+        Router::new()
+            .with_get("/", StatusCode::OK)
+            .with_get("/abort", async |ext: Extensions| {
+                ext.get_ref::<AbortController>().unwrap().abort().await;
+                StatusCode::INTERNAL_SERVER_ERROR
+            });
 
     let http_middlewares = (
         TraceLayer::new_for_http(),

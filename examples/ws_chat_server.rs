@@ -17,7 +17,7 @@
 
 use rama::{
     Layer,
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     http::{
         server::HttpServer,
         service::web::{Router, response::Html},
@@ -234,7 +234,7 @@ enum BroadcastMessage {
     System(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Extension)]
 struct State {
     broadcast_rx: broadcast::Receiver<BroadcastMessage>,
     broadcast_tx: broadcast::Sender<BroadcastMessage>,

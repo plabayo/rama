@@ -6,22 +6,37 @@
 //!
 //! ```rust
 //! use rama_http::layer::header_from_str_config::HeaderFromStrConfigLayer;
-//! use rama_http::service::web::{WebService};
+//! use rama_http::service::web::WebService;
 //! use rama_http::{Body, Request, StatusCode, HeaderName};
-//! use rama_core::{extensions::ExtensionsRef, Service, Layer};
-//! use serde::Deserialize;
+//! use rama_core::{extensions::{Extension, ExtensionsRef}, Service, Layer};
+//!
+//! #[derive(Debug, Clone, Extension)]
+//! struct ProxyLabel(String);
+//!
+//! impl std::str::FromStr for ProxyLabel {
+//!     type Err = std::convert::Infallible;
+//!     fn from_str(s: &str) -> Result<Self, Self::Err> {
+//!         Ok(ProxyLabel(s.to_owned()))
+//!     }
+//! }
+//!
+//! #[derive(Debug, Clone, Extension)]
+//! struct ProxyLabels(Vec<ProxyLabel>);
+//!
+//! impl FromIterator<ProxyLabel> for ProxyLabels {
+//!     fn from_iter<I: IntoIterator<Item = ProxyLabel>>(iter: I) -> Self {
+//!         Self(iter.into_iter().collect())
+//!     }
+//! }
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let service = HeaderFromStrConfigLayer::<String>::required(HeaderName::from_static("x-proxy-labels"))
+//!     let service = HeaderFromStrConfigLayer::<ProxyLabel, ProxyLabels>::required(HeaderName::from_static("x-proxy-labels"))
 //!         .with_repeat(true)
 //!         .into_layer(WebService::default()
 //!             .with_get("/", async |req: Request| {
-//!                 // For production-like code you should prefer a custom type
-//!                 // to avoid possible conflicts. Ideally these are also as
-//!                 // cheap as possible to allocate.
-//!                 let labels: &Vec<String> = req.extensions().get_ref().unwrap();
-//!                 assert_eq!("a+b+c", labels.join("+"));
+//!                 let labels: &ProxyLabels = req.extensions().get_ref().unwrap();
+//!                 assert_eq!("a+b+c", labels.0.iter().map(|l| l.0.as_str()).collect::<Vec<_>>().join("+"));
 //!             }),
 //!         );
 //!
@@ -42,7 +57,7 @@ use crate::{
     utils::{HeaderValueErr, HeaderValueGetter},
 };
 use rama_core::error::ErrorContext as _;
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::iter::FromIterator;
@@ -141,8 +156,9 @@ where
         + Sync
         + Clone
         + std::fmt::Debug
+        + Extension
         + 'static,
-    C: FromIterator<T> + Send + Sync + Clone + std::fmt::Debug + 'static,
+    C: FromIterator<T> + Send + Sync + Clone + std::fmt::Debug + Extension + 'static,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
@@ -289,12 +305,96 @@ impl<T, S, C> Layer<S> for HeaderFromStrConfigLayer<T, C> {
 
 #[cfg(test)]
 mod test {
-    use rama_core::extensions::ExtensionsRef;
+    use rama_core::extensions::{Extension, ExtensionsRef};
 
     use super::*;
     use crate::Method;
     use ahash::HashSet;
-    use std::collections::LinkedList;
+    use std::{collections::VecDeque, convert::Infallible, num::ParseIntError, str::FromStr};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+    struct ProxyId(usize);
+
+    impl FromStr for ProxyId {
+        type Err = ParseIntError;
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            s.parse::<usize>().map(Self)
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
+    struct ProxyLabel(String);
+
+    impl From<&str> for ProxyLabel {
+        fn from(value: &str) -> Self {
+            Self(value.to_owned())
+        }
+    }
+
+    impl FromStr for ProxyLabel {
+        type Err = Infallible;
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            Ok(Self(s.to_owned()))
+        }
+    }
+
+    #[derive(Debug, Clone, Default, Extension)]
+    struct ProxyLabelList(Vec<ProxyLabel>);
+
+    impl FromIterator<ProxyLabel> for ProxyLabelList {
+        fn from_iter<T: IntoIterator<Item = ProxyLabel>>(iter: T) -> Self {
+            Self(iter.into_iter().collect())
+        }
+    }
+
+    impl ProxyLabelList {
+        fn join_with_plus(&self) -> String {
+            self.0
+                .iter()
+                .map(|label| label.0.as_str())
+                .collect::<Vec<_>>()
+                .join("+")
+        }
+    }
+
+    #[derive(Debug, Clone, Default, Extension)]
+    struct ProxyLabelSet(HashSet<ProxyLabel>);
+
+    impl FromIterator<ProxyLabel> for ProxyLabelSet {
+        fn from_iter<T: IntoIterator<Item = ProxyLabel>>(iter: T) -> Self {
+            Self(iter.into_iter().collect())
+        }
+    }
+
+    impl ProxyLabelSet {
+        fn contains_value(&self, value: &str) -> bool {
+            self.0.contains(&ProxyLabel::from(value))
+        }
+    }
+
+    #[derive(Debug, Clone, Default, Extension)]
+    struct ProxyLabelQueue(VecDeque<ProxyLabel>);
+
+    impl FromIterator<ProxyLabel> for ProxyLabelQueue {
+        fn from_iter<T: IntoIterator<Item = ProxyLabel>>(iter: T) -> Self {
+            Self(iter.into_iter().collect())
+        }
+    }
+
+    #[derive(Debug, Clone, Default, Extension)]
+    struct ProxyIdList {
+        _ids: Vec<ProxyId>,
+    }
+
+    impl FromIterator<ProxyId> for ProxyIdList {
+        fn from_iter<T: IntoIterator<Item = ProxyId>>(iter: T) -> Self {
+            Self {
+                _ids: iter.into_iter().collect(),
+            }
+        }
+    }
 
     #[tokio::test]
     async fn test_header_config_required_happy_path() {
@@ -306,13 +406,13 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let id: &usize = req.extensions().get_ref().unwrap();
-            assert_eq!(*id, 42);
+            let id: &ProxyId = req.extensions().get_ref().unwrap();
+            assert_eq!(id.0, 42);
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<usize, _>::required(
+        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::required(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -330,13 +430,13 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &Vec<String> = req.extensions().get_ref().unwrap();
-            assert_eq!("foo+bar+baz+fin", labels.join("+"));
+            let labels: &ProxyLabelList = req.extensions().get_ref().unwrap();
+            assert_eq!("foo+bar+baz+fin", labels.join_with_plus());
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<String, _>::required(
+        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::required(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )
@@ -355,16 +455,16 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &HashSet<String> = req.extensions().get_ref().unwrap();
-            assert_eq!(3, labels.len());
-            assert!(labels.contains("foo"));
-            assert!(labels.contains("bar"));
-            assert!(labels.contains("baz"));
+            let labels: &ProxyLabelSet = req.extensions().get_ref().unwrap();
+            assert_eq!(3, labels.0.len());
+            assert!(labels.contains_value("foo"));
+            assert!(labels.contains_value("bar"));
+            assert!(labels.contains_value("baz"));
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<String, _, HashSet<String>>::required(
+        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelSet>::required(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )
@@ -383,17 +483,17 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &LinkedList<String> = req.extensions().get_ref().unwrap();
-            let mut iter = labels.iter();
-            assert_eq!(Some("foo"), iter.next().map(|x| x.as_str()));
-            assert_eq!(Some("bar"), iter.next().map(|x| x.as_str()));
-            assert_eq!(Some("baz"), iter.next().map(|x| x.as_str()));
+            let labels: &ProxyLabelQueue = req.extensions().get_ref().unwrap();
+            let mut iter = labels.0.iter();
+            assert_eq!(Some("foo"), iter.next().map(|x| x.0.as_str()));
+            assert_eq!(Some("bar"), iter.next().map(|x| x.0.as_str()));
+            assert_eq!(Some("baz"), iter.next().map(|x| x.0.as_str()));
             assert_eq!(None, iter.next());
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<String, _, LinkedList<String>>::required(
+        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelQueue>::required(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )
@@ -414,13 +514,13 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &Vec<String> = req.extensions().get_ref().unwrap();
-            assert_eq!("foo+bar+baz+fin", labels.join("+"));
+            let labels: &ProxyLabelList = req.extensions().get_ref().unwrap();
+            assert_eq!("foo+bar+baz+fin", labels.join_with_plus());
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<String, _>::required(
+        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::required(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )
@@ -439,13 +539,13 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let id: usize = *req.extensions().get_ref().unwrap();
-            assert_eq!(id, 42);
+            let id: &ProxyId = req.extensions().get_ref().unwrap();
+            assert_eq!(id.0, 42);
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<usize, _>::optional(
+        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -463,13 +563,13 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            let labels: &Vec<String> = req.extensions().get_ref().unwrap();
-            assert_eq!("foo+bar+baz+fin", labels.join("+"));
+            let labels: &ProxyLabelList = req.extensions().get_ref().unwrap();
+            assert_eq!("foo+bar+baz+fin", labels.join_with_plus());
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<String, _>::optional(
+        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )
@@ -487,11 +587,11 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get_ref::<usize>().is_none());
-            Ok::<_, std::convert::Infallible>(())
+            assert!(req.extensions().get_ref::<ProxyId>().is_none());
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<usize, _>::optional(
+        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -508,12 +608,12 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get_ref::<Vec<String>>().is_none());
+            assert!(req.extensions().get_ref::<ProxyLabelList>().is_none());
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<String, _>::optional(
+        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )
@@ -530,11 +630,10 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = rama_core::service::service_fn(async |_req: Request<()>| {
-            Ok::<_, std::convert::Infallible>(())
-        });
+        let inner_service =
+            rama_core::service::service_fn(async |_req: Request<()>| Ok::<_, Infallible>(()));
 
-        let service = HeaderFromStrConfigService::<usize, _>::required(
+        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::required(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -552,12 +651,12 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get_ref::<Vec<String>>().is_none());
+            assert!(req.extensions().get_ref::<ProxyLabelList>().is_none());
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<String, _>::required(
+        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::required(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )
@@ -576,11 +675,10 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = rama_core::service::service_fn(async |_req: Request<()>| {
-            Ok::<_, std::convert::Infallible>(())
-        });
+        let inner_service =
+            rama_core::service::service_fn(async |_req: Request<()>| Ok::<_, Infallible>(()));
 
-        let service = HeaderFromStrConfigService::<usize, _>::required(
+        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::required(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -599,12 +697,12 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get_ref::<Vec<String>>().is_none());
+            assert!(req.extensions().get_ref::<ProxyIdList>().is_none());
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<usize, _>::required(
+        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::required(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )
@@ -623,11 +721,10 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = rama_core::service::service_fn(async |_req: Request<()>| {
-            Ok::<_, std::convert::Infallible>(())
-        });
+        let inner_service =
+            rama_core::service::service_fn(async |_req: Request<()>| Ok::<_, Infallible>(()));
 
-        let service = HeaderFromStrConfigService::<usize, _>::optional(
+        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -646,12 +743,12 @@ mod test {
             .unwrap();
 
         let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
-            assert!(req.extensions().get_ref::<Vec<String>>().is_none());
+            assert!(req.extensions().get_ref::<ProxyIdList>().is_none());
 
-            Ok::<_, std::convert::Infallible>(())
+            Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<usize, _>::optional(
+        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )

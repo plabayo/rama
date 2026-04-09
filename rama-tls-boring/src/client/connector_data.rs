@@ -17,6 +17,7 @@ use rama_core::{
     bytes::Bytes,
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt},
+    extensions::Extension,
 };
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
@@ -69,7 +70,7 @@ impl TlsConnectorData {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Extension)]
 /// Use [`TlsConnectorDataBuilder`] to build a [`TlsConnectorData`] in an ergonomic way
 ///
 /// This builder is very powerful and is capable of stacking other builders. Using it

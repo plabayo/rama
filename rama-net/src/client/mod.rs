@@ -19,8 +19,9 @@ pub use either_conn::{
 };
 
 use crate::address::HostWithPort;
+use rama_core::extensions::Extension;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 /// Target [`HostWithPort`] which if found in extensions
 /// is to be used by a connector such as a TCPConnector instead
 /// of the requested address, unless a proxy is requested in

@@ -22,8 +22,9 @@
 use rama::{
     Layer,
     bytes::Bytes,
+    extensions::ExtensionsRef,
     http::{
-        Uri, header,
+        header,
         layer::{
             compression::CompressionLayer,
             sensitive_headers::{
@@ -34,7 +35,6 @@ use rama::{
         server::HttpServer,
         service::web::{
             IntoEndpointService,
-            extract::Extension,
             response::{Html, IntoResponse},
         },
     },
@@ -52,6 +52,7 @@ use rama::{
     },
     utils::latency::LatencyUnit,
 };
+use rama_http::Request;
 
 use std::{sync::Arc, time::Duration};
 
@@ -94,9 +95,11 @@ async fn main() {
             MapOutputLayer::new(IntoResponse::into_response),
         )
             .into_layer(
-                (|Extension(socket_info): Extension<SocketInfo>,
-                  Extension(tracker): Extension<BytesRWTrackerHandle>,
-                  uri: Uri| {
+                (|req: Request| {
+                    let uri = req.uri();
+                    let socket_info = req.extensions().get_ref::<SocketInfo>().unwrap();
+                    let tracker = req.extensions().get_ref::<BytesRWTrackerHandle>().unwrap();
+
                     std::future::ready(Html(format!(
                         r##"
                         <html>

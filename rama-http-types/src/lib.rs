@@ -22,6 +22,7 @@
 )]
 
 pub mod body;
+use rama_core::extensions::Extension;
 use std::sync::Arc;
 
 pub use body::{
@@ -49,7 +50,7 @@ pub use crate::status::StatusCode;
 #[doc(inline)]
 pub use crate::version::Version;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Extension type that can be inserted in case a Uri is modified as part of nested routers
 pub struct OriginalRouterUri(pub Arc<Uri>);
 

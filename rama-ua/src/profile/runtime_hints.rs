@@ -1,10 +1,12 @@
 use rama_core::error::{BoxError, ErrorExt as _};
+use rama_core::extensions::Extension;
 use rama_http::headers::ClientHint;
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::{fmt, str::FromStr};
+use std::sync::Arc;
+use std::{fmt, ops::Deref, str::FromStr};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Extension)]
 #[non_exhaustive]
 /// Runtime hint to request a user agent to be preserved,
 /// useful for systems that modify requests based on the context and request,
@@ -25,9 +27,24 @@ impl PreserveHeaderUserAgent {
 }
 
 /// ClientHints requested for the (http) Request.
-pub type RequestClientHints = Vec<ClientHint>;
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Extension)]
+pub struct RequestClientHints(pub Arc<[ClientHint]>);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+impl AsRef<[ClientHint]> for RequestClientHints {
+    fn as_ref(&self) -> &[ClientHint] {
+        self.0.deref()
+    }
+}
+
+impl Deref for RequestClientHints {
+    type Target = [ClientHint];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 /// The initiator of the (http) Request.
 ///
 /// It is used to determine the request initiator for the to be emulated http request,

@@ -1,3 +1,4 @@
+use rama_core::extensions::Extension;
 use rama_utils::str::NonEmptyStr;
 
 derive_non_empty_flat_csv_header! {
@@ -10,7 +11,7 @@ derive_non_empty_flat_csv_header! {
     pub struct SecWebSocketProtocol(pub NonEmptySmallVec<3, NonEmptyStr>);
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
 /// Utility type containing the accepted [`SecWebSocketProtocol`].
 pub struct AcceptedWebSocketProtocol(pub NonEmptyStr);
 

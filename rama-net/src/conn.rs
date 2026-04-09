@@ -1,5 +1,6 @@
 //! Connection utilities
 
+use rama_core::extensions::Extension;
 use std::{
     io,
     sync::{
@@ -24,7 +25,7 @@ pub fn is_connection_error(e: &io::Error) -> bool {
     )
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Extension)]
 /// Health of this connection
 ///
 /// Note: this should only be added once to extensions and

@@ -9,6 +9,7 @@ use rama_boring::ssl::{ClientHello, NameType, SelectCertError, SslAcceptorBuilde
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::conversion::RamaTryFrom;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt as _};
+use rama_core::extensions::Extension;
 use rama_core::telemetry::tracing;
 use rama_net::{
     address::Domain,
@@ -23,7 +24,7 @@ use rama_net::{
 };
 use std::{sync::Arc, time::Duration};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
 ///
 /// Created by trying to turn the _rama_ opiniated [`rama_net::tls::server::ServerConfig`] into it.

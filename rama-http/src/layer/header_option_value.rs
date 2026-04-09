@@ -85,7 +85,7 @@ where
 impl<T, S, Body, E> Service<Request<Body>> for HeaderOptionValueService<T, S>
 where
     S: Service<Request<Body>, Error = E>,
-    T: Default + Extension + Clone,
+    T: Default + Extension,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
@@ -192,12 +192,12 @@ impl<T, S> Layer<S> for HeaderOptionValueLayer<T> {
 
 #[cfg(test)]
 mod test {
-    use rama_core::extensions::ExtensionsRef;
+    use rama_core::extensions::{Extension, ExtensionsRef};
 
     use super::*;
     use crate::Method;
 
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Default, Extension)]
     struct UnitValue;
 
     #[tokio::test]

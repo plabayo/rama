@@ -54,7 +54,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef},
     futures::SinkExt,
     http::{
         Body, Request, Response, StatusCode, Version,
@@ -62,7 +62,7 @@ use rama::{
         conn::TargetHttpVersion,
         headers::{
             HeaderMapExt as _, SecWebSocketExtensions, TypedHeader as _,
-            sec_websocket_extensions::Extension,
+            sec_websocket_extensions::Extension as WsExtension,
         },
         io::upgrade,
         layer::{
@@ -121,7 +121,7 @@ use rama::{
 use itertools::Itertools;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 struct State {
     mitm_tls_service_data: TlsAcceptorData,
     ua_db: Arc<UserAgentDatabase>,
@@ -408,7 +408,7 @@ where
     if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
         tracing::debug!("ingress request contains sec-websocket-extensions header");
         if let Some(accept_pmd_cfg) = ingress_header.0.iter().find_map(|ext| {
-            if let Extension::PerMessageDeflate(cfg) = ext {
+            if let WsExtension::PerMessageDeflate(cfg) = ext {
                 Some(cfg.clone())
             } else {
                 None

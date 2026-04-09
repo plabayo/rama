@@ -1,7 +1,7 @@
 use std::{convert::Infallible, sync::Arc};
 
 use rama_core::{
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     matcher::service::{ServiceMatch, ServiceMatcher},
     telemetry::tracing,
 };
@@ -34,12 +34,12 @@ pub struct HttpWebSocketRelayServiceRequestMatcher<S = IoForwardService> {
     store_handshake_res_header: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Stored in the Ingress extensions
 /// by the [`HttpWebSocketRelayServiceRequestMatcher`] if configured to do so.
 pub struct HttpWebSocketRelayHandshakeRequest(pub Arc<request::Parts>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// Stored in the Egress extensions
 /// by the [`HttpWebSocketRelayServiceResponseMatcher`] if configured to do so.
 pub struct HttpWebSocketRelayHandshakeResponse(pub Arc<response::Parts>);
@@ -201,7 +201,7 @@ pub struct HttpWebSocketRelayServiceResponseMatcher<S> {
     store_handshake_res_header: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 /// A [`WebSocketConfig`] extracted as part of the handshake phase prior to the relay...
 pub struct RelayWebSocketConfig(pub WebSocketConfig);
 

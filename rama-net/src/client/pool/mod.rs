@@ -646,6 +646,13 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
     }
 }
 
+impl<C, ID> Extension for LruDropPool<C, ID>
+where
+    C: Send + Sync + 'static,
+    ID: Send + Sync + Debug + 'static,
+{
+}
+
 /// [`ReqToConnID`] is used to convert a `Input` to a connection ID. These IDs
 /// are not unique and multiple connections can have the same ID. IDs are used
 /// to filter which connections can be used for a specific input in a way that
@@ -715,7 +722,7 @@ impl<Input, S, P, R> Service<Input> for PooledConnector<S, P, R>
 where
     S: ConnectorService<Input>,
     Input: Send + ExtensionsRef + 'static,
-    P: Pool<S::Connection, R::ID> + Extension + Clone,
+    P: Pool<S::Connection, R::ID> + Extension,
     R: ReqToConnID<Input>,
 {
     type Output = EstablishedClientConnection<P::Connection, Input>;

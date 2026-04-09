@@ -1,11 +1,12 @@
 use std::{fmt, str::FromStr};
 
 use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::extensions::Extension;
 use rama_utils::str::NonEmptyStr;
 
 use crate::user::authority::StaticAuthorizer;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Extension)]
 /// Basic credentials.
 pub struct Basic {
     username: NonEmptyStr,

@@ -7,11 +7,12 @@ use crate::{
 };
 use rama_core::{
     error::{BoxError, ErrorContext},
+    extensions::Extension,
     telemetry::tracing,
 };
 use std::{fmt::Display, str::FromStr};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
 /// Address of a proxy that can be connected to.
 pub struct ProxyAddress {
     /// [`Protocol`] used by the proxy.

@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use rama::ServiceInput;
-use rama::extensions::ExtensionsRef;
+use rama::extensions::{Extension, ExtensionsRef};
 use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
@@ -52,7 +52,7 @@ async fn tcp_connect(addr: &SocketAddr) -> std::io::Result<TcpStream> {
     TcpStream::connect(*addr).await
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Extension)]
 struct HttpInfo {
     remote_addr: SocketAddress,
 }

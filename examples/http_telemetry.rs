@@ -38,7 +38,7 @@
 
 use rama::{
     Layer,
-    extensions::Extensions,
+    extensions::{Extension, Extensions},
     http::{
         Uri,
         client::EasyHttpWebClient,
@@ -74,7 +74,7 @@ use rama::{
 
 use std::{sync::Arc, time::Duration};
 
-#[derive(Debug)]
+#[derive(Debug, Extension)]
 struct Metrics {
     counter: UpDownCounter<i64>,
 }
