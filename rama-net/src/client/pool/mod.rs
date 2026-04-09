@@ -13,6 +13,7 @@ use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -114,6 +115,8 @@ pub struct LeasedConnection<C: ExtensionsRef, ID> {
     pooled_conn_taken: bool,
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
+    got_response: AtomicBool,
+    drop_connection_if_no_response: bool,
 }
 
 impl<C: ExtensionsRef, ID> LeasedConnection<C, ID> {
@@ -163,6 +166,7 @@ pub struct LruDropPool<C, ID> {
     idle_timeout: Option<Duration>,
     returner: ConnReturner<C, ID>,
     reuse_strategy: ReuseStrategy,
+    drop_connection_if_no_response: bool,
     #[cfg(feature = "opentelemetry")]
     metrics: Option<Arc<metrics::PoolMetrics>>,
 }
@@ -208,6 +212,7 @@ impl<C, ID> Clone for LruDropPool<C, ID> {
             returner: self.returner.clone(),
             idle_timeout: self.idle_timeout,
             reuse_strategy: self.reuse_strategy,
+            drop_connection_if_no_response: self.drop_connection_if_no_response,
             #[cfg(feature = "opentelemetry")]
             metrics: self.metrics.clone(),
         }
@@ -239,6 +244,7 @@ impl<C, ID> LruDropPool<C, ID> {
             active_slots: Arc::new(Semaphore::const_new(max_active)),
             idle_timeout: None,
             reuse_strategy: ReuseStrategy::default(),
+            drop_connection_if_no_response: true,
             #[cfg(feature = "opentelemetry")]
             metrics: None,
         })
@@ -259,6 +265,17 @@ impl<C, ID> LruDropPool<C, ID> {
     generate_set_and_with! {
         pub fn reuse_strategy(mut self, strategy: ReuseStrategy) -> Self {
             self.reuse_strategy = strategy;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// If enabled (the default), connections that did not receive a response
+        /// will be evicted from the pool instead of being returned for reuse.
+        ///
+        /// This includes timeouts, cancellations, and errors.
+        pub fn drop_connection_if_no_response(mut self, drop_connection_if_no_response: bool) -> Self {
+            self.drop_connection_if_no_response = drop_connection_if_no_response;
             self
         }
     }
@@ -363,6 +380,8 @@ where
                 pooled_conn: ManuallyDrop::new(pooled_conn),
                 pooled_conn_taken: false,
                 returner: self.returner.clone(),
+                got_response: AtomicBool::new(false),
+                drop_connection_if_no_response: self.drop_connection_if_no_response,
             }));
         }
 
@@ -412,6 +431,8 @@ where
                 last_used: Instant::now(),
             }),
             pooled_conn_taken: false,
+            got_response: AtomicBool::new(false),
+            drop_connection_if_no_response: self.drop_connection_if_no_response,
         }
     }
 }
@@ -481,6 +502,11 @@ impl<C: ExtensionsRef, ID> AsMut<C> for LeasedConnection<C, ID> {
 impl<C: ExtensionsRef, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if !self.pooled_conn_taken {
+            if self.drop_connection_if_no_response && !self.got_response.load(Ordering::Relaxed) {
+                trace!("LRU connection pool: dropping connection that didn't receive a response");
+                unsafe { ManuallyDrop::drop(&mut self.pooled_conn) };
+                return;
+            }
             if let Some(health) = self.extensions().get_ref::<ConnectionHealth>()
                 && health.status() == ConnectionHealthStatus::Broken
             {
@@ -590,17 +616,10 @@ where
     type Error = C::Error;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        self.got_response.store(false, Ordering::Relaxed);
         let result = self.as_ref().serve(input).await;
-
-        if result.is_err() {
-            let id = &self.pooled_conn.id;
-            trace!(
-                "LRU connection pool: detected error result, marking connection w/ id {id:?} as failed"
-            );
-
-            if let Some(health) = self.extensions().get_ref::<ConnectionHealth>() {
-                health.set_status(ConnectionHealthStatus::Broken);
-            }
+        if result.is_ok() {
+            self.got_response.store(true, Ordering::Relaxed);
         }
         result
     }
@@ -908,7 +927,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_reuse_connections() {
-        let pool = LruDropPool::try_new(5, 10).unwrap();
+        let pool = LruDropPool::try_new(5, 10)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
         // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
         // acting like like a global connection pool (eg database connection pool where all connections can be used).
         let svc = PooledConnector::new(
@@ -928,7 +949,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_conn_id_to_separate() {
-        let pool = LruDropPool::try_new(5, 10).unwrap();
+        let pool = LruDropPool::try_new(5, 10)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
         let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {});
 
         {
@@ -985,7 +1008,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_max_size() {
-        let pool = LruDropPool::try_new(1, 1).unwrap();
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
         let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {})
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
@@ -1058,6 +1083,84 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    impl Service<Duration> for InnerService {
+        type Output = ();
+        type Error = BoxError;
+
+        async fn serve(&self, delay: Duration) -> Result<Self::Output, Self::Error> {
+            tokio::time::sleep(delay).await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cancellated_fut_should_drop_connection_by_default() {
+        let pool = LruDropPool::try_new(1, 1).unwrap();
+        let svc = PooledConnector::new(TestConnector::default(), pool, StringInputLengthID {});
+
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+        assert_ok!(conn.conn.serve(false).await);
+        drop(conn);
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
+
+        // Get the (reused) connection, start a slow request, and cancel it via timeout
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
+
+        let timeout_result = tokio::time::timeout(
+            Duration::from_millis(10),
+            conn.conn.serve(Duration::from_secs(60)),
+        )
+        .await;
+
+        assert!(timeout_result.is_err(), "should have timed out");
+        drop(conn);
+
+        // Next connection must be a fresh one: the cancelled one should not have been returned
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
+        assert_ok!(conn.conn.serve(false).await);
+    }
+
+    #[tokio::test]
+    async fn test_cancellated_fut_should_not_drop_connection_if_this_is_disabled() {
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let svc = PooledConnector::new(TestConnector::default(), pool, StringInputLengthID {});
+
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
+
+        let timeout_result = tokio::time::timeout(
+            Duration::from_millis(10),
+            conn.conn.serve(Duration::from_secs(60)),
+        )
+        .await;
+        assert!(timeout_result.is_err(), "should have timed out");
+        drop(conn);
+
+        // With drop_connection_if_no_response disabled, the connection should be returned to the pool
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
+        assert_ok!(conn.conn.serve(false).await);
     }
 
     #[tokio::test]
@@ -1153,7 +1256,8 @@ mod tests {
     async fn drop_idle_connections() {
         let pool = LruDropPool::try_new(5, 10)
             .unwrap()
-            .with_idle_timeout(Duration::from_micros(1));
+            .with_idle_timeout(Duration::from_micros(1))
+            .with_drop_connection_if_no_response(false);
 
         let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {});
 
@@ -1193,7 +1297,8 @@ mod tests {
     async fn test_reuse(strategy: ReuseStrategy, expected: u32) {
         let pool = LruDropPool::try_new(5, 10)
             .unwrap()
-            .with_reuse_strategy(strategy);
+            .with_reuse_strategy(strategy)
+            .with_drop_connection_if_no_response(false);
 
         let svc = PooledConnector::new(TestService::default(), pool, |_: &ServiceInput<()>| Ok(()));
 
