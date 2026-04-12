@@ -71,6 +71,7 @@ impl TlsConnectorData {
 }
 
 #[derive(Clone, Default, Extension)]
+#[extension(tags(tls))]
 /// Use [`TlsConnectorDataBuilder`] to build a [`TlsConnectorData`] in an ergonomic way
 ///
 /// This builder is very powerful and is capable of stacking other builders. Using it

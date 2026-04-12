@@ -10,6 +10,7 @@ use rama_utils::str::smol_str::SmolStr;
 use rama_http_types::Scheme;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
+#[extension(tags(net))]
 /// Web protocols that are relevant to Rama.
 ///
 /// Please [file an issue or open a PR][repo] if you need support for more protocols.

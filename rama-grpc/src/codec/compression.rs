@@ -321,6 +321,7 @@ pub(crate) fn decompress(
 
 /// Controls compression behavior for individual messages within a stream.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Extension)]
+#[extension(tags(grpc))]
 pub enum SingleMessageCompressionOverride {
     /// Inherit whatever compression is already configured. If the stream is compressed this
     /// message will also be configured.

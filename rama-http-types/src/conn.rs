@@ -7,6 +7,7 @@ use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture};
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, Default, Extension)]
+#[extension(tags(http))]
 /// Optional parameters that can be set in the [`Extensions`] of a (h1) request
 /// to customise the connection of the h1 connection.
 ///
@@ -23,6 +24,7 @@ pub struct Http1ClientContextParams {
 }
 
 #[derive(Debug, Clone, Default, Extension)]
+#[extension(tags(http))]
 /// Optional parameters that can be set in the [`Extensions`] of a (h2) request
 /// to customise the connection of the h2 connection.
 ///
@@ -62,6 +64,7 @@ pub struct H2ClientContextParams {
 }
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Extension)]
+#[extension(tags(http))]
 /// Target http version
 ///
 /// This can be set manually to enforce a specific version,

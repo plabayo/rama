@@ -16,6 +16,7 @@ use rama_core::extensions::Extension;
 /// When a `ReasonPhrase` is present in the extensions of the `http::Response` written by a server,
 /// its contents will be written in place of the canonical reason phrase when responding via HTTP/1.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
+#[extension(tags(http))]
 pub struct ReasonPhrase(Bytes);
 
 impl ReasonPhrase {

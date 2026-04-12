@@ -9,6 +9,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Extension)]
+#[extension(tags(ua))]
 /// Extra information about the selected user agent profile,
 /// which isn't already injected. E.g. http and tls information
 /// is already injected separately.
@@ -40,6 +41,7 @@ impl From<&UserAgentProfile> for SelectedUserAgentProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Extension)]
+#[extension(tags(ua))]
 /// Fallback strategy that can be injected into the context
 /// to customise what a provider can be requested to do
 /// in case the preconditions for UA selection were not fulfilled.

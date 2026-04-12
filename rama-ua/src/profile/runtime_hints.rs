@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::{fmt, ops::Deref, str::FromStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Extension)]
+#[extension(tags(ua))]
 #[non_exhaustive]
 /// Runtime hint to request a user agent to be preserved,
 /// useful for systems that modify requests based on the context and request,
@@ -28,6 +29,7 @@ impl PreserveHeaderUserAgent {
 
 /// ClientHints requested for the (http) Request.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Extension)]
+#[extension(tags(ua))]
 pub struct RequestClientHints(pub Arc<[ClientHint]>);
 
 impl AsRef<[ClientHint]> for RequestClientHints {
@@ -45,6 +47,7 @@ impl Deref for RequestClientHints {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(ua))]
 /// The initiator of the (http) Request.
 ///
 /// It is used to determine the request initiator for the to be emulated http request,

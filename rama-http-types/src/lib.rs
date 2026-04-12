@@ -51,6 +51,7 @@ pub use crate::status::StatusCode;
 pub use crate::version::Version;
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
 /// Extension type that can be inserted in case a Uri is modified as part of nested routers
 pub struct OriginalRouterUri(pub Arc<Uri>);
 

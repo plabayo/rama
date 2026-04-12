@@ -30,6 +30,7 @@ pub static CUSTOM_HEADER_MARKER: HeaderName =
     HeaderName::from_static("x-rama-custom-header-marker");
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(ua, http))]
 /// A User Agent (UA) profile for HTTP.
 ///
 /// This profile contains the HTTP profiles for

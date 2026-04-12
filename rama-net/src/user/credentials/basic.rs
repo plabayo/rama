@@ -7,6 +7,7 @@ use rama_utils::str::NonEmptyStr;
 use crate::user::authority::StaticAuthorizer;
 
 #[derive(Clone, PartialEq, Eq, Extension)]
+#[extension(tags(net))]
 /// Basic credentials.
 pub struct Basic {
     username: NonEmptyStr,

@@ -9,6 +9,7 @@ use std::{convert::Infallible, fmt, str::FromStr};
 ///
 /// See [the module level documentation](crate) for more information.
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(ua))]
 pub struct UserAgent {
     pub(super) header: ArcStr,
     pub(super) data: UserAgentData,

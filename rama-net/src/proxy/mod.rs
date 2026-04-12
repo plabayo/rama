@@ -8,5 +8,6 @@ mod forward;
 pub use forward::IoForwardService;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(net, proxy))]
 /// Target [`HostWithPort`] for a proxy/forwarder service.
 pub struct ProxyTarget(pub HostWithPort);

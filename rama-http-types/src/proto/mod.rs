@@ -11,10 +11,12 @@ pub mod h1;
 pub mod h2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Extension)]
+#[extension(tags(http))]
 /// Byte length of the raw bytes of the request/response headers (excl. trailers).
 pub struct HeaderByteLength(pub usize);
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
 /// Read-only copy of the parent request headers.
 ///
 /// This extension can be made available in [`RequestHeaders`].
@@ -35,6 +37,7 @@ impl Deref for RequestHeaders {
 }
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
 /// Read-only copy of the parent request extensions.
 ///
 /// This extension can be made available as part of a response.

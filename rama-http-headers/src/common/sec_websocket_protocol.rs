@@ -12,6 +12,7 @@ derive_non_empty_flat_csv_header! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(http, ws))]
 /// Utility type containing the accepted [`SecWebSocketProtocol`].
 pub struct AcceptedWebSocketProtocol(pub NonEmptyStr);
 

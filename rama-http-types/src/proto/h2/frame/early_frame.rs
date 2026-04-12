@@ -161,6 +161,7 @@ struct EarlyFrameRecorder {
 }
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
 pub struct EarlyFrameCapture(Arc<[EarlyFrame]>);
 
 impl EarlyFrameCapture {

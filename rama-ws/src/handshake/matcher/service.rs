@@ -35,11 +35,13 @@ pub struct HttpWebSocketRelayServiceRequestMatcher<S = IoForwardService> {
 }
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(ws))]
 /// Stored in the Ingress extensions
 /// by the [`HttpWebSocketRelayServiceRequestMatcher`] if configured to do so.
 pub struct HttpWebSocketRelayHandshakeRequest(pub Arc<request::Parts>);
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(ws))]
 /// Stored in the Egress extensions
 /// by the [`HttpWebSocketRelayServiceResponseMatcher`] if configured to do so.
 pub struct HttpWebSocketRelayHandshakeResponse(pub Arc<response::Parts>);
@@ -202,6 +204,7 @@ pub struct HttpWebSocketRelayServiceResponseMatcher<S> {
 }
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(ws))]
 /// A [`WebSocketConfig`] extracted as part of the handshake phase prior to the relay...
 pub struct RelayWebSocketConfig(pub WebSocketConfig);
 

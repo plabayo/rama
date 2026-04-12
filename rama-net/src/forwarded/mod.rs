@@ -34,6 +34,7 @@ pub use version::ForwardedVersion;
 use crate::address::SocketAddress;
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(net))]
 /// Forwarding information stored as a chain.
 ///
 /// This extension (which can be stored and modified via the [`Extensions`])

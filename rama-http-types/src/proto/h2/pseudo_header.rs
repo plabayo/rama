@@ -91,6 +91,7 @@ impl<'de> Deserialize<'de> for PseudoHeader {
 const PSEUDO_HEADERS_STACK_SIZE: usize = 5;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Extension)]
+#[extension(tags(http))]
 pub struct PseudoHeaderOrder {
     headers: SmallVec<[PseudoHeader; PSEUDO_HEADERS_STACK_SIZE]>,
     mask: u8,

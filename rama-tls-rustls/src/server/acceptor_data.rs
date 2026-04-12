@@ -14,6 +14,7 @@ use crate::dep::pki_types::PrivatePkcs8KeyDer;
 use ::rama_net::address::Domain;
 
 #[derive(Clone, Debug, Extension)]
+#[extension(tags(tls))]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
 ///
 /// Created by converting a [`rustls::ServerConfig`] into it directly,

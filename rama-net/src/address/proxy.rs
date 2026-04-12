@@ -13,6 +13,7 @@ use rama_core::{
 use std::{fmt::Display, str::FromStr};
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(net, proxy))]
 /// Address of a proxy that can be connected to.
 pub struct ProxyAddress {
     /// [`Protocol`] used by the proxy.

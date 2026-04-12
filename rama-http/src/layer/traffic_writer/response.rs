@@ -42,6 +42,7 @@ pub trait ResponseWriter: Send + Sync + 'static {
 
 /// Marker struct to indicate that the response should not be printed.
 #[derive(Debug, Clone, Default, Extension)]
+#[extension(tags(http))]
 #[non_exhaustive]
 pub struct DoNotWriteResponse;
 

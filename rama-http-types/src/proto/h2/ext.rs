@@ -24,6 +24,7 @@ use std::fmt;
 /// // Now the request will include the `:protocol` pseudo-header with value "websocket"
 /// ```
 #[derive(Clone, Eq, PartialEq, Extension)]
+#[extension(tags(http))]
 pub struct Protocol {
     value: BytesStr,
 }

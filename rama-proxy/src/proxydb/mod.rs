@@ -34,6 +34,7 @@ mod str;
 pub use str::StringFilter;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
+#[extension(tags(proxy))]
 /// `ID` of the selected proxy. To be inserted into the `Context`,
 /// only if that proxy is selected.
 pub struct ProxyID(NonEmptyStr);
@@ -65,6 +66,7 @@ impl From<NonEmptyStr> for ProxyID {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(proxy))]
 /// Filter to select a specific kind of proxy.
 ///
 /// If the `id` is specified the other fields are used

@@ -7,4 +7,5 @@ pub use ::tokio_graceful::{
     Shutdown, ShutdownBuilder, ShutdownGuard, WeakShutdownGuard, default_signal,
 };
 
+// TODO @glendc, remove usage from this in TransparentProxyEngine
 impl Extension for ShutdownGuard {}

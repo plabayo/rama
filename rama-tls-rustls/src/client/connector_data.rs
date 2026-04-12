@@ -16,6 +16,7 @@ use crate::dep::pki_types::PrivatePkcs8KeyDer;
 use ::rama_core::error::ErrorContext;
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
 /// Internal data used as configuration/input for the [`super::TlsConnector`].
 ///
 /// Created by converting a [`rustls::ClientConfig`] into it directly,

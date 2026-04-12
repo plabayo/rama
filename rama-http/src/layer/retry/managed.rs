@@ -11,6 +11,7 @@ use rama_core::telemetry::tracing;
 use rama_utils::backoff::Backoff;
 
 #[derive(Debug, Clone, Default, Extension)]
+#[extension(tags(http))]
 /// A metadata value that can be added to the [`Extensions`]
 /// of a [`Request`] to signal that the request should not be retried.
 ///

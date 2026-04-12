@@ -312,6 +312,10 @@ pub struct Stream<T>(pub T);
 #[derive(Debug, Clone, Extension)]
 pub struct Input<T>(pub T);
 
+// We use this syntax: [`TlsExtension`] — TLS and secure transport
+// Instead of [`TlsExtension`]: TLS and secure transport
+// Because otherwise we hit `link definitions are not shown in rendered documentation`
+
 /// [`Extension`] is type which can be stored inside an [`Extensions`] store
 ///
 /// This is has to be manually implement or can be implemented using `#[derive(Extension)]`
@@ -323,7 +327,76 @@ pub struct Input<T>(pub T);
 ///
 /// There might be valid use cases for implementing it for other type of containers, so in case you run into these
 /// open a Github issue and we can see if implementing it makes sense
+///
+/// # Extension Tags
+///
+/// Extensions can be tagged with one or more categories using the `#[extension(tags(tag1, tag2))]`
+/// attribute on the derive macro. This generates implementations for the corresponding
+/// marker traits below, which groups them in rust docs
+///
+/// - [`TlsExtension`] — TLS and secure transport
+/// - [`HttpExtension`] — HTTP protocol
+/// - [`NetExtension`] — Network and connection level
+/// - [`UaExtension`] — User-agent emulation
+/// - [`ProxyExtension`] — Proxy
+/// - [`WsExtension`] — WebSocket
+/// - [`DnsExtension`] — DNS resolution
+/// - [`GrpcExtension`] — gRPC
+///
+/// ```rust,ignore
+/// #[derive(Debug, Clone, Extension)]
+/// #[extension(tags(tls, net))]
+/// pub struct SecureTransport(..);
+/// ```
+///
+/// Types that implement [`Extension`] manually can opt into tagged docs by implementing
+/// the marker trait(s) directly:
+///
+/// ```rust,ignore
+/// impl Extension for MyType {}
+/// impl HttpExtension for MyType {}
+/// ```
 pub trait Extension: Any + Send + Sync + std::fmt::Debug + 'static {}
+
+/// TLS and secure transport related extensions.
+///
+/// Derive with `#[extension(tags(tls))]`
+pub trait TlsExtension: Extension {}
+
+/// HTTP protocol related extensions.
+///
+/// Derive with `#[extension(tags(http))]`
+pub trait HttpExtension: Extension {}
+
+/// Network and connection level extensions.
+///
+/// Derive with `#[extension(tags(net))]`
+pub trait NetExtension: Extension {}
+
+/// User-agent emulation related extensions.
+///
+/// Derive with `#[extension(tags(ua))]`
+pub trait UaExtension: Extension {}
+
+/// Proxy related extensions.
+///
+/// Derive with `#[extension(tags(proxy))]`
+pub trait ProxyExtension: Extension {}
+
+/// WebSocket related extensions.
+///
+/// Derive with `#[extension(tags(ws))]`
+pub trait WsExtension: Extension {}
+
+/// DNS resolution related extensions.
+///
+/// Derive with `#[extension(tags(dns))]`
+pub trait DnsExtension: Extension {}
+
+/// gRPC related extensions.
+///
+/// Derive with `#[extension(tags(grpc))]`
+pub trait GrpcExtension: Extension {}
 
 pub trait ExtensionsRef {
     /// Get reference to the underlying [`Extensions`] store

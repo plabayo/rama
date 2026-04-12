@@ -13,6 +13,7 @@ use rama_net::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(ua, tls))]
 /// Profile of the user-agent's TLS (client) configuration.
 ///
 /// It is used to emulate the TLS configuration of the user-agent.

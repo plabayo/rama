@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use venndb::VennDB;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Extension)]
+#[extension(tags(proxy))]
 #[cfg_attr(feature = "memory-db", derive(VennDB))]
 #[cfg_attr(feature = "memory-db", venndb(validator = proxydb_insert_validator))]
 /// The selected proxy to use to connect to the proxy.

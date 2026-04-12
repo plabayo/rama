@@ -196,6 +196,7 @@ impl Predicate for DefaultStreamPredicate {
 
 /// Preferred response encoding requested by a compression predicate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(http))]
 pub enum PreferredEncoding {
     #[default]
     Gzip,

@@ -26,6 +26,7 @@ use super::{ApplicationProtocol, DataEncoding, ProtocolVersion};
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
 /// Indicate (some) of the negotiated tls parameters that
 /// can be added to the input extensions by Tls implementations.
 pub struct NegotiatedTlsParameters {
