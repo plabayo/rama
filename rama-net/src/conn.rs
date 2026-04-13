@@ -26,6 +26,7 @@ pub fn is_connection_error(e: &io::Error) -> bool {
 }
 
 #[derive(Clone, Default, Extension)]
+#[extension(tags(net))]
 /// Health of this connection
 ///
 /// Note: this should only be added once to extensions and

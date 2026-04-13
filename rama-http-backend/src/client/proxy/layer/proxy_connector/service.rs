@@ -254,6 +254,7 @@ where
 }
 
 #[derive(Clone, Debug, Extension)]
+#[extension(tags(http, proxy))]
 /// Extension added to the [`Extensions`] by [`HttpProxyConnector`] to record the
 /// headers from a successful CONNECT response.
 ///

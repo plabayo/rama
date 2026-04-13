@@ -69,6 +69,7 @@ pub struct Upgraded {
 ///
 /// If no upgrade was available, or it doesn't succeed, yields an `Error`.
 #[derive(Clone, Extension)]
+#[extension(tags(http))]
 pub struct OnUpgrade {
     rx: Arc<Mutex<oneshot::Receiver<Result<Upgraded, BoxError>>>>,
 }

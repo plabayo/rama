@@ -17,6 +17,7 @@ pub mod keylog;
 pub mod server;
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
 /// Context information that can be provided by `tls` connectors`,
 /// to configure the connection in function on an tls tunnel.
 pub struct TlsTunnel {
@@ -25,6 +26,7 @@ pub struct TlsTunnel {
 }
 
 #[derive(Debug, Clone, Default, Extension)]
+#[extension(tags(tls))]
 /// Metadata that can be added to the [`Extensions`]
 /// of a transport layer to signal that the transport is secure.
 ///

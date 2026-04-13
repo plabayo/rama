@@ -19,6 +19,7 @@ pub trait RequestWriter: Send + Sync + 'static {
 
 /// Marker struct to indicate that the request should not be printed.
 #[derive(Debug, Clone, Default, Extension)]
+#[extension(tags(http))]
 #[non_exhaustive]
 pub struct DoNotWriteRequest;
 

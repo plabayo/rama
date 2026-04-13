@@ -6,6 +6,7 @@ use rama_net::address::Domain;
 use super::{BoxDnsAddressResolver, DnsAddressResolver};
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(dns))]
 /// Wrapper struct that can be used to add
 /// dns address overwrites to an input as an extension.
 ///

@@ -310,6 +310,7 @@ where
 /// The value differs from the original request's effective URI if the middleware has followed
 /// redirections.
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
 pub struct RequestUri(pub Uri);
 
 #[derive(Debug)]

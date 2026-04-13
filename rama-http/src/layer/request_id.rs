@@ -87,6 +87,7 @@ pub trait MakeRequestId: Send + Sync + 'static {
 
 /// An identifier for a request.
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
 pub struct RequestId(HeaderValue);
 
 impl RequestId {

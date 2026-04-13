@@ -2,6 +2,7 @@ use rama_core::extensions::Extension;
 
 /// Can be used to communicate the desire to limit the size of request/response bodies.
 #[derive(Debug, Clone, Copy, Extension)]
+#[extension(tags(http))]
 pub struct BodyLimit {
     kind: Option<BodyLimitKind>,
 }

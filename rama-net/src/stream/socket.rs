@@ -79,6 +79,7 @@ impl<T: Socket> Socket for ServiceInput<T> {
 }
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(net))]
 /// Information about the socket on the egress end.
 pub struct ClientSocketInfo(pub SocketInfo);
 
@@ -108,6 +109,7 @@ impl DerefMut for ClientSocketInfo {
 }
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(net))]
 /// Connected socket information.
 pub struct SocketInfo {
     local_addr: Option<SocketAddress>,

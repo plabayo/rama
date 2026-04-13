@@ -106,6 +106,7 @@ mod service;
 /// Marker extension inserted into a response when [`Decompression`] unwraps a
 /// compressed response body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(http))]
 pub enum DecompressedFrom {
     Gzip,
     Deflate,

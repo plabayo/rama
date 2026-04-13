@@ -10,6 +10,7 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 use super::ForwardHeader;
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(http))]
 /// Typed header wrapper for [`rama_net::forwarded::Forwarded`];
 pub struct Forwarded(rama_net::forwarded::Forwarded);
 

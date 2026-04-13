@@ -3,4 +3,5 @@ use rama_utils::str::arcstr::ArcStr;
 
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(http))]
 pub struct RequestComment(pub ArcStr);

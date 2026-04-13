@@ -1,6 +1,7 @@
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(net))]
 /// The identifier of a user.
 ///
 /// Usually created by the layer which authenticates the user.

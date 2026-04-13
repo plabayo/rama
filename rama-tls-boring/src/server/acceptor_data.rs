@@ -25,6 +25,7 @@ use rama_net::{
 use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
 ///
 /// Created by trying to turn the _rama_ opiniated [`rama_net::tls::server::ServerConfig`] into it.

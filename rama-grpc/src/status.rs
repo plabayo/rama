@@ -44,7 +44,8 @@ const ENCODING_SET: &AsciiSet = &CONTROLS
 /// assert_eq!(status1.code(), Code::InvalidArgument);
 /// assert_eq!(status1.code(), status2.code());
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Extension)]
+#[extension(tags(grpc))]
 pub struct Status(Box<StatusInner>);
 
 /// Box the contents of Status to avoid large error variants
@@ -69,8 +70,6 @@ impl StatusInner {
         Status(Box::new(self))
     }
 }
-
-impl Extension for Status {}
 
 /// gRPC status codes used by [`Status`].
 ///

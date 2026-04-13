@@ -25,6 +25,7 @@ mod username_parser;
 pub use username_parser::DnsResolveModeUsernameParser;
 
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
+#[extension(tags(http, dns))]
 /// A vanity [`Extensions`] type for others to easily check if eager DNS resolution is enabled.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions

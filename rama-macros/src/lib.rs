@@ -190,7 +190,11 @@ pub fn derive_from_ref(item: TokenStream) -> TokenStream {
 ///
 /// Note that all type parameters of the derived type must satisfy:
 /// `Any + Send + Sync + Debug + 'static`.
-#[proc_macro_derive(Extension)]
+///
+/// Optional derive attributes:
+/// - `#[extension(tags(...))]`: implement one or more marker traits used to group
+///   extensions in rustdoc (`tls`, `http`, `net`, `ua`, `proxy`, `ws`, `dns`, `grpc`).
+#[proc_macro_derive(Extension, attributes(extension))]
 pub fn derive_extension(item: TokenStream) -> TokenStream {
     from_ref_macro::expand_with(item, extension_macro::extension::expand)
 }

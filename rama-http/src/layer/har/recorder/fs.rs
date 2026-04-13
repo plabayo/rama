@@ -21,6 +21,7 @@ pub struct FileRecorder {
 }
 
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
 /// Path to (HAR) file that the [`FileRecorder`] is recording into.
 ///
 /// Inserted into the response extensions.

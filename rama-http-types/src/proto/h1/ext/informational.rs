@@ -4,6 +4,7 @@ use rama_core::extensions::Extension;
 use std::sync::Arc;
 
 #[derive(Clone, Extension)]
+#[extension(tags(http))]
 pub struct OnInformational(Arc<dyn OnInformationalCallback + Send + Sync>);
 
 impl OnInformational {

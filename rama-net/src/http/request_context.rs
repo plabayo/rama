@@ -30,6 +30,7 @@ fn try_get_sni_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
 
 #[cfg(not(feature = "tls"))]
 #[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
 #[non_exhaustive]
 struct SecureTransport;
 
@@ -39,6 +40,7 @@ fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(http))]
 /// The context of the [`Request`].
 pub struct RequestContext {
     /// The HTTP Version.
