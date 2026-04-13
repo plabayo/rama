@@ -1,6 +1,6 @@
 use std::{fmt, str::FromStr};
 
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::error::{BoxError, ErrorContext as _, extra::OpaqueError};
 use rama_utils::str::smol_str::SmolStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
