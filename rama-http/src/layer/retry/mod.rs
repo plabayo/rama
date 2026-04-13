@@ -139,7 +139,9 @@ mod test {
         service::web::response::IntoResponse,
     };
     use rama_core::{
-        Layer, extensions::Extension, extensions::Extensions, extensions::ExtensionsRef,
+        Layer,
+        error::extra::OpaqueError,
+        extensions::{Extension, Extensions, ExtensionsRef},
         service::service_fn,
     };
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
@@ -196,7 +198,7 @@ mod test {
                 let txt = req.try_into_string().await.unwrap();
                 match txt.as_str() {
                     "internal" => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-                    "error" => Err(rama_core::error::BoxError::from("custom error")),
+                    "error" => Err(OpaqueError::from_static_str("custom error")),
                     _ => Ok(txt.into_response()),
                 }
             },

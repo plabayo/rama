@@ -3,6 +3,7 @@ use crate::address::SocketAddress;
 use crate::conn::{ConnectionHealth, ConnectionHealthStatus};
 use crate::stream::Socket;
 use parking_lot::Mutex;
+use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
@@ -222,18 +223,18 @@ impl<C, ID> Clone for LruDropPool<C, ID> {
 impl<C, ID> LruDropPool<C, ID> {
     pub fn try_new(max_active: usize, max_total: usize) -> Result<Self, BoxError> {
         if max_active == 0 || max_total == 0 {
-            return Err(BoxError::from(
+            return Err(OpaqueError::from_static_str(
                 "max_active or max_total of 0 will make this pool unusable",
             )
             .context_field("max_active", max_active)
             .context_field("max_total", max_total));
         }
         if max_active > max_total {
-            return Err(
-                BoxError::from("max_active should be smaller or equal to max_total")
-                    .context_field("max_active", max_active)
-                    .context_field("max_total", max_total),
-            );
+            return Err(OpaqueError::from_static_str(
+                "max_active should be smaller or equal to max_total",
+            )
+            .context_field("max_active", max_active)
+            .context_field("max_total", max_total));
         }
         let storage = Arc::new(Mutex::new(VecDeque::with_capacity(max_total)));
         let weak_storage = Arc::downgrade(&storage);
@@ -1072,7 +1073,7 @@ mod tests {
 
     impl Service<bool> for InnerService {
         type Output = ();
-        type Error = BoxError;
+        type Error = OpaqueError;
 
         async fn serve(&self, should_error: bool) -> Result<Self::Output, Self::Error> {
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
@@ -1085,7 +1086,7 @@ mod tests {
             }
 
             if self.should_error.load(Ordering::Relaxed) {
-                Err(BoxError::from("service is in broken state"))
+                Err(OpaqueError::from_static_str("service is in broken state"))
             } else {
                 Ok(())
             }

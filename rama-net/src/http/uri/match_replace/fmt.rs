@@ -1,6 +1,6 @@
 use std::{borrow::Cow, fmt};
 
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError};
 use rama_http_types::Uri;
 
 #[derive(Clone)]
@@ -77,7 +77,7 @@ impl UriFormatter {
                         offset = index + 1;
                     } else if byte == b'?' {
                         if include_query {
-                            return Err(BoxError::from(
+                            return Err(OpaqueError::from_static_str(
                                 "uri can only contain a single '?': multiple found",
                             )
                             .context_field("index", index));
@@ -114,9 +114,10 @@ impl UriFormatter {
         let literal_len =
             template.len() - captures.iter().map(|capture| capture.length).sum::<usize>();
         if literal_len + captures.len() >= MAX_URI_LEN {
-            return Err(BoxError::from(
+            return Err(OpaqueError::from_static_str(
                 "Uri Formatter potential length exceeds max URI length",
-            ));
+            )
+            .into_box_error());
         }
 
         Ok(Self {
@@ -154,10 +155,12 @@ fn try_rule_capture_from_byte_range(
     bytes: &[u8],
     offset: usize,
     index: usize,
-) -> Result<RuleCapture, BoxError> {
+) -> Result<RuleCapture, OpaqueError> {
     let length = index.saturating_sub(offset);
     if length == 0 || length > 2 {
-        return Err(BoxError::from("invalid capture raw byte length (OOR)"));
+        return Err(OpaqueError::from_static_str(
+            "invalid capture raw byte length (OOR)",
+        ));
     }
 
     let capture_index: usize = bytes[offset..offset + length]
@@ -170,7 +173,7 @@ fn try_rule_capture_from_byte_range(
         .sum();
 
     if capture_index == 0 || capture_index > 16 {
-        return Err(BoxError::from(
+        return Err(OpaqueError::from_static_str(
             "uri formatter is invalid: capture index has to be within inclusive range [1, 16]",
         ));
     }

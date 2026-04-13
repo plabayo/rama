@@ -51,7 +51,7 @@
 
 use rama::{
     Layer,
-    error::{BoxError, ErrorContext, ErrorExt},
+    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
@@ -120,18 +120,18 @@ impl DynamicConfigProvider for DynamicConfig {
         &self,
         client_hello: rama::tls::rustls::dep::rustls::server::ClientHello<'_>,
     ) -> Result<Arc<rama::tls::rustls::dep::rustls::ServerConfig>, BoxError> {
-        let (cert_chain, key_der) =
-            match client_hello.server_name() {
-                Some(name) => match name {
-                    "example" => load_example_certificate().await,
-                    "second.example" => load_second_example_certificate().await,
-                    name => Err(BoxError::from("server name not recognised")
-                        .context_str_field("name", name)),
-                },
-                _ => Err(BoxError::from(
-                    "server name required for this server to work",
-                )),
-            }?;
+        let (cert_chain, key_der) = match client_hello.server_name() {
+            Some(name) => match name {
+                "example" => load_example_certificate().await,
+                "second.example" => load_second_example_certificate().await,
+                name => Err(OpaqueError::from_static_str("server name not recognised")
+                    .context_str_field("name", name)),
+            },
+            _ => Err(
+                OpaqueError::from_static_str("server name required for this server to work")
+                    .into_box_error(),
+            ),
+        }?;
 
         let config = TlsAcceptorDataBuilder::new(cert_chain, key_der)
             .unwrap()

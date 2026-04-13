@@ -1,3 +1,4 @@
+use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::extensions::Extension;
 use rama_http::headers::ClientHint;
@@ -127,7 +128,7 @@ impl FromStr for RequestInitiator {
                 "form" => Ok(Self::Form),
                 "xhr" => Ok(Self::Xhr),
                 "fetch" => Ok(Self::Fetch),
-                _ => Err(BoxError::from("invalid request initiator").context_str_field("str", s)),
+                _ => Err(OpaqueError::from_static_str("invalid request initiator").context_str_field("str", s)),
             }
         }
     }

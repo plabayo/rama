@@ -1,6 +1,7 @@
 use std::{fmt, str::FromStr};
 
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::error::extra::OpaqueError;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::Extension;
 use rama_utils::str::NonEmptyStr;
 
@@ -140,7 +141,10 @@ impl TryFrom<&str> for Basic {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value.find(':') {
-            Some(0) => Err(BoxError::from("missing username in basic credential")),
+            Some(0) => Err(
+                OpaqueError::from_static_str("missing username in basic credential")
+                    .into_box_error(),
+            ),
             Some(n) => Ok(Self {
                 username: NonEmptyStr::try_from(&value[..n])
                     .context("create username for secure basic credentials")?,

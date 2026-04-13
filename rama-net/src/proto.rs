@@ -1,7 +1,8 @@
 use std::cmp::min;
 use std::str::FromStr;
 
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::extra::OpaqueError;
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::Extension;
 use rama_utils::macros::str::eq_ignore_ascii_case;
 use rama_utils::str::smol_str::SmolStr;
@@ -356,7 +357,7 @@ pub(crate) fn try_to_extract_protocol_from_uri_scheme(
     s: &[u8],
 ) -> Result<(Option<Protocol>, usize), BoxError> {
     if s.is_empty() {
-        return Err(BoxError::from("empty uri contains no scheme"));
+        return Err(OpaqueError::from_static_str("empty uri contains no scheme").into_box_error());
     }
 
     for i in 0..min(s.len(), 512) {

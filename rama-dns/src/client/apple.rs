@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rama_core::bytes::Bytes;
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, ErrorExt};
 use rama_core::futures::{Stream, async_stream::stream_fn};
 use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
@@ -279,7 +279,7 @@ where
     P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
 {
     state.done.store(true, Ordering::SeqCst);
-    state.queue.lock().push_back(Err(BoxError::from(err)));
+    state.queue.lock().push_back(Err(err.into_box_error()));
 }
 
 fn finish_empty<T, P>(

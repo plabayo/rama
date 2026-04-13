@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use rama_core::{
-    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
     extensions::Extensions,
     futures::StreamExt,
     telemetry::tracing,
@@ -152,17 +152,17 @@ where
 
     if resolved_count > 0 {
         Err(
-            BoxError::from("failed to (udp) connect to any resolved IP address")
+            OpaqueError::from_static_str("failed to (udp) connect to any resolved IP address")
                 .context_field("host", host)
                 .context_field("port", port)
                 .context_field("resolved_addr_count", resolved_count),
         )
     } else {
-        Err(
-            BoxError::from("failed to resolve into any IP address (as part of udp connect)")
-                .context_field("host", host)
-                .context_field("port", port),
+        Err(OpaqueError::from_static_str(
+            "failed to resolve into any IP address (as part of udp connect)",
         )
+        .context_field("host", host)
+        .context_field("port", port))
     }
 }
 

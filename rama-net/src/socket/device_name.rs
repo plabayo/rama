@@ -73,7 +73,10 @@ impl TryFrom<&str> for DeviceName {
             return Ok(Self(SmolStr::from(s)));
         }
 
-        Err(BoxError::from("invalid (interface) device name").context_str_field("str", s))
+        Err(
+            OpaqueError::from_static_str("invalid (interface) device name")
+                .context_str_field("str", s),
+        )
     }
 }
 

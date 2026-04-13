@@ -16,7 +16,7 @@
 
 use rama::{
     Layer,
-    error::BoxError,
+    error::{BoxError, ErrorExt, extra::OpaqueError},
     http::{
         BodyExtractExt,
         client::EasyHttpWebClient,
@@ -136,7 +136,9 @@ where
     async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
         let output = match !self.0.swap(true, Ordering::AcqRel) {
             true => PolicyOutput::Ready(()),
-            false => PolicyOutput::Abort(BoxError::from("only first connection is allowed")),
+            false => PolicyOutput::Abort(
+                OpaqueError::from_static_str("only first connection is allowed").into_box_error(),
+            ),
         };
         PolicyResult {
             input: request,

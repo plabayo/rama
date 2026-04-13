@@ -180,7 +180,7 @@ impl AcmeClient {
                 .context("create account request")?;
 
             if mode == CreateAccountMode::Create && response.status() == 200 {
-                return Err(BoxError::from(
+                return Err(OpaqueError::from_static_str(
                     "Tried creating new account, but account already exists",
                 )
                 .into());
@@ -561,7 +561,9 @@ impl<'a> Order<'a> {
                 server::ChallengeStatus::Pending | server::ChallengeStatus::Processing => (),
                 server::ChallengeStatus::Valid => return Ok(()),
                 server::ChallengeStatus::Invalid => {
-                    return Err(BoxError::from("challenge is detected as invalid").into());
+                    return Err(
+                        OpaqueError::from_static_str("challenge is detected as invalid").into(),
+                    );
                 }
             }
 
@@ -677,7 +679,7 @@ impl<'a> Order<'a> {
                 return Ok::<_, ClientError>(&self.inner);
             }
             if self.inner.status == server::OrderStatus::Invalid {
-                return Err(BoxError::from("Order is invalid state").into());
+                return Err(OpaqueError::from_static_str("Order is invalid state").into());
             }
 
             sleep(retry_wait.unwrap_or(self.account.client.default_retry_duration)).await;
@@ -757,7 +759,7 @@ async fn bytes_into_error(response_parts: Parts, bytes: Bytes) -> ClientError {
         problem.into()
     } else {
         match bytes.try_into_string().await {
-            Ok(body_str) => BoxError::from("unexpected problem response")
+            Ok(body_str) => OpaqueError::from_static_str("unexpected problem response")
                 .context_field("status", response_parts.status)
                 .context_str_field("body", body_str),
             Err(err) => err
@@ -831,6 +833,12 @@ impl std::error::Error for ClientError {
 impl From<BoxError> for ClientError {
     fn from(value: BoxError) -> Self {
         Self::Other(value)
+    }
+}
+
+impl From<OpaqueError> for ClientError {
+    fn from(value: OpaqueError) -> Self {
+        Self::Other(value.into_box_error())
     }
 }
 

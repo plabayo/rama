@@ -46,7 +46,7 @@ use crate::{
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
 };
 
-use rama_core::error::ErrorExt as _;
+use rama_core::error::{ErrorExt as _, extra::OpaqueError};
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -292,7 +292,7 @@ where
                 Either3::B(HttpServer::new_http1(exec).service(http_service))
             }
             Some(version) => {
-                return Err(BoxError::from("unsupported http version")
+                return Err(OpaqueError::from_static_str("unsupported http version")
                     .context_debug_field("version", version));
             }
             None => Either3::C({

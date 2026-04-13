@@ -5,6 +5,7 @@
 
 use std::{fmt, str::FromStr};
 
+use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::Extension as ExtensionTrait;
 use rama_core::telemetry::tracing;
@@ -225,27 +226,31 @@ impl FromStr for Extension {
             for part in parts {
                 if part.eq_ignore_ascii_case("server_no_context_takeover") {
                     if std::mem::replace(&mut config.server_no_context_takeover, true) {
-                        return Err(BoxError::from(
+                        return Err(OpaqueError::from_static_str(
                             "duplicate extension param: server_no_context_takeover",
-                        ));
+                        )
+                        .into_box_error());
                     }
                 } else if part.eq_ignore_ascii_case("client_no_context_takeover") {
                     if std::mem::replace(&mut config.client_no_context_takeover, true) {
-                        return Err(BoxError::from(
+                        return Err(OpaqueError::from_static_str(
                             "duplicate extension param: client_no_context_takeover",
-                        ));
+                        )
+                        .into_box_error());
                     }
                 } else if part.eq_ignore_ascii_case("server_max_window_bits") {
                     if config.server_max_window_bits.replace(0).is_some() {
-                        return Err(BoxError::from(
+                        return Err(OpaqueError::from_static_str(
                             "duplicate extension param: server_max_window_bits",
-                        ));
+                        )
+                        .into_box_error());
                     }
                 } else if part.eq_ignore_ascii_case("client_max_window_bits") {
                     if config.client_max_window_bits.replace(0).is_some() {
-                        return Err(BoxError::from(
+                        return Err(OpaqueError::from_static_str(
                             "duplicate extension param: client_max_window_bits",
-                        ));
+                        )
+                        .into_box_error());
                     }
                 } else if let Some((k, v)) = part.split_once('=') {
                     let k = k.trim();
@@ -265,15 +270,16 @@ impl FromStr for Extension {
                                     tracing::debug!(
                                         "fail per-message-deflate config value for server max windows bits: {v} not in [8,15] range"
                                     );
-                                    return Err(BoxError::from(
+                                    return Err(OpaqueError::from_static_str(
                                         "invalid server max windows bits (OOB)",
                                     )
                                     .context_field("value", v));
                                 }
                                 if config.server_max_window_bits.replace(v).is_some() {
-                                    return Err(BoxError::from(
+                                    return Err(OpaqueError::from_static_str(
                                         "duplicate extension param: server_max_window_bits",
-                                    ));
+                                    )
+                                    .into_box_error());
                                 }
                             }
                             Err(err) => {
@@ -290,15 +296,16 @@ impl FromStr for Extension {
                                     tracing::debug!(
                                         "fail per-message-deflate config value for client max windows bits: {v} not in [8,15] range"
                                     );
-                                    return Err(BoxError::from(
+                                    return Err(OpaqueError::from_static_str(
                                         "invalid client max windows bits (OOB)",
                                     )
                                     .context_field("value", v));
                                 }
                                 if config.client_max_window_bits.replace(v).is_some() {
-                                    return Err(BoxError::from(
+                                    return Err(OpaqueError::from_static_str(
                                         "duplicate extension param: client_max_window_bits",
-                                    ));
+                                    )
+                                    .into_box_error());
                                 }
                             }
                             Err(err) => {
@@ -312,18 +319,20 @@ impl FromStr for Extension {
                         tracing::debug!(
                             "fail per-message-deflate config with unknown permessage-deflate config parameter: {k} = {v}"
                         );
-                        return Err(BoxError::from("value not expected for given key")
-                            .context_str_field("key", k)
-                            .context_str_field("value", v));
+                        return Err(OpaqueError::from_static_str(
+                            "value not expected for given key",
+                        )
+                        .context_str_field("key", k)
+                        .context_str_field("value", v));
                     }
                 } else {
                     tracing::debug!(
                         "received unknown permessage-deflate config parameter part: {part}"
                     );
-                    return Err(
-                        BoxError::from("key not expected for permessage-deflate config")
-                            .context_str_field("key", part),
-                    );
+                    return Err(OpaqueError::from_static_str(
+                        "key not expected for permessage-deflate config",
+                    )
+                    .context_str_field("key", part));
                 }
             }
             Ok(Self::PerMessageDeflate(config))

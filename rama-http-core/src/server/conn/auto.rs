@@ -10,6 +10,7 @@ use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
 use rama_core::Service;
+use rama_core::error::{ErrorExt as _, extra::OpaqueError};
 use rama_core::extensions::ExtensionsRef;
 use rama_http::{Request, Response};
 use tokio::io::AsyncRead;
@@ -223,7 +224,7 @@ where
         // We start as H2 and switch to H1 as soon as we don't have the preface.
         while buf.filled().len() < H2_PREFACE.len() {
             let Some(io) = this.io.as_mut() else {
-                return Poll::Ready(Err(std::io::Error::other(BoxError::from(
+                return Poll::Ready(Err(std::io::Error::other(OpaqueError::from_static_str(
                     "unexpected error: ReadVersion(..., >IO<) already taken in earlier Poll::ready, cannot read from it, report bug in rama repo",
                 ))));
             };
@@ -242,7 +243,7 @@ where
         }
 
         let Some(io) = this.io.take() else {
-            return Poll::Ready(Err(std::io::Error::other(BoxError::from(
+            return Poll::Ready(Err(std::io::Error::other(OpaqueError::from_static_str(
                 "unexpected error: ReadVersion(..., >IO<) already taken in earlier Poll::ready, cannot take it again, report bug in rama repo",
             ))));
         };
@@ -377,9 +378,9 @@ where
                 } => {
                     let (version, io) = ready!(read_version.poll(cx))?;
                     let Some(service) = service.take() else {
-                        return Poll::Ready(Err(BoxError::from(
+                        return Poll::Ready(Err(OpaqueError::from_static_str(
                             "unexpected error: auto http svc in connection already taken, report bug in rama repo",
-                        )));
+                        ).into_box_error()));
                     };
                     match version {
                         Version::H1 => {
@@ -507,9 +508,9 @@ where
                 } => {
                     let (version, io) = ready!(read_version.poll(cx))?;
                     let Some(service) = service.take() else {
-                        return Poll::Ready(Err(BoxError::from(
+                        return Poll::Ready(Err(OpaqueError::from_static_str(
                             "unexpected error: auto http svc in upgradeable connection already taken, report bug in rama repo",
-                        )));
+                        ).into_box_error()));
                     };
                     match version {
                         Version::H1 => {

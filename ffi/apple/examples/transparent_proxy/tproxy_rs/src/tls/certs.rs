@@ -139,7 +139,7 @@ fn load_file_secret(service: &str) -> Result<Option<Vec<u8>>, BoxError> {
     match std::fs::read(&path) {
         Ok(raw) => Ok(Some(raw)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(BoxError::from(err)
+        Err(err) => Err(err
             .context("load filesystem secret")
             .context_str_field("service", service)
             .context_str_field("path", path.display().to_string())),

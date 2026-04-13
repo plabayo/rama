@@ -1,4 +1,4 @@
-use rama_core::error::{BoxError, ErrorExt};
+use rama_core::error::{BoxError, ErrorExt, extra::OpaqueError};
 use std::net::{IpAddr, Ipv6Addr};
 
 pub(crate) fn split_port_from_str(s: &str) -> Result<(&str, u16), BoxError> {
@@ -8,7 +8,7 @@ pub(crate) fn split_port_from_str(s: &str) -> Result<(&str, u16), BoxError> {
             Err(err) => Err(err.context("parse port as u16")),
         }
     } else {
-        Err(BoxError::from("missing port"))
+        Err(OpaqueError::from_static_str("missing port").into_box_error())
     }
 }
 

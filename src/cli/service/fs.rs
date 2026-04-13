@@ -1,6 +1,6 @@
 //! [`Service`] that serves a file or directory using [`ServeFile`] or [`ServeDir`], or a placeholder page.
 
-use rama_core::error::ErrorExt as _;
+use rama_core::error::{ErrorExt as _, extra::OpaqueError};
 
 use crate::{
     Layer, Service,
@@ -276,7 +276,7 @@ where
                 Either3::B(HttpServer::new_http1(executor).service(http_service))
             }
             Some(version) => {
-                return Err(BoxError::from("unsupported http version")
+                return Err(OpaqueError::from_static_str("unsupported http version")
                     .context_debug_field("version", version));
             }
             None => Either3::C(HttpServer::auto(executor).service(http_service)),
@@ -322,8 +322,10 @@ where
                 Either3::C(ServeDir::new(path).with_directory_serve_mode(self.dir_serve_mode))
             }
             Some(path) => {
-                return Err(BoxError::from("invalid path: no such file or directory")
-                    .with_context_debug_field("path", || path.clone()));
+                return Err(OpaqueError::from_static_str(
+                    "invalid path: no such file or directory",
+                )
+                .with_context_debug_field("path", || path.clone()));
             }
         };
 

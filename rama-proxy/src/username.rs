@@ -1,6 +1,6 @@
 use super::ProxyFilter;
 use rama_core::{
-    error::{BoxError, ErrorExt},
+    error::{BoxError, ErrorExt, extra::OpaqueError},
     extensions::Extensions,
     telemetry::tracing,
     username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
@@ -165,7 +165,8 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
     fn build(self, ext: &Extensions) -> Result<(), Self::Error> {
         if let Some(key) = self.key {
             return Err(
-                BoxError::from("unused proxy filter username key").context_debug_field("key", key)
+                OpaqueError::from_static_str("unused proxy filter username key")
+                    .context_debug_field("key", key),
             );
         }
         if self.proxy_filter != ProxyFilter::default() {

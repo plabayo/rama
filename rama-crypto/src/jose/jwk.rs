@@ -10,7 +10,7 @@ use aws_lc_rs::{
     },
 };
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 
 use crate::jose::{JWA, Signer, jwk_utils::create_subject_public_key_info};
@@ -173,9 +173,10 @@ impl JWK {
                     rsa_public_key_sequence,
                 ))
             }
-            JWKType::OCT { .. } => Err(BoxError::from(
+            JWKType::OCT { .. } => Err(OpaqueError::from_static_str(
                 "Symmetric key cannot be converted to public key",
-            )),
+            )
+            .into_box_error()),
             JWKType::EC { crv, x, y } => {
                 let alg: &'static EcdsaVerificationAlgorithm =
                     JWA::from(crv.to_owned()).try_into()?;

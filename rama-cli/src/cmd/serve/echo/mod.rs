@@ -6,7 +6,7 @@ use rama::{
     Layer as _,
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
     combinators::Either,
-    error::{BoxError, ErrorContext, ErrorExt as _},
+    error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
     graceful::ShutdownGuard,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
@@ -210,14 +210,16 @@ async fn bind_echo_tcp_service(
 ) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
     if cfg.ws {
-        return Err(BoxError::from(
+        return Err(OpaqueError::from_static_str(
             "websocket support is only possible in http(s) mode",
-        ));
+        )
+        .into_box_error());
     }
     if cfg.http_version != HttpVersion::Auto {
-        return Err(BoxError::from(
+        return Err(OpaqueError::from_static_str(
             "http version selection is only possible in http(s) mode",
-        ));
+        )
+        .into_box_error());
     }
 
     let with_ha_proxy = match cfg.forward {
@@ -230,9 +232,10 @@ async fn bind_echo_tcp_service(
             | ForwardKind::CFConnectingIp
             | ForwardKind::TrueClientIp,
         ) => {
-            return Err(BoxError::from(
+            return Err(OpaqueError::from_static_str(
                 "forward http headers are only possible in http(s) mode",
-            ));
+            )
+            .into_box_error());
         }
         Some(ForwardKind::HaProxy) => true,
         None => false,
@@ -297,27 +300,33 @@ async fn bind_echo_udp_service(
     etx: tokio::sync::mpsc::Sender<BoxError>,
 ) -> Result<(), BoxError> {
     if cfg.ws {
-        return Err(BoxError::from(
+        return Err(OpaqueError::from_static_str(
             "websocket support is only possible in http(s) mode",
-        ));
+        )
+        .into_box_error());
     }
     if cfg.http_version != HttpVersion::Auto {
-        return Err(BoxError::from(
+        return Err(OpaqueError::from_static_str(
             "http version selection is only possible in http(s) mode",
-        ));
+        )
+        .into_box_error());
     }
     if maybe_tls_config.is_some() {
-        return Err(BoxError::from("TLS is not supported for UDP mode"));
+        return Err(
+            OpaqueError::from_static_str("TLS is not supported for UDP mode").into_box_error(),
+        );
     }
     if cfg.forward.is_some() {
-        return Err(BoxError::from(
+        return Err(OpaqueError::from_static_str(
             "Forward info capabilities is not supported for UDP mode",
-        ));
+        )
+        .into_box_error());
     }
     if cfg.timeout.is_some() {
-        return Err(BoxError::from(
+        return Err(OpaqueError::from_static_str(
             "connection timeout is not supported for UDP mode",
-        ));
+        )
+        .into_box_error());
     }
 
     tracing::info!("starting UDP echo service: bind interface = {:?}", cfg.bind);

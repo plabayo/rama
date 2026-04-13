@@ -4,7 +4,7 @@ use crate::protocol::{v1, v2};
 use rama_core::{
     Layer, Service,
     bytes::Bytes,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     extensions::{ChainableExtensions, ExtensionsRef},
     io::Io,
 };
@@ -226,7 +226,9 @@ where
                         .get_ref::<SocketInfo>()
                         .map(|info| info.peer_addr())
                 })
-                .ok_or_else(|| BoxError::from("PROXY client (v1): missing src socket address"))?
+                .ok_or_else(|| {
+                    OpaqueError::from_static_str("PROXY client (v1): missing src socket address")
+                })?
         };
 
         let peer_addr = conn.peer_addr()?;
@@ -238,9 +240,10 @@ where
                 v1::Addresses::new_tcp6(src_ip, dst_ip, src.port, peer_addr.port)
             }
             (_, _) => {
-                return Err(BoxError::from(
+                return Err(OpaqueError::from_static_str(
                     "PROXY client (v1): IP version mismatch between src and dest",
-                ));
+                )
+                .into_box_error());
             }
         };
 
@@ -275,7 +278,9 @@ where
                         .get_ref::<SocketInfo>()
                         .map(|info| info.peer_addr())
                 })
-                .ok_or_else(|| BoxError::from("PROXY client (v2): missing src socket address"))?
+                .ok_or_else(|| {
+                    OpaqueError::from_static_str("PROXY client (v2): missing src socket address")
+                })?
         };
 
         let peer_addr = conn.peer_addr()?;
@@ -291,9 +296,10 @@ where
                 v2::IPv6::new(src_ip, dst_ip, src.port, peer_addr.port),
             ),
             (_, _) => {
-                return Err(BoxError::from(
+                return Err(OpaqueError::from_static_str(
                     "PROXY client (v2): IP version mismatch between src and dest",
-                ));
+                )
+                .into_box_error());
             }
         };
 

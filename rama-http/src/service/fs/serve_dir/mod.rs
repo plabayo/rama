@@ -6,6 +6,7 @@ use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_net::uri::util::percent_encoding::percent_decode;
@@ -376,7 +377,7 @@ impl fmt::Display for DirectoryServeMode {
 }
 
 impl FromStr for DirectoryServeMode {
-    type Err = BoxError;
+    type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         rama_utils::macros::match_ignore_ascii_case_str! {
@@ -384,14 +385,14 @@ impl FromStr for DirectoryServeMode {
                 "append-index" | "append_index" => Ok(Self::AppendIndexHtml),
                 "not-found" | "not_found" => Ok(Self::NotFound),
                 "html-file-list" | "html_file_list" => Ok(Self::HtmlFileList),
-                _ => Err(BoxError::from("invalid DirectoryServeMode str")),
+                _ => Err(OpaqueError::from_static_str("invalid DirectoryServeMode str")),
             }
         }
     }
 }
 
 impl TryFrom<&str> for DirectoryServeMode {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     #[inline]
     fn try_from(value: &str) -> Result<Self, Self::Error> {

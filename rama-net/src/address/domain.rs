@@ -1,4 +1,4 @@
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
 use rama_utils::str::smol_str::{SmolStr, format_smolstr};
 use std::{cmp::Ordering, fmt, iter::repeat};
 
@@ -151,7 +151,7 @@ impl Domain {
     pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, BoxError> {
         let sub = format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
         if !is_valid_name(sub.as_bytes()) {
-            return Err(BoxError::from("invalid subdomain"));
+            return Err(OpaqueError::from_static_str("invalid subdomain").into_box_error());
         }
         Ok(Self(sub))
     }
@@ -164,7 +164,7 @@ impl Domain {
     pub fn try_as_wildcard(&self) -> Result<Self, BoxError> {
         let sub = format_smolstr!("*.{}", self.0);
         if !is_valid_name(sub.as_bytes()) {
-            return Err(BoxError::from("invalid subdomain"));
+            return Err(OpaqueError::from_static_str("invalid subdomain").into_box_error());
         }
         Ok(Self(sub))
     }
@@ -304,7 +304,7 @@ impl TryFrom<String> for Domain {
         if is_valid_name(name.as_bytes()) {
             Ok(Self(SmolStr::new(name)))
         } else {
-            Err(BoxError::from("invalid domain"))
+            Err(OpaqueError::from_static_str("invalid domain").into_box_error())
         }
     }
 }
@@ -318,7 +318,7 @@ impl<'a> TryFrom<&'a [u8]> for Domain {
                 std::str::from_utf8(name).context("convert domain bytes to utf-8 string")?,
             )))
         } else {
-            Err(BoxError::from("invalid domain"))
+            Err(OpaqueError::from_static_str("invalid domain").into_box_error())
         }
     }
 }
@@ -332,7 +332,7 @@ impl TryFrom<Vec<u8>> for Domain {
                 String::from_utf8(name).context("convert domain bytes to utf-8 string")?,
             )))
         } else {
-            Err(BoxError::from("invalid domain"))
+            Err(OpaqueError::from_static_str("invalid domain").into_box_error())
         }
     }
 }

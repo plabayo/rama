@@ -40,6 +40,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use parking_lot::Mutex;
+use rama_core::error::ErrorExt as _;
+use rama_core::error::extra::OpaqueError;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;
 
@@ -112,12 +114,15 @@ pub fn handle_upgrade<T: ExtensionsRef>(
         Some(on_upgrade) => {
             trace!("upgrading this: {:?}", on_upgrade);
             if on_upgrade.has_handled_upgrade() {
-                Err(BoxError::from("upgraded has already been handled"))
+                Err(
+                    OpaqueError::from_static_str("upgraded has already been handled")
+                        .into_box_error(),
+                )
             } else {
                 Ok(on_upgrade)
             }
         }
-        None => Err(BoxError::from("no pending update found")),
+        None => Err(OpaqueError::from_static_str("no pending update found").into_box_error()),
     };
 
     async {
@@ -286,9 +291,10 @@ impl Future for OnUpgrade {
             .map(|res| match res {
                 Ok(Ok(upgraded)) => Ok(upgraded),
                 Ok(Err(err)) => Err(err),
-                Err(_oneshot_canceled) => Err(BoxError::from(
+                Err(_oneshot_canceled) => Err(OpaqueError::from_static_str(
                     "OnUpgrade: cancelled while expecting upgrade",
-                )),
+                )
+                .into_box_error()),
             })
     }
 }
@@ -312,9 +318,10 @@ impl Pending {
     /// upgrades are handled manually.
     pub fn manual(self) {
         trace!("pending upgrade handled manually");
-        let _ = self
-            .tx
-            .send(Err(BoxError::from("OnUpgrade: manual upgrade failed")));
+        let _ = self.tx.send(Err(OpaqueError::from_static_str(
+            "OnUpgrade: manual upgrade failed",
+        )
+        .into_box_error()));
     }
 }
 

@@ -233,6 +233,7 @@ impl IntoHeaderValue for &String {}
 impl IntoHeaderValue for &[u8] {}
 
 mod private {
+    use rama_core::error::extra::OpaqueError;
     use rama_http_types::HeaderName;
     use rama_net::Protocol;
 
@@ -250,11 +251,11 @@ mod private {
                     if protocol.is_http() || protocol.is_ws() {
                         Ok(self)
                     } else {
-                        Err(BoxError::from("unsupported protocol")
+                        Err(OpaqueError::from_static_str("unsupported protocol")
                             .context_field("protocol", protocol))
                     }
                 }
-                None => Err(BoxError::from("Missing scheme in URI")),
+                None => Err(OpaqueError::from_static_str("Missing scheme in URI").into_box_error()),
             }
         }
     }
@@ -263,7 +264,10 @@ mod private {
         fn into_url(self) -> Result<Uri, BoxError> {
             match self.parse::<Uri>() {
                 Ok(uri) => uri.into_url(),
-                Err(_) => Err(BoxError::from("invalid url").context_str_field("raw_str", self)),
+                Err(_) => {
+                    Err(OpaqueError::from_static_str("invalid url")
+                        .context_str_field("raw_str", self))
+                }
             }
         }
     }
@@ -296,7 +300,9 @@ mod private {
         fn into_header_name(self) -> Result<crate::HeaderName, BoxError> {
             match self {
                 Some(name) => Ok(name),
-                None => Err(BoxError::from("Header name is required")),
+                None => {
+                    Err(OpaqueError::from_static_str("Header name is required").into_box_error())
+                }
             }
         }
     }

@@ -16,7 +16,7 @@ use crate::{
     telemetry::tracing,
 };
 use pin_project_lite::pin_project;
-use rama_core::error::{ErrorContext as _, ErrorExt as _};
+use rama_core::error::{ErrorContext as _, ErrorExt as _, extra::OpaqueError};
 use std::{
     fmt::Debug,
     pin::Pin,
@@ -127,8 +127,10 @@ where
                     let conn = MaybeProxiedConnection::http(conn);
                     Ok(EstablishedClientConnection { input, conn })
                 } else {
-                    Err(BoxError::from("received unsupport proxy protocol")
-                        .with_context_debug_field("protocol", || protocol.clone()))
+                    Err(
+                        OpaqueError::from_static_str("received unsupport proxy protocol")
+                            .with_context_debug_field("protocol", || protocol.clone()),
+                    )
                 }
             }
         }

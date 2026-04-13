@@ -217,7 +217,7 @@ where
                 conn: svc,
             })
         }
-        version => Err(BoxError::from("unsupported Http version")
+        version => Err(OpaqueError::from_static_str("unsupported Http version")
             .context_debug_field("version", version)
             .into_opaque_error()),
     }
