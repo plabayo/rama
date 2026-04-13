@@ -282,9 +282,12 @@ pub fn client_root_certs() -> Arc<RootCertStore> {
 #[cfg(not(any(feature = "aws-lc", feature = "ring")))]
 pub fn self_signed_client_auth()
 -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    Err(BoxError::from(
+    use rama_core::error::{ErrorExt, extra::OpaqueError};
+
+    Err(OpaqueError::from_static_str(
         "enable aws-lc or ring feature to use fn self_signed_client_auth",
-    ))
+    )
+    .into_box_error())
 }
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]

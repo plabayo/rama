@@ -1,4 +1,4 @@
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError};
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 use std::{fmt, str::FromStr};
 
@@ -66,9 +66,10 @@ impl Bearer {
     /// Returns an error in case the token contains non-visible ASCII chars.
     pub fn try_new(s: NonEmptyStr) -> Result<Self, BoxError> {
         if s.as_bytes().iter().any(|b| *b < 32 || *b >= 127) {
-            return Err(BoxError::from(
+            return Err(OpaqueError::from_static_str(
                 "string contains non visible ASCII characters",
-            ));
+            )
+            .into_box_error());
         }
 
         Ok(Self(s))

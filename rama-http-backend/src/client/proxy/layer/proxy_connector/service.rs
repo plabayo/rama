@@ -4,7 +4,7 @@ use super::InnerHttpProxyConnector;
 use pin_project_lite::pin_project;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext as _, ErrorExt},
+    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
     extensions::{Extension, Extensions, ExtensionsRef},
     io::Io,
     telemetry::tracing,
@@ -120,9 +120,10 @@ where
             .map(|p| p.is_http())
             .unwrap_or(true)
         {
-            return Err(BoxError::from(
+            return Err(OpaqueError::from_static_str(
                 "http proxy connector can only serve http protocol",
-            ));
+            )
+            .into_box_error());
         }
 
         let transport_ctx = input

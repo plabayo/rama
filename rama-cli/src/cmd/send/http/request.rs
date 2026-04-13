@@ -1,6 +1,6 @@
 use rama::{
     bytes::Bytes,
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
     extensions::ExtensionsRef,
     futures::{StreamExt, stream},
     http::{
@@ -21,7 +21,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
 
     let input = build_data_input(cfg).await?;
     if input.is_some() && is_ws {
-        return Err(BoxError::from("input not allowed in WS mode"));
+        return Err(OpaqueError::from_static_str("input not allowed in WS mode").into_box_error());
     }
 
     let uri: Uri = expand_url(&cfg.uri)
@@ -42,7 +42,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         (false, false, false, true, false) => Some(Version::HTTP_2),
         (false, false, false, false, true) => Some(Version::HTTP_3),
         (false, false, false, false, false) => None,
-        _ => Err(BoxError::from(
+        _ => Err(OpaqueError::from_static_str(
             "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",
         ))?,
     } {
@@ -78,7 +78,9 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     }
 
     match (cfg.ipv4, cfg.ipv6) {
-        (true, true) => Err(BoxError::from("--ipv4, --ipv6 are mutually exclusive"))?,
+        (true, true) => Err(OpaqueError::from_static_str(
+            "--ipv4, --ipv6 are mutually exclusive",
+        ))?,
         (true, false) => {
             request.extensions().insert(DnsResolveIpMode::SingleIpV4);
             request.extensions().insert(ConnectIpMode::Ipv4);
@@ -103,7 +105,9 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<(Body, ContentType
         (true, false) => (ContentType::octet_stream(), None),
         (false, true) => (ContentType::json(), Some(NATIVE_NEWLINE)),
         (false, false) => (ContentType::form_url_encoded(), Some("&")),
-        _ => Err(BoxError::from("--binary, --json are mutually exclusive"))?,
+        _ => Err(OpaqueError::from_static_str(
+            "--binary, --json are mutually exclusive",
+        ))?,
     };
 
     let Some(data) = cfg.data.as_deref() else {

@@ -4,7 +4,7 @@ use crate::{
 };
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt},
+    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
     extensions::ExtensionsRef,
     io::Io,
     telemetry::tracing,
@@ -340,9 +340,10 @@ where
             .map(|p| p.is_socks5())
             .unwrap_or(true)
         {
-            return Err(BoxError::from(
+            return Err(OpaqueError::from_static_str(
                 "socks5 proxy connector can only serve socks5 protocol",
-            ));
+            )
+            .into_box_error());
         }
 
         let address = match address {
@@ -414,9 +415,10 @@ where
                 client.set_auth(basic.clone());
             }
             Some(ProxyCredential::Bearer(_)) => {
-                return Err(BoxError::from(
+                return Err(OpaqueError::from_static_str(
                     "socks5proxy does not support auth with bearer credential",
-                ));
+                )
+                .into_box_error());
             }
             None => {
                 tracing::trace!(
@@ -431,7 +433,9 @@ where
 
         let Some(connect_authority) = transport_ctx.host_with_port() else {
             return Err(Box::new(Socks5ProxyError::Handshake(
-                HandshakeError::other(BoxError::from("failed to get port from transport context")),
+                HandshakeError::other(OpaqueError::from_static_str(
+                    "failed to get port from transport context",
+                )),
             )));
         };
 

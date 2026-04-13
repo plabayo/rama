@@ -2,7 +2,8 @@ use crate::address::{HostWithOptPort, HostWithPort};
 use crate::user::Basic;
 
 use super::{Domain, DomainAddress, Host, SocketAddress};
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::extra::OpaqueError;
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -469,7 +470,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     let mut s = maybe_borrowed.as_ref();
 
     if s.is_empty() {
-        return Err(BoxError::from("empty string is invalid authority"));
+        return Err(
+            OpaqueError::from_static_str("empty string is invalid authority").into_box_error(),
+        );
     }
 
     let mut user_info = None;

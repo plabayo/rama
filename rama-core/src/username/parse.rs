@@ -1,6 +1,7 @@
 use super::DEFAULT_USERNAME_LABEL_SEPARATOR;
 use crate::error::BoxError;
 use crate::extensions::{Extension, Extensions};
+use rama_error::extra::OpaqueError;
 use rama_error::{ErrorContext as _, ErrorExt};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::convert::Infallible;
@@ -36,24 +37,24 @@ where
     let username = match label_it.next() {
         Some(username) => {
             if username.is_empty() {
-                return Err(BoxError::from("empty username"));
+                return Err(OpaqueError::from_static_str("empty username").into_box_error());
             } else {
                 username
             }
         }
-        None => return Err(BoxError::from("missing username")),
+        None => return Err(OpaqueError::from_static_str("missing username").into_box_error()),
     };
 
     for (index, label) in label_it.enumerate() {
         match parser.parse_label(label) {
             UsernameLabelState::Used => (), // optimistic smiley
             UsernameLabelState::Ignored => {
-                return Err(BoxError::from("ignored username label")
+                return Err(OpaqueError::from_static_str("ignored username label")
                     .context_field("index", index)
                     .context_str_field("label", label));
             }
             UsernameLabelState::Abort => {
-                return Err(BoxError::from("invalid username label")
+                return Err(OpaqueError::from_static_str("invalid username label")
                     .context_field("index", index)
                     .context_str_field("label", label));
             }

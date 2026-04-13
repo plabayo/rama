@@ -1,6 +1,6 @@
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext, ErrorExt},
+    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef, InputExtensions},
     telemetry::tracing,
 };
@@ -48,11 +48,11 @@ where
         match (&self.sender, req.version()) {
             (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
             | (SendRequest::Http2(_), Version::HTTP_2) => (),
-            (SendRequest::Http1(_), version) => Err(BoxError::from(
+            (SendRequest::Http1(_), version) => Err(OpaqueError::from_static_str(
                 "Http1 connector cannot send request with version",
             )
             .context_debug_field("version", version))?,
-            (SendRequest::Http2(_), version) => Err(BoxError::from(
+            (SendRequest::Http2(_), version) => Err(OpaqueError::from_static_str(
                 "Http2 connector cannot send request with version",
             )
             .context_debug_field("version", version))?,
@@ -128,7 +128,9 @@ impl<B> ExtensionsRef for HttpClientService<B> {
 fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError> {
     // logic specific to this method
     if req.method() == Method::CONNECT && req.uri().host().is_none() {
-        return Err(BoxError::from("missing host in CONNECT request"));
+        return Err(
+            OpaqueError::from_static_str("missing host in CONNECT request").into_box_error(),
+        );
     }
 
     let uses_http_proxy = req

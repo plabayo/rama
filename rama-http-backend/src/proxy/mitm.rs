@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
     extensions::ExtensionsRef,
     graceful::ShutdownGuard,
     io::{BridgeIo, GracefulIo, Io},
@@ -253,8 +253,10 @@ impl TryFrom<Version> for RelayMode {
         match version {
             Version::HTTP_2 => Ok(Self::Http2),
             Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => Ok(Self::Http1),
-            version => Err(BoxError::from("unsupported request version for MITM relay")
-                .context_debug_field("version", version)),
+            version => Err(OpaqueError::from_static_str(
+                "unsupported request version for MITM relay",
+            )
+            .context_debug_field("version", version)),
         }
     }
 }

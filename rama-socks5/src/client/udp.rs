@@ -1,4 +1,5 @@
 use rama_core::bytes::{BufMut, BytesMut};
+use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::futures::Sink;
 use rama_core::futures::Stream;
@@ -244,10 +245,10 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
 
 fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxError> {
     if header.fragment_number != 0 {
-        return Err(
-            BoxError::from("UdpSocketRelay: fragment number != 0 is not supported")
-                .context_field("fragment_number", header.fragment_number),
-        );
+        return Err(OpaqueError::from_static_str(
+            "UdpSocketRelay: fragment number != 0 is not supported",
+        )
+        .context_field("fragment_number", header.fragment_number));
     }
 
     let header_offset = header.serialized_len() - 1;
@@ -255,7 +256,7 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
     let HostWithPort { host, port } = header.destination;
     let from: SocketAddress = match host {
         rama_net::address::Host::Name(domain) => {
-            return Err(BoxError::from(
+            return Err(OpaqueError::from_static_str(
                 "server responded with named address: incompatible for udp bind",
             )
             .context_field("domain", domain));

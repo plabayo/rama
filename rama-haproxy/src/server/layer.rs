@@ -1,7 +1,7 @@
 use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt},
+    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     extensions::ExtensionsRef,
     io::{HeapReader, Io, PrefixedIo},
     telemetry::tracing,
@@ -131,7 +131,10 @@ where
 
         let header = loop {
             if read >= buffer.len() {
-                return Err(BoxError::from("Buffer exhausted before parsing completed"));
+                return Err(OpaqueError::from_static_str(
+                    "Buffer exhausted before parsing completed",
+                )
+                .into_box_error());
             }
 
             let n = stream.read(&mut buffer[read..]).await?;

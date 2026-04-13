@@ -1,4 +1,5 @@
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::extra::OpaqueError;
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::Extension;
 use rama_net::asn::Asn;
 use rama_utils::str::NonEmptyStr;
@@ -154,7 +155,7 @@ pub trait ProxyDB: Send + Sync + 'static {
 }
 
 impl ProxyDB for () {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     #[inline]
     async fn get_proxy_if(
@@ -163,7 +164,9 @@ impl ProxyDB for () {
         _filter: ProxyFilter,
         _predicate: impl ProxyQueryPredicate,
     ) -> Result<Proxy, Self::Error> {
-        Err(BoxError::from("()::get_proxy_if: no ProxyDB defined"))
+        Err(OpaqueError::from_static_str(
+            "()::get_proxy_if: no ProxyDB defined",
+        ))
     }
 
     #[inline]
@@ -172,7 +175,9 @@ impl ProxyDB for () {
         _ctx: ProxyContext,
         _filter: ProxyFilter,
     ) -> Result<Proxy, Self::Error> {
-        Err(BoxError::from("()::get_proxy: no ProxyDB defined"))
+        Err(OpaqueError::from_static_str(
+            "()::get_proxy: no ProxyDB defined",
+        ))
     }
 }
 
@@ -194,7 +199,10 @@ where
                 .get_proxy_if(ctx, filter, predicate)
                 .await
                 .context("Some::get_proxy_if"),
-            None => Err(BoxError::from("None::get_proxy_if: no ProxyDB defined")),
+            None => Err(
+                OpaqueError::from_static_str("None::get_proxy_if: no ProxyDB defined")
+                    .into_box_error(),
+            ),
         }
     }
 
@@ -206,7 +214,10 @@ where
     ) -> Result<Proxy, Self::Error> {
         match self {
             Some(db) => db.get_proxy(ctx, filter).await.context("Some::get_proxy"),
-            None => Err(BoxError::from("None::get_proxy: no ProxyDB defined")),
+            None => Err(
+                OpaqueError::from_static_str("None::get_proxy: no ProxyDB defined")
+                    .into_box_error(),
+            ),
         }
     }
 }

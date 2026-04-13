@@ -1,5 +1,5 @@
 use crate::error::BoxError;
-use rama_core::error::ErrorExt as _;
+use rama_core::error::{ErrorExt as _, extra::OpaqueError};
 use rama_utils::macros::match_ignore_ascii_case_str;
 use std::str::FromStr;
 
@@ -55,7 +55,7 @@ impl<'a> TryFrom<&'a str> for ForwardKind {
                 "cf-connecting-ip" => Ok(Self::CFConnectingIp),
                 "true-client-ip" => Ok(Self::TrueClientIp),
                 "haproxy" => Ok(Self::HaProxy),
-                _ => Err(BoxError::from("unknown forward kind").context_str_field("str", value)),
+                _ => Err(OpaqueError::from_static_str("unknown forward kind").context_str_field("str", value)),
             }
         }
     }

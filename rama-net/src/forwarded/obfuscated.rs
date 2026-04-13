@@ -1,4 +1,4 @@
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError};
 use rama_utils::str::smol_str::SmolStr;
 use std::fmt;
 
@@ -98,7 +98,7 @@ macro_rules! create_obf_type {
                 if $val_fn(s.as_bytes()) {
                     Ok(Self(SmolStr::new(s)))
                 } else {
-                    Err(BoxError::from(concat!("invalid ", stringify!($name))))
+                    Err(OpaqueError::from_static_str(concat!("invalid ", stringify!($name))).into_box_error())
                 }
             }
         }
@@ -112,7 +112,7 @@ macro_rules! create_obf_type {
                         String::from_utf8(s).context(concat!("convert ", stringify!($name), "bytes to utf-8 string"))?,
                     )))
                 } else {
-                    Err(BoxError::from(concat!("invalid ", stringify!($name))))
+                    Err(OpaqueError::from_static_str(concat!("invalid ", stringify!($name))).into_box_error())
                 }
             }
         }

@@ -1,5 +1,6 @@
 use crate::util::HeaderValueString;
 use crate::x_robots_tag::{CustomRule, DirectiveDateTime, MaxImagePreviewSetting};
+use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
@@ -668,9 +669,9 @@ impl Iterator for Parser<'_> {
 
                         if tag.bot_name.is_some() {
                             self.buffer = &self.buffer[self.buffer.len()..];
-                            return Some(Err(BoxError::from(
+                            return Some(Err(OpaqueError::from_static_str(
                                 "unexpected bot name: one is already defined without any directives",
-                            )));
+                            ).into_box_error()));
                         } else {
                             let s = match std::str::from_utf8(key_buffer) {
                                 Ok(value) => value,
@@ -739,7 +740,7 @@ impl Iterator for Parser<'_> {
                 if directive_count == 0 {
                     if let Some(bot_name) = tag.bot_name {
                         self.buffer = &self.buffer[self.buffer.len()..];
-                        return Some(Err(BoxError::from(
+                        return Some(Err(OpaqueError::from_static_str(
                             "tag with only a bot name is not allowed",
                         )
                         .context_field("bot_name", bot_name)));
@@ -752,7 +753,10 @@ impl Iterator for Parser<'_> {
         }
 
         self.buffer = &self.buffer[self.buffer.len()..];
-        Some(Err(BoxError::from("delimiter search overflow")))
+        Some(Err(OpaqueError::from_static_str(
+            "delimiter search overflow",
+        )
+        .into_box_error()))
     }
 }
 

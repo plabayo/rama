@@ -1,6 +1,6 @@
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     extensions::ExtensionsRef,
     rt::Executor,
     telemetry::tracing,
@@ -169,9 +169,10 @@ where
             TransportProtocol::Tcp => (), // a-ok :)
             TransportProtocol::Udp => {
                 // sanity check, shouldn't happen, but in case someone makes a weird stack, it can
-                return Err(BoxError::from(
+                return Err(OpaqueError::from_static_str(
                     "Tcp Connector Service cannot establish a UDP transport",
-                ));
+                )
+                .into_box_error());
             }
         }
 

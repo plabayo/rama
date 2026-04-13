@@ -2,7 +2,8 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::str::FromStr;
 
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::extra::OpaqueError;
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_utils::macros::generate_set_and_with;
 
 use crate::address::ip::{
@@ -333,9 +334,10 @@ impl TryFrom<&str> for SocketAddress {
         let ip_addr =
             try_to_parse_str_to_ip(ip_addr).context("parse ip address from socket address")?;
         match ip_addr {
-            IpAddr::V6(_) if !s.starts_with('[') => Err(BoxError::from(
+            IpAddr::V6(_) if !s.starts_with('[') => Err(OpaqueError::from_static_str(
                 "missing brackets for IPv6 address with port",
-            )),
+            )
+            .into_box_error()),
             _ => Ok(Self { ip_addr, port }),
         }
     }

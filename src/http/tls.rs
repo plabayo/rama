@@ -204,8 +204,10 @@ impl CertIssuerHttpClient {
 
         let status = response.status();
         if status != StatusCode::OK {
-            return Err(BoxError::from("unexpected dinocert order response")
-                .context_field("status", status));
+            return Err(
+                OpaqueError::from_static_str("unexpected dinocert order response")
+                    .context_field("status", status),
+            );
         }
 
         let CertOrderOutput {
@@ -249,8 +251,10 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                 if let Some(ref allow_list) = self.allow_list {
                     match allow_list.match_parent(domain) {
                         None => {
-                            return Err(BoxError::from("sni found: unexpected unknown domain")
-                                .with_context_field("domain", || domain.clone()));
+                            return Err(OpaqueError::from_static_str(
+                                "sni found: unexpected unknown domain",
+                            )
+                            .with_context_field("domain", || domain.clone()));
                         }
                         Some(DomainParentMatch {
                             value: &DomainAllowMode::Exact,
@@ -260,8 +264,10 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                             if is_exact {
                                 domain.clone()
                             } else {
-                                return Err(BoxError::from("sni found: unexpected child domain")
-                                    .with_context_field("domain", || domain.clone()));
+                                return Err(OpaqueError::from_static_str(
+                                    "sni found: unexpected child domain",
+                                )
+                                .with_context_field("domain", || domain.clone()));
                             }
                         }
                         Some(DomainParentMatch {
@@ -274,7 +280,7 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                 }
             }
             None => {
-                return Err(BoxError::from("no SNI found"));
+                return Err(OpaqueError::from_static_str("no SNI found").into_box_error());
             }
         };
 

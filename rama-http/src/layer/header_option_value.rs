@@ -6,7 +6,7 @@
 use crate::{HeaderName, Request, utils::HeaderValueGetter};
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt},
+    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
     extensions::{Extension, ExtensionsRef},
     telemetry::tracing,
 };
@@ -99,7 +99,7 @@ where
                 if str_value == "1" || str_value.eq_ignore_ascii_case("true") {
                     request.extensions().insert(T::default());
                 } else if str_value != "0" && !str_value.eq_ignore_ascii_case("false") {
-                    return Err(BoxError::from("invalid header option")
+                    return Err(OpaqueError::from_static_str("invalid header option")
                         .context_field("header_name", self.header_name.clone())
                         .context_str_field("header_value", str_value));
                 }

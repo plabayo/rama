@@ -1,24 +1,27 @@
 use super::ExtensionValue;
 use super::{ForwardedElement, NodeId};
 use crate::forwarded::ForwardedProtocol;
+use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_utils::macros::match_ignore_ascii_case_str;
 
 pub(crate) fn parse_single_forwarded_element(bytes: &[u8]) -> Result<ForwardedElement, BoxError> {
     if bytes.len() > 512 {
         // custom max length, to keep things sane here...
-        return Err(BoxError::from("forwarded element bytes length is too big")
-            .context_field("length", bytes.len()));
+        return Err(
+            OpaqueError::from_static_str("forwarded element bytes length is too big")
+                .context_field("length", bytes.len()),
+        );
     }
 
     let (element, bytes) = parse_next_forwarded_element(bytes)?;
     if bytes.is_empty() {
         Ok(element)
     } else {
-        Err(
-            BoxError::from("trailing characters found following the forwarded element")
-                .context_field("count", bytes.len()),
+        Err(OpaqueError::from_static_str(
+            "trailing characters found following the forwarded element",
         )
+        .context_field("count", bytes.len()))
     }
 }
 
@@ -27,10 +30,10 @@ pub(crate) fn parse_one_plus_forwarded_elements(
 ) -> Result<(ForwardedElement, Vec<ForwardedElement>), BoxError> {
     if bytes.len() > 8096 {
         // custom max length, to keep things sane here...
-        return Err(
-            BoxError::from("forwarded elements list bytes length is too big")
-                .context_field("length", bytes.len()),
-        );
+        return Err(OpaqueError::from_static_str(
+            "forwarded elements list bytes length is too big",
+        )
+        .context_field("length", bytes.len()));
     }
 
     let mut others = Vec::new();
@@ -44,10 +47,10 @@ pub(crate) fn parse_one_plus_forwarded_elements(
     loop {
         // skip comma first
         if bytes[0] != b',' {
-            return Err(
-                BoxError::from("unexpected char in forward element list: expected comma")
-                    .context_field("char", bytes[0]),
-            );
+            return Err(OpaqueError::from_static_str(
+                "unexpected char in forward element list: expected comma",
+            )
+            .context_field("char", bytes[0]));
         }
         bytes = &bytes[1..];
 
@@ -65,7 +68,10 @@ pub(crate) fn parse_one_plus_forwarded_elements(
 
 fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &[u8]), BoxError> {
     if bytes.is_empty() {
-        return Err(BoxError::from("empty str is not a valid Forwarded Element"));
+        return Err(
+            OpaqueError::from_static_str("empty str is not a valid Forwarded Element")
+                .into_box_error(),
+        );
     }
 
     let mut el = ForwardedElement {
@@ -94,14 +100,14 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
             match bytes[index] {
                 b'"' => {
                     if index != 0 {
-                        return Err(BoxError::from("dangling quote string quote")
+                        return Err(OpaqueError::from_static_str("dangling quote string quote")
                             .context_field("quote_pos", index));
                     } else {
                         bytes = &bytes[1..];
-                        let trailer_quote_index = bytes
-                            .iter()
-                            .position(|b| *b == b'"')
-                            .ok_or_else(|| BoxError::from("quote string missing trailer quote"))?;
+                        let trailer_quote_index =
+                            bytes.iter().position(|b| *b == b'"').ok_or_else(|| {
+                                OpaqueError::from_static_str("quote string missing trailer quote")
+                            })?;
                         let value = &bytes[..trailer_quote_index];
                         bytes = &bytes[trailer_quote_index + 1..];
                         (value, true)
@@ -133,7 +139,7 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
         // >
         // > remark: we do not apply any validation here
         if !quoted && value.contains(['[', ']', ':']) {
-            return Err(BoxError::from(
+            return Err(OpaqueError::from_static_str(
                 "Forwarded Element pair's value was expected to be a quoted string due to the chars it contains"
             ).context_str_field("value", value));
         }
@@ -141,22 +147,22 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
         match_ignore_ascii_case_str! {
             match(key) {
                 "for" => if el.for_node.is_some() {
-                    return Err(BoxError::from("Forwarded Element can only contain one 'for' property"));
+                    return Err(OpaqueError::from_static_str("Forwarded Element can only contain one 'for' property").into_box_error());
                 } else {
                     el.for_node = Some(NodeId::try_from(value).context("parse Forwarded Element 'for' node")?);
                 },
                 "host" => if el.authority.is_some() {
-                    return Err(BoxError::from("Forwarded Element can only contain one 'host' property"));
+                    return Err(OpaqueError::from_static_str("Forwarded Element can only contain one 'host' property").into_box_error());
                 } else {
                     el.authority = Some(value.parse().context("parse Forwarded Element 'host' authority")?);
                 },
                 "by" => if el.by_node.is_some() {
-                    return Err(BoxError::from("Forwarded Element can only contain one 'by' property"));
+                    return Err(OpaqueError::from_static_str("Forwarded Element can only contain one 'by' property").into_box_error());
                 } else {
                     el.by_node = Some(NodeId::try_from(value).context("parse Forwarded Element 'by' node")?);
                 },
                 "proto" => if el.proto.is_some() {
-                    return Err(BoxError::from("Forwarded Element can only contain one 'proto' property"));
+                    return Err(OpaqueError::from_static_str("Forwarded Element can only contain one 'proto' property").into_box_error());
                 } else {
                     el.proto = Some(ForwardedProtocol::try_from(value).context("parse Forwarded Element 'proto' protocol")?);
                 },
@@ -183,9 +189,10 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
 
     if el.for_node.is_none() && el.by_node.is_none() && el.authority.is_none() && el.proto.is_none()
     {
-        return Err(BoxError::from(
+        return Err(OpaqueError::from_static_str(
             "invalid forwarded element: none of required properties are set",
-        ));
+        )
+        .into_box_error());
     }
 
     bytes = trim_left(bytes);
@@ -218,7 +225,9 @@ fn trim(b: &[u8]) -> &[u8] {
 
 fn parse_value(slice: &[u8]) -> Result<&str, BoxError> {
     if slice.iter().any(|b| !(32..127).contains(b) || *b == b'"') {
-        return Err(BoxError::from("value contains invalid characters"));
+        return Err(
+            OpaqueError::from_static_str("value contains invalid characters").into_box_error(),
+        );
     }
     std::str::from_utf8(slice).context("parse value as utf-8")
 }

@@ -12,7 +12,7 @@ use aws_lc_rs::{
         RSA_PSS_SHA512, RsaEncoding, VerificationAlgorithm,
     },
 };
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, extra::OpaqueError};
 use serde::{Deserialize, Serialize};
 
 use crate::jose::JWKEllipticCurves;
@@ -63,37 +63,37 @@ impl From<JWKEllipticCurves> for JWA {
 }
 
 impl TryFrom<JWA> for JWKEllipticCurves {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     fn try_from(value: JWA) -> Result<Self, Self::Error> {
         match value {
             JWA::ES256 => Ok(Self::P256),
             JWA::ES384 => Ok(Self::P384),
             JWA::ES512 => Ok(Self::P521),
-            JWA::HS256 | JWA::HS384 | JWA::HS512 => {
-                Err(BoxError::from("Hmac cannot be converted to elliptic curve"))
-            }
-            JWA::RS256 | JWA::RS384 | JWA::RS512 | JWA::PS256 | JWA::PS384 | JWA::PS512 => {
-                Err(BoxError::from("RSA cannot be converted to elliptic curve"))
-            }
+            JWA::HS256 | JWA::HS384 | JWA::HS512 => Err(OpaqueError::from_static_str(
+                "Hmac cannot be converted to elliptic curve",
+            )),
+            JWA::RS256 | JWA::RS384 | JWA::RS512 | JWA::PS256 | JWA::PS384 | JWA::PS512 => Err(
+                OpaqueError::from_static_str("RSA cannot be converted to elliptic curve"),
+            ),
         }
     }
 }
 
 impl TryFrom<JWA> for &'static EcdsaSigningAlgorithm {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     fn try_from(value: JWA) -> Result<Self, Self::Error> {
         match value {
             JWA::ES256 => Ok(&ECDSA_P256_SHA256_FIXED_SIGNING),
             JWA::ES384 => Ok(&ECDSA_P384_SHA384_FIXED_SIGNING),
             JWA::ES512 => Ok(&ECDSA_P521_SHA512_FIXED_SIGNING),
-            JWA::HS256 | JWA::HS384 | JWA::HS512 => {
-                Err(BoxError::from("Hmac cannot be converted to elliptic curve"))
-            }
-            JWA::RS256 | JWA::RS384 | JWA::RS512 | JWA::PS256 | JWA::PS384 | JWA::PS512 => {
-                Err(BoxError::from("RSA cannot be converted to elliptic curve"))
-            }
+            JWA::HS256 | JWA::HS384 | JWA::HS512 => Err(OpaqueError::from_static_str(
+                "Hmac cannot be converted to elliptic curve",
+            )),
+            JWA::RS256 | JWA::RS384 | JWA::RS512 | JWA::PS256 | JWA::PS384 | JWA::PS512 => Err(
+                OpaqueError::from_static_str("RSA cannot be converted to elliptic curve"),
+            ),
         }
     }
 }
@@ -108,27 +108,27 @@ impl TryFrom<JWA> for &'static EcdsaVerificationAlgorithm {
 }
 
 impl TryFrom<&'static EcdsaSigningAlgorithm> for JWA {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     fn try_from(value: &'static EcdsaSigningAlgorithm) -> Result<Self, Self::Error> {
         match value {
             alg if *alg == ECDSA_P256_SHA256_FIXED_SIGNING => Ok(Self::ES256),
             alg if *alg == ECDSA_P384_SHA384_FIXED_SIGNING => Ok(Self::ES384),
             alg if *alg == ECDSA_P521_SHA512_FIXED_SIGNING => Ok(Self::ES512),
-            _ => Err(BoxError::from("cannot convert to jwa")),
+            _ => Err(OpaqueError::from_static_str("cannot convert to jwa")),
         }
     }
 }
 
 impl TryFrom<JWA> for &'static hmac::Algorithm {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     fn try_from(value: JWA) -> Result<Self, Self::Error> {
         match value {
             JWA::HS256 => Ok(&HMAC_SHA256),
             JWA::HS384 => Ok(&HMAC_SHA384),
             JWA::HS512 => Ok(&HMAC_SHA512),
-            _ => Err(BoxError::from(
+            _ => Err(OpaqueError::from_static_str(
                 "Non-Hmac algorithm cannot be converted to hmac types",
             )),
         }
@@ -136,7 +136,7 @@ impl TryFrom<JWA> for &'static hmac::Algorithm {
 }
 
 impl TryFrom<JWA> for &'static dyn RsaEncoding {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     fn try_from(value: JWA) -> Result<Self, Self::Error> {
         match value {
@@ -146,7 +146,7 @@ impl TryFrom<JWA> for &'static dyn RsaEncoding {
             JWA::PS256 => Ok(&RSA_PSS_SHA256),
             JWA::PS384 => Ok(&RSA_PSS_SHA384),
             JWA::PS512 => Ok(&RSA_PSS_SHA512),
-            _ => Err(BoxError::from(
+            _ => Err(OpaqueError::from_static_str(
                 "Non-RSA algorithm cannot be converted to rsa types",
             )),
         }
@@ -154,7 +154,7 @@ impl TryFrom<JWA> for &'static dyn RsaEncoding {
 }
 
 impl TryFrom<JWA> for &'static dyn VerificationAlgorithm {
-    type Error = BoxError;
+    type Error = OpaqueError;
 
     fn try_from(value: JWA) -> Result<Self, Self::Error> {
         match value {
@@ -168,7 +168,9 @@ impl TryFrom<JWA> for &'static dyn VerificationAlgorithm {
                 let signing_algo: &'static EcdsaSigningAlgorithm = value.try_into()?;
                 Ok(signing_algo.deref())
             }
-            _ => Err(BoxError::from("Verification algorithm is not supported")),
+            _ => Err(OpaqueError::from_static_str(
+                "Verification algorithm is not supported",
+            )),
         }
     }
 }

@@ -7,7 +7,7 @@ use rama_boring_tokio::SslErrorStack;
 use rama_core::{
     Layer,
     conversion::RamaTryInto as _,
-    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
     extensions::{self, ExtensionsRef as _},
     io::{BridgeIo, Io},
     telemetry::tracing,
@@ -374,9 +374,11 @@ where
                     } else {
                         TlsMitmRelayError::handshake(
                             TlsMitmRelayErrorDirection::Egress,
-                            BoxError::from("tls mitm relay: egress tls accept failed")
-                                .context_debug_field("code", maybe_ssl_code)
-                                .context_debug_field("sni", server_name),
+                            OpaqueError::from_static_str(
+                                "tls mitm relay: egress tls accept failed",
+                            )
+                            .context_debug_field("code", maybe_ssl_code)
+                            .context_debug_field("sni", server_name),
                             maybe_ssl_code,
                         )
                     }
@@ -386,7 +388,9 @@ where
         let egress_ssl_ref = egress_tls_stream.ssl_ref();
         let source_cert = egress_ssl_ref
             .peer_certificate()
-            .ok_or_else(|| BoxError::from("tls mitm relay: egress tls stream has no peer cert"))
+            .ok_or_else(|| {
+                OpaqueError::from_static_str("tls mitm relay: egress tls stream has no peer cert")
+            })
             .map_err(TlsMitmRelayError::config)?;
 
         let (mirrored_leaf_cert_chain, mirrored_leaf_key) = self
@@ -443,7 +447,7 @@ where
             let protocol_version = protocol_version
                 .rama_try_into()
                 .map_err(|v| {
-                    BoxError::from("boring ssl connector: cast min proto version")
+                    OpaqueError::from_static_str("boring ssl connector: cast min proto version")
                         .context_field("protocol_version", v)
                 })
                 .map_err(TlsMitmRelayError::config)?;
@@ -546,7 +550,7 @@ where
                 } else {
                     TlsMitmRelayError::handshake(
                         TlsMitmRelayErrorDirection::Ingress,
-                        BoxError::from("tls mitm relay: ingress tls accept failed")
+                        OpaqueError::from_static_str("tls mitm relay: ingress tls accept failed")
                             .context_debug_field("code", maybe_ssl_code),
                         maybe_ssl_code,
                     )

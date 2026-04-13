@@ -18,7 +18,7 @@
 /// rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer as _,
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
     http::{
         HeaderValue, Request,
         layer::trace::TraceLayer,
@@ -204,7 +204,10 @@ where
         // Now check the sleep
         match this.sleep.poll(cx) {
             std::task::Poll::Pending => std::task::Poll::Pending,
-            std::task::Poll::Ready(_) => std::task::Poll::Ready(Err(BoxError::from("Elapses"))),
+            std::task::Poll::Ready(_) => std::task::Poll::Ready(Err(OpaqueError::from_static_str(
+                "Elapses",
+            )
+            .into_box_error())),
         }
     }
 }

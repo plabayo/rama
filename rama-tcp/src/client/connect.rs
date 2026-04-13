@@ -1,5 +1,6 @@
 use rama_core::combinators::Either;
 use rama_core::error::ErrorExt as _;
+use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::Extensions;
 use rama_core::stream::StreamExt;
 use rama_core::stream::wrappers::ReceiverStream;
@@ -313,17 +314,17 @@ where
 
     if resolved_count > 0 {
         Err(
-            BoxError::from("failed to (tcp) connect to any resolved IP address")
+            OpaqueError::from_static_str("failed to (tcp) connect to any resolved IP address")
                 .context_field("host", host)
                 .context_field("port", port)
                 .context_field("resolved_addr_count", resolved_count),
         )
     } else {
-        Err(
-            BoxError::from("failed to resolve into any IP address (as part of tcp connect)")
-                .context_field("host", host)
-                .context_field("port", port),
+        Err(OpaqueError::from_static_str(
+            "failed to resolve into any IP address (as part of tcp connect)",
         )
+        .context_field("host", host)
+        .context_field("port", port))
     }
 }
 

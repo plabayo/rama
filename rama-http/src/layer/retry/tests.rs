@@ -3,7 +3,8 @@ use crate::BodyExtractExt;
 use crate::service::web::response::IntoResponse;
 use crate::{Request, Response};
 use parking_lot::Mutex;
-use rama_core::error::BoxError;
+use rama_core::error::extra::OpaqueError;
+use rama_core::error::{BoxError, ErrorExt};
 use rama_core::{Layer, Service};
 use std::sync::{
     Arc,
@@ -29,7 +30,7 @@ async fn retry_errors() {
                 Ok("world".into_response())
             } else {
                 self.error_counter.fetch_add(1, Ordering::AcqRel);
-                Err(BoxError::from("retry me"))
+                Err(OpaqueError::from_static_str("retry me").into_box_error())
             }
         }
     }
@@ -62,7 +63,7 @@ async fn retry_limit() {
         async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             self.error_counter.fetch_add(1, Ordering::AcqRel);
-            Err(BoxError::from("error forever"))
+            Err(OpaqueError::from_static_str("error forever").into_box_error())
         }
     }
 
@@ -90,9 +91,9 @@ async fn retry_error_inspection() {
         async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             if self.errored.swap(true, Ordering::AcqRel) {
-                Err(BoxError::from("reject"))
+                Err(OpaqueError::from_static_str("reject").into_box_error())
             } else {
-                Err(BoxError::from("retry me"))
+                Err(OpaqueError::from_static_str("retry me").into_box_error())
             }
         }
     }
@@ -115,7 +116,7 @@ async fn retry_cannot_clone_request() {
 
         async fn serve(&self, req: Request<RetryBody>) -> Result<Self::Output, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
-            Err(BoxError::from("failed"))
+            Err(OpaqueError::from_static_str("failed").into_box_error())
         }
     }
 
@@ -297,13 +298,14 @@ where
 {
     async fn retry(
         &self,
-
         _req: Request<RetryBody>,
         _result: Result<Response, Error>,
     ) -> PolicyResult<Response, Error> {
         let mut remaining = self.remaining.lock();
         if *remaining == 0 {
-            PolicyResult::Abort(Err(BoxError::from("out of retries")))
+            PolicyResult::Abort(Err(
+                OpaqueError::from_static_str("out of retries").into_box_error()
+            ))
         } else {
             *remaining -= 1;
             PolicyResult::Retry {

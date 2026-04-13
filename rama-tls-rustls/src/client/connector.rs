@@ -2,6 +2,8 @@ use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
+#[cfg(feature = "http")]
+use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
@@ -422,7 +424,7 @@ fn set_target_http_version(
         if let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>()
             && target_version.0 != neg_version
         {
-            return Err(BoxError::from(
+            return Err(OpaqueError::from_static_str(
                 "TargetHTTPVersion incompatible with tls ALPN negotiated version",
             )
             .context_debug_field("target_version", *target_version)

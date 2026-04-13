@@ -4,9 +4,8 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use rama_core::io::Io;
+use rama_core::{error::extra::OpaqueError, io::Io};
 use rama_core::{
-    error::BoxError,
     extensions::{Extensions, ExtensionsRef},
     futures::{self, SinkExt, StreamExt},
     telemetry::tracing::{debug, trace},
@@ -148,7 +147,9 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
         self.next().await.ok_or_else(|| {
             ProtocolError::Io(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                BoxError::from("Connection closed: no messages to be received any longer"),
+                OpaqueError::from_static_str(
+                    "Connection closed: no messages to be received any longer",
+                ),
             ))
         })?
     }

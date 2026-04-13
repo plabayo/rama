@@ -44,7 +44,7 @@
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     Layer, Service,
-    error::BoxError,
+    error::{BoxError, ErrorExt, extra::OpaqueError},
     extensions::ExtensionsRef,
     graceful::{Shutdown, ShutdownGuard},
     http::{layer::trace::TraceLayer, server::HttpServer, service::web::Router},
@@ -148,7 +148,9 @@ where
                         server.address = %sni,
                         "block connection for unknown destination",
                     );
-                    return Err(BoxError::from("unknown destination"));
+                    return Err(
+                        OpaqueError::from_static_str("unknown destination").into_box_error()
+                    );
                 }
             }
         };

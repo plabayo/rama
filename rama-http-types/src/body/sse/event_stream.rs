@@ -5,6 +5,7 @@ use super::utf8_stream::Utf8Stream;
 use super::{Event, EventBuildError, EventDataRead};
 
 use pin_project_lite::pin_project;
+use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::futures::stream::Stream;
 use rama_core::futures::task::{Context, Poll};
@@ -213,7 +214,7 @@ fn parse_event<T: EventDataRead>(
                 return Ok(None);
             }
             Err(nom::Err::Error(err) | nom::Err::Failure(err)) => {
-                return Err(BoxError::from("SSE parse error")
+                return Err(OpaqueError::from_static_str("SSE parse error")
                     .context_debug_field("code", err.code)
                     .context_str_field("input", err.input));
             }

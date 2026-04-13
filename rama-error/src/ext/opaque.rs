@@ -15,6 +15,16 @@ impl OpaqueError {
     pub(super) fn from_box_error(e: impl Into<BoxError>) -> Self {
         Self(e.into())
     }
+
+    #[inline(always)]
+    /// Create an opaque error from a static str.
+    ///
+    /// Use this instead of `"msg".context()` or
+    /// some other method that turns it into a BoxError...
+    /// Because the std rust library turns this into a `String` otherwise...
+    pub fn from_static_str(e: &'static str) -> Self {
+        Self(Box::new(StaticStrError(e)))
+    }
 }
 
 impl fmt::Debug for OpaqueError {
@@ -42,3 +52,22 @@ impl From<Infallible> for OpaqueError {
         unreachable!()
     }
 }
+
+#[derive(Clone, Copy)]
+struct StaticStrError(&'static str);
+
+impl fmt::Debug for StaticStrError {
+    #[inline(always)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl fmt::Display for StaticStrError {
+    #[inline(always)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for StaticStrError {}

@@ -233,7 +233,7 @@ impl crate::StdError for ErrorWithContext {
 mod tests {
     use super::*;
 
-    use crate::{ErrorExt, StdError};
+    use crate::{ErrorExt, StdError, extra::OpaqueError};
 
     use std::io;
 
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn empty_keys_are_seen_as_simple_values_and_keys_are_trimmed() {
-        let err = BoxError::from("test error")
+        let err = OpaqueError::from_static_str("test error")
             .context_field("foo  ", "bar")
             .context_field("  ", "baz")
             .context_field("", 42);

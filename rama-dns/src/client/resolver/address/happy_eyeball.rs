@@ -7,7 +7,7 @@ use std::{
 
 use pin_project_lite::pin_project;
 use rama_core::{
-    error::{BoxError, ErrorExt, extra::OpaqueError},
+    error::{ErrorExt, extra::OpaqueError},
     extensions::Extensions,
     futures::{DelayStream, Stream, stream},
     stream::{StreamExt as _, adapters::Merge},
@@ -87,10 +87,12 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                 return HappyEyeballIpStream::Once {
                     stream: rama_core::stream::once(match (ip, ip_mode) {
                         (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-                            Err(BoxError::from("IPv4 address is not allowed").into_opaque_error())
+                            Err(OpaqueError::from_static_str("IPv4 address is not allowed")
+                                .into_opaque_error())
                         }
                         (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-                            Err(BoxError::from("IPv6 address is not allowed").into_opaque_error())
+                            Err(OpaqueError::from_static_str("IPv6 address is not allowed")
+                                .into_opaque_error())
                         }
                         _ => {
                             // if the host is already defined as an allowed IP address

@@ -205,9 +205,12 @@ impl TlsAcceptorDataBuilder {
 pub fn self_signed_server_auth(
     _: SelfSignedData,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    Err(BoxError::from(
+    use rama_core::error::{ErrorExt, extra::OpaqueError};
+
+    Err(OpaqueError::from_static_str(
         "enable aws-lc or ring feature to use fn self_signed_server_auth",
-    ))
+    )
+    .into_box_error())
 }
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]

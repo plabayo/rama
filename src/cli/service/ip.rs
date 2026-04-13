@@ -51,7 +51,7 @@ type TlsConfig = ServerConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 type TlsConfig = TlsAcceptorData;
 
-use rama_core::error::ErrorExt as _;
+use rama_core::error::{ErrorExt as _, extra::OpaqueError};
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
 use tokio::io::AsyncWriteExt;
 
@@ -332,8 +332,10 @@ impl<M> IpServiceBuilder<M> {
             None => None,
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             Some(other) => {
-                return Err(BoxError::from("invalid forward kind for Transport mode")
-                    .with_context_debug_field("kind", || other.clone()));
+                return Err(OpaqueError::from_static_str(
+                    "invalid forward kind for Transport mode",
+                )
+                .with_context_debug_field("kind", || other.clone()));
             }
         };
 

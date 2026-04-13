@@ -144,7 +144,7 @@ fn new_inner_client(
         (false, false, true, false) => Some(SslVersion::TLS1_2),
         (false, false, false, true) => Some(SslVersion::TLS1_3),
         (false, false, false, false) => None,
-        _ => Err(BoxError::from(
+        _ => Err(OpaqueError::from_static_str(
             "--tlsv1.0, --tlsv1.1, --tlsv1.2, --tlsv1.3 are mutually exclusive",
         ))?,
     } {

@@ -236,9 +236,8 @@ impl App {
                     self.history.push_server_message(text);
                 }
                 Ok(Message::Close(close)) => {
-                    return Err(
-                        BoxError::from("recv close msg").context_debug_field("frame", close)
-                    );
+                    return Err(OpaqueError::from_static_str("recv close msg")
+                        .context_debug_field("frame", close));
                 }
                 Ok(message) => {
                     tracing::info!("received non-text message: {message}");
