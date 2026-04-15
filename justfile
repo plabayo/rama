@@ -233,9 +233,8 @@ publish *ARGS:
     wingetcreate submit -p 'Plabayo.Rama.Preview version bump' .
 
 update-deps:
-    @cargo install cargo-outdated --locked
-    cargo outdated
-    cargo update
+    @cargo install cargo-edit --locked
+    cargo upgrade && cargo update
     just ./ffi/apple/examples/transparent_proxy/clean
     just ./ffi/apple/examples/transparent_proxy/update-deps
 

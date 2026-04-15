@@ -127,9 +127,9 @@ build-tproxy-rs-debug:
     cargo build
 
 update-deps:
-    @cargo install cargo-outdated --locked
-    cd ./tproxy_rs && cargo outdated && cargo update
-    cd ./tproxy_ffi_e2e && cargo outdated && cargo update
+    @cargo install cargo-edit --locked
+    cd ./tproxy_rs && cargo upgrade && cargo update
+    cd ./tproxy_ffi_e2e && cargo upgrade && cargo update
 
 [working-directory: './tproxy_ffi_e2e']
 clippy-tproxy-ffi-e2e:

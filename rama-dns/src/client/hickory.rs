@@ -240,7 +240,7 @@ impl DnsAddressResolver for HickoryDnsResolver {
             for ip in lookup
                 .answers()
                 .iter()
-                .map(|a| a.data())
+                .map(|a| &a.data)
                 .filter_map(|data| match data {
                     RData::A(A(ip)) => Some(*ip),
                     _ => None,
@@ -270,7 +270,7 @@ impl DnsAddressResolver for HickoryDnsResolver {
             for ip in lookup
                 .answers()
                 .iter()
-                .map(|a| a.data())
+                .map(|a| &a.data)
                 .filter_map(|data| match data {
                     RData::AAAA(AAAA(ip)) => Some(*ip),
                     _ => None,
@@ -304,7 +304,7 @@ impl DnsTxtResolver for HickoryDnsResolver {
             for txt in lookup
                 .answers()
                 .iter()
-                .map(|a| a.data())
+                .map(|a| &a.data)
                 .filter_map(|data| match data {
                     RData::TXT(txt) => Some(txt),
                     _ => None,
