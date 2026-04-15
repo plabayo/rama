@@ -118,6 +118,15 @@ impl SocketAddress {
         }
     }
 
+    #[must_use]
+    #[inline(always)]
+    /// Returns `true` when the [`SocketAddress`]'s ip address
+    /// belongs to a range that should be treated as
+    /// private instead of a normal public-Internet destination.
+    pub fn has_private_ip_addr(self) -> bool {
+        super::ip::private::is_private_ip(self.ip_addr)
+    }
+
     /// Create a [`SocketAddress`] from the std [`SocketAddr`] version.
     #[must_use]
     #[inline(always)]
