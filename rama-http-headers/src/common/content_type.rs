@@ -142,7 +142,7 @@ impl ContentType {
         Self(mime::TEXT_CSV_UTF_8)
     }
 
-    /// A constructor to easily create a `Content-Type: application/www-form-url-encoded` header.
+    /// A constructor to easily create a `Content-Type: application/x-www-form-url-encoded` header.
     #[inline]
     #[must_use]
     pub fn form_url_encoded() -> Self {

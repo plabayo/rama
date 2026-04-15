@@ -1,7 +1,7 @@
 use std::{borrow::Cow, fmt};
 
 use rama_core::{
-    bytes::{Buf, BufMut, BytesMut},
+    bytes::{self, Buf, BufMut, BytesMut},
     error::{BoxError, ErrorContext as _},
     extensions::Extension,
 };
@@ -286,14 +286,17 @@ pub(crate) fn compress(
 pub(crate) fn decompress(
     settings: CompressionSettings,
     compressed_buf: &mut BytesMut,
-    out_buf: &mut BytesMut,
+    mut out_buf: bytes::buf::Limit<&mut BytesMut>,
     len: usize,
 ) -> Result<(), std::io::Error> {
     let buffer_growth_interval = settings.buffer_growth_interval;
     let estimate_decompressed_len = len * 2;
-    let capacity =
-        ((estimate_decompressed_len / buffer_growth_interval) + 1) * buffer_growth_interval;
-    out_buf.reserve(capacity);
+    let capacity = std::cmp::min(
+        bytes::buf::Limit::limit(&out_buf),
+        ((estimate_decompressed_len / buffer_growth_interval) + 1) * buffer_growth_interval,
+    );
+
+    out_buf.get_mut().reserve(capacity);
 
     #[cfg(feature = "compression")]
     let mut out_writer = out_buf.writer();

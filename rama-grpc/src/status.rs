@@ -394,6 +394,8 @@ impl Status {
     fn code_from_h2(err: &rama_http_core::h2::Error) -> Code {
         // See https://github.com/grpc/grpc/blob/3977c30/doc/PROTOCOL-HTTP2.md#errors
         match err.reason() {
+            // NO_ERROR on a RST_STREAM means the peer reset the stream without a gRPC status.
+            // Per the spec this is still a protocol violation and must be mapped to INTERNAL.
             Some(
                 rama_http_core::h2::Reason::NO_ERROR
                 | rama_http_core::h2::Reason::PROTOCOL_ERROR
@@ -769,9 +771,8 @@ impl fmt::Display for Status {
             write!(f, ", message: {:?}", self.message())?;
         }
         // We intentionally omit `self.details` since it's binary data, not fit for human eyes.
-        if !self.metadata().is_empty() {
-            write!(f, ", metadata: {:?}", self.metadata().as_ref())?;
-        }
+        // impl.
+
         if let Some(source) = self.source() {
             write!(f, ", source: {source:?}")?;
         }
@@ -810,13 +811,35 @@ pub(crate) fn infer_grpc_status(
         | rama_http_types::StatusCode::BAD_GATEWAY
         | rama_http_types::StatusCode::SERVICE_UNAVAILABLE
         | rama_http_types::StatusCode::GATEWAY_TIMEOUT => Code::Unavailable,
-        // We got a 200 but no trailers, we can infer that this request is finished.
+        // We got a 200 but no grpc-status trailer.
         //
-        // This can happen when a streaming response sends two Status but
-        // gRPC requires that we end the stream after the first status.
+        // Per the gRPC-over-HTTP/2 protocol, grpc-status MUST be present in Trailers
+        // even when the HTTP status is 200 OK. A clean end-of-stream without a
+        // grpc-status trailer is therefore a protocol violation.
         //
-        // https://github.com/hyperium/tonic/issues/681
-        rama_http_types::StatusCode::OK => return Err(None),
+        // rama-grpc attempts to follow the RST_STREAM error-code mapping defined in the
+        // gRPC-over-HTTP/2 spec: <https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#errors>
+        //
+        // However, rama-http-core intentionally converts RST_STREAM frames with reason NO_ERROR
+        // or CANCEL into a clean end-of-stream (Poll::Ready(None)) instead of surfacing
+        // them as errors — see rama-http-core's `Incoming::poll_frame` for h2 bodies. By the time
+        // tonic observes the body termination, the h2 reset reason has been discarded and
+        // is no longer accessible. Tonic therefore has no way to distinguish a legitimate
+        // graceful close from a proxy/load-balancer reset (e.g. an Envoy timeout that
+        // issues RST_STREAM(NO_ERROR)) via the h2 error path.
+        //
+        // The only signal available at this point is the absence of a grpc-status
+        // trailer on an otherwise-successful (HTTP 200) stream. We map this to Unknown,
+        // which the gRPC spec defines as the appropriate code when a final status is
+        // absent or indeterminate. This matches the behaviour of grpc-go:
+        //   https://github.com/grpc/grpc-go/pull/8702
+        //
+        // https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#responses
+        rama_http_types::StatusCode::OK => {
+            return Err(Some(Status::unknown(
+                "protocol error: missing grpc-status trailer, stream was terminated without a final status (possible truncation by a proxy or load balancer)",
+            )));
+        }
         _ => Code::Unknown,
     };
 

@@ -24,33 +24,33 @@ as a distant relative.
     - Original: <https://github.com/hyperium/hyper-util/blob/66afc93debef02548c86e8454e6bc01cf4fca280/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
-- headers: <https://github.com/hyperium/headers/tree/de0b1a1e97d20f3667a346c4d5b5973d92ab58f9>
+- headers: <https://github.com/hyperium/headers/tree/e900f04aa329d3211c226dc2333fe37ec143d680>
   - License:
-    - Original: <https://github.com/hyperium/headers/blob/de0b1a1e97d20f3667a346c4d5b5973d92ab58f9/LICENSE>
+    - Original: <https://github.com/hyperium/headers/blob/e900f04aa329d3211c226dc2333fe37ec143d680/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
-- tonic: <https://github.com/hyperium/tonic/tree/88a448a2fdedf06340deac645a061120a2612537>
+- tonic: <https://github.com/hyperium/tonic/tree/a88b919bd872f20e29d40aa05a88b19574037358>
   - License:
-    - Original: <https://github.com/hyperium/tonic/blob/88a448a2fdedf06340deac645a061120a2612537/LICENSE>
+    - Original: <https://github.com/hyperium/tonic/blob/a88b919bd872f20e29d40aa05a88b19574037358/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
 
 ### tower-rs
 
-- <https://github.com/tower-rs/tower/tree/1992ebd196467deffe193d5a073db655492ce168>
+- <https://github.com/tower-rs/tower/tree/251296dc54a044383dffd16d2179b443e2615672>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
   - License:
-    - Original: <https://github.com/tower-rs/tower/blob/1992ebd196467deffe193d5a073db655492ce168/LICENSE>
+    - Original: <https://github.com/tower-rs/tower/blob/251296dc54a044383dffd16d2179b443e2615672/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/2237ed67b0acb48d7e7cee13e73c33e7054f6ae4>
+- <https://github.com/tower-rs/tower-http/tree/0d608fdbb0e62fcaa9d3e7b5205207337f223831>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/2237ed67b0acb48d7e7cee13e73c33e7054f6ae4/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/0d608fdbb0e62fcaa9d3e7b5205207337f223831/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
