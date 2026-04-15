@@ -629,12 +629,9 @@ where
 
         if let Some(trie) = self.sub_services.as_ref() {
             let norm_path = parts.uri.path().trim_matches('/').to_lowercase_smolstr();
-            if let Some((prefix, sub_svc)) =
-                trie.get_ancestor(norm_path.as_str()).and_then(|sub_trie| {
-                    sub_trie
-                        .key()
-                        .and_then(|k| sub_trie.value().map(|v| (k, v)))
-                })
+            if let Some((prefix, sub_svc)) = trie
+                .get_ancestor(norm_path.as_str())
+                .and_then(|sub_trie| sub_trie.key().zip(sub_trie.value()))
             {
                 if let Some(matcher) = sub_svc.matcher.as_ref() {
                     let fragment_count = matcher.fragment_count();

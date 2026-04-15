@@ -61,13 +61,7 @@ where
         let b = req_to_csv_bytes(req).await?;
         let mut rdr = csv::Reader::from_reader(b.reader());
 
-        let out: Result<Vec<T>, _> = rdr
-            .deserialize()
-            .map(|rec| {
-                let record: Result<T, _> = rec;
-                record
-            })
-            .collect();
+        let out: Result<Vec<T>, _> = rdr.deserialize().collect();
 
         match out {
             Ok(s) => Ok(Self(s)),
