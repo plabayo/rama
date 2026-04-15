@@ -45,6 +45,9 @@ See for more information:
 * **Rama Crate:** [`rama-net-apple-networkextension`](https://crates.io/crates/rama-net-apple-networkextension)
 * **Example:** [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) shows a full transparent proxy host app, Network Extension, Rust `staticlib`, and Apple FFI end-to-end tests.
 
+Learn more about operating transparent proxies for MacOS
+in this dedicated chapter: [./transparent/macos.md](./transparent/macos.md).
+
 ## 3. Windows: Windows Filtering Platform (WFP)
 
 Windows uses the **WFP**, a powerful set of API and system services that allow you to "plumb" the networking stack.
@@ -60,6 +63,9 @@ For a truly transparent experience that catches all apps, you typically need a *
 * **Official Documentation:** [Microsoft: Windows Filtering Platform](https://learn.microsoft.com/en-us/windows/win32/fwp/windows-filtering-platform-start-page)
 * **Useful Tooling:** The **`AppId`** and **`UserId`** metadata provided at the ALE layer are essential for filtering "Work" traffic vs. "Personal" traffic.
 
+Learn more about operating transparent proxies for Windows
+in this dedicated chapter: [./transparent/windows.md](./transparent/windows.md).
+
 ## 4. Complementary Modules & Filtering
 
 Operating a transparent proxy at scale usually requires more than just "grabbing" the traffic. You often need these auxiliary modules to make the system functional:
@@ -71,3 +77,20 @@ Operating a transparent proxy at scale usually requires more than just "grabbing
 ## Fail open Vs Fail closed
 
 **Final Operational Note:** Transparent proxies are the most invasive form of proxying. When operating them, always implement a **"Bypass" or "Fail-Safe"** mechanism. If your Rama service crashes, your firewall rules should ideally be configured to either "fail open" (allowing direct internet) or "fail closed" (blocking all) depending on your security requirements.
+
+The most common failure you will encounter with transparent MITM proxies are CA certificate trust issues.
+Even when you add your proxy's CA (or its issuer) in the system root store of the machines the proxy operates on,
+you will still encounter plenty of network flows that fail due to CA certificate trust issues. The reason for this is
+that a lot of applications, for whatever reasons, do not load (or use) the system root certificate trust storage. And thus
+will not be aware of your custom CA certificate. For those apps you have three options:
+
+1. Ensure to never MITM them
+2. Ensure the app uses the system root certificate storage (some apps such as Firefox allow it to be opt-in)
+3. Explicitly add your proxy CA as a certificate trusted by that application
+
+However... even before you figure out the root cause, let alone picking one of these three options, you will want
+to ensure that in the meanwhile the users of these machines are still able to work on these machines even if you
+cannot MITM these specific network flows (yet). One way to do so is keeping a cache around of domain-app combinations
+that failed due to tls handshake issues and ensure to not MITM them until explicitly approved (again) or based on some
+(short) time. That's an example of "a fail open" policy. And also immediately the only one that I would recommend
+for pretty much any MITM proxy, but especially transparent L4 ones.

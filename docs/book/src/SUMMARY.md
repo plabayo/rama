@@ -46,6 +46,8 @@
   - [System Proxies](./proxies/operate/system.md)
   - [🔀 Proxy Auto Configuration](./proxies/operate/pac.md)
   - [⛶ Transparent Proxies](./proxies/operate/transparent.md)
+    - [🍎 Operating Transparent Proxies on macOS](./proxies/operate/transparent/macos.md)
+    - [🪟 Operating Transparent Proxies on Windows](./proxies/operate/transparent/windows.md)
   - [Proxies and VPNs](./proxies/operate/proxies_and_vpns.md)
 
 # Intro to HTTP
