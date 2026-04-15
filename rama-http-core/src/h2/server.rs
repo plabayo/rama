@@ -843,6 +843,20 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+    /// Sets the header table size.
+        ///
+        /// This setting informs the peer of the maximum size of the header compression
+        /// table used to encode header blocks, in octets. The encoder may select any value
+        /// equal to or less than the header table size specified by the sender.
+        ///
+        /// The default value is 4,096.
+        pub fn header_table_size(mut self, size: u32) ->Self {
+            self.settings.config.header_table_size = Some(size);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Sets the maximum number of concurrent streams.
         ///
         /// The maximum concurrent streams setting only controls the maximum number

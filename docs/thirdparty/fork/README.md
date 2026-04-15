@@ -9,9 +9,9 @@ as a distant relative.
 
 ### hyperium
 
-- h2: <https://github.com/hyperium/h2/tree/5634dddea8ff9ed4e8df327a64765738f3e997d8>
+- h2: <https://github.com/hyperium/h2/tree/dbc204e57e0f96ea25d023c82d8a16340675b271>
   - License:
-    - Original: <https://github.com/hyperium/h2/blob/5634dddea8ff9ed4e8df327a64765738f3e997d8/LICENSE>
+    - Original: <https://github.com/hyperium/h2/blob/dbc204e57e0f96ea25d023c82d8a16340675b271/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
 - hyper: <https://github.com/hyperium/hyper/tree/8ba900853b0f619b165e8530fc8c310bc13e056b>
