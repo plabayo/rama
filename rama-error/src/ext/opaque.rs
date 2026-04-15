@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt};
+use core::{convert::Infallible, fmt};
 
 use crate::BoxError;
 
@@ -41,8 +41,8 @@ impl fmt::Display for OpaqueError {
     }
 }
 
-impl std::error::Error for OpaqueError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for OpaqueError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         Some(self.0.as_ref())
     }
 }
@@ -70,4 +70,4 @@ impl fmt::Display for StaticStrError {
     }
 }
 
-impl std::error::Error for StaticStrError {}
+impl core::error::Error for StaticStrError {}

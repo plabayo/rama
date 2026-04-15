@@ -1,5 +1,7 @@
+use core::fmt;
+use std::backtrace::Backtrace;
+
 use super::BoxError;
-use std::{backtrace::Backtrace, fmt};
 
 #[derive(Debug)]
 pub(super) struct ErrorWithBacktrace {
@@ -31,8 +33,8 @@ impl fmt::Display for ErrorWithBacktrace {
     }
 }
 
-impl std::error::Error for ErrorWithBacktrace {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for ErrorWithBacktrace {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         Some(self.source.as_ref())
     }
 }
@@ -41,7 +43,8 @@ impl std::error::Error for ErrorWithBacktrace {
 mod tests {
     use super::*;
 
-    use std::{error::Error as _, io};
+    use core::error::Error as _;
+    use std::io;
 
     #[test]
     fn display_non_alternate_prints_only_source() {

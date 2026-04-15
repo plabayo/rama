@@ -1,6 +1,8 @@
-use std::fmt;
+use core::fmt;
 
+#[cfg(feature = "std")]
 mod backtrace;
+
 mod context;
 pub(super) mod opaque;
 
@@ -254,7 +256,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())),
+                .context_debug_field("type", core::any::type_name::<Self>())),
         }
     }
 
@@ -270,7 +272,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .context(value)),
         }
     }
@@ -282,7 +284,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .context_hex(value)),
         }
     }
@@ -294,7 +296,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .context_debug(value)),
         }
     }
@@ -306,7 +308,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .context_field(key, value)),
         }
     }
@@ -318,7 +320,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .context_str_field(key, value)),
         }
     }
@@ -330,7 +332,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .context_hex_field(key, value)),
         }
     }
@@ -342,7 +344,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .context_debug_field(key, value)),
         }
     }
@@ -355,7 +357,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context(cb)),
         }
     }
@@ -368,7 +370,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context_hex(cb)),
         }
     }
@@ -381,7 +383,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context_debug(cb)),
         }
     }
@@ -394,7 +396,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(OpaqueError::from_static_str("Option is None")
-                .context_debug_field("type", std::any::type_name::<Self>())
+                .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context_field(key, cb)),
         }
     }
@@ -543,6 +545,7 @@ pub trait ErrorExt: private::SealedErrorExt {
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
+    #[cfg(feature = "std")]
     /// Add a [`Backtrace`][std::backtrace::Backtrace] to the error.
     fn backtrace(self) -> BoxError;
 }
@@ -701,6 +704,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         self.context_field(key, self::context::DebugContextValue(cb()))
     }
 
+    #[cfg(feature = "std")]
     fn backtrace(self) -> BoxError {
         let source = self.into();
         Box::new(self::backtrace::ErrorWithBacktrace::new(source))
@@ -720,19 +724,26 @@ mod private {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use super::*;
 
     use crate::StdError;
 
-    use std::{cell::Cell, io};
+    #[derive(Debug, Clone)]
+    struct BoomError;
 
-    fn io_err(msg: &'static str) -> io::Error {
-        io::Error::other(msg)
+    impl fmt::Display for BoomError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "boom")
+        }
     }
+
+    impl core::error::Error for BoomError {}
 
     #[test]
     fn result_context_adds_context_to_error() {
-        let res: Result<(), io::Error> = Err(io_err("boom"));
+        let res: Result<(), BoomError> = Err(BoomError);
 
         let err = res.context("ctx").unwrap_err();
         let s = format!("{err}");
@@ -744,7 +755,7 @@ mod tests {
 
     #[test]
     fn result_context_field_adds_keyed_context_to_error() {
-        let res: Result<(), io::Error> = Err(io_err("boom"));
+        let res: Result<(), BoomError> = Err(BoomError);
 
         let err = res.context_field("path", "/a,b/c").unwrap_err();
         let s = format!("{err}");
@@ -755,7 +766,7 @@ mod tests {
 
     #[test]
     fn result_with_context_is_lazy_and_called_once() {
-        let res: Result<(), io::Error> = Err(io_err("boom"));
+        let res: Result<(), BoomError> = Err(BoomError);
 
         let calls = Cell::new(0);
         let err = res
@@ -773,7 +784,7 @@ mod tests {
 
     #[test]
     fn result_with_context_field_is_lazy_and_called_once() {
-        let res: Result<(), io::Error> = Err(io_err("boom"));
+        let res: Result<(), BoomError> = Err(BoomError);
 
         let calls = Cell::new(0);
         let err = res
@@ -850,7 +861,7 @@ mod tests {
     #[test]
     fn errorext_context_reuses_existing_context_wrapper() {
         // First wrap
-        let err1: BoxError = io_err("boom").context("a");
+        let err1: BoxError = BoomError.context("a");
         // Second wrap should mutate existing wrapper, not create another layer
         let err2: BoxError = err1.context("b");
 
@@ -866,7 +877,7 @@ mod tests {
 
     #[test]
     fn errorext_context_field_reuses_existing_context_wrapper() {
-        let err1: BoxError = io_err("boom").context_field("k1", "v1");
+        let err1: BoxError = BoomError.context_field("k1", "v1");
         let err2: BoxError = err1.context_field("k2", "v2");
 
         let s = format!("{err2}");
@@ -877,8 +888,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn errorext_backtrace_wraps_error_and_preserves_source() {
-        let err: BoxError = io_err("boom").backtrace();
+        let err: BoxError = BoomError.backtrace();
 
         // Display default should be source only
         assert_eq!(format!("{err}"), "boom");
@@ -902,8 +914,8 @@ mod tests {
         #[derive(Debug)]
         struct MyErr;
 
-        impl std::fmt::Display for MyErr {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        impl core::fmt::Display for MyErr {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 write!(f, "myerr")
             }
         }

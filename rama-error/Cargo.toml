@@ -10,6 +10,10 @@ categories = ["rust-patterns"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+default = ["std"]
+std = []
+
 [package.metadata.cargo-public-api-crates]
 allowed = []
 

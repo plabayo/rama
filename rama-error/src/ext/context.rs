@@ -1,4 +1,4 @@
-use std::fmt::{self, Write as _};
+use core::fmt::{self, Write as _};
 
 use crate::BoxError;
 
@@ -235,11 +235,20 @@ mod tests {
 
     use crate::{ErrorExt, StdError, extra::OpaqueError};
 
-    use std::io;
+    #[derive(Debug, Clone)]
+    struct BoomError;
+
+    impl fmt::Display for BoomError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "boom")
+        }
+    }
+
+    impl core::error::Error for BoomError {}
 
     #[test]
     fn display_non_alternate_without_fields_is_source_only() {
-        let src = io::Error::other("boom");
+        let src = BoomError;
         let err = ErrorWithContext::new(BoxError::from(src));
 
         assert_eq!(format!("{err}"), "boom");
@@ -257,7 +266,7 @@ mod tests {
 
     #[test]
     fn display_non_alternate_with_fields_is_single_line_logfmt() {
-        let src = io::Error::other("boom");
+        let src = BoomError;
         let mut err = ErrorWithContext::new(BoxError::from(src));
 
         err.insert_key_value("path", "/a,b/c");
@@ -296,7 +305,7 @@ mod tests {
 
     #[test]
     fn display_alternate_includes_context_block_when_fields_exist() {
-        let src = io::Error::other("boom");
+        let src = BoomError;
         let mut err = ErrorWithContext::new(BoxError::from(src));
 
         err.insert_key_value("path", "/a,b/c");
@@ -325,11 +334,11 @@ mod tests {
     fn display_alternate_prints_cause_chain_when_source_has_source() {
         #[derive(Debug)]
         struct Outer {
-            inner: io::Error,
+            inner: BoomError,
         }
 
-        impl std::fmt::Display for Outer {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        impl core::fmt::Display for Outer {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 write!(f, "outer")
             }
         }
@@ -340,9 +349,7 @@ mod tests {
             }
         }
 
-        let src = Outer {
-            inner: io::Error::other("inner"),
-        };
+        let src = Outer { inner: BoomError };
 
         let mut err = ErrorWithContext::new(BoxError::from(src));
         err.insert_key_value("k", "v");
@@ -351,12 +358,12 @@ mod tests {
 
         // We should see the cause chain section and indexed causes.
         assert!(s.contains("Caused by:\n"), "got: {s:?}");
-        assert!(s.contains("  0: inner\n"), "got: {s:?}");
+        assert!(s.contains("  0: boom\n"), "got: {s:?}");
     }
 
     #[test]
     fn debug_includes_type_name_and_fields_map() {
-        let src = io::Error::other("boom");
+        let src = BoomError;
         let mut err = ErrorWithContext::new(BoxError::from(src));
         err.insert_key_value("path", "/a,b/c");
         err.insert_value("bare");
@@ -374,7 +381,7 @@ mod tests {
 
     #[test]
     fn source_returns_inner_error() {
-        let src = io::Error::other("boom");
+        let src = BoomError;
         let err = ErrorWithContext::new(BoxError::from(src));
 
         let src_ref = err.source().expect("source should exist");

@@ -14,10 +14,10 @@
 //!
 //! - `Result<T, E>` is a control flow type that represents either success (`Ok(T)`)
 //!   or failure (`Err(E)`).
-//! - [`std::error::Error`] is a trait for values that can be displayed and can
+//! - [`core::error::Error`] is a trait for values that can be displayed and can
 //!   reference a source error.
 //!
-//! `Result<T, E>` does not require `E` to implement [`std::error::Error`]. This
+//! `Result<T, E>` does not require `E` to implement [`core::error::Error`]. This
 //! means `Err(E)` is not always an error in the semantic sense.
 //!
 //! A common example is web middleware that uses `Result<Response, Response>`,
@@ -35,7 +35,7 @@
 //!
 //! # Type erasure
 //!
-//! The [`BoxError`] type alias is a boxed `std::error::Error` trait object.
+//! The [`BoxError`] type alias is a boxed `core::error::Error` trait object.
 //!
 //! It is used when the concrete error type is not important, only the fact that
 //! an error occurred. This is useful at abstraction boundaries such as middleware
@@ -103,7 +103,7 @@
 //! ```rust
 //! use rama_error::{ErrorContext, ErrorExt};
 //!
-//! fn parse(input: &str) -> Result<usize, std::num::ParseIntError> {
+//! fn parse(input: &str) -> Result<usize, core::num::ParseIntError> {
 //!     input.parse()
 //! }
 //!
@@ -124,6 +124,8 @@
 //! ```
 //!
 //! # Backtraces
+//!
+//! > Only available when the `std` feature is enabled.
 //!
 //! [`ErrorExt::backtrace`] captures a [`std::backtrace::Backtrace`] at the point
 //! it is called and wraps the error with it.
@@ -149,7 +151,7 @@
 //! error types. Rama does not impose a specific strategy here.
 //!
 //! If you need custom error types, define them as regular Rust types and implement
-//! [`std::error::Error`] for them. The article <https://sabrinajewson.org/blog/errors>
+//! [`core::error::Error`] for them. The article <https://sabrinajewson.org/blog/errors>
 //! provides an excellent overview of modern error design in Rust.
 //!
 //! For repeated patterns, `macro_rules` macros can be a good fit. As inspiration,
@@ -173,7 +175,7 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
-use std::error::Error as StdError;
+use core::error::Error as StdError;
 
 /// Alias for a type-erased error type.
 ///
