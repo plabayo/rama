@@ -1,17 +1,18 @@
 use rama::{
-    error::ErrorContext as _,
     extensions::Extensions,
     http::{
         client::EasyHttpWebClient, headers::SecWebSocketProtocol,
         ws::handshake::client::HttpClientWebSocketExt,
     },
-    net::address::{HostWithPort, SocketAddress},
+    net::address::HostWithPort,
     rt::Executor,
     tcp::client::default_tcp_connect,
     telemetry::tracing,
-    udp::bind_udp_with_address,
     utils::str::non_empty_str,
 };
+
+#[cfg(feature = "udp")]
+use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
 
 #[cfg(feature = "boring")]
 use ::{
@@ -177,6 +178,7 @@ async fn test_tls_tcp_echo() {
 
 #[ignore]
 #[tokio::test]
+#[cfg(feature = "udp")]
 async fn test_udp_echo() {
     utils::init_tracing();
 
@@ -364,12 +366,12 @@ async fn test_https_forced_version() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(all(feature = "boring", feature = "http-full"))]
+#[cfg(all(feature = "boring", feature = "http-full", feature = "haproxy"))]
 async fn test_https_with_remote_tls_cert_issuer() {
     use ::base64::Engine;
     use ::rama::{
         Layer as _,
-        error::BoxError,
+        error::{BoxError, ErrorContext as _},
         http::{
             headers::StrictTransportSecurity,
             layer::{

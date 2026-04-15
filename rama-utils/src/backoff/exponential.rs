@@ -281,8 +281,7 @@ mod tests {
             let result = ExponentialBackoff::new(min, max, n, || rng.clone());
             assert!(
                 matches!(result, Err(InvalidBackoff(_))),
-                "{} should be an invalid jitter",
-                n
+                "{n} should be an invalid jitter",
             );
         }
     }

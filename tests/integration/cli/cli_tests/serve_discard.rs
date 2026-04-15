@@ -1,8 +1,10 @@
 use rama::{
-    extensions::Extensions, net::address::SocketAddress, rt::Executor,
-    tcp::client::default_tcp_connect, telemetry::tracing, udp::bind_udp_with_address,
+    extensions::Extensions, net::address::HostWithPort, rt::Executor,
+    tcp::client::default_tcp_connect, telemetry::tracing,
 };
-use rama_net::address::HostWithPort;
+
+#[cfg(feature = "udp")]
+use rama::{net::address::SocketAddress, udp::bind_udp_with_address};
 
 #[cfg(feature = "boring")]
 use ::{
@@ -117,6 +119,7 @@ async fn test_tls_tcp_discard() {
 
 #[ignore]
 #[tokio::test]
+#[cfg(feature = "udp")]
 async fn test_udp_discard() {
     utils::init_tracing();
 
