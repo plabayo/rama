@@ -366,7 +366,7 @@ impl Bdp {
             self.rtt = rtt;
         } else {
             // Weigh this rtt as 1/8 for a moving average.
-            self.rtt += (rtt - self.rtt) * 0.125;
+            self.rtt = (rtt - self.rtt).mul_add(0.125, self.rtt);
         }
 
         // calculate the current bandwidth

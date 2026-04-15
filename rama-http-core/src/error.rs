@@ -144,6 +144,12 @@ impl Error {
         matches!(self.inner.kind, Kind::User(_))
     }
 
+    /// Returns true if this was an HTTP parse error caused by HTTP2 preface sent over an HTTP1
+    /// connection.
+    pub fn is_parse_version_h2(&self) -> bool {
+        matches!(self.inner.kind, Kind::Parse(Parse::VersionH2))
+    }
+
     /// Returns true if this was about a `Request` that was canceled.
     #[must_use]
     #[inline(always)]

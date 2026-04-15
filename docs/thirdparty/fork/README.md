@@ -14,9 +14,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/h2/blob/dbc204e57e0f96ea25d023c82d8a16340675b271/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/8ba900853b0f619b165e8530fc8c310bc13e056b>
+- hyper: <https://github.com/hyperium/hyper/tree/0d6c7d5469baa09e2fb127ee3758a79b3271a4f0>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/8ba900853b0f619b165e8530fc8c310bc13e056b/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/0d6c7d5469baa09e2fb127ee3758a79b3271a4f0/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>

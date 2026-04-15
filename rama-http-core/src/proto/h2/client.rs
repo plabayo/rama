@@ -522,6 +522,12 @@ where
     pub(crate) fn is_extended_connect_protocol_enabled(&self) -> bool {
         self.h2_tx.is_extended_connect_protocol_enabled()
     }
+    pub(crate) fn current_max_send_streams(&self) -> usize {
+        self.h2_tx.current_max_send_streams()
+    }
+    pub(crate) fn current_max_recv_streams(&self) -> usize {
+        self.h2_tx.current_max_recv_streams()
+    }
 }
 
 pin_project! {
@@ -535,6 +541,7 @@ pin_project! {
         conn_drop_ref: Option<Sender<Infallible>>,
         #[pin]
         ping: Option<Recorder>,
+        cancel_rx: Option<oneshot::Receiver<()>>,
     }
 }
 
@@ -547,6 +554,41 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
         let mut this = self.project();
 
+        // Check if the client cancelled the request (e.g. dropped the
+        // response future due to a timeout). If so, reset the h2 stream
+        // so that a RST_STREAM is sent and flow-control capacity is freed.
+        let cancel_result = this.cancel_rx.as_mut().map(|rx| Pin::new(rx).poll(cx));
+        match cancel_result {
+            Some(Poll::Ready(Ok(()))) => {
+                debug!("client request body send cancelled, resetting stream");
+                this.pipe.as_mut().send_reset(crate::h2::Reason::CANCEL);
+
+                if let Some(conn_drop_ref) = this.conn_drop_ref.take() {
+                    drop(conn_drop_ref);
+                } else {
+                    warn!(
+                        "h2 client: CancelResult: ConnTask PipeMap polled twice: conn_drop_ref was already None"
+                    );
+                }
+
+                if let Some(ping) = this.ping.take() {
+                    drop(ping);
+                } else {
+                    warn!(
+                        "h2 client: CancelResult: ConnTask PipeMap polled twice: ping was already None"
+                    );
+                }
+
+                return Poll::Ready(());
+            }
+            Some(Poll::Ready(Err(_))) => {
+                // Sender dropped without cancelling (normal response or error).
+                // Stop polling the receiver.
+                *this.cancel_rx = None;
+            }
+            Some(Poll::Pending) | None => {}
+        }
+
         match Pin::new(&mut this.pipe).poll(cx) {
             Poll::Ready(result) => {
                 if let Err(_e) = result {
@@ -557,14 +599,16 @@ where
                     drop(conn_drop_ref);
                 } else {
                     warn!(
-                        "h2 client: ConnTask PipeMap polled twice: conn_drop_ref was already None"
+                        "h2 client: ThisPipe: ConnTask PipeMap polled twice: conn_drop_ref was already None"
                     );
                 }
 
                 if let Some(ping) = this.ping.take() {
                     drop(ping);
                 } else {
-                    warn!("h2 client: ConnTask PipeMap polled twice: ping was already None");
+                    warn!(
+                        "h2 client: ThisPipe: ConnTask PipeMap polled twice: ping was already None"
+                    );
                 }
 
                 return Poll::Ready(());
@@ -583,6 +627,10 @@ where
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn poll_pipe(&mut self, f: FutCtx<B>, cx: &mut Context<'_>) {
         let ping = self.ping.clone();
+
+        // A one-shot channel so that send_task can tell pipe_task to
+        // reset the stream when the client cancels the request.
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
 
         let send_stream = if !f.is_connect {
             if !f.eos {
@@ -603,6 +651,7 @@ where
                             pipe,
                             conn_drop_ref: Some(conn_drop_ref),
                             ping: Some(ping),
+                            cancel_rx: Some(cancel_rx),
                         };
 
                         let pipe_span = trace_root_span!(
@@ -638,6 +687,7 @@ where
                     ping: Some(ping),
                     send_stream: Some(send_stream),
                     exec: self.executor.clone(),
+                    cancel_tx: Some(cancel_tx),
                 },
                 call_back: Some(f.cb),
             },
@@ -664,6 +714,19 @@ pin_project! {
         #[pin]
         send_stream: Option<Option<SendStream<SendBuf<<B as StreamingBody>::Data>>>>,
         exec: Executor,
+        cancel_tx: Option<oneshot::Sender<()>>,
+    }
+}
+
+impl<B> ResponseFutMap<B>
+where
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+{
+    /// Signal the pipe_task to reset the stream (e.g. on client cancellation).
+    pub(crate) fn cancel(self: Pin<&mut Self>) {
+        if let Some(cancel_tx) = self.project().cancel_tx.take() {
+            let _ = cancel_tx.send(());
+        }
     }
 }
 
@@ -678,11 +741,7 @@ where
 
         let result = ready!(this.fut.poll(cx));
 
-        let Some((ping, send_stream)) = this
-            .ping
-            .take()
-            .and_then(|ping| this.send_stream.take().map(|stream| (ping, stream)))
-        else {
+        let Some((ping, send_stream)) = this.ping.take().zip(this.send_stream.take()) else {
             return Poll::Ready(Err((
                 crate::Error::new_parse_internal()
                     .with_display("ResponseFutMap polled twice (bug: polled after ready)"),

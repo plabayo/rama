@@ -1574,9 +1574,9 @@ mod conn {
     use rama::bytes::{Buf, Bytes};
     use rama::extensions::{Extensions, ExtensionsRef};
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
-    use rama_http::StreamingBody;
     use rama_http::proto::h1::ext::ReasonPhrase;
     use rama_http::proto::h1::ext::informational::OnInformational;
+    use rama_http::{Body, StreamingBody};
     use tokio::io::{
         AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf,
     };
@@ -2901,6 +2901,49 @@ mod conn {
         ) -> Poll<io::Result<()>> {
             Pin::new(&mut self.tcp).poll_read(cx, buf)
         }
+    }
+
+    // https://github.com/hyperium/hyper/issues/4040
+    #[tokio::test]
+    async fn h2_pipe_task_cancelled_on_response_future_drop() {
+        let (client_io, server_io, _) = setup_duplex_test_server();
+        let (rst_tx, rst_rx) = oneshot::channel::<bool>();
+
+        tokio::spawn(async move {
+            let mut builder = rama_http_core::h2::server::Builder::new();
+            builder.set_initial_window_size(0);
+            let mut h2 = builder
+                .handshake::<_, Bytes>(ServiceInput::new(server_io))
+                .await
+                .unwrap();
+            let (req, _respond) = h2.accept().await.unwrap().unwrap();
+            tokio::spawn(async move {
+                let _ = poll_fn(|cx| h2.poll_closed(cx)).await;
+            });
+
+            let mut body = req.into_body();
+            let got_rst = tokio::time::timeout(Duration::from_secs(2), body.data())
+                .await
+                .is_ok_and(|frame| matches!(frame, Some(Err(_)) | None));
+            let _ = rst_tx.send(got_rst);
+        });
+
+        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+            .handshake(ServiceInput::new(client_io))
+            .await
+            .expect("http handshake");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let req = Request::post("http://localhost/")
+            .body(Body::from(vec![b'x'; 50]))
+            .unwrap();
+        let res = tokio::time::timeout(Duration::from_millis(5), client.send_request(req)).await;
+        assert!(res.is_err(), "should timeout waiting for response");
+
+        let got_rst = rst_rx.await.expect("server task should complete");
+        assert!(got_rst, "server should receive RST_STREAM");
     }
 }
 

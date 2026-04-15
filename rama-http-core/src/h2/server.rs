@@ -879,7 +879,7 @@ impl Builder {
         ///
         /// See [Section 5.1.2] in the HTTP/2 spec for more details.
         ///
-        /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
+        /// [Section 5.1.2]: https://httpwg.org/specs/rfc7540.html#rfc.section.5.1.2
         ///
         /// # Examples
         ///
