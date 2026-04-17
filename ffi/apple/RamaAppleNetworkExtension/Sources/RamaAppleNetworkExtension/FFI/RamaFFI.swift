@@ -270,20 +270,11 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     static func flowAction(meta: RamaTransparentProxyFlowMetaBridge) -> RamaTransparentProxyFlowActionBridge {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-            message:
-                "flowAction call protocol=\(meta.protocolRaw) remote=\(meta.remoteHost ?? "<nil>"):\(meta.remotePort) local=\(meta.localHost ?? "<nil>"):\(meta.localPort)"
-        )
         let resultRaw = withFlowMeta(meta) { metaPtr in
             rama_transparent_proxy_flow_action(metaPtr).rawValue
         }
         let result = RamaTransparentProxyFlowActionBridge(rawValue: resultRaw)
             ?? .passthrough
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-            message: "flowAction result=\(result)"
-        )
         return result
     }
 
@@ -396,6 +387,11 @@ final class RamaTcpSessionHandle {
     func onClientEof() {
         guard let s = sessionPtr else { return }
         rama_transparent_proxy_tcp_session_on_client_eof(s)
+    }
+
+    func cancel() {
+        guard let s = sessionPtr else { return }
+        rama_transparent_proxy_tcp_session_cancel(s)
     }
 }
 

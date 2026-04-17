@@ -319,6 +319,9 @@ void rama_transparent_proxy_tcp_session_on_client_bytes(
 /// Signal EOF on client->server TCP direction.
 void rama_transparent_proxy_tcp_session_on_client_eof(RamaTransparentProxyTcpSession* session);
 
+/// Cancel TCP session and suppress any future server callbacks for this session.
+void rama_transparent_proxy_tcp_session_cancel(RamaTransparentProxyTcpSession* session);
+
 // UDP flow lifecycle
 
 /// Create a UDP session for one intercepted flow.

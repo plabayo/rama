@@ -279,8 +279,31 @@ impl TransparentProxyEngine {
         let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
         let (eof_tx, eof_rx) = watch::channel(false);
 
-        let bytes_sink: BytesSink = Arc::new(on_server_bytes);
-        let closed_sink: ClosedSink = Arc::new(on_server_closed);
+        let callback_active = Arc::new(Mutex::new(true));
+        let user_bytes_sink: BytesSink = Arc::new(on_server_bytes);
+        let user_closed_sink: ClosedSink = Arc::new(on_server_closed);
+        let bytes_sink = {
+            let callback_active = callback_active.clone();
+            let user_bytes_sink = user_bytes_sink.clone();
+            Arc::new(move |bytes: Bytes| {
+                let active = callback_active.lock();
+                if !*active {
+                    return;
+                }
+                user_bytes_sink(bytes);
+            }) as BytesSink
+        };
+        let closed_sink = {
+            let callback_active = callback_active.clone();
+            let user_closed_sink = user_closed_sink.clone();
+            Arc::new(move || {
+                let active = callback_active.lock();
+                if !*active {
+                    return;
+                }
+                user_closed_sink();
+            }) as ClosedSink
+        };
         let remote_endpoint = meta.remote_endpoint.clone();
 
         tracing::debug!(protocol = ?meta.protocol, "new tcp session");
@@ -306,7 +329,11 @@ impl TransparentProxyEngine {
             let _ = service.serve(stream).await;
         });
 
-        Some(TransparentProxyTcpSession { client_tx, eof_tx })
+        Some(TransparentProxyTcpSession {
+            client_tx: Some(client_tx),
+            eof_tx,
+            callback_active,
+        })
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -378,8 +405,9 @@ fn build_default_runtime() -> tokio::runtime::Runtime {
 }
 
 pub struct TransparentProxyTcpSession {
-    client_tx: mpsc::UnboundedSender<Bytes>,
+    client_tx: Option<mpsc::UnboundedSender<Bytes>>,
     eof_tx: watch::Sender<bool>,
+    callback_active: Arc<Mutex<bool>>,
 }
 
 impl TransparentProxyTcpSession {
@@ -387,10 +415,22 @@ impl TransparentProxyTcpSession {
         if bytes.is_empty() {
             return;
         }
-        let _ = self.client_tx.send(Bytes::copy_from_slice(bytes));
+        if let Some(tx) = self.client_tx.as_mut() {
+            let _ = tx.send(Bytes::copy_from_slice(bytes));
+        }
     }
 
     pub fn on_client_eof(&mut self) {
+        let _ = self.eof_tx.send(true);
+    }
+
+    /// Cancel this session and suppress any future callbacks to the Swift side.
+    pub fn cancel(&mut self) {
+        {
+            let mut active = self.callback_active.lock();
+            *active = false;
+        }
+        self.client_tx = None;
         let _ = self.eof_tx.send(true);
     }
 }
@@ -567,7 +607,11 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use rama_net::address::HostWithPort;
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::{Duration, Instant};
 
     #[test]
     fn engine_start_stop_state() {
@@ -799,5 +843,65 @@ mod tests {
 
         let meta = seen.lock().clone().expect("udp flow meta");
         assert_eq!(meta.source_app_pid, Some(888));
+    }
+
+    #[test]
+    fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
+        let closed_count = Arc::new(AtomicUsize::new(0));
+        let bytes_count = Arc::new(AtomicUsize::new(0));
+
+        let engine = TransparentProxyEngineBuilder::new()
+            .with_runtime(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_time()
+                    .build()
+                    .unwrap(),
+            )
+            .with_tcp_service_factory(|_ctx| async {
+                Ok(service_fn(|mut stream: TcpFlow| async move {
+                    // Keep flow idle until client-side cancel/EOF closes ingress.
+                    let mut buf = [0u8; 1];
+                    let _ = stream.read(&mut buf).await;
+                    Ok(())
+                }))
+            })
+            .build();
+
+        engine.start().unwrap();
+
+        let mut sessions = Vec::new();
+        for _ in 0..512 {
+            let closed_count = closed_count.clone();
+            let bytes_count = bytes_count.clone();
+            let session = engine
+                .new_tcp_session(
+                    TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+                        .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+                    move |_bytes| {
+                        bytes_count.fetch_add(1, Ordering::Relaxed);
+                    },
+                    move || {
+                        closed_count.fetch_add(1, Ordering::Relaxed);
+                    },
+                )
+                .expect("session");
+            sessions.push(session);
+        }
+
+        for session in &mut sessions {
+            session.cancel();
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(bytes_count.load(Ordering::Relaxed), 0);
+        assert_eq!(closed_count.load(Ordering::Relaxed), 0);
+
+        let start = Instant::now();
+        engine.stop(0);
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "engine.stop took too long after cancel: {:?}",
+            start.elapsed()
+        );
     }
 }

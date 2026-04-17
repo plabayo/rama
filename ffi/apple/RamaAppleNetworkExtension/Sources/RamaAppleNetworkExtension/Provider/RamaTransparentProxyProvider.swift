@@ -148,6 +148,43 @@ private func blockedFlowError() -> NSError {
     )
 }
 
+private func tcpFirstByteTimeoutError(timeoutSeconds: TimeInterval) -> NSError {
+    NSError(
+        domain: "NEAppProxyFlowErrorDomain",
+        code: AppProxyFlowErrorCode.timedOut.rawValue,
+        userInfo: [
+            NSLocalizedDescriptionKey: "TCP flow timed out waiting for first client bytes",
+            NSLocalizedFailureReasonErrorKey:
+                "No client payload arrived within \(String(format: "%.2f", timeoutSeconds))s.",
+        ]
+    )
+}
+
+private final class TcpFirstByteWatchdog {
+    private let lock = NSLock()
+    private var completed = false
+
+    func complete() {
+        lock.lock()
+        completed = true
+        lock.unlock()
+    }
+
+    func schedule(timeout: TimeInterval, onTimeout: @escaping () -> Void) {
+        guard timeout > 0 else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+            self.lock.lock()
+            if self.completed {
+                self.lock.unlock()
+                return
+            }
+            self.completed = true
+            self.lock.unlock()
+            onTimeout()
+        }
+    }
+}
+
 /// Classify callback errors from `NEAppProxyFlow` read/write operations into expected
 /// disconnects versus actionable failures.
 ///
@@ -381,6 +418,7 @@ private final class UdpClientWritePump {
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
+    private static let tcpFirstByteTimeoutSeconds: TimeInterval = 0.25
     private var engine: RamaTransparentProxyEngineHandle?
     private let stateQueue = DispatchQueue(label: "rama.tproxy.state")
     private var tcpSessions: [ObjectIdentifier: RamaTcpSessionHandle] = [:]
@@ -538,6 +576,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let writer = TcpClientWritePump(flow: flow) { [weak self] message in
             self?.logFlowMessage(message)
         }
+        let firstByteWatchdog = TcpFirstByteWatchdog()
         let flowId = ObjectIdentifier(flow)
 
         guard
@@ -547,6 +586,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     writer.enqueue(data)
                 },
                 onServerClosed: { [weak self] in
+                    firstByteWatchdog.complete()
                     writer.closeWhenDrained { [weak self] in
                         flow.closeReadWithError(nil)
                         flow.closeWriteWithError(nil)
@@ -569,15 +609,36 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         flow.open(withLocalEndpoint: nil) { error in
             if let error {
+                firstByteWatchdog.complete()
                 self.logDebug("flow.open error: \(error)")
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
-                // Keep the callback box alive until Rust signals onServerClosed.
-                session.onClientEof()
+                session.cancel()
+                self.stateQueue.async {
+                    self.tcpSessions.removeValue(forKey: flowId)
+                }
                 return
             }
+            firstByteWatchdog.schedule(timeout: Self.tcpFirstByteTimeoutSeconds) { [weak self] in
+                let timeout = Self.tcpFirstByteTimeoutSeconds
+                self?.logInfo(
+                    "tcp first-byte timeout \(String(format: "%.2f", timeout))s remote=\(meta.remoteHost ?? "<nil>"):\(meta.remotePort)"
+                )
+                let error = tcpFirstByteTimeoutError(timeoutSeconds: timeout)
+                flow.closeReadWithError(error)
+                flow.closeWriteWithError(error)
+                session.cancel()
+                self?.stateQueue.async {
+                    self?.tcpSessions.removeValue(forKey: flowId)
+                }
+            }
             self.logTrace("flow.open ok (tcp)")
-            self.tcpReadLoop(flow: flow, session: session)
+            self.tcpReadLoop(
+                flow: flow,
+                session: session,
+                firstByteWatchdog: firstByteWatchdog,
+                flowId: flowId
+            )
         }
     }
 
@@ -599,27 +660,45 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
-    private func tcpReadLoop(flow: NEAppProxyTCPFlow, session: RamaTcpSessionHandle) {
+    private func tcpReadLoop(
+        flow: NEAppProxyTCPFlow,
+        session: RamaTcpSessionHandle,
+        firstByteWatchdog: TcpFirstByteWatchdog,
+        flowId: ObjectIdentifier
+    ) {
         flow.readData { data, error in
+            firstByteWatchdog.complete()
             if let error {
                 self.logFlowMessage(
                     classifyFlowCallbackError(error, operation: "tcp flow.read")
                 )
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
-                // Keep the callback box alive until Rust signals onServerClosed.
-                session.onClientEof()
+                session.cancel()
+                self.stateQueue.async {
+                    self.tcpSessions.removeValue(forKey: flowId)
+                }
                 return
             }
 
             guard let data, !data.isEmpty else {
                 self.logTrace("flow.readData eof")
-                session.onClientEof()
+                flow.closeReadWithError(nil)
+                flow.closeWriteWithError(nil)
+                session.cancel()
+                self.stateQueue.async {
+                    self.tcpSessions.removeValue(forKey: flowId)
+                }
                 return
             }
 
             session.onClientBytes(data)
-            self.tcpReadLoop(flow: flow, session: session)
+            self.tcpReadLoop(
+                flow: flow,
+                session: session,
+                firstByteWatchdog: firstByteWatchdog,
+                flowId: flowId
+            )
         }
     }
 
