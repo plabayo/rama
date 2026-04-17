@@ -1,6 +1,6 @@
 use core::{convert::Infallible, fmt};
 
-use crate::BoxError;
+use crate::{BoxError, std::Box};
 
 /// Rarely will you need [`OpaqueError`],
 /// it can however be a useful last-resort in case you

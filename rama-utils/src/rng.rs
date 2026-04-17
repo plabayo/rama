@@ -1,7 +1,7 @@
 //! [PRNG] utilities for middleware.
 //!
 //! This module provides a generic [`Rng`] trait and a [`HasherRng`] that
-//! implements the trait based on [`RandomState`] or any other [`Hasher`].
+//! implements the trait based on any [`Hasher`].
 //!
 //! [PRNG]: https://en.wikipedia.org/wiki/Pseudorandom_number_generator
 
@@ -61,11 +61,6 @@ impl<R: Rng + ?Sized> Rng for crate::std::boxed::Box<R> {
 /// A [`Rng`] implementation that uses a [`Hasher`] to generate the random
 /// values. The implementation uses an internal counter to pass to the hasher
 /// for each iteration of [`Rng::next_u64`].
-///
-/// # Default
-///
-/// This hasher has a default type of [`RandomState`] which just uses the
-/// libstd method of getting a random u64.
 #[derive(Clone, Debug)]
 pub struct HasherRng<
     #[cfg(feature = "std")] H = std::hash::RandomState,

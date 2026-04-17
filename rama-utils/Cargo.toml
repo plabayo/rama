@@ -10,16 +10,23 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[features]
-default = ["std"]
-std = ["rama-macros/std", "smallvec/write", "smol_str/std", "dep:tokio", "serde/std", "dep:parking_lot"]
-
 [package.metadata.cargo-public-api-crates]
 allowed = []
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["std"]
+std = [
+    "rama-macros/std",
+    "smallvec/write",
+    "smol_str/std",
+    "dep:tokio",
+    "serde/std",
+    "dep:parking_lot",
+]
 
 [dependencies]
 const_format = { workspace = true }

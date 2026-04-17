@@ -127,23 +127,11 @@
 //!
 //! > Only available when the `std` feature is enabled.
 //!
-//! [`ErrorExt::backtrace`] captures a [`std::backtrace::Backtrace`] at the point
+//! `ErrorExt::backtrace` captures a `std::backtrace::Backtrace` at the point
 //! it is called and wraps the error with it.
 //!
 //! In normal formatting the error prints as the underlying error.
 //! In alternate formatting (`{:#}`) the backtrace is included.
-//!
-//! ```rust
-//! use rama_error::ErrorExt;
-//!
-//! let err = std::io::Error::other("boom")
-//!     .context_field("path", "/tmp/data")
-//!     .backtrace();
-//!
-//! assert_eq!(format!("{err}"), "boom | path=\"/tmp/data\"");
-//! let pretty = format!("{err:#}");
-//! assert!(pretty.contains("Backtrace:"));
-//! ```
 //!
 //! # Error composition
 //!
@@ -184,7 +172,7 @@ use core::error::Error as StdError;
 /// Alias for a type-erased error type.
 ///
 /// See the [module level documentation](crate) for more information.
-pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
+pub type BoxError = self::std::Box<dyn StdError + Send + Sync + 'static>;
 
 mod ext;
 pub use ext::{ErrorContext, ErrorExt};
@@ -195,3 +183,5 @@ pub mod extra {
     #[doc(inline)]
     pub use crate::ext::opaque::OpaqueError;
 }
+
+mod std;

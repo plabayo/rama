@@ -1,10 +1,13 @@
 use core::fmt::{self, Write as _};
 
-use crate::BoxError;
+use crate::{
+    BoxError,
+    std::{Box, String},
+};
 
 pub(super) struct ErrorWithContext {
     source: BoxError,
-    fields: Option<Vec<ContextField>>,
+    fields: Option<crate::std::Vec<ContextField>>,
 }
 
 impl ErrorWithContext {

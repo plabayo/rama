@@ -73,7 +73,7 @@ mod tests {
 
         // We do not assert backtrace contents because it can be disabled depending on env and build.
         // We only assert it printed something after the label.
-        let parts: Vec<&str> = s.split("Backtrace:").collect();
+        let parts: crate::std::Vec<&str> = s.split("Backtrace:").collect();
         assert_eq!(parts.len(), 2, "got: {s:?}");
         assert!(
             !parts[1].trim().is_empty(),

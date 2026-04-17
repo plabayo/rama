@@ -6,7 +6,11 @@ mod backtrace;
 mod context;
 pub(super) mod opaque;
 
-use crate::{BoxError, extra::OpaqueError};
+use crate::{
+    BoxError,
+    extra::OpaqueError,
+    std::{Box, String},
+};
 
 /// Extends the `Result` and `Option` types with methods for adding context to errors.
 ///
