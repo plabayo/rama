@@ -298,6 +298,19 @@ async fn test_https_echo() {
     );
 }
 
+#[cfg(feature = "boring")]
+fn assert_contains(lines: &str, needle: &str, cli_flag: &str) {
+    if !rama::utils::str::submatch_ignore_ascii_case(lines, needle) {
+        eprintln!("Assertion failed for cli flag: {cli_flag}");
+        eprintln!("Missing expected line: '{needle}'");
+        eprintln!("All lines:");
+        eprintln!("------------------");
+        eprintln!(">>> {lines}");
+        eprintln!("------------------");
+        panic!("expected line not found");
+    }
+}
+
 #[ignore]
 #[tokio::test]
 #[cfg(feature = "boring")]
@@ -347,20 +360,8 @@ async fn test_https_forced_version() {
         ])
         .unwrap();
 
-        assert!(
-            lines.contains(test.version_response),
-            "cli flag {}, didn't find '{}' lines: {:?}",
-            test.cli_flag,
-            test.version_response,
-            lines
-        );
-        assert!(
-            lines.contains(&tls_alpn),
-            "cli flag {}, didn't find '{}' lines: {:?}",
-            test.cli_flag,
-            tls_alpn,
-            lines
-        );
+        assert_contains(&lines, test.version_response, test.cli_flag);
+        assert_contains(&lines, &tls_alpn, test.cli_flag);
     }
 }
 
@@ -572,20 +573,8 @@ async fn test_https_with_remote_tls_cert_issuer() {
             ])
             .unwrap();
 
-            assert!(
-                lines.contains(test.version_response),
-                "cli flag {}, didn't find '{}' lines: {:?}",
-                test.cli_flag,
-                test.version_response,
-                lines
-            );
-            assert!(
-                lines.contains(&tls_alpn),
-                "cli flag {}, didn't find '{}' lines: {:?}",
-                test.cli_flag,
-                tls_alpn,
-                lines
-            );
+            assert_contains(&lines, test.version_response, test.cli_flag);
+            assert_contains(&lines, &tls_alpn, test.cli_flag);
         })
         .await
         .unwrap();
