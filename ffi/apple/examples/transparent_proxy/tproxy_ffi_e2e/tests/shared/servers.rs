@@ -214,13 +214,9 @@ pub(crate) async fn spawn_raw_tcp_echo() -> u16 {
             };
             tokio::spawn(async move {
                 let mut buf = [0_u8; 1024];
-                loop {
-                    let Ok(n) = stream.read(&mut buf).await else {
-                        break;
-                    };
-                    if n == 0 {
-                        break;
-                    }
+                while let Ok(n) = stream.read(&mut buf).await
+                    && n > 0
+                {
                     if stream.write_all(&buf[..n]).await.is_err() {
                         break;
                     }

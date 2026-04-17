@@ -32,6 +32,7 @@
 //! ```
 
 use std::any::{Any, TypeId};
+use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -39,7 +40,7 @@ use rama_utils::collections::AppendOnlyVec;
 
 pub use rama_macros::Extension;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 /// A type map of protocol extensions.
 ///
 /// [`Extension`]s are internally stored in a type erased [`Arc`]. Since values are
@@ -228,6 +229,16 @@ impl Extensions {
     /// convert it back to type `T` if it matches the erasaed type stored internally.
     pub fn iter_all(&self) -> impl Iterator<Item = &TypeErasedExtension> {
         self.extensions.iter()
+    }
+}
+
+impl fmt::Debug for Extensions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_list();
+        for ext in self.extensions.iter() {
+            d.entry(&ext.value);
+        }
+        d.finish()
     }
 }
 
