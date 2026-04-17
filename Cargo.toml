@@ -379,7 +379,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
-rama-grpc = { workspace = true, optional = true }
+rama-grpc = { workspace = true, optional = true, features = ["protobuf", "vendor-protoc"] }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
