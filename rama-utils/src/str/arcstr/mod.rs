@@ -107,5 +107,5 @@ pub mod _private {
 
     pub use super::arc_str::{STATIC_COUNT_VALUE, StaticArcStrInner};
     pub use ::const_format::formatcp;
-    pub use std::primitive::{str, u8};
+    pub use core::primitive::{str, u8};
 }

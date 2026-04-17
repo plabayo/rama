@@ -36,10 +36,10 @@ pub(crate) fn expand(mut item: DeriveInput) -> syn::Result<TokenStream> {
     // These bounds are needed to implement Extension, so all generics need them aswel
     for param in item.generics.params.iter_mut() {
         if let GenericParam::Type(type_param) = param {
-            type_param.bounds.push(parse_quote!(::std::any::Any));
-            type_param.bounds.push(parse_quote!(::std::marker::Send));
-            type_param.bounds.push(parse_quote!(::std::marker::Sync));
-            type_param.bounds.push(parse_quote!(::std::fmt::Debug));
+            type_param.bounds.push(parse_quote!(::core::any::Any));
+            type_param.bounds.push(parse_quote!(::core::marker::Send));
+            type_param.bounds.push(parse_quote!(::core::marker::Sync));
+            type_param.bounds.push(parse_quote!(::core::fmt::Debug));
             type_param.bounds.push(parse_quote!('static));
         }
     }

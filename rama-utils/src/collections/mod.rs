@@ -21,7 +21,7 @@ pub use crate::__non_empty_smallvec as non_empty_smallvec;
 
 #[doc(hidden)]
 pub mod __macro_support {
-    pub use std::vec;
+    pub use crate::std::vec;
 }
 
 pub use smallvec;

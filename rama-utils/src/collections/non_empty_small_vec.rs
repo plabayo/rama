@@ -5,10 +5,10 @@ use serde::{
 };
 use smallvec::SmallVec;
 
-use std::convert::TryFrom;
-use std::iter;
-use std::mem;
-use std::{cmp::Ordering, num::NonZeroUsize};
+use core::convert::TryFrom;
+use core::iter;
+use core::mem;
+use core::{cmp::Ordering, num::NonZeroUsize};
 
 /// Like the `vec!` macro, but enforces at least one argument. A nice short-hand
 /// for constructing [`NonEmptySmallVec`] values.
@@ -120,7 +120,7 @@ impl<T> ExactSizeIterator for NonEmptySmallVecIter<'_, T> {
     }
 }
 
-impl<T> std::iter::FusedIterator for NonEmptySmallVecIter<'_, T> {}
+impl<T> core::iter::FusedIterator for NonEmptySmallVecIter<'_, T> {}
 
 impl<const N: usize, T> NonEmptySmallVec<N, T> {
     /// Alias for [`NonEmptySmallVec::singleton`].
@@ -622,14 +622,14 @@ impl<const N: usize, T> IntoIterator for NonEmptySmallVec<N, T> {
 
 impl<'a, const N: usize, T> IntoIterator for &'a NonEmptySmallVec<N, T> {
     type Item = &'a T;
-    type IntoIter = iter::Chain<iter::Once<&'a T>, std::slice::Iter<'a, T>>;
+    type IntoIter = iter::Chain<iter::Once<&'a T>, core::slice::Iter<'a, T>>;
 
     fn into_iter(self) -> Self::IntoIter {
         iter::once(&self.head).chain(self.tail.iter())
     }
 }
 
-impl<const N: usize, T> std::ops::Index<usize> for NonEmptySmallVec<N, T> {
+impl<const N: usize, T> core::ops::Index<usize> for NonEmptySmallVec<N, T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &T {
@@ -641,7 +641,7 @@ impl<const N: usize, T> std::ops::Index<usize> for NonEmptySmallVec<N, T> {
     }
 }
 
-impl<const N: usize, T> std::ops::IndexMut<usize> for NonEmptySmallVec<N, T> {
+impl<const N: usize, T> core::ops::IndexMut<usize> for NonEmptySmallVec<N, T> {
     fn index_mut(&mut self, index: usize) -> &mut T {
         if index > 0 {
             &mut self.tail[index - 1]

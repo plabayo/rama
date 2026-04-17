@@ -24,21 +24,32 @@
     warn(clippy::print_stdout, clippy::dbg_macro),
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
 
 #[doc(hidden)]
 #[macro_use]
 pub mod macros;
 
+#[cfg(feature = "std")]
 pub mod include_dir;
 
+#[cfg(feature = "std")]
 pub mod backoff;
+
+#[cfg(feature = "std")]
+pub mod time;
+
 pub mod collections;
 pub mod info;
 pub mod latency;
 pub mod octets;
 pub mod rng;
 pub mod str;
-pub mod time;
+
+mod std;
 
 #[doc(hidden)]
 pub mod test_helpers;

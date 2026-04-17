@@ -10,6 +10,10 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+default = ["std"]
+std = []
+
 [package.metadata.cargo-public-api-crates]
 allowed = []
 

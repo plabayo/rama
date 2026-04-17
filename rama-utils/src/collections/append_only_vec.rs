@@ -1,10 +1,11 @@
-use std::{alloc::handle_alloc_error, mem::ManuallyDrop, ptr};
+use crate::std::alloc::handle_alloc_error;
+
+use core::{mem::ManuallyDrop, ptr};
 
 #[cfg(not(all(loom, test)))]
-use std::{
-    alloc::{Layout, alloc, dealloc},
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
-};
+use crate::std::alloc::{Layout, alloc, dealloc};
+#[cfg(not(all(loom, test)))]
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 #[cfg(all(loom, test))]
 use loom::{
@@ -70,7 +71,7 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         Self {
             count: AtomicUsize::new(0),
             reserved: AtomicUsize::new(0),
-            data: std::array::from_fn(|_| AtomicPtr::new(std::ptr::null_mut())),
+            data: core::array::from_fn(|_| AtomicPtr::new(core::ptr::null_mut())),
         }
     }
 
@@ -190,8 +191,8 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         let mut ptr = self.data[bin_idx].load(Ordering::Acquire);
         if ptr.is_null() {
             // Make sure we support zero sized traits
-            let (layout, new_ptr) = if std::mem::size_of::<T>() == 0 {
-                (None, std::ptr::NonNull::<T>::dangling().as_ptr())
+            let (layout, new_ptr) = if core::mem::size_of::<T>() == 0 {
+                (None, core::ptr::NonNull::<T>::dangling().as_ptr())
             } else {
                 #[allow(
                     clippy::expect_used,
@@ -281,7 +282,7 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
 
         let max_elements = Self::bin_size(AMOUNT_OF_BINS - 1);
 
-        let size_of_t = std::mem::size_of::<T>();
+        let size_of_t = core::mem::size_of::<T>();
         if size_of_t > 0 && max_elements > (isize::MAX as usize / size_of_t) {
             panic!("The largest bin exceeds isize::MAX bytes; Layout creation would fail");
         }
@@ -297,7 +298,7 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         #[cfg(all(test, loom))]
         let mut remaining = self.count.with_mut(|v| *v);
 
-        let is_zst = std::mem::size_of::<T>() == 0;
+        let is_zst = core::mem::size_of::<T>() == 0;
 
         for (i, atomic_ptr) in self.data.iter_mut().enumerate() {
             #[cfg(not(all(loom, test)))]
@@ -314,7 +315,7 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
             }
 
             let bin_cap = Self::bin_size(i);
-            let to_drop = std::cmp::min(remaining, bin_cap);
+            let to_drop = core::cmp::min(remaining, bin_cap);
 
             // Drop individual elements in the bucket
 
@@ -356,9 +357,13 @@ fn spin_wait(failures: &mut usize) {
     {
         *failures += 1;
         if *failures <= 10 {
-            std::hint::spin_loop();
+            core::hint::spin_loop();
         } else {
+            #[cfg(feature = "std")]
             std::thread::yield_now();
+
+            #[cfg(not(feature = "std"))]
+            core::hint::spin_loop();
         }
     }
 
@@ -400,7 +405,7 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Default
     }
 }
 
-use std::ops::Index;
+use core::ops::Index;
 
 impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Index<usize>
     for AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
@@ -519,7 +524,7 @@ impl<T, const BINS: usize, const OFFSET: u32> Iterator for IntoIterOwned<T, BINS
 
             // Safety: This is safe because consume < total, and since we own this
             // structure no one else can change this
-            unsafe { Some(std::ptr::read(bucket.add(offset))) }
+            unsafe { Some(core::ptr::read(bucket.add(offset))) }
         } else {
             None
         }

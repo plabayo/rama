@@ -174,6 +174,10 @@
     warn(clippy::print_stdout, clippy::dbg_macro),
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
 
 use core::error::Error as StdError;
 

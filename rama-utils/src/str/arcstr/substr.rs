@@ -7,7 +7,8 @@
     clippy::redundant_slicing,
 )]
 
-use std::ops::{Range, RangeBounds};
+use crate::std::borrow::ToOwned as _;
+use core::ops::{Range, RangeBounds};
 
 use super::ArcStr;
 
@@ -275,7 +276,7 @@ impl Substr {
         self.2 == self.1
     }
 
-    /// Convert us to a `std::string::String`.
+    /// Convert us to a `core::string::String`.
     ///
     /// This is provided as an inherent method to avoid needing to route through
     /// the `Display` machinery, but is equivalent to `ToString::to_string`.
@@ -290,7 +291,7 @@ impl Substr {
     #[inline]
     #[allow(clippy::inherent_to_string_shadow_display)]
     #[must_use]
-    pub fn to_string(&self) -> std::string::String {
+    pub fn to_string(&self) -> crate::std::string::String {
         self.as_str().to_owned()
     }
 
@@ -610,29 +611,29 @@ macro_rules! impl_from_via_arcstr {
 impl_from_via_arcstr![
     &str,
     &mut str,
-    std::string::String,
-    &std::string::String,
-    std::boxed::Box<str>,
-    std::rc::Rc<str>,
-    std::sync::Arc<str>,
-    std::borrow::Cow<'_, str>
+    crate::std::string::String,
+    &crate::std::string::String,
+    crate::std::boxed::Box<str>,
+    crate::std::rc::Rc<str>,
+    crate::std::Arc<str>,
+    crate::std::borrow::Cow<'_, str>
 ];
 
-impl<'a> From<&'a Substr> for std::borrow::Cow<'a, str> {
+impl<'a> From<&'a Substr> for crate::std::borrow::Cow<'a, str> {
     #[inline]
     fn from(s: &'a Substr) -> Self {
-        std::borrow::Cow::Borrowed(s)
+        crate::std::borrow::Cow::Borrowed(s)
     }
 }
 
-impl<'a> From<Substr> for std::borrow::Cow<'a, str> {
+impl<'a> From<Substr> for crate::std::borrow::Cow<'a, str> {
     #[inline]
     fn from(s: Substr) -> Self {
         if let Some(st) = ArcStr::as_static(&s.0) {
             debug_assert!(st.get(s.range()).is_some());
-            std::borrow::Cow::Borrowed(unsafe { st.get_unchecked(s.range()) })
+            crate::std::borrow::Cow::Borrowed(unsafe { st.get_unchecked(s.range()) })
         } else {
-            std::borrow::Cow::Owned(s.to_string())
+            crate::std::borrow::Cow::Owned(s.to_string())
         }
     }
 }
@@ -660,11 +661,11 @@ macro_rules! impl_peq {
 impl_peq! {
     (Substr, str),
     (Substr, &'a str),
-    (Substr, std::string::String),
-    (Substr, std::borrow::Cow<'a, str>),
-    (Substr, std::boxed::Box<str>),
-    (Substr, std::sync::Arc<str>),
-    (Substr, std::rc::Rc<str>),
+    (Substr, crate::std::string::String),
+    (Substr, crate::std::borrow::Cow<'a, str>),
+    (Substr, crate::std::boxed::Box<str>),
+    (Substr, crate::std::Arc<str>),
+    (Substr, crate::std::rc::Rc<str>),
 }
 
 macro_rules! impl_index {

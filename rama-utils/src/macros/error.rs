@@ -20,14 +20,14 @@ macro_rules! __static_str_error {
             }
         }
 
-        impl std::fmt::Display for $name {
+        impl core::fmt::Display for $name {
             #[inline(always)]
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 write!(f, $desc)
             }
         }
 
-        impl std::error::Error for $name {}
+        impl core::error::Error for $name {}
     }
 }
 #[doc(inline)]
