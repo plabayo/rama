@@ -305,10 +305,58 @@ fn assert_contains(lines: &str, needle: &str, cli_flag: &str) {
         eprintln!("Missing expected line: '{needle}'");
         eprintln!("All lines:");
         eprintln!("------------------");
-        eprintln!(">>> {lines}");
+        dump_debug_lines(lines);
         eprintln!("------------------");
         panic!("expected line not found");
     }
+}
+
+#[cfg(feature = "boring")]
+fn dump_debug_lines(lines: &str) {
+    const CHUNK: usize = 400;
+    for (i, line) in lines.lines().enumerate() {
+        if line.len() <= CHUNK {
+            eprintln!("{:04} | {}", i + 1, line);
+            continue;
+        }
+
+        for (j, chunk) in line.as_bytes().chunks(CHUNK).enumerate() {
+            eprintln!(
+                "{:04}.{:02} | {}",
+                i + 1,
+                j + 1,
+                String::from_utf8_lossy(chunk)
+            );
+        }
+    }
+}
+
+#[cfg(feature = "boring")]
+fn assert_contains_tls_alpn(lines: &str, alpn: &str, cli_flag: &str) {
+    let id = "APPLICATION_LAYER_PROTOCOL_NEGOTIATION (0x0010)";
+    let variants = [
+        format!(r#"{{"data":["{alpn}"],"id":"{id}"}}"#),
+        format!(r#"{{"id":"{id}","data":["{alpn}"]}}"#),
+    ];
+
+    if variants
+        .iter()
+        .any(|needle| rama::utils::str::submatch_ignore_ascii_case(lines, needle))
+    {
+        return;
+    }
+
+    eprintln!("Assertion failed for cli flag: {cli_flag}");
+    eprintln!("Missing expected ALPN extension for protocol: '{alpn}'");
+    eprintln!("Accepted variants:");
+    for variant in variants {
+        eprintln!("  - {variant}");
+    }
+    eprintln!("All lines:");
+    eprintln!("------------------");
+    dump_debug_lines(lines);
+    eprintln!("------------------");
+    panic!("expected ALPN extension not found");
 }
 
 #[ignore]
@@ -344,11 +392,6 @@ async fn test_https_forced_version() {
     ];
 
     for test in tests.iter() {
-        let tls_alpn = format!(
-            r#"{{"data":["{}"],"id":"APPLICATION_LAYER_PROTOCOL_NEGOTIATION (0x0010)"}}"#,
-            test.tls_alpn
-        );
-
         let lines = utils::RamaService::http(vec![
             test.cli_flag,
             "https://127.0.0.1:63104?q=1",
@@ -361,7 +404,7 @@ async fn test_https_forced_version() {
         .unwrap();
 
         assert_contains(&lines, test.version_response, test.cli_flag);
-        assert_contains(&lines, &tls_alpn, test.cli_flag);
+        assert_contains_tls_alpn(&lines, test.tls_alpn, test.cli_flag);
     }
 }
 
@@ -557,11 +600,6 @@ async fn test_https_with_remote_tls_cert_issuer() {
         tokio::task::spawn_blocking(move || {
             tracing::info!("run test: {test:?}");
 
-            let tls_alpn = format!(
-                r#"{{"data":["{}"],"id":"APPLICATION_LAYER_PROTOCOL_NEGOTIATION (0x0010)"}}"#,
-                test.tls_alpn
-            );
-
             let lines = utils::RamaService::http(vec![
                 test.cli_flag,
                 "https://localhost:63131?q=1",
@@ -574,7 +612,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
             .unwrap();
 
             assert_contains(&lines, test.version_response, test.cli_flag);
-            assert_contains(&lines, &tls_alpn, test.cli_flag);
+            assert_contains_tls_alpn(&lines, test.tls_alpn, test.cli_flag);
         })
         .await
         .unwrap();
