@@ -1,5 +1,6 @@
-use crate::str::arcstr::ArcStr;
-use std::{fmt, ops::Deref};
+use core::{fmt, ops::Deref};
+
+use crate::{std::string::String, str::arcstr::ArcStr};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A read-only string which can never be empty.
@@ -119,7 +120,7 @@ impl TryFrom<&str> for NonEmptyStr {
     }
 }
 
-impl std::str::FromStr for NonEmptyStr {
+impl core::str::FromStr for NonEmptyStr {
     type Err = EmptyStrErr;
 
     #[inline(always)]

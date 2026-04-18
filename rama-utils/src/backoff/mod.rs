@@ -44,7 +44,7 @@ impl<T: Backoff> Backoff for Option<T> {
     async fn reset(&self) {}
 }
 
-impl<T: Backoff> Backoff for std::sync::Arc<T> {
+impl<T: Backoff> Backoff for crate::std::Arc<T> {
     #[inline]
     fn next_backoff(&self) -> impl Future<Output = bool> + Send + '_ {
         (**self).next_backoff()

@@ -1,8 +1,8 @@
 use super::ArcStr;
 use super::Substr;
 
+use core::marker::PhantomData;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use std::marker::PhantomData;
 
 impl Serialize for ArcStr {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
@@ -35,14 +35,14 @@ where
     for<'a> &'a str: Into<StrTy>,
 {
     type Value = StrTy;
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("a string")
     }
     fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
         Ok(v.into())
     }
     fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
-        match std::str::from_utf8(v) {
+        match core::str::from_utf8(v) {
             Ok(s) => Ok(s.into()),
             Err(_) => Err(de::Error::invalid_value(de::Unexpected::Bytes(v), &self)),
         }

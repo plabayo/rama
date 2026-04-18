@@ -22,7 +22,7 @@ where
 {
     if let Some(kw) = b {
         if a.is_some() {
-            let kw_name = std::any::type_name::<K>().split("::").last().unwrap();
+            let kw_name = core::any::type_name::<K>().split("::").last().unwrap();
             let msg = format!("`{kw_name}` specified more than once");
             return Err(syn::Error::new_spanned(kw, msg));
         }

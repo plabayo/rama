@@ -6,18 +6,19 @@
 // For macros
     clippy::redundant_slicing,
 )]
+use core::alloc::Layout;
+use core::mem::{MaybeUninit, align_of, size_of};
+use core::ptr::NonNull;
+#[cfg(not(all(loom, test)))]
+pub(crate) use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(all(loom, test))]
 pub(crate) use loom::sync::atomic::{AtomicUsize, Ordering};
 use smol_str::SmolStr;
-use std::alloc::Layout;
-use std::mem::{MaybeUninit, align_of, size_of};
-use std::ptr::NonNull;
-#[cfg(not(all(loom, test)))]
-pub(crate) use std::sync::atomic::{AtomicUsize, Ordering};
 
-use std::borrow::Cow;
-use std::boxed::Box;
-use std::string::String;
+use crate::std::borrow::Cow;
+use crate::std::borrow::ToOwned as _;
+use crate::std::boxed::Box;
+use crate::std::string::String;
 
 use super::Substr;
 
@@ -185,7 +186,7 @@ impl ArcStr {
     ///
     /// ```
     /// # use rama_utils::str::arcstr::ArcStr;
-    /// # use std::mem::MaybeUninit;
+    /// # use core::mem::MaybeUninit;
     /// let arcstr = unsafe {
     ///     ArcStr::try_init_with_unchecked(10, |s: &mut [MaybeUninit<u8>]| {
     ///         s.fill(MaybeUninit::new(b'a'));
@@ -224,7 +225,7 @@ impl ArcStr {
     ///
     /// ```
     /// # use rama_utils::str::arcstr::ArcStr;
-    /// # use std::mem::MaybeUninit;
+    /// # use core::mem::MaybeUninit;
     /// let arcstr = unsafe {
     ///     ArcStr::init_with_unchecked(10, |s: &mut [MaybeUninit<u8>]| {
     ///         s.fill(MaybeUninit::new(b'a'));
@@ -241,7 +242,7 @@ impl ArcStr {
         match unsafe { ThinInner::try_allocate_with(n, false, AllocInit::Uninit, initializer) } {
             Ok(inner) => Self(inner),
             Err(None) => panic!("capacity overflow"),
-            Err(Some(layout)) => std::alloc::handle_alloc_error(layout),
+            Err(Some(layout)) => crate::std::alloc::handle_alloc_error(layout),
         }
     }
 
@@ -272,19 +273,19 @@ impl ArcStr {
     /// assert_eq!(s, "01234");
     /// ```
     #[inline]
-    pub fn init_with<F>(n: usize, initializer: F) -> Result<Self, std::str::Utf8Error>
+    pub fn init_with<F>(n: usize, initializer: F) -> Result<Self, core::str::Utf8Error>
     where
         F: FnOnce(&mut [u8]),
     {
-        let mut failed = None::<std::str::Utf8Error>;
+        let mut failed = None::<core::str::Utf8Error>;
         let wrapper = |zeroed_slice: &mut [MaybeUninit<u8>]| {
             debug_assert_eq!(n, zeroed_slice.len());
             // Safety: we pass `AllocInit::Zero`, so this is actually initialized
             let slice = unsafe {
-                std::slice::from_raw_parts_mut(zeroed_slice.as_mut_ptr().cast::<u8>(), n)
+                core::slice::from_raw_parts_mut(zeroed_slice.as_mut_ptr().cast::<u8>(), n)
             };
             initializer(slice);
-            if let Err(e) = std::str::from_utf8(slice) {
+            if let Err(e) = core::str::from_utf8(slice) {
                 failed = Some(e);
             }
         };
@@ -299,7 +300,7 @@ impl ArcStr {
                 }
             }
             Err(None) => panic!("capacity overflow"),
-            Err(Some(layout)) => std::alloc::handle_alloc_error(layout),
+            Err(Some(layout)) => crate::std::alloc::handle_alloc_error(layout),
         }
     }
 
@@ -357,7 +358,7 @@ impl ArcStr {
         self.len() == 0
     }
 
-    /// Convert us to a `std::string::String`.
+    /// Convert us to a `core::string::String`.
     ///
     /// This is provided as an inherent method to avoid needing to route through
     /// the `Display` machinery, but is equivalent to `ToString::to_string`.
@@ -392,8 +393,8 @@ impl ArcStr {
         let p = self.0.as_ptr();
         unsafe {
             let data = p.cast::<u8>().add(OFFSET_DATA);
-            debug_assert_eq!(std::ptr::addr_of!((*p).data).cast::<u8>(), data);
-            std::slice::from_raw_parts(data, len)
+            debug_assert_eq!(core::ptr::addr_of!((*p).data).cast::<u8>(), data);
+            core::slice::from_raw_parts(data, len)
         }
     }
 
@@ -418,7 +419,7 @@ impl ArcStr {
     pub fn into_raw(this: Self) -> NonNull<()> {
         let p = this.0;
         #[allow(clippy::mem_forget)]
-        std::mem::forget(this);
+        core::mem::forget(this);
         p.cast()
     }
 
@@ -476,7 +477,7 @@ impl ArcStr {
     #[inline]
     #[must_use]
     pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
-        std::ptr::eq(lhs.0.as_ptr(), rhs.0.as_ptr())
+        core::ptr::eq(lhs.0.as_ptr(), rhs.0.as_ptr())
     }
 
     /// Returns the number of references that exist to this `ArcStr`. If this is
@@ -600,12 +601,12 @@ impl ArcStr {
         if is_unique {
             // SAFETY: inner pointer is per contract always valid
             unsafe {
-                std::ptr::addr_of_mut!((*this.0.as_ptr()).count_flag).write(AtomicUsize::new(
+                core::ptr::addr_of_mut!((*this.0.as_ptr()).count_flag).write(AtomicUsize::new(
                     PackedFlagUint::new_raw(true, 1).encoded_value(),
                 ));
             }
             // SAFETY: inner pointer is per contract always valid
-            let lenp = unsafe { std::ptr::addr_of_mut!((*this.0.as_ptr()).len_flag) };
+            let lenp = unsafe { core::ptr::addr_of_mut!((*this.0.as_ptr()).len_flag) };
             // SAFETY: packed flag is per contract always valid,
             // so reading is fine
             debug_assert!(!unsafe { lenp.read() }.flag_part());
@@ -615,7 +616,7 @@ impl ArcStr {
         } else {
             let flag_bit = PackedFlagUint::new_raw(true, 0).encoded_value();
             // SAFETY: inner pointer is per contract always valid
-            let atomic_count_flag = unsafe { &*std::ptr::addr_of!((*this.0.as_ptr()).count_flag) };
+            let atomic_count_flag = unsafe { &*core::ptr::addr_of!((*this.0.as_ptr()).count_flag) };
             atomic_count_flag.fetch_or(flag_bit, Ordering::Release);
         }
     }
@@ -632,8 +633,8 @@ impl ArcStr {
         unsafe {
             let p: *const ThinInner = this.0.as_ptr();
             let data = p.cast::<u8>().add(OFFSET_DATA);
-            debug_assert_eq!(std::ptr::addr_of!((*p).data).cast::<u8>(), data,);
-            std::ptr::slice_from_raw_parts(data, len)
+            debug_assert_eq!(core::ptr::addr_of!((*p).data).cast::<u8>(), data,);
+            core::ptr::slice_from_raw_parts(data, len)
         }
     }
 
@@ -765,7 +766,7 @@ impl ArcStr {
     /// - These can be conveniently verified in advance using
     ///   `self.get(start..end).is_some()` if needed.
     #[inline]
-    pub fn substr(&self, range: impl std::ops::RangeBounds<usize>) -> Substr {
+    pub fn substr(&self, range: impl core::ops::RangeBounds<usize>) -> Substr {
         Substr::from_parts(self, range)
     }
 
@@ -958,7 +959,7 @@ impl ArcStr {
 
             // Copy `source` into the allocated string `n` times
             while data_ptr < data_end {
-                std::ptr::copy_nonoverlapping(source.as_ptr(), data_ptr, source.len());
+                core::ptr::copy_nonoverlapping(source.as_ptr(), data_ptr, source.len());
                 data_ptr = data_ptr.add(source.len());
             }
         }
@@ -1180,7 +1181,7 @@ impl ThinInner {
         match Self::try_allocate(data, initially_static) {
             Ok(v) => v,
             Err(None) => alloc_overflow(),
-            Err(Some(layout)) => std::alloc::handle_alloc_error(layout),
+            Err(Some(layout)) => crate::std::alloc::handle_alloc_error(layout),
         }
     }
 
@@ -1209,8 +1210,8 @@ impl ThinInner {
         debug_assert!(Layout::from_size_align(capacity + OFFSET_DATA, ALIGN).is_ok());
         let layout = unsafe { Layout::from_size_align_unchecked(capacity + OFFSET_DATA, ALIGN) };
         let ptr = match init_how {
-            AllocInit::Uninit => unsafe { std::alloc::alloc(layout) as *mut Self },
-            AllocInit::Zero => unsafe { std::alloc::alloc_zeroed(layout) as *mut Self },
+            AllocInit::Uninit => unsafe { crate::std::alloc::alloc(layout) as *mut Self },
+            AllocInit::Zero => unsafe { crate::std::alloc::alloc_zeroed(layout) as *mut Self },
         };
         if ptr.is_null() {
             return Err(Some(layout));
@@ -1224,11 +1225,11 @@ impl ThinInner {
         debug_assert_eq!(len_flag.flag_part(), initially_static);
 
         unsafe {
-            std::ptr::addr_of_mut!((*ptr).len_flag).write(len_flag);
+            core::ptr::addr_of_mut!((*ptr).len_flag).write(len_flag);
 
             let initial_count_flag = PackedFlagUint::new_raw(initially_static, 1);
             let count_flag: AtomicUsize = AtomicUsize::new(initial_count_flag.encoded_value());
-            std::ptr::addr_of_mut!((*ptr).count_flag).write(count_flag);
+            core::ptr::addr_of_mut!((*ptr).count_flag).write(count_flag);
 
             debug_assert_eq!(
                 (ptr as *const u8).wrapping_add(OFFSET_DATA),
@@ -1253,7 +1254,7 @@ impl ThinInner {
                 // Copy the given string into the allocation
                 |uninit_slice| {
                     debug_assert_eq!(uninit_slice.len(), data.len());
-                    std::ptr::copy_nonoverlapping(
+                    core::ptr::copy_nonoverlapping(
                         data.as_ptr(),
                         uninit_slice.as_mut_ptr().cast::<u8>(),
                         data.len(),
@@ -1271,14 +1272,14 @@ impl ThinInner {
         len: usize,
         initially_static: bool,
         init_style: AllocInit,
-        initializer: impl FnOnce(&mut [std::mem::MaybeUninit<u8>]),
+        initializer: impl FnOnce(&mut [core::mem::MaybeUninit<u8>]),
     ) -> Result<NonNull<Self>, Option<Layout>> {
         // Allocate a enough space to hold the given string
         let this = Self::try_allocate_maybe_uninit(len, initially_static, init_style)?;
 
         // SAFETY: initialised above
         initializer(unsafe {
-            std::slice::from_raw_parts_mut(Self::data_ptr(this).cast::<MaybeUninit<u8>>(), len)
+            core::slice::from_raw_parts_mut(Self::data_ptr(this).cast::<MaybeUninit<u8>>(), len)
         });
 
         Ok(this)
@@ -1304,7 +1305,7 @@ impl ThinInner {
             unsafe { Layout::from_size_align_unchecked(size, align) }
         };
         // SAFETY: valid by mutual conract of ThisInner and the callee
-        unsafe { std::alloc::dealloc(p as *mut _, layout) };
+        unsafe { crate::std::alloc::dealloc(p as *mut _, layout) };
     }
 }
 
@@ -1332,31 +1333,31 @@ impl From<&str> for ArcStr {
 }
 
 impl TryFrom<&[u8]> for ArcStr {
-    type Error = std::str::Utf8Error;
+    type Error = core::str::Utf8Error;
 
     #[inline(always)]
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(value)?;
+        let s = core::str::from_utf8(value)?;
         Ok(s.into())
     }
 }
 
-impl TryFrom<Vec<u8>> for ArcStr {
-    type Error = std::string::FromUtf8Error;
+impl TryFrom<crate::std::vec::Vec<u8>> for ArcStr {
+    type Error = crate::std::string::FromUtf8Error;
 
     #[inline(always)]
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+    fn try_from(value: crate::std::vec::Vec<u8>) -> Result<Self, Self::Error> {
         let s = String::from_utf8(value)?;
         Ok(s.into())
     }
 }
 
-impl TryFrom<&Vec<u8>> for ArcStr {
-    type Error = std::str::Utf8Error;
+impl TryFrom<&crate::std::vec::Vec<u8>> for ArcStr {
+    type Error = core::str::Utf8Error;
 
     #[inline(always)]
-    fn try_from(value: &Vec<u8>) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(value)?;
+    fn try_from(value: &crate::std::vec::Vec<u8>) -> Result<Self, Self::Error> {
+        let s = core::str::from_utf8(value)?;
         Ok(s.into())
     }
 }
@@ -1375,11 +1376,11 @@ impl From<&SmolStr> for ArcStr {
     }
 }
 
-impl std::ops::Deref for ArcStr {
+impl core::ops::Deref for ArcStr {
     type Target = str;
     #[inline]
     fn deref(&self) -> &str {
-        unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
+        unsafe { core::str::from_utf8_unchecked(self.as_bytes()) }
     }
 }
 
@@ -1417,27 +1418,27 @@ impl From<ArcStr> for Box<str> {
         s.as_str().into()
     }
 }
-impl From<ArcStr> for std::rc::Rc<str> {
+impl From<ArcStr> for crate::std::rc::Rc<str> {
     #[inline]
     fn from(s: ArcStr) -> Self {
         s.as_str().into()
     }
 }
-impl From<ArcStr> for std::sync::Arc<str> {
+impl From<ArcStr> for crate::std::Arc<str> {
     #[inline]
     fn from(s: ArcStr) -> Self {
         s.as_str().into()
     }
 }
-impl From<std::rc::Rc<str>> for ArcStr {
+impl From<crate::std::rc::Rc<str>> for ArcStr {
     #[inline]
-    fn from(s: std::rc::Rc<str>) -> Self {
+    fn from(s: crate::std::rc::Rc<str>) -> Self {
         Self::from(&*s)
     }
 }
-impl From<std::sync::Arc<str>> for ArcStr {
+impl From<crate::std::Arc<str>> for ArcStr {
     #[inline]
-    fn from(s: std::sync::Arc<str>) -> Self {
+    fn from(s: crate::std::Arc<str>) -> Self {
         Self::from(&*s)
     }
 }
@@ -1478,17 +1479,17 @@ impl From<&Self> for ArcStr {
     }
 }
 
-impl std::fmt::Debug for ArcStr {
+impl core::fmt::Debug for ArcStr {
     #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(self.as_str(), f)
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(self.as_str(), f)
     }
 }
 
-impl std::fmt::Display for ArcStr {
+impl core::fmt::Display for ArcStr {
     #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self.as_str(), f)
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(self.as_str(), f)
     }
 }
 
@@ -1531,37 +1532,37 @@ impl_peq! {
     (ArcStr, String),
     (ArcStr, Cow<'a, str>),
     (ArcStr, Box<str>),
-    (ArcStr, std::sync::Arc<str>),
-    (ArcStr, std::rc::Rc<str>),
-    (ArcStr, std::sync::Arc<String>),
-    (ArcStr, std::rc::Rc<String>),
+    (ArcStr, crate::std::Arc<str>),
+    (ArcStr, crate::std::rc::Rc<str>),
+    (ArcStr, crate::std::Arc<String>),
+    (ArcStr, crate::std::rc::Rc<String>),
 }
 
 impl PartialOrd for ArcStr {
     #[inline]
     #[allow(clippy::non_canonical_partial_ord_impl)]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for ArcStr {
     #[inline]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.as_str().cmp(other.as_str())
     }
 }
 
-impl std::hash::Hash for ArcStr {
+impl core::hash::Hash for ArcStr {
     #[inline]
-    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.as_str().hash(h)
     }
 }
 
 macro_rules! impl_index {
     ($($IdxT:ty,)*) => {$(
-        impl std::ops::Index<$IdxT> for ArcStr {
+        impl core::ops::Index<$IdxT> for ArcStr {
             type Output = str;
             #[inline]
             fn index(&self, i: $IdxT) -> &Self::Output {
@@ -1572,12 +1573,12 @@ macro_rules! impl_index {
 }
 
 impl_index! {
-    std::ops::RangeFull,
-    std::ops::Range<usize>,
-    std::ops::RangeFrom<usize>,
-    std::ops::RangeTo<usize>,
-    std::ops::RangeInclusive<usize>,
-    std::ops::RangeToInclusive<usize>,
+    core::ops::RangeFull,
+    core::ops::Range<usize>,
+    core::ops::RangeFrom<usize>,
+    core::ops::RangeTo<usize>,
+    core::ops::RangeInclusive<usize>,
+    core::ops::RangeToInclusive<usize>,
 }
 
 impl AsRef<str> for ArcStr {
@@ -1594,15 +1595,15 @@ impl AsRef<[u8]> for ArcStr {
     }
 }
 
-impl std::borrow::Borrow<str> for ArcStr {
+impl core::borrow::Borrow<str> for ArcStr {
     #[inline]
     fn borrow(&self) -> &str {
         self
     }
 }
 
-impl std::str::FromStr for ArcStr {
-    type Err = std::convert::Infallible;
+impl core::str::FromStr for ArcStr {
+    type Err = core::convert::Infallible;
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(Self::from(s))
@@ -1616,39 +1617,39 @@ mod test {
     fn sasi_layout_check<Buf>() {
         assert!(align_of::<StaticArcStrInner<Buf>>() >= 8);
         assert_eq!(
-            std::mem::offset_of!(StaticArcStrInner<Buf>, count_flag),
+            core::mem::offset_of!(StaticArcStrInner<Buf>, count_flag),
             OFFSET_COUNTFLAGS
         );
         assert_eq!(
-            std::mem::offset_of!(StaticArcStrInner<Buf>, len_flag),
+            core::mem::offset_of!(StaticArcStrInner<Buf>, len_flag),
             OFFSET_LENFLAGS
         );
         assert_eq!(
-            std::mem::offset_of!(StaticArcStrInner<Buf>, data),
+            core::mem::offset_of!(StaticArcStrInner<Buf>, data),
             OFFSET_DATA
         );
         assert_eq!(
-            std::mem::offset_of!(ThinInner, count_flag),
-            std::mem::offset_of!(StaticArcStrInner::<Buf>, count_flag),
+            core::mem::offset_of!(ThinInner, count_flag),
+            core::mem::offset_of!(StaticArcStrInner::<Buf>, count_flag),
         );
         assert_eq!(
-            std::mem::offset_of!(ThinInner, len_flag),
-            std::mem::offset_of!(StaticArcStrInner::<Buf>, len_flag),
+            core::mem::offset_of!(ThinInner, len_flag),
+            core::mem::offset_of!(StaticArcStrInner::<Buf>, len_flag),
         );
         assert_eq!(
-            std::mem::offset_of!(ThinInner, data),
-            std::mem::offset_of!(StaticArcStrInner::<Buf>, data),
+            core::mem::offset_of!(ThinInner, data),
+            core::mem::offset_of!(StaticArcStrInner::<Buf>, data),
         );
     }
 
     #[test]
     fn verify_type_pun_offsets_sasi_big_bufs() {
         assert_eq!(
-            std::mem::offset_of!(ThinInner, count_flag),
+            core::mem::offset_of!(ThinInner, count_flag),
             OFFSET_COUNTFLAGS,
         );
-        assert_eq!(std::mem::offset_of!(ThinInner, len_flag), OFFSET_LENFLAGS);
-        assert_eq!(std::mem::offset_of!(ThinInner, data), OFFSET_DATA);
+        assert_eq!(core::mem::offset_of!(ThinInner, len_flag), OFFSET_LENFLAGS);
+        assert_eq!(core::mem::offset_of!(ThinInner, data), OFFSET_DATA);
 
         assert!(align_of::<ThinInner>() >= 8);
 

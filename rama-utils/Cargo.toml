@@ -17,16 +17,27 @@ allowed = []
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+default = ["std"]
+std = [
+    "rama-macros/std",
+    "smallvec/write",
+    "smol_str/std",
+    "dep:tokio",
+    "serde/std",
+    "dep:parking_lot",
+]
+
 [dependencies]
 const_format = { workspace = true }
-parking_lot = { workspace = true }
+parking_lot = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-macros = { workspace = true }
-regex = { workspace = true }
+regex = { workspace = true, features = ["perf", "unicode"] }
 serde = { workspace = true, features = ["derive"] }
-smallvec = { workspace = true, features = ["write", "serde", "const_generics", "const_new"] }
+smallvec = { workspace = true, features = ["serde", "const_generics", "const_new"] }
 smol_str = { workspace = true, features = ["serde"] }
-tokio = { workspace = true, features = ["time", "macros"] }
+tokio = { workspace = true, features = ["time", "macros"], optional = true }
 wildcard = { workspace = true }
 
 [dev-dependencies]

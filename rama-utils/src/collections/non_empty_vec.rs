@@ -8,11 +8,11 @@ use serde::{
     ser::{SerializeSeq, Serializer},
 };
 
-use std::convert::TryFrom;
-use std::iter;
-use std::mem;
-use std::vec::{self, Vec};
-use std::{cmp::Ordering, num::NonZeroUsize};
+use crate::std::vec::{self, Vec};
+use core::convert::TryFrom;
+use core::iter;
+use core::mem;
+use core::{cmp::Ordering, num::NonZeroUsize};
 
 /// Like the `vec!` macro, but enforces at least one argument. A nice short-hand
 /// for constructing [`NonEmptyVec`] values.
@@ -162,7 +162,7 @@ impl<T> ExactSizeIterator for NonEmptyVecIter<'_, T> {
     }
 }
 
-impl<T> std::iter::FusedIterator for NonEmptyVecIter<'_, T> {}
+impl<T> core::iter::FusedIterator for NonEmptyVecIter<'_, T> {}
 
 impl<T> NonEmptyVec<T> {
     /// Alias for [`NonEmptyVec::singleton`].
@@ -1051,14 +1051,14 @@ impl<T> IntoIterator for NonEmptyVec<T> {
 
 impl<'a, T> IntoIterator for &'a NonEmptyVec<T> {
     type Item = &'a T;
-    type IntoIter = iter::Chain<iter::Once<&'a T>, std::slice::Iter<'a, T>>;
+    type IntoIter = iter::Chain<iter::Once<&'a T>, core::slice::Iter<'a, T>>;
 
     fn into_iter(self) -> Self::IntoIter {
         iter::once(&self.head).chain(self.tail.iter())
     }
 }
 
-impl<T> std::ops::Index<usize> for NonEmptyVec<T> {
+impl<T> core::ops::Index<usize> for NonEmptyVec<T> {
     type Output = T;
 
     /// ```
@@ -1079,7 +1079,7 @@ impl<T> std::ops::Index<usize> for NonEmptyVec<T> {
     }
 }
 
-impl<T> std::ops::IndexMut<usize> for NonEmptyVec<T> {
+impl<T> core::ops::IndexMut<usize> for NonEmptyVec<T> {
     fn index_mut(&mut self, index: usize) -> &mut T {
         if index > 0 {
             &mut self.tail[index - 1]

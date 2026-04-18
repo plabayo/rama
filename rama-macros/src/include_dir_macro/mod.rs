@@ -125,9 +125,9 @@ fn metadata(
 
     Some(quote! {
         #root_crate::include_dir::Metadata::new(
-            std::time::Duration::from_secs(#accessed),
-            std::time::Duration::from_secs(#created),
-            std::time::Duration::from_secs(#modified),
+            core::time::Duration::from_secs(#accessed),
+            core::time::Duration::from_secs(#created),
+            core::time::Duration::from_secs(#modified),
         )
     })
 }

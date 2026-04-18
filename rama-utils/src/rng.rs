@@ -1,12 +1,11 @@
 //! [PRNG] utilities for middleware.
 //!
 //! This module provides a generic [`Rng`] trait and a [`HasherRng`] that
-//! implements the trait based on [`RandomState`] or any other [`Hasher`].
+//! implements the trait based on any [`Hasher`].
 //!
 //! [PRNG]: https://en.wikipedia.org/wiki/Pseudorandom_number_generator
 
-use std::{
-    collections::hash_map::RandomState,
+use core::{
     hash::{BuildHasher, Hasher},
     ops::Range,
 };
@@ -22,7 +21,7 @@ pub trait Rng: Send + Sync + 'static {
     fn next_f64(&mut self) -> f64 {
         // Borrowed from:
         // https://github.com/rust-random/rand/blob/master/src/distributions/float.rs#L106
-        let float_size = std::mem::size_of::<f64>() as u32 * 8;
+        let float_size = core::mem::size_of::<f64>() as u32 * 8;
         let precision = 52 + 1;
         let scale = 1.0 / ((1u64 << precision) as f64);
 
@@ -53,7 +52,7 @@ pub trait Rng: Send + Sync + 'static {
     }
 }
 
-impl<R: Rng + ?Sized> Rng for Box<R> {
+impl<R: Rng + ?Sized> Rng for crate::std::boxed::Box<R> {
     fn next_u64(&mut self) -> u64 {
         (**self).next_u64()
     }
@@ -62,17 +61,16 @@ impl<R: Rng + ?Sized> Rng for Box<R> {
 /// A [`Rng`] implementation that uses a [`Hasher`] to generate the random
 /// values. The implementation uses an internal counter to pass to the hasher
 /// for each iteration of [`Rng::next_u64`].
-///
-/// # Default
-///
-/// This hasher has a default type of [`RandomState`] which just uses the
-/// libstd method of getting a random u64.
 #[derive(Clone, Debug)]
-pub struct HasherRng<H = RandomState> {
+pub struct HasherRng<
+    #[cfg(feature = "std")] H = std::hash::RandomState,
+    #[cfg(not(feature = "std"))] H,
+> {
     hasher: H,
     counter: u64,
 }
 
+#[cfg(feature = "std")]
 impl HasherRng {
     /// Create a new default [`HasherRng`].
     #[must_use]
@@ -81,9 +79,10 @@ impl HasherRng {
     }
 }
 
+#[cfg(feature = "std")]
 impl Default for HasherRng {
     fn default() -> Self {
-        Self::with_hasher(RandomState::default())
+        Self::with_hasher(std::hash::RandomState::default())
     }
 }
 

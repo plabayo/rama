@@ -9,18 +9,22 @@
 //! > Credits to Simon Sapin (@SimonSapin)
 
 mod lossy;
-mod read;
 
 #[cfg(test)]
 mod tests;
 
 pub use lossy::LossyDecoder;
+
+#[cfg(feature = "std")]
+mod read;
+
+#[cfg(feature = "std")]
 pub use read::{BufReadDecoder, BufReadDecoderError};
 
-use std::cmp;
-use std::error::Error;
-use std::fmt;
-use std::str;
+use core::cmp;
+use core::error::Error;
+use core::fmt;
+use core::str;
 
 /// The replacement character, U+FFFD. In lossy decoding, insert it for every decoding error.
 pub const REPLACEMENT_CHARACTER: &str = "\u{FFFD}";

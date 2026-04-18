@@ -578,6 +578,20 @@ macro_rules! __transparent_proxy_ffi_emit {
         #[unsafe(no_mangle)]
         /// # Safety
         ///
+        /// `session` must be valid.
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_cancel(
+            session: *mut RamaTransparentProxyTcpSession,
+        ) {
+            if session.is_null() {
+                return;
+            }
+
+            unsafe { (*session).cancel() };
+        }
+
+        #[unsafe(no_mangle)]
+        /// # Safety
+        ///
         /// `engine` must be valid and `meta` must be either null or point to a valid
         /// `RamaTransparentProxyFlowMeta`.
         pub unsafe extern "C" fn rama_transparent_proxy_engine_new_udp_session(

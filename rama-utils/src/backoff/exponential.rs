@@ -1,10 +1,10 @@
-use parking_lot::Mutex;
-use std::fmt::{self, Display};
-use std::time::Duration;
-use tokio::time;
+use core::fmt::{self, Display};
+use core::time::Duration;
 
 use super::Backoff;
 use crate::rng::{HasherRng, Rng};
+
+use parking_lot::Mutex;
 
 /// A jittered [exponential backoff] strategy.
 ///
@@ -15,8 +15,8 @@ use crate::rng::{HasherRng, Rng};
 /// [exponential backoff]: https://en.wikipedia.org/wiki/Exponential_backoff
 /// [random jitter]: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
 pub struct ExponentialBackoff<F, R = HasherRng> {
-    min: time::Duration,
-    max: time::Duration,
+    min: Duration,
+    max: Duration,
     jitter: f64,
     rng_creator: F,
     state: Mutex<ExponentialBackoffState<R>>,
@@ -98,8 +98,8 @@ where
     /// - `jitter` > `100.0`
     /// - `jitter` is NaN
     pub fn new(
-        min: time::Duration,
-        max: time::Duration,
+        min: Duration,
+        max: Duration,
         jitter: f64,
         rng_creator: F,
     ) -> Result<Self, InvalidBackoff> {
@@ -110,8 +110,8 @@ where
 
 impl<F, R> ExponentialBackoff<F, R> {
     fn new_inner(
-        min: time::Duration,
-        max: time::Duration,
+        min: Duration,
+        max: Duration,
         jitter: f64,
         rng_creator: F,
         rng: R,
@@ -119,7 +119,7 @@ impl<F, R> ExponentialBackoff<F, R> {
         if min > max {
             return Err(InvalidBackoff("maximum must not be less than minimum"));
         }
-        if max == time::Duration::from_millis(0) {
+        if max == Duration::from_millis(0) {
             return Err(InvalidBackoff("maximum must be non-zero"));
         }
         if jitter < 0.0 {
@@ -142,13 +142,13 @@ impl<F, R> ExponentialBackoff<F, R> {
 }
 
 impl<F, R: Rng> ExponentialBackoff<F, R> {
-    fn base(&self) -> time::Duration {
+    fn base(&self) -> Duration {
         debug_assert!(
             self.min <= self.max,
             "maximum backoff must not be less than minimum backoff"
         );
         debug_assert!(
-            self.max > time::Duration::from_millis(0),
+            self.max > Duration::from_millis(0),
             "Maximum backoff must be non-zero"
         );
         self.min
@@ -159,7 +159,7 @@ impl<F, R: Rng> ExponentialBackoff<F, R> {
 
     /// Returns a random, uniform duration on `[0, base*self.jitter]` no greater
     /// than `self.max`.
-    fn jitter(&self, base: time::Duration) -> Option<time::Duration> {
+    fn jitter(&self, base: Duration) -> Option<Duration> {
         if self.jitter <= 0.0 {
             None
         } else {
@@ -172,7 +172,7 @@ impl<F, R: Rng> ExponentialBackoff<F, R> {
             let secs = (base.as_secs() as f64) * rand_jitter;
             let nanos = (base.subsec_nanos() as f64) * rand_jitter;
             let remaining = self.max - base;
-            let result = time::Duration::new(secs as u64, nanos as u32);
+            let result = Duration::new(secs as u64, nanos as u32);
             if remaining.is_zero() || result.is_zero() {
                 None
             } else {
@@ -227,12 +227,12 @@ impl Default for ExponentialBackoff<(), HasherRng> {
 pub struct InvalidBackoff(&'static str);
 
 impl Display for InvalidBackoff {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "invalid backoff: {}", self.0)
     }
 }
 
-impl std::error::Error for InvalidBackoff {}
+impl core::error::Error for InvalidBackoff {}
 
 #[cfg(test)]
 mod tests {
@@ -273,8 +273,8 @@ mod tests {
 
     #[test]
     fn jitter_must_be_finite() {
-        let min = time::Duration::from_millis(0);
-        let max = time::Duration::from_millis(1);
+        let min = Duration::from_millis(0);
+        let max = Duration::from_millis(1);
         let rng = HasherRng::default();
 
         for n in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
@@ -288,8 +288,8 @@ mod tests {
 
     quickcheck! {
         fn backoff_base_first(min_ms: u64, max_ms: u64) -> TestResult {
-            let min = time::Duration::from_millis(min_ms);
-            let max = time::Duration::from_millis(max_ms);
+            let min = Duration::from_millis(min_ms);
+            let max = Duration::from_millis(max_ms);
             let Ok(backoff) = ExponentialBackoff::new(min, max, 0.0, HasherRng::default) else {
                 return TestResult::discard();
             };
@@ -299,8 +299,8 @@ mod tests {
         }
 
         fn backoff_base(min_ms: u64, max_ms: u64, iterations: u32) -> TestResult {
-            let min = time::Duration::from_millis(min_ms);
-            let max = time::Duration::from_millis(max_ms);
+            let min = Duration::from_millis(min_ms);
+            let max = Duration::from_millis(max_ms);
             let Ok(backoff) = ExponentialBackoff::new(min, max, 0.0, HasherRng::default) else {
                 return TestResult::discard();
             };
@@ -311,8 +311,8 @@ mod tests {
         }
 
         fn backoff_jitter(base_ms: u64, max_ms: u64, jitter: f64) -> TestResult {
-            let base = time::Duration::from_millis(base_ms);
-            let max = time::Duration::from_millis(max_ms);
+            let base = Duration::from_millis(base_ms);
+            let max = Duration::from_millis(max_ms);
             let Ok(backoff) = ExponentialBackoff::new(base, max, jitter, HasherRng::default) else {
                 return TestResult::discard();
             };

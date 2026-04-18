@@ -20,6 +20,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 [lib]
 proc-macro = true
 
+[features]
+default = ["std"]
+std = []
+
 [dependencies]
 proc-macro-crate = { workspace = true }
 proc-macro2 = { workspace = true }

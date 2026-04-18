@@ -17,6 +17,10 @@ allowed = []
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+default = ["std"]
+std = []
+
 [dependencies]
 
 [dev-dependencies]

@@ -371,6 +371,11 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
           key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}
+      - name: install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler
+          protoc --version
         # Extra: Loom Tests
       - name: Run Loom tests (rama-utils)
         run: |
