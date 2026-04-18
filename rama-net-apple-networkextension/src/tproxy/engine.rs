@@ -38,6 +38,7 @@ type TcpFlowService = BoxService<TcpFlow, (), Infallible>;
 type UdpFlowService = BoxService<UdpFlow, (), Infallible>;
 type BytesSink = Arc<dyn Fn(Bytes) + Send + Sync + 'static>;
 type ClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
+type DemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
 type TcpFlowServiceFuture =
     Pin<Box<dyn Future<Output = Result<TcpFlowService, BoxError>> + Send + 'static>>;
 type UdpFlowServiceFuture =
@@ -259,14 +260,16 @@ impl TransparentProxyEngine {
         state.running
     }
 
-    pub fn new_tcp_session<F, G>(
+    pub fn new_tcp_session<F, G, H>(
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_bytes: F,
+        on_client_read_demand: H,
         on_server_closed: G,
     ) -> Option<TransparentProxyTcpSession>
     where
         F: Fn(Bytes) + Send + Sync + 'static,
+        H: Fn() + Send + Sync + 'static,
         G: Fn() + Send + Sync + 'static,
     {
         let guard = self.shutdown_guard()?;
@@ -281,6 +284,7 @@ impl TransparentProxyEngine {
 
         let callback_active = Arc::new(Mutex::new(true));
         let user_bytes_sink: BytesSink = Arc::new(on_server_bytes);
+        let user_client_read_demand_sink: DemandSink = Arc::new(on_client_read_demand);
         let user_closed_sink: ClosedSink = Arc::new(on_server_closed);
         let bytes_sink = {
             let callback_active = callback_active.clone();
@@ -304,6 +308,17 @@ impl TransparentProxyEngine {
                 user_closed_sink();
             }) as ClosedSink
         };
+        let client_read_demand_sink = {
+            let callback_active = callback_active.clone();
+            let user_client_read_demand_sink = user_client_read_demand_sink.clone();
+            Arc::new(move || {
+                let active = callback_active.lock();
+                if !*active {
+                    return;
+                }
+                user_client_read_demand_sink();
+            }) as DemandSink
+        };
         let remote_endpoint = meta.remote_endpoint.clone();
 
         tracing::debug!(protocol = ?meta.protocol, "new tcp session");
@@ -315,6 +330,7 @@ impl TransparentProxyEngine {
             client_rx,
             eof_rx,
             bytes_sink,
+            client_read_demand_sink,
             closed_sink,
         ));
 
@@ -551,10 +567,15 @@ async fn run_tcp_bridge(
     mut client_rx: mpsc::UnboundedReceiver<Bytes>,
     mut eof_rx: watch::Receiver<bool>,
     on_server_bytes: BytesSink,
+    on_client_read_demand: DemandSink,
     on_server_closed: ClosedSink,
 ) {
     let (mut read_half, mut write_half) = tokio::io::split(internal);
     let mut buf = vec![0u8; 16 * 1024];
+    let mut eof_seen = false;
+
+    // Ask Swift to arm one `readData` to bootstrap client->server forwarding.
+    on_client_read_demand();
 
     loop {
         tokio::select! {
@@ -569,14 +590,19 @@ async fn run_tcp_bridge(
                             }
                             break;
                         }
+                        if !eof_seen {
+                            on_client_read_demand();
+                        }
                     }
                     None => {
+                        eof_seen = true;
                         let _ = write_half.shutdown().await;
                     }
                 }
             }
             _ = eof_rx.changed() => {
                 if *eof_rx.borrow() {
+                    eof_seen = true;
                     let _ = write_half.shutdown().await;
                 }
             }
@@ -642,6 +668,7 @@ mod tests {
             TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
             |_| {},
             || {},
+            || {},
         );
         assert!(session.is_none());
     }
@@ -660,6 +687,7 @@ mod tests {
         let session = engine.new_tcp_session(
             TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
             |_| {},
+            || {},
             || {},
         );
         assert!(session.is_none());
@@ -696,6 +724,7 @@ mod tests {
                     let _ = notify_tx.send(());
                 },
                 || {},
+                || {},
             )
             .expect("session");
 
@@ -706,6 +735,46 @@ mod tests {
 
         let lock = got.lock();
         assert_eq!(lock.as_slice(), b"pong");
+    }
+
+    #[test]
+    fn tcp_bridge_requests_client_read_demand() {
+        let demand_count = Arc::new(AtomicUsize::new(0));
+        let demand_count_clone = demand_count.clone();
+        let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+        let engine = TransparentProxyEngineBuilder::new()
+            .with_tcp_service_factory(|_ctx| async {
+                Ok(service_fn(|_stream: TcpFlow| async move { Ok(()) }))
+            })
+            .with_runtime(
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap(),
+            )
+            .build();
+
+        engine.start().unwrap();
+        let _session = engine
+            .new_tcp_session(
+                TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+                    .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
+                |_| {},
+                move || {
+                    demand_count_clone.fetch_add(1, Ordering::Relaxed);
+                    let _ = notify_tx.send(());
+                },
+                || {},
+            )
+            .expect("session");
+
+        let _ = notify_rx.recv_timeout(std::time::Duration::from_secs(1));
+        engine.stop(0);
+
+        assert!(
+            demand_count.load(Ordering::Relaxed) >= 1,
+            "expected at least one client-read demand callback"
+        );
     }
 
     #[test]
@@ -789,6 +858,7 @@ mod tests {
                 TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
                     .with_source_app_pid(777),
                 |_| {},
+                || {},
                 || {},
             )
             .expect("session");
@@ -880,6 +950,7 @@ mod tests {
                     move |_bytes| {
                         bytes_count.fetch_add(1, Ordering::Relaxed);
                     },
+                    || {},
                     move || {
                         closed_count.fetch_add(1, Ordering::Relaxed);
                     },
