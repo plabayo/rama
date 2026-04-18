@@ -19,7 +19,9 @@ pub(super) struct Writer {
 
 impl Writer {
     pub(super) async fn write_bytes(&self, b: &[u8]) -> std::io::Result<()> {
-        self.inner.lock().await.write_all(b).await
+        let mut writer = self.inner.lock().await;
+        writer.write_all(b).await?;
+        writer.flush().await
     }
 }
 
