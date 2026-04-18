@@ -211,6 +211,7 @@ typedef struct {
 } RamaTransparentProxyTcpSessionCallbacks;
 
 typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes);
+typedef void (*RamaUdpClientReadDemandFn)(void* context);
 typedef void (*RamaUdpServerClosedFn)(void* context);
 
 /// Callbacks Swift provides for Rust UDP session events.
@@ -219,6 +220,8 @@ typedef struct {
     void* context;
     /// Called when Rust has one datagram to write to client-side UDP flow.
     RamaUdpServerDatagramFn on_server_datagram;
+    /// Called when Rust requests one client-side UDP read (`flow.readDatagrams`).
+    RamaUdpClientReadDemandFn on_client_read_demand;
     /// Called when Rust closes server-side UDP flow.
     RamaUdpServerClosedFn on_server_closed;
 } RamaTransparentProxyUdpSessionCallbacks;

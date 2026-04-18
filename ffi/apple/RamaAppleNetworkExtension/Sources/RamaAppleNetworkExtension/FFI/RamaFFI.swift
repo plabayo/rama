@@ -50,10 +50,16 @@ final class TcpSessionCallbackBox {
 
 final class UdpSessionCallbackBox {
     let onServerDatagram: (Data) -> Void
+    let onClientReadDemand: () -> Void
     let onServerClosed: () -> Void
 
-    init(onServerDatagram: @escaping (Data) -> Void, onServerClosed: @escaping () -> Void) {
+    init(
+        onServerDatagram: @escaping (Data) -> Void,
+        onClientReadDemand: @escaping () -> Void,
+        onServerClosed: @escaping () -> Void
+    ) {
         self.onServerDatagram = onServerDatagram
+        self.onClientReadDemand = onClientReadDemand
         self.onServerClosed = onServerClosed
     }
 }
@@ -192,6 +198,13 @@ private let ramaUdpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPoint
     let box = Unmanaged<UdpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
     box.onServerClosed()
 }
+
+private let ramaUdpOnClientReadDemandCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void =
+    { context in
+        guard let context else { return }
+        let box = Unmanaged<UdpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        box.onClientReadDemand()
+    }
 
 final class RamaTransparentProxyEngineHandle {
     private var enginePtr: OpaquePointer?
@@ -348,6 +361,7 @@ final class RamaTransparentProxyEngineHandle {
     func newUdpSession(
         meta: RamaTransparentProxyFlowMetaBridge,
         onServerDatagram: @escaping (Data) -> Void,
+        onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaUdpSessionHandle? {
         guard let p = enginePtr else { return nil }
@@ -355,11 +369,13 @@ final class RamaTransparentProxyEngineHandle {
         let callbackBox = Unmanaged.passRetained(
             UdpSessionCallbackBox(
                 onServerDatagram: onServerDatagram,
+                onClientReadDemand: onClientReadDemand,
                 onServerClosed: onServerClosed
             ))
         let callbacks = RamaTransparentProxyUdpSessionCallbacks(
             context: callbackBox.toOpaque(),
             on_server_datagram: ramaUdpOnServerDatagramCallback,
+            on_client_read_demand: ramaUdpOnClientReadDemandCallback,
             on_server_closed: ramaUdpOnServerClosedCallback
         )
 
