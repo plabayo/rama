@@ -7,6 +7,7 @@ pub struct DemoProxyConfig {
     pub html_badge_enabled: bool,
     pub html_badge_label: String,
     pub peek_duration_s: f64,
+    pub tcp_connect_timeout_ms: u64,
     pub exclude_domains: Vec<String>,
 }
 
@@ -16,6 +17,7 @@ impl Default for DemoProxyConfig {
             html_badge_enabled: true,
             html_badge_label: "proxied by rama".to_owned(),
             peek_duration_s: 8.,
+            tcp_connect_timeout_ms: 2000,
             exclude_domains: vec![
                 "detectportal.firefox.com".to_owned(),
                 "connectivitycheck.gstatic.com".to_owned(),

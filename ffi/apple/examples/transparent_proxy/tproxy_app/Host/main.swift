@@ -7,6 +7,7 @@ import SystemExtensions
 private struct DemoProxySettings: Equatable {
     var htmlBadgeEnabled = true
     var htmlBadgeLabel = "proxied by rama"
+    var tcpConnectTimeoutMs: Int = 2000
     var excludeDomains = [
         "detectportal.firefox.com",
         "connectivitycheck.gstatic.com",
@@ -561,6 +562,7 @@ final class HostController: NSObject, NSApplicationDelegate {
         let config: [String: Any] = [
             "html_badge_enabled": demoSettings.htmlBadgeEnabled,
             "html_badge_label": demoSettings.htmlBadgeLabel,
+            "tcp_connect_timeout_ms": demoSettings.tcpConnectTimeoutMs,
             "exclude_domains": demoSettings.excludeDomains,
         ]
 
@@ -597,6 +599,11 @@ final class HostController: NSObject, NSApplicationDelegate {
             !htmlBadgeLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             settings.htmlBadgeLabel = htmlBadgeLabel
+        }
+        if let tcpConnectTimeoutMs = object["tcp_connect_timeout_ms"] as? Int,
+            tcpConnectTimeoutMs > 0
+        {
+            settings.tcpConnectTimeoutMs = tcpConnectTimeoutMs
         }
         if let excludeDomains = object["exclude_domains"] as? [String] {
             let domains =

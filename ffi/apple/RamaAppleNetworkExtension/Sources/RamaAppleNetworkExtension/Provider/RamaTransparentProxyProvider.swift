@@ -1039,8 +1039,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             localEndpoint: Self.udpLocalEndpoint(flow: flow)
         )
         if bootMeta.remoteHost != nil, bootMeta.remotePort != 0 {
-            if case .intercept = RamaTransparentProxyEngineHandle.flowAction(meta: bootMeta),
-                let createdSession = engine?.newUdpSession(
+            switch RamaTransparentProxyEngineHandle.flowAction(meta: bootMeta) {
+            case .intercept:
+                if let createdSession = engine?.newUdpSession(
                     meta: bootMeta,
                     onServerDatagram: { data in
                         writer.enqueue(data)
@@ -1051,14 +1052,25 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     onServerClosed: {
                         terminate(nil)
                     }
-                )
-            {
-                stateQueue.async {
-                    activeSession = createdSession
-                    self.stateQueue.async {
-                        self.udpSessions[flowId] = createdSession
+                ) {
+                    stateQueue.async {
+                        activeSession = createdSession
+                        self.stateQueue.async {
+                            self.udpSessions[flowId] = createdSession
+                        }
                     }
+                    return
                 }
+                self.logDebug("failed to create udp session")
+                terminate(nil)
+                return
+            case .passthrough:
+                self.logDebug("udp flow switched to passthrough before interception started; closing flow")
+                terminate(nil)
+                return
+            case .blocked:
+                self.logInfo("udp flow blocked by rust flow policy")
+                self.blockFlow(flow)
                 return
             }
         }

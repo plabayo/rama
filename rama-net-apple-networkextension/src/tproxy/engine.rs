@@ -19,11 +19,13 @@ use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot, watch},
+    time::timeout,
 };
 
 use crate::{TcpFlow, UdpFlow, tproxy::TransparentProxyFlowMeta};
 
 const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
+const DEFAULT_TCP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Default)]
 struct EngineState {
@@ -496,9 +498,23 @@ async fn default_tcp_service(
             .map(Executor::graceful)
             .unwrap_or_default();
 
-        let Ok((egress_stream, _sock_addr)) = default_tcp_connect(extensions, target, exec).await
-        else {
-            tracing::warn!("default tcp connect failed");
+        let connect_result = timeout(
+            DEFAULT_TCP_CONNECT_TIMEOUT,
+            default_tcp_connect(extensions, target.clone(), exec),
+        )
+        .await;
+        let Ok(Ok((egress_stream, _sock_addr))) = connect_result else {
+            match connect_result {
+                Err(_) => tracing::warn!(
+                    timeout_ms = DEFAULT_TCP_CONNECT_TIMEOUT.as_millis(),
+                    remote = %target,
+                    "default tcp connect timed out"
+                ),
+                Ok(Err(err)) => {
+                    tracing::warn!(%err, remote = %target, "default tcp connect failed")
+                }
+                Ok(Ok(_)) => unreachable!(),
+            }
             return Ok(());
         };
 
@@ -588,25 +604,22 @@ async fn run_tcp_bridge(
     loop {
         tokio::select! {
             maybe = client_rx.recv() => {
-                match maybe {
-                    Some(bytes) => {
-                        if let Err(err) = write_half.write_all(&bytes).await {
-                            if is_connection_error(&err) {
-                                tracing::trace!("tcp bridge write_all conn erorr: {err}");
-                            } else {
-                                tracing::debug!("tcp bridge write_all failed: {err}");
-                            }
-                            break;
-                        }
-                        if !eof_seen {
-                            on_client_read_demand();
-                        }
-                    }
-                    None => {
-                        eof_seen = true;
-                        let _ = write_half.shutdown().await;
-                    }
-                }
+                if let Some(bytes) = maybe {
+                     if let Err(err) = write_half.write_all(&bytes).await {
+                         if is_connection_error(&err) {
+                             tracing::trace!("tcp bridge write_all conn erorr: {err}");
+                         } else {
+                             tracing::debug!("tcp bridge write_all failed: {err}");
+                         }
+                         break;
+                     }
+                     if !eof_seen {
+                         on_client_read_demand();
+                     }
+                 } else {
+                     eof_seen = true;
+                     let _ = write_half.shutdown().await;
+                 }
             }
             _ = eof_rx.changed() => {
                 if *eof_rx.borrow() {

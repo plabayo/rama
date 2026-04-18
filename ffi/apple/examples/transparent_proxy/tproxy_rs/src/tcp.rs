@@ -24,7 +24,7 @@ use rama::{
         },
     },
     io::{BridgeIo, Io},
-    layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
+    layer::{ArcLayer, ConsumeErrLayer, HijackLayer, TimeoutLayer},
     net::{
         address::Domain,
         apple::networkextension::{TcpFlow, tproxy::TransparentProxyServiceContext},
@@ -69,6 +69,7 @@ pub(super) async fn try_new_service(
     let tls_mitm_relay_policy =
         TlsMitmRelayPolicyLayer::new().with_excluded_domains(excluded_domains);
     let tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
+    let tcp_connect_timeout_ms = demo_config.tcp_connect_timeout_ms.max(50);
 
     let mitm_svc = new_tcp_service_inner(
         executor.clone(),
@@ -83,6 +84,7 @@ pub(super) async fn try_new_service(
         ConsumeErrLayer::trace_as_debug(),
         IoToProxyBridgeIoLayer::extension_proxy_target_with_connector(tcp_connector_service(
             executor,
+            Duration::from_millis(tcp_connect_timeout_ms),
         )),
     )
         .into_layer(mitm_svc))
@@ -208,14 +210,17 @@ where
 
 fn tcp_connector_service(
     exec: Executor,
+    connect_timeout: Duration,
 ) -> impl ConnectorService<rama::tcp::client::Request, Connection: Io + Unpin> + Clone {
-    TcpConnector::new(exec).with_connector(Arc::new(SocketOptions {
-        keep_alive: Some(true),
-        tcp_keep_alive: Some(TcpKeepAlive {
-            time: Some(TCP_KEEPALIVE_TIME),
-            interval: Some(TCP_KEEPALIVE_INTERVAL),
-            retries: Some(TCP_KEEPALIVE_RETRIES),
-        }),
-        ..SocketOptions::default_tcp()
-    }))
+    TimeoutLayer::new(connect_timeout).into_layer(TcpConnector::new(exec).with_connector(Arc::new(
+        SocketOptions {
+            keep_alive: Some(true),
+            tcp_keep_alive: Some(TcpKeepAlive {
+                time: Some(TCP_KEEPALIVE_TIME),
+                interval: Some(TCP_KEEPALIVE_INTERVAL),
+                retries: Some(TCP_KEEPALIVE_RETRIES),
+            }),
+            ..SocketOptions::default_tcp()
+        },
+    )))
 }
