@@ -1,3 +1,4 @@
+use crate::futures::FutureExt as _;
 use crate::graceful::ShutdownGuard;
 
 /// Future executor that utilises `tokio` threads.
@@ -31,6 +32,35 @@ impl Executor {
         match &self.guard {
             Some(guard) => guard.spawn_task(future),
             None => tokio::spawn(future),
+        }
+    }
+
+    /// Spawn a future on the current executor,
+    /// this is aborted early in case the executor is graceful.
+    ///
+    /// In case this executor is not graceful,
+    /// this function operates the same as [`Self::spawn_task`].
+    ///
+    /// # Note
+    ///
+    /// Ensure that your future is cancellable!
+    pub fn spawn_cancellable_task<F>(&self, future: F) -> tokio::task::JoinHandle<Option<F::Output>>
+    where
+        F: Future<Output: Send + 'static> + Send + 'static,
+    {
+        match &self.guard {
+            Some(guard) => guard.spawn_task_fn(async |guard| {
+                tokio::select! {
+                    _ = guard.cancelled() => {
+                        tracing::trace!("cancellable task is cancelled due to guard");
+                        None
+                    }
+                    output = future => {
+                        Some(output)
+                    }
+                }
+            }),
+            None => tokio::spawn(future.map(Some)),
         }
     }
 

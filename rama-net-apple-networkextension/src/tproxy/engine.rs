@@ -279,6 +279,18 @@ impl TransparentProxyEngine {
             let state = self.state.lock();
             state.tcp_service.clone()
         }?;
+        let parent_guard = guard.clone();
+        let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
+        let flow_shutdown = {
+            let _enter = self.rt.enter();
+            Shutdown::new(async move {
+                tokio::select! {
+                    _ = flow_stop_rx => {}
+                    _ = parent_guard.cancelled() => {}
+                }
+            })
+        };
+        let flow_guard = flow_shutdown.guard();
 
         let (user_stream, internal_stream) = tokio::io::duplex(self.tcp_flow_buffer_size);
         let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
@@ -327,22 +339,22 @@ impl TransparentProxyEngine {
 
         let _enter = self.rt.enter();
 
-        guard.spawn_task(run_tcp_bridge(
+        let bridge_task = flow_guard.spawn_task(run_tcp_bridge(
             internal_stream,
             client_rx,
             eof_rx,
             bytes_sink,
-            client_read_demand_sink,
+            client_read_demand_sink.clone(),
             closed_sink,
         ));
 
-        let stream = TcpFlow::new(user_stream);
+        let stream = TcpFlow::new_with_io_demand(user_stream, Some(client_read_demand_sink.clone()));
         stream.extensions().insert_arc(Arc::new(meta));
         if let Some(remote) = remote_endpoint {
             stream.extensions().insert(ProxyTarget(remote));
         }
 
-        guard.spawn_task_fn(async move |guard| {
+        let service_task = flow_guard.spawn_task_fn(async move |guard| {
             stream.extensions().insert(guard);
             let _ = service.serve(stream).await;
         });
@@ -351,6 +363,10 @@ impl TransparentProxyEngine {
             client_tx: Some(client_tx),
             eof_tx,
             callback_active,
+            saw_client_bytes: false,
+            bridge_task: Some(bridge_task),
+            service_task: Some(service_task),
+            flow_stop_tx: Some(flow_stop_tx),
         })
     }
 
@@ -372,6 +388,18 @@ impl TransparentProxyEngine {
             let state = self.state.lock();
             state.udp_service.clone()
         }?;
+        let parent_guard = guard.clone();
+        let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
+        let flow_shutdown = {
+            let _enter = self.rt.enter();
+            Shutdown::new(async move {
+                tokio::select! {
+                    _ = flow_stop_rx => {}
+                    _ = parent_guard.cancelled() => {}
+                }
+            })
+        };
+        let flow_guard = flow_shutdown.guard();
 
         let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
 
@@ -383,25 +411,29 @@ impl TransparentProxyEngine {
 
         tracing::debug!(protocol = ?meta.protocol, "new udp session");
 
-        let flow = UdpFlow::new(client_rx, datagram_sink);
-        flow.extensions().insert(guard.clone());
+        let flow = UdpFlow::new_with_io_demand(
+            client_rx,
+            datagram_sink,
+            Some(client_read_demand_sink.clone()),
+        );
+        flow.extensions().insert(flow_guard.clone());
         flow.extensions().insert_arc(meta);
         if let Some(remote) = remote_endpoint {
             flow.extensions().insert(ProxyTarget(remote));
         }
 
         let _enter = self.rt.enter();
-        guard.spawn_task_fn(async move |guard| {
+        let service_task = flow_guard.spawn_task_fn(async move |guard| {
             flow.extensions().insert(guard);
             let _ = service.serve(flow).await;
             closed_sink();
         });
 
-        client_read_demand_sink();
-
         Some(TransparentProxyUdpSession {
             client_tx: Some(client_tx),
             on_client_read_demand: client_read_demand_sink,
+            service_task: Some(service_task),
+            flow_stop_tx: Some(flow_stop_tx),
         })
     }
 
@@ -432,6 +464,10 @@ pub struct TransparentProxyTcpSession {
     client_tx: Option<mpsc::UnboundedSender<Bytes>>,
     eof_tx: watch::Sender<bool>,
     callback_active: Arc<Mutex<bool>>,
+    saw_client_bytes: bool,
+    bridge_task: Option<tokio::task::JoinHandle<()>>,
+    service_task: Option<tokio::task::JoinHandle<()>>,
+    flow_stop_tx: Option<oneshot::Sender<()>>,
 }
 
 impl TransparentProxyTcpSession {
@@ -439,12 +475,17 @@ impl TransparentProxyTcpSession {
         if bytes.is_empty() {
             return;
         }
+        self.saw_client_bytes = true;
         if let Some(tx) = self.client_tx.as_mut() {
             let _ = tx.send(Bytes::copy_from_slice(bytes));
         }
     }
 
     pub fn on_client_eof(&mut self) {
+        if !self.saw_client_bytes {
+            self.cancel();
+            return;
+        }
         let _ = self.eof_tx.send(true);
     }
 
@@ -456,12 +497,24 @@ impl TransparentProxyTcpSession {
         }
         self.client_tx = None;
         let _ = self.eof_tx.send(true);
+        // First trigger graceful per-flow cancellation, then hard-abort as fallback.
+        if let Some(tx) = self.flow_stop_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(task) = self.bridge_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.service_task.take() {
+            task.abort();
+        }
     }
 }
 
 pub struct TransparentProxyUdpSession {
     client_tx: Option<mpsc::UnboundedSender<Bytes>>,
     on_client_read_demand: DemandSink,
+    service_task: Option<tokio::task::JoinHandle<()>>,
+    flow_stop_tx: Option<oneshot::Sender<()>>,
 }
 
 impl TransparentProxyUdpSession {
@@ -478,6 +531,12 @@ impl TransparentProxyUdpSession {
 
     pub fn on_client_close(&mut self) {
         self.client_tx = None;
+        if let Some(tx) = self.flow_stop_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(task) = self.service_task.take() {
+            task.abort();
+        }
     }
 }
 
@@ -598,7 +657,8 @@ async fn run_tcp_bridge(
     let mut buf = vec![0u8; 16 * 1024];
     let mut eof_seen = false;
 
-    // Ask Swift to arm one `readData` to bootstrap client->server forwarding.
+    // Arm one initial read demand so ingress EOF/teardown is detected promptly
+    // even before any Rust-side poll on the TCP flow.
     on_client_read_demand();
 
     loop {
@@ -766,7 +826,11 @@ mod tests {
 
         let engine = TransparentProxyEngineBuilder::new()
             .with_tcp_service_factory(|_ctx| async {
-                Ok(service_fn(|_stream: TcpFlow| async move { Ok(()) }))
+                Ok(service_fn(|mut stream: TcpFlow| async move {
+                    let mut buf = [0u8; 1];
+                    let _ = stream.read(&mut buf).await;
+                    Ok(())
+                }))
             })
             .with_runtime(
                 tokio::runtime::Builder::new_current_thread()
@@ -776,7 +840,7 @@ mod tests {
             .build();
 
         engine.start().unwrap();
-        let _session = engine
+        let mut _session = engine
             .new_tcp_session(
                 TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
                     .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
@@ -788,6 +852,9 @@ mod tests {
                 || {},
             )
             .expect("session");
+
+        // Unblock the service-side read.
+        _session.on_client_bytes(b"x");
 
         let _ = notify_rx.recv_timeout(std::time::Duration::from_secs(1));
         engine.stop(0);
@@ -857,12 +924,15 @@ mod tests {
                     .unwrap(),
             )
             .with_udp_service_factory(|_ctx| async {
-                Ok(service_fn(|_flow: UdpFlow| async move { Ok(()) }))
+                Ok(service_fn(|mut flow: UdpFlow| async move {
+                    let _ = flow.recv().await;
+                    Ok(())
+                }))
             })
             .build();
 
         engine.start().unwrap();
-        let _session = engine
+        let mut _session = engine
             .new_udp_session(
                 TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
                     .with_remote_endpoint(HostWithPort::local_ipv4(5353)),
@@ -874,6 +944,8 @@ mod tests {
                 || {},
             )
             .expect("session");
+
+        _session.on_client_datagram(b"x");
 
         let _ = notify_rx.recv_timeout(std::time::Duration::from_secs(1));
         engine.stop(0);

@@ -160,6 +160,18 @@ private func tcpFirstByteTimeoutError(timeoutSeconds: TimeInterval) -> NSError {
     )
 }
 
+private func tcpUpstreamUnavailableError() -> NSError {
+    NSError(
+        domain: "NEAppProxyFlowErrorDomain",
+        code: AppProxyFlowErrorCode.refused.rawValue,
+        userInfo: [
+            NSLocalizedDescriptionKey: "TCP upstream connection failed",
+            NSLocalizedFailureReasonErrorKey:
+                "The transparent proxy could not establish the outbound TCP connection.",
+        ]
+    )
+}
+
 private final class TcpFirstByteWatchdog {
     private let lock = NSLock()
     private var completed = false
@@ -236,6 +248,15 @@ final class TcpFlowOpenGate {
                     }
                 }
             }
+        }
+    }
+
+    func hasOpenedFlow() -> Bool {
+        queue.sync {
+            if case .open = state {
+                return true
+            }
+            return false
         }
     }
 }
@@ -835,8 +856,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 onServerClosed: { [weak self] in
                     firstByteWatchdog.complete()
                     writer.closeWhenDrained { [weak self] in
-                        flow.closeReadWithError(nil)
-                        flow.closeWriteWithError(nil)
+                        if openGate.hasOpenedFlow() {
+                            flow.closeReadWithError(nil)
+                            flow.closeWriteWithError(nil)
+                        } else {
+                            let error = tcpUpstreamUnavailableError()
+                            flow.closeReadWithError(error)
+                            flow.closeWriteWithError(error)
+                        }
                         self?.stateQueue.async {
                             self?.tcpSessions.removeValue(forKey: flowId)
                         }

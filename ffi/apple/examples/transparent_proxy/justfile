@@ -56,7 +56,6 @@ install-tproxy-app-dev-reset-profile:
     rm -rf "$INSTALLED_APP"; \
     ditto "{{tproxy_built_app_dev}}" "$INSTALLED_APP"; \
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dev}}" || true; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dist}}" || true; \
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
     echo "Installed Development system extension bundle at $INSTALLED_SYSEXT"; \
     open -a "$INSTALLED_APP" --args --reset-profile-on-launch
@@ -69,7 +68,6 @@ install-tproxy-app-dist-reset-profile:
     sleep 1; \
     rm -rf "$INSTALLED_APP"; \
     ditto "{{tproxy_built_app_dist}}" "$INSTALLED_APP"; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dev}}" || true; \
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dist}}" || true; \
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
     echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"; \
