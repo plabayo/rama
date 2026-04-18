@@ -9,6 +9,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     ServiceInput,
     extensions::{Extensions, ExtensionsRef},
+    rt::Executor,
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 
@@ -21,6 +22,7 @@ pin_project! {
         #[pin]
         inner: DuplexStream,
         extensions: Extensions,
+        executor: Option<Executor>,
         io_demand_once: Once,
         on_io_demand: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     }
@@ -31,11 +33,13 @@ impl TcpFlow {
     /// Create a new [`TcpFlow`] that triggers one ingress-read demand when Rust starts I/O.
     pub(crate) fn new_with_io_demand(
         inner: DuplexStream,
+        executor: Option<Executor>,
         on_io_demand: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     ) -> Self {
         Self {
             inner,
             extensions: Extensions::new(),
+            executor,
             io_demand_once: Once::new(),
             on_io_demand,
         }
@@ -54,6 +58,7 @@ impl TcpFlow {
         let Self {
             inner: duplex_stream,
             extensions,
+            executor: _,
             io_demand_once: _,
             on_io_demand: _,
         } = self;
@@ -62,6 +67,11 @@ impl TcpFlow {
             input: map(duplex_stream),
             extensions,
         }
+    }
+
+    #[must_use]
+    pub fn executor(&self) -> Option<&Executor> {
+        self.executor.as_ref()
     }
 }
 

@@ -382,8 +382,8 @@ mod tests {
         net::{Ipv4Addr, Ipv6Addr},
     };
 
-    use rama_core::graceful::Shutdown;
     use super::*;
+    use rama_core::graceful::Shutdown;
     use rama_dns::client::{DenyAllDnsResolver, EmptyDnsResolver};
     use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 
@@ -520,7 +520,10 @@ mod tests {
             .expect("expected tcp_connect task to finish quickly after guard cancellation")
             .expect("tcp_connect task panicked");
 
-        assert!(result.is_err(), "expected tcp_connect to fail after guard cancellation");
+        assert!(
+            result.is_err(),
+            "expected tcp_connect to fail after guard cancellation"
+        );
     }
 }
 

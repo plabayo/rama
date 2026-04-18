@@ -279,7 +279,7 @@ impl TransparentProxyEngine {
             let state = self.state.lock();
             state.tcp_service.clone()
         }?;
-        let parent_guard = guard.clone();
+        let parent_guard = guard;
         let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
         let flow_shutdown = {
             let _enter = self.rt.enter();
@@ -348,7 +348,11 @@ impl TransparentProxyEngine {
             closed_sink,
         ));
 
-        let stream = TcpFlow::new_with_io_demand(user_stream, Some(client_read_demand_sink.clone()));
+        let stream = TcpFlow::new_with_io_demand(
+            user_stream,
+            Some(Executor::graceful(flow_guard.clone())),
+            Some(client_read_demand_sink.clone()),
+        );
         stream.extensions().insert_arc(Arc::new(meta));
         if let Some(remote) = remote_endpoint {
             stream.extensions().insert(ProxyTarget(remote));
@@ -388,7 +392,7 @@ impl TransparentProxyEngine {
             let state = self.state.lock();
             state.udp_service.clone()
         }?;
-        let parent_guard = guard.clone();
+        let parent_guard = guard;
         let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
         let flow_shutdown = {
             let _enter = self.rt.enter();

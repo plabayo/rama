@@ -3,7 +3,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use rama::{
     Layer, Service,
     combinators::Either,
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
     extensions::ExtensionsRef,
     http::{
         Request, Response,
@@ -28,16 +28,17 @@ use rama::{
     net::{
         address::Domain,
         apple::networkextension::{TcpFlow, tproxy::TransparentProxyServiceContext},
-        client::ConnectorService,
+        client::{ConnectorService, EstablishedClientConnection},
         http::server::HttpPeekRouter,
-        proxy::IoForwardService,
+        proxy::{IoForwardService, ProxyTarget},
         socket::{SocketOptions, opts::TcpKeepAlive},
         tls::server::PeekTlsClientHelloService,
     },
     proxy::socks5::{proxy::mitm::Socks5MitmRelayService, server::Socks5PeekRouter},
     rt::Executor,
     service::MirrorService,
-    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer},
+    service::service_fn,
+    tcp::client::service::TcpConnector,
     tls::boring::proxy::{TlsMitmRelay, cert_issuer::BoringMitmCertIssuer},
 };
 
@@ -80,14 +81,35 @@ pub(super) async fn try_new_service(
         false,
     );
 
-    Ok((
-        ConsumeErrLayer::trace_as_debug(),
-        IoToProxyBridgeIoLayer::extension_proxy_target_with_connector(tcp_connector_service(
-            executor,
-            Duration::from_millis(tcp_connect_timeout_ms),
-        )),
-    )
-        .into_layer(mitm_svc))
+    let connect_timeout = Duration::from_millis(tcp_connect_timeout_ms);
+    let svc = service_fn(move |ingress: TcpFlow| {
+        let mitm_svc = mitm_svc.clone();
+        async move {
+            let Some(ProxyTarget(egress_addr)) = ingress.extensions().get_ref().cloned() else {
+                return Err(OpaqueError::from_static_str(
+                    "missing ProxyTarget in transparent proxy example tcp service",
+                )
+                .into_box_error());
+            };
+
+            let flow_exec = ingress.executor().cloned().unwrap_or_default();
+            let connector = tcp_connector_service(flow_exec, connect_timeout);
+            let tcp_req = rama::tcp::client::Request::new_with_extensions(
+                egress_addr.clone(),
+                ingress.extensions().clone(),
+            );
+
+            let EstablishedClientConnection { conn: egress, .. } = connector
+                .connect(tcp_req)
+                .await
+                .context("establish tcp connection")
+                .context_field("address", egress_addr)?;
+
+            mitm_svc.serve(BridgeIo(ingress, egress)).await.into_box_error()
+        }
+    });
+
+    Ok(ConsumeErrLayer::trace_as_debug().into_layer(svc))
 }
 
 fn new_tcp_service_inner<Issuer, Ingress, Egress>(
