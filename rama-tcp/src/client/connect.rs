@@ -293,7 +293,7 @@ where
                 let connected = connected.clone();
                 let sem = sem.clone();
 
-                exec.spawn_task(
+                exec.spawn_cancellable_task(
                     tcp_connect_inner_task(index, connector, ip, port, connected, tx, sem)
                         .instrument(trace_span!(
                             "tcp::connect",
@@ -383,6 +383,7 @@ mod tests {
     };
 
     use super::*;
+    use rama_core::graceful::Shutdown;
     use rama_dns::client::{DenyAllDnsResolver, EmptyDnsResolver};
     use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 
@@ -475,6 +476,54 @@ mod tests {
             Some(ext)
         })
         .await;
+    }
+
+    #[derive(Debug, Clone)]
+    struct NeverConnector;
+
+    impl TcpStreamConnector for NeverConnector {
+        type Error = Infallible;
+
+        async fn connect(&self, _addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+            std::future::pending::<Result<TcpStream, Infallible>>().await
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_connect_returns_when_graceful_executor_is_stopped() {
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown = Shutdown::new(async move {
+            let _ = stop_rx.await;
+        });
+        let exec = Executor::graceful(shutdown.guard());
+
+        let connect_task = tokio::spawn(async move {
+            let ext = Extensions::new();
+            tcp_connect(
+                &ext,
+                HostWithPort::example_domain_http(),
+                Ipv4Addr::LOCALHOST,
+                NeverConnector,
+                exec,
+            )
+            .await
+        });
+
+        let _ = stop_tx.send(());
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), shutdown.shutdown())
+            .await
+            .expect("expected graceful shutdown to complete quickly");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), connect_task)
+            .await
+            .expect("expected tcp_connect task to finish quickly after guard cancellation")
+            .expect("tcp_connect task panicked");
+
+        assert!(
+            result.is_err(),
+            "expected tcp_connect to fail after guard cancellation"
+        );
     }
 }
 

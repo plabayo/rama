@@ -29,6 +29,8 @@ unsafe extern "C" fn on_tcp_server_closed(ctx: *mut c_void) {
     ctx.closed.notify_waiters();
 }
 
+unsafe extern "C" fn on_tcp_client_read_demand(_ctx: *mut c_void) {}
+
 pub(crate) struct IngressGuard {
     local_addr: std::net::SocketAddr,
     shutdown: Arc<Notify>,
@@ -160,6 +162,7 @@ async fn serve_one_ingress_connection(
                 bindings::RamaTransparentProxyTcpSessionCallbacks {
                     context: ctx_ptr as *mut c_void,
                     on_server_bytes: Some(on_tcp_server_bytes),
+                    on_client_read_demand: Some(on_tcp_client_read_demand),
                     on_server_closed: Some(on_tcp_server_closed),
                 },
             )

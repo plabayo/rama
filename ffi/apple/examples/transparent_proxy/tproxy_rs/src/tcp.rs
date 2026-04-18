@@ -3,7 +3,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use rama::{
     Layer, Service,
     combinators::Either,
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
     extensions::ExtensionsRef,
     http::{
         Request, Response,
@@ -24,20 +24,21 @@ use rama::{
         },
     },
     io::{BridgeIo, Io},
-    layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
+    layer::{ArcLayer, ConsumeErrLayer, HijackLayer, TimeoutLayer},
     net::{
         address::Domain,
         apple::networkextension::{TcpFlow, tproxy::TransparentProxyServiceContext},
-        client::ConnectorService,
+        client::{ConnectorService, EstablishedClientConnection},
         http::server::HttpPeekRouter,
-        proxy::IoForwardService,
+        proxy::{IoForwardService, ProxyTarget},
         socket::{SocketOptions, opts::TcpKeepAlive},
         tls::server::PeekTlsClientHelloService,
     },
     proxy::socks5::{proxy::mitm::Socks5MitmRelayService, server::Socks5PeekRouter},
     rt::Executor,
     service::MirrorService,
-    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer},
+    service::service_fn,
+    tcp::client::service::TcpConnector,
     tls::boring::proxy::{TlsMitmRelay, cert_issuer::BoringMitmCertIssuer},
 };
 
@@ -69,6 +70,7 @@ pub(super) async fn try_new_service(
     let tls_mitm_relay_policy =
         TlsMitmRelayPolicyLayer::new().with_excluded_domains(excluded_domains);
     let tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
+    let tcp_connect_timeout_ms = demo_config.tcp_connect_timeout_ms.max(50);
 
     let mitm_svc = new_tcp_service_inner(
         executor.clone(),
@@ -79,13 +81,35 @@ pub(super) async fn try_new_service(
         false,
     );
 
-    Ok((
-        ConsumeErrLayer::trace_as_debug(),
-        IoToProxyBridgeIoLayer::extension_proxy_target_with_connector(tcp_connector_service(
-            executor,
-        )),
-    )
-        .into_layer(mitm_svc))
+    let connect_timeout = Duration::from_millis(tcp_connect_timeout_ms);
+    let svc = service_fn(move |ingress: TcpFlow| {
+        let mitm_svc = mitm_svc.clone();
+        async move {
+            let Some(ProxyTarget(egress_addr)) = ingress.extensions().get_ref().cloned() else {
+                return Err(OpaqueError::from_static_str(
+                    "missing ProxyTarget in transparent proxy example tcp service",
+                )
+                .into_box_error());
+            };
+
+            let flow_exec = ingress.executor().cloned().unwrap_or_default();
+            let connector = tcp_connector_service(flow_exec, connect_timeout);
+            let tcp_req = rama::tcp::client::Request::new_with_extensions(
+                egress_addr.clone(),
+                ingress.extensions().clone(),
+            );
+
+            let EstablishedClientConnection { conn: egress, .. } = connector
+                .connect(tcp_req)
+                .await
+                .context("establish tcp connection")
+                .context_field("address", egress_addr)?;
+
+            mitm_svc.serve(BridgeIo(ingress, egress)).await.into_box_error()
+        }
+    });
+
+    Ok(ConsumeErrLayer::trace_as_debug().into_layer(svc))
 }
 
 fn new_tcp_service_inner<Issuer, Ingress, Egress>(
@@ -208,14 +232,17 @@ where
 
 fn tcp_connector_service(
     exec: Executor,
+    connect_timeout: Duration,
 ) -> impl ConnectorService<rama::tcp::client::Request, Connection: Io + Unpin> + Clone {
-    TcpConnector::new(exec).with_connector(Arc::new(SocketOptions {
-        keep_alive: Some(true),
-        tcp_keep_alive: Some(TcpKeepAlive {
-            time: Some(TCP_KEEPALIVE_TIME),
-            interval: Some(TCP_KEEPALIVE_INTERVAL),
-            retries: Some(TCP_KEEPALIVE_RETRIES),
-        }),
-        ..SocketOptions::default_tcp()
-    }))
+    TimeoutLayer::new(connect_timeout).into_layer(TcpConnector::new(exec).with_connector(Arc::new(
+        SocketOptions {
+            keep_alive: Some(true),
+            tcp_keep_alive: Some(TcpKeepAlive {
+                time: Some(TCP_KEEPALIVE_TIME),
+                interval: Some(TCP_KEEPALIVE_INTERVAL),
+                retries: Some(TCP_KEEPALIVE_RETRIES),
+            }),
+            ..SocketOptions::default_tcp()
+        },
+    )))
 }

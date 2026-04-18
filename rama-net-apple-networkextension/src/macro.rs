@@ -495,6 +495,7 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             let context = callbacks.context as usize;
             let on_server_bytes = callbacks.on_server_bytes;
+            let on_client_read_demand = callbacks.on_client_read_demand;
             let on_server_closed = callbacks.on_server_closed;
 
             let engine = unsafe { &*engine };
@@ -515,6 +516,11 @@ macro_rules! __transparent_proxy_ffi_emit {
                                 len: bytes.len(),
                             },
                         );
+                    }
+                },
+                move || {
+                    if let Some(callback) = on_client_read_demand {
+                        unsafe { callback(context as *mut ::std::ffi::c_void) };
                     }
                 },
                 move || {
@@ -613,6 +619,7 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             let context = callbacks.context as usize;
             let on_server_datagram = callbacks.on_server_datagram;
+            let on_client_read_demand = callbacks.on_client_read_demand;
             let on_server_closed = callbacks.on_server_closed;
 
             let engine = unsafe { &*engine };
@@ -633,6 +640,11 @@ macro_rules! __transparent_proxy_ffi_emit {
                                 len: bytes.len(),
                             },
                         );
+                    }
+                },
+                move || {
+                    if let Some(callback) = on_client_read_demand {
+                        unsafe { callback(context as *mut ::std::ffi::c_void) };
                     }
                 },
                 move || {

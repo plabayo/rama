@@ -1,6 +1,7 @@
 use std::{
     io,
     pin::Pin,
+    sync::{Arc, Once},
     task::{Context, Poll},
 };
 
@@ -8,6 +9,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     ServiceInput,
     extensions::{Extensions, ExtensionsRef},
+    rt::Executor,
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 
@@ -20,16 +22,33 @@ pin_project! {
         #[pin]
         inner: DuplexStream,
         extensions: Extensions,
+        executor: Option<Executor>,
+        io_demand_once: Once,
+        on_io_demand: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     }
 }
 
 impl TcpFlow {
     #[must_use]
-    /// Create a new [`TcpFlow`].
-    pub(crate) fn new(inner: DuplexStream) -> Self {
+    /// Create a new [`TcpFlow`] that triggers one ingress-read demand when Rust starts I/O.
+    pub(crate) fn new_with_io_demand(
+        inner: DuplexStream,
+        executor: Option<Executor>,
+        on_io_demand: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+    ) -> Self {
         Self {
             inner,
             extensions: Extensions::new(),
+            executor,
+            io_demand_once: Once::new(),
+            on_io_demand,
+        }
+    }
+
+    #[inline(always)]
+    fn signal_io_demand_once(&self) {
+        if let Some(on_io_demand) = &self.on_io_demand {
+            self.io_demand_once.call_once(|| on_io_demand());
         }
     }
 
@@ -39,12 +58,20 @@ impl TcpFlow {
         let Self {
             inner: duplex_stream,
             extensions,
+            executor: _,
+            io_demand_once: _,
+            on_io_demand: _,
         } = self;
 
         ServiceInput {
             input: map(duplex_stream),
             extensions,
         }
+    }
+
+    #[must_use]
+    pub fn executor(&self) -> Option<&Executor> {
+        self.executor.as_ref()
     }
 }
 
@@ -62,6 +89,7 @@ impl AsyncRead for TcpFlow {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        self.as_ref().get_ref().signal_io_demand_once();
         self.project().inner.poll_read(cx, buf)
     }
 }
@@ -73,6 +101,7 @@ impl AsyncWrite for TcpFlow {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        self.as_ref().get_ref().signal_io_demand_once();
         self.project().inner.poll_write(cx, buf)
     }
 

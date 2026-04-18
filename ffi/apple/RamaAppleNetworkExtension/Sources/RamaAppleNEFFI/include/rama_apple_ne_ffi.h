@@ -195,6 +195,7 @@ typedef struct {
 } RamaTransparentProxyInitConfig;
 
 typedef void (*RamaTcpServerBytesFn)(void* context, RamaBytesView bytes);
+typedef void (*RamaTcpClientReadDemandFn)(void* context);
 typedef void (*RamaTcpServerClosedFn)(void* context);
 
 /// Callbacks Swift provides for Rust TCP session events.
@@ -203,11 +204,14 @@ typedef struct {
     void* context;
     /// Called when Rust has bytes to write to client-side TCP flow.
     RamaTcpServerBytesFn on_server_bytes;
+    /// Called when Rust requests one client-side TCP read (`flow.readData`).
+    RamaTcpClientReadDemandFn on_client_read_demand;
     /// Called when Rust closes server-side TCP direction.
     RamaTcpServerClosedFn on_server_closed;
 } RamaTransparentProxyTcpSessionCallbacks;
 
 typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes);
+typedef void (*RamaUdpClientReadDemandFn)(void* context);
 typedef void (*RamaUdpServerClosedFn)(void* context);
 
 /// Callbacks Swift provides for Rust UDP session events.
@@ -216,6 +220,8 @@ typedef struct {
     void* context;
     /// Called when Rust has one datagram to write to client-side UDP flow.
     RamaUdpServerDatagramFn on_server_datagram;
+    /// Called when Rust requests one client-side UDP read (`flow.readDatagrams`).
+    RamaUdpClientReadDemandFn on_client_read_demand;
     /// Called when Rust closes server-side UDP flow.
     RamaUdpServerClosedFn on_server_closed;
 } RamaTransparentProxyUdpSessionCallbacks;
