@@ -269,8 +269,9 @@ final class RamaTransparentProxyEngineHandle {
         }
     }
 
-    static func config() -> RamaTransparentProxyConfigBridge? {
-        guard let outPtr = rama_transparent_proxy_get_config() else { return nil }
+    func config() -> RamaTransparentProxyConfigBridge? {
+        guard let p = enginePtr else { return nil }
+        guard let outPtr = rama_transparent_proxy_get_config(p) else { return nil }
         defer { rama_transparent_proxy_config_free(outPtr) }
         let out = outPtr.pointee
         guard
@@ -341,7 +342,8 @@ final class RamaTransparentProxyEngineHandle {
         let result = withFlowMeta(meta) { metaPtr in
             rama_transparent_proxy_engine_new_tcp_session(p, metaPtr, callbacks)
         }
-        let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
+        let action =
+            RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
             ?? .passthrough
         guard action == .intercept, let sessionPtr = result.session else {
             callbackBox.release()
@@ -382,7 +384,8 @@ final class RamaTransparentProxyEngineHandle {
         let result = withFlowMeta(meta) { metaPtr in
             rama_transparent_proxy_engine_new_udp_session(p, metaPtr, callbacks)
         }
-        let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
+        let action =
+            RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
             ?? .passthrough
         guard action == .intercept, let sessionPtr = result.session else {
             callbackBox.release()

@@ -665,7 +665,31 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
         logInfo("extension startProxy")
 
-        guard let startup = RamaTransparentProxyEngineHandle.config() else {
+        let engineConfigJson = Self.engineConfigJson(
+            protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
+            startOptions: options
+        )
+        if let engineConfigJson {
+            self.logInfo("engine config json bytes=\(engineConfigJson.count)")
+        }
+        guard let engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
+        else {
+            self.logError("engine creation error")
+            completionHandler(
+                NSError(
+                    domain: "org.ramaproxy.example.tproxy.engine",
+                    code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "Failed to create transparent proxy engine"
+                    ]
+                )
+            )
+            return
+        }
+        self.engine = engine
+        self.logInfo("engine created")
+
+        guard let startup = self.engine?.config() else {
             logError("failed to get transparent proxy config from rust")
             let error = NSError(
                 domain: "RamaTransparentProxy.Startup",
@@ -712,27 +736,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
 
             self.logInfo("setTunnelNetworkSettings ok")
-            let engineConfigJson = Self.engineConfigJson(
-                protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
-                startOptions: options
-            )
-            if let engineConfigJson {
-                self.logInfo("engine config json bytes=\(engineConfigJson.count)")
-            }
-            guard let engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
-            else {
-                self.logError("engine creation error")
-                completionHandler(
-                    NSError(
-                        domain: "org.ramaproxy.example.tproxy.engine",
-                        code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to create transparent proxy engine"]
-                    )
-                )
-                return
-            }
-            self.engine = engine
-            self.logInfo("engine created")
             completionHandler(nil)
         }
     }
@@ -815,38 +818,39 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
         )
 
-        let decision = engine?.newTcpSession(
-            meta: meta,
-            onServerBytes: { data in
-                writer.enqueue(data)
-            },
-            onClientReadDemand: {
-                readDemandLock.lock()
-                if let readPump {
+        let decision =
+            engine?.newTcpSession(
+                meta: meta,
+                onServerBytes: { data in
+                    writer.enqueue(data)
+                },
+                onClientReadDemand: {
+                    readDemandLock.lock()
+                    if let readPump {
+                        readDemandLock.unlock()
+                        readPump.requestRead()
+                        return
+                    }
+                    pendingReadDemand = true
                     readDemandLock.unlock()
-                    readPump.requestRead()
-                    return
-                }
-                pendingReadDemand = true
-                readDemandLock.unlock()
-            },
-            onServerClosed: { [weak self] in
-                firstByteWatchdog.complete()
-                writer.closeWhenDrained { [weak self] in
-                    if openGate.hasOpenedFlow() {
-                        flow.closeReadWithError(nil)
-                        flow.closeWriteWithError(nil)
-                    } else {
-                        let error = tcpUpstreamUnavailableError()
-                        flow.closeReadWithError(error)
-                        flow.closeWriteWithError(error)
-                    }
-                    self?.stateQueue.async {
-                        self?.tcpSessions.removeValue(forKey: flowId)
+                },
+                onServerClosed: { [weak self] in
+                    firstByteWatchdog.complete()
+                    writer.closeWhenDrained { [weak self] in
+                        if openGate.hasOpenedFlow() {
+                            flow.closeReadWithError(nil)
+                            flow.closeWriteWithError(nil)
+                        } else {
+                            let error = tcpUpstreamUnavailableError()
+                            flow.closeReadWithError(error)
+                            flow.closeWriteWithError(error)
+                        }
+                        self?.stateQueue.async {
+                            self?.tcpSessions.removeValue(forKey: flowId)
+                        }
                     }
                 }
-            }
-        ) ?? .passthrough
+            ) ?? .passthrough
 
         let session: RamaTcpSessionHandle
         switch decision {
@@ -982,7 +986,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                 if activeSession == nil {
                                     let meta = Self.udpMeta(
                                         flow: flow,
-                                        remoteEndpoint: endpoint ?? Self.udpRemoteEndpoint(flow: flow),
+                                        remoteEndpoint: endpoint
+                                            ?? Self.udpRemoteEndpoint(flow: flow),
                                         localEndpoint: Self.udpLocalEndpoint(flow: flow)
                                     )
                                     switch self?.engine?.newUdpSession(
@@ -1062,7 +1067,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 }
                 return true
             case .passthrough:
-                self.logDebug("udp flow switched to passthrough before interception started; closing flow")
+                self.logDebug(
+                    "udp flow switched to passthrough before interception started; closing flow")
                 terminate(nil)
                 return false
             case .blocked:

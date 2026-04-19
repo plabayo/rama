@@ -131,18 +131,15 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn rama_transparent_proxy_get_config()
-        -> *mut RamaTransparentProxyConfig {
-            let engine = match __rama_build_transparent_proxy_engine(None) {
-                Ok(engine) => engine,
-                Err(err) => {
-                    $crate::tproxy::log_engine_build_error(
-                        err.as_ref(),
-                        "get transparent proxy config",
-                    );
-                    return ::std::ptr::null_mut();
-                }
-            };
+        pub unsafe extern "C" fn rama_transparent_proxy_get_config(
+            engine: *mut RamaTransparentProxyEngine,
+        ) -> *mut RamaTransparentProxyConfig {
+            if engine.is_null() {
+                return ::std::ptr::null_mut();
+            }
+
+            let engine = unsafe { &*engine };
+
             let config = engine.transparent_proxy_config();
             let ffi_cfg = RamaTransparentProxyConfig::from_rust_type(&config);
             ::std::boxed::Box::into_raw(::std::boxed::Box::new(ffi_cfg))

@@ -26,6 +26,7 @@ mod http;
 mod policy;
 mod tcp;
 mod tls;
+mod udp;
 mod utils;
 
 fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> bool {
@@ -49,6 +50,7 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
 fn proxy_config() -> TransparentProxyConfig {
     TransparentProxyConfig::new().with_rules(vec![
         TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
+        TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
     ])
 }
 
@@ -63,7 +65,9 @@ fn flow_action_for_remote_endpoint(
     match &target.host {
         Host::Name(_) => TransparentProxyFlowAction::Intercept,
         Host::Address(addr) => {
-            if is_private_ip(*addr) {
+            if is_private_ip(*addr) && !addr.is_loopback() {
+                // non-loopback private ip addreses,
+                // as to ensure e2e ffi tests do still run :)
                 TransparentProxyFlowAction::Passthrough
             } else {
                 TransparentProxyFlowAction::Intercept
@@ -91,14 +95,17 @@ impl TransparentProxyHandlerFactory for DemoEngineFactory {
 struct DemoTransparentProxyHandler {
     config: TransparentProxyConfig,
     tcp_service: rama::service::BoxService<apple_ne::TcpFlow, (), Infallible>,
+    udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
 }
 
 impl DemoTransparentProxyHandler {
     async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, rama::error::BoxError> {
-        let tcp_service = self::tcp::try_new_service(ctx).await?.boxed();
+        let tcp_service = self::tcp::try_new_service(ctx.clone()).await?.boxed();
+        let udp_service = self::udp::try_new_service(ctx).await?.boxed();
         Ok(Self {
             config: proxy_config(),
             tcp_service,
+            udp_service,
         })
     }
 }
@@ -121,6 +128,26 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         std::future::ready(match action {
             TransparentProxyFlowAction::Intercept => FlowAction::Intercept {
                 service: tcp_service,
+                meta,
+            },
+            TransparentProxyFlowAction::Passthrough => FlowAction::Passthrough,
+            TransparentProxyFlowAction::Blocked => FlowAction::Blocked,
+        })
+    }
+
+    fn match_udp_flow(
+        &self,
+        _exec: rama::rt::Executor,
+        meta: TransparentProxyFlowMeta,
+    ) -> impl Future<
+        Output = FlowAction<impl rama::Service<apple_ne::UdpFlow, Output = (), Error = Infallible>>,
+    > + Send
+    + '_ {
+        let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
+        let udp_service = self.udp_service.clone();
+        std::future::ready(match action {
+            TransparentProxyFlowAction::Intercept => FlowAction::Intercept {
+                service: udp_service,
                 meta,
             },
             TransparentProxyFlowAction::Passthrough => FlowAction::Passthrough,

@@ -263,7 +263,7 @@ bool rama_transparent_proxy_initialize(const RamaTransparentProxyInitConfig* con
 ///
 /// Returns an owned pointer, or NULL on failure.
 /// Caller must release it with `rama_transparent_proxy_config_free`.
-RamaTransparentProxyConfig* rama_transparent_proxy_get_config(void);
+RamaTransparentProxyConfig* rama_transparent_proxy_get_config(RamaTransparentProxyEngine* engine);
 
 /// Free a config previously returned by `rama_transparent_proxy_get_config`.
 ///

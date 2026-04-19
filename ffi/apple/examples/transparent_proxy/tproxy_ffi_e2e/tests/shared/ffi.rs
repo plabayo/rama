@@ -68,15 +68,3 @@ pub(crate) fn load_mitm_ca_store() -> Arc<rama::tls::boring::core::x509::store::
     builder.add_cert(cert).expect("add mitm ca cert");
     Arc::new(builder.build())
 }
-
-pub(crate) fn ffi_config_has_rules() {
-    let cfg = unsafe { bindings::rama_transparent_proxy_get_config() };
-    assert!(!cfg.is_null(), "ffi config pointer");
-    unsafe {
-        assert!(
-            (*cfg).rules_len >= 1,
-            "config should contain at least one rule"
-        );
-        bindings::rama_transparent_proxy_config_free(cfg);
-    }
-}
