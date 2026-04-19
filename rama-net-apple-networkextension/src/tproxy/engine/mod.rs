@@ -82,80 +82,23 @@ where
             return SessionFlowAction::Passthrough;
         };
 
+        let tcp_flow_buffer_size = self.tcp_flow_buffer_size;
         let exec = Executor::graceful(guard.clone());
-        let flow_action = self.rt.block_on(self.handler.match_tcp_flow(exec, meta));
-        let (service, meta) = match flow_action {
-            FlowAction::Intercept { service, meta } => (service, meta),
-            FlowAction::Blocked => return SessionFlowAction::Blocked,
-            FlowAction::Passthrough => return SessionFlowAction::Passthrough,
-        };
+        let handler = self.handler.clone();
 
-        let parent_guard = guard;
-        let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
-        let flow_shutdown = {
-            let _enter = self.rt.enter();
-            Shutdown::new(async move {
-                tokio::select! {
-                    _ = flow_stop_rx => {}
-                    _ = parent_guard.cancelled() => {}
-                }
-            })
-        };
-        let flow_guard = flow_shutdown.guard();
-
-        let (user_stream, internal_stream) = tokio::io::duplex(self.tcp_flow_buffer_size);
-        let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
-        let (eof_tx, eof_rx) = watch::channel(false);
-
-        let callback_active = Arc::new(parking_lot::Mutex::new(true));
-        let user_bytes_sink: BytesSink = Arc::new(on_server_bytes);
-        let user_client_read_demand_sink: DemandSink = Arc::new(on_client_read_demand);
-        let user_closed_sink: ClosedSink = Arc::new(on_server_closed);
-        let bytes_sink = guarded_bytes_sink(callback_active.clone(), user_bytes_sink);
-        let closed_sink = guarded_closed_sink(callback_active.clone(), user_closed_sink);
-        let client_read_demand_sink = guarded_demand_sink(
-            callback_active.clone(),
-            user_client_read_demand_sink.clone(),
-        );
-        let remote_endpoint = meta.remote_endpoint.clone();
-
-        tracing::debug!(protocol = ?meta.protocol, "new tcp session v2");
-
-        let _enter = self.rt.enter();
-
-        let bridge_task = flow_guard.spawn_task(run_tcp_bridge(
-            internal_stream,
-            client_rx,
-            eof_rx,
-            bytes_sink,
-            client_read_demand_sink.clone(),
-            closed_sink,
-        ));
-
-        let stream = TcpFlow::new_with_io_demand(
-            user_stream,
-            Some(Executor::graceful(flow_guard.clone())),
-            Some(client_read_demand_sink.clone()),
-        );
-        stream.extensions().insert_arc(Arc::new(meta));
-        if let Some(remote) = remote_endpoint {
-            stream.extensions().insert(ProxyTarget(remote));
-        }
-
-        let service_task = flow_guard.spawn_task_fn(async move |guard| {
-            stream.extensions().insert(guard);
-            let _ = service.serve(stream).await;
-        });
-
-        SessionFlowAction::Intercept(TransparentProxyTcpSession {
-            client_tx: Some(client_tx),
-            eof_tx,
-            callback_active,
-            saw_client_bytes: false,
-            bridge_task: Some(bridge_task),
-            service_task: Some(service_task),
-            flow_stop_tx: Some(flow_stop_tx),
-        })
+        block_on_async_task(
+            &self.rt,
+            new_tcp_sesson_flow_action(
+                guard,
+                exec,
+                meta,
+                tcp_flow_buffer_size,
+                on_server_bytes,
+                on_client_read_demand,
+                on_server_closed,
+                handler,
+            ),
+        )
     }
 
     pub fn new_udp_session<OnDatagram, OnClosed, OnDemand>(
@@ -179,63 +122,20 @@ where
         };
 
         let exec = Executor::graceful(guard.clone());
-        let flow_action = self.rt.block_on(self.handler.match_udp_flow(exec, meta));
-        let (service, meta) = match flow_action {
-            FlowAction::Intercept { service, meta } => (service, meta),
-            FlowAction::Blocked => return SessionFlowAction::Blocked,
-            FlowAction::Passthrough => return SessionFlowAction::Passthrough,
-        };
+        let handler = self.handler.clone();
 
-        let parent_guard = guard;
-        let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
-        let flow_shutdown = {
-            let _enter = self.rt.enter();
-            Shutdown::new(async move {
-                tokio::select! {
-                    _ = flow_stop_rx => {}
-                    _ = parent_guard.cancelled() => {}
-                }
-            })
-        };
-        let flow_guard = flow_shutdown.guard();
-
-        let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
-
-        let datagram_sink: BytesSink = Arc::new(on_server_datagram);
-        let user_client_read_demand_sink: DemandSink = Arc::new(on_client_read_demand);
-        let closed_sink: ClosedSink = Arc::new(on_server_closed);
-        let client_read_demand_sink = guarded_demand_sink(
-            Arc::new(parking_lot::Mutex::new(true)),
-            user_client_read_demand_sink,
-        );
-        let remote_endpoint = meta.remote_endpoint.clone();
-        let protocol = meta.protocol;
-        let flow = UdpFlow::new_with_io_demand(
-            client_rx,
-            datagram_sink,
-            Some(client_read_demand_sink.clone()),
-        );
-        flow.extensions().insert(flow_guard.clone());
-        flow.extensions().insert_arc(Arc::new(meta));
-        if let Some(remote) = remote_endpoint {
-            flow.extensions().insert(ProxyTarget(remote));
-        }
-
-        tracing::debug!(protocol = ?protocol, "new udp session v2");
-
-        let _enter = self.rt.enter();
-        let service_task = flow_guard.spawn_task_fn(async move |guard| {
-            flow.extensions().insert(guard);
-            let _ = service.serve(flow).await;
-            closed_sink();
-        });
-
-        SessionFlowAction::Intercept(TransparentProxyUdpSession {
-            client_tx: Some(client_tx),
-            on_client_read_demand: client_read_demand_sink,
-            service_task: Some(service_task),
-            flow_stop_tx: Some(flow_stop_tx),
-        })
+        block_on_async_task(
+            &self.rt,
+            new_udp_sesson_flow_action(
+                guard,
+                exec,
+                meta,
+                on_server_datagram,
+                on_client_read_demand,
+                on_server_closed,
+                handler,
+            ),
+        )
     }
 
     pub fn stop(mut self, reason: i32) {
@@ -244,6 +144,196 @@ where
 
     fn shutdown_guard(&self) -> Option<ShutdownGuard> {
         self.shutdown.as_ref().map(Shutdown::guard)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn new_tcp_sesson_flow_action<OnBytes, OnClosed, OnDemand, H>(
+    parent_guard: ShutdownGuard,
+    exec: Executor,
+    meta: TransparentProxyFlowMeta,
+    tcp_flow_buffer_size: usize,
+    on_server_bytes: OnBytes,
+    on_client_read_demand: OnDemand,
+    on_server_closed: OnClosed,
+    handler: H,
+) -> SessionFlowAction<TransparentProxyTcpSession>
+where
+    OnBytes: Fn(Bytes) + Send + Sync + 'static,
+    OnClosed: Fn() + Send + Sync + 'static,
+    OnDemand: Fn() + Send + Sync + 'static,
+    H: TransparentProxyHandler,
+{
+    let flow_action = handler.match_tcp_flow(exec, meta).await;
+
+    let (service, meta) = match flow_action {
+        FlowAction::Intercept { service, meta } => (service, meta),
+        FlowAction::Blocked => return SessionFlowAction::Blocked,
+        FlowAction::Passthrough => return SessionFlowAction::Passthrough,
+    };
+
+    let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
+    let flow_shutdown = {
+        Shutdown::new(async move {
+            tokio::select! {
+                _ = flow_stop_rx => {}
+                _ = parent_guard.cancelled() => {}
+            }
+        })
+    };
+    let flow_guard = flow_shutdown.guard();
+
+    let (user_stream, internal_stream) = tokio::io::duplex(tcp_flow_buffer_size);
+    let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
+    let (eof_tx, eof_rx) = watch::channel(false);
+
+    let callback_active = Arc::new(parking_lot::Mutex::new(true));
+    let user_bytes_sink: BytesSink = Arc::new(on_server_bytes);
+    let user_client_read_demand_sink: DemandSink = Arc::new(on_client_read_demand);
+    let user_closed_sink: ClosedSink = Arc::new(on_server_closed);
+    let bytes_sink = guarded_bytes_sink(callback_active.clone(), user_bytes_sink);
+    let closed_sink = guarded_closed_sink(callback_active.clone(), user_closed_sink);
+    let client_read_demand_sink = guarded_demand_sink(
+        callback_active.clone(),
+        user_client_read_demand_sink.clone(),
+    );
+    let remote_endpoint = meta.remote_endpoint.clone();
+
+    tracing::debug!(protocol = ?meta.protocol, "new tcp session");
+
+    let bridge_task = flow_guard.spawn_task(run_tcp_bridge(
+        internal_stream,
+        client_rx,
+        eof_rx,
+        bytes_sink,
+        client_read_demand_sink.clone(),
+        closed_sink,
+    ));
+
+    let stream = TcpFlow::new_with_io_demand(
+        user_stream,
+        Some(Executor::graceful(flow_guard.clone())),
+        Some(client_read_demand_sink.clone()),
+    );
+    stream.extensions().insert_arc(Arc::new(meta));
+    if let Some(remote) = remote_endpoint {
+        stream.extensions().insert(ProxyTarget(remote));
+    }
+
+    let service_task = flow_guard.spawn_task_fn(async move |guard| {
+        stream.extensions().insert(guard);
+        let Ok(()) = service.serve(stream).await;
+    });
+
+    SessionFlowAction::Intercept(TransparentProxyTcpSession {
+        client_tx: Some(client_tx),
+        eof_tx,
+        callback_active,
+        saw_client_bytes: false,
+        bridge_task: Some(bridge_task),
+        service_task: Some(service_task),
+        flow_stop_tx: Some(flow_stop_tx),
+    })
+}
+
+async fn new_udp_sesson_flow_action<OnDatagram, OnClosed, OnDemand, H>(
+    parent_guard: ShutdownGuard,
+    exec: Executor,
+    meta: TransparentProxyFlowMeta,
+    on_server_datagram: OnDatagram,
+    on_client_read_demand: OnDemand,
+    on_server_closed: OnClosed,
+    handler: H,
+) -> SessionFlowAction<TransparentProxyUdpSession>
+where
+    OnDatagram: Fn(Bytes) + Send + Sync + 'static,
+    OnClosed: Fn() + Send + Sync + 'static,
+    OnDemand: Fn() + Send + Sync + 'static,
+    H: TransparentProxyHandler,
+{
+    let flow_action = handler.match_udp_flow(exec, meta).await;
+    let (service, meta) = match flow_action {
+        FlowAction::Intercept { service, meta } => (service, meta),
+        FlowAction::Blocked => return SessionFlowAction::Blocked,
+        FlowAction::Passthrough => return SessionFlowAction::Passthrough,
+    };
+
+    let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
+    let flow_shutdown = {
+        Shutdown::new(async move {
+            tokio::select! {
+                _ = flow_stop_rx => {}
+                _ = parent_guard.cancelled() => {}
+            }
+        })
+    };
+    let flow_guard = flow_shutdown.guard();
+
+    let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
+
+    let datagram_sink: BytesSink = Arc::new(on_server_datagram);
+    let user_client_read_demand_sink: DemandSink = Arc::new(on_client_read_demand);
+    let closed_sink: ClosedSink = Arc::new(on_server_closed);
+    let client_read_demand_sink = guarded_demand_sink(
+        Arc::new(parking_lot::Mutex::new(true)),
+        user_client_read_demand_sink,
+    );
+    let remote_endpoint = meta.remote_endpoint.clone();
+    let protocol = meta.protocol;
+    let flow = UdpFlow::new_with_io_demand(
+        client_rx,
+        datagram_sink,
+        Some(client_read_demand_sink.clone()),
+    );
+    flow.extensions().insert(flow_guard.clone());
+    flow.extensions().insert_arc(Arc::new(meta));
+    if let Some(remote) = remote_endpoint {
+        flow.extensions().insert(ProxyTarget(remote));
+    }
+
+    tracing::debug!(protocol = ?protocol, "new udp session");
+
+    let service_task = flow_guard.spawn_task(async move {
+        let Ok(()) = service.serve(flow).await;
+        closed_sink();
+    });
+
+    SessionFlowAction::Intercept(TransparentProxyUdpSession {
+        client_tx: Some(client_tx),
+        on_client_read_demand: client_read_demand_sink,
+        service_task: Some(service_task),
+        flow_stop_tx: Some(flow_stop_tx),
+    })
+}
+
+fn block_on_async_task<F>(rt: &tokio::runtime::Runtime, future: F) -> F::Output
+where
+    F: Future<Output: Send> + Send,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
+            tokio::task::block_in_place(|| rt.block_on(future))
+        }
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::CurrentThread
+            ) =>
+        {
+            std::thread::scope(|scope| {
+                let join = scope.spawn(|| rt.block_on(future));
+                match join.join() {
+                    Ok(output) => output,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            })
+        }
+        _ => rt.block_on(future),
     }
 }
 
@@ -259,12 +349,13 @@ impl<H> TransparentProxyEngine<H> {
             return;
         };
 
-        tracing::info!(reason, "transparent proxy engine v2 stopping");
+        tracing::info!(reason, "transparent proxy engine stopping");
         if let Some(stop_trigger) = self.stop_trigger.take() {
             let _ = stop_trigger.send(());
         }
-        self.rt.block_on(shutdown.shutdown());
-        tracing::info!(reason, "transparent proxy engine v2 stopped");
+
+        let time = block_on_async_task(&self.rt, shutdown.shutdown());
+        tracing::info!(?time, reason, "transparent proxy engine stopped");
     }
 }
 

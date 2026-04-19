@@ -1,15 +1,15 @@
-use std::{convert::Infallible, future::Future, net::IpAddr};
+use std::{convert::Infallible, future::Future};
 
 use rama::{
     Service,
     net::{
-        address::{Host, HostWithPort},
+        address::{Host, HostWithPort, ip::private::is_private_ip},
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
                 FlowAction, TransparentProxyConfig, TransparentProxyEngineBuilder,
-                TransparentProxyFlowAction, TransparentProxyFlowMeta,
-                TransparentProxyHandler, TransparentProxyHandlerFactory, TransparentProxyNetworkRule,
+                TransparentProxyFlowAction, TransparentProxyFlowMeta, TransparentProxyHandler,
+                TransparentProxyHandlerFactory, TransparentProxyNetworkRule,
                 TransparentProxyRuleProtocol, TransparentProxyServiceContext,
             },
         },
@@ -54,7 +54,7 @@ fn proxy_config() -> TransparentProxyConfig {
 
 #[inline(always)]
 fn flow_action_for_remote_endpoint(
-    remote_endpoint: Option<&HostWithPort>
+    remote_endpoint: Option<&HostWithPort>,
 ) -> TransparentProxyFlowAction {
     let Some(target) = remote_endpoint else {
         return TransparentProxyFlowAction::Passthrough;
@@ -62,18 +62,11 @@ fn flow_action_for_remote_endpoint(
 
     match &target.host {
         Host::Name(_) => TransparentProxyFlowAction::Intercept,
-        Host::Address(IpAddr::V4(addr)) => {
-            if !addr.is_loopback() && !addr.is_private() {
-                TransparentProxyFlowAction::Intercept
-            } else {
+        Host::Address(addr) => {
+            if is_private_ip(*addr) {
                 TransparentProxyFlowAction::Passthrough
-            }
-        }
-        Host::Address(IpAddr::V6(addr)) => {
-            if !addr.is_loopback() && !addr.is_unique_local() {
-                TransparentProxyFlowAction::Intercept
             } else {
-                TransparentProxyFlowAction::Passthrough
+                TransparentProxyFlowAction::Intercept
             }
         }
     }
@@ -122,7 +115,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
     ) -> impl Future<
         Output = FlowAction<impl rama::Service<apple_ne::TcpFlow, Output = (), Error = Infallible>>,
     > + Send
-           + '_ {
+    + '_ {
         let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
         let tcp_service = self.tcp_service.clone();
         std::future::ready(match action {

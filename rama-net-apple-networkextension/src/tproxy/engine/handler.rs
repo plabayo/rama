@@ -47,7 +47,7 @@ pub enum FlowAction<S> {
     },
 }
 
-pub trait TransparentProxyHandler: Send + Sync + 'static {
+pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig;
 
     fn match_tcp_flow(

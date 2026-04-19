@@ -19,6 +19,10 @@ fn main() {
     let lib_dir = env::var_os("RAMA_TPROXY_EXAMPLE_LIB_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| transparent_proxy_dir.join("tproxy_rs/target/debug"));
+    let static_lib = lib_dir.join("librama_tproxy_example.a");
+    if static_lib.exists() {
+        println!("cargo:rerun-if-changed={}", static_lib.display());
+    }
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=rama_tproxy_example");
