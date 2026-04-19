@@ -59,10 +59,14 @@ where
         }
     }
 
-    #[must_use]
-    pub fn opaque_config(mut self, opaque_config: Option<Arc<[u8]>>) -> Self {
-        self.opaque_config = opaque_config;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        #[must_use]
+        #[doc(hidden)]
+        /// Unstable API only meant for generated code.
+        pub fn opaque_config(mut self, opaque_config: Option<Arc<[u8]>>) -> Self {
+            self.opaque_config = opaque_config;
+            self
+        }
     }
 
     pub fn build(self) -> Result<TransparentProxyEngine<F::Handler>, BoxError> {

@@ -112,7 +112,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             RamaTransparentProxyEngine,
             ::std::boxed::Box<dyn ::std::error::Error + Send + Sync + 'static>,
         > {
-            let builder = ($engine_builder).opaque_config(opaque_config);
+            let builder = ($engine_builder).maybe_with_opaque_config(opaque_config);
             let engine = builder.build()?;
             Ok(engine.into())
         }

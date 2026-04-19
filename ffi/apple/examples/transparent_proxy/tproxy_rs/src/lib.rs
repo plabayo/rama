@@ -47,13 +47,6 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
     init_status
 }
 
-fn proxy_config() -> TransparentProxyConfig {
-    TransparentProxyConfig::new().with_rules(vec![
-        TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
-        TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
-    ])
-}
-
 #[inline(always)]
 fn flow_action_for_remote_endpoint(
     remote_endpoint: Option<&HostWithPort>,
@@ -102,8 +95,14 @@ impl DemoTransparentProxyHandler {
     async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, rama::error::BoxError> {
         let tcp_service = self::tcp::try_new_service(ctx.clone()).await?.boxed();
         let udp_service = self::udp::try_new_service(ctx).await?.boxed();
+
+        let proxy_config = TransparentProxyConfig::new().with_rules(vec![
+            TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
+            TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
+        ]);
+
         Ok(Self {
-            config: proxy_config(),
+            config: proxy_config,
             tcp_service,
             udp_service,
         })
