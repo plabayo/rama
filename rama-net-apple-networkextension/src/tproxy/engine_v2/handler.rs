@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, future::Future};
 
 use rama_core::{Service, error::BoxError, rt::Executor};
 
@@ -9,12 +9,12 @@ use crate::{
 
 use super::TransparentProxyServiceContext;
 
-pub trait TransparentProxyHandlerFactory: Send + Sync + 'static {
+pub(crate) trait TransparentProxyHandlerFactory: Send + Sync + 'static {
     type Handler: TransparentProxyHandler;
     type Error: Into<BoxError>;
 
     fn create_transparent_proxy_handler(
-        self,
+        &self,
         ctx: TransparentProxyServiceContext,
     ) -> impl Future<Output = Result<Self::Handler, Self::Error>> + Send;
 }
@@ -23,7 +23,7 @@ impl<Handler, Error, F, Fut> TransparentProxyHandlerFactory for F
 where
     Handler: TransparentProxyHandler,
     Error: Into<BoxError>,
-    F: FnOnce(TransparentProxyServiceContext) -> Fut + Send + Sync + 'static,
+    F: Fn(TransparentProxyServiceContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Handler, Error>> + Send,
 {
     type Handler = Handler;
@@ -31,14 +31,14 @@ where
 
     #[inline(always)]
     fn create_transparent_proxy_handler(
-        self,
+        &self,
         ctx: TransparentProxyServiceContext,
     ) -> impl Future<Output = Result<Self::Handler, Self::Error>> + Send {
         (self)(ctx)
     }
 }
 
-pub enum FlowAction<S> {
+pub(crate) enum FlowAction<S> {
     Passthrough,
     Blocked,
     Intercept {
@@ -47,7 +47,7 @@ pub enum FlowAction<S> {
     },
 }
 
-pub trait TransparentProxyHandler: Send + Sync + 'static {
+pub(crate) trait TransparentProxyHandler: Send + Sync + 'static {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig;
 
     fn match_tcp_flow(

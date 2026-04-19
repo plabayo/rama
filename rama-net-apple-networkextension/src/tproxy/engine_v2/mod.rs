@@ -1,26 +1,425 @@
-use rama_core::graceful::Shutdown;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-
-mod svc_context;
-pub use self::svc_context::TransparentProxyServiceContext;
-
-mod handler;
-pub use self::handler::{FlowAction, TransparentProxyHandler, TransparentProxyHandlerFactory};
-
-mod builder;
-
-mod runtime;
-pub use self::runtime::{
-    DefaultTransparentProxyAsyncRuntimeFactory, TransparentProxyAsyncRuntime,
-    TransparentProxyAsyncRuntimeFactory,
+use rama_core::{
+    bytes::Bytes,
+    extensions::ExtensionsRef,
+    graceful::{Shutdown, ShutdownGuard},
+    rt::Executor,
+    service::Service,
+};
+use rama_net::{conn::is_connection_error, proxy::ProxyTarget};
+use std::{convert::Infallible, future::Future, sync::Arc};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::{mpsc, oneshot, watch},
 };
 
-pub struct TransparentProxyEngine<H> {
+use crate::{TcpFlow, UdpFlow, tproxy::TransparentProxyFlowMeta};
+
+mod svc_context;
+pub(crate) use self::svc_context::TransparentProxyServiceContext;
+
+mod handler;
+pub(crate) use self::handler::{
+    FlowAction, TransparentProxyHandler, TransparentProxyHandlerFactory,
+};
+
+mod builder;
+pub(crate) use self::builder::TransparentProxyEngineBuilder;
+
+mod runtime;
+pub(crate) use self::runtime::{
+    DefaultTransparentProxyAsyncRuntimeFactory, TransparentProxyAsyncRuntimeFactory,
+};
+
+const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
+
+type BytesSink = Arc<dyn Fn(Bytes) + Send + Sync + 'static>;
+type ClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
+type DemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
+
+pub(crate) enum SessionFlowAction<S> {
+    Intercept(S),
+    Blocked,
+    Passthrough,
+}
+
+pub(crate) struct TransparentProxyEngine<H> {
     rt: tokio::runtime::Runtime,
     handler: H,
     tcp_flow_buffer_size: usize,
-    shutdown: Shutdown, //running is implicitly checked via shutdown
-    stop_trigger: mpsc::UnboundedSender<()>,
-    opaque_config: Option<Arc<[u8]>>,
-} // no seperate state :)
+    shutdown: Option<Shutdown>,
+    stop_trigger: Option<oneshot::Sender<()>>,
+}
+
+impl<H> TransparentProxyEngine<H>
+where
+    H: TransparentProxyHandler,
+{
+    pub(crate) fn new_tcp_session<OnBytes, OnClosed, OnDemand>(
+        &self,
+        meta: TransparentProxyFlowMeta,
+        on_server_bytes: OnBytes,
+        on_client_read_demand: OnDemand,
+        on_server_closed: OnClosed,
+    ) -> SessionFlowAction<TransparentProxyTcpSession>
+    where
+        OnBytes: Fn(Bytes) + Send + Sync + 'static,
+        OnClosed: Fn() + Send + Sync + 'static,
+        OnDemand: Fn() + Send + Sync + 'static,
+    {
+        let guard = self.shutdown_guard();
+
+        let exec = Executor::graceful(guard.clone());
+        let flow_action = self.rt.block_on(self.handler.match_tcp_flow(exec, meta));
+        let (service, meta) = match flow_action {
+            FlowAction::Intercept { service, meta } => (service, meta),
+            FlowAction::Blocked => return SessionFlowAction::Blocked,
+            FlowAction::Passthrough => return SessionFlowAction::Passthrough,
+        };
+
+        let parent_guard = guard;
+        let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
+        let flow_shutdown = {
+            let _enter = self.rt.enter();
+            Shutdown::new(async move {
+                tokio::select! {
+                    _ = flow_stop_rx => {}
+                    _ = parent_guard.cancelled() => {}
+                }
+            })
+        };
+        let flow_guard = flow_shutdown.guard();
+
+        let (user_stream, internal_stream) = tokio::io::duplex(self.tcp_flow_buffer_size);
+        let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
+        let (eof_tx, eof_rx) = watch::channel(false);
+
+        let callback_active = Arc::new(parking_lot::Mutex::new(true));
+        let user_bytes_sink: BytesSink = Arc::new(on_server_bytes);
+        let user_client_read_demand_sink: DemandSink = Arc::new(on_client_read_demand);
+        let user_closed_sink: ClosedSink = Arc::new(on_server_closed);
+        let bytes_sink = guarded_bytes_sink(callback_active.clone(), user_bytes_sink);
+        let closed_sink = guarded_closed_sink(callback_active.clone(), user_closed_sink);
+        let client_read_demand_sink = guarded_demand_sink(
+            callback_active.clone(),
+            user_client_read_demand_sink.clone(),
+        );
+        let remote_endpoint = meta.remote_endpoint.clone();
+
+        tracing::debug!(protocol = ?meta.protocol, "new tcp session v2");
+
+        let _enter = self.rt.enter();
+
+        let bridge_task = flow_guard.spawn_task(run_tcp_bridge(
+            internal_stream,
+            client_rx,
+            eof_rx,
+            bytes_sink,
+            client_read_demand_sink.clone(),
+            closed_sink,
+        ));
+
+        let stream = TcpFlow::new_with_io_demand(
+            user_stream,
+            Some(Executor::graceful(flow_guard.clone())),
+            Some(client_read_demand_sink.clone()),
+        );
+        stream.extensions().insert_arc(Arc::new(meta));
+        if let Some(remote) = remote_endpoint {
+            stream.extensions().insert(ProxyTarget(remote));
+        }
+
+        let service_task = flow_guard.spawn_task_fn(async move |guard| {
+            stream.extensions().insert(guard);
+            let _ = service.serve(stream).await;
+        });
+
+        SessionFlowAction::Intercept(TransparentProxyTcpSession {
+            client_tx: Some(client_tx),
+            eof_tx,
+            callback_active,
+            saw_client_bytes: false,
+            bridge_task: Some(bridge_task),
+            service_task: Some(service_task),
+            flow_stop_tx: Some(flow_stop_tx),
+        })
+    }
+
+    pub(crate) fn new_udp_session<OnDatagram, OnClosed, OnDemand>(
+        &self,
+        meta: TransparentProxyFlowMeta,
+        on_server_datagram: OnDatagram,
+        on_client_read_demand: OnDemand,
+        on_server_closed: OnClosed,
+    ) -> SessionFlowAction<TransparentProxyUdpSession>
+    where
+        OnDatagram: Fn(Bytes) + Send + Sync + 'static,
+        OnClosed: Fn() + Send + Sync + 'static,
+        OnDemand: Fn() + Send + Sync + 'static,
+    {
+        let guard = self.shutdown_guard();
+
+        let exec = Executor::graceful(guard.clone());
+        let flow_action = self.rt.block_on(self.handler.match_udp_flow(exec, meta));
+        let (service, meta) = match flow_action {
+            FlowAction::Intercept { service, meta } => (service, meta),
+            FlowAction::Blocked => return SessionFlowAction::Blocked,
+            FlowAction::Passthrough => return SessionFlowAction::Passthrough,
+        };
+
+        let parent_guard = guard;
+        let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
+        let flow_shutdown = {
+            let _enter = self.rt.enter();
+            Shutdown::new(async move {
+                tokio::select! {
+                    _ = flow_stop_rx => {}
+                    _ = parent_guard.cancelled() => {}
+                }
+            })
+        };
+        let flow_guard = flow_shutdown.guard();
+
+        let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
+
+        let datagram_sink: BytesSink = Arc::new(on_server_datagram);
+        let user_client_read_demand_sink: DemandSink = Arc::new(on_client_read_demand);
+        let closed_sink: ClosedSink = Arc::new(on_server_closed);
+        let client_read_demand_sink = guarded_demand_sink(
+            Arc::new(parking_lot::Mutex::new(true)),
+            user_client_read_demand_sink,
+        );
+        let remote_endpoint = meta.remote_endpoint.clone();
+        let protocol = meta.protocol;
+        let flow = UdpFlow::new_with_io_demand(
+            client_rx,
+            datagram_sink,
+            Some(client_read_demand_sink.clone()),
+        );
+        flow.extensions().insert(flow_guard.clone());
+        flow.extensions().insert_arc(Arc::new(meta));
+        if let Some(remote) = remote_endpoint {
+            flow.extensions().insert(ProxyTarget(remote));
+        }
+
+        tracing::debug!(protocol = ?protocol, "new udp session v2");
+
+        let _enter = self.rt.enter();
+        let service_task = flow_guard.spawn_task_fn(async move |guard| {
+            flow.extensions().insert(guard);
+            let _ = service.serve(flow).await;
+            closed_sink();
+        });
+
+        SessionFlowAction::Intercept(TransparentProxyUdpSession {
+            client_tx: Some(client_tx),
+            on_client_read_demand: client_read_demand_sink,
+            service_task: Some(service_task),
+            flow_stop_tx: Some(flow_stop_tx),
+        })
+    }
+
+    pub(crate) fn stop(mut self, reason: i32) {
+        self.shutdown_blocking(reason);
+    }
+
+    fn shutdown_guard(&self) -> ShutdownGuard {
+        self.shutdown
+            .as_ref()
+            .expect("engine shutdown missing")
+            .guard()
+    }
+}
+
+impl<H> Drop for TransparentProxyEngine<H> {
+    fn drop(&mut self) {
+        self.shutdown_blocking(0);
+    }
+}
+
+impl<H> TransparentProxyEngine<H> {
+    fn shutdown_blocking(&mut self, reason: i32) {
+        let Some(shutdown) = self.shutdown.take() else {
+            return;
+        };
+
+        tracing::info!(reason, "transparent proxy engine v2 stopping");
+        if let Some(stop_trigger) = self.stop_trigger.take() {
+            let _ = stop_trigger.send(());
+        }
+        self.rt.block_on(shutdown.shutdown());
+        tracing::info!(reason, "transparent proxy engine v2 stopped");
+    }
+}
+
+fn guarded_bytes_sink(
+    callback_active: Arc<parking_lot::Mutex<bool>>,
+    user_bytes_sink: BytesSink,
+) -> BytesSink {
+    Arc::new(move |bytes: Bytes| {
+        if !*callback_active.lock() {
+            return;
+        }
+        user_bytes_sink(bytes);
+    })
+}
+
+fn guarded_closed_sink(
+    callback_active: Arc<parking_lot::Mutex<bool>>,
+    user_closed_sink: ClosedSink,
+) -> ClosedSink {
+    Arc::new(move || {
+        if !*callback_active.lock() {
+            return;
+        }
+        user_closed_sink();
+    })
+}
+
+fn guarded_demand_sink(
+    callback_active: Arc<parking_lot::Mutex<bool>>,
+    user_client_read_demand_sink: DemandSink,
+) -> DemandSink {
+    Arc::new(move || {
+        if !*callback_active.lock() {
+            return;
+        }
+        user_client_read_demand_sink();
+    })
+}
+
+pub(crate) struct TransparentProxyTcpSession {
+    client_tx: Option<mpsc::UnboundedSender<Bytes>>,
+    eof_tx: watch::Sender<bool>,
+    callback_active: Arc<parking_lot::Mutex<bool>>,
+    saw_client_bytes: bool,
+    bridge_task: Option<tokio::task::JoinHandle<()>>,
+    service_task: Option<tokio::task::JoinHandle<()>>,
+    flow_stop_tx: Option<oneshot::Sender<()>>,
+}
+
+impl TransparentProxyTcpSession {
+    pub(crate) fn on_client_bytes(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.saw_client_bytes = true;
+        if let Some(tx) = self.client_tx.as_mut() {
+            let _ = tx.send(Bytes::copy_from_slice(bytes));
+        }
+    }
+
+    pub(crate) fn on_client_eof(&mut self) {
+        if !self.saw_client_bytes {
+            self.cancel();
+            return;
+        }
+        let _ = self.eof_tx.send(true);
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        *self.callback_active.lock() = false;
+        self.client_tx = None;
+        let _ = self.eof_tx.send(true);
+        if let Some(tx) = self.flow_stop_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(task) = self.bridge_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.service_task.take() {
+            task.abort();
+        }
+    }
+}
+
+pub(crate) struct TransparentProxyUdpSession {
+    client_tx: Option<mpsc::UnboundedSender<Bytes>>,
+    on_client_read_demand: DemandSink,
+    service_task: Option<tokio::task::JoinHandle<()>>,
+    flow_stop_tx: Option<oneshot::Sender<()>>,
+}
+
+impl TransparentProxyUdpSession {
+    pub(crate) fn on_client_datagram(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+
+        if let Some(tx) = self.client_tx.as_mut() {
+            let _ = tx.send(Bytes::copy_from_slice(bytes));
+            (self.on_client_read_demand)();
+        }
+    }
+
+    pub(crate) fn on_client_close(&mut self) {
+        self.client_tx = None;
+        if let Some(tx) = self.flow_stop_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(task) = self.service_task.take() {
+            task.abort();
+        }
+    }
+}
+
+async fn run_tcp_bridge(
+    internal: tokio::io::DuplexStream,
+    mut client_rx: mpsc::UnboundedReceiver<Bytes>,
+    mut eof_rx: watch::Receiver<bool>,
+    on_server_bytes: BytesSink,
+    on_client_read_demand: DemandSink,
+    on_server_closed: ClosedSink,
+) {
+    let (mut read_half, mut write_half) = tokio::io::split(internal);
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut eof_seen = false;
+
+    on_client_read_demand();
+
+    loop {
+        tokio::select! {
+            maybe = client_rx.recv() => {
+                if let Some(bytes) = maybe {
+                     if let Err(err) = write_half.write_all(&bytes).await {
+                         if is_connection_error(&err) {
+                             tracing::trace!("tcp bridge write_all conn error: {err}");
+                         } else {
+                             tracing::debug!("tcp bridge write_all failed: {err}");
+                         }
+                         break;
+                     }
+                     if !eof_seen {
+                         on_client_read_demand();
+                     }
+                 } else {
+                     eof_seen = true;
+                     let _ = write_half.shutdown().await;
+                 }
+            }
+            _ = eof_rx.changed() => {
+                if *eof_rx.borrow() {
+                    eof_seen = true;
+                    let _ = write_half.shutdown().await;
+                }
+            }
+            read_res = read_half.read(&mut buf) => {
+                match read_res {
+                    Ok(0) => break,
+                    Err(err) => {
+                        if is_connection_error(&err) {
+                            tracing::trace!("tcp bridge read_half conn error: {err}");
+                        } else {
+                            tracing::debug!("tcp bridge read_half failed: {err}");
+                        }
+                        break;
+                    }
+                    Ok(n) => on_server_bytes(Bytes::copy_from_slice(&buf[..n])),
+                }
+            }
+        }
+    }
+
+    on_server_closed();
+}
+#[cfg(test)]
+mod tests;
