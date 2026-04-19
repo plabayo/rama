@@ -719,16 +719,20 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             if let engineConfigJson {
                 self.logInfo("engine config json bytes=\(engineConfigJson.count)")
             }
-            self.engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
-            self.logInfo("engine created")
-            do {
-                try self.engine?.start()
-            } catch {
-                self.logError("engine start error: \(error)")
-                completionHandler(error)
+            guard let engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
+            else {
+                self.logError("engine creation error")
+                completionHandler(
+                    NSError(
+                        domain: "org.ramaproxy.example.tproxy.engine",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to create transparent proxy engine"]
+                    )
+                )
                 return
             }
-            self.logInfo("engine started")
+            self.engine = engine
+            self.logInfo("engine created")
             completionHandler(nil)
         }
     }
@@ -749,38 +753,11 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
         if let tcp = flow as? NEAppProxyTCPFlow {
             let meta = Self.tcpMeta(flow: tcp)
-            switch RamaTransparentProxyEngineHandle.flowAction(meta: meta) {
-            case .intercept:
-                handleTcpFlow(tcp, meta: meta)
-                return true
-            case .passthrough:
-                logDebug("handleNewFlow tcp bypassed by rust flow policy")
-                return false
-            case .blocked:
-                logInfo("handleNewFlow tcp blocked by rust flow policy")
-                blockFlow(tcp)
-                return true
-            }
+            return handleTcpFlow(tcp, meta: meta)
         }
 
         if let udp = flow as? NEAppProxyUDPFlow {
-            let meta = Self.udpMeta(
-                flow: udp,
-                remoteEndpoint: nil,
-                localEndpoint: Self.udpLocalEndpoint(flow: udp)
-            )
-            switch RamaTransparentProxyEngineHandle.flowAction(meta: meta) {
-            case .intercept:
-                handleUdpFlow(udp)
-                return true
-            case .passthrough:
-                logDebug("handleNewFlow udp bypassed by rust flow policy")
-                return false
-            case .blocked:
-                logInfo("handleNewFlow udp blocked by rust flow policy")
-                blockFlow(udp)
-                return true
-            }
+            return handleUdpFlow(udp)
         }
 
         logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
@@ -788,6 +765,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     }
 
     private func handleTcpFlow(_ flow: NEAppProxyTCPFlow, meta: RamaTransparentProxyFlowMetaBridge)
+        -> Bool
     {
         let firstByteWatchdog = TcpFirstByteWatchdog()
         let flowId = ObjectIdentifier(flow)
@@ -837,44 +815,50 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
         )
 
-        guard
-            let session = engine?.newTcpSession(
-                meta: meta,
-                onServerBytes: { data in
-                    writer.enqueue(data)
-                },
-                onClientReadDemand: {
-                    readDemandLock.lock()
-                    if let readPump {
-                        readDemandLock.unlock()
-                        readPump.requestRead()
-                        return
-                    }
-                    pendingReadDemand = true
+        let decision = engine?.newTcpSession(
+            meta: meta,
+            onServerBytes: { data in
+                writer.enqueue(data)
+            },
+            onClientReadDemand: {
+                readDemandLock.lock()
+                if let readPump {
                     readDemandLock.unlock()
-                },
-                onServerClosed: { [weak self] in
-                    firstByteWatchdog.complete()
-                    writer.closeWhenDrained { [weak self] in
-                        if openGate.hasOpenedFlow() {
-                            flow.closeReadWithError(nil)
-                            flow.closeWriteWithError(nil)
-                        } else {
-                            let error = tcpUpstreamUnavailableError()
-                            flow.closeReadWithError(error)
-                            flow.closeWriteWithError(error)
-                        }
-                        self?.stateQueue.async {
-                            self?.tcpSessions.removeValue(forKey: flowId)
-                        }
+                    readPump.requestRead()
+                    return
+                }
+                pendingReadDemand = true
+                readDemandLock.unlock()
+            },
+            onServerClosed: { [weak self] in
+                firstByteWatchdog.complete()
+                writer.closeWhenDrained { [weak self] in
+                    if openGate.hasOpenedFlow() {
+                        flow.closeReadWithError(nil)
+                        flow.closeWriteWithError(nil)
+                    } else {
+                        let error = tcpUpstreamUnavailableError()
+                        flow.closeReadWithError(error)
+                        flow.closeWriteWithError(error)
+                    }
+                    self?.stateQueue.async {
+                        self?.tcpSessions.removeValue(forKey: flowId)
                     }
                 }
-            )
-        else {
-            logDebug("failed to create tcp session")
-            flow.closeReadWithError(nil)
-            flow.closeWriteWithError(nil)
-            return
+            }
+        ) ?? .passthrough
+
+        let session: RamaTcpSessionHandle
+        switch decision {
+        case .intercept(let createdSession):
+            session = createdSession
+        case .passthrough:
+            logDebug("handleNewFlow tcp bypassed by rust flow policy")
+            return false
+        case .blocked:
+            logInfo("handleNewFlow tcp blocked by rust flow policy")
+            blockFlow(flow)
+            return true
         }
 
         let createdReadPump = TcpClientReadPump(
@@ -907,9 +891,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         stateQueue.async {
             self.tcpSessions[flowId] = session
         }
+        return true
     }
 
-    private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) {
+    private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) -> Bool {
         let flowId = ObjectIdentifier(flow)
         let stateQueue = DispatchQueue(label: "rama.tproxy.udp.flow", qos: .utility)
         var activeSession: RamaUdpSessionHandle?
@@ -1000,9 +985,23 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                         remoteEndpoint: endpoint ?? Self.udpRemoteEndpoint(flow: flow),
                                         localEndpoint: Self.udpLocalEndpoint(flow: flow)
                                     )
-                                    switch RamaTransparentProxyEngineHandle.flowAction(meta: meta) {
-                                    case .intercept:
-                                        break
+                                    switch self?.engine?.newUdpSession(
+                                        meta: meta,
+                                        onServerDatagram: { data in
+                                            writer.enqueue(data)
+                                        },
+                                        onClientReadDemand: {
+                                            requestRead()
+                                        },
+                                        onServerClosed: {
+                                            terminate(nil)
+                                        }
+                                    ) ?? .passthrough {
+                                    case .intercept(let createdSession):
+                                        activeSession = createdSession
+                                        self?.stateQueue.async {
+                                            self?.udpSessions[flowId] = createdSession
+                                        }
                                     case .passthrough:
                                         self?.logDebug(
                                             "udp flow policy switched to passthrough after interception already started; closing flow"
@@ -1013,30 +1012,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                         self?.logInfo("udp flow blocked by rust flow policy")
                                         self?.blockFlow(flow)
                                         return
-                                    }
-
-                                    guard
-                                        let createdSession = self?.engine?.newUdpSession(
-                                            meta: meta,
-                                            onServerDatagram: { data in
-                                                writer.enqueue(data)
-                                            },
-                                            onClientReadDemand: {
-                                                requestRead()
-                                            },
-                                            onServerClosed: {
-                                                terminate(nil)
-                                            }
-                                        )
-                                    else {
-                                        self?.logDebug("failed to create udp session")
-                                        terminate(nil)
-                                        return
-                                    }
-
-                                    activeSession = createdSession
-                                    self?.stateQueue.async {
-                                        self?.udpSessions[flowId] = createdSession
                                     }
                                 }
 
@@ -1066,44 +1041,40 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             localEndpoint: Self.udpLocalEndpoint(flow: flow)
         )
         if bootMeta.remoteHost != nil, bootMeta.remotePort != 0 {
-            switch RamaTransparentProxyEngineHandle.flowAction(meta: bootMeta) {
-            case .intercept:
-                if let createdSession = engine?.newUdpSession(
-                    meta: bootMeta,
-                    onServerDatagram: { data in
-                        writer.enqueue(data)
-                    },
-                    onClientReadDemand: {
-                        requestRead()
-                    },
-                    onServerClosed: {
-                        terminate(nil)
-                    }
-                ) {
-                    stateQueue.async {
-                        activeSession = createdSession
-                        self.stateQueue.async {
-                            self.udpSessions[flowId] = createdSession
-                        }
-                    }
-                    return
+            switch engine?.newUdpSession(
+                meta: bootMeta,
+                onServerDatagram: { data in
+                    writer.enqueue(data)
+                },
+                onClientReadDemand: {
+                    requestRead()
+                },
+                onServerClosed: {
+                    terminate(nil)
                 }
-                self.logDebug("failed to create udp session")
-                terminate(nil)
-                return
+            ) ?? .passthrough {
+            case .intercept(let createdSession):
+                stateQueue.async {
+                    activeSession = createdSession
+                    self.stateQueue.async {
+                        self.udpSessions[flowId] = createdSession
+                    }
+                }
+                return true
             case .passthrough:
                 self.logDebug("udp flow switched to passthrough before interception started; closing flow")
                 terminate(nil)
-                return
+                return false
             case .blocked:
                 self.logInfo("udp flow blocked by rust flow policy")
                 self.blockFlow(flow)
-                return
+                return true
             }
         }
 
         // Endpoint-discovery bootstrap: one read to learn sender endpoint, then rust drives.
         requestRead()
+        return true
     }
 
     private func blockFlow(_ flow: NEAppProxyFlow) {

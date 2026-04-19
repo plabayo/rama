@@ -32,6 +32,18 @@ enum RamaTransparentProxyFlowActionBridge: UInt32 {
     case blocked = 3
 }
 
+enum RamaTransparentProxyTcpSessionDecision {
+    case intercept(RamaTcpSessionHandle)
+    case passthrough
+    case blocked
+}
+
+enum RamaTransparentProxyUdpSessionDecision {
+    case intercept(RamaUdpSessionHandle)
+    case passthrough
+    case blocked
+}
+
 final class TcpSessionCallbackBox {
     let onServerBytes: (Data) -> Void
     let onClientReadDemand: () -> Void
@@ -209,7 +221,7 @@ private let ramaUdpOnClientReadDemandCallback: @convention(c) (UnsafeMutableRawP
 final class RamaTransparentProxyEngineHandle {
     private var enginePtr: OpaquePointer?
 
-    init(engineConfigJson: Data? = nil) {
+    init?(engineConfigJson: Data? = nil) {
         if let engineConfigJson, !engineConfigJson.isEmpty {
             self.enginePtr = engineConfigJson.withUnsafeBytes { raw in
                 let ptr = raw.bindMemory(to: UInt8.self).baseAddress
@@ -219,6 +231,10 @@ final class RamaTransparentProxyEngineHandle {
             }
         } else {
             self.enginePtr = rama_transparent_proxy_engine_new()
+        }
+
+        if enginePtr == nil {
+            return nil
         }
     }
 
@@ -295,35 +311,10 @@ final class RamaTransparentProxyEngineHandle {
         )
     }
 
-    static func flowAction(meta: RamaTransparentProxyFlowMetaBridge) -> RamaTransparentProxyFlowActionBridge {
-        let resultRaw = withFlowMeta(meta) { metaPtr in
-            rama_transparent_proxy_flow_action(metaPtr).rawValue
-        }
-        let result = RamaTransparentProxyFlowActionBridge(rawValue: resultRaw)
-            ?? .passthrough
-        return result
-    }
-
-    func start() throws {
-        guard let p = enginePtr else { return }
-        let errorBytes = dataFromOwnedBytes(rama_transparent_proxy_engine_start(p))
-        guard !errorBytes.isEmpty else {
-            return
-        }
-        let message = String(decoding: errorBytes, as: UTF8.self)
-        throw NSError(
-            domain: "org.ramaproxy.example.tproxy.engine",
-            code: 1,
-            userInfo: [
-                NSLocalizedDescriptionKey: "Failed to start transparent proxy engine",
-                NSLocalizedFailureReasonErrorKey: message,
-            ]
-        )
-    }
-
     func stop(reason: Int32) {
         guard let p = enginePtr else { return }
         rama_transparent_proxy_engine_stop(p, reason)
+        enginePtr = nil
     }
 
     func newTcpSession(
@@ -331,8 +322,8 @@ final class RamaTransparentProxyEngineHandle {
         onServerBytes: @escaping (Data) -> Void,
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
-    ) -> RamaTcpSessionHandle? {
-        guard let p = enginePtr else { return nil }
+    ) -> RamaTransparentProxyTcpSessionDecision {
+        guard let p = enginePtr else { return .passthrough }
 
         let callbackBox = Unmanaged.passRetained(
             TcpSessionCallbackBox(
@@ -347,15 +338,24 @@ final class RamaTransparentProxyEngineHandle {
             on_server_closed: ramaTcpOnServerClosedCallback
         )
 
-        let sessionPtr: OpaquePointer? = withFlowMeta(meta) { metaPtr in
+        let result = withFlowMeta(meta) { metaPtr in
             rama_transparent_proxy_engine_new_tcp_session(p, metaPtr, callbacks)
         }
-        guard let sessionPtr else {
+        let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
+            ?? .passthrough
+        guard action == .intercept, let sessionPtr = result.session else {
             callbackBox.release()
-            return nil
+            switch action {
+            case .intercept:
+                return .passthrough
+            case .passthrough:
+                return .passthrough
+            case .blocked:
+                return .blocked
+            }
         }
 
-        return RamaTcpSessionHandle(sessionPtr: sessionPtr, callbackBox: callbackBox)
+        return .intercept(RamaTcpSessionHandle(sessionPtr: sessionPtr, callbackBox: callbackBox))
     }
 
     func newUdpSession(
@@ -363,8 +363,8 @@ final class RamaTransparentProxyEngineHandle {
         onServerDatagram: @escaping (Data) -> Void,
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
-    ) -> RamaUdpSessionHandle? {
-        guard let p = enginePtr else { return nil }
+    ) -> RamaTransparentProxyUdpSessionDecision {
+        guard let p = enginePtr else { return .passthrough }
 
         let callbackBox = Unmanaged.passRetained(
             UdpSessionCallbackBox(
@@ -379,15 +379,24 @@ final class RamaTransparentProxyEngineHandle {
             on_server_closed: ramaUdpOnServerClosedCallback
         )
 
-        let sessionPtr: OpaquePointer? = withFlowMeta(meta) { metaPtr in
+        let result = withFlowMeta(meta) { metaPtr in
             rama_transparent_proxy_engine_new_udp_session(p, metaPtr, callbacks)
         }
-        guard let sessionPtr else {
+        let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
+            ?? .passthrough
+        guard action == .intercept, let sessionPtr = result.session else {
             callbackBox.release()
-            return nil
+            switch action {
+            case .intercept:
+                return .passthrough
+            case .passthrough:
+                return .passthrough
+            case .blocked:
+                return .blocked
+            }
         }
 
-        return RamaUdpSessionHandle(sessionPtr: sessionPtr, callbackBox: callbackBox)
+        return .intercept(RamaUdpSessionHandle(sessionPtr: sessionPtr, callbackBox: callbackBox))
     }
 }
 

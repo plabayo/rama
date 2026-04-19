@@ -9,7 +9,7 @@ use crate::{
 
 use super::TransparentProxyServiceContext;
 
-pub(crate) trait TransparentProxyHandlerFactory: Send + Sync + 'static {
+pub trait TransparentProxyHandlerFactory: Send + Sync + 'static {
     type Handler: TransparentProxyHandler;
     type Error: Into<BoxError>;
 
@@ -38,7 +38,7 @@ where
     }
 }
 
-pub(crate) enum FlowAction<S> {
+pub enum FlowAction<S> {
     Passthrough,
     Blocked,
     Intercept {
@@ -47,7 +47,7 @@ pub(crate) enum FlowAction<S> {
     },
 }
 
-pub(crate) trait TransparentProxyHandler: Send + Sync + 'static {
+pub trait TransparentProxyHandler: Send + Sync + 'static {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig;
 
     fn match_tcp_flow(

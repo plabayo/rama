@@ -6,7 +6,7 @@ use rama_core::{
     service::Service,
 };
 use rama_net::{conn::is_connection_error, proxy::ProxyTarget};
-use std::{convert::Infallible, future::Future, sync::Arc};
+use std::sync::Arc;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot, watch},
@@ -15,18 +15,22 @@ use tokio::{
 use crate::{TcpFlow, UdpFlow, tproxy::TransparentProxyFlowMeta};
 
 mod svc_context;
-pub(crate) use self::svc_context::TransparentProxyServiceContext;
+pub use self::svc_context::TransparentProxyServiceContext;
 
-mod handler;
-pub(crate) use self::handler::{
-    FlowAction, TransparentProxyHandler, TransparentProxyHandlerFactory,
+mod boxed;
+pub use self::boxed::{
+    BoxedClosedSink, BoxedDemandSink, BoxedServerBytesSink, BoxedTransparentProxyEngine,
+    log_engine_build_error,
 };
 
+mod handler;
+pub use self::handler::{FlowAction, TransparentProxyHandler, TransparentProxyHandlerFactory};
+
 mod builder;
-pub(crate) use self::builder::TransparentProxyEngineBuilder;
+pub use self::builder::TransparentProxyEngineBuilder;
 
 mod runtime;
-pub(crate) use self::runtime::{
+pub use self::runtime::{
     DefaultTransparentProxyAsyncRuntimeFactory, TransparentProxyAsyncRuntimeFactory,
 };
 
@@ -36,13 +40,13 @@ type BytesSink = Arc<dyn Fn(Bytes) + Send + Sync + 'static>;
 type ClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
 type DemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
 
-pub(crate) enum SessionFlowAction<S> {
+pub enum SessionFlowAction<S> {
     Intercept(S),
     Blocked,
     Passthrough,
 }
 
-pub(crate) struct TransparentProxyEngine<H> {
+pub struct TransparentProxyEngine<H> {
     rt: tokio::runtime::Runtime,
     handler: H,
     tcp_flow_buffer_size: usize,
@@ -54,7 +58,11 @@ impl<H> TransparentProxyEngine<H>
 where
     H: TransparentProxyHandler,
 {
-    pub(crate) fn new_tcp_session<OnBytes, OnClosed, OnDemand>(
+    pub fn transparent_proxy_config(&self) -> crate::tproxy::TransparentProxyConfig {
+        self.handler.transparent_proxy_config()
+    }
+
+    pub fn new_tcp_session<OnBytes, OnClosed, OnDemand>(
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_bytes: OnBytes,
@@ -66,7 +74,13 @@ where
         OnClosed: Fn() + Send + Sync + 'static,
         OnDemand: Fn() + Send + Sync + 'static,
     {
-        let guard = self.shutdown_guard();
+        let Some(guard) = self.shutdown_guard() else {
+            tracing::error!(
+                protocol = ?meta.protocol,
+                "shutdown_guard called after transparent proxy engine was already stopped; passing tcp flow through"
+            );
+            return SessionFlowAction::Passthrough;
+        };
 
         let exec = Executor::graceful(guard.clone());
         let flow_action = self.rt.block_on(self.handler.match_tcp_flow(exec, meta));
@@ -144,7 +158,7 @@ where
         })
     }
 
-    pub(crate) fn new_udp_session<OnDatagram, OnClosed, OnDemand>(
+    pub fn new_udp_session<OnDatagram, OnClosed, OnDemand>(
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_datagram: OnDatagram,
@@ -156,7 +170,13 @@ where
         OnClosed: Fn() + Send + Sync + 'static,
         OnDemand: Fn() + Send + Sync + 'static,
     {
-        let guard = self.shutdown_guard();
+        let Some(guard) = self.shutdown_guard() else {
+            tracing::error!(
+                protocol = ?meta.protocol,
+                "shutdown_guard called after transparent proxy engine was already stopped; passing udp flow through"
+            );
+            return SessionFlowAction::Passthrough;
+        };
 
         let exec = Executor::graceful(guard.clone());
         let flow_action = self.rt.block_on(self.handler.match_udp_flow(exec, meta));
@@ -218,15 +238,12 @@ where
         })
     }
 
-    pub(crate) fn stop(mut self, reason: i32) {
+    pub fn stop(mut self, reason: i32) {
         self.shutdown_blocking(reason);
     }
 
-    fn shutdown_guard(&self) -> ShutdownGuard {
-        self.shutdown
-            .as_ref()
-            .expect("engine shutdown missing")
-            .guard()
+    fn shutdown_guard(&self) -> Option<ShutdownGuard> {
+        self.shutdown.as_ref().map(Shutdown::guard)
     }
 }
 
@@ -287,7 +304,7 @@ fn guarded_demand_sink(
     })
 }
 
-pub(crate) struct TransparentProxyTcpSession {
+pub struct TransparentProxyTcpSession {
     client_tx: Option<mpsc::UnboundedSender<Bytes>>,
     eof_tx: watch::Sender<bool>,
     callback_active: Arc<parking_lot::Mutex<bool>>,
@@ -298,7 +315,7 @@ pub(crate) struct TransparentProxyTcpSession {
 }
 
 impl TransparentProxyTcpSession {
-    pub(crate) fn on_client_bytes(&mut self, bytes: &[u8]) {
+    pub fn on_client_bytes(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
@@ -308,7 +325,7 @@ impl TransparentProxyTcpSession {
         }
     }
 
-    pub(crate) fn on_client_eof(&mut self) {
+    pub fn on_client_eof(&mut self) {
         if !self.saw_client_bytes {
             self.cancel();
             return;
@@ -316,7 +333,7 @@ impl TransparentProxyTcpSession {
         let _ = self.eof_tx.send(true);
     }
 
-    pub(crate) fn cancel(&mut self) {
+    pub fn cancel(&mut self) {
         *self.callback_active.lock() = false;
         self.client_tx = None;
         let _ = self.eof_tx.send(true);
@@ -332,7 +349,7 @@ impl TransparentProxyTcpSession {
     }
 }
 
-pub(crate) struct TransparentProxyUdpSession {
+pub struct TransparentProxyUdpSession {
     client_tx: Option<mpsc::UnboundedSender<Bytes>>,
     on_client_read_demand: DemandSink,
     service_task: Option<tokio::task::JoinHandle<()>>,
@@ -340,7 +357,7 @@ pub(crate) struct TransparentProxyUdpSession {
 }
 
 impl TransparentProxyUdpSession {
-    pub(crate) fn on_client_datagram(&mut self, bytes: &[u8]) {
+    pub fn on_client_datagram(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
@@ -351,7 +368,7 @@ impl TransparentProxyUdpSession {
         }
     }
 
-    pub(crate) fn on_client_close(&mut self) {
+    pub fn on_client_close(&mut self) {
         self.client_tx = None;
         if let Some(tx) = self.flow_stop_tx.take() {
             let _ = tx.send(());

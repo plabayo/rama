@@ -2,7 +2,7 @@ use rama_core::error::{BoxError, ErrorContext as _};
 
 pub(crate) type TransparentProxyAsyncRuntime = tokio::runtime::Runtime;
 
-pub(crate) trait TransparentProxyAsyncRuntimeFactory {
+pub trait TransparentProxyAsyncRuntimeFactory {
     type Error: Into<BoxError>;
 
     fn create_async_runtime(
@@ -29,7 +29,7 @@ where
 
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
-pub(crate) struct DefaultTransparentProxyAsyncRuntimeFactory;
+pub struct DefaultTransparentProxyAsyncRuntimeFactory;
 
 impl TransparentProxyAsyncRuntimeFactory for DefaultTransparentProxyAsyncRuntimeFactory {
     type Error = BoxError;

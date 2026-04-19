@@ -350,7 +350,7 @@ pub(crate) async fn udp_roundtrip(
             source_app_pid: 0,
             source_app_pid_is_set: false,
         };
-        let raw = unsafe {
+        let result = unsafe {
             bindings::rama_transparent_proxy_engine_new_udp_session(
                 engine.raw,
                 &meta,
@@ -362,6 +362,12 @@ pub(crate) async fn udp_roundtrip(
                 },
             )
         };
+        assert_eq!(
+            result.action,
+            bindings::RamaTransparentProxyFlowAction_RAMA_FLOW_ACTION_INTERCEPT,
+            "ffi udp session decision should intercept"
+        );
+        let raw = result.session;
         assert!(!raw.is_null(), "ffi udp session must allocate");
         raw as usize
     };

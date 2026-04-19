@@ -43,14 +43,6 @@ impl EngineHandle {
         };
         assert!(!raw.is_null(), "ffi engine allocation must succeed");
 
-        let err = unsafe { bindings::rama_transparent_proxy_engine_start(raw) };
-        if !err.ptr.is_null() && err.len > 0 {
-            let bytes = unsafe { std::slice::from_raw_parts(err.ptr.cast::<u8>(), err.len) };
-            let message = String::from_utf8_lossy(bytes).into_owned();
-            unsafe { bindings::rama_owned_bytes_free(err) };
-            panic!("ffi engine start failed: {message}");
-        }
-
         Self { raw }
     }
 }

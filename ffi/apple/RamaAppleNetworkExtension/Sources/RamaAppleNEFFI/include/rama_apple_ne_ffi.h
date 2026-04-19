@@ -69,6 +69,16 @@ typedef enum {
     RAMA_FLOW_ACTION_BLOCKED = 3,
 } RamaTransparentProxyFlowAction;
 
+typedef struct {
+    RamaTransparentProxyFlowAction action;
+    RamaTransparentProxyTcpSession* session;
+} RamaTransparentProxyTcpSessionResult;
+
+typedef struct {
+    RamaTransparentProxyFlowAction action;
+    RamaTransparentProxyUdpSession* session;
+} RamaTransparentProxyUdpSessionResult;
+
 /// Protocol filter used by network interception rules.
 typedef enum {
     /// Match any protocol.
@@ -262,13 +272,6 @@ void rama_transparent_proxy_config_free(
     RamaTransparentProxyConfig* config
 );
 
-/// Ask Rust what to do with a flow.
-///
-/// Returns `RAMA_FLOW_ACTION_PASSTHROUGH` if `meta` is NULL.
-RamaTransparentProxyFlowAction rama_transparent_proxy_flow_action(
-    const RamaTransparentProxyFlowMeta* meta
-);
-
 /// Allocate a new transparent proxy engine.
 ///
 /// Returns NULL on failure.
@@ -285,12 +288,9 @@ RamaTransparentProxyEngine* rama_transparent_proxy_engine_new_with_config(RamaBy
 /// NULL is allowed and ignored.
 void rama_transparent_proxy_engine_free(RamaTransparentProxyEngine* engine);
 
-/// Start the transparent proxy engine.
-///
-/// Returns empty bytes on success, or a UTF-8 error message on failure.
-RamaBytesOwned rama_transparent_proxy_engine_start(RamaTransparentProxyEngine* engine);
-
 /// Stop the transparent proxy engine with provider stop reason.
+///
+/// Consumes the engine pointer. Do not free the engine again after calling this.
 ///
 /// NULL is allowed and ignored.
 /// Apple reference:
@@ -302,8 +302,8 @@ void rama_transparent_proxy_engine_stop(RamaTransparentProxyEngine* engine, int3
 /// Create a TCP session for one intercepted flow.
 ///
 /// `meta` may be NULL (Rust will fall back to default TCP metadata).
-/// Returns NULL if session creation is rejected/fails.
-RamaTransparentProxyTcpSession* rama_transparent_proxy_engine_new_tcp_session(
+/// Returns the merged Rust decision plus an optional session handle.
+RamaTransparentProxyTcpSessionResult rama_transparent_proxy_engine_new_tcp_session(
     RamaTransparentProxyEngine* engine,
     const RamaTransparentProxyFlowMeta* meta,
     RamaTransparentProxyTcpSessionCallbacks callbacks
@@ -333,8 +333,8 @@ void rama_transparent_proxy_tcp_session_cancel(RamaTransparentProxyTcpSession* s
 /// Create a UDP session for one intercepted flow.
 ///
 /// `meta` may be NULL (Rust will fall back to default UDP metadata).
-/// Returns NULL if session creation is rejected/fails.
-RamaTransparentProxyUdpSession* rama_transparent_proxy_engine_new_udp_session(
+/// Returns the merged Rust decision plus an optional session handle.
+RamaTransparentProxyUdpSessionResult rama_transparent_proxy_engine_new_udp_session(
     RamaTransparentProxyEngine* engine,
     const RamaTransparentProxyFlowMeta* meta,
     RamaTransparentProxyUdpSessionCallbacks callbacks

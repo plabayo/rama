@@ -73,7 +73,7 @@ pub(super) async fn try_new_service(
     let tcp_connect_timeout_ms = demo_config.tcp_connect_timeout_ms.max(50);
 
     let mitm_svc = new_tcp_service_inner(
-        executor.clone(),
+        executor,
         demo_config,
         tls_mitm_relay_policy,
         tls_mitm_relay,

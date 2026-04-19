@@ -11,7 +11,7 @@ use super::{
     TransparentProxyEngine, TransparentProxyHandlerFactory, TransparentProxyServiceContext,
 };
 
-pub(crate) struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRuntimeFactory> {
+pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRuntimeFactory> {
     handler_factory: F,
     tcp_flow_buffer_size: Option<usize>,
     opaque_config: Option<Arc<[u8]>>,
@@ -23,7 +23,7 @@ where
     F: TransparentProxyHandlerFactory,
 {
     #[must_use]
-    pub(crate) fn new(factory: F) -> Self {
+    pub fn new(factory: F) -> Self {
         Self {
             handler_factory: factory,
             tcp_flow_buffer_size: None,
@@ -32,7 +32,7 @@ where
         }
     }
 
-    pub(crate) fn with_runtime_factory<R: TransparentProxyAsyncRuntimeFactory>(
+    pub fn with_runtime_factory<R: TransparentProxyAsyncRuntimeFactory>(
         self,
         runtime_factory: R,
     ) -> TransparentProxyEngineBuilder<F, R> {
@@ -60,13 +60,12 @@ where
     }
 
     #[must_use]
-    pub(crate) fn opaque_config(mut self, opaque_config: Option<Arc<[u8]>>) -> Self {
+    pub fn opaque_config(mut self, opaque_config: Option<Arc<[u8]>>) -> Self {
         self.opaque_config = opaque_config;
         self
     }
 
-    #[must_use]
-    pub(crate) fn build(self) -> Result<TransparentProxyEngine<F::Handler>, BoxError> {
+    pub fn build(self) -> Result<TransparentProxyEngine<F::Handler>, BoxError> {
         let Self {
             handler_factory,
             tcp_flow_buffer_size,
@@ -88,7 +87,7 @@ where
         let guard = shutdown.guard();
         let ctx = TransparentProxyServiceContext {
             executor: Executor::graceful(guard),
-            opaque_config: opaque_config.clone(),
+            opaque_config,
         };
         let handler = rt
             .block_on(handler_factory.create_transparent_proxy_handler(ctx))

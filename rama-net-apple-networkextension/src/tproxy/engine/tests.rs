@@ -6,11 +6,14 @@ use rama_core::{
     service::{BoxService, service_fn},
 };
 use rama_net::address::HostWithPort;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
 use std::time::{Duration, Instant};
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 type TestTcpService = BoxService<TcpFlow, (), Infallible>;
 type TestUdpService = BoxService<UdpFlow, (), Infallible>;
