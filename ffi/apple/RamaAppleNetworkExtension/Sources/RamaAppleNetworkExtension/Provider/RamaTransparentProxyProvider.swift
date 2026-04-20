@@ -311,7 +311,7 @@ private final class TcpClientWritePump {
     private var closeRequested = false
     private var closed = false
     private var opened = false
-    private var onDrainedClose: (() -> Void)?
+    private var onDrainedClose: ((Bool) -> Void)?
 
     init(
         flow: NEAppProxyTCPFlow,
@@ -342,10 +342,6 @@ private final class TcpClientWritePump {
         }
     }
 
-    func hasOpenedFlow() -> Bool {
-        queue.sync { opened }
-    }
-
     func enqueue(_ data: Data) {
         guard !data.isEmpty else { return }
         queue.async {
@@ -355,10 +351,10 @@ private final class TcpClientWritePump {
         }
     }
 
-    func closeWhenDrained(_ onDrainedClose: @escaping () -> Void) {
+    func closeWhenDrained(_ onDrainedClose: @escaping (_ wasOpened: Bool) -> Void) {
         queue.async {
             if self.closed {
-                onDrainedClose()
+                onDrainedClose(self.opened)
                 return
             }
 
@@ -405,8 +401,9 @@ private final class TcpClientWritePump {
 
         closed = true
         let onDrainedClose = self.onDrainedClose
+        let wasOpened = self.opened
         self.onDrainedClose = nil
-        onDrainedClose?()
+        onDrainedClose?(wasOpened)
     }
 }
 
@@ -668,8 +665,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     writer.enqueue(data)
                 },
                 onServerClosed: { [weak self] in
-                    writer.closeWhenDrained { [weak self] in
-                        if writer.hasOpenedFlow() {
+                    writer.closeWhenDrained { [weak self] wasOpened in
+                        if wasOpened {
                             flow.closeReadWithError(nil)
                             flow.closeWriteWithError(nil)
                         } else {
