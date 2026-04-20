@@ -74,6 +74,7 @@ impl TcpListenerBuilder {
 
     #[cfg(any(target_os = "windows", target_family = "unix"))]
     #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
+    #[inline(always)]
     /// Creates a new TcpListener, which will be bound to the specified socket.
     ///
     /// The returned listener is ready for accepting connections.
@@ -81,9 +82,7 @@ impl TcpListenerBuilder {
         self,
         socket: rama_net::socket::core::Socket,
     ) -> Result<TcpListener, BoxError> {
-        tokio::task::spawn_blocking(|| bind_socket_internal(socket, self.exec))
-            .await
-            .context("await blocking bind socket task")?
+        bind_socket_internal(socket, self.exec)
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -100,21 +99,17 @@ impl TcpListenerBuilder {
         domain: Domain,
         backlog: Option<i32>,
     ) -> Result<TcpListener, BoxError> {
-        tokio::task::spawn_blocking(move || {
-            let name = name.try_into().map_err(Into::<BoxError>::into)?;
-            let socket = SocketOptions {
-                device: Some(name),
-                ..SocketOptions::default_tcp()
-            }
-            .try_build_socket(domain)
-            .context("create tcp ipv4 socket attached to device")?;
-            socket
-                .listen(backlog.unwrap_or(4096))
-                .context("mark the socket as ready to accept incoming connection requests")?;
-            bind_socket_internal(socket, self.exec)
-        })
-        .await
-        .context("await blocking bind socket task")?
+        let name = name.try_into().map_err(Into::<BoxError>::into)?;
+        let socket = SocketOptions {
+            device: Some(name),
+            ..SocketOptions::default_tcp()
+        }
+        .try_build_socket(domain)
+        .context("create tcp ipv4 socket attached to device")?;
+        socket
+            .listen(backlog.unwrap_or(4096))
+            .context("mark the socket as ready to accept incoming connection requests")?;
+        bind_socket_internal(socket, self.exec)
     }
 }
 

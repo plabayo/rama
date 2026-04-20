@@ -38,8 +38,8 @@ impl Default for ConcurrencyPolicy {
         let cpus = std::thread::available_parallelism()
             .map(std::num::NonZeroUsize::get)
             .unwrap_or(8);
-        let global_limit = (cpus * 512).max(2048);
-        let web_reserved_limit = global_limit * 65 / 100;
+        let global_limit = (cpus * 128).max(2048);
+        let web_reserved_limit = global_limit * 75 / 100;
         let per_app_host_limit = (global_limit / 32).clamp(16, 64);
         let app_host_cache_max_capacity = (global_limit.saturating_mul(8)).max(8192) as u64;
 

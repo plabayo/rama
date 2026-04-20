@@ -97,8 +97,7 @@ impl UnixListenerBuilder {
         self,
         opts: SocketOptions,
     ) -> Result<UnixListener, rama_core::error::BoxError> {
-        let socket =
-            tokio::task::spawn_blocking(move || opts.try_build_socket(Domain::Unix)).await??;
+        let socket = opts.try_build_socket(Domain::Unix)?;
         Ok(self.bind_socket(socket)?)
     }
 }
