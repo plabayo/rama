@@ -182,6 +182,11 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         Output = FlowAction<impl rama::Service<apple_ne::UdpFlow, Output = (), Error = Infallible>>,
     > + Send
     + '_ {
+        // Pass through DNS (port 53), the NE sandbox cannot bind raw UDP sockets,
+        // so DNS forwarding fails with EPERM. Let DNS go directly.
+        if meta.remote_endpoint.as_ref().map(|e| e.port) == Some(53) {
+            return std::future::ready(FlowAction::Passthrough);
+        }
         let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
         let udp_service = self.udp_service.clone();
         std::future::ready(match action {
