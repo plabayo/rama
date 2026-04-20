@@ -766,6 +766,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
         )
 
+        let bootMeta = Self.udpMeta(
+            flow: flow,
+            remoteEndpoint: Self.udpRemoteEndpoint(flow: flow),
+            localEndpoint: Self.udpLocalEndpoint(flow: flow)
+        )
+
         var requestRead: (() -> Void)!
         requestRead = { [weak self] in
             stateQueue.async {
@@ -860,45 +866,40 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
                 self?.logTrace("flow.open ok (udp)")
                 writer.markOpened()
-
-                let bootMeta = Self.udpMeta(
-                    flow: flow,
-                    remoteEndpoint: Self.udpRemoteEndpoint(flow: flow),
-                    localEndpoint: Self.udpLocalEndpoint(flow: flow)
-                )
-                if bootMeta.remoteHost != nil, bootMeta.remotePort != 0 {
-                    switch self?.engine?.newUdpSession(
-                        meta: bootMeta,
-                        onServerDatagram: { data in
-                            writer.enqueue(data)
-                        },
-                        onClientReadDemand: {
-                            requestRead()
-                        },
-                        onServerClosed: {
-                            terminate(nil)
-                        }
-                    ) ?? .passthrough {
-                    case .intercept(let createdSession):
-                        activeSession = createdSession
-                        self?.stateQueue.async {
-                            self?.udpSessions[flowId] = createdSession
-                        }
-                    case .passthrough:
-                        self?.logDebug(
-                            "udp flow switched to passthrough before interception started; closing flow")
-                        terminate(nil)
-                        return
-                    case .blocked:
-                        self?.logInfo("udp flow blocked by rust flow policy")
-                        self?.blockFlow(flow)
-                        return
-                    }
-                } else {
+                if activeSession == nil {
                     requestRead()
                 }
             }
         }
+
+        if bootMeta.remoteHost != nil, bootMeta.remotePort != 0 {
+            switch engine?.newUdpSession(
+                meta: bootMeta,
+                onServerDatagram: { data in
+                    writer.enqueue(data)
+                },
+                onClientReadDemand: {
+                    requestRead()
+                },
+                onServerClosed: {
+                    terminate(nil)
+                }
+            ) ?? .passthrough {
+            case .intercept(let createdSession):
+                stateQueue.async {
+                    activeSession = createdSession
+                    self.udpSessions[flowId] = createdSession
+                }
+            case .passthrough:
+                logDebug("handleNewFlow udp bypassed by rust flow policy before opening flow")
+                return false
+            case .blocked:
+                logInfo("handleNewFlow udp blocked by rust flow policy before opening flow")
+                blockFlow(flow)
+                return true
+            }
+        }
+
         return true
     }
 
