@@ -1,7 +1,8 @@
-use std::{convert::Infallible, future::Future};
+use std::{convert::Infallible, future::Future, sync::Arc};
 
 use rama::{
     Service,
+    extensions::ExtensionsRef,
     net::{
         address::{Host, HostWithPort, ip::private::is_private_ip},
         apple::networkextension::{
@@ -14,12 +15,14 @@ use rama::{
             },
         },
     },
+    service::service_fn,
     telemetry::tracing,
 };
 
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
+mod concurrency;
 mod config;
 mod demo_trace_traffic;
 mod http;
@@ -87,6 +90,7 @@ impl TransparentProxyHandlerFactory for DemoEngineFactory {
 #[derive(Clone)]
 struct DemoTransparentProxyHandler {
     config: TransparentProxyConfig,
+    concurrency_limiter: Arc<concurrency::ConcurrencyLimiter>,
     tcp_service: rama::service::BoxService<apple_ne::TcpFlow, (), Infallible>,
     udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
 }
@@ -101,8 +105,12 @@ impl DemoTransparentProxyHandler {
             TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
         ]);
 
+        let concurrency_limiter =
+            Arc::new(concurrency::ConcurrencyLimiter::new(Default::default()));
+
         Ok(Self {
             config: proxy_config,
+            concurrency_limiter,
             tcp_service,
             udp_service,
         })
@@ -123,12 +131,44 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
     > + Send
     + '_ {
         let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
+        let concurrency_limiter = self.concurrency_limiter.clone();
         let tcp_service = self.tcp_service.clone();
         std::future::ready(match action {
-            TransparentProxyFlowAction::Intercept => FlowAction::Intercept {
-                service: tcp_service,
-                meta,
-            },
+            TransparentProxyFlowAction::Intercept => {
+                let bundle_identifier = meta.source_app_bundle_identifier.as_deref();
+                let (scoped_host, port) = meta
+                    .remote_endpoint
+                    .as_ref()
+                    .map(|endpoint| (Some(&endpoint.host), endpoint.port))
+                    .unwrap_or((None, 0));
+
+                match concurrency_limiter.try_acquire(port, bundle_identifier, scoped_host) {
+                    Ok(permit) => {
+                        let permit = Arc::new(permit);
+                        FlowAction::Intercept {
+                            service: service_fn(move |ingress: apple_ne::TcpFlow| {
+                                let permit = permit.clone();
+                                let tcp_service = tcp_service.clone();
+                                async move {
+                                    ingress.extensions().insert_arc(permit);
+                                    tcp_service.serve(ingress).await
+                                }
+                            }),
+                            meta,
+                        }
+                    }
+                    Err(reason) => {
+                        tracing::debug!(
+                            ?reason,
+                            port,
+                            remote = ?meta.remote_endpoint,
+                            bundle_identifier,
+                            "transparent proxy tcp concurrency admission rejected flow; passing through"
+                        );
+                        FlowAction::Passthrough
+                    }
+                }
+            }
             TransparentProxyFlowAction::Passthrough => FlowAction::Passthrough,
             TransparentProxyFlowAction::Blocked => FlowAction::Blocked,
         })

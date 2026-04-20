@@ -2012,6 +2012,7 @@ dependencies = [
 name = "rama_tproxy_example"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "apple-native-keyring-store",
  "keyring-core",
  "moka",

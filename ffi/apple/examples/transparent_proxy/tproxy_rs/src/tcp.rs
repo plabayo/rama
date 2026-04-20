@@ -105,7 +105,10 @@ pub(super) async fn try_new_service(
                 .context("establish tcp connection")
                 .context_field("address", egress_addr)?;
 
-            mitm_svc.serve(BridgeIo(ingress, egress)).await.into_box_error()
+            mitm_svc
+                .serve(BridgeIo(ingress, egress))
+                .await
+                .into_box_error()
         }
     });
 
