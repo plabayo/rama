@@ -96,10 +96,7 @@ impl TcpStreamConnector for Arc<SocketOptions> {
     type Error = BoxError;
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
-        let opts = self.clone();
-        tokio::task::spawn_blocking(move || tcp_connect_with_socket_opts(&opts, addr))
-            .await
-            .context("wait for blocking tcp bind using custom socket opts")?
+        tcp_connect_with_socket_opts_async(self, addr).await
     }
 }
 
@@ -112,9 +109,7 @@ impl TcpStreamConnector for SocketAddress {
             address: Some(bind_addr),
             ..SocketOptions::default_tcp()
         };
-        tokio::task::spawn_blocking(move || tcp_connect_with_socket_opts(&opts, addr))
-            .await
-            .context("wait for blocking tcp bind using provided Socket Address")?
+        tcp_connect_with_socket_opts_async(&opts, addr).await
     }
 }
 
@@ -124,21 +119,18 @@ impl TcpStreamConnector for rama_net::socket::DeviceName {
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let bind_interface = self.clone();
-        tokio::task::spawn_blocking(move || {
-            tcp_connect_with_socket_opts(
-                &SocketOptions {
-                    device: Some(bind_interface),
-                    ..SocketOptions::default_tcp()
-                },
-                addr,
-            )
-        })
+        tcp_connect_with_socket_opts_async(
+            &SocketOptions {
+                device: Some(bind_interface),
+                ..SocketOptions::default_tcp()
+            },
+            addr,
+        )
         .await
-        .context("wait for blocking tcp bind using provided Socket Address")?
     }
 }
 
-fn tcp_connect_with_socket_opts(
+async fn tcp_connect_with_socket_opts_async(
     opts: &SocketOptions,
     addr: SocketAddr,
 ) -> Result<TcpStream, BoxError> {
@@ -146,15 +138,52 @@ fn tcp_connect_with_socket_opts(
         .try_build_socket(addr.into())
         .context("try to build TCP socket's underlying OS socket")?;
     socket
-        .connect(&addr.into())
-        .context("connect to the provided socket addr")?;
-    socket
         .set_nonblocking(true)
-        .context("set socket non-blocking")?;
-    let stream = tokio::net::TcpStream::from_std(std::net::TcpStream::from(socket))
+        .context("set socket non-blocking before connect")?;
+    match socket.connect(&addr.into()) {
+        Ok(()) => {}
+        Err(err) if nonblocking_connect_in_progress(&err) => {}
+        Err(err) => {
+            return Err(err)
+                .context("connect to the provided socket addr")
+                .into_box_error();
+        }
+    }
+    let stream = TcpStream::try_from_socket(socket, Default::default())
         .context("create tokio tcp stream from created raw (tcp) socket")?;
+    stream
+        .stream
+        .writable()
+        .await
+        .context("wait for tcp socket to become writable after nonblocking connect")?;
+    if let Some(err) = stream
+        .stream
+        .take_error()
+        .context("inspect pending tcp socket error after nonblocking connect")?
+    {
+        return Err(err)
+            .context("complete nonblocking connect to the provided socket addr")
+            .into_box_error();
+    }
 
-    Ok(stream.into())
+    Ok(stream)
+}
+
+fn nonblocking_connect_in_progress(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AlreadyExists
+    ) || nonblocking_connect_in_progress_os(err)
+}
+
+#[cfg(target_family = "unix")]
+fn nonblocking_connect_in_progress_os(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(libc::EINPROGRESS | libc::EALREADY))
+}
+
+#[cfg(not(target_family = "unix"))]
+fn nonblocking_connect_in_progress_os(_err: &std::io::Error) -> bool {
+    false
 }
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn

@@ -192,9 +192,7 @@ pub async fn bind_udp_with_address<A: TryInto<SocketAddress, Error: Into<BoxErro
 pub async fn bind_udp_with_socket(
     socket: rama_net::socket::core::Socket,
 ) -> Result<UdpSocket, BoxError> {
-    tokio::task::spawn_blocking(|| bind_socket_internal(socket))
-        .await
-        .context("await blocking bind socket task")?
+    bind_socket_internal(socket)
 }
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -210,18 +208,14 @@ pub async fn bind_udp_with_device<
 >(
     name: N,
 ) -> Result<UdpSocket, BoxError> {
-    tokio::task::spawn_blocking(|| {
-        let name = name.try_into().map_err(Into::<BoxError>::into)?;
-        let socket = SocketOptions {
-            device: Some(name),
-            ..SocketOptions::default_udp()
-        }
-        .try_build_socket(Domain::Unix)
-        .context("create udp ipv4 socket attached to device")?;
-        bind_socket_internal(socket)
-    })
-    .await
-    .context("await blocking bind socket task")?
+    let name = name.try_into().map_err(Into::<BoxError>::into)?;
+    let socket = SocketOptions {
+        device: Some(name),
+        ..SocketOptions::default_udp()
+    }
+    .try_build_socket(Domain::Unix)
+    .context("create udp ipv4 socket attached to device")?;
+    bind_socket_internal(socket)
 }
 
 fn bind_socket_internal(socket: rama_net::socket::core::Socket) -> Result<UdpSocket, BoxError> {
