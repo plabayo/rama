@@ -52,49 +52,107 @@ impl Default for ConcurrencyPolicy {
     }
 }
 
-#[derive(Debug, Extension)]
-pub struct ConcurrencyPermit {
-    global: Arc<AtomicUsize>,
-    non_web: Option<Arc<AtomicUsize>>,
-    app_host: Option<AppHostPermit>,
+#[derive(Debug)]
+struct AppHostReservation {
+    key: AppHostKeyHash,
+    reservation_ctr: Arc<AtomicUsize>,
+    active_ctr: Arc<AtomicUsize>,
+    reservation_counters: Cache<AppHostKeyHash, Arc<AtomicUsize>>,
+    active_counters: Cache<AppHostKeyHash, Arc<AtomicUsize>>,
+}
+
+impl AppHostReservation {
+    fn activate(&self) {
+        self.active_ctr.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn drop_active(&self) {
+        let prev = self.active_ctr.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(prev > 0, "app-host active counter underflow");
+        if prev == 1 {
+            invalidate_if_zero(&self.active_counters, self.key, &self.active_ctr);
+        }
+    }
+}
+
+impl Drop for AppHostReservation {
+    fn drop(&mut self) {
+        let prev = self.reservation_ctr.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(prev > 0, "app-host reservation counter underflow");
+        if prev == 1 {
+            invalidate_if_zero(&self.reservation_counters, self.key, &self.reservation_ctr);
+        }
+    }
 }
 
 #[derive(Debug)]
-struct AppHostPermit {
-    key: AppHostKeyHash,
-    ctr: Arc<AtomicUsize>,
-    counters: Cache<AppHostKeyHash, Arc<AtomicUsize>>,
+struct ConcurrencyReservationInner {
+    reservation_global: Arc<AtomicUsize>,
+    active_global: Arc<AtomicUsize>,
+    reservation_non_web: Option<Arc<AtomicUsize>>,
+    active_non_web: Option<Arc<AtomicUsize>>,
+    app_host: Option<AppHostReservation>,
+}
+
+impl Drop for ConcurrencyReservationInner {
+    fn drop(&mut self) {
+        self.reservation_global.fetch_sub(1, Ordering::AcqRel);
+        if let Some(counter) = &self.reservation_non_web {
+            counter.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConcurrencyReservation {
+    inner: Arc<ConcurrencyReservationInner>,
+}
+
+impl ConcurrencyReservation {
+    #[must_use]
+    pub fn activate(&self) -> ConcurrencyPermit {
+        self.inner.active_global.fetch_add(1, Ordering::AcqRel);
+        if let Some(counter) = &self.inner.active_non_web {
+            counter.fetch_add(1, Ordering::AcqRel);
+        }
+        if let Some(app_host) = &self.inner.app_host {
+            app_host.activate();
+        }
+
+        ConcurrencyPermit {
+            reservation: self.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Extension)]
+pub struct ConcurrencyPermit {
+    reservation: ConcurrencyReservation,
 }
 
 impl Drop for ConcurrencyPermit {
     fn drop(&mut self) {
-        self.global.fetch_sub(1, Ordering::AcqRel);
-
-        if let Some(non_web) = &self.non_web {
-            non_web.fetch_sub(1, Ordering::AcqRel);
+        self.reservation
+            .inner
+            .active_global
+            .fetch_sub(1, Ordering::AcqRel);
+        if let Some(counter) = &self.reservation.inner.active_non_web {
+            counter.fetch_sub(1, Ordering::AcqRel);
         }
-
-        if let Some(app_host) = self.app_host.take() {
-            let prev = app_host.ctr.fetch_sub(1, Ordering::AcqRel);
-            debug_assert!(prev > 0, "app-host counter underflow");
-
-            if prev == 1 {
-                if let Some(current) = app_host.counters.get(&app_host.key) {
-                    if Arc::ptr_eq(&current, &app_host.ctr) && current.load(Ordering::Acquire) == 0
-                    {
-                        app_host.counters.invalidate(&app_host.key);
-                    }
-                }
-            }
+        if let Some(app_host) = &self.reservation.inner.app_host {
+            app_host.drop_active();
         }
     }
 }
 
 #[derive(Debug)]
 pub struct ConcurrencyLimiter {
-    global: Arc<AtomicUsize>,
-    non_web: Arc<AtomicUsize>,
-    app_host_counters: Cache<AppHostKeyHash, Arc<AtomicUsize>>,
+    reserved_global: Arc<AtomicUsize>,
+    active_global: Arc<AtomicUsize>,
+    reserved_non_web: Arc<AtomicUsize>,
+    active_non_web: Arc<AtomicUsize>,
+    reserved_app_host_counters: Cache<AppHostKeyHash, Arc<AtomicUsize>>,
+    active_app_host_counters: Cache<AppHostKeyHash, Arc<AtomicUsize>>,
     app_host_hasher: RandomState,
     policy: ConcurrencyPolicy,
 }
@@ -103,9 +161,14 @@ impl ConcurrencyLimiter {
     #[must_use]
     pub fn new(policy: ConcurrencyPolicy) -> Self {
         Self {
-            global: Arc::new(AtomicUsize::new(0)),
-            non_web: Arc::new(AtomicUsize::new(0)),
-            app_host_counters: Cache::builder()
+            reserved_global: Arc::new(AtomicUsize::new(0)),
+            active_global: Arc::new(AtomicUsize::new(0)),
+            reserved_non_web: Arc::new(AtomicUsize::new(0)),
+            active_non_web: Arc::new(AtomicUsize::new(0)),
+            reserved_app_host_counters: Cache::builder()
+                .max_capacity(policy.app_host_cache_max_capacity)
+                .build(),
+            active_app_host_counters: Cache::builder()
                 .max_capacity(policy.app_host_cache_max_capacity)
                 .build(),
             app_host_hasher: RandomState::default(),
@@ -113,87 +176,76 @@ impl ConcurrencyLimiter {
         }
     }
 
-    pub fn try_acquire(
+    pub fn try_reserve(
         &self,
         port: u16,
         bundle_identifier: Option<&str>,
         host: Option<&Host>,
-    ) -> Result<ConcurrencyPermit, RejectReason> {
-        let global = self
-            .try_acquire_counter(&self.global, self.policy.global_limit)
-            .ok_or(RejectReason::Global)?;
+    ) -> Result<ConcurrencyReservation, RejectReason> {
+        let reservation_global =
+            try_increment_counter(&self.reserved_global, self.policy.global_limit)
+                .ok_or(RejectReason::Global)?;
 
-        let non_web = if is_web_port(port) {
+        let reservation_non_web = if is_web_port(port) {
             None
         } else {
-            match self.try_acquire_counter(&self.non_web, self.policy.non_web_limit()) {
-                Some(counter) => Some(counter),
-                None => {
-                    global.fetch_sub(1, Ordering::AcqRel);
-                    return Err(RejectReason::NonWeb);
-                }
+            if let Some(counter) =
+                try_increment_counter(&self.reserved_non_web, self.policy.non_web_limit())
+            {
+                Some(counter)
+            } else {
+                reservation_global.fetch_sub(1, Ordering::AcqRel);
+                return Err(RejectReason::NonWeb);
             }
         };
 
         let app_host = match (bundle_identifier, host) {
             (Some(bundle_identifier), Some(host)) => {
-                match self.try_acquire_app_host(bundle_identifier, host) {
-                    Some(permit) => Some(permit),
-                    None => {
-                        global.fetch_sub(1, Ordering::AcqRel);
-                        if let Some(non_web) = &non_web {
-                            non_web.fetch_sub(1, Ordering::AcqRel);
-                        }
-                        return Err(RejectReason::AppHost);
+                if let Some(reservation) = self.try_reserve_app_host(bundle_identifier, host) {
+                    Some(reservation)
+                } else {
+                    reservation_global.fetch_sub(1, Ordering::AcqRel);
+                    if let Some(counter) = &reservation_non_web {
+                        counter.fetch_sub(1, Ordering::AcqRel);
                     }
+                    return Err(RejectReason::AppHost);
                 }
             }
             _ => None,
         };
 
-        Ok(ConcurrencyPermit {
-            global,
-            non_web,
-            app_host,
+        Ok(ConcurrencyReservation {
+            inner: Arc::new(ConcurrencyReservationInner {
+                reservation_global,
+                active_global: self.active_global.clone(),
+                reservation_non_web,
+                active_non_web: (!is_web_port(port)).then(|| self.active_non_web.clone()),
+                app_host,
+            }),
         })
     }
 
-    fn try_acquire_counter(
+    fn try_reserve_app_host(
         &self,
-        counter: &Arc<AtomicUsize>,
-        limit: usize,
-    ) -> Option<Arc<AtomicUsize>> {
-        let mut current = counter.load(Ordering::Acquire);
-
-        loop {
-            if current >= limit {
-                return None;
-            }
-
-            match counter.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return Some(counter.clone()),
-                Err(observed) => current = observed,
-            }
-        }
-    }
-
-    fn try_acquire_app_host(&self, bundle_identifier: &str, host: &Host) -> Option<AppHostPermit> {
+        bundle_identifier: &str,
+        host: &Host,
+    ) -> Option<AppHostReservation> {
         let key = AppHostKeyHash(self.hash_app_host(bundle_identifier, host));
-        let counter = self
-            .app_host_counters
+        let reservation_ctr = self
+            .reserved_app_host_counters
             .get_with(key, || Arc::new(AtomicUsize::new(0)));
 
-        self.try_acquire_counter(&counter, self.policy.per_app_host_limit)
-            .map(|ctr| AppHostPermit {
+        try_increment_counter(&reservation_ctr, self.policy.per_app_host_limit).map(
+            |reservation_ctr| AppHostReservation {
                 key,
-                ctr,
-                counters: self.app_host_counters.clone(),
-            })
+                reservation_ctr,
+                active_ctr: self
+                    .active_app_host_counters
+                    .get_with(key, || Arc::new(AtomicUsize::new(0))),
+                reservation_counters: self.reserved_app_host_counters.clone(),
+                active_counters: self.active_app_host_counters.clone(),
+            },
+        )
     }
 
     fn hash_app_host(&self, bundle_identifier: &str, host: &Host) -> u64 {
@@ -202,6 +254,39 @@ impl ConcurrencyLimiter {
         0xff_u8.hash(&mut hasher);
         host.hash(&mut hasher);
         hasher.finish()
+    }
+}
+
+fn try_increment_counter(counter: &Arc<AtomicUsize>, limit: usize) -> Option<Arc<AtomicUsize>> {
+    let mut current = counter.load(Ordering::Acquire);
+
+    loop {
+        if current >= limit {
+            return None;
+        }
+
+        match counter.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Some(counter.clone()),
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn invalidate_if_zero(
+    counters: &Cache<AppHostKeyHash, Arc<AtomicUsize>>,
+    key: AppHostKeyHash,
+    ctr: &Arc<AtomicUsize>,
+) {
+    if let Some(current) = counters.get(&key)
+        && Arc::ptr_eq(&current, ctr)
+        && current.load(Ordering::Acquire) == 0
+    {
+        counters.invalidate(&key);
     }
 }
 
@@ -225,22 +310,22 @@ mod tests {
         let host = Host::EXAMPLE_NAME;
 
         let _non_web_1 = limiter
-            .try_acquire(22, Some("com.example.app"), Some(&host))
+            .try_reserve(22, Some("com.example.app"), Some(&host))
             .unwrap_or_else(|err| panic!("unexpected non-web reject: {err:?}"));
         let _non_web_2 = limiter
-            .try_acquire(25, Some("com.example.app"), Some(&host))
+            .try_reserve(25, Some("com.example.app"), Some(&host))
             .unwrap_or_else(|err| panic!("unexpected non-web reject: {err:?}"));
 
         assert!(matches!(
-            limiter.try_acquire(53, Some("com.example.app"), Some(&host)),
+            limiter.try_reserve(53, Some("com.example.app"), Some(&host)),
             Err(RejectReason::NonWeb)
         ));
 
         let _web_1 = limiter
-            .try_acquire(443, Some("com.example.app"), Some(&host))
+            .try_reserve(443, Some("com.example.app"), Some(&host))
             .unwrap_or_else(|err| panic!("unexpected web reject: {err:?}"));
         let _web_2 = limiter
-            .try_acquire(80, Some("com.example.app"), Some(&host))
+            .try_reserve(80, Some("com.example.app"), Some(&host))
             .unwrap_or_else(|err| panic!("unexpected web reject: {err:?}"));
     }
 
@@ -255,19 +340,19 @@ mod tests {
         let host = Host::EXAMPLE_NAME;
 
         let _permit_1 = limiter
-            .try_acquire(443, Some("com.example.app"), Some(&host))
+            .try_reserve(443, Some("com.example.app"), Some(&host))
             .unwrap_or_else(|err| panic!("unexpected app-host reject: {err:?}"));
         let _permit_2 = limiter
-            .try_acquire(443, Some("com.example.app"), Some(&host))
+            .try_reserve(443, Some("com.example.app"), Some(&host))
             .unwrap_or_else(|err| panic!("unexpected app-host reject: {err:?}"));
 
         assert!(matches!(
-            limiter.try_acquire(443, Some("com.example.app"), Some(&host)),
+            limiter.try_reserve(443, Some("com.example.app"), Some(&host)),
             Err(RejectReason::AppHost)
         ));
 
         let _other_app = limiter
-            .try_acquire(443, Some("com.example.other"), Some(&host))
+            .try_reserve(443, Some("com.example.other"), Some(&host))
             .unwrap_or_else(|err| panic!("unexpected other-app reject: {err:?}"));
     }
 
@@ -281,17 +366,17 @@ mod tests {
         });
 
         let _permit_1 = limiter
-            .try_acquire(443, None, None)
+            .try_reserve(443, None, None)
             .unwrap_or_else(|err| panic!("unexpected reject without scoped key: {err:?}"));
         let _permit_2 = limiter
-            .try_acquire(443, None, None)
+            .try_reserve(443, None, None)
             .unwrap_or_else(|err| panic!("unexpected reject without scoped key: {err:?}"));
         let _permit_3 = limiter
-            .try_acquire(443, None, None)
+            .try_reserve(443, None, None)
             .unwrap_or_else(|err| panic!("unexpected reject without scoped key: {err:?}"));
 
         assert!(matches!(
-            limiter.try_acquire(443, None, None),
+            limiter.try_reserve(443, None, None),
             Err(RejectReason::Global)
         ));
     }

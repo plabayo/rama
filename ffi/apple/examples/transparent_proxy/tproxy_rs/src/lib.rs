@@ -2,7 +2,6 @@ use std::{convert::Infallible, future::Future, sync::Arc};
 
 use rama::{
     Service,
-    extensions::ExtensionsRef,
     net::{
         address::{Host, HostWithPort, ip::private::is_private_ip},
         apple::networkextension::{
@@ -15,7 +14,6 @@ use rama::{
             },
         },
     },
-    service::service_fn,
     telemetry::tracing,
 };
 
@@ -91,13 +89,13 @@ impl TransparentProxyHandlerFactory for DemoEngineFactory {
 struct DemoTransparentProxyHandler {
     config: TransparentProxyConfig,
     concurrency_limiter: Arc<concurrency::ConcurrencyLimiter>,
-    tcp_service: rama::service::BoxService<apple_ne::TcpFlow, (), Infallible>,
+    tcp_mitm_service: tcp::DemoTcpMitmService,
     udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
 }
 
 impl DemoTransparentProxyHandler {
     async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, rama::error::BoxError> {
-        let tcp_service = self::tcp::try_new_service(ctx.clone()).await?.boxed();
+        let tcp_mitm_service = self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
         let udp_service = self::udp::try_new_service(ctx).await?.boxed();
 
         let proxy_config = TransparentProxyConfig::new().with_rules(vec![
@@ -111,7 +109,7 @@ impl DemoTransparentProxyHandler {
         Ok(Self {
             config: proxy_config,
             concurrency_limiter,
-            tcp_service,
+            tcp_mitm_service,
             udp_service,
         })
     }
@@ -132,7 +130,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
     + '_ {
         let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
         let concurrency_limiter = self.concurrency_limiter.clone();
-        let tcp_service = self.tcp_service.clone();
+        let tcp_mitm_service = self.tcp_mitm_service.clone();
         std::future::ready(match action {
             TransparentProxyFlowAction::Intercept => {
                 let bundle_identifier = meta.source_app_bundle_identifier.as_deref();
@@ -142,21 +140,11 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
                     .map(|endpoint| (Some(&endpoint.host), endpoint.port))
                     .unwrap_or((None, 0));
 
-                match concurrency_limiter.try_acquire(port, bundle_identifier, scoped_host) {
-                    Ok(permit) => {
-                        let permit = Arc::new(permit);
-                        FlowAction::Intercept {
-                            service: service_fn(move |ingress: apple_ne::TcpFlow| {
-                                let permit = permit.clone();
-                                let tcp_service = tcp_service.clone();
-                                async move {
-                                    ingress.extensions().insert_arc(permit);
-                                    tcp_service.serve(ingress).await
-                                }
-                            }),
-                            meta,
-                        }
-                    }
+                match concurrency_limiter.try_reserve(port, bundle_identifier, scoped_host) {
+                    Ok(reservation) => FlowAction::Intercept {
+                        service: tcp_mitm_service.new_intercept_service(reservation),
+                        meta,
+                    },
                     Err(reason) => {
                         tracing::debug!(
                             ?reason,
