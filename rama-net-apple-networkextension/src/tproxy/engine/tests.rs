@@ -110,7 +110,6 @@ fn tcp_session_passthrough_by_default() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
         |_| {},
         || {},
-        || {},
     );
     assert!(matches!(decision, SessionFlowAction::Passthrough));
 }
@@ -136,7 +135,6 @@ fn tcp_session_can_be_blocked() {
     let decision = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
         |_| {},
-        || {},
         || {},
     );
     assert!(matches!(decision, SessionFlowAction::Blocked));
@@ -185,7 +183,6 @@ fn tcp_bridge_delivers_server_bytes() {
             let _ = notify_tx.send(());
         },
         || {},
-        || {},
     ) else {
         panic!("expected intercept session");
     };
@@ -196,46 +193,6 @@ fn tcp_bridge_delivers_server_bytes() {
     engine.stop(0);
 
     assert_eq!(got.lock().as_slice(), b"pong");
-}
-
-#[test]
-fn tcp_bridge_requests_client_read_demand() {
-    let demand_count = Arc::new(AtomicUsize::new(0));
-    let demand_count_clone = demand_count.clone();
-    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
-
-    let handler = TestHandler {
-        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
-            meta,
-            service: service_fn(|mut stream: TcpFlow| async move {
-                let mut buf = [0u8; 1];
-                let _ = stream.read(&mut buf).await;
-                Ok(())
-            })
-            .boxed(),
-        }),
-        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
-    };
-    let engine = build_engine(handler);
-
-    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
-        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
-        |_| {},
-        move || {
-            demand_count_clone.fetch_add(1, Ordering::Relaxed);
-            let _ = notify_tx.send(());
-        },
-        || {},
-    ) else {
-        panic!("expected intercept session");
-    };
-
-    session.on_client_bytes(b"x");
-
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
-    engine.stop(0);
-
-    assert!(demand_count.load(Ordering::Relaxed) >= 1);
 }
 
 #[test]
@@ -353,7 +310,6 @@ fn tcp_flow_exposes_meta_extension() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp).with_source_app_pid(777),
         |_| {},
         || {},
-        || {},
     ) else {
         panic!("expected intercept session");
     };
@@ -441,7 +397,6 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
             move |_bytes| {
                 bytes_count.fetch_add(1, Ordering::Relaxed);
             },
-            || {},
             move || {
                 closed_count.fetch_add(1, Ordering::Relaxed);
             },

@@ -241,7 +241,6 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             let context = callbacks.context as usize;
             let on_server_bytes = callbacks.on_server_bytes;
-            let on_client_read_demand = callbacks.on_client_read_demand;
             let on_server_closed = callbacks.on_server_closed;
 
             let engine = unsafe { &*engine };
@@ -262,11 +261,6 @@ macro_rules! __transparent_proxy_ffi_emit {
                                 len: bytes.len(),
                             },
                         );
-                    }
-                }),
-                ::std::sync::Arc::new(move || {
-                    if let Some(callback) = on_client_read_demand {
-                        unsafe { callback(context as *mut ::std::ffi::c_void) };
                     }
                 }),
                 ::std::sync::Arc::new(move || {

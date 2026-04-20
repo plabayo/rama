@@ -14,6 +14,7 @@ use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddresssResolverOverwrite
 use rama_net::address::HostWithPort;
 use rama_net::mode::ConnectIpMode;
 use rama_net::{address::SocketAddress, socket::SocketOptions};
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::error::static_str_error;
 use std::{
     net::{IpAddr, SocketAddr},
@@ -26,6 +27,7 @@ use tokio::sync::{
     Semaphore,
     mpsc::{Sender, channel},
 };
+use tokio::task::JoinHandle;
 
 use crate::TcpStream;
 
@@ -256,6 +258,7 @@ where
     let mut resolved_count = 0;
     let connected = Arc::new(AtomicBool::new(false));
     let sem = Arc::new(Semaphore::new(3));
+    let mut spawned_connect_tasks = SpawnedConnectTasks::default();
 
     let mut index = 0;
     while let Some(output) = output_stream.next().await {
@@ -293,7 +296,7 @@ where
                 let connected = connected.clone();
                 let sem = sem.clone();
 
-                exec.spawn_cancellable_task(
+                let task = exec.spawn_cancellable_task(
                     tcp_connect_inner_task(index, connector, ip, port, connected, tx, sem)
                         .instrument(trace_span!(
                             "tcp::connect",
@@ -304,6 +307,7 @@ where
                             %index,
                         )),
                 );
+                spawned_connect_tasks.push(task);
             }
             Either::B(stream_and_addr) => {
                 connected.store(true, Ordering::Release);
@@ -325,6 +329,25 @@ where
         )
         .context_field("host", host)
         .context_field("port", port))
+    }
+}
+
+#[derive(Default)]
+struct SpawnedConnectTasks {
+    handles: SmallVec<[JoinHandle<Option<()>>; 8]>,
+}
+
+impl SpawnedConnectTasks {
+    fn push(&mut self, handle: JoinHandle<Option<()>>) {
+        self.handles.push(handle);
+    }
+}
+
+impl Drop for SpawnedConnectTasks {
+    fn drop(&mut self) {
+        for handle in self.handles.drain(..) {
+            handle.abort();
+        }
     }
 }
 

@@ -210,6 +210,7 @@ private final class TcpClientReadPump {
                     }
 
                     self.session.onClientBytes(data)
+                    self.requestRead()
                 }
             }
         }
@@ -643,9 +644,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         -> Bool
     {
         let flowId = ObjectIdentifier(flow)
-        let readDemandLock = NSLock()
-        var readPump: TcpClientReadPump?
-        var pendingReadDemand = false
 
         let writer = TcpClientWritePump(
             flow: flow,
@@ -668,16 +666,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 meta: meta,
                 onServerBytes: { data in
                     writer.enqueue(data)
-                },
-                onClientReadDemand: {
-                    readDemandLock.lock()
-                    if let readPump {
-                        readDemandLock.unlock()
-                        readPump.requestRead()
-                        return
-                    }
-                    pendingReadDemand = true
-                    readDemandLock.unlock()
                 },
                 onServerClosed: { [weak self] in
                     writer.closeWhenDrained { [weak self] in
@@ -740,15 +728,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
             self?.logTrace("flow.open ok (tcp)")
             writer.markOpened()
-
-            readDemandLock.lock()
-            readPump = createdReadPump
-            let shouldKickRead = pendingReadDemand
-            pendingReadDemand = false
-            readDemandLock.unlock()
-            if shouldKickRead {
-                createdReadPump.requestRead()
-            }
+            createdReadPump.requestRead()
         }
         return true
     }

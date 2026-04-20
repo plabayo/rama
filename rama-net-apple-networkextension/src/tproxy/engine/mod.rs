@@ -39,7 +39,6 @@ const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
 type BytesSink = Arc<dyn Fn(Bytes) + Send + Sync + 'static>;
 type ClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
 type DemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
-
 pub enum SessionFlowAction<S> {
     Intercept(S),
     Blocked,
@@ -62,17 +61,15 @@ where
         self.handler.transparent_proxy_config()
     }
 
-    pub fn new_tcp_session<OnBytes, OnClosed, OnDemand>(
+    pub fn new_tcp_session<OnBytes, OnClosed>(
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_bytes: OnBytes,
-        on_client_read_demand: OnDemand,
         on_server_closed: OnClosed,
     ) -> SessionFlowAction<TransparentProxyTcpSession>
     where
         OnBytes: Fn(Bytes) + Send + Sync + 'static,
         OnClosed: Fn() + Send + Sync + 'static,
-        OnDemand: Fn() + Send + Sync + 'static,
     {
         let Some(guard) = self.shutdown_guard() else {
             tracing::error!(
@@ -94,7 +91,6 @@ where
                 meta,
                 tcp_flow_buffer_size,
                 on_server_bytes,
-                on_client_read_demand,
                 on_server_closed,
                 handler,
             ),
@@ -148,20 +144,18 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn new_tcp_sesson_flow_action<OnBytes, OnClosed, OnDemand, H>(
+async fn new_tcp_sesson_flow_action<OnBytes, OnClosed, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
     tcp_flow_buffer_size: usize,
     on_server_bytes: OnBytes,
-    on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
     handler: H,
 ) -> SessionFlowAction<TransparentProxyTcpSession>
 where
     OnBytes: Fn(Bytes) + Send + Sync + 'static,
     OnClosed: Fn() + Send + Sync + 'static,
-    OnDemand: Fn() + Send + Sync + 'static,
     H: TransparentProxyHandler,
 {
     let flow_action = handler.match_tcp_flow(exec, meta).await;
@@ -189,14 +183,9 @@ where
 
     let callback_active = Arc::new(parking_lot::Mutex::new(true));
     let user_bytes_sink: BytesSink = Arc::new(on_server_bytes);
-    let user_client_read_demand_sink: DemandSink = Arc::new(on_client_read_demand);
     let user_closed_sink: ClosedSink = Arc::new(on_server_closed);
     let bytes_sink = guarded_bytes_sink(callback_active.clone(), user_bytes_sink);
     let closed_sink = guarded_closed_sink(callback_active.clone(), user_closed_sink);
-    let client_read_demand_sink = guarded_demand_sink(
-        callback_active.clone(),
-        user_client_read_demand_sink.clone(),
-    );
     let remote_endpoint = meta.remote_endpoint.clone();
 
     tracing::debug!(protocol = ?meta.protocol, "new tcp session");
@@ -206,15 +195,10 @@ where
         client_rx,
         eof_rx,
         bytes_sink,
-        client_read_demand_sink.clone(),
         closed_sink,
     ));
 
-    let stream = TcpFlow::new_with_io_demand(
-        user_stream,
-        Some(Executor::graceful(flow_guard.clone())),
-        Some(client_read_demand_sink.clone()),
-    );
+    let stream = TcpFlow::new(user_stream, Some(Executor::graceful(flow_guard.clone())));
     stream.extensions().insert_arc(Arc::new(meta));
     if let Some(remote) = remote_endpoint {
         stream.extensions().insert(ProxyTarget(remote));
@@ -442,7 +426,7 @@ impl TransparentProxyTcpSession {
 
 pub struct TransparentProxyUdpSession {
     client_tx: Option<mpsc::UnboundedSender<Bytes>>,
-    on_client_read_demand: DemandSink,
+    on_client_read_demand: Arc<dyn Fn() + Send + Sync + 'static>,
     service_task: Option<tokio::task::JoinHandle<()>>,
     flow_stop_tx: Option<oneshot::Sender<()>>,
 }
@@ -475,14 +459,10 @@ async fn run_tcp_bridge(
     mut client_rx: mpsc::UnboundedReceiver<Bytes>,
     mut eof_rx: watch::Receiver<bool>,
     on_server_bytes: BytesSink,
-    on_client_read_demand: DemandSink,
     on_server_closed: ClosedSink,
 ) {
     let (mut read_half, mut write_half) = tokio::io::split(internal);
     let mut buf = vec![0u8; 16 * 1024];
-    let mut eof_seen = false;
-
-    on_client_read_demand();
 
     loop {
         tokio::select! {
@@ -496,17 +476,12 @@ async fn run_tcp_bridge(
                          }
                          break;
                      }
-                     if !eof_seen {
-                         on_client_read_demand();
-                     }
                  } else {
-                     eof_seen = true;
                      let _ = write_half.shutdown().await;
                  }
             }
             _ = eof_rx.changed() => {
                 if *eof_rx.borrow() {
-                    eof_seen = true;
                     let _ = write_half.shutdown().await;
                 }
             }
