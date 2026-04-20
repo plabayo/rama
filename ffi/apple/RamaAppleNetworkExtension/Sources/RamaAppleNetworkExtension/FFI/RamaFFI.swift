@@ -332,12 +332,17 @@ final class RamaTransparentProxyEngineHandle {
         let action =
             RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
             ?? .passthrough
+        if action == .intercept, result.session == nil {
+            NSLog(
+                "RamaFFI: ffi returned tcp intercept without a session pointer; coercing decision to passthrough"
+            )
+            callbackBox.release()
+            return .passthrough
+        }
         guard action == .intercept, let sessionPtr = result.session else {
             callbackBox.release()
             switch action {
-            case .intercept:
-                return .passthrough
-            case .passthrough:
+            case .intercept, .passthrough:
                 return .passthrough
             case .blocked:
                 return .blocked
@@ -374,12 +379,17 @@ final class RamaTransparentProxyEngineHandle {
         let action =
             RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
             ?? .passthrough
+        if action == .intercept, result.session == nil {
+            NSLog(
+                "RamaFFI: ffi returned udp intercept without a session pointer; coercing decision to passthrough"
+            )
+            callbackBox.release()
+            return .passthrough
+        }
         guard action == .intercept, let sessionPtr = result.session else {
             callbackBox.release()
             switch action {
-            case .intercept:
-                return .passthrough
-            case .passthrough:
+            case .intercept, .passthrough:
                 return .passthrough
             case .blocked:
                 return .blocked
