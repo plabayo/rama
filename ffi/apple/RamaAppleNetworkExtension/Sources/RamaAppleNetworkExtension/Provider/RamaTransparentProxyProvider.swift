@@ -148,18 +148,6 @@ private func blockedFlowError() -> NSError {
     )
 }
 
-private func tcpFirstByteTimeoutError(timeoutSeconds: TimeInterval) -> NSError {
-    NSError(
-        domain: "NEAppProxyFlowErrorDomain",
-        code: AppProxyFlowErrorCode.timedOut.rawValue,
-        userInfo: [
-            NSLocalizedDescriptionKey: "TCP flow timed out waiting for first client bytes",
-            NSLocalizedFailureReasonErrorKey:
-                "No client payload arrived within \(String(format: "%.2f", timeoutSeconds))s.",
-        ]
-    )
-}
-
 private func tcpUpstreamUnavailableError() -> NSError {
     NSError(
         domain: "NEAppProxyFlowErrorDomain",
@@ -172,35 +160,9 @@ private func tcpUpstreamUnavailableError() -> NSError {
     )
 }
 
-private final class TcpFirstByteWatchdog {
-    private let lock = NSLock()
-    private var completed = false
-
-    func complete() {
-        lock.lock()
-        completed = true
-        lock.unlock()
-    }
-
-    func schedule(timeout: TimeInterval, onTimeout: @escaping () -> Void) {
-        guard timeout > 0 else { return }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
-            self.lock.lock()
-            if self.completed {
-                self.lock.unlock()
-                return
-            }
-            self.completed = true
-            self.lock.unlock()
-            onTimeout()
-        }
-    }
-}
-
 private final class TcpClientReadPump {
     private let flow: NEAppProxyTCPFlow
     private let session: RamaTcpSessionHandle
-    private let firstByteWatchdog: TcpFirstByteWatchdog
     private let logger: (FlowLogMessage) -> Void
     private let onTerminal: (Error?) -> Void
     private let queue = DispatchQueue(label: "rama.tproxy.tcp.read", qos: .utility)
@@ -210,13 +172,11 @@ private final class TcpClientReadPump {
     init(
         flow: NEAppProxyTCPFlow,
         session: RamaTcpSessionHandle,
-        firstByteWatchdog: TcpFirstByteWatchdog,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminal: @escaping (Error?) -> Void
     ) {
         self.flow = flow
         self.session = session
-        self.firstByteWatchdog = firstByteWatchdog
         self.logger = logger
         self.onTerminal = onTerminal
     }
@@ -229,7 +189,6 @@ private final class TcpClientReadPump {
                 self.queue.async {
                     guard !self.closed else { return }
                     self.readPending = false
-                    self.firstByteWatchdog.complete()
 
                     if let error {
                         self.logger(
@@ -548,7 +507,6 @@ private final class UdpClientWritePump {
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
-    private static let tcpFirstByteTimeoutSeconds: TimeInterval = 0.25
     private var engine: RamaTransparentProxyEngineHandle?
     private let stateQueue = DispatchQueue(label: "rama.tproxy.state")
     private var tcpSessions: [ObjectIdentifier: RamaTcpSessionHandle] = [:]
@@ -684,7 +642,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     private func handleTcpFlow(_ flow: NEAppProxyTCPFlow, meta: RamaTransparentProxyFlowMetaBridge)
         -> Bool
     {
-        let firstByteWatchdog = TcpFirstByteWatchdog()
         let flowId = ObjectIdentifier(flow)
         let readDemandLock = NSLock()
         var readPump: TcpClientReadPump?
@@ -696,7 +653,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 self?.logFlowMessage(message)
             },
             onTerminalError: { [weak self] error in
-                firstByteWatchdog.complete()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 self?.stateQueue.async {
@@ -724,7 +680,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     readDemandLock.unlock()
                 },
                 onServerClosed: { [weak self] in
-                    firstByteWatchdog.complete()
                     writer.closeWhenDrained { [weak self] in
                         if writer.hasOpenedFlow() {
                             flow.closeReadWithError(nil)
@@ -757,12 +712,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let createdReadPump = TcpClientReadPump(
             flow: flow,
             session: session,
-            firstByteWatchdog: firstByteWatchdog,
             logger: { [weak self] message in
                 self?.logFlowMessage(message)
             },
             onTerminal: { [weak self] error in
-                firstByteWatchdog.complete()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 self?.stateQueue.async {
@@ -777,7 +730,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
         flow.open(withLocalEndpoint: nil) { [weak self] error in
             if let error {
-                firstByteWatchdog.complete()
                 self?.logDebug("flow.open error: \(error)")
                 writer.failOpen(error)
                 session.cancel()
@@ -785,20 +737,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     self?.tcpSessions.removeValue(forKey: flowId)
                 }
                 return
-            }
-
-            firstByteWatchdog.schedule(timeout: Self.tcpFirstByteTimeoutSeconds) { [weak self] in
-                let timeout = Self.tcpFirstByteTimeoutSeconds
-                self?.logInfo(
-                    "tcp first-byte timeout \(String(format: "%.2f", timeout))s remote=\(meta.remoteHost ?? "<nil>"):\(meta.remotePort)"
-                )
-                let error = tcpFirstByteTimeoutError(timeoutSeconds: timeout)
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                session.cancel()
-                self?.stateQueue.async {
-                    self?.tcpSessions.removeValue(forKey: flowId)
-                }
             }
             self?.logTrace("flow.open ok (tcp)")
             writer.markOpened()
