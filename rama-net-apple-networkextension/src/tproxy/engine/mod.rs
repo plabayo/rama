@@ -478,6 +478,7 @@ async fn run_tcp_bridge(
                      }
                  } else {
                      let _ = write_half.shutdown().await;
+                     break;
                  }
             }
             _ = eof_rx.changed() => {
