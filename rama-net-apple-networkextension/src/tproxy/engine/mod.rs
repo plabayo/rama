@@ -204,8 +204,7 @@ where
         stream.extensions().insert(ProxyTarget(remote));
     }
 
-    let service_task = flow_guard.spawn_task_fn(async move |guard| {
-        stream.extensions().insert(guard);
+    let service_task = flow_guard.spawn_task(async move {
         let Ok(()) = service.serve(stream).await;
     });
 
@@ -269,7 +268,6 @@ where
         datagram_sink,
         Some(client_read_demand_sink.clone()),
     );
-    flow.extensions().insert(flow_guard.clone());
     flow.extensions().insert_arc(Arc::new(meta));
     if let Some(remote) = remote_endpoint {
         flow.extensions().insert(ProxyTarget(remote));

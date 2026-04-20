@@ -22,15 +22,12 @@
 #[cfg(target_family = "unix")]
 mod unix_example {
     use rama::{
-        Layer,
-        combinators::Either,
+        Service,
         error::BoxError,
         extensions::ExtensionsRef,
         graceful::ShutdownGuard,
         io::Io,
-        layer::AddInputExtensionLayer,
         rt::Executor,
-        service::service_fn,
         telemetry::tracing::{
             self,
             level_filters::LevelFilter,
@@ -62,56 +59,12 @@ mod unix_example {
             .expect("bind Unix socket");
 
         graceful.spawn_task_fn(async |guard| {
-            async fn handle(mut stream: impl Io + Unpin + ExtensionsRef) -> Result<(), BoxError> {
-                let mut buf = [0u8; 1024];
-
-                let mut cancelled = Box::pin(
-                    stream
-                        .extensions()
-                        .get_ref::<ShutdownGuard>()
-                        .map(|guard| Either::A(guard.clone_weak().into_cancelled()))
-                        .unwrap_or_else(|| Either::B(std::future::pending())),
-                );
-
-                loop {
-                    let n = tokio::select! {
-                        _ = cancelled.as_mut() => {
-                            tracing::info!("stop read loop, shutdown complete");
-                            return Ok(());
-                        }
-                        result = stream.read(&mut buf) => {
-                            result.expect("foo")
-                        }
-                    };
-
-                    if n == 0 {
-                        tracing::info!("stream read empty, exit!");
-                        return Ok(());
-                    }
-
-                    let read_buf = &mut buf[..n];
-                    read_buf.trim_ascii();
-                    if read_buf.is_empty() {
-                        tracing::info!("ignore space-only read");
-                        continue;
-                    }
-
-                    tracing::debug!(
-                        data = %String::from_utf8_lossy(read_buf).trim(),
-                        "reverse received data and exist",
-                    );
-                    read_buf.reverse();
-                    stream.write_all(read_buf).await?;
-                }
-            }
-
             tracing::info!(
                 file.path = %PATH,
                 "ready to unix-serve",
             );
-            listener
-                .serve(AddInputExtensionLayer::new(guard).into_layer(service_fn(handle)))
-                .await;
+            let svc = GracefulUnixService(guard);
+            listener.serve(svc).await;
         });
 
         let duration = graceful.shutdown().await;
@@ -119,6 +72,54 @@ mod unix_example {
             shutdown.duration_ms = %duration.as_millis(),
             "bye!",
         );
+    }
+
+    #[derive(Debug, Clone)]
+    struct GracefulUnixService(ShutdownGuard);
+
+    impl<Stream> Service<Stream> for GracefulUnixService
+    where
+        Stream: Io + Unpin + ExtensionsRef,
+    {
+        type Output = ();
+        type Error = BoxError;
+
+        async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
+            let mut buf = [0u8; 1024];
+
+            let mut cancelled = std::pin::pin!(self.0.clone_weak().into_cancelled());
+
+            loop {
+                let n = tokio::select! {
+                    _ = cancelled.as_mut() => {
+                        tracing::info!("stop read loop, shutdown complete");
+                        return Ok(());
+                    }
+                    result = stream.read(&mut buf) => {
+                        result.expect("foo")
+                    }
+                };
+
+                if n == 0 {
+                    tracing::info!("stream read empty, exit!");
+                    return Ok(());
+                }
+
+                let read_buf = &mut buf[..n];
+                read_buf.trim_ascii();
+                if read_buf.is_empty() {
+                    tracing::info!("ignore space-only read");
+                    continue;
+                }
+
+                tracing::debug!(
+                    data = %String::from_utf8_lossy(read_buf).trim(),
+                    "reverse received data and exist",
+                );
+                read_buf.reverse();
+                stream.write_all(read_buf).await?;
+            }
+        }
     }
 }
 
