@@ -424,6 +424,12 @@ impl TransparentProxyTcpSession {
     }
 }
 
+impl Drop for TransparentProxyTcpSession {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 pub struct TransparentProxyUdpSession {
     client_tx: Option<mpsc::UnboundedSender<Bytes>>,
     on_client_read_demand: Arc<dyn Fn() + Send + Sync + 'static>,
@@ -451,6 +457,12 @@ impl TransparentProxyUdpSession {
         if let Some(task) = self.service_task.take() {
             task.abort();
         }
+    }
+}
+
+impl Drop for TransparentProxyUdpSession {
+    fn drop(&mut self) {
+        self.on_client_close();
     }
 }
 
@@ -484,6 +496,7 @@ async fn run_tcp_bridge(
             _ = eof_rx.changed() => {
                 if *eof_rx.borrow() {
                     let _ = write_half.shutdown().await;
+                    break;
                 }
             }
             read_res = read_half.read(&mut buf) => {
