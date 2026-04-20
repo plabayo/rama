@@ -821,21 +821,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
         }
 
-        flow.open(withLocalEndpoint: nil) { [weak self] error in
-            stateQueue.async {
-                if closed { return }
-                if let error {
-                    self?.logDebug("udp flow.open error: \(error)")
-                    writer.failOpen(error)
-                    return
-                }
-
-                self?.logTrace("flow.open ok (udp)")
-                writer.markOpened()
-                requestRead()
-            }
-        }
-
         switch engine?.newUdpSession(
             meta: bootMeta,
             onServerDatagram: { data in
@@ -860,6 +845,21 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             logInfo("handleNewFlow udp blocked by rust flow policy before opening flow")
             blockFlow(flow)
             return true
+        }
+
+        flow.open(withLocalEndpoint: nil) { [weak self] error in
+            stateQueue.async {
+                if closed { return }
+                if let error {
+                    self?.logDebug("udp flow.open error: \(error)")
+                    writer.failOpen(error)
+                    return
+                }
+
+                self?.logTrace("flow.open ok (udp)")
+                writer.markOpened()
+                requestRead()
+            }
         }
 
         return true
