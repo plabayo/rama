@@ -391,8 +391,10 @@ final class RamaTransparentProxyEngineHandle {
 }
 
 final class RamaTcpSessionHandle {
+    private let lock = NSLock()
     private var sessionPtr: OpaquePointer?
     private let callbackBox: Unmanaged<TcpSessionCallbackBox>
+    private var cancelled = false
 
     fileprivate init(sessionPtr: OpaquePointer, callbackBox: Unmanaged<TcpSessionCallbackBox>) {
         self.sessionPtr = sessionPtr
@@ -400,15 +402,27 @@ final class RamaTcpSessionHandle {
     }
 
     deinit {
-        if let p = sessionPtr {
+        lock.lock()
+        let p = sessionPtr
+        sessionPtr = nil
+        cancelled = true
+        lock.unlock()
+
+        if let p {
             rama_transparent_proxy_tcp_session_free(p)
         }
         callbackBox.release()
     }
 
     func onClientBytes(_ data: Data) {
-        guard let s = sessionPtr else { return }
         guard !data.isEmpty else { return }
+
+        lock.lock()
+        guard !cancelled, let s = sessionPtr else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
 
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
@@ -419,19 +433,32 @@ final class RamaTcpSessionHandle {
     }
 
     func onClientEof() {
-        guard let s = sessionPtr else { return }
+        lock.lock()
+        guard !cancelled, let s = sessionPtr else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
         rama_transparent_proxy_tcp_session_on_client_eof(s)
     }
 
     func cancel() {
-        guard let s = sessionPtr else { return }
+        lock.lock()
+        guard !cancelled, let s = sessionPtr else {
+            lock.unlock()
+            return
+        }
+        cancelled = true
+        lock.unlock()
         rama_transparent_proxy_tcp_session_cancel(s)
     }
 }
 
 final class RamaUdpSessionHandle {
+    private let lock = NSLock()
     private var sessionPtr: OpaquePointer?
     private let callbackBox: Unmanaged<UdpSessionCallbackBox>
+    private var cancelled = false
 
     fileprivate init(sessionPtr: OpaquePointer, callbackBox: Unmanaged<UdpSessionCallbackBox>) {
         self.sessionPtr = sessionPtr
@@ -439,15 +466,27 @@ final class RamaUdpSessionHandle {
     }
 
     deinit {
-        if let p = sessionPtr {
+        lock.lock()
+        let p = sessionPtr
+        sessionPtr = nil
+        cancelled = true
+        lock.unlock()
+
+        if let p {
             rama_transparent_proxy_udp_session_free(p)
         }
         callbackBox.release()
     }
 
     func onClientDatagram(_ data: Data) {
-        guard let s = sessionPtr else { return }
         guard !data.isEmpty else { return }
+
+        lock.lock()
+        guard !cancelled, let s = sessionPtr else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
 
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
@@ -458,7 +497,13 @@ final class RamaUdpSessionHandle {
     }
 
     func onClientClose() {
-        guard let s = sessionPtr else { return }
+        lock.lock()
+        guard !cancelled, let s = sessionPtr else {
+            lock.unlock()
+            return
+        }
+        cancelled = true
+        lock.unlock()
         rama_transparent_proxy_udp_session_on_client_close(s)
     }
 }
