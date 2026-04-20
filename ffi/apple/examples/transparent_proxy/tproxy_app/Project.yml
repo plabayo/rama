@@ -42,6 +42,17 @@ targets:
     platform: macOS
     sources:
       - path: Extension
+    postBuildScripts:
+      - name: Bump CFBundleVersion
+        script: |
+          VERSION=$(date +%Y%m%d%H%M%S)
+          PLIST="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+
+          echo "Updating CFBundleVersion in $PLIST to $VERSION"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
+
+          echo "Re-signing $CODESIGNING_FOLDER_PATH"
+          /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$CODESIGNING_FOLDER_PATH"
     dependencies:
       - package: RamaAppleNetworkExtension
         product: RamaAppleNetworkExtension

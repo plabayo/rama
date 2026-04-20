@@ -21,9 +21,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dist
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: "$(RAMA_TPROXY_CURRENT_PROJECT_VERSION)"
         INFOPLIST_FILE: Host/Info.plist
-        MARKETING_VERSION: 0.1
+        MARKETING_VERSION: "$(RAMA_TPROXY_MARKETING_VERSION)"
         CODE_SIGN_ENTITLEMENTS: Host/Host.entitlements
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
@@ -55,9 +55,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dist.provider
         PRODUCT_NAME: org.ramaproxy.example.tproxy.dist.provider
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: "$(RAMA_TPROXY_CURRENT_PROJECT_VERSION)"
         INFOPLIST_FILE: Extension/Info.plist
-        MARKETING_VERSION: 0.1
+        MARKETING_VERSION: "$(RAMA_TPROXY_MARKETING_VERSION)"
         CODE_SIGN_ENTITLEMENTS: Extension/Extension.entitlements
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
