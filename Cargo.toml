@@ -130,7 +130,7 @@ loom = "0.7"
 matchit = "0.9"
 md5 = "0.8"
 memchr = "2.8"
-mimalloc = { version = "0.1", default-features = false }
+mimalloc = { version = "=0.1.48", default-features = false }
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
