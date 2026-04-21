@@ -35,3 +35,4 @@ mod tcp;
 mod udp;
 
 pub use self::{tcp::TcpFlow, udp::UdpFlow};
+pub use crate::__transparent_proxy_ffi as transparent_proxy_ffi;

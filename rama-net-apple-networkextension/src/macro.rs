@@ -1,5 +1,6 @@
 #[macro_export]
-macro_rules! transparent_proxy_ffi {
+#[doc(hidden)]
+macro_rules! __transparent_proxy_ffi {
     ($($tt:tt)*) => {
         $crate::__transparent_proxy_ffi_parse! {
             [init: ()]
