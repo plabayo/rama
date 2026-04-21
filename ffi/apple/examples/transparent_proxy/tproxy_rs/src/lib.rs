@@ -1,14 +1,16 @@
-use std::net::IpAddr;
+use std::{convert::Infallible, future::Future, sync::Arc};
 
 use rama::{
+    Service,
     net::{
-        address::{Host, HostWithPort},
+        address::{Host, HostWithPort, ip::private::is_private_ip},
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
-                TransparentProxyConfig, TransparentProxyFlowAction, TransparentProxyFlowMeta,
-                TransparentProxyFlowProtocol,
-                TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+                FlowAction, TransparentProxyConfig, TransparentProxyEngineBuilder,
+                TransparentProxyFlowAction, TransparentProxyFlowMeta, TransparentProxyHandler,
+                TransparentProxyHandlerFactory, TransparentProxyNetworkRule,
+                TransparentProxyRuleProtocol, TransparentProxyServiceContext,
             },
         },
     },
@@ -18,6 +20,7 @@ use rama::{
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
+mod concurrency;
 mod config;
 mod demo_trace_traffic;
 mod http;
@@ -45,30 +48,9 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
     init_status
 }
 
-fn proxy_config() -> TransparentProxyConfig {
-    TransparentProxyConfig::new().with_rules(vec![
-        TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
-    ])
-}
-
-fn flow_action(meta: &TransparentProxyFlowMeta) -> TransparentProxyFlowAction {
-    tracing::trace!(
-        protocol = ?meta.protocol,
-        remote = ?meta.remote_endpoint,
-        local = ?meta.local_endpoint,
-        "flow policy action: evaluating (rust callback entered)"
-    );
-
-    if meta.protocol != TransparentProxyFlowProtocol::Tcp {
-        return TransparentProxyFlowAction::Passthrough;
-    }
-
-    flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref())
-}
-
 #[inline(always)]
 fn flow_action_for_remote_endpoint(
-    remote_endpoint: Option<&HostWithPort>
+    remote_endpoint: Option<&HostWithPort>,
 ) -> TransparentProxyFlowAction {
     let Some(target) = remote_endpoint else {
         return TransparentProxyFlowAction::Passthrough;
@@ -76,27 +58,137 @@ fn flow_action_for_remote_endpoint(
 
     match &target.host {
         Host::Name(_) => TransparentProxyFlowAction::Intercept,
-        Host::Address(IpAddr::V4(addr)) => {
-            if !addr.is_loopback() && !addr.is_private() {
-                TransparentProxyFlowAction::Intercept
-            } else {
+        Host::Address(addr) => {
+            if is_private_ip(*addr) && !addr.is_loopback() {
+                // non-loopback private ip addreses,
+                // as to ensure e2e ffi tests do still run :)
                 TransparentProxyFlowAction::Passthrough
-            }
-        }
-        Host::Address(IpAddr::V6(addr)) => {
-            if !addr.is_loopback() && !addr.is_unique_local() {
-                TransparentProxyFlowAction::Intercept
             } else {
-                TransparentProxyFlowAction::Passthrough
+                TransparentProxyFlowAction::Intercept
             }
         }
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct DemoEngineFactory;
+
+impl TransparentProxyHandlerFactory for DemoEngineFactory {
+    type Handler = DemoTransparentProxyHandler;
+    type Error = rama::error::BoxError;
+
+    fn create_transparent_proxy_handler(
+        &self,
+        ctx: TransparentProxyServiceContext,
+    ) -> impl Future<Output = Result<Self::Handler, Self::Error>> + Send {
+        DemoTransparentProxyHandler::try_new(ctx)
+    }
+}
+
+#[derive(Clone)]
+struct DemoTransparentProxyHandler {
+    config: TransparentProxyConfig,
+    concurrency_limiter: Arc<concurrency::ConcurrencyLimiter>,
+    tcp_mitm_service: tcp::DemoTcpMitmService,
+    udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
+}
+
+impl DemoTransparentProxyHandler {
+    async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, rama::error::BoxError> {
+        let tcp_mitm_service = self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
+        let udp_service = self::udp::try_new_service(ctx).await?.boxed();
+
+        let proxy_config = TransparentProxyConfig::new().with_rules(vec![
+            TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
+            TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
+        ]);
+
+        let concurrency_limiter =
+            Arc::new(concurrency::ConcurrencyLimiter::new(Default::default()));
+
+        Ok(Self {
+            config: proxy_config,
+            concurrency_limiter,
+            tcp_mitm_service,
+            udp_service,
+        })
+    }
+}
+
+impl TransparentProxyHandler for DemoTransparentProxyHandler {
+    fn transparent_proxy_config(&self) -> TransparentProxyConfig {
+        self.config.clone()
+    }
+
+    fn match_tcp_flow(
+        &self,
+        _exec: rama::rt::Executor,
+        meta: TransparentProxyFlowMeta,
+    ) -> impl Future<
+        Output = FlowAction<impl rama::Service<apple_ne::TcpFlow, Output = (), Error = Infallible>>,
+    > + Send
+    + '_ {
+        let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
+        let concurrency_limiter = self.concurrency_limiter.clone();
+        let tcp_mitm_service = self.tcp_mitm_service.clone();
+        std::future::ready(match action {
+            TransparentProxyFlowAction::Intercept => {
+                let bundle_identifier = meta.source_app_bundle_identifier.as_deref();
+                let (scoped_host, port) = meta
+                    .remote_endpoint
+                    .as_ref()
+                    .map(|endpoint| (Some(&endpoint.host), endpoint.port))
+                    .unwrap_or((None, 0));
+
+                match concurrency_limiter.try_reserve(port, bundle_identifier, scoped_host) {
+                    Ok(reservation) => FlowAction::Intercept {
+                        service: tcp_mitm_service.new_intercept_service(reservation),
+                        meta,
+                    },
+                    Err(reason) => {
+                        tracing::debug!(
+                            ?reason,
+                            port,
+                            remote = ?meta.remote_endpoint,
+                            bundle_identifier,
+                            "transparent proxy tcp concurrency admission rejected flow; passing through"
+                        );
+                        FlowAction::Passthrough
+                    }
+                }
+            }
+            TransparentProxyFlowAction::Passthrough => FlowAction::Passthrough,
+            TransparentProxyFlowAction::Blocked => FlowAction::Blocked,
+        })
+    }
+
+    fn match_udp_flow(
+        &self,
+        _exec: rama::rt::Executor,
+        meta: TransparentProxyFlowMeta,
+    ) -> impl Future<
+        Output = FlowAction<impl rama::Service<apple_ne::UdpFlow, Output = (), Error = Infallible>>,
+    > + Send
+    + '_ {
+        // Pass through DNS (port 53), the NE sandbox cannot bind raw UDP sockets,
+        // so DNS forwarding fails with EPERM. Let DNS go directly.
+        if meta.remote_endpoint.as_ref().map(|e| e.port) == Some(53) {
+            return std::future::ready(FlowAction::Passthrough);
+        }
+        let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
+        let udp_service = self.udp_service.clone();
+        std::future::ready(match action {
+            TransparentProxyFlowAction::Intercept => FlowAction::Intercept {
+                service: udp_service,
+                meta,
+            },
+            TransparentProxyFlowAction::Passthrough => FlowAction::Passthrough,
+            TransparentProxyFlowAction::Blocked => FlowAction::Blocked,
+        })
+    }
+}
+
 apple_ne::transparent_proxy_ffi! {
     init = init,
-    config = proxy_config,
-    flow_action = flow_action,
-    tcp_service = self::tcp::try_new_service,
-    udp_service = self::udp::new_service,
+    engine_builder = TransparentProxyEngineBuilder::new(DemoEngineFactory),
 }

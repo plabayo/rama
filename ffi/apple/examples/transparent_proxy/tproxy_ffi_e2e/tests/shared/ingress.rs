@@ -153,7 +153,7 @@ async fn serve_one_ingress_connection(
             source_app_pid_is_set: false,
         };
 
-        let raw = unsafe {
+        let result = unsafe {
             bindings::rama_transparent_proxy_engine_new_tcp_session(
                 engine.raw,
                 &meta,
@@ -164,6 +164,12 @@ async fn serve_one_ingress_connection(
                 },
             )
         };
+        assert_eq!(
+            result.action,
+            bindings::RamaTransparentProxyFlowAction_RAMA_FLOW_ACTION_INTERCEPT,
+            "ffi tcp session decision should intercept"
+        );
+        let raw = result.session;
         assert!(!raw.is_null(), "ffi tcp session must allocate");
         raw as usize
     };

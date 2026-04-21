@@ -1,10 +1,14 @@
 mod engine;
+
 mod types;
 
 pub use self::{
     engine::{
-        TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyServiceContext,
-        TransparentProxyTcpSession, TransparentProxyUdpSession,
+        BoxedClosedSink, BoxedDemandSink, BoxedServerBytesSink, BoxedTransparentProxyEngine,
+        DefaultTransparentProxyAsyncRuntimeFactory, FlowAction, SessionFlowAction,
+        TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine, TransparentProxyEngineBuilder,
+        TransparentProxyHandler, TransparentProxyHandlerFactory, TransparentProxyServiceContext,
+        TransparentProxyTcpSession, TransparentProxyUdpSession, log_engine_build_error,
     },
     types::{
         TransparentProxyConfig, TransparentProxyFlowAction, TransparentProxyFlowMeta,

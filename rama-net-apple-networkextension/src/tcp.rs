@@ -8,6 +8,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     ServiceInput,
     extensions::{Extensions, ExtensionsRef},
+    rt::Executor,
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 
@@ -20,16 +21,17 @@ pin_project! {
         #[pin]
         inner: DuplexStream,
         extensions: Extensions,
+        executor: Option<Executor>,
     }
 }
 
 impl TcpFlow {
     #[must_use]
-    /// Create a new [`TcpFlow`].
-    pub(crate) fn new(inner: DuplexStream) -> Self {
+    pub(crate) fn new(inner: DuplexStream, executor: Option<Executor>) -> Self {
         Self {
             inner,
             extensions: Extensions::new(),
+            executor,
         }
     }
 
@@ -39,12 +41,18 @@ impl TcpFlow {
         let Self {
             inner: duplex_stream,
             extensions,
+            executor: _,
         } = self;
 
         ServiceInput {
             input: map(duplex_stream),
             extensions,
         }
+    }
+
+    #[must_use]
+    pub fn executor(&self) -> Option<&Executor> {
+        self.executor.as_ref()
     }
 }
 

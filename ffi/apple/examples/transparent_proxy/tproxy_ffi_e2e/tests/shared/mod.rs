@@ -1,4 +1,3 @@
-pub(crate) mod abi;
 pub(crate) mod bindings;
 pub(crate) mod clients;
 pub(crate) mod env;

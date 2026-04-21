@@ -254,6 +254,7 @@ pub struct TransparentProxyTcpSessionCallbacks {
 pub struct TransparentProxyUdpSessionCallbacks {
     pub context: *mut c_void,
     pub on_server_datagram: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
+    pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 

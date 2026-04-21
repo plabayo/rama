@@ -148,40 +148,78 @@ private func blockedFlowError() -> NSError {
     )
 }
 
-private func tcpFirstByteTimeoutError(timeoutSeconds: TimeInterval) -> NSError {
+private func tcpUpstreamUnavailableError() -> NSError {
     NSError(
         domain: "NEAppProxyFlowErrorDomain",
-        code: AppProxyFlowErrorCode.timedOut.rawValue,
+        code: AppProxyFlowErrorCode.refused.rawValue,
         userInfo: [
-            NSLocalizedDescriptionKey: "TCP flow timed out waiting for first client bytes",
+            NSLocalizedDescriptionKey: "TCP upstream connection failed",
             NSLocalizedFailureReasonErrorKey:
-                "No client payload arrived within \(String(format: "%.2f", timeoutSeconds))s.",
+                "The transparent proxy could not establish the outbound TCP connection.",
         ]
     )
 }
 
-private final class TcpFirstByteWatchdog {
-    private let lock = NSLock()
-    private var completed = false
+private final class TcpClientReadPump {
+    private let flow: NEAppProxyTCPFlow
+    private let session: RamaTcpSessionHandle
+    private let logger: (FlowLogMessage) -> Void
+    private let onTerminal: (Error?) -> Void
+    private let queue = DispatchQueue(label: "rama.tproxy.tcp.read", qos: .utility)
+    private var readPending = false
+    private var closed = false
 
-    func complete() {
-        lock.lock()
-        completed = true
-        lock.unlock()
+    init(
+        flow: NEAppProxyTCPFlow,
+        session: RamaTcpSessionHandle,
+        logger: @escaping (FlowLogMessage) -> Void,
+        onTerminal: @escaping (Error?) -> Void
+    ) {
+        self.flow = flow
+        self.session = session
+        self.logger = logger
+        self.onTerminal = onTerminal
     }
 
-    func schedule(timeout: TimeInterval, onTimeout: @escaping () -> Void) {
-        guard timeout > 0 else { return }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
-            self.lock.lock()
-            if self.completed {
-                self.lock.unlock()
-                return
+    func requestRead() {
+        queue.async {
+            guard !self.closed, !self.readPending else { return }
+            self.readPending = true
+            self.flow.readData { data, error in
+                self.queue.async {
+                    guard !self.closed else { return }
+                    self.readPending = false
+
+                    if let error {
+                        self.logger(
+                            classifyFlowCallbackError(error, operation: "tcp flow.read")
+                        )
+                        self.terminate(with: error)
+                        return
+                    }
+
+                    guard let data, !data.isEmpty else {
+                        self.logger(
+                            FlowLogMessage(
+                                level: .trace,
+                                text: "flow.readData eof"
+                            )
+                        )
+                        self.terminate(with: nil)
+                        return
+                    }
+
+                    self.session.onClientBytes(data)
+                    self.requestRead()
+                }
             }
-            self.completed = true
-            self.lock.unlock()
-            onTimeout()
         }
+    }
+
+    private func terminate(with error: Error?) {
+        guard !closed else { return }
+        closed = true
+        onTerminal(error)
     }
 }
 
@@ -266,16 +304,42 @@ private func classifyFlowCallbackError(
 private final class TcpClientWritePump {
     private let flow: NEAppProxyTCPFlow
     private let logger: (FlowLogMessage) -> Void
+    private let onTerminalError: (Error) -> Void
     private let queue = DispatchQueue(label: "rama.tproxy.tcp.write", qos: .utility)
     private var pending: [Data] = []
     private var writing = false
     private var closeRequested = false
     private var closed = false
-    private var onDrainedClose: (() -> Void)?
+    private var opened = false
+    private var onDrainedClose: ((Bool) -> Void)?
 
-    init(flow: NEAppProxyTCPFlow, logger: @escaping (FlowLogMessage) -> Void) {
+    init(
+        flow: NEAppProxyTCPFlow,
+        logger: @escaping (FlowLogMessage) -> Void,
+        onTerminalError: @escaping (Error) -> Void
+    ) {
         self.flow = flow
         self.logger = logger
+        self.onTerminalError = onTerminalError
+    }
+
+    func markOpened() {
+        queue.async {
+            guard !self.closed else { return }
+            self.opened = true
+            self.flushLocked()
+        }
+    }
+
+    func failOpen(_ error: Error) {
+        queue.async {
+            guard !self.closed else { return }
+            self.closed = true
+            self.closeRequested = true
+            self.pending.removeAll(keepingCapacity: false)
+            self.onDrainedClose = nil
+            self.onTerminalError(error)
+        }
     }
 
     func enqueue(_ data: Data) {
@@ -287,10 +351,10 @@ private final class TcpClientWritePump {
         }
     }
 
-    func closeWhenDrained(_ onDrainedClose: @escaping () -> Void) {
+    func closeWhenDrained(_ onDrainedClose: @escaping (_ wasOpened: Bool) -> Void) {
         queue.async {
             if self.closed {
-                onDrainedClose()
+                onDrainedClose(self.opened)
                 return
             }
 
@@ -301,14 +365,14 @@ private final class TcpClientWritePump {
     }
 
     private func flushLocked() {
-        if writing || pending.isEmpty || closed {
+        if writing || pending.isEmpty || closed || !opened {
             finishCloseIfDrainedLocked()
             return
         }
 
         writing = true
         let chunk = pending.removeFirst()
-        flow.write(chunk) { error in
+        self.flow.write(chunk) { error in
             self.queue.async {
                 self.writing = false
                 if let error {
@@ -323,8 +387,7 @@ private final class TcpClientWritePump {
                     self.closeRequested = true
                     self.pending.removeAll(keepingCapacity: false)
                     self.onDrainedClose = nil
-                    self.flow.closeReadWithError(error)
-                    self.flow.closeWriteWithError(error)
+                    self.onTerminalError(error)
                     return
                 }
 
@@ -338,23 +401,48 @@ private final class TcpClientWritePump {
 
         closed = true
         let onDrainedClose = self.onDrainedClose
+        let wasOpened = self.opened
         self.onDrainedClose = nil
-        onDrainedClose?()
+        onDrainedClose?(wasOpened)
     }
 }
 
 private final class UdpClientWritePump {
     private let flow: NEAppProxyUDPFlow
     private let logger: (FlowLogMessage) -> Void
+    private let onTerminalError: (Error) -> Void
     private let queue = DispatchQueue(label: "rama.tproxy.udp.write", qos: .utility)
     private var pending: [Data] = []
     private var writing = false
     private var closed = false
+    private var opened = false
     private var sentByEndpoint: NWEndpoint?
 
-    init(flow: NEAppProxyUDPFlow, logger: @escaping (FlowLogMessage) -> Void) {
+    init(
+        flow: NEAppProxyUDPFlow,
+        logger: @escaping (FlowLogMessage) -> Void,
+        onTerminalError: @escaping (Error) -> Void
+    ) {
         self.flow = flow
         self.logger = logger
+        self.onTerminalError = onTerminalError
+    }
+
+    func markOpened() {
+        queue.async {
+            guard !self.closed else { return }
+            self.opened = true
+            self.flushLocked()
+        }
+    }
+
+    func failOpen(_ error: Error) {
+        queue.async {
+            guard !self.closed else { return }
+            self.closed = true
+            self.pending.removeAll(keepingCapacity: false)
+            self.onTerminalError(error)
+        }
     }
 
     func setSentByEndpoint(_ endpoint: NWEndpoint?) {
@@ -383,7 +471,7 @@ private final class UdpClientWritePump {
     }
 
     private func flushLocked() {
-        if writing || pending.isEmpty || closed {
+        if writing || pending.isEmpty || closed || !opened {
             return
         }
 
@@ -393,7 +481,7 @@ private final class UdpClientWritePump {
 
         writing = true
         let chunk = pending.removeFirst()
-        flow.writeDatagrams([chunk], sentBy: [endpoint]) { error in
+        self.flow.writeDatagrams([chunk], sentBy: [endpoint]) { error in
             self.queue.async {
                 self.writing = false
                 if let error {
@@ -406,8 +494,7 @@ private final class UdpClientWritePump {
                     )
                     self.closed = true
                     self.pending.removeAll(keepingCapacity: false)
-                    self.flow.closeReadWithError(error)
-                    self.flow.closeWriteWithError(error)
+                    self.onTerminalError(error)
                     return
                 }
 
@@ -418,7 +505,6 @@ private final class UdpClientWritePump {
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
-    private static let tcpFirstByteTimeoutSeconds: TimeInterval = 0.25
     private var engine: RamaTransparentProxyEngineHandle?
     private let stateQueue = DispatchQueue(label: "rama.tproxy.state")
     private var tcpSessions: [ObjectIdentifier: RamaTcpSessionHandle] = [:]
@@ -449,7 +535,31 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
         logInfo("extension startProxy")
 
-        guard let startup = RamaTransparentProxyEngineHandle.config() else {
+        let engineConfigJson = Self.engineConfigJson(
+            protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
+            startOptions: options
+        )
+        if let engineConfigJson {
+            self.logInfo("engine config json bytes=\(engineConfigJson.count)")
+        }
+        guard let engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
+        else {
+            self.logError("engine creation error")
+            completionHandler(
+                NSError(
+                    domain: "org.ramaproxy.example.tproxy.engine",
+                    code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "Failed to create transparent proxy engine"
+                    ]
+                )
+            )
+            return
+        }
+        self.engine = engine
+        self.logInfo("engine created")
+
+        guard let startup = self.engine?.config() else {
             logError("failed to get transparent proxy config from rust")
             let error = NSError(
                 domain: "RamaTransparentProxy.Startup",
@@ -496,23 +606,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
 
             self.logInfo("setTunnelNetworkSettings ok")
-            let engineConfigJson = Self.engineConfigJson(
-                protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
-                startOptions: options
-            )
-            if let engineConfigJson {
-                self.logInfo("engine config json bytes=\(engineConfigJson.count)")
-            }
-            self.engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
-            self.logInfo("engine created")
-            do {
-                try self.engine?.start()
-            } catch {
-                self.logError("engine start error: \(error)")
-                completionHandler(error)
-                return
-            }
-            self.logInfo("engine started")
             completionHandler(nil)
         }
     }
@@ -533,38 +626,11 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
         if let tcp = flow as? NEAppProxyTCPFlow {
             let meta = Self.tcpMeta(flow: tcp)
-            switch RamaTransparentProxyEngineHandle.flowAction(meta: meta) {
-            case .intercept:
-                handleTcpFlow(tcp, meta: meta)
-                return true
-            case .passthrough:
-                logDebug("handleNewFlow tcp bypassed by rust flow policy")
-                return false
-            case .blocked:
-                logInfo("handleNewFlow tcp blocked by rust flow policy")
-                blockFlow(tcp)
-                return true
-            }
+            return handleTcpFlow(tcp, meta: meta)
         }
 
         if let udp = flow as? NEAppProxyUDPFlow {
-            let meta = Self.udpMeta(
-                flow: udp,
-                remoteEndpoint: nil,
-                localEndpoint: Self.udpLocalEndpoint(flow: udp)
-            )
-            switch RamaTransparentProxyEngineHandle.flowAction(meta: meta) {
-            case .intercept:
-                handleUdpFlow(udp)
-                return true
-            case .passthrough:
-                logDebug("handleNewFlow udp bypassed by rust flow policy")
-                return false
-            case .blocked:
-                logInfo("handleNewFlow udp blocked by rust flow policy")
-                blockFlow(udp)
-                return true
-            }
+            return handleUdpFlow(udp)
         }
 
         logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
@@ -572,225 +638,231 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     }
 
     private func handleTcpFlow(_ flow: NEAppProxyTCPFlow, meta: RamaTransparentProxyFlowMetaBridge)
+        -> Bool
     {
-        let writer = TcpClientWritePump(flow: flow) { [weak self] message in
-            self?.logFlowMessage(message)
-        }
-        let firstByteWatchdog = TcpFirstByteWatchdog()
         let flowId = ObjectIdentifier(flow)
 
-        guard
-            let session = engine?.newTcpSession(
+        let writer = TcpClientWritePump(
+            flow: flow,
+            logger: { [weak self] message in
+                self?.logFlowMessage(message)
+            },
+            onTerminalError: { [weak self] error in
+                flow.closeReadWithError(error)
+                flow.closeWriteWithError(error)
+                self?.stateQueue.async {
+                    if let session = self?.tcpSessions.removeValue(forKey: flowId) {
+                        session.cancel()
+                    }
+                }
+            }
+        )
+
+        let decision =
+            engine?.newTcpSession(
                 meta: meta,
                 onServerBytes: { data in
                     writer.enqueue(data)
                 },
                 onServerClosed: { [weak self] in
-                    firstByteWatchdog.complete()
-                    writer.closeWhenDrained { [weak self] in
-                        flow.closeReadWithError(nil)
-                        flow.closeWriteWithError(nil)
+                    writer.closeWhenDrained { [weak self] wasOpened in
+                        if wasOpened {
+                            flow.closeReadWithError(nil)
+                            flow.closeWriteWithError(nil)
+                        } else {
+                            let error = tcpUpstreamUnavailableError()
+                            flow.closeReadWithError(error)
+                            flow.closeWriteWithError(error)
+                        }
                         self?.stateQueue.async {
                             self?.tcpSessions.removeValue(forKey: flowId)
                         }
                     }
                 }
-            )
-        else {
-            logDebug("failed to create tcp session")
-            flow.closeReadWithError(nil)
-            flow.closeWriteWithError(nil)
-            return
+            ) ?? .passthrough
+
+        let session: RamaTcpSessionHandle
+        switch decision {
+        case .intercept(let createdSession):
+            session = createdSession
+        case .passthrough:
+            logDebug("handleNewFlow tcp bypassed by rust flow policy")
+            return false
+        case .blocked:
+            logInfo("handleNewFlow tcp blocked by rust flow policy")
+            blockFlow(flow)
+            return true
         }
+
+        let createdReadPump = TcpClientReadPump(
+            flow: flow,
+            session: session,
+            logger: { [weak self] message in
+                self?.logFlowMessage(message)
+            },
+            onTerminal: { [weak self] error in
+                flow.closeReadWithError(error)
+                flow.closeWriteWithError(error)
+                self?.stateQueue.async {
+                    self?.tcpSessions.removeValue(forKey: flowId)
+                }
+                session.cancel()
+            }
+        )
 
         stateQueue.async {
             self.tcpSessions[flowId] = session
         }
-
-        flow.open(withLocalEndpoint: nil) { error in
+        flow.open(withLocalEndpoint: nil) { [weak self] error in
             if let error {
-                firstByteWatchdog.complete()
-                self.logDebug("flow.open error: \(error)")
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                session.cancel()
-                self.stateQueue.async {
-                    self.tcpSessions.removeValue(forKey: flowId)
-                }
-                return
-            }
-            firstByteWatchdog.schedule(timeout: Self.tcpFirstByteTimeoutSeconds) { [weak self] in
-                let timeout = Self.tcpFirstByteTimeoutSeconds
-                self?.logInfo(
-                    "tcp first-byte timeout \(String(format: "%.2f", timeout))s remote=\(meta.remoteHost ?? "<nil>"):\(meta.remotePort)"
-                )
-                let error = tcpFirstByteTimeoutError(timeoutSeconds: timeout)
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
+                self?.logDebug("flow.open error: \(error)")
+                writer.failOpen(error)
                 session.cancel()
                 self?.stateQueue.async {
                     self?.tcpSessions.removeValue(forKey: flowId)
                 }
+                return
             }
-            self.logTrace("flow.open ok (tcp)")
-            self.tcpReadLoop(
-                flow: flow,
-                session: session,
-                firstByteWatchdog: firstByteWatchdog,
-                flowId: flowId
-            )
+            self?.logTrace("flow.open ok (tcp)")
+            writer.markOpened()
+            createdReadPump.requestRead()
         }
+        return true
     }
 
-    private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) {
-        let writer = UdpClientWritePump(flow: flow) { [weak self] message in
-            self?.logFlowMessage(message)
-        }
+    private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) -> Bool {
         let flowId = ObjectIdentifier(flow)
+        let stateQueue = DispatchQueue(label: "rama.tproxy.udp.flow", qos: .utility)
+        var activeSession: RamaUdpSessionHandle?
+        var readPending = false
+        var demandPending = false
+        var closed = false
+        var writer: UdpClientWritePump!
 
-        flow.open(withLocalEndpoint: nil) { error in
-            if let error {
-                self.logDebug("udp flow.open error: \(error)")
+        let terminate: (Error?) -> Void = { [weak self] error in
+            stateQueue.async {
+                if closed { return }
+                closed = true
+                if let session = activeSession {
+                    session.onClientClose()
+                    activeSession = nil
+                }
+                writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
-                return
+                self?.stateQueue.async {
+                    self?.udpSessions.removeValue(forKey: flowId)
+                }
             }
-            self.logTrace("flow.open ok (udp)")
-            self.udpReadLoop(flow: flow, writer: writer, session: nil, flowId: flowId)
         }
-    }
 
-    private func tcpReadLoop(
-        flow: NEAppProxyTCPFlow,
-        session: RamaTcpSessionHandle,
-        firstByteWatchdog: TcpFirstByteWatchdog,
-        flowId: ObjectIdentifier
-    ) {
-        flow.readData { data, error in
-            firstByteWatchdog.complete()
-            if let error {
-                self.logFlowMessage(
-                    classifyFlowCallbackError(error, operation: "tcp flow.read")
-                )
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                session.cancel()
-                self.stateQueue.async {
-                    self.tcpSessions.removeValue(forKey: flowId)
-                }
-                return
+        writer = UdpClientWritePump(
+            flow: flow,
+            logger: { [weak self] message in
+                self?.logFlowMessage(message)
+            },
+            onTerminalError: { error in
+                terminate(error)
             }
+        )
 
-            guard let data, !data.isEmpty else {
-                self.logTrace("flow.readData eof")
-                flow.closeReadWithError(nil)
-                flow.closeWriteWithError(nil)
-                session.cancel()
-                self.stateQueue.async {
-                    self.tcpSessions.removeValue(forKey: flowId)
-                }
-                return
-            }
+        let bootMeta = Self.udpMeta(
+            flow: flow,
+            remoteEndpoint: Self.udpRemoteEndpoint(flow: flow),
+            localEndpoint: Self.udpLocalEndpoint(flow: flow)
+        )
 
-            session.onClientBytes(data)
-            self.tcpReadLoop(
-                flow: flow,
-                session: session,
-                firstByteWatchdog: firstByteWatchdog,
-                flowId: flowId
-            )
-        }
-    }
+        var requestRead: (() -> Void)!
+        requestRead = { [weak self] in
+            stateQueue.async {
+                guard !closed else { return }
+                demandPending = true
+                guard !readPending else { return }
+                readPending = true
+                demandPending = false
+                flow.readDatagrams { datagrams, endpoints, error in
+                    stateQueue.async {
+                        if closed { return }
+                        readPending = false
+                        if let error {
+                            self?.logFlowMessage(
+                                classifyFlowCallbackError(error, operation: "udp flow.read")
+                            )
+                            terminate(error)
+                            return
+                        }
 
-    private func udpReadLoop(
-        flow: NEAppProxyUDPFlow,
-        writer: UdpClientWritePump,
-        session: RamaUdpSessionHandle?,
-        flowId: ObjectIdentifier
-    ) {
-        flow.readDatagrams { datagrams, endpoints, error in
-            if let error {
-                self.logFlowMessage(
-                    classifyFlowCallbackError(error, operation: "udp flow.read")
-                )
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                // Keep the callback box alive until Rust signals onServerClosed.
-                session?.onClientClose()
-                return
-            }
+                        guard let datagrams, !datagrams.isEmpty else {
+                            self?.logTrace("flow.readDatagrams eof")
+                            terminate(nil)
+                            return
+                        }
 
-            guard let datagrams, !datagrams.isEmpty else {
-                self.logTrace("flow.readDatagrams eof")
-                session?.onClientClose()
-                return
-            }
+                        let endpoint = endpoints?.first
+                        writer.setSentByEndpoint(endpoint)
 
-            let endpoint = endpoints?.first
-            writer.setSentByEndpoint(endpoint)
+                        guard let activeSession else {
+                            self?.logDebug(
+                                "udp flow read received before an intercepted session existed; closing flow"
+                            )
+                            terminate(nil)
+                            return
+                        }
 
-            var activeSession = session
-            if activeSession == nil {
-                let meta = Self.udpMeta(
-                    flow: flow,
-                    remoteEndpoint: endpoint,
-                    localEndpoint: Self.udpLocalEndpoint(flow: flow)
-                )
-                switch RamaTransparentProxyEngineHandle.flowAction(meta: meta) {
-                case .intercept:
-                    break
-                case .passthrough:
-                    self.logDebug(
-                        "udp flow policy switched to passthrough after interception already started; closing flow"
-                    )
-                    flow.closeReadWithError(nil)
-                    flow.closeWriteWithError(nil)
-                    return
-                case .blocked:
-                    self.logInfo("udp flow blocked by rust flow policy")
-                    self.blockFlow(flow)
-                    return
-                }
+                        for datagram in datagrams where !datagram.isEmpty {
+                            activeSession.onClientDatagram(datagram)
+                        }
 
-                activeSession = self.engine?.newUdpSession(
-                    meta: meta,
-                    onServerDatagram: { data in
-                        writer.enqueue(data)
-                    },
-                    onServerClosed: { [weak self] in
-                        writer.close()
-                        flow.closeReadWithError(nil)
-                        flow.closeWriteWithError(nil)
-                        self?.stateQueue.async {
-                            self?.udpSessions.removeValue(forKey: flowId)
+                        if demandPending {
+                            requestRead()
                         }
                     }
-                )
+                }
+            }
+        }
 
-                guard let createdSession = activeSession else {
-                    self.logDebug("failed to create udp session")
-                    flow.closeReadWithError(nil)
-                    flow.closeWriteWithError(nil)
+        switch engine?.newUdpSession(
+            meta: bootMeta,
+            onServerDatagram: { data in
+                writer.enqueue(data)
+            },
+            onClientReadDemand: {
+                requestRead()
+            },
+            onServerClosed: {
+                terminate(nil)
+            }
+        ) ?? .passthrough {
+        case .intercept(let createdSession):
+            stateQueue.async {
+                activeSession = createdSession
+                self.udpSessions[flowId] = createdSession
+            }
+        case .passthrough:
+            logDebug("handleNewFlow udp bypassed by rust flow policy before opening flow")
+            return false
+        case .blocked:
+            logInfo("handleNewFlow udp blocked by rust flow policy before opening flow")
+            blockFlow(flow)
+            return true
+        }
+
+        flow.open(withLocalEndpoint: nil) { [weak self] error in
+            stateQueue.async {
+                if closed { return }
+                if let error {
+                    self?.logDebug("udp flow.open error: \(error)")
+                    writer.failOpen(error)
                     return
                 }
 
-                self.stateQueue.async {
-                    self.udpSessions[flowId] = createdSession
-                }
+                self?.logTrace("flow.open ok (udp)")
+                writer.markOpened()
+                requestRead()
             }
-
-            guard let activeSession else {
-                flow.closeReadWithError(nil)
-                flow.closeWriteWithError(nil)
-                return
-            }
-
-            for datagram in datagrams where !datagram.isEmpty {
-                activeSession.onClientDatagram(datagram)
-            }
-
-            self.udpReadLoop(flow: flow, writer: writer, session: activeSession, flowId: flowId)
         }
+
+        return true
     }
 
     private func blockFlow(_ flow: NEAppProxyFlow) {
@@ -970,6 +1042,17 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return flow.localFlowEndpoint
         }
         return bestEffortLocalEndpoint(flow)
+    }
+
+    private static func udpRemoteEndpoint(flow: NEAppProxyUDPFlow) -> Any? {
+        let object = flow as NSObject
+        if object.responds(to: NSSelectorFromString("remoteFlowEndpoint")) {
+            return object.value(forKey: "remoteFlowEndpoint")
+        }
+        if object.responds(to: NSSelectorFromString("remoteEndpoint")) {
+            return object.value(forKey: "remoteEndpoint")
+        }
+        return nil
     }
 
     private static func bestEffortLocalEndpoint(_ flow: NEAppProxyFlow) -> Any? {

@@ -3,12 +3,7 @@ macro_rules! transparent_proxy_ffi {
     ($($tt:tt)*) => {
         $crate::__transparent_proxy_ffi_parse! {
             [init: ()]
-            [config: ()]
-            [flow_action: ()]
-            [tcp_service: none]
-            [udp_service: none]
-            [runtime: none]
-            [tcp_buffer_size: none]
+            [engine_builder: ()]
             $($tt)*
         }
     };
@@ -19,192 +14,46 @@ macro_rules! transparent_proxy_ffi {
 macro_rules! __transparent_proxy_ffi_parse {
     (
         [init: $init:tt]
-        [config: $config:tt]
-        [flow_action: $flow_action:tt]
-        [tcp_service: $tcp_service:tt]
-        [udp_service: $udp_service:tt]
-        [runtime: $runtime:tt]
-        [tcp_buffer_size: $tcp_buffer_size:tt]
+        [engine_builder: $engine_builder:tt]
     ) => {
         $crate::__transparent_proxy_ffi_require_init!($init);
-        $crate::__transparent_proxy_ffi_require_config!($config);
-        $crate::__transparent_proxy_ffi_require_flow_action!($flow_action);
+        $crate::__transparent_proxy_ffi_require_engine_builder!($engine_builder);
         $crate::__transparent_proxy_ffi_emit! {
             $init,
-            $config,
-            $flow_action,
-            $tcp_service,
-            $udp_service,
-            $runtime,
-            $tcp_buffer_size
+            $engine_builder
         }
     };
     (
         [init: $init:tt]
-        [config: $config:tt]
-        [flow_action: $flow_action:tt]
-        [tcp_service: $tcp_service:tt]
-        [udp_service: $udp_service:tt]
-        [runtime: $runtime:tt]
-        [tcp_buffer_size: $tcp_buffer_size:tt]
+        [engine_builder: $engine_builder:tt]
         ,
         $($rest:tt)*
     ) => {
         $crate::__transparent_proxy_ffi_parse! {
             [init: $init]
-            [config: $config]
-            [flow_action: $flow_action]
-            [tcp_service: $tcp_service]
-            [udp_service: $udp_service]
-            [runtime: $runtime]
-            [tcp_buffer_size: $tcp_buffer_size]
+            [engine_builder: $engine_builder]
             $($rest)*
         }
     };
     (
         [init: $init:tt]
-        [config: $config:tt]
-        [flow_action: $flow_action:tt]
-        [tcp_service: $tcp_service:tt]
-        [udp_service: $udp_service:tt]
-        [runtime: $runtime:tt]
-        [tcp_buffer_size: $tcp_buffer_size:tt]
+        [engine_builder: $engine_builder:tt]
         init = $value:expr $(, $($rest:tt)*)?
     ) => {
         $crate::__transparent_proxy_ffi_parse! {
             [init: ($value)]
-            [config: $config]
-            [flow_action: $flow_action]
-            [tcp_service: $tcp_service]
-            [udp_service: $udp_service]
-            [runtime: $runtime]
-            [tcp_buffer_size: $tcp_buffer_size]
+            [engine_builder: $engine_builder]
             $($($rest)*)?
         }
     };
     (
         [init: $init:tt]
-        [config: $config:tt]
-        [flow_action: $flow_action:tt]
-        [tcp_service: $tcp_service:tt]
-        [udp_service: $udp_service:tt]
-        [runtime: $runtime:tt]
-        [tcp_buffer_size: $tcp_buffer_size:tt]
-        config = $value:expr $(, $($rest:tt)*)?
+        [engine_builder: $engine_builder:tt]
+        engine_builder = $value:expr $(, $($rest:tt)*)?
     ) => {
         $crate::__transparent_proxy_ffi_parse! {
             [init: $init]
-            [config: ($value)]
-            [flow_action: $flow_action]
-            [tcp_service: $tcp_service]
-            [udp_service: $udp_service]
-            [runtime: $runtime]
-            [tcp_buffer_size: $tcp_buffer_size]
-            $($($rest)*)?
-        }
-    };
-    (
-        [init: $init:tt]
-        [config: $config:tt]
-        [flow_action: $flow_action:tt]
-        [tcp_service: $tcp_service:tt]
-        [udp_service: $udp_service:tt]
-        [runtime: $runtime:tt]
-        [tcp_buffer_size: $tcp_buffer_size:tt]
-        flow_action = $value:expr $(, $($rest:tt)*)?
-    ) => {
-        $crate::__transparent_proxy_ffi_parse! {
-            [init: $init]
-            [config: $config]
-            [flow_action: ($value)]
-            [tcp_service: $tcp_service]
-            [udp_service: $udp_service]
-            [runtime: $runtime]
-            [tcp_buffer_size: $tcp_buffer_size]
-            $($($rest)*)?
-        }
-    };
-    (
-        [init: $init:tt]
-        [config: $config:tt]
-        [flow_action: $flow_action:tt]
-        [tcp_service: $tcp_service:tt]
-        [udp_service: $udp_service:tt]
-        [runtime: $runtime:tt]
-        [tcp_buffer_size: $tcp_buffer_size:tt]
-        tcp_service = $value:expr $(, $($rest:tt)*)?
-    ) => {
-        $crate::__transparent_proxy_ffi_parse! {
-            [init: $init]
-            [config: $config]
-            [flow_action: $flow_action]
-            [tcp_service: ($value)]
-            [udp_service: $udp_service]
-            [runtime: $runtime]
-            [tcp_buffer_size: $tcp_buffer_size]
-            $($($rest)*)?
-        }
-    };
-    (
-        [init: $init:tt]
-        [config: $config:tt]
-        [flow_action: $flow_action:tt]
-        [tcp_service: $tcp_service:tt]
-        [udp_service: $udp_service:tt]
-        [runtime: $runtime:tt]
-        [tcp_buffer_size: $tcp_buffer_size:tt]
-        udp_service = $value:expr $(, $($rest:tt)*)?
-    ) => {
-        $crate::__transparent_proxy_ffi_parse! {
-            [init: $init]
-            [config: $config]
-            [flow_action: $flow_action]
-            [tcp_service: $tcp_service]
-            [udp_service: ($value)]
-            [runtime: $runtime]
-            [tcp_buffer_size: $tcp_buffer_size]
-            $($($rest)*)?
-        }
-    };
-    (
-        [init: $init:tt]
-        [config: $config:tt]
-        [flow_action: $flow_action:tt]
-        [tcp_service: $tcp_service:tt]
-        [udp_service: $udp_service:tt]
-        [runtime: $runtime:tt]
-        [tcp_buffer_size: $tcp_buffer_size:tt]
-        runtime = $value:expr $(, $($rest:tt)*)?
-    ) => {
-        $crate::__transparent_proxy_ffi_parse! {
-            [init: $init]
-            [config: $config]
-            [flow_action: $flow_action]
-            [tcp_service: $tcp_service]
-            [udp_service: $udp_service]
-            [runtime: ($value)]
-            [tcp_buffer_size: $tcp_buffer_size]
-            $($($rest)*)?
-        }
-    };
-    (
-        [init: $init:tt]
-        [config: $config:tt]
-        [flow_action: $flow_action:tt]
-        [tcp_service: $tcp_service:tt]
-        [udp_service: $udp_service:tt]
-        [runtime: $runtime:tt]
-        [tcp_buffer_size: $tcp_buffer_size:tt]
-        tcp_buffer_size = $value:expr $(, $($rest:tt)*)?
-    ) => {
-        $crate::__transparent_proxy_ffi_parse! {
-            [init: $init]
-            [config: $config]
-            [flow_action: $flow_action]
-            [tcp_service: $tcp_service]
-            [udp_service: $udp_service]
-            [runtime: $runtime]
-            [tcp_buffer_size: ($value)]
+            [engine_builder: ($value)]
             $($($rest)*)?
         }
     };
@@ -221,71 +70,18 @@ macro_rules! __transparent_proxy_ffi_require_init {
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __transparent_proxy_ffi_require_config {
+macro_rules! __transparent_proxy_ffi_require_engine_builder {
     (()) => {
-        compile_error!("transparent_proxy_ffi!: missing required `config = ...` entry");
+        compile_error!("transparent_proxy_ffi!: missing required `engine_builder = ...` entry");
     };
     (($value:expr)) => {};
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __transparent_proxy_ffi_require_flow_action {
-    (()) => {
-        compile_error!("transparent_proxy_ffi!: missing required `flow_action = ...` entry");
-    };
-    (($value:expr)) => {};
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __transparent_proxy_ffi_apply_tcp_service {
-    ($builder:ident, none) => {};
-    ($builder:ident, ($value:expr)) => {
-        $builder = $builder.with_tcp_service_factory($value);
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __transparent_proxy_ffi_apply_udp_service {
-    ($builder:ident, none) => {};
-    ($builder:ident, ($value:expr)) => {
-        $builder = $builder.with_udp_service_factory($value);
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __transparent_proxy_ffi_apply_runtime {
-    ($builder:ident, none) => {};
-    ($builder:ident, ($value:expr)) => {
-        $builder = $builder.with_runtime(Some(($value)()));
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __transparent_proxy_ffi_apply_tcp_buffer_size {
-    ($builder:ident, none) => {};
-    ($builder:ident, ($value:expr)) => {
-        $builder = $builder.with_tcp_flow_buffer_size(Some($value));
-    };
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __transparent_proxy_ffi_emit {
-    (
-        ($init:expr),
-        ($config:expr),
-        ($flow_action:expr),
-        $tcp_service:tt,
-        $udp_service:tt,
-        $runtime:tt,
-        $tcp_buffer_size:tt
-    ) => {
-        pub type RamaTransparentProxyEngine = $crate::tproxy::TransparentProxyEngine;
+    (($init:expr), ($engine_builder:expr)) => {
+        pub type RamaTransparentProxyEngine = $crate::tproxy::BoxedTransparentProxyEngine;
         pub type RamaTransparentProxyTcpSession = $crate::tproxy::TransparentProxyTcpSession;
         pub type RamaTransparentProxyUdpSession = $crate::tproxy::TransparentProxyUdpSession;
 
@@ -298,10 +94,30 @@ macro_rules! __transparent_proxy_ffi_emit {
         pub type RamaTransparentProxyUdpSessionCallbacks =
             $crate::ffi::tproxy::TransparentProxyUdpSessionCallbacks;
 
+        #[repr(C)]
+        pub struct RamaTransparentProxyTcpSessionResult {
+            pub action: RamaTransparentProxyFlowAction,
+            pub session: *mut RamaTransparentProxyTcpSession,
+        }
+
+        #[repr(C)]
+        pub struct RamaTransparentProxyUdpSessionResult {
+            pub action: RamaTransparentProxyFlowAction,
+            pub session: *mut RamaTransparentProxyUdpSession,
+        }
+
+        fn __rama_build_transparent_proxy_engine(
+            opaque_config: Option<::std::sync::Arc<[u8]>>,
+        ) -> Result<
+            RamaTransparentProxyEngine,
+            ::std::boxed::Box<dyn ::std::error::Error + Send + Sync + 'static>,
+        > {
+            let builder = ($engine_builder).maybe_with_opaque_config(opaque_config);
+            let engine = builder.build()?;
+            Ok(engine.into())
+        }
+
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// This function is FFI entrypoint and may be called from Swift/C.
         pub unsafe extern "C" fn rama_transparent_proxy_initialize(
             config: *const RamaTransparentProxyInitConfig,
         ) -> bool {
@@ -315,21 +131,21 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// Returned [`RamaTransparentProxyConfig`] should be valid.
-        pub unsafe extern "C" fn rama_transparent_proxy_get_config()
-        -> *mut RamaTransparentProxyConfig {
-            let config = ($config)();
+        pub unsafe extern "C" fn rama_transparent_proxy_get_config(
+            engine: *mut RamaTransparentProxyEngine,
+        ) -> *mut RamaTransparentProxyConfig {
+            if engine.is_null() {
+                return ::std::ptr::null_mut();
+            }
+
+            let engine = unsafe { &*engine };
+
+            let config = engine.transparent_proxy_config();
             let ffi_cfg = RamaTransparentProxyConfig::from_rust_type(&config);
             ::std::boxed::Box::into_raw(::std::boxed::Box::new(ffi_cfg))
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `config` must be either null or a pointer returned by
-        /// `rama_transparent_proxy_get_config` that was not freed yet.
         pub unsafe extern "C" fn rama_transparent_proxy_config_free(
             config: *mut RamaTransparentProxyConfig,
         ) {
@@ -342,27 +158,6 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `meta` must be either null or a valid pointer to `RamaTransparentProxyFlowMeta`.
-        pub unsafe extern "C" fn rama_transparent_proxy_flow_action(
-            meta: *const RamaTransparentProxyFlowMeta,
-        ) -> RamaTransparentProxyFlowAction {
-            if meta.is_null() {
-                return RamaTransparentProxyFlowAction::Passthrough;
-            }
-
-            let meta = unsafe { (*meta).as_owned_rust_type() };
-            ::std::convert::Into::<$crate::tproxy::TransparentProxyFlowAction>::into(
-                ($flow_action)(&meta),
-            )
-            .into()
-        }
-
-        #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// This function is FFI entrypoint and may be called from Swift/C.
         pub unsafe extern "C" fn rama_transparent_proxy_engine_new()
         -> *mut RamaTransparentProxyEngine {
             unsafe {
@@ -374,10 +169,6 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// This function is FFI entrypoint and may be called from Swift/C.
-        /// `engine_config` is borrowed for the duration of the call.
         pub unsafe extern "C" fn rama_transparent_proxy_engine_new_with_config(
             engine_config: $crate::ffi::BytesView,
         ) -> *mut RamaTransparentProxyEngine {
@@ -389,25 +180,21 @@ macro_rules! __transparent_proxy_ffi_emit {
                 }))
             };
 
-            let mut engine_builder =
-                $crate::tproxy::TransparentProxyEngineBuilder::new().opaque_config(opaque_config);
-            $crate::__transparent_proxy_ffi_apply_tcp_service!(engine_builder, $tcp_service);
-            $crate::__transparent_proxy_ffi_apply_udp_service!(engine_builder, $udp_service);
-            $crate::__transparent_proxy_ffi_apply_runtime!(engine_builder, $runtime);
-            $crate::__transparent_proxy_ffi_apply_tcp_buffer_size!(
-                engine_builder,
-                $tcp_buffer_size
-            );
+            let engine = match __rama_build_transparent_proxy_engine(opaque_config) {
+                Ok(engine) => engine,
+                Err(err) => {
+                    $crate::tproxy::log_engine_build_error(
+                        err.as_ref(),
+                        "create transparent proxy engine",
+                    );
+                    return ::std::ptr::null_mut();
+                }
+            };
 
-            let engine = engine_builder.build();
             ::std::boxed::Box::into_raw(::std::boxed::Box::new(engine))
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `engine` must either be null or a pointer returned by
-        /// `rama_transparent_proxy_engine_new` that has not been freed.
         pub unsafe extern "C" fn rama_transparent_proxy_engine_free(
             engine: *mut RamaTransparentProxyEngine,
         ) {
@@ -419,47 +206,6 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `engine` must be a valid pointer returned by
-        /// `rama_transparent_proxy_engine_new`.
-        pub unsafe extern "C" fn rama_transparent_proxy_engine_start(
-            engine: *mut RamaTransparentProxyEngine,
-        ) -> $crate::ffi::BytesOwned {
-            if engine.is_null() {
-                return ::std::vec::Vec::from("null transparent proxy engine pointer".as_bytes())
-                    .try_into()
-                    .unwrap_or($crate::ffi::BytesOwned {
-                        ptr: ::std::ptr::null_mut(),
-                        len: 0,
-                        cap: 0,
-                    });
-            }
-
-            match unsafe { (*engine).start() } {
-                Ok(()) => $crate::ffi::BytesOwned {
-                    ptr: ::std::ptr::null_mut(),
-                    len: 0,
-                    cap: 0,
-                },
-                Err(err) => {
-                    err.to_string()
-                        .into_bytes()
-                        .try_into()
-                        .unwrap_or($crate::ffi::BytesOwned {
-                            ptr: ::std::ptr::null_mut(),
-                            len: 0,
-                            cap: 0,
-                        })
-                }
-            }
-        }
-
-        #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `engine` must be a valid pointer returned by
-        /// `rama_transparent_proxy_engine_new`.
         pub unsafe extern "C" fn rama_transparent_proxy_engine_stop(
             engine: *mut RamaTransparentProxyEngine,
             reason: i32,
@@ -468,21 +214,21 @@ macro_rules! __transparent_proxy_ffi_emit {
                 return;
             }
 
-            unsafe { (*engine).stop(reason) };
+            let engine = unsafe { ::std::boxed::Box::from_raw(engine) };
+            engine.stop(reason);
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `engine` must be valid and `meta` must be either null or point to a valid
-        /// `RamaTransparentProxyFlowMeta`.
         pub unsafe extern "C" fn rama_transparent_proxy_engine_new_tcp_session(
             engine: *mut RamaTransparentProxyEngine,
             meta: *const RamaTransparentProxyFlowMeta,
             callbacks: RamaTransparentProxyTcpSessionCallbacks,
-        ) -> *mut RamaTransparentProxyTcpSession {
+        ) -> RamaTransparentProxyTcpSessionResult {
             if engine.is_null() {
-                return ::std::ptr::null_mut();
+                return RamaTransparentProxyTcpSessionResult {
+                    action: RamaTransparentProxyFlowAction::Passthrough,
+                    session: ::std::ptr::null_mut(),
+                };
             }
 
             let typed_meta = if meta.is_null() {
@@ -498,9 +244,9 @@ macro_rules! __transparent_proxy_ffi_emit {
             let on_server_closed = callbacks.on_server_closed;
 
             let engine = unsafe { &*engine };
-            let session = engine.new_tcp_session(
+            let result = engine.new_tcp_session(
                 typed_meta,
-                move |bytes| {
+                ::std::sync::Arc::new(move |bytes: &[u8]| {
                     let Some(callback) = on_server_bytes else {
                         return;
                     };
@@ -516,25 +262,37 @@ macro_rules! __transparent_proxy_ffi_emit {
                             },
                         );
                     }
-                },
-                move || {
+                }),
+                ::std::sync::Arc::new(move || {
                     if let Some(callback) = on_server_closed {
                         unsafe { callback(context as *mut ::std::ffi::c_void) };
                     }
-                },
+                }),
             );
 
-            match session {
-                Some(session) => ::std::boxed::Box::into_raw(::std::boxed::Box::new(session)),
-                None => ::std::ptr::null_mut(),
+            match result {
+                $crate::tproxy::SessionFlowAction::Intercept(session) => {
+                    RamaTransparentProxyTcpSessionResult {
+                        action: RamaTransparentProxyFlowAction::Intercept,
+                        session: ::std::boxed::Box::into_raw(::std::boxed::Box::new(session)),
+                    }
+                }
+                $crate::tproxy::SessionFlowAction::Blocked => {
+                    RamaTransparentProxyTcpSessionResult {
+                        action: RamaTransparentProxyFlowAction::Blocked,
+                        session: ::std::ptr::null_mut(),
+                    }
+                }
+                $crate::tproxy::SessionFlowAction::Passthrough => {
+                    RamaTransparentProxyTcpSessionResult {
+                        action: RamaTransparentProxyFlowAction::Passthrough,
+                        session: ::std::ptr::null_mut(),
+                    }
+                }
             }
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `session` must either be null or a pointer returned by
-        /// `rama_transparent_proxy_engine_new_tcp_session`.
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_free(
             session: *mut RamaTransparentProxyTcpSession,
         ) {
@@ -546,9 +304,6 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `session` must be valid. `bytes` must reference readable memory for this call.
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_client_bytes(
             session: *mut RamaTransparentProxyTcpSession,
             bytes: $crate::ffi::BytesView,
@@ -562,9 +317,6 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `session` must be valid.
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_client_eof(
             session: *mut RamaTransparentProxyTcpSession,
         ) {
@@ -576,9 +328,6 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `session` must be valid.
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_cancel(
             session: *mut RamaTransparentProxyTcpSession,
         ) {
@@ -590,17 +339,16 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `engine` must be valid and `meta` must be either null or point to a valid
-        /// `RamaTransparentProxyFlowMeta`.
         pub unsafe extern "C" fn rama_transparent_proxy_engine_new_udp_session(
             engine: *mut RamaTransparentProxyEngine,
             meta: *const RamaTransparentProxyFlowMeta,
             callbacks: RamaTransparentProxyUdpSessionCallbacks,
-        ) -> *mut RamaTransparentProxyUdpSession {
+        ) -> RamaTransparentProxyUdpSessionResult {
             if engine.is_null() {
-                return ::std::ptr::null_mut();
+                return RamaTransparentProxyUdpSessionResult {
+                    action: RamaTransparentProxyFlowAction::Passthrough,
+                    session: ::std::ptr::null_mut(),
+                };
             }
 
             let typed_meta = if meta.is_null() {
@@ -613,12 +361,13 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             let context = callbacks.context as usize;
             let on_server_datagram = callbacks.on_server_datagram;
+            let on_client_read_demand = callbacks.on_client_read_demand;
             let on_server_closed = callbacks.on_server_closed;
 
             let engine = unsafe { &*engine };
-            let session = engine.new_udp_session(
+            let result = engine.new_udp_session(
                 typed_meta,
-                move |bytes| {
+                ::std::sync::Arc::new(move |bytes: &[u8]| {
                     let Some(callback) = on_server_datagram else {
                         return;
                     };
@@ -634,25 +383,42 @@ macro_rules! __transparent_proxy_ffi_emit {
                             },
                         );
                     }
-                },
-                move || {
+                }),
+                ::std::sync::Arc::new(move || {
+                    if let Some(callback) = on_client_read_demand {
+                        unsafe { callback(context as *mut ::std::ffi::c_void) };
+                    }
+                }),
+                ::std::sync::Arc::new(move || {
                     if let Some(callback) = on_server_closed {
                         unsafe { callback(context as *mut ::std::ffi::c_void) };
                     }
-                },
+                }),
             );
 
-            match session {
-                Some(session) => ::std::boxed::Box::into_raw(::std::boxed::Box::new(session)),
-                None => ::std::ptr::null_mut(),
+            match result {
+                $crate::tproxy::SessionFlowAction::Intercept(session) => {
+                    RamaTransparentProxyUdpSessionResult {
+                        action: RamaTransparentProxyFlowAction::Intercept,
+                        session: ::std::boxed::Box::into_raw(::std::boxed::Box::new(session)),
+                    }
+                }
+                $crate::tproxy::SessionFlowAction::Blocked => {
+                    RamaTransparentProxyUdpSessionResult {
+                        action: RamaTransparentProxyFlowAction::Blocked,
+                        session: ::std::ptr::null_mut(),
+                    }
+                }
+                $crate::tproxy::SessionFlowAction::Passthrough => {
+                    RamaTransparentProxyUdpSessionResult {
+                        action: RamaTransparentProxyFlowAction::Passthrough,
+                        session: ::std::ptr::null_mut(),
+                    }
+                }
             }
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `session` must either be null or a pointer returned by
-        /// `rama_transparent_proxy_engine_new_udp_session`.
         pub unsafe extern "C" fn rama_transparent_proxy_udp_session_free(
             session: *mut RamaTransparentProxyUdpSession,
         ) {
@@ -664,9 +430,6 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `session` must be valid. `bytes` must reference readable memory for this call.
         pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_client_datagram(
             session: *mut RamaTransparentProxyUdpSession,
             bytes: $crate::ffi::BytesView,
@@ -680,9 +443,6 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `session` must be valid.
         pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_client_close(
             session: *mut RamaTransparentProxyUdpSession,
         ) {
@@ -694,17 +454,11 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `message.ptr` must be readable for `message.len` bytes for this call.
         pub unsafe extern "C" fn rama_log(level: u32, message: $crate::ffi::BytesView) {
             unsafe { $crate::ffi::log_callback(level, message) };
         }
 
         #[unsafe(no_mangle)]
-        /// # Safety
-        ///
-        /// `bytes` must have been returned by this Rust FFI layer and not freed yet.
         pub unsafe extern "C" fn rama_owned_bytes_free(bytes: $crate::ffi::BytesOwned) {
             unsafe { bytes.free() };
         }

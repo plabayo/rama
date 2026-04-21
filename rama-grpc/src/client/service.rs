@@ -19,7 +19,9 @@ pub trait GrpcService<ReqBody>: Send + Sync + 'static {
     fn serve(
         &self,
         request: rama_http_types::Request<ReqBody>,
-    ) -> impl Future<Output = Result<rama_http_types::Response<Self::ResponseBody>, Self::Error>>;
+    ) -> impl Future<Output = Result<rama_http_types::Response<Self::ResponseBody>, Self::Error>>
+    + Send
+    + '_;
 }
 
 impl<T, ReqBody, ResBody> GrpcService<ReqBody> for T
@@ -39,7 +41,8 @@ where
         &self,
         request: rama_http_types::Request<ReqBody>,
     ) -> impl Future<Output = Result<rama_http_types::Response<Self::ResponseBody>, Self::Error>>
-    {
+    + Send
+    + '_ {
         Service::serve(self, request)
     }
 }

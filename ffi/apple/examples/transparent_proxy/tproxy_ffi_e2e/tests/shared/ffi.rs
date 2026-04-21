@@ -43,14 +43,6 @@ impl EngineHandle {
         };
         assert!(!raw.is_null(), "ffi engine allocation must succeed");
 
-        let err = unsafe { bindings::rama_transparent_proxy_engine_start(raw) };
-        if !err.ptr.is_null() && err.len > 0 {
-            let bytes = unsafe { std::slice::from_raw_parts(err.ptr.cast::<u8>(), err.len) };
-            let message = String::from_utf8_lossy(bytes).into_owned();
-            unsafe { bindings::rama_owned_bytes_free(err) };
-            panic!("ffi engine start failed: {message}");
-        }
-
         Self { raw }
     }
 }
@@ -75,16 +67,4 @@ pub(crate) fn load_mitm_ca_store() -> Arc<rama::tls::boring::core::x509::store::
     let mut builder = X509StoreBuilder::new().expect("x509 store builder");
     builder.add_cert(cert).expect("add mitm ca cert");
     Arc::new(builder.build())
-}
-
-pub(crate) fn ffi_config_has_rules() {
-    let cfg = unsafe { bindings::rama_transparent_proxy_get_config() };
-    assert!(!cfg.is_null(), "ffi config pointer");
-    unsafe {
-        assert!(
-            (*cfg).rules_len >= 1,
-            "config should contain at least one rule"
-        );
-        bindings::rama_transparent_proxy_config_free(cfg);
-    }
 }

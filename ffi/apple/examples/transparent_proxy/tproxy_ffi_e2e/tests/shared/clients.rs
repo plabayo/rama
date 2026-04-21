@@ -57,6 +57,8 @@ unsafe extern "C" fn on_udp_server_datagram(ctx: *mut c_void, bytes: bindings::R
 
 unsafe extern "C" fn on_udp_server_closed(_ctx: *mut c_void) {}
 
+unsafe extern "C" fn on_udp_client_read_demand(_ctx: *mut c_void) {}
+
 pub(crate) fn build_http_client(
     cert_store: Option<Arc<rama::tls::boring::core::x509::store::X509Store>>,
 ) -> ClientService {
@@ -348,17 +350,24 @@ pub(crate) async fn udp_roundtrip(
             source_app_pid: 0,
             source_app_pid_is_set: false,
         };
-        let raw = unsafe {
+        let result = unsafe {
             bindings::rama_transparent_proxy_engine_new_udp_session(
                 engine.raw,
                 &meta,
                 bindings::RamaTransparentProxyUdpSessionCallbacks {
                     context: ctx_ptr as *mut c_void,
                     on_server_datagram: Some(on_udp_server_datagram),
+                    on_client_read_demand: Some(on_udp_client_read_demand),
                     on_server_closed: Some(on_udp_server_closed),
                 },
             )
         };
+        assert_eq!(
+            result.action,
+            bindings::RamaTransparentProxyFlowAction_RAMA_FLOW_ACTION_INTERCEPT,
+            "ffi udp session decision should intercept"
+        );
+        let raw = result.session;
         assert!(!raw.is_null(), "ffi udp session must allocate");
         raw as usize
     };

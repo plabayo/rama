@@ -13,7 +13,7 @@ use rama::{
     udp::bind_udp_socket_with_connect_default_dns,
 };
 
-pub(super) async fn new_service(
+pub(super) async fn try_new_service(
     _: TransparentProxyServiceContext,
 ) -> Result<impl Service<UdpFlow, Output = (), Error = Infallible>, BoxError> {
     Ok(service_fn(service))

@@ -69,6 +69,16 @@ typedef enum {
     RAMA_FLOW_ACTION_BLOCKED = 3,
 } RamaTransparentProxyFlowAction;
 
+typedef struct {
+    RamaTransparentProxyFlowAction action;
+    RamaTransparentProxyTcpSession* session;
+} RamaTransparentProxyTcpSessionResult;
+
+typedef struct {
+    RamaTransparentProxyFlowAction action;
+    RamaTransparentProxyUdpSession* session;
+} RamaTransparentProxyUdpSessionResult;
+
 /// Protocol filter used by network interception rules.
 typedef enum {
     /// Match any protocol.
@@ -208,6 +218,7 @@ typedef struct {
 } RamaTransparentProxyTcpSessionCallbacks;
 
 typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes);
+typedef void (*RamaUdpClientReadDemandFn)(void* context);
 typedef void (*RamaUdpServerClosedFn)(void* context);
 
 /// Callbacks Swift provides for Rust UDP session events.
@@ -216,6 +227,8 @@ typedef struct {
     void* context;
     /// Called when Rust has one datagram to write to client-side UDP flow.
     RamaUdpServerDatagramFn on_server_datagram;
+    /// Called when Rust requests one client-side UDP read (`flow.readDatagrams`).
+    RamaUdpClientReadDemandFn on_client_read_demand;
     /// Called when Rust closes server-side UDP flow.
     RamaUdpServerClosedFn on_server_closed;
 } RamaTransparentProxyUdpSessionCallbacks;
@@ -247,20 +260,13 @@ bool rama_transparent_proxy_initialize(const RamaTransparentProxyInitConfig* con
 ///
 /// Returns an owned pointer, or NULL on failure.
 /// Caller must release it with `rama_transparent_proxy_config_free`.
-RamaTransparentProxyConfig* rama_transparent_proxy_get_config(void);
+RamaTransparentProxyConfig* rama_transparent_proxy_get_config(RamaTransparentProxyEngine* engine);
 
 /// Free a config previously returned by `rama_transparent_proxy_get_config`.
 ///
 /// NULL is allowed and ignored.
 void rama_transparent_proxy_config_free(
     RamaTransparentProxyConfig* config
-);
-
-/// Ask Rust what to do with a flow.
-///
-/// Returns `RAMA_FLOW_ACTION_PASSTHROUGH` if `meta` is NULL.
-RamaTransparentProxyFlowAction rama_transparent_proxy_flow_action(
-    const RamaTransparentProxyFlowMeta* meta
 );
 
 /// Allocate a new transparent proxy engine.
@@ -279,12 +285,9 @@ RamaTransparentProxyEngine* rama_transparent_proxy_engine_new_with_config(RamaBy
 /// NULL is allowed and ignored.
 void rama_transparent_proxy_engine_free(RamaTransparentProxyEngine* engine);
 
-/// Start the transparent proxy engine.
-///
-/// Returns empty bytes on success, or a UTF-8 error message on failure.
-RamaBytesOwned rama_transparent_proxy_engine_start(RamaTransparentProxyEngine* engine);
-
 /// Stop the transparent proxy engine with provider stop reason.
+///
+/// Consumes the engine pointer. Do not free the engine again after calling this.
 ///
 /// NULL is allowed and ignored.
 /// Apple reference:
@@ -296,8 +299,8 @@ void rama_transparent_proxy_engine_stop(RamaTransparentProxyEngine* engine, int3
 /// Create a TCP session for one intercepted flow.
 ///
 /// `meta` may be NULL (Rust will fall back to default TCP metadata).
-/// Returns NULL if session creation is rejected/fails.
-RamaTransparentProxyTcpSession* rama_transparent_proxy_engine_new_tcp_session(
+/// Returns the merged Rust decision plus an optional session handle.
+RamaTransparentProxyTcpSessionResult rama_transparent_proxy_engine_new_tcp_session(
     RamaTransparentProxyEngine* engine,
     const RamaTransparentProxyFlowMeta* meta,
     RamaTransparentProxyTcpSessionCallbacks callbacks
@@ -327,8 +330,8 @@ void rama_transparent_proxy_tcp_session_cancel(RamaTransparentProxyTcpSession* s
 /// Create a UDP session for one intercepted flow.
 ///
 /// `meta` may be NULL (Rust will fall back to default UDP metadata).
-/// Returns NULL if session creation is rejected/fails.
-RamaTransparentProxyUdpSession* rama_transparent_proxy_engine_new_udp_session(
+/// Returns the merged Rust decision plus an optional session handle.
+RamaTransparentProxyUdpSessionResult rama_transparent_proxy_engine_new_udp_session(
     RamaTransparentProxyEngine* engine,
     const RamaTransparentProxyFlowMeta* meta,
     RamaTransparentProxyUdpSessionCallbacks callbacks

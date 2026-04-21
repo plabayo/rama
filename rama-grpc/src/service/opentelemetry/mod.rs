@@ -73,7 +73,6 @@ const METRICS_EXPORT_PATH: &str = "/opentelemetry.proto.collector.metrics.v1.Met
 #[derive(Debug, Clone)]
 pub struct OtelExporter<S = ()> {
     service: S,
-    handle: tokio::runtime::Handle,
     endpoint: Option<Uri>,
     timeout: Option<Duration>,
     compression: Option<CompressionEncoding>,
@@ -140,7 +139,6 @@ impl<S> OtelExporter<S> {
     pub fn new(service: S) -> Self {
         Self {
             service,
-            handle: tokio::runtime::Handle::current(),
             endpoint: None,
             timeout: None,
             compression: None,
@@ -389,80 +387,67 @@ where
         }
 
         let service = self.service.clone();
-        let handle = self.handle.clone();
         let config = self.trace_config();
         let resource = self.resource.clone();
         let shutdown = self.shutdown.clone();
 
-        // gRPC client futures are !Send, so run them on the runtime via a blocking task.
-        let runtime = handle.clone();
-        let join = handle.spawn_blocking(move || {
-            runtime.block_on(async move {
-                if shutdown.load(Ordering::SeqCst) {
-                    return Err(OTelSdkError::AlreadyShutdown);
-                }
+        if shutdown.load(Ordering::SeqCst) {
+            return Err(OTelSdkError::AlreadyShutdown);
+        }
 
-                let mut grpc = Grpc::new(service, config.endpoint);
-                if let Some(compression) = config.compression {
-                    grpc = grpc
-                        .with_send_compressed(compression)
-                        .with_accept_compressed(compression);
-                }
+        let mut grpc = Grpc::new(service, config.endpoint);
+        if let Some(compression) = config.compression {
+            grpc = grpc
+                .with_send_compressed(compression)
+                .with_accept_compressed(compression);
+        }
 
-                let request_body = {
-                    let guard = resource.read();
-                    span_batch_to_request(&batch, &guard)
-                };
+        let request_body = {
+            let guard = resource.read();
+            span_batch_to_request(&batch, &guard)
+        };
 
-                let mut request = Request::new(request_body);
-                *request.metadata_mut() = config.metadata;
-                if let Some(timeout) = config.timeout {
-                    request
-                        .try_set_timeout(timeout)
-                        .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
-                }
+        let mut request = Request::new(request_body);
+        *request.metadata_mut() = config.metadata;
+        if let Some(timeout) = config.timeout {
+            request
+                .try_set_timeout(timeout)
+                .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
+        }
 
-                let rpc = grpc.unary(
-                    request,
-                    PathAndQuery::from_static(TRACE_EXPORT_PATH),
-                    ProstCodec::<ExportTraceServiceRequest, ExportTraceServiceResponse>::new(),
-                );
+        let rpc = grpc.unary(
+            request,
+            PathAndQuery::from_static(TRACE_EXPORT_PATH),
+            ProstCodec::<ExportTraceServiceRequest, ExportTraceServiceResponse>::new(),
+        );
 
-                let response = match config.timeout {
-                    Some(timeout) => match tokio::time::timeout(timeout, rpc).await {
-                        Ok(result) => result,
-                        Err(_) => return Err(OTelSdkError::Timeout(timeout)),
-                    },
-                    None => rpc.await,
-                }
-                .map_err(|status| {
-                    OTelSdkError::InternalFailure(format!("export error: {status:?}"))
-                })?;
+        let response = match config.timeout {
+            Some(timeout) => match tokio::time::timeout(timeout, rpc).await {
+                Ok(result) => result,
+                Err(_) => return Err(OTelSdkError::Timeout(timeout)),
+            },
+            None => rpc.await,
+        }
+        .map_err(|status| OTelSdkError::InternalFailure(format!("export error: {status:?}")))?;
 
-                otel_debug!(name: "RamaGrpcOtelTraces.ExportSucceeded");
+        otel_debug!(name: "RamaGrpcOtelTraces.ExportSucceeded");
 
-                if let Some(partial_success) =
-                    response
-                        .into_inner()
-                        .partial_success
-                        .filter(|partial_success| {
-                            partial_success.rejected_spans > 0
-                                || !partial_success.error_message.is_empty()
-                        })
-                {
-                    otel_warn!(
-                        name: "RamaGrpcOtelTraces.PartialSuccess",
-                        rejected_spans = partial_success.rejected_spans,
-                        error_message = partial_success.error_message.as_str(),
-                    );
-                }
+        if let Some(partial_success) =
+            response
+                .into_inner()
+                .partial_success
+                .filter(|partial_success| {
+                    partial_success.rejected_spans > 0 || !partial_success.error_message.is_empty()
+                })
+        {
+            otel_warn!(
+                name: "RamaGrpcOtelTraces.PartialSuccess",
+                rejected_spans = partial_success.rejected_spans,
+                error_message = partial_success.error_message.as_str(),
+            );
+        }
 
-                Ok(())
-            })
-        });
-
-        join.await
-            .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?
+        Ok(())
     }
 
     fn shutdown_with_timeout(&mut self, _timeout: Duration) -> OTelSdkResult {
@@ -498,75 +483,63 @@ where
         }
 
         let service = self.service.clone();
-        let handle = self.handle.clone();
         let config = self.metrics_config();
         let shutdown = self.shutdown.clone();
         let request_body = transform::resource_metrics_to_request(metrics);
 
-        // gRPC client futures are !Send, so run them on the runtime via a blocking task.
-        let runtime = handle.clone();
-        let join = handle.spawn_blocking(move || {
-            runtime.block_on(async move {
-                if shutdown.load(Ordering::SeqCst) {
-                    return Err(OTelSdkError::AlreadyShutdown);
-                }
+        if shutdown.load(Ordering::SeqCst) {
+            return Err(OTelSdkError::AlreadyShutdown);
+        }
 
-                let mut grpc = Grpc::new(service, config.endpoint);
-                if let Some(compression) = config.compression {
-                    grpc = grpc
-                        .with_send_compressed(compression)
-                        .with_accept_compressed(compression);
-                }
+        let mut grpc = Grpc::new(service, config.endpoint);
+        if let Some(compression) = config.compression {
+            grpc = grpc
+                .with_send_compressed(compression)
+                .with_accept_compressed(compression);
+        }
 
-                let mut request = Request::new(request_body);
-                *request.metadata_mut() = config.metadata;
-                if let Some(timeout) = config.timeout {
-                    request
-                        .try_set_timeout(timeout)
-                        .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
-                }
+        let mut request = Request::new(request_body);
+        *request.metadata_mut() = config.metadata;
+        if let Some(timeout) = config.timeout {
+            request
+                .try_set_timeout(timeout)
+                .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
+        }
 
-                let rpc = grpc.unary(
-                    request,
-                    PathAndQuery::from_static(METRICS_EXPORT_PATH),
-                    ProstCodec::<ExportMetricsServiceRequest, ExportMetricsServiceResponse>::new(),
-                );
+        let rpc = grpc.unary(
+            request,
+            PathAndQuery::from_static(METRICS_EXPORT_PATH),
+            ProstCodec::<ExportMetricsServiceRequest, ExportMetricsServiceResponse>::new(),
+        );
 
-                let response = match config.timeout {
-                    Some(timeout) => match tokio::time::timeout(timeout, rpc).await {
-                        Ok(result) => result,
-                        Err(_) => return Err(OTelSdkError::Timeout(timeout)),
-                    },
-                    None => rpc.await,
-                }
-                .map_err(|status| {
-                    OTelSdkError::InternalFailure(format!("export error: {status:?}"))
-                })?;
+        let response = match config.timeout {
+            Some(timeout) => match tokio::time::timeout(timeout, rpc).await {
+                Ok(result) => result,
+                Err(_) => return Err(OTelSdkError::Timeout(timeout)),
+            },
+            None => rpc.await,
+        }
+        .map_err(|status| OTelSdkError::InternalFailure(format!("export error: {status:?}")))?;
 
-                otel_debug!(name: "RamaGrpcOtelMetrics.ExportSucceeded");
+        otel_debug!(name: "RamaGrpcOtelMetrics.ExportSucceeded");
 
-                if let Some(partial_success) =
-                    response
-                        .into_inner()
-                        .partial_success
-                        .filter(|partial_success| {
-                            partial_success.rejected_data_points > 0
-                                || !partial_success.error_message.is_empty()
-                        })
-                {
-                    otel_warn!(
-                        name: "RamaGrpcOtelMetrics.PartialSuccess",
-                        rejected_data_points = partial_success.rejected_data_points,
-                        error_message = partial_success.error_message.as_str(),
-                    );
-                }
+        if let Some(partial_success) =
+            response
+                .into_inner()
+                .partial_success
+                .filter(|partial_success| {
+                    partial_success.rejected_data_points > 0
+                        || !partial_success.error_message.is_empty()
+                })
+        {
+            otel_warn!(
+                name: "RamaGrpcOtelMetrics.PartialSuccess",
+                rejected_data_points = partial_success.rejected_data_points,
+                error_message = partial_success.error_message.as_str(),
+            );
+        }
 
-                Ok(())
-            })
-        });
-
-        join.await
-            .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?
+        Ok(())
     }
 
     fn force_flush(&self) -> OTelSdkResult {

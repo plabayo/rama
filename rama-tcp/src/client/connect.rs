@@ -14,6 +14,7 @@ use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddresssResolverOverwrite
 use rama_net::address::HostWithPort;
 use rama_net::mode::ConnectIpMode;
 use rama_net::{address::SocketAddress, socket::SocketOptions};
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::error::static_str_error;
 use std::{
     net::{IpAddr, SocketAddr},
@@ -26,6 +27,7 @@ use tokio::sync::{
     Semaphore,
     mpsc::{Sender, channel},
 };
+use tokio::task::JoinHandle;
 
 use crate::TcpStream;
 
@@ -94,10 +96,7 @@ impl TcpStreamConnector for Arc<SocketOptions> {
     type Error = BoxError;
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
-        let opts = self.clone();
-        tokio::task::spawn_blocking(move || tcp_connect_with_socket_opts(&opts, addr))
-            .await
-            .context("wait for blocking tcp bind using custom socket opts")?
+        tcp_connect_with_socket_opts_async(self, addr).await
     }
 }
 
@@ -110,9 +109,7 @@ impl TcpStreamConnector for SocketAddress {
             address: Some(bind_addr),
             ..SocketOptions::default_tcp()
         };
-        tokio::task::spawn_blocking(move || tcp_connect_with_socket_opts(&opts, addr))
-            .await
-            .context("wait for blocking tcp bind using provided Socket Address")?
+        tcp_connect_with_socket_opts_async(&opts, addr).await
     }
 }
 
@@ -122,21 +119,18 @@ impl TcpStreamConnector for rama_net::socket::DeviceName {
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let bind_interface = self.clone();
-        tokio::task::spawn_blocking(move || {
-            tcp_connect_with_socket_opts(
-                &SocketOptions {
-                    device: Some(bind_interface),
-                    ..SocketOptions::default_tcp()
-                },
-                addr,
-            )
-        })
+        tcp_connect_with_socket_opts_async(
+            &SocketOptions {
+                device: Some(bind_interface),
+                ..SocketOptions::default_tcp()
+            },
+            addr,
+        )
         .await
-        .context("wait for blocking tcp bind using provided Socket Address")?
     }
 }
 
-fn tcp_connect_with_socket_opts(
+async fn tcp_connect_with_socket_opts_async(
     opts: &SocketOptions,
     addr: SocketAddr,
 ) -> Result<TcpStream, BoxError> {
@@ -144,15 +138,52 @@ fn tcp_connect_with_socket_opts(
         .try_build_socket(addr.into())
         .context("try to build TCP socket's underlying OS socket")?;
     socket
-        .connect(&addr.into())
-        .context("connect to the provided socket addr")?;
-    socket
         .set_nonblocking(true)
-        .context("set socket non-blocking")?;
-    let stream = tokio::net::TcpStream::from_std(std::net::TcpStream::from(socket))
+        .context("set socket non-blocking before connect")?;
+    match socket.connect(&addr.into()) {
+        Ok(()) => {}
+        Err(err) if nonblocking_connect_in_progress(&err) => {}
+        Err(err) => {
+            return Err(err)
+                .context("connect to the provided socket addr")
+                .into_box_error();
+        }
+    }
+    let stream = TcpStream::try_from_socket(socket, Default::default())
         .context("create tokio tcp stream from created raw (tcp) socket")?;
+    stream
+        .stream
+        .writable()
+        .await
+        .context("wait for tcp socket to become writable after nonblocking connect")?;
+    if let Some(err) = stream
+        .stream
+        .take_error()
+        .context("inspect pending tcp socket error after nonblocking connect")?
+    {
+        return Err(err)
+            .context("complete nonblocking connect to the provided socket addr")
+            .into_box_error();
+    }
 
-    Ok(stream.into())
+    Ok(stream)
+}
+
+fn nonblocking_connect_in_progress(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AlreadyExists
+    ) || nonblocking_connect_in_progress_os(err)
+}
+
+#[cfg(target_family = "unix")]
+fn nonblocking_connect_in_progress_os(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(libc::EINPROGRESS | libc::EALREADY))
+}
+
+#[cfg(not(target_family = "unix"))]
+fn nonblocking_connect_in_progress_os(_err: &std::io::Error) -> bool {
+    false
 }
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
@@ -256,6 +287,7 @@ where
     let mut resolved_count = 0;
     let connected = Arc::new(AtomicBool::new(false));
     let sem = Arc::new(Semaphore::new(3));
+    let mut spawned_connect_tasks = SpawnedConnectTasks::default();
 
     let mut index = 0;
     while let Some(output) = output_stream.next().await {
@@ -293,7 +325,7 @@ where
                 let connected = connected.clone();
                 let sem = sem.clone();
 
-                exec.spawn_task(
+                let task = exec.spawn_cancellable_task(
                     tcp_connect_inner_task(index, connector, ip, port, connected, tx, sem)
                         .instrument(trace_span!(
                             "tcp::connect",
@@ -304,6 +336,7 @@ where
                             %index,
                         )),
                 );
+                spawned_connect_tasks.push(task);
             }
             Either::B(stream_and_addr) => {
                 connected.store(true, Ordering::Release);
@@ -325,6 +358,25 @@ where
         )
         .context_field("host", host)
         .context_field("port", port))
+    }
+}
+
+#[derive(Default)]
+struct SpawnedConnectTasks {
+    handles: SmallVec<[JoinHandle<Option<()>>; 8]>,
+}
+
+impl SpawnedConnectTasks {
+    fn push(&mut self, handle: JoinHandle<Option<()>>) {
+        self.handles.push(handle);
+    }
+}
+
+impl Drop for SpawnedConnectTasks {
+    fn drop(&mut self) {
+        for handle in self.handles.drain(..) {
+            handle.abort();
+        }
     }
 }
 
@@ -383,6 +435,7 @@ mod tests {
     };
 
     use super::*;
+    use rama_core::graceful::Shutdown;
     use rama_dns::client::{DenyAllDnsResolver, EmptyDnsResolver};
     use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 
@@ -475,6 +528,54 @@ mod tests {
             Some(ext)
         })
         .await;
+    }
+
+    #[derive(Debug, Clone)]
+    struct NeverConnector;
+
+    impl TcpStreamConnector for NeverConnector {
+        type Error = Infallible;
+
+        async fn connect(&self, _addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+            std::future::pending::<Result<TcpStream, Infallible>>().await
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_connect_returns_when_graceful_executor_is_stopped() {
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown = Shutdown::new(async move {
+            let _ = stop_rx.await;
+        });
+        let exec = Executor::graceful(shutdown.guard());
+
+        let connect_task = tokio::spawn(async move {
+            let ext = Extensions::new();
+            tcp_connect(
+                &ext,
+                HostWithPort::example_domain_http(),
+                Ipv4Addr::LOCALHOST,
+                NeverConnector,
+                exec,
+            )
+            .await
+        });
+
+        let _ = stop_tx.send(());
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), shutdown.shutdown())
+            .await
+            .expect("expected graceful shutdown to complete quickly");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), connect_task)
+            .await
+            .expect("expected tcp_connect task to finish quickly after guard cancellation")
+            .expect("tcp_connect task panicked");
+
+        assert!(
+            result.is_err(),
+            "expected tcp_connect to fail after guard cancellation"
+        );
     }
 }
 

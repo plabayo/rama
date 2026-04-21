@@ -250,6 +250,12 @@ log stream --info --debug \
     --predicate 'subsystem == "org.ramaproxy.example.tproxy"'
 ```
 
+more complete stream logs:
+
+```sh
+log stream --info --debug \
+  --predicate 'subsystem == "org.ramaproxy.example.tproxy" OR process == "neagent" OR process == "nesessionmanager" OR process == "RamaTransparentProxyExampleExtension"'
+```
 
 Or if you want historical logs:
 

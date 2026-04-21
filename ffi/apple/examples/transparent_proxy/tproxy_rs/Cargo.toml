@@ -10,6 +10,7 @@ publish = false
 crate-type = ["staticlib"]
 
 [dependencies]
+ahash = "0.8"
 apple-native-keyring-store = { version = "0.2", features = ["protected"] }
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 keyring-core = "0.7"
