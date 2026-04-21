@@ -16,6 +16,10 @@ impl BytesOwned {
     pub unsafe fn free(self) {
         let Self { ptr, len, cap } = self;
         if ptr.is_null() || cap == 0 {
+            debug_assert!(
+                ptr.is_null() && cap == 0,
+                "both are expected to be true if we reach this path"
+            );
             return;
         }
 

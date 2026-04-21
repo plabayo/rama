@@ -56,7 +56,7 @@ impl TransparentProxyFlowProtocol {
 
 impl From<u32> for TransparentProxyFlowProtocol {
     fn from(value: u32) -> Self {
-        if value <= Self::Udp as u32 {
+        if (Self::Tcp as u32..=Self::Udp as u32).contains(&value) {
             // SAFETY: repr(u32) and valid range
             unsafe { ::std::mem::transmute::<u32, Self>(value) }
         } else {

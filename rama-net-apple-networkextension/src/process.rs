@@ -211,7 +211,8 @@ pub unsafe fn pid_arguments(pid: i32) -> io::Result<Vec<String>> {
     }
 
     // SAFETY: `buf` is at least `size_of::<i32>()` bytes long.
-    let argc = unsafe { ptr::read_unaligned(buf.as_ptr().cast::<i32>()) }.max(0) as usize;
+    let argc =
+        (unsafe { ptr::read_unaligned(buf.as_ptr().cast::<i32>()) }.max(0) as usize).min(4096);
     if argc == 0 {
         return Ok(Vec::new());
     }
