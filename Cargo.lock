@@ -334,6 +334,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
+name = "block"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2950,6 +2956,7 @@ dependencies = [
  "rama-http-core",
  "rama-net",
  "rama-net-apple-networkextension",
+ "rama-net-apple-xpc",
  "rama-proxy",
  "rama-socks5",
  "rama-tcp",
@@ -3380,6 +3387,16 @@ dependencies = [
  "rama-utils",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "rama-net-apple-xpc"
+version = "0.3.0-rc1"
+dependencies = [
+ "bindgen",
+ "block",
+ "rama-core",
+ "tokio",
 ]
 
 [[package]]

@@ -1,0 +1,32 @@
+[package]
+name = "rama-net-apple-xpc"
+description = "Apple XPC support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["xpc", "apple", "ipc", "network", "rama"]
+categories = ["asynchronous", "network-programming", "api-bindings", "os"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+
+[dependencies]
+block = { workspace = true }
+rama-core = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[build-dependencies]
+bindgen = { workspace = true }
+
+[lints]
+workspace = true
