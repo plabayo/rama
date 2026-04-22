@@ -6,7 +6,8 @@
 //! system software and Network Extensions.
 //!
 //! This crate wraps `libxpc` with thin, async-friendly Rust types that plug directly
-//! into Rama's service model. The low-level layer is bindgen-generated; see [`ffi`].
+//! into Rama's service model. The low-level layer is a bindgen-generated `pub(crate)`
+//! module; it is not part of the public API.
 //!
 //! # Core concepts
 //!
@@ -116,8 +117,7 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
-#[doc(hidden)]
-pub mod ffi;
+mod ffi;
 
 mod block;
 mod client;

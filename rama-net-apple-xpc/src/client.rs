@@ -91,6 +91,9 @@ impl XpcConnection {
             0
         };
 
+        // SAFETY: service_name is a valid null-terminated C string from make_c_string.
+        // queue.raw is either a valid dispatch_queue_t or null. flags is a valid
+        // XPC_CONNECTION_MACH_SERVICE_* combination (0 or PRIVILEGED).
         let raw =
             unsafe { xpc_connection_create_mach_service(service_name.as_ptr(), queue.raw, flags) };
         let connection = OwnedXpcObject::from_raw(raw as _, "client connection")?;

@@ -76,6 +76,10 @@ pub enum PeerSecurityRequirement {
 
 impl PeerSecurityRequirement {
     pub(crate) fn apply(&self, connection: xpc_connection_t) -> Result<(), XpcError> {
+        // SAFETY for all arms: `connection` is a valid, non-null xpc_connection_t passed
+        // in by the caller (always sourced from OwnedXpcObject). String arguments are
+        // null-terminated C strings from make_c_string or null (accepted by the APIs).
+        // XPC object arguments are valid retained objects from OwnedXpcObject::from_message.
         let result = match self {
             Self::CodeSigning(requirement) => {
                 let requirement = make_c_string(requirement)?;

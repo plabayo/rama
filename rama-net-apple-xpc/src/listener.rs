@@ -98,6 +98,10 @@ impl XpcListener {
         } = config;
         let service_name = make_c_string(&service_name)?;
         let queue = DispatchQueue::new(target_queue_label.as_deref())?;
+        // SAFETY: service_name is a valid null-terminated C string produced by
+        // make_c_string. queue.raw is either a valid dispatch_queue_t or null (anonymous
+        // queue). XPC_CONNECTION_MACH_SERVICE_LISTENER is the correct flag for a server-
+        // side Mach service. The returned value is a new retained connection or NULL.
         let raw = unsafe {
             xpc_connection_create_mach_service(
                 service_name.as_ptr(),
@@ -123,6 +127,10 @@ impl XpcListener {
         })
         .copy();
 
+        // SAFETY: raw_connection is a valid, non-null xpc_connection_t from OwnedXpcObject.
+        // block is a heap-allocated copied Block; XPC retains it after
+        // xpc_connection_set_event_handler. xpc_connection_activate must be called
+        // exactly once to begin accepting connections.
         unsafe {
             xpc_connection_set_event_handler(raw_connection, block.deref() as *const _ as *mut _);
             xpc_connection_activate(raw_connection);
@@ -136,15 +144,28 @@ impl XpcListener {
 
     /// Await the next incoming peer connection.
     ///
-    /// Returns `None` if the listener has been cancelled and the internal channel
-    /// is drained. Under normal operation this method yields indefinitely.
+    /// Cancel-safe: if this future is dropped before it resolves, no connection is lost.
+    /// Returns `None` once the listener has been cancelled and the internal channel drains.
+    /// Under normal operation this method yields indefinitely.
     pub async fn accept(&mut self) -> Option<XpcConnection> {
         self.receiver.recv().await
+    }
+
+    /// Explicitly cancel the listener.
+    ///
+    /// Stops accepting new connections and tears down the underlying Mach service.
+    /// Safe to call multiple times — cancelling an already-cancelled listener is a no-op.
+    /// The listener is also cancelled automatically on [`Drop`].
+    pub fn cancel(&self) {
+        // SAFETY: self.connection.raw is a valid, non-null xpc_connection_t held by
+        // OwnedXpcObject. xpc_connection_cancel is idempotent per Apple's documentation.
+        unsafe { xpc_connection_cancel(self.connection.raw as _) };
     }
 }
 
 impl Drop for XpcListener {
     fn drop(&mut self) {
+        // SAFETY: Same contract as cancel(). Called at most once because Drop runs once.
         unsafe { xpc_connection_cancel(self.connection.raw as _) };
     }
 }

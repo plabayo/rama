@@ -76,15 +76,23 @@ impl ReceivedXpcMessage {
             return Err(XpcError::ReplyNotExpected);
         };
 
+        // SAFETY: self.raw_event.raw is a valid XPC dictionary object retained by
+        // OwnedXpcObject. xpc_dictionary_create_reply returns a new retained dictionary
+        // or NULL if the message does not support replies.
         let reply = unsafe { xpc_dictionary_create_reply(self.raw_event.raw) };
         let reply = OwnedXpcObject::from_raw(reply, "reply message")?;
 
         for (key, value) in values {
             let key = make_c_string(&key)?;
             let value = OwnedXpcObject::from_message(value)?;
+            // SAFETY: reply.raw is a valid mutable XPC dictionary. key.as_ptr() is a
+            // valid null-terminated C string. value.raw is a valid retained XPC object.
             unsafe { xpc_dictionary_set_value(reply.raw, key.as_ptr(), value.raw) };
         }
 
+        // SAFETY: self.connection is the raw connection from which this message was
+        // received; it remains valid because the kernel keeps the connection alive while
+        // an event handler block is executing. reply.raw is a valid retained XPC object.
         unsafe { xpc_connection_send_message(self.connection, reply.raw) };
         Ok(())
     }
@@ -153,6 +161,11 @@ impl XpcConnection {
         })
         .copy();
 
+        // SAFETY: raw_connection is a valid, non-null xpc_connection_t from OwnedXpcObject.
+        // block is a heap-allocated copied Block whose lifetime is managed by XPC after
+        // xpc_connection_set_event_handler transfers ownership. xpc_connection_resume
+        // activates the connection; it must be called exactly once before any messages
+        // are sent or received.
         unsafe {
             xpc_connection_set_event_handler(raw_connection, block.deref() as *const _ as *mut _);
             xpc_connection_resume(raw_connection);
@@ -167,6 +180,9 @@ impl XpcConnection {
 
     /// Await the next event from the peer.
     ///
+    /// Cancel-safe: dropping this future before it resolves does not discard any
+    /// pending event; the next call to `recv` will yield it.
+    ///
     /// Returns `None` when the connection has been closed and the internal channel
     /// is drained. After receiving [`XpcEvent::Error`] the channel will close and
     /// subsequent calls will return `None`.
@@ -180,11 +196,18 @@ impl XpcConnection {
     /// [`send_request`](Self::send_request) when you need the peer's response.
     pub fn send(&self, message: XpcMessage) -> Result<(), XpcError> {
         let object = OwnedXpcObject::from_message(message)?;
+        // SAFETY: self.connection.raw is a valid xpc_connection_t held by OwnedXpcObject
+        // for the lifetime of &self. object.raw is a valid retained XPC object.
         unsafe { xpc_connection_send_message(self.connection.raw as xpc_connection_t, object.raw) };
         Ok(())
     }
 
     /// Send a message and await a [`XpcMessage::Dictionary`] reply from the peer.
+    ///
+    /// **Not cancel-safe.** The message is enqueued with XPC before this future is
+    /// polled for the reply. If the future is dropped after the message has been sent
+    /// but before the peer replies, the message is already in flight — the peer will
+    /// still receive and process it, but the reply will be silently discarded.
     ///
     /// The peer satisfies the future by calling [`ReceivedXpcMessage::reply`] on the
     /// corresponding received message. Returns [`XpcError::ReplyCanceled`] if the
@@ -210,6 +233,10 @@ impl XpcConnection {
         })
         .copy();
 
+        // SAFETY: raw_connection is a valid xpc_connection_t. object.raw is a valid
+        // retained XPC object. The queue argument is null, so XPC uses the connection's
+        // own queue. block is a heap-allocated copied Block; XPC retains it until after
+        // the callback fires, at which point it is released.
         unsafe {
             xpc_connection_send_message_with_reply(
                 raw_connection,
@@ -226,16 +253,19 @@ impl XpcConnection {
     ///
     /// PIDs are recycled by the kernel. For session-stable identity, use [`asid`](Self::asid).
     pub fn pid(&self) -> i32 {
+        // SAFETY: self.connection.raw is a valid, non-null xpc_connection_t for &self's lifetime.
         unsafe { xpc_connection_get_pid(self.connection.raw as xpc_connection_t) }
     }
 
     /// Effective user ID of the remote peer.
     pub fn euid(&self) -> u32 {
+        // SAFETY: Same as pid().
         unsafe { xpc_connection_get_euid(self.connection.raw as xpc_connection_t) }
     }
 
     /// Effective group ID of the remote peer.
     pub fn egid(&self) -> u32 {
+        // SAFETY: Same as pid().
         unsafe { xpc_connection_get_egid(self.connection.raw as xpc_connection_t) }
     }
 
@@ -245,6 +275,7 @@ impl XpcConnection {
     /// across PID recycling within the same login session. It is more reliable than
     /// [`pid`](Self::pid) for session-level identity checks.
     pub fn asid(&self) -> i32 {
+        // SAFETY: Same as pid().
         unsafe { xpc_connection_get_asid(self.connection.raw as xpc_connection_t) }
     }
 
@@ -252,10 +283,15 @@ impl XpcConnection {
     ///
     /// Returns `None` for anonymous or peer connections created from endpoints.
     pub fn name(&self) -> Option<String> {
+        // SAFETY: self.connection.raw is a valid xpc_connection_t. The returned pointer
+        // is either null or a valid C string borrowed from the connection object; it
+        // remains valid for &self's lifetime. We copy it to a String before returning.
         let ptr = unsafe { xpc_connection_get_name(self.connection.raw as xpc_connection_t) };
         if ptr.is_null() {
             return None;
         }
+        // SAFETY: ptr is non-null and points to a valid, null-terminated C string
+        // owned by the XPC connection object, as guaranteed by the API contract above.
         Some(
             unsafe { std::ffi::CStr::from_ptr(ptr) }
                 .to_string_lossy()
@@ -268,6 +304,8 @@ impl XpcConnection {
     /// Safe to call multiple times — canceling an already-canceled connection is a no-op.
     /// The connection is also canceled automatically on [`Drop`].
     pub fn cancel(&self) {
+        // SAFETY: self.connection.raw is a valid xpc_connection_t. xpc_connection_cancel
+        // is idempotent per Apple's documentation.
         unsafe { xpc_connection_cancel(self.connection.raw as xpc_connection_t) };
     }
 
@@ -276,6 +314,7 @@ impl XpcConnection {
     /// Every call to `suspend` must be balanced by a corresponding call to [`resume`](Self::resume)
     /// before the connection is released. Unbalanced suspends will cause a crash.
     pub fn suspend(&self) {
+        // SAFETY: self.connection.raw is a valid xpc_connection_t for &self's lifetime.
         unsafe { xpc_connection_suspend(self.connection.raw as xpc_connection_t) };
     }
 
@@ -283,6 +322,7 @@ impl XpcConnection {
     ///
     /// Must be called once for each preceding call to [`suspend`](Self::suspend).
     pub fn resume(&self) {
+        // SAFETY: Same as suspend().
         unsafe { xpc_connection_resume(self.connection.raw as xpc_connection_t) };
     }
 
@@ -299,6 +339,8 @@ impl ExtensionsRef for XpcConnection {
 
 impl Drop for XpcConnection {
     fn drop(&mut self) {
+        // SAFETY: self.connection.raw is a valid xpc_connection_t. xpc_connection_cancel
+        // is idempotent, so calling it here after an explicit cancel() is safe.
         unsafe { xpc_connection_cancel(self.connection.raw as xpc_connection_t) };
     }
 }

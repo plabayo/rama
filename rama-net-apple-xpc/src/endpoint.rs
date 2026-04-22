@@ -43,6 +43,10 @@ impl XpcEndpoint {
     /// connect back to the listener.
     pub fn from_connection(connection: &XpcConnection) -> Result<Self, XpcError> {
         let raw_conn = connection.connection_raw();
+        // SAFETY: raw_conn is a valid xpc_connection_t obtained from XpcConnection,
+        // which must have been created via xpc_connection_create* (as documented by
+        // the xpc_endpoint_create precondition in <xpc/endpoint.h>). The returned
+        // xpc_endpoint_t is a new retained XPC object or NULL on failure.
         let endpoint = unsafe { xpc_endpoint_create(raw_conn) };
         let obj = OwnedXpcObject::from_raw(endpoint as _, "endpoint")?;
         Ok(Self {
@@ -57,6 +61,10 @@ impl XpcEndpoint {
     /// created the endpoint.
     pub fn into_connection(self) -> Result<XpcConnection, XpcError> {
         let endpoint_raw = self.inner.raw as xpc_endpoint_t;
+        // SAFETY: endpoint_raw is a valid xpc_endpoint_t stored as xpc_object_t (void*)
+        // inside the Arc<OwnedXpcObject>. The cast back to xpc_endpoint_t is safe because
+        // OwnedXpcObject always stores the pointer in the same bit-width void* format.
+        // xpc_connection_create_from_endpoint returns a new retained connection or NULL.
         let conn = unsafe { xpc_connection_create_from_endpoint(endpoint_raw) };
         let owned = OwnedXpcObject::from_raw(conn as _, "endpoint connection")?;
         XpcConnection::from_owned_peer(owned)
