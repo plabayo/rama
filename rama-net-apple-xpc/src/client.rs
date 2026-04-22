@@ -9,6 +9,12 @@ use crate::{
     util::{DispatchQueue, make_c_string},
 };
 
+/// Configuration for a client-side XPC connection.
+///
+/// Pass to [`XpcConnection::connect`] or [`XpcConnector`](crate::XpcConnector).
+///
+/// The `service_name` must match the `MachServices` key in the launchd plist of
+/// the target service (e.g. `"com.example.myservice"`).
 #[derive(Debug, Clone)]
 pub struct XpcClientConfig {
     service_name: ArcStr,
@@ -18,6 +24,9 @@ pub struct XpcClientConfig {
 }
 
 impl XpcClientConfig {
+    /// Create a config targeting `service_name`.
+    ///
+    /// `service_name` is looked up in the launchd bootstrap namespace.
     pub fn new(service_name: impl Into<ArcStr>) -> Self {
         Self {
             service_name: service_name.into(),
@@ -28,6 +37,10 @@ impl XpcClientConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Connect to the privileged Mach bootstrap context (`XPC_CONNECTION_MACH_SERVICE_PRIVILEGED`).
+        ///
+        /// Set this when targeting a launchd daemon registered in the system bootstrap
+        /// context rather than the per-user session context.
         pub fn privileged(mut self, privileged: bool) -> Self {
             self.privileged = privileged;
             self
@@ -35,6 +48,9 @@ impl XpcClientConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Override the GCD dispatch queue label used for the connection's event handler.
+        ///
+        /// `None` uses a default anonymous queue.
         pub fn target_queue_label(mut self, label: Option<ArcStr>) -> Self {
             self.target_queue_label = label;
             self
@@ -42,6 +58,11 @@ impl XpcClientConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Require the server to satisfy a security constraint before any message is exchanged.
+        ///
+        /// Applied before the connection is activated. If the server does not satisfy it,
+        /// [`XpcConnectionError::PeerRequirementFailed`](crate::XpcConnectionError::PeerRequirementFailed)
+        /// is delivered through the event stream and no messages are exchanged.
         pub fn peer_requirement(mut self, requirement: Option<PeerSecurityRequirement>) -> Self {
             self.peer_requirement = requirement;
             self
@@ -50,6 +71,11 @@ impl XpcClientConfig {
 }
 
 impl XpcConnection {
+    /// Establish a client connection to the named XPC service.
+    ///
+    /// The service must be registered with launchd under `config.service_name`.
+    /// The connection is lazy — no handshake occurs until the first message is sent
+    /// or a peer requirement failure is reported through [`recv`](XpcConnection::recv).
     pub fn connect(config: XpcClientConfig) -> Result<Self, XpcError> {
         let XpcClientConfig {
             service_name,

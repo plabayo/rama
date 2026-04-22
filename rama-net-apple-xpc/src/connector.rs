@@ -3,6 +3,11 @@ use rama_net::client::EstablishedClientConnection;
 
 use crate::{client::XpcClientConfig, connection::XpcConnection, error::XpcError};
 
+/// A [`rama_core::Service`] that establishes XPC client connections.
+///
+/// Accepts an [`XpcClientConfig`] and returns an
+/// [`EstablishedClientConnection<XpcConnection, XpcClientConfig>`].
+/// Designed for use inside Rama client service stacks.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct XpcConnector;
 

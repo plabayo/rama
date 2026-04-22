@@ -1,23 +1,107 @@
 //! Apple XPC support for rama.
 //!
-//! Official Apple documentation:
+//! XPC is Apple's inter-process communication framework. It provides structured,
+//! asynchronous message passing between processes on the same machine, carried over
+//! kernel Mach ports. It is the standard mechanism for privilege-separated macOS
+//! system software and Network Extensions.
+//!
+//! This crate wraps `libxpc` with thin, async-friendly Rust types that plug directly
+//! into Rama's service model. The low-level layer is bindgen-generated; see [`ffi`].
+//!
+//! # Core concepts
+//!
+//! ## Roles: listener and client
+//!
+//! **[`XpcListener`]** — binds to a launchd-registered service name and accepts
+//! incoming peer connections. Each accepted connection is an [`XpcConnection`].
+//!
+//! **[`XpcConnection`]** — a bidirectional, async channel to a peer process. Created
+//! via [`XpcConnection::connect`] on the client side, or delivered by
+//! [`XpcListener::accept`] on the server side. Implements [`rama_core::Service`]
+//! (fire-and-forget send) and [`rama_core::extensions::ExtensionsRef`].
+//!
+//! **[`XpcConnector`]** — a [`rama_core::Service`] that creates client connections;
+//! drop-in for Rama client service stacks.
+//!
+//! ## Messages
+//!
+//! All XPC values are represented by [`XpcMessage`], an enum covering every native
+//! XPC primitive:
+//!
+//! | Variant | XPC type |
+//! |---|---|
+//! | `Null` | `XPC_TYPE_NULL` |
+//! | `Bool(bool)` | `XPC_TYPE_BOOL` |
+//! | `Int64(i64)` | `XPC_TYPE_INT64` |
+//! | `Uint64(u64)` | `XPC_TYPE_UINT64` |
+//! | `Double(f64)` | `XPC_TYPE_DOUBLE` |
+//! | `String(String)` | `XPC_TYPE_STRING` |
+//! | `Data(Vec<u8>)` | `XPC_TYPE_DATA` |
+//! | `Fd(RawFd)` | `XPC_TYPE_FD` |
+//! | `Uuid([u8; 16])` | `XPC_TYPE_UUID` |
+//! | `Date(i64)` | `XPC_TYPE_DATE` (ns since 2001-01-01 UTC) |
+//! | `Endpoint(XpcEndpoint)` | `XPC_TYPE_ENDPOINT` |
+//! | `Array(Vec<XpcMessage>)` | `XPC_TYPE_ARRAY` |
+//! | `Dictionary(BTreeMap<…>)` | `XPC_TYPE_DICTIONARY` |
+//!
+//! ## Endpoints
+//!
+//! [`XpcEndpoint`] is a serializable reference to a listener. Embed it in a message
+//! and send it to a third process; that process calls [`XpcEndpoint::into_connection`]
+//! to establish a peer connection without needing a launchd service name. This is the
+//! canonical pattern for dynamic or ephemeral services.
+//!
+//! ## Message passing patterns
+//!
+//! - **Fire-and-forget** — [`XpcConnection::send`]: queues a message and returns.
+//! - **Request-reply** — [`XpcConnection::send_request`]: awaits a reply from the peer.
+//!   The server side calls [`ReceivedXpcMessage::reply`] to satisfy the future.
+//!   The reply must be a `Dictionary`.
+//! - **Event loop** — [`XpcConnection::recv`]: yields the next [`XpcEvent`], which is
+//!   either an incoming [`Message`](XpcEvent::Message) or a connection lifecycle
+//!   [`Error`](XpcEvent::Error).
+//!
+//! ## Security
+//!
+//! Set a [`PeerSecurityRequirement`] on a connection before first use to restrict which
+//! processes may connect. The kernel enforces the constraint; if the peer does not
+//! qualify, the connection is invalidated before any message is delivered.
+//!
+//! Peer identity (not subject to PID recycling races) is available via:
+//! - [`XpcConnection::pid`] / [`XpcConnection::euid`] / [`XpcConnection::egid`] — process credentials
+//! - [`XpcConnection::asid`] — audit session identifier (kernel-stable within a login session)
+//! - [`XpcConnection::name`] — service name, if the connection was made by name
+//!
+//! # Gotchas
+//!
+//! **launchd registration required for named listeners.** [`XpcListener`] registers under
+//! a Mach service name through launchd. The corresponding plist must be installed and
+//! loaded before the process starts. Use [`XpcEndpoint`] for dynamic services that do not
+//! have a launchd entry.
+//!
+//! **`NSXPCConnection` is a different protocol.** Swift/ObjC services built on
+//! `NSXPCConnection` use `NSKeyedArchiver` framing inside XPC data messages. This crate
+//! speaks raw `libxpc` and is not compatible with such services out of the box.
+//!
+//! **`suspend`/`resume` must be balanced.** Every [`XpcConnection::suspend`] call must
+//! be paired with a [`XpcConnection::resume`] before the connection is released.
+//! An imbalanced suspend is a programming error that will crash the process.
+//!
+//! **Connections are lazy on the client side.** No handshake occurs until the first
+//! message is sent. Peer requirement failures surface as
+//! [`XpcConnectionError::PeerRequirementFailed`] in the event stream, not at construction.
+//!
+//! # Official documentation
 //!
 //! - XPC overview: <https://developer.apple.com/documentation/xpc>
-//! - Creating XPC services:
-//!   <https://developer.apple.com/documentation/xpc/creating_xpc_services>
-//! - XPC connections:
-//!   <https://developer.apple.com/documentation/xpc/xpc-connections?language=objc>
-//! - XPC updates:
-//!   <https://developer.apple.com/documentation/updates/xpc>
-//!
-//! This crate uses bindgen-generated `libXPC` bindings as its low-level core.
-//! It then layers small Rust wrappers on top so that Rama applications can use
-//! XPC in a more ergonomic, service-oriented style.
+//! - Creating XPC services: <https://developer.apple.com/documentation/xpc/creating_xpc_services>
+//! - XPC connections: <https://developer.apple.com/documentation/xpc/xpc-connections?language=objc>
+//! - XPC updates: <https://developer.apple.com/documentation/updates/xpc>
 //!
 //! Learn more about `rama`:
 //!
 //! - Github: <https://github.com/plabayo/rama>
-//! - Book: <https://ramaproxy.org/book/>
+//! - Book: <https://ramaproxy.org/book/xpc.html>
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"

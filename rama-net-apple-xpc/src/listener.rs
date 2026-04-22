@@ -17,6 +17,13 @@ use crate::{
     util::{DispatchQueue, make_c_string},
 };
 
+/// Configuration for a server-side XPC listener.
+///
+/// Pass to [`XpcListener::bind`].
+///
+/// The `service_name` must match the `MachServices` key in the launchd plist of
+/// this process (e.g. `"com.example.myservice"`). The plist must be installed and
+/// loaded before [`XpcListener::bind`] is called.
 #[derive(Debug, Clone)]
 pub struct XpcListenerConfig {
     service_name: ArcStr,
@@ -25,6 +32,9 @@ pub struct XpcListenerConfig {
 }
 
 impl XpcListenerConfig {
+    /// Create a config for `service_name`.
+    ///
+    /// `service_name` must be registered in the launchd bootstrap namespace.
     pub fn new(service_name: impl Into<ArcStr>) -> Self {
         Self {
             service_name: service_name.into(),
@@ -34,6 +44,9 @@ impl XpcListenerConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Override the GCD dispatch queue label used for the listener's event handler.
+        ///
+        /// `None` uses a default anonymous queue.
         pub fn target_queue_label(mut self, label: Option<ArcStr>) -> Self {
             self.target_queue_label = label;
             self
@@ -41,6 +54,10 @@ impl XpcListenerConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Require connecting clients to satisfy a security constraint.
+        ///
+        /// Applied to each incoming peer connection before it is delivered by
+        /// [`XpcListener::accept`]. Peers that fail the check are silently dropped.
         pub fn peer_requirement(mut self, requirement: Option<PeerSecurityRequirement>) -> Self {
             self.peer_requirement = requirement;
             self
@@ -48,6 +65,20 @@ impl XpcListenerConfig {
     }
 }
 
+/// A server-side XPC listener that accepts incoming peer connections.
+///
+/// Created with [`XpcListener::bind`]. Each call to [`accept`](Self::accept)
+/// yields an [`XpcConnection`] for the next connecting client.
+///
+/// The listener is cancelled and the underlying Mach service is torn down on [`Drop`].
+///
+/// # Requirements
+///
+/// The service name in [`XpcListenerConfig`] must be registered with launchd via a
+/// plist file before [`bind`](Self::bind) is called. Without launchd registration,
+/// `bind` will succeed but no clients will be able to connect by name. Use
+/// [`XpcEndpoint`](crate::XpcEndpoint) to hand off connection references out-of-band
+/// for services that do not have a launchd entry.
 #[derive(Debug)]
 pub struct XpcListener {
     connection: OwnedXpcObject,
@@ -55,6 +86,10 @@ pub struct XpcListener {
 }
 
 impl XpcListener {
+    /// Bind to the XPC service name in `config` and start accepting connections.
+    ///
+    /// Activates the underlying Mach service immediately; clients may begin connecting
+    /// before the first call to [`accept`](Self::accept).
     pub fn bind(config: XpcListenerConfig) -> Result<Self, XpcError> {
         let XpcListenerConfig {
             service_name,
@@ -99,6 +134,10 @@ impl XpcListener {
         })
     }
 
+    /// Await the next incoming peer connection.
+    ///
+    /// Returns `None` if the listener has been cancelled and the internal channel
+    /// is drained. Under normal operation this method yields indefinitely.
     pub async fn accept(&mut self) -> Option<XpcConnection> {
         self.receiver.recv().await
     }

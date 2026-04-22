@@ -33,12 +33,18 @@ use crate::{
     util::make_c_string,
 };
 
+/// An event received on an [`XpcConnection`].
 #[derive(Debug)]
 pub enum XpcEvent {
+    /// An incoming message from the peer.
     Message(ReceivedXpcMessage),
+    /// A connection lifecycle error. After this event the connection is permanently closed.
     Error(XpcConnectionError),
 }
 
+/// An incoming XPC message together with the context needed to send a reply.
+///
+/// Obtained from [`XpcEvent::Message`] via [`XpcConnection::recv`].
 #[derive(Debug)]
 pub struct ReceivedXpcMessage {
     connection: xpc_connection_t,
@@ -50,14 +56,21 @@ unsafe impl Send for ReceivedXpcMessage {}
 unsafe impl Sync for ReceivedXpcMessage {}
 
 impl ReceivedXpcMessage {
+    /// Borrow the decoded message.
     pub fn message(&self) -> &XpcMessage {
         &self.message
     }
 
+    /// Consume this wrapper and return the decoded message, discarding reply capability.
     pub fn into_message(self) -> XpcMessage {
         self.message
     }
 
+    /// Send a reply to the peer.
+    ///
+    /// `message` must be a [`XpcMessage::Dictionary`]; any other variant returns
+    /// [`XpcError::ReplyNotExpected`]. The reply is delivered to the future awaiting
+    /// [`XpcConnection::send_request`] on the other side.
     pub fn reply(&self, message: XpcMessage) -> Result<(), XpcError> {
         let XpcMessage::Dictionary(values) = message else {
             return Err(XpcError::ReplyNotExpected);
@@ -77,6 +90,45 @@ impl ReceivedXpcMessage {
     }
 }
 
+/// A bidirectional async XPC connection to a peer process.
+///
+/// On the **client** side, create one with [`XpcConnection::connect`].
+/// On the **server** side, connections are delivered by [`XpcListener::accept`](crate::XpcListener::accept).
+/// An [`XpcEndpoint`](crate::XpcEndpoint) can also produce a connection via
+/// [`XpcEndpoint::into_connection`](crate::XpcEndpoint::into_connection) without a launchd service name.
+///
+/// ## Sending
+///
+/// - [`send`](Self::send) — fire-and-forget; queues the message and returns immediately.
+/// - [`send_request`](Self::send_request) — awaits a [`XpcMessage::Dictionary`] reply
+///   from the peer (the peer calls [`ReceivedXpcMessage::reply`]).
+///
+/// ## Receiving
+///
+/// [`recv`](Self::recv) yields the next [`XpcEvent`]. After an
+/// [`XpcEvent::Error`] the connection is permanently closed; further `recv` calls
+/// return `None`.
+///
+/// ## Lifecycle
+///
+/// The connection is cancelled automatically on [`Drop`]. You may also call
+/// [`cancel`](Self::cancel) explicitly. [`suspend`](Self::suspend) and
+/// [`resume`](Self::resume) gate event delivery and must be called in balanced pairs.
+///
+/// ## Peer identity
+///
+/// [`pid`](Self::pid), [`euid`](Self::euid), [`egid`](Self::egid),
+/// [`asid`](Self::asid), and [`name`](Self::name) expose kernel-reported peer
+/// credentials. For security decisions, prefer [`asid`](Self::asid) over
+/// [`pid`](Self::pid): audit session IDs are stable within a login session and
+/// are not subject to PID recycling.
+///
+/// ## Security
+///
+/// Pass a [`PeerSecurityRequirement`](crate::PeerSecurityRequirement) to
+/// [`XpcClientConfig`](crate::XpcClientConfig) or
+/// [`XpcListenerConfig`](crate::XpcListenerConfig) to restrict which peer binaries
+/// may connect. The kernel enforces the constraint before any message is delivered.
 #[derive(Debug)]
 pub struct XpcConnection {
     connection: OwnedXpcObject,
@@ -113,16 +165,30 @@ impl XpcConnection {
         })
     }
 
+    /// Await the next event from the peer.
+    ///
+    /// Returns `None` when the connection has been closed and the internal channel
+    /// is drained. After receiving [`XpcEvent::Error`] the channel will close and
+    /// subsequent calls will return `None`.
     pub async fn recv(&mut self) -> Option<XpcEvent> {
         self.receiver.recv().await
     }
 
+    /// Send a message to the peer without waiting for a reply.
+    ///
+    /// The message is queued and the call returns immediately. Use
+    /// [`send_request`](Self::send_request) when you need the peer's response.
     pub fn send(&self, message: XpcMessage) -> Result<(), XpcError> {
         let object = OwnedXpcObject::from_message(message)?;
         unsafe { xpc_connection_send_message(self.connection.raw as xpc_connection_t, object.raw) };
         Ok(())
     }
 
+    /// Send a message and await a [`XpcMessage::Dictionary`] reply from the peer.
+    ///
+    /// The peer satisfies the future by calling [`ReceivedXpcMessage::reply`] on the
+    /// corresponding received message. Returns [`XpcError::ReplyCanceled`] if the
+    /// connection closes before a reply is delivered.
     pub async fn send_request(&self, message: XpcMessage) -> Result<XpcMessage, XpcError> {
         let object = OwnedXpcObject::from_message(message)?;
         let (reply_sender, reply_receiver) = oneshot::channel();
@@ -156,14 +222,19 @@ impl XpcConnection {
         reply_receiver.await.map_err(|_| XpcError::ReplyCanceled)?
     }
 
+    /// Process ID of the remote peer at the time the connection was established.
+    ///
+    /// PIDs are recycled by the kernel. For session-stable identity, use [`asid`](Self::asid).
     pub fn pid(&self) -> i32 {
         unsafe { xpc_connection_get_pid(self.connection.raw as xpc_connection_t) }
     }
 
+    /// Effective user ID of the remote peer.
     pub fn euid(&self) -> u32 {
         unsafe { xpc_connection_get_euid(self.connection.raw as xpc_connection_t) }
     }
 
+    /// Effective group ID of the remote peer.
     pub fn egid(&self) -> u32 {
         unsafe { xpc_connection_get_egid(self.connection.raw as xpc_connection_t) }
     }

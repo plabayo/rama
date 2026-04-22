@@ -2,23 +2,44 @@ use std::fmt;
 
 use rama_utils::str::arcstr::ArcStr;
 
+/// A connection-level error delivered through the XPC event stream.
+///
+/// After any of these variants, the connection is permanently closed.
+/// See `XPC_ERROR_CONNECTION_INTERRUPTED` and `XPC_ERROR_CONNECTION_INVALID`
+/// in `<xpc/connection.h>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum XpcConnectionError {
+    /// The remote process exited or crashed; the connection may be re-established.
     Interrupted,
+    /// The connection was invalidated and cannot be recovered.
+    /// The inner string is the reason reported by the kernel, if available.
     Invalidated(Option<ArcStr>),
+    /// The peer did not satisfy the [`PeerSecurityRequirement`](crate::PeerSecurityRequirement)
+    /// set on this connection.
     PeerRequirementFailed(Option<ArcStr>),
 }
 
+/// Errors returned by XPC operations.
 #[derive(Debug)]
 pub enum XpcError {
+    /// A string argument contained an interior NUL byte and could not be converted to a C string.
     InvalidCString(ArcStr),
+    /// `xpc_connection_create*` returned NULL.
     NullConnection(&'static str),
+    /// An XPC API returned a NULL object where one was required.
     NullObject(&'static str),
+    /// An XPC object had a type that this crate does not handle.
     UnsupportedObjectType(&'static str),
+    /// `dispatch_queue_create` returned NULL.
     QueueCreationFailed,
+    /// Applying a [`PeerSecurityRequirement`](crate::PeerSecurityRequirement) failed.
     PeerRequirementFailed { code: i32, context: &'static str },
+    /// [`ReceivedXpcMessage::reply`](crate::ReceivedXpcMessage::reply) was called with a
+    /// non-Dictionary message. XPC replies must be dictionaries.
     ReplyNotExpected,
+    /// The connection closed before the reply callback was invoked.
     ReplyCanceled,
+    /// A connection-level error received from the XPC event stream.
     Connection(XpcConnectionError),
 }
 
