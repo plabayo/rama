@@ -235,6 +235,8 @@ publish *ARGS:
 update-deps:
     @cargo install cargo-edit --locked
     cargo upgrade && cargo update
+    cargo update mimalloc --precise 0.1.48
+    cargo update libmimalloc-sys --precise 0.1.44
     just ./ffi/apple/examples/transparent_proxy/clean
     just ./ffi/apple/examples/transparent_proxy/update-deps
 
