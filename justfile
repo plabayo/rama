@@ -9,6 +9,12 @@ fmt *ARGS:
 fmt-crate CRATE *ARGS:
     cargo fmt --all -p {{CRATE}} {{ARGS}}
 
+fmt-check *ARGS:
+    cargo fmt --all --check {{ARGS}}
+
+fmt-check-crate CRATE *ARGS:
+    cargo fmt --all -p {{CRATE}} --check {{ARGS}}
+
 sort:
     @cargo install cargo-sort
     cargo sort --workspace --grouped
@@ -104,11 +110,12 @@ test-loom:
     @cargo install cargo-nextest --locked
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
-qq: lint check clippy doc extra-checks
+qq: fmt-check check clippy doc extra-checks
 
 qa: qq test test-doc deny
 
 qa-crate CRATE:
+    just fmt-check-crate {{CRATE}}
     just check-crate {{CRATE}}
     just clippy-crate {{CRATE}}
     just doc-crate {{CRATE}}
