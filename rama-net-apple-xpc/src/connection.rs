@@ -19,14 +19,14 @@ use crate::{
     block::ConcreteBlock,
     error::{XpcConnectionError, XpcError},
     ffi::{
-        _xpc_error_connection_interrupted, _xpc_error_connection_invalid, _xpc_error_key_description,
-        _xpc_error_peer_code_signing_requirement, _xpc_type_error, xpc_connection_cancel,
-        xpc_connection_copy_invalidation_reason, xpc_connection_get_asid, xpc_connection_get_egid,
-        xpc_connection_get_euid, xpc_connection_get_name, xpc_connection_get_pid,
-        xpc_connection_resume, xpc_connection_send_message, xpc_connection_send_message_with_reply,
-        xpc_connection_set_event_handler, xpc_connection_suspend, xpc_connection_t,
-        xpc_dictionary_create_reply, xpc_dictionary_get_string, xpc_dictionary_set_value,
-        xpc_object_t,
+        _xpc_error_connection_interrupted, _xpc_error_connection_invalid,
+        _xpc_error_key_description, _xpc_error_peer_code_signing_requirement, _xpc_type_error,
+        xpc_connection_cancel, xpc_connection_copy_invalidation_reason, xpc_connection_get_asid,
+        xpc_connection_get_egid, xpc_connection_get_euid, xpc_connection_get_name,
+        xpc_connection_get_pid, xpc_connection_resume, xpc_connection_send_message,
+        xpc_connection_send_message_with_reply, xpc_connection_set_event_handler,
+        xpc_connection_suspend, xpc_connection_t, xpc_dictionary_create_reply,
+        xpc_dictionary_get_string, xpc_dictionary_set_value, xpc_object_t,
     },
     message::XpcMessage,
     object::OwnedXpcObject,
@@ -399,14 +399,14 @@ pub(crate) fn map_connection_error(
         event.raw.cast_const(),
         (&raw const _xpc_error_connection_invalid).cast(),
     ) {
-        return Some(XpcConnectionError::Invalidated(connection_error_description(
-            connection, event.raw,
-        )));
+        return Some(XpcConnectionError::Invalidated(
+            connection_error_description(connection, event.raw),
+        ));
     }
 
-    Some(XpcConnectionError::Invalidated(connection_error_description(
-        connection, event.raw,
-    )))
+    Some(XpcConnectionError::Invalidated(
+        connection_error_description(connection, event.raw),
+    ))
 }
 
 fn connection_error_description(
@@ -429,5 +429,7 @@ fn connection_error_description(
         return None;
     }
 
-    Some(ArcStr::from(unsafe { CStr::from_ptr(value) }.to_string_lossy()))
+    Some(ArcStr::from(
+        unsafe { CStr::from_ptr(value) }.to_string_lossy(),
+    ))
 }

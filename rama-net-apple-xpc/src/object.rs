@@ -1,7 +1,8 @@
 use std::{
     collections::BTreeMap,
     ffi::{CStr, c_char, c_void},
-    ptr, sync::mpsc,
+    ptr,
+    sync::mpsc,
 };
 
 use crate::{
@@ -133,11 +134,15 @@ impl OwnedXpcObject {
         }
         if self.is_type(unsafe { &_xpc_type_uint64 as *const _ as *const c_void }) {
             // SAFETY: Type confirmed as XPC_TYPE_UINT64 above.
-            return Ok(XpcMessage::Uint64(unsafe { xpc_uint64_get_value(self.raw) }));
+            return Ok(XpcMessage::Uint64(unsafe {
+                xpc_uint64_get_value(self.raw)
+            }));
         }
         if self.is_type(unsafe { &_xpc_type_double as *const _ as *const c_void }) {
             // SAFETY: Type confirmed as XPC_TYPE_DOUBLE above.
-            return Ok(XpcMessage::Double(unsafe { xpc_double_get_value(self.raw) }));
+            return Ok(XpcMessage::Double(unsafe {
+                xpc_double_get_value(self.raw)
+            }));
         }
         if self.is_type(unsafe { &_xpc_type_string as *const _ as *const c_void }) {
             // SAFETY: Type confirmed as XPC_TYPE_STRING. xpc_string_get_string_ptr
@@ -145,7 +150,9 @@ impl OwnedXpcObject {
             // remains valid for the lifetime of self (OwnedXpcObject keeps self.raw
             // retained). We copy to a String before returning.
             let ptr = unsafe { xpc_string_get_string_ptr(self.raw) };
-            let value = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+            let value = unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned();
             return Ok(XpcMessage::String(value));
         }
         if self.is_type(unsafe { &_xpc_type_data as *const _ as *const c_void }) {
@@ -202,7 +209,9 @@ impl OwnedXpcObject {
             // The recv() calls will not block because xpc_array_apply above has already
             // sent exactly xpc_array_get_count items into the channel.
             for _ in 0..unsafe { xpc_array_get_count(self.raw) } {
-                let value = receiver.recv().map_err(|_| XpcError::UnsupportedObjectType("array"))??;
+                let value = receiver
+                    .recv()
+                    .map_err(|_| XpcError::UnsupportedObjectType("array"))??;
                 values.push(value.to_message()?);
             }
             return Ok(XpcMessage::Array(values));
@@ -212,7 +221,9 @@ impl OwnedXpcObject {
             let mut block = ConcreteBlock::new(move |key: *const c_char, value: xpc_object_t| {
                 // SAFETY: key is a valid null-terminated C string borrowed from the XPC
                 // dictionary for the duration of this callback invocation.
-                let key = unsafe { CStr::from_ptr(key) }.to_string_lossy().into_owned();
+                let key = unsafe { CStr::from_ptr(key) }
+                    .to_string_lossy()
+                    .into_owned();
                 let _ = sender.send((key, Self::retain(value, "dictionary value")));
                 true
             });
@@ -225,8 +236,9 @@ impl OwnedXpcObject {
             // SAFETY: xpc_dictionary_get_count on a valid XPC dictionary returns the entry
             // count. recv() will not block for the same reason as the array case above.
             for _ in 0..unsafe { xpc_dictionary_get_count(self.raw) } {
-                let (key, value) =
-                    receiver.recv().map_err(|_| XpcError::UnsupportedObjectType("dictionary"))?;
+                let (key, value) = receiver
+                    .recv()
+                    .map_err(|_| XpcError::UnsupportedObjectType("dictionary"))?;
                 values.insert(key, value?.to_message()?);
             }
             return Ok(XpcMessage::Dictionary(values));
@@ -297,7 +309,15 @@ mod tests {
 
     #[test]
     fn double_values() {
-        for v in [0.0f64, 1.0, -1.0, f64::MIN, f64::MAX, f64::INFINITY, f64::NEG_INFINITY] {
+        for v in [
+            0.0f64,
+            1.0,
+            -1.0,
+            f64::MIN,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
             assert_eq!(rt(XpcMessage::Double(v)), XpcMessage::Double(v));
         }
         // NaN is not equal to itself, so check the type tag separately.
@@ -309,7 +329,10 @@ mod tests {
 
     #[test]
     fn string_empty() {
-        assert_eq!(rt(XpcMessage::String(String::new())), XpcMessage::String(String::new()));
+        assert_eq!(
+            rt(XpcMessage::String(String::new())),
+            XpcMessage::String(String::new())
+        );
     }
 
     #[test]
@@ -353,8 +376,13 @@ mod tests {
         let file = std::fs::File::open("/dev/null").expect("open /dev/null");
         let original = file.as_raw_fd();
         let result = rt(XpcMessage::Fd(original));
-        let XpcMessage::Fd(duped) = result else { panic!("expected Fd variant") };
-        assert_ne!(duped, original, "round-tripped fd must be a dup, not the original");
+        let XpcMessage::Fd(duped) = result else {
+            panic!("expected Fd variant")
+        };
+        assert_ne!(
+            duped, original,
+            "round-tripped fd must be a dup, not the original"
+        );
         // Take ownership so the duped fd is closed on drop.
         drop(unsafe { OwnedFd::from_raw_fd(duped) });
     }
@@ -434,9 +462,10 @@ mod tests {
 
     #[test]
     fn dictionary_nested() {
-        let inner = XpcMessage::Dictionary(BTreeMap::from([
-            ("inner_key".into(), XpcMessage::Uint64(42)),
-        ]));
+        let inner = XpcMessage::Dictionary(BTreeMap::from([(
+            "inner_key".into(),
+            XpcMessage::Uint64(42),
+        )]));
         let outer = XpcMessage::Dictionary(BTreeMap::from([
             ("nested".into(), inner),
             ("flag".into(), XpcMessage::Bool(true)),

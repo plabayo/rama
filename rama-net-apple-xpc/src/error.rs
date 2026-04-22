@@ -57,7 +57,9 @@ impl fmt::Display for XpcError {
                 write!(f, "xpc peer requirement failed with code {code}: {context}")
             }
             Self::ReplyNotExpected => f.write_str("incoming xpc message does not support replies"),
-            Self::ReplyCanceled => f.write_str("xpc reply callback dropped before delivering a response"),
+            Self::ReplyCanceled => {
+                f.write_str("xpc reply callback dropped before delivering a response")
+            }
             Self::Connection(err) => write!(f, "{err:?}"),
         }
     }

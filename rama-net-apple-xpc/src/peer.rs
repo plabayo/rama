@@ -84,7 +84,10 @@ impl PeerSecurityRequirement {
             Self::CodeSigning(requirement) => {
                 let requirement = make_c_string(requirement)?;
                 unsafe {
-                    xpc_connection_set_peer_code_signing_requirement(connection, requirement.as_ptr())
+                    xpc_connection_set_peer_code_signing_requirement(
+                        connection,
+                        requirement.as_ptr(),
+                    )
                 }
             }
             Self::TeamIdentity(signing_identifier) => {
@@ -138,7 +141,10 @@ impl PeerSecurityRequirement {
             Self::LightweightCodeRequirement(requirement) => {
                 let requirement = OwnedXpcObject::from_message(requirement.clone())?;
                 unsafe {
-                    xpc_connection_set_peer_lightweight_code_requirement(connection, requirement.raw)
+                    xpc_connection_set_peer_lightweight_code_requirement(
+                        connection,
+                        requirement.raw,
+                    )
                 }
             }
         };

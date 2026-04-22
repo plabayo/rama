@@ -8,9 +8,8 @@ use crate::{
     connection::XpcConnection,
     error::XpcError,
     ffi::{
-        XPC_CONNECTION_MACH_SERVICE_LISTENER, xpc_connection_activate,
-        xpc_connection_cancel, xpc_connection_create_mach_service,
-        xpc_connection_set_event_handler, xpc_object_t,
+        XPC_CONNECTION_MACH_SERVICE_LISTENER, xpc_connection_activate, xpc_connection_cancel,
+        xpc_connection_create_mach_service, xpc_connection_set_event_handler, xpc_object_t,
     },
     object::OwnedXpcObject,
     peer::PeerSecurityRequirement,
