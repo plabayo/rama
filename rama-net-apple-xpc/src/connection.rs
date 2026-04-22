@@ -20,12 +20,13 @@ use crate::{
     error::{XpcConnectionError, XpcError},
     ffi::{
         _xpc_error_connection_interrupted, _xpc_error_connection_invalid, _xpc_error_key_description,
-        _xpc_error_peer_code_signing_requirement, _xpc_type_error,
-        xpc_connection_cancel, xpc_connection_copy_invalidation_reason,
-        xpc_connection_get_euid, xpc_connection_get_pid, xpc_connection_resume,
-        xpc_connection_send_message, xpc_connection_send_message_with_reply,
-        xpc_connection_set_event_handler, xpc_connection_t, xpc_dictionary_create_reply,
-        xpc_dictionary_get_string, xpc_dictionary_set_value, xpc_object_t,
+        _xpc_error_peer_code_signing_requirement, _xpc_type_error, xpc_connection_cancel,
+        xpc_connection_copy_invalidation_reason, xpc_connection_get_asid, xpc_connection_get_egid,
+        xpc_connection_get_euid, xpc_connection_get_name, xpc_connection_get_pid,
+        xpc_connection_resume, xpc_connection_send_message, xpc_connection_send_message_with_reply,
+        xpc_connection_set_event_handler, xpc_connection_suspend, xpc_connection_t,
+        xpc_dictionary_create_reply, xpc_dictionary_get_string, xpc_dictionary_set_value,
+        xpc_object_t,
     },
     message::XpcMessage,
     object::OwnedXpcObject,
@@ -161,6 +162,61 @@ impl XpcConnection {
 
     pub fn euid(&self) -> u32 {
         unsafe { xpc_connection_get_euid(self.connection.raw as xpc_connection_t) }
+    }
+
+    pub fn egid(&self) -> u32 {
+        unsafe { xpc_connection_get_egid(self.connection.raw as xpc_connection_t) }
+    }
+
+    /// Audit session identifier of the remote peer.
+    ///
+    /// The audit session ID is a kernel-assigned, per-session identity that is stable
+    /// across PID recycling within the same login session. It is more reliable than
+    /// [`pid`](Self::pid) for session-level identity checks.
+    pub fn asid(&self) -> i32 {
+        unsafe { xpc_connection_get_asid(self.connection.raw as xpc_connection_t) }
+    }
+
+    /// Service name of this connection, if any.
+    ///
+    /// Returns `None` for anonymous or peer connections created from endpoints.
+    pub fn name(&self) -> Option<String> {
+        let ptr = unsafe { xpc_connection_get_name(self.connection.raw as xpc_connection_t) };
+        if ptr.is_null() {
+            return None;
+        }
+        Some(
+            unsafe { std::ffi::CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
+    /// Explicitly cancel the connection.
+    ///
+    /// Safe to call multiple times — canceling an already-canceled connection is a no-op.
+    /// The connection is also canceled automatically on [`Drop`].
+    pub fn cancel(&self) {
+        unsafe { xpc_connection_cancel(self.connection.raw as xpc_connection_t) };
+    }
+
+    /// Suspend event delivery on the connection.
+    ///
+    /// Every call to `suspend` must be balanced by a corresponding call to [`resume`](Self::resume)
+    /// before the connection is released. Unbalanced suspends will cause a crash.
+    pub fn suspend(&self) {
+        unsafe { xpc_connection_suspend(self.connection.raw as xpc_connection_t) };
+    }
+
+    /// Resume a previously suspended connection.
+    ///
+    /// Must be called once for each preceding call to [`suspend`](Self::suspend).
+    pub fn resume(&self) {
+        unsafe { xpc_connection_resume(self.connection.raw as xpc_connection_t) };
+    }
+
+    pub(crate) fn connection_raw(&self) -> xpc_connection_t {
+        self.connection.raw as xpc_connection_t
     }
 }
 

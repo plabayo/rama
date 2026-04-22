@@ -6,17 +6,20 @@ use std::{
 
 use crate::{
     block::{Block, ConcreteBlock},
+    endpoint::XpcEndpoint,
     error::XpcError,
     ffi::{
-        _xpc_type_array, _xpc_type_bool, _xpc_type_data, _xpc_type_dictionary, _xpc_type_double,
-        _xpc_type_fd, _xpc_type_int64, _xpc_type_null, _xpc_type_string, _xpc_type_uint64,
-        xpc_array_append_value, xpc_array_apply, xpc_array_create, xpc_array_get_count,
-        xpc_bool_create, xpc_bool_get_value, xpc_data_create, xpc_data_get_bytes_ptr,
-        xpc_data_get_length, xpc_dictionary_apply, xpc_dictionary_create,
+        _xpc_type_array, _xpc_type_bool, _xpc_type_data, _xpc_type_date, _xpc_type_dictionary,
+        _xpc_type_double, _xpc_type_endpoint, _xpc_type_fd, _xpc_type_int64, _xpc_type_null,
+        _xpc_type_string, _xpc_type_uint64, _xpc_type_uuid, xpc_array_append_value,
+        xpc_array_apply, xpc_array_create, xpc_array_get_count, xpc_bool_create,
+        xpc_bool_get_value, xpc_data_create, xpc_data_get_bytes_ptr, xpc_data_get_length,
+        xpc_date_create, xpc_date_get_value, xpc_dictionary_apply, xpc_dictionary_create,
         xpc_dictionary_get_count, xpc_dictionary_set_value, xpc_double_create,
         xpc_double_get_value, xpc_fd_create, xpc_fd_dup, xpc_get_type, xpc_int64_create,
         xpc_int64_get_value, xpc_null_create, xpc_object_t, xpc_release, xpc_retain,
         xpc_string_create, xpc_string_get_string_ptr, xpc_uint64_create, xpc_uint64_get_value,
+        xpc_uuid_create, xpc_uuid_get_bytes,
     },
     message::XpcMessage,
     util::make_c_string,
@@ -59,6 +62,14 @@ impl OwnedXpcObject {
             }
             XpcMessage::Data(value) => unsafe { xpc_data_create(value.as_ptr().cast(), value.len()) },
             XpcMessage::Fd(value) => unsafe { xpc_fd_create(value) },
+            XpcMessage::Uuid(bytes) => unsafe { xpc_uuid_create(bytes.as_ptr()) },
+            XpcMessage::Date(nanos) => unsafe { xpc_date_create(nanos) },
+            XpcMessage::Endpoint(endpoint) => {
+                // Retain the existing endpoint object so the new OwnedXpcObject
+                // can hold an independent reference with its own release.
+                unsafe { xpc_retain(endpoint.raw_object().raw) };
+                endpoint.raw_object().raw
+            }
             XpcMessage::Array(values) => {
                 let raw = unsafe { xpc_array_create(ptr::null_mut(), 0) };
                 for value in values {
@@ -109,6 +120,19 @@ impl OwnedXpcObject {
         }
         if self.is_type(unsafe { &_xpc_type_fd as *const _ as *const c_void }) {
             return Ok(XpcMessage::Fd(unsafe { xpc_fd_dup(self.raw) }));
+        }
+        if self.is_type(unsafe { &_xpc_type_uuid as *const _ as *const c_void }) {
+            let ptr = unsafe { xpc_uuid_get_bytes(self.raw) };
+            let mut bytes = [0u8; 16];
+            bytes.copy_from_slice(unsafe { std::slice::from_raw_parts(ptr, 16) });
+            return Ok(XpcMessage::Uuid(bytes));
+        }
+        if self.is_type(unsafe { &_xpc_type_date as *const _ as *const c_void }) {
+            return Ok(XpcMessage::Date(unsafe { xpc_date_get_value(self.raw) }));
+        }
+        if self.is_type(unsafe { &_xpc_type_endpoint as *const _ as *const c_void }) {
+            let retained = Self::retain(self.raw, "endpoint to message")?;
+            return Ok(XpcMessage::Endpoint(XpcEndpoint::from_raw_object(retained)));
         }
         if self.is_type(unsafe { &_xpc_type_array as *const _ as *const c_void }) {
             let (sender, receiver) = mpsc::channel();
