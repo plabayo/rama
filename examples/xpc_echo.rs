@@ -40,15 +40,17 @@ fn main() {
 #[cfg(target_vendor = "apple")]
 #[tokio::main]
 async fn main() {
-    use std::{collections::BTreeMap, time::Duration};
+    use std::{collections::BTreeMap, convert::Infallible, time::Duration};
 
     use tokio::sync::oneshot;
 
     use rama::{
         graceful::Shutdown,
-        net::apple::xpc::{XpcConnectionError, XpcEndpoint, XpcEvent, XpcMessage},
+        net::apple::xpc::{XpcEndpoint, XpcMessage, XpcServer},
+        rt::Executor,
+        service::service_fn,
         telemetry::tracing::{
-            self, debug, error, info,
+            self, error, info,
             level_filters::LevelFilter,
             subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
         },
@@ -67,78 +69,30 @@ async fn main() {
     let graceful = Shutdown::new(async { drop(shutdown_rx.await) });
 
     // Create anonymous channel: server connection + endpoint for the client.
-    let (mut server_conn, endpoint) =
-        XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
+    let (server_conn, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
 
-    // Server task: first accept the incoming peer connection from the anonymous
-    // listener, then echo every incoming message back via reply (if it's a request)
-    // or print it (if it's fire-and-forget).
-    let server_task = graceful.spawn_task(async move {
-        info!(target: "xpc_echo::server", "ready, waiting for peer connection");
-        let mut peer_conn = loop {
-            match server_conn.recv().await {
-                None => {
-                    info!(target: "xpc_echo::server", "listener closed before peer connected");
-                    return;
-                }
-                Some(XpcEvent::Connection(conn)) => {
-                    info!(target: "xpc_echo::server", "peer connected");
-                    break conn;
-                }
-                Some(XpcEvent::Error(err)) => {
-                    error!(target: "xpc_echo::server", ?err, "listener error");
-                    return;
-                }
-                Some(XpcEvent::Message(_)) => {
-                    error!(target: "xpc_echo::server", "unexpected message on anonymous listener");
-                    return;
-                }
+    let server = XpcServer::new(service_fn(async |message: XpcMessage| {
+        let reply = match message {
+            XpcMessage::Dictionary(values) if values.contains_key("text") => {
+                Some(XpcMessage::Dictionary(values))
             }
+            _ => None,
         };
+        Ok::<_, Infallible>(reply)
+    }));
 
-        debug!(target: "xpc_echo::server", "waiting for peer events");
-        loop {
-            match peer_conn.recv().await {
-                None => {
-                    info!(target: "xpc_echo::server", "channel closed, shutting down");
-                    break;
-                }
-                Some(XpcEvent::Connection(_)) => {
-                    error!(target: "xpc_echo::server", "unexpected nested peer connection");
-                    break;
-                }
-                Some(XpcEvent::Error(XpcConnectionError::Interrupted)) => {
-                    info!(
-                        target: "xpc_echo::server",
-                        "connection closed (Interrupted), shutting down"
-                    );
-                    break;
-                }
-                Some(XpcEvent::Error(XpcConnectionError::Invalidated(_))) => {
-                    info!(
-                        target: "xpc_echo::server",
-                        "connection closed (Invalidated), shutting down"
-                    );
-                    break;
-                }
-                Some(XpcEvent::Error(err)) => {
-                    error!(target: "xpc_echo::server", ?err, "connection error");
-                    break;
-                }
-                Some(XpcEvent::Message(msg)) => {
-                    // Try to reply; if the message doesn't support it (fire-and-forget),
-                    // reply() returns Err(XpcError::ReplyNotExpected) which we ignore.
-                    debug!(target: "xpc_echo::server", message = ?msg.message(), "received message");
-                    if let XpcMessage::Dictionary(vals) = msg.message() {
-                        let mut reply_vals = BTreeMap::new();
-                        for (k, v) in vals {
-                            reply_vals.insert(k.clone(), v.clone());
-                        }
-                        let _ = msg.reply(XpcMessage::Dictionary(reply_vals));
-                    }
-                }
-            }
+    // Server task: serve the anonymous listener through the higher-level XpcServer
+    // adapter, which accepts the peer connection and dispatches message handling to
+    // the Rama service above.
+    let server_task = graceful.spawn_task_fn(async move |guard| {
+        info!(target: "xpc_echo::server", "ready, waiting for peer connection");
+        if let Err(err) = server
+            .serve_connection(server_conn, Executor::graceful(guard))
+            .await
+        {
+            error!(target: "xpc_echo::server", %err, "server error");
         }
+        info!(target: "xpc_echo::server", "server stopped");
     });
 
     // Client task: connect via endpoint, send fire-and-forget then a request.

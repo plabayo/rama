@@ -159,7 +159,11 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 ## Apple XPC
 
 - [`xpc_echo.rs`](./xpc_echo.rs) - End-to-end XPC echo using an anonymous channel (no launchd required).
-  Demonstrates fire-and-forget send, request-reply, and connection lifecycle — Apple platforms only.
+  Demonstrates `XpcServer<S>`, anonymous listener acceptance, fire-and-forget send, request-reply,
+  graceful shutdown, and tracing output — Apple platforms only.
+- [`xpc_ca_exchange.rs`](./xpc_ca_exchange.rs) - A control-plane shaped XPC request/reply example.
+  Demonstrates fetching CA material over XPC, using the same service-driven anonymous-channel setup
+  that can later be moved behind a named Mach service with peer requirements.
 
 ## Network and Transport
 - [`native_dns.rs`](./native_dns.rs) - Resolve domains using Rama's native DNS resolver,

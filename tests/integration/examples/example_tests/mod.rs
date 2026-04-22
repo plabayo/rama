@@ -175,4 +175,6 @@ mod tls_boring_termination;
 mod tls_rustls_termination;
 
 #[cfg(all(feature = "net-apple-xpc", target_vendor = "apple"))]
+mod xpc_ca_exchange;
+#[cfg(all(feature = "net-apple-xpc", target_vendor = "apple"))]
 mod xpc_echo;

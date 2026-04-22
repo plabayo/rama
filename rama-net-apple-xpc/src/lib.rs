@@ -24,6 +24,10 @@
 //! **[`XpcConnector`]** — a [`rama_core::Service`] that creates client connections;
 //! drop-in for Rama client service stacks.
 //!
+//! **[`XpcServer`]** — a higher-level Rama-native server adapter that accepts peer
+//! connections from a listener or anonymous listener connection and dispatches
+//! incoming [`XpcMessage`] values into a regular Rama service.
+//!
 //! ## Messages
 //!
 //! All XPC values are represented by [`XpcMessage`], an enum covering every native
@@ -53,8 +57,11 @@
 //! canonical pattern for dynamic or ephemeral services.
 //!
 //! For programs that need XPC without any launchd registration, call
-//! [`XpcEndpoint::anonymous_channel`] to create a `(XpcConnection, XpcEndpoint)` pair
-//! directly — no plist required. This is also the easiest way to test XPC code in-process.
+//! [`XpcEndpoint::anonymous_channel`] to create an anonymous listener connection plus
+//! an [`XpcEndpoint`] directly — no plist required. The listener side first yields
+//! [`XpcEvent::Connection`] when a peer connects, after which that peer connection
+//! yields normal [`XpcEvent::Message`] values. This is also the easiest way to test
+//! XPC code in-process.
 //!
 //! ## Message passing patterns
 //!
@@ -87,6 +94,13 @@
 //! **`NSXPCConnection` is a different protocol.** Swift/ObjC services built on
 //! `NSXPCConnection` use `NSKeyedArchiver` framing inside XPC data messages. This crate
 //! speaks raw `libxpc` and is not compatible with such services out of the box.
+//!
+//! **This is not yet the full Apple XPC surface.** The crate focuses on the raw-XPC
+//! pieces needed for structured messaging, request-reply, endpoint handoff, peer
+//! verification, and a first Rama-native server adapter. Typed codecs, richer
+//! request-routing helpers, launchd/plist end-to-end examples, `NSXPCConnection`
+//! interoperability, and some newer Apple XPC APIs are still missing. Contributions
+//! are welcome.
 //!
 //! **`suspend`/`resume` must be balanced.** Every [`XpcConnection::suspend`] call must
 //! be paired with a [`XpcConnection::resume`] before the connection is released.
@@ -133,6 +147,7 @@ mod listener;
 mod message;
 mod object;
 mod peer;
+mod server;
 mod util;
 
 pub use client::XpcClientConfig;
@@ -143,3 +158,4 @@ pub use error::{XpcConnectionError, XpcError};
 pub use listener::{XpcListener, XpcListenerConfig};
 pub use message::XpcMessage;
 pub use peer::PeerSecurityRequirement;
+pub use server::XpcServer;

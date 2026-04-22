@@ -125,6 +125,14 @@ qa-crate CRATE:
 qa-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/qa
 
+qa-xpc-apple:
+    cargo check -p rama-net-apple-xpc
+    cargo clippy -p rama-net-apple-xpc --all-targets -- -D warnings
+    cargo doc --all-features --no-deps -p rama-net-apple-xpc
+    cargo check -p rama --features net-apple-xpc
+    cargo run --example xpc_echo --features=net-apple-xpc
+    cargo run --example xpc_ca_exchange --features=net-apple-xpc
+
 test-e2e-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/test-e2e
 

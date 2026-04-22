@@ -2,22 +2,19 @@ use super::utils;
 
 #[tokio::test]
 #[ignore]
-async fn test_xpc_echo() {
+async fn test_xpc_ca_exchange() {
     utils::init_tracing();
 
-    // The example is self-contained: it creates an anonymous XPC channel, exchanges
-    // messages between two in-process tokio tasks, then exits. We just verify it exits
-    // successfully without panicking.
     let output = escargot::CargoBuild::new()
         .arg("--features=net-apple-xpc")
-        .example("xpc_echo")
+        .example("xpc_ca_exchange")
         .manifest_path("Cargo.toml")
         .target_dir("./target/")
         .run()
-        .expect("cargo build xpc_echo")
+        .expect("cargo build xpc_ca_exchange")
         .command()
         .output()
-        .expect("run xpc_echo");
+        .expect("run xpc_ca_exchange");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -25,12 +22,12 @@ async fn test_xpc_echo() {
 
     assert!(
         output.status.success(),
-        "xpc_echo exited with status {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        "xpc_ca_exchange exited with status {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
         output.status,
     );
 
     assert!(
-        combined.contains("xpc_echo::client: got reply"),
+        combined.contains("xpc_ca_exchange::client: received reply"),
         "expected reply line in output:\n{combined}"
     );
 }

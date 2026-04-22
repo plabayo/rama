@@ -25,7 +25,7 @@ parking_lot = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["rt", "sync"] }
 
 [build-dependencies]
 bindgen = { workspace = true }

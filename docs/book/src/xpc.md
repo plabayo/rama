@@ -91,7 +91,19 @@ reply. The server calls `received.reply(response)` to satisfy the pending future
 must be a `Dictionary`.
 
 The server receives all incoming messages (and connection lifecycle events) via
-`conn.recv().await`, which returns an `XpcEvent` — either a `Message` or an `Error`.
+`conn.recv().await`, which returns an `XpcEvent`.
+
+For peer connections this is usually either:
+
+- `Message`
+- `Error`
+
+For listener-style connections, including anonymous listeners created via
+`XpcEndpoint::anonymous_channel`, the first meaningful event is:
+
+- `Connection(XpcConnection)`
+
+That accepted peer connection then yields the usual message/error stream.
 
 ## Security Model
 
@@ -149,6 +161,17 @@ dynamic services.
 from raw libXPC dictionaries. `rama-net-apple-xpc` speaks raw libXPC and is not compatible
 with `NSXPCConnection` services out of the box.
 
+**This crate does not yet expose the full Apple XPC surface.** It currently focuses on
+the raw-XPC pieces needed for structured message passing, endpoint handoff, request-reply,
+peer verification, and a first Rama-native server adapter. It does not yet provide:
+
+- typed request/response codecs or higher-level XPC routing helpers on top of `XpcServer<S>`
+- launchd/plist-driven end-to-end examples in this book
+- compatibility with Foundation `NSXPCConnection`
+- wrappers for every newer Apple XPC API family beyond the current raw connection/endpoint model
+
+Contributions are appreciated and welcome.
+
 **`suspend` and `resume` must be balanced.** Calling `conn.suspend()` without a matching
 `conn.resume()` before the connection is released will crash the process. Imbalanced
 suspends are a programming error, not a runtime error.
@@ -164,7 +187,10 @@ in the event stream, not at construction time.
 
 `XpcConnection` implements `rama_core::Service<XpcMessage>` (fire-and-forget send) and
 `rama_core::ExtensionsRef` (typed extension storage). `XpcConnector` implements
-`Service<XpcClientConfig>` and fits into any Rama client service stack.
+`Service<XpcClientConfig>` and fits into any Rama client service stack. `XpcServer<S>`
+accepts peer connections and dispatches incoming `XpcMessage` values into a regular
+Rama service returning `Option<XpcMessage>`, which is enough for the first host-app /
+Network Extension style control-plane flows.
 
 Feature flag: `net-apple-xpc`. Only compiled on `target_vendor = "apple"`.
 
@@ -172,7 +198,7 @@ Crate docs: <https://ramaproxy.org/docs/rama_net_apple_xpc/index.html>
 
 Apple XPC reference: <https://developer.apple.com/documentation/xpc>
 
-## Example: Anonymous Echo Channel
+## Examples: Anonymous Echo and Request/Reply Control Plane
 
 The `xpc_echo` example demonstrates all three XPC message patterns in a single
 self-contained binary — no launchd registration or plist required:
@@ -181,6 +207,17 @@ self-contained binary — no launchd registration or plist required:
 cargo run --example xpc_echo --features=net-apple-xpc
 ```
 
-It uses `XpcEndpoint::anonymous_channel` to create an in-process server/client pair,
-then exercises fire-and-forget send, request-reply, and connection shutdown.
+It uses `XpcEndpoint::anonymous_channel` to create an in-process anonymous listener plus
+endpoint, then serves it through `XpcServer<S>` and exercises fire-and-forget send,
+request-reply, and connection shutdown.
 Source: [`examples/xpc_echo.rs`](https://github.com/plabayo/rama/blob/main/examples/xpc_echo.rs)
+
+For a control-plane shaped example closer to a host-app / Network Extension workflow:
+
+```sh
+cargo run --example xpc_ca_exchange --features=net-apple-xpc
+```
+
+That example models a client requesting CA material over XPC request/reply instead of
+pushing it through some unrelated opaque configuration transport.
+Source: [`examples/xpc_ca_exchange.rs`](https://github.com/plabayo/rama/blob/main/examples/xpc_ca_exchange.rs)

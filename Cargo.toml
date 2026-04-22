@@ -692,6 +692,10 @@ name = "xpc_echo"
 required-features = ["net-apple-xpc"]
 
 [[example]]
+name = "xpc_ca_exchange"
+required-features = ["net-apple-xpc"]
+
+[[example]]
 name = "tcp_nd_json"
 required-features = ["tcp"]
 
