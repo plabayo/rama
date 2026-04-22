@@ -52,6 +52,10 @@
 //! to establish a peer connection without needing a launchd service name. This is the
 //! canonical pattern for dynamic or ephemeral services.
 //!
+//! For programs that need XPC without any launchd registration, call
+//! [`XpcEndpoint::anonymous_channel`] to create a `(XpcConnection, XpcEndpoint)` pair
+//! directly — no plist required. This is also the easiest way to test XPC code in-process.
+//!
 //! ## Message passing patterns
 //!
 //! - **Fire-and-forget** — [`XpcConnection::send`]: queues a message and returns.

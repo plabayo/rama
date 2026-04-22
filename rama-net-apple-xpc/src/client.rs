@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing;
 use rama_utils::str::arcstr::ArcStr;
 
 use crate::{
@@ -83,6 +84,11 @@ impl XpcConnection {
             target_queue_label,
             peer_requirement,
         } = config;
+        tracing::debug!(
+            service = %service_name,
+            privileged,
+            "create xpc client connection"
+        );
         let service_name = make_c_string(&service_name)?;
         let queue = DispatchQueue::new(target_queue_label.as_deref())?;
         let flags = if privileged {

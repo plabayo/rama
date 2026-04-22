@@ -156,6 +156,11 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 ### Mutual TLS
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation
 
+## Apple XPC
+
+- [`xpc_echo.rs`](./xpc_echo.rs) - End-to-end XPC echo using an anonymous channel (no launchd required).
+  Demonstrates fire-and-forget send, request-reply, and connection lifecycle — Apple platforms only.
+
 ## Network and Transport
 - [`native_dns.rs`](./native_dns.rs) - Resolve domains using Rama's native DNS resolver,
   - with Apple-native DNS-SD support on Apple platforms

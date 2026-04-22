@@ -171,3 +171,16 @@ Feature flag: `net-apple-xpc`. Only compiled on `target_vendor = "apple"`.
 Crate docs: <https://ramaproxy.org/docs/rama_net_apple_xpc/index.html>
 
 Apple XPC reference: <https://developer.apple.com/documentation/xpc>
+
+## Example: Anonymous Echo Channel
+
+The `xpc_echo` example demonstrates all three XPC message patterns in a single
+self-contained binary — no launchd registration or plist required:
+
+```sh
+cargo run --example xpc_echo --features=net-apple-xpc
+```
+
+It uses `XpcEndpoint::anonymous_channel` to create an in-process server/client pair,
+then exercises fire-and-forget send, request-reply, and connection shutdown.
+Source: [`examples/xpc_echo.rs`](https://github.com/plabayo/rama/blob/main/examples/xpc_echo.rs)

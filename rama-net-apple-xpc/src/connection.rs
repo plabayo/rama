@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 use rama_core::{
     Service,
     extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing,
 };
 use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::{
@@ -20,13 +21,14 @@ use crate::{
     error::{XpcConnectionError, XpcError},
     ffi::{
         _xpc_error_connection_interrupted, _xpc_error_connection_invalid,
-        _xpc_error_key_description, _xpc_error_peer_code_signing_requirement, _xpc_type_error,
-        xpc_connection_cancel, xpc_connection_copy_invalidation_reason, xpc_connection_get_asid,
-        xpc_connection_get_egid, xpc_connection_get_euid, xpc_connection_get_name,
-        xpc_connection_get_pid, xpc_connection_resume, xpc_connection_send_message,
-        xpc_connection_send_message_with_reply, xpc_connection_set_event_handler,
-        xpc_connection_suspend, xpc_connection_t, xpc_dictionary_create_reply,
-        xpc_dictionary_get_string, xpc_dictionary_set_value, xpc_object_t,
+        _xpc_error_key_description, _xpc_error_peer_code_signing_requirement, _xpc_type_connection,
+        _xpc_type_error, xpc_connection_cancel, xpc_connection_copy_invalidation_reason,
+        xpc_connection_get_asid, xpc_connection_get_egid, xpc_connection_get_euid,
+        xpc_connection_get_name, xpc_connection_get_pid, xpc_connection_resume,
+        xpc_connection_send_message, xpc_connection_send_message_with_reply,
+        xpc_connection_set_event_handler, xpc_connection_suspend, xpc_connection_t,
+        xpc_dictionary_create_reply, xpc_dictionary_get_string, xpc_dictionary_set_value,
+        xpc_object_t,
     },
     message::XpcMessage,
     object::OwnedXpcObject,
@@ -36,6 +38,8 @@ use crate::{
 /// An event received on an [`XpcConnection`].
 #[derive(Debug)]
 pub enum XpcEvent {
+    /// An incoming peer connection from a listener-style connection.
+    Connection(XpcConnection),
     /// An incoming message from the peer.
     Message(ReceivedXpcMessage),
     /// A connection lifecycle error. After this event the connection is permanently closed.
@@ -171,6 +175,11 @@ impl XpcConnection {
             xpc_connection_resume(raw_connection);
         }
 
+        tracing::debug!(
+            pid = unsafe { xpc_connection_get_pid(raw_connection) },
+            "xpc peer connection activated"
+        );
+
         Ok(Self {
             connection,
             extensions: Extensions::new(),
@@ -195,6 +204,7 @@ impl XpcConnection {
     /// The message is queued and the call returns immediately. Use
     /// [`send_request`](Self::send_request) when you need the peer's response.
     pub fn send(&self, message: XpcMessage) -> Result<(), XpcError> {
+        tracing::trace!(message = ?message, "xpc send");
         let object = OwnedXpcObject::from_message(message)?;
         // SAFETY: self.connection.raw is a valid xpc_connection_t held by OwnedXpcObject
         // for the lifetime of &self. object.raw is a valid retained XPC object.
@@ -213,40 +223,47 @@ impl XpcConnection {
     /// corresponding received message. Returns [`XpcError::ReplyCanceled`] if the
     /// connection closes before a reply is delivered.
     pub async fn send_request(&self, message: XpcMessage) -> Result<XpcMessage, XpcError> {
+        tracing::trace!(message = ?message, "xpc send request");
         let object = OwnedXpcObject::from_message(message)?;
         let (reply_sender, reply_receiver) = oneshot::channel();
         let reply_sender = Mutex::new(Some(reply_sender));
         let raw_connection = self.connection.raw as xpc_connection_t;
 
-        let block = ConcreteBlock::new(move |reply: xpc_object_t| {
-            let result = match OwnedXpcObject::retain(reply, "async reply") {
-                Ok(reply) => match map_connection_error(raw_connection, &reply) {
-                    Some(err) => Err(XpcError::Connection(err)),
-                    None => reply.to_message(),
-                },
-                Err(err) => Err(err),
-            };
+        {
+            let block = ConcreteBlock::new(move |reply: xpc_object_t| {
+                let result = match OwnedXpcObject::retain(reply, "async reply") {
+                    Ok(reply) => match map_connection_error(raw_connection, &reply) {
+                        Some(err) => Err(XpcError::Connection(err)),
+                        None => reply.to_message(),
+                    },
+                    Err(err) => Err(err),
+                };
 
-            if let Some(reply_sender) = reply_sender.lock().take() {
-                let _ = reply_sender.send(result);
+                if let Some(reply_sender) = reply_sender.lock().take() {
+                    let _ = reply_sender.send(result);
+                }
+            })
+            .copy();
+
+            // SAFETY: raw_connection is a valid xpc_connection_t. object.raw is a valid
+            // retained XPC object. The queue argument is null, so XPC uses the connection's
+            // own queue. block is a heap-allocated copied Block; XPC retains it until after
+            // the callback fires, at which point it is released.
+            unsafe {
+                xpc_connection_send_message_with_reply(
+                    raw_connection,
+                    object.raw,
+                    ptr::null_mut(),
+                    block.deref() as *const _ as *mut _,
+                );
             }
-        })
-        .copy();
-
-        // SAFETY: raw_connection is a valid xpc_connection_t. object.raw is a valid
-        // retained XPC object. The queue argument is null, so XPC uses the connection's
-        // own queue. block is a heap-allocated copied Block; XPC retains it until after
-        // the callback fires, at which point it is released.
-        unsafe {
-            xpc_connection_send_message_with_reply(
-                raw_connection,
-                object.raw,
-                ptr::null_mut(),
-                block.deref() as *const _ as *mut _,
-            );
         }
 
-        reply_receiver.await.map_err(|_| XpcError::ReplyCanceled)?
+        let reply = reply_receiver
+            .await
+            .map_err(|_| XpcError::ReplyCanceled)??;
+        tracing::trace!(reply = ?reply, "xpc received reply");
+        Ok(reply)
     }
 
     /// Process ID of the remote peer at the time the connection was established.
@@ -304,6 +321,7 @@ impl XpcConnection {
     /// Safe to call multiple times — canceling an already-canceled connection is a no-op.
     /// The connection is also canceled automatically on [`Drop`].
     pub fn cancel(&self) {
+        tracing::debug!("xpc connection cancel");
         // SAFETY: self.connection.raw is a valid xpc_connection_t. xpc_connection_cancel
         // is idempotent per Apple's documentation.
         unsafe { xpc_connection_cancel(self.connection.raw as xpc_connection_t) };
@@ -314,6 +332,7 @@ impl XpcConnection {
     /// Every call to `suspend` must be balanced by a corresponding call to [`resume`](Self::resume)
     /// before the connection is released. Unbalanced suspends will cause a crash.
     pub fn suspend(&self) {
+        tracing::trace!("xpc connection suspend");
         // SAFETY: self.connection.raw is a valid xpc_connection_t for &self's lifetime.
         unsafe { xpc_connection_suspend(self.connection.raw as xpc_connection_t) };
     }
@@ -322,6 +341,7 @@ impl XpcConnection {
     ///
     /// Must be called once for each preceding call to [`suspend`](Self::suspend).
     pub fn resume(&self) {
+        tracing::trace!("xpc connection resume");
         // SAFETY: Same as suspend().
         unsafe { xpc_connection_resume(self.connection.raw as xpc_connection_t) };
     }
@@ -356,15 +376,29 @@ impl Service<XpcMessage> for XpcConnection {
 
 pub(crate) fn map_event(connection: xpc_connection_t, event: OwnedXpcObject) -> XpcEvent {
     if let Some(error) = map_connection_error(connection, &event) {
+        tracing::debug!(?error, "xpc connection lifecycle event");
         return XpcEvent::Error(error);
     }
 
+    if event.is_type(unsafe { &_xpc_type_connection as *const _ as *const std::ffi::c_void }) {
+        tracing::debug!("xpc listener received peer connection");
+        return match XpcConnection::from_owned_peer(event) {
+            Ok(connection) => XpcEvent::Connection(connection),
+            Err(err) => XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
+                err.to_string(),
+            )))),
+        };
+    }
+
     match event.to_message() {
-        Ok(message) => XpcEvent::Message(ReceivedXpcMessage {
-            connection,
-            message,
-            raw_event: event,
-        }),
+        Ok(message) => {
+            tracing::trace!(message = ?message, "xpc incoming message");
+            XpcEvent::Message(ReceivedXpcMessage {
+                connection,
+                message,
+                raw_event: event,
+            })
+        }
         Err(err) => XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
             err.to_string(),
         )))),

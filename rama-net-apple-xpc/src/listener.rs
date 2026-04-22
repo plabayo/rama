@@ -1,5 +1,6 @@
 use std::ops::Deref;
 
+use rama_core::telemetry::tracing;
 use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -95,6 +96,7 @@ impl XpcListener {
             target_queue_label,
             peer_requirement,
         } = config;
+        tracing::debug!(service = %service_name, "create xpc listener");
         let service_name = make_c_string(&service_name)?;
         let queue = DispatchQueue::new(target_queue_label.as_deref())?;
         // SAFETY: service_name is a valid null-terminated C string produced by
@@ -147,7 +149,11 @@ impl XpcListener {
     /// Returns `None` once the listener has been cancelled and the internal channel drains.
     /// Under normal operation this method yields indefinitely.
     pub async fn accept(&mut self) -> Option<XpcConnection> {
-        self.receiver.recv().await
+        let connection = self.receiver.recv().await;
+        if connection.is_some() {
+            tracing::debug!("xpc listener accepted peer connection");
+        }
+        connection
     }
 
     /// Explicitly cancel the listener.
@@ -156,6 +162,7 @@ impl XpcListener {
     /// Safe to call multiple times — cancelling an already-cancelled listener is a no-op.
     /// The listener is also cancelled automatically on [`Drop`].
     pub fn cancel(&self) {
+        tracing::debug!("xpc listener cancel");
         // SAFETY: self.connection.raw is a valid, non-null xpc_connection_t held by
         // OwnedXpcObject. xpc_connection_cancel is idempotent per Apple's documentation.
         unsafe { xpc_connection_cancel(self.connection.raw as _) };

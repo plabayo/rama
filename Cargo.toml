@@ -688,6 +688,10 @@ name = "linux_tproxy_tcp"
 required-features = ["tcp"]
 
 [[example]]
+name = "xpc_echo"
+required-features = ["net-apple-xpc"]
+
+[[example]]
 name = "tcp_nd_json"
 required-features = ["tcp"]
 

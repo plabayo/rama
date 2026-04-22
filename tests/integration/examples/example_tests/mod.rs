@@ -173,3 +173,6 @@ mod tls_boring_termination;
     feature = "http-full"
 ))]
 mod tls_rustls_termination;
+
+#[cfg(all(feature = "net-apple-xpc", target_vendor = "apple"))]
+mod xpc_echo;
