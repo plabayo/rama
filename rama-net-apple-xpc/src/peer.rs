@@ -1,5 +1,7 @@
 use std::ptr;
 
+use rama_utils::str::arcstr::ArcStr;
+
 use crate::{
     error::XpcError,
     ffi::{
@@ -17,12 +19,12 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub enum PeerSecurityRequirement {
-    CodeSigning(String),
-    TeamIdentity(Option<String>),
-    PlatformIdentity(Option<String>),
-    EntitlementExists(String),
+    CodeSigning(ArcStr),
+    TeamIdentity(Option<ArcStr>),
+    PlatformIdentity(Option<ArcStr>),
+    EntitlementExists(ArcStr),
     EntitlementMatchesValue {
-        entitlement: String,
+        entitlement: ArcStr,
         value: XpcMessage,
     },
     LightweightCodeRequirement(XpcMessage),

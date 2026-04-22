@@ -5,8 +5,8 @@ use rama_utils::str::arcstr::ArcStr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum XpcConnectionError {
     Interrupted,
-    Invalidated(Option<String>),
-    PeerRequirementFailed(Option<String>),
+    Invalidated(Option<ArcStr>),
+    PeerRequirementFailed(Option<ArcStr>),
 }
 
 #[derive(Debug)]
@@ -18,6 +18,7 @@ pub enum XpcError {
     QueueCreationFailed,
     PeerRequirementFailed { code: i32, context: &'static str },
     ReplyNotExpected,
+    ReplyCanceled,
     Connection(XpcConnectionError),
 }
 
@@ -35,6 +36,7 @@ impl fmt::Display for XpcError {
                 write!(f, "xpc peer requirement failed with code {code}: {context}")
             }
             Self::ReplyNotExpected => f.write_str("incoming xpc message does not support replies"),
+            Self::ReplyCanceled => f.write_str("xpc reply callback dropped before delivering a response"),
             Self::Connection(err) => write!(f, "{err:?}"),
         }
     }

@@ -1,3 +1,5 @@
+use rama_utils::str::arcstr::ArcStr;
+
 use crate::{
     connection::XpcConnection,
     error::XpcError,
@@ -9,14 +11,14 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct XpcClientConfig {
-    service_name: String,
+    service_name: ArcStr,
     privileged: bool,
-    target_queue_label: Option<String>,
+    target_queue_label: Option<ArcStr>,
     peer_requirement: Option<PeerSecurityRequirement>,
 }
 
 impl XpcClientConfig {
-    pub fn new(service_name: impl Into<String>) -> Self {
+    pub fn new(service_name: impl Into<ArcStr>) -> Self {
         Self {
             service_name: service_name.into(),
             privileged: false,
@@ -25,22 +27,25 @@ impl XpcClientConfig {
         }
     }
 
-    #[must_use]
-    pub fn privileged(mut self, privileged: bool) -> Self {
-        self.privileged = privileged;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn privileged(mut self, privileged: bool) -> Self {
+            self.privileged = privileged;
+            self
+        }
     }
 
-    #[must_use]
-    pub fn target_queue_label(mut self, label: impl Into<String>) -> Self {
-        self.target_queue_label = Some(label.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn target_queue_label(mut self, label: Option<ArcStr>) -> Self {
+            self.target_queue_label = label;
+            self
+        }
     }
 
-    #[must_use]
-    pub fn peer_requirement(mut self, requirement: PeerSecurityRequirement) -> Self {
-        self.peer_requirement = Some(requirement);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn peer_requirement(mut self, requirement: Option<PeerSecurityRequirement>) -> Self {
+            self.peer_requirement = requirement;
+            self
+        }
     }
 }
 

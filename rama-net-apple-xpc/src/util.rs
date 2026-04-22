@@ -1,12 +1,15 @@
 use std::{ffi::CString, ptr};
 
+use rama_utils::str::arcstr::ArcStr;
+
 use crate::{
     error::XpcError,
     ffi::{dispatch_queue_create, dispatch_queue_t},
 };
 
-pub(crate) fn make_c_string(value: &str) -> Result<CString, XpcError> {
-    CString::new(value).map_err(|_| XpcError::InvalidCString(value.into()))
+pub(crate) fn make_c_string(value: impl AsRef<str>) -> Result<CString, XpcError> {
+    let value = value.as_ref();
+    CString::new(value).map_err(|_| XpcError::InvalidCString(ArcStr::from(value)))
 }
 
 #[derive(Debug)]

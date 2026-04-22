@@ -3388,6 +3388,7 @@ name = "rama-net-apple-xpc"
 version = "0.3.0-rc1"
 dependencies = [
  "bindgen",
+ "parking_lot",
  "rama-core",
  "rama-net",
  "rama-utils",

@@ -1,10 +1,19 @@
-use std::{ffi::{CStr, CString}, ops::Deref, ptr};
+use std::{
+    ffi::{CStr, CString},
+    ops::Deref,
+    ptr,
+};
 
+use parking_lot::Mutex;
 use rama_core::{
     Service,
     extensions::{Extensions, ExtensionsRef},
 };
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use rama_utils::str::arcstr::ArcStr;
+use tokio::sync::{
+    mpsc::{UnboundedReceiver, unbounded_channel},
+    oneshot,
+};
 
 use crate::{
     block::ConcreteBlock,
@@ -14,7 +23,7 @@ use crate::{
         _xpc_error_peer_code_signing_requirement, _xpc_type_error,
         xpc_connection_cancel, xpc_connection_copy_invalidation_reason,
         xpc_connection_get_euid, xpc_connection_get_pid, xpc_connection_resume,
-        xpc_connection_send_message, xpc_connection_send_message_with_reply_sync,
+        xpc_connection_send_message, xpc_connection_send_message_with_reply,
         xpc_connection_set_event_handler, xpc_connection_t, xpc_dictionary_create_reply,
         xpc_dictionary_get_string, xpc_dictionary_set_value, xpc_object_t,
     },
@@ -113,19 +122,37 @@ impl XpcConnection {
         Ok(())
     }
 
-    pub fn send_request_sync(&self, message: XpcMessage) -> Result<XpcMessage, XpcError> {
+    pub async fn send_request(&self, message: XpcMessage) -> Result<XpcMessage, XpcError> {
         let object = OwnedXpcObject::from_message(message)?;
-        let reply = unsafe {
-            xpc_connection_send_message_with_reply_sync(
-                self.connection.raw as xpc_connection_t,
+        let (reply_sender, reply_receiver) = oneshot::channel();
+        let reply_sender = Mutex::new(Some(reply_sender));
+        let raw_connection = self.connection.raw as xpc_connection_t;
+
+        let block = ConcreteBlock::new(move |reply: xpc_object_t| {
+            let result = match OwnedXpcObject::retain(reply, "async reply") {
+                Ok(reply) => match map_connection_error(raw_connection, &reply) {
+                    Some(err) => Err(XpcError::Connection(err)),
+                    None => reply.to_message(),
+                },
+                Err(err) => Err(err),
+            };
+
+            if let Some(reply_sender) = reply_sender.lock().take() {
+                let _ = reply_sender.send(result);
+            }
+        })
+        .copy();
+
+        unsafe {
+            xpc_connection_send_message_with_reply(
+                raw_connection,
                 object.raw,
-            )
-        };
-        let reply = OwnedXpcObject::from_raw(reply, "sync reply")?;
-        match map_connection_error(self.connection.raw as xpc_connection_t, &reply) {
-            Some(err) => Err(XpcError::Connection(err)),
-            None => reply.to_message(),
+                ptr::null_mut(),
+                block.deref() as *const _ as *mut _,
+            );
         }
+
+        reply_receiver.await.map_err(|_| XpcError::ReplyCanceled)?
     }
 
     pub fn pid(&self) -> i32 {
@@ -169,7 +196,9 @@ pub(crate) fn map_event(connection: xpc_connection_t, event: OwnedXpcObject) -> 
             message,
             raw_event: event,
         }),
-        Err(err) => XpcEvent::Error(XpcConnectionError::Invalidated(Some(err.to_string()))),
+        Err(err) => XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
+            err.to_string(),
+        )))),
     }
 }
 
@@ -211,10 +240,13 @@ pub(crate) fn map_connection_error(
     )))
 }
 
-fn connection_error_description(connection: xpc_connection_t, event: xpc_object_t) -> Option<String> {
+fn connection_error_description(
+    connection: xpc_connection_t,
+    event: xpc_object_t,
+) -> Option<ArcStr> {
     let copied = unsafe { xpc_connection_copy_invalidation_reason(connection) };
     if !copied.is_null() {
-        let value = unsafe { CString::from_raw(copied) }.to_string_lossy().into_owned();
+        let value = ArcStr::from(unsafe { CString::from_raw(copied) }.to_string_lossy());
         return Some(value);
     }
 
@@ -228,5 +260,5 @@ fn connection_error_description(connection: xpc_connection_t, event: xpc_object_
         return None;
     }
 
-    Some(unsafe { CStr::from_ptr(value) }.to_string_lossy().into_owned())
+    Some(ArcStr::from(unsafe { CStr::from_ptr(value) }.to_string_lossy()))
 }

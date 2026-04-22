@@ -1,5 +1,6 @@
 use std::ops::Deref;
 
+use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::{
@@ -18,13 +19,13 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct XpcListenerConfig {
-    service_name: String,
-    target_queue_label: Option<String>,
+    service_name: ArcStr,
+    target_queue_label: Option<ArcStr>,
     peer_requirement: Option<PeerSecurityRequirement>,
 }
 
 impl XpcListenerConfig {
-    pub fn new(service_name: impl Into<String>) -> Self {
+    pub fn new(service_name: impl Into<ArcStr>) -> Self {
         Self {
             service_name: service_name.into(),
             target_queue_label: None,
@@ -32,16 +33,18 @@ impl XpcListenerConfig {
         }
     }
 
-    #[must_use]
-    pub fn target_queue_label(mut self, label: impl Into<String>) -> Self {
-        self.target_queue_label = Some(label.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn target_queue_label(mut self, label: Option<ArcStr>) -> Self {
+            self.target_queue_label = label;
+            self
+        }
     }
 
-    #[must_use]
-    pub fn peer_requirement(mut self, requirement: PeerSecurityRequirement) -> Self {
-        self.peer_requirement = Some(requirement);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn peer_requirement(mut self, requirement: Option<PeerSecurityRequirement>) -> Self {
+            self.peer_requirement = requirement;
+            self
+        }
     }
 }
 
