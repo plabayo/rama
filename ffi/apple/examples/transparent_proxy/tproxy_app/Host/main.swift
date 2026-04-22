@@ -1,8 +1,11 @@
 import AppKit
+import CryptoKit
 import Foundation
 import NetworkExtension
 import OSLog
+import Security
 import SystemExtensions
+import X509
 
 private struct DemoProxySettings: Equatable {
     var htmlBadgeEnabled = true
@@ -19,6 +22,29 @@ private struct DemoProxySettings: Equatable {
     }
 }
 
+private struct ProxyEngineConfigPayload: Encodable {
+    let htmlBadgeEnabled: Bool
+    let htmlBadgeLabel: String
+    let tcpConnectTimeoutMs: Int
+    let excludeDomains: [String]
+    let caCertPEM: String
+    let caKeyPEM: String
+
+    private enum CodingKeys: String, CodingKey {
+        case htmlBadgeEnabled = "html_badge_enabled"
+        case htmlBadgeLabel = "html_badge_label"
+        case tcpConnectTimeoutMs = "tcp_connect_timeout_ms"
+        case excludeDomains = "exclude_domains"
+        case caCertPEM = "ca_cert_pem"
+        case caKeyPEM = "ca_key_pem"
+    }
+}
+
+private struct MITMCASecrets: Equatable {
+    let certPEM: String
+    let keyPEM: String
+}
+
 final class HostController: NSObject, NSApplicationDelegate {
     #if TPROXY_DEV_IDENTIFIERS
         private let extensionBundleId = "org.ramaproxy.example.tproxy.dev.provider"
@@ -27,6 +53,13 @@ final class HostController: NSObject, NSApplicationDelegate {
     #endif
     private let managerDescription = "Rama Transparent Proxy Example"
     private let managerServerAddress = "127.0.0.1"
+    private static let secretAccount = "org.ramaproxy.example.tproxy.host"
+    private static let secretServiceKeyPEM = "tls-root-selfsigned-ca-key"
+    private static let secretServiceCertPEM = "tls-root-selfsigned-ca-crt"
+    private static let secretServiceKeys = [
+        secretServiceKeyPEM,
+        secretServiceCertPEM,
+    ]
     private lazy var hostLogger = Logger(
         subsystem: "org.ramaproxy.example.tproxy", category: "host")
     private lazy var logFileURL: URL = {
@@ -43,6 +76,7 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var badgeLabelMenuItem: NSMenuItem?
     private var excludeDomainsMenuItem: NSMenuItem?
     private var resetDemoSettingsMenuItem: NSMenuItem?
+    private var rotateCAMenuItem: NSMenuItem?
     private var resetMenuItem: NSMenuItem?
 
     private var activeManager: NETransparentProxyManager?
@@ -106,6 +140,10 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     @objc private func resetProfileAction(_: Any?) {
         resetProxyConfigurationAndStart()
+    }
+
+    @objc private func rotateCAAction(_: Any?) {
+        rotateMITMCAAndApply()
     }
 
     @objc private func toggleHtmlBadgeAction(_: Any?) {
@@ -225,6 +263,14 @@ final class HostController: NSObject, NSApplicationDelegate {
         resetDemoSettingsItem.target = self
         menu.addItem(resetDemoSettingsItem)
 
+        let rotateCAItem = NSMenuItem(
+            title: "Rotate MITM CA",
+            action: #selector(rotateCAAction(_:)),
+            keyEquivalent: ""
+        )
+        rotateCAItem.target = self
+        menu.addItem(rotateCAItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let resetItem = NSMenuItem(
@@ -254,6 +300,7 @@ final class HostController: NSObject, NSApplicationDelegate {
         self.badgeLabelMenuItem = badgeLabelItem
         self.excludeDomainsMenuItem = excludeDomainsItem
         self.resetDemoSettingsMenuItem = resetDemoSettingsItem
+        self.rotateCAMenuItem = rotateCAItem
         self.resetMenuItem = resetItem
         updateDemoSettingsMenu()
     }
@@ -443,7 +490,13 @@ final class HostController: NSObject, NSApplicationDelegate {
                 if managersToRemove.isEmpty {
                     self.log("forced manager reinstall requested; no existing manager to remove")
                     let manager = NETransparentProxyManager()
-                    _ = self.configure(manager: manager)
+                    do {
+                        _ = try self.configure(manager: manager)
+                    } catch {
+                        self.logError("configure manager error", error)
+                        completion(nil)
+                        return
+                    }
                     self.log("saving fresh preferences after forced reinstall")
                     self.save(manager: manager, fallbackManager: nil, completion: completion)
                     return
@@ -459,7 +512,13 @@ final class HostController: NSObject, NSApplicationDelegate {
                     }
 
                     let manager = NETransparentProxyManager()
-                    _ = self.configure(manager: manager)
+                    do {
+                        _ = try self.configure(manager: manager)
+                    } catch {
+                        self.logError("configure manager error", error)
+                        completion(nil)
+                        return
+                    }
                     self.log("saving fresh preferences after forced reinstall")
                     self.save(manager: manager, fallbackManager: nil, completion: completion)
                 }
@@ -468,7 +527,14 @@ final class HostController: NSObject, NSApplicationDelegate {
 
             let manager = existingManager ?? NETransparentProxyManager()
             let isExisting = existingManager != nil
-            let changed = self.configure(manager: manager)
+            let changed: Bool
+            do {
+                changed = try self.configure(manager: manager)
+            } catch {
+                self.logError("configure manager error", error)
+                completion(nil)
+                return
+            }
 
             if isExisting, !changed {
                 self.log("reusing installed manager without saving preferences")
@@ -481,7 +547,7 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func configure(manager: NETransparentProxyManager) -> Bool {
+    private func configure(manager: NETransparentProxyManager) throws -> Bool {
         var changed = false
 
         let proto =
@@ -504,7 +570,7 @@ final class HostController: NSObject, NSApplicationDelegate {
             changed = true
         }
 
-        let expectedProviderConfiguration = currentProviderConfiguration()
+        let expectedProviderConfiguration = try currentProviderConfiguration()
         let existingEngineConfigJson = proto.providerConfiguration?["engineConfigJson"] as? String
         let expectedEngineConfigJson = expectedProviderConfiguration["engineConfigJson"] as? String
         if proto.providerConfiguration == nil
@@ -540,41 +606,43 @@ final class HostController: NSObject, NSApplicationDelegate {
             return false
         }
 
+        let expectedEngineConfigJson = try? currentEngineConfigJson()
+        guard let expectedEngineConfigJson else {
+            return false
+        }
+
         return proto.providerBundleIdentifier == extensionBundleId
             && proto.serverAddress == managerServerAddress
             && (proto.providerConfiguration?["engineConfigJson"] as? String)
-                == (currentProviderConfiguration()["engineConfigJson"] as? String)
+                == expectedEngineConfigJson
     }
 
-    private func currentProviderConfiguration() -> [String: Any] {
-        guard let engineConfigJson = currentEngineConfigJson() else {
-            return [:]
-        }
-
-        return ["engineConfigJson": engineConfigJson]
+    private func currentProviderConfiguration() throws -> [String: Any] {
+        ["engineConfigJson": try currentEngineConfigJson()]
     }
 
-    private func currentEngineConfigJson() -> String? {
-        if demoSettings.isDefault {
-            return nil
+    private func currentEngineConfigJson() throws -> String {
+        let ca = try loadOrCreateMITMCA()
+        let payload = ProxyEngineConfigPayload(
+            htmlBadgeEnabled: demoSettings.htmlBadgeEnabled,
+            htmlBadgeLabel: demoSettings.htmlBadgeLabel,
+            tcpConnectTimeoutMs: demoSettings.tcpConnectTimeoutMs,
+            excludeDomains: demoSettings.excludeDomains,
+            caCertPEM: ca.certPEM,
+            caKeyPEM: ca.keyPEM
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(payload)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw NSError(
+                domain: "RamaTransparentProxyExampleHost",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "failed to encode engineConfigJson as UTF-8"]
+            )
         }
 
-        let config: [String: Any] = [
-            "html_badge_enabled": demoSettings.htmlBadgeEnabled,
-            "html_badge_label": demoSettings.htmlBadgeLabel,
-            "tcp_connect_timeout_ms": demoSettings.tcpConnectTimeoutMs,
-            "exclude_domains": demoSettings.excludeDomains,
-        ]
-
-        guard JSONSerialization.isValidJSONObject(config),
-            let data = try? JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]),
-            let json = String(data: data, encoding: .utf8)
-        else {
-            logErrorText("failed to encode engineConfigJson from host args/env")
-            return nil
-        }
-
-        log("engineConfigJson=\(json)")
+        log("engineConfigJson refreshed")
         return json
     }
 
@@ -622,6 +690,7 @@ final class HostController: NSObject, NSApplicationDelegate {
         badgeLabelMenuItem?.title = "Badge Label… (\(demoSettings.htmlBadgeLabel))"
         excludeDomainsMenuItem?.title =
             "Excluded Domains… (\(demoSettings.excludeDomains.count))"
+        rotateCAMenuItem?.title = "Rotate MITM CA"
     }
 
     private func applyDemoSettings() {
@@ -648,7 +717,7 @@ final class HostController: NSObject, NSApplicationDelegate {
             self.installStatusObserver(manager: manager)
             self.startStatusTimer(manager: manager)
             if shouldRestart {
-                self.log("demo settings changed; restarting proxy to apply")
+                self.log("proxy configuration changed; restarting proxy to apply")
                 self.stopProxyAndWaitForDisconnect(manager: manager) { [weak self] in
                     self?.startProxy()
                 }
@@ -657,6 +726,12 @@ final class HostController: NSObject, NSApplicationDelegate {
 
             self.setStatus(status: manager.connection.status, detail: "demo settings saved")
         }
+    }
+
+    private func rotateMITMCAAndApply() {
+        log("rotating MITM CA")
+        cleanSecrets()
+        applyDemoSettings()
     }
 
     private func stopProxyAndWaitForDisconnect(
@@ -719,6 +794,200 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
 
         return textField.stringValue
+    }
+
+    private func cleanSecrets() {
+        for key in Self.secretServiceKeys {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: key,
+                kSecAttrAccount as String: Self.secretAccount,
+                kSecUseDataProtectionKeychain as String: true,
+            ]
+
+            let status = SecItemDelete(query as CFDictionary)
+            if status != errSecSuccess && status != errSecItemNotFound {
+                logErrorText("failed to delete keychain secret \(key): OSStatus \(status)")
+            }
+        }
+    }
+
+    private func loadOrCreateMITMCA() throws -> MITMCASecrets {
+        let existingKey = try loadSecret(service: Self.secretServiceKeyPEM)
+        let existingCert = try loadSecret(service: Self.secretServiceCertPEM)
+
+        if let keyPEM = existingKey, let certPEM = existingCert {
+            return MITMCASecrets(certPEM: certPEM, keyPEM: keyPEM)
+        }
+
+        if existingKey != nil || existingCert != nil {
+            log("MITM CA keychain state incomplete; deleting partial CA material and regenerating")
+            cleanSecrets()
+        }
+
+        let generated = try generateSelfSignedCAPEM()
+        try storeSecret(service: Self.secretServiceKeyPEM, value: generated.keyPEM)
+        try storeSecret(service: Self.secretServiceCertPEM, value: generated.certPEM)
+        log("generated and stored new MITM CA PEM in keychain")
+        return generated
+    }
+
+    private func loadSecret(service: String) throws -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: Self.secretAccount,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+
+        switch status {
+        case errSecSuccess:
+            guard let data = item as? Data else {
+                throw NSError(
+                    domain: "RamaTransparentProxyExampleHost",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "keychain item for \(service) did not return Data"]
+                )
+            }
+            guard let value = String(data: data, encoding: .utf8) else {
+                throw NSError(
+                    domain: "RamaTransparentProxyExampleHost",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "keychain item for \(service) was not valid UTF-8"]
+                )
+            }
+            return value
+        case errSecItemNotFound:
+            return nil
+        default:
+            throw NSError(
+                domain: "RamaTransparentProxyExampleHost",
+                code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: "failed to load keychain secret \(service): OSStatus \(status)"]
+            )
+        }
+    }
+
+    private func storeSecret(service: String, value: String) throws {
+        guard let data = value.data(using: .utf8) else {
+            throw NSError(
+                domain: "RamaTransparentProxyExampleHost",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "failed to encode keychain secret \(service) as UTF-8"]
+            )
+        }
+
+        let baseQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: Self.secretAccount,
+            kSecUseDataProtectionKeychain as String: true,
+        ]
+
+        let updateStatus = SecItemUpdate(
+            baseQuery as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if updateStatus == errSecSuccess {
+            return
+        }
+
+        if updateStatus != errSecItemNotFound {
+            throw NSError(
+                domain: "RamaTransparentProxyExampleHost",
+                code: Int(updateStatus),
+                userInfo: [NSLocalizedDescriptionKey: "failed to update keychain secret \(service): OSStatus \(updateStatus)"]
+            )
+        }
+
+        var addQuery = baseQuery
+        addQuery[kSecValueData as String] = data
+        if let accessControl = createAccessControl() {
+            addQuery[kSecAttrAccessControl as String] = accessControl
+        }
+
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus != errSecSuccess {
+            throw NSError(
+                domain: "RamaTransparentProxyExampleHost",
+                code: Int(addStatus),
+                userInfo: [NSLocalizedDescriptionKey: "failed to add keychain secret \(service): OSStatus \(addStatus)"]
+            )
+        }
+    }
+
+    private func generateSelfSignedCAPEM() throws -> MITMCASecrets {
+        let signingKey = P256.Signing.PrivateKey()
+        let now = Date()
+        let calendar = Calendar(identifier: .gregorian)
+        guard let notValidAfter = calendar.date(byAdding: .day, value: 3650, to: now) else {
+            throw NSError(
+                domain: "RamaTransparentProxyExampleHost",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "failed to compute CA certificate expiry date"]
+            )
+        }
+
+        let subject = try DistinguishedName {
+            CommonName("Rama Transparent Proxy Example Root CA")
+            OrganizationName("Rama")
+            OrganizationalUnitName("Transparent Proxy")
+        }
+
+        let certificate = try Certificate(
+            version: .v3,
+            serialNumber: .init(),
+            publicKey: .init(signingKey.publicKey),
+            notValidBefore: now,
+            notValidAfter: notValidAfter,
+            issuer: subject,
+            subject: subject,
+            signatureAlgorithm: .ecdsaWithSHA256,
+            extensions: try Certificate.Extensions {
+                Critical(BasicConstraints.isCertificateAuthority(maxPathLength: 0))
+                Critical(
+                    KeyUsage(
+                        digitalSignature: true,
+                        nonRepudiation: false,
+                        keyEncipherment: false,
+                        dataEncipherment: false,
+                        keyAgreement: false,
+                        keyCertSign: true,
+                        cRLSign: true,
+                        encipherOnly: false,
+                        decipherOnly: false
+                    )
+                )
+            },
+            issuerPrivateKey: .init(signingKey)
+        )
+
+        let certPEM = try certificate.serializeAsPEM().pemString
+        let keyPEM = try Certificate.PrivateKey(signingKey).serializeAsPEM().pemString
+        return MITMCASecrets(certPEM: certPEM, keyPEM: keyPEM)
+    }
+
+    private func createAccessControl() -> SecAccessControl? {
+        var error: Unmanaged<CFError>?
+        let access = SecAccessControlCreateWithFlags(
+            nil,
+            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            [],
+            &error
+        )
+
+        if let error {
+            logErrorText(
+                "failed to create access control for keychain secret: \(error.takeRetainedValue())"
+            )
+        }
+
+        return access
     }
 
     private func save(

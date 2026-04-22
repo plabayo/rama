@@ -11,9 +11,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 ahash = "0.8"
-apple-native-keyring-store = { version = "0.2", features = ["protected"] }
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
-keyring-core = "0.7"
 moka = { version = "0.12", features = ["sync"] }
 rama = { path = "../../../../../", features = ["net-apple-networkextension", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
 serde = { version = "1", features = ["derive"] }

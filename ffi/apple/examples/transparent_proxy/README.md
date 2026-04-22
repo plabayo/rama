@@ -3,6 +3,10 @@
 This example shows how to link a Rust staticlib that implements the
 Rama NetworkExtension C ABI into a macOS Transparent Proxy extension.
 
+The host app generates and stores the demo MITM root CA in the macOS
+keychain using `swift-certificates`, then forwards the PEM certificate/key to
+the Rust engine through the opaque Network Extension config blob.
+
 ## Build
 
 ```sh
@@ -52,6 +56,10 @@ The build helpers are:
 - [notarize_tproxy_app_with_developer_id_signing.sh](./scripts/notarize_tproxy_app_with_developer_id_signing.sh) for the full Developer ID distribution flow
 
 Both modes use the real system-extension product type. Developer mode uses the plain `app-proxy-provider` entitlement payload, while distribution mode switches the same entitlement template to `app-proxy-provider-systemextension`.
+
+At runtime, the host menu includes `Rotate MITM CA`, which deletes the stored CA
+material, generates a fresh CA on the host, updates the opaque config, and
+restarts the proxy when needed.
 
 ## Signing Setup
 

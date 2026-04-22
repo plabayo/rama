@@ -3,7 +3,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use rama::{
     Layer, Service,
     combinators::Either,
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
     extensions::ExtensionsRef,
     http::{
         Request, Response,
@@ -70,8 +70,22 @@ pub(super) struct DemoTcpMitmService {
 impl DemoTcpMitmService {
     pub(super) async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, BoxError> {
         let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
-        let (ca_crt, ca_key) = crate::tls::certs::load_or_create_mitm_ca_crt_key_pair()
-            .context("load/create MITM CA Crt/Key pair")?;
+        let Some((ca_crt_pem, ca_key_pem)) = demo_config
+            .ca_cert_pem
+            .as_deref()
+            .zip(demo_config.ca_key_pem.as_deref())
+        else {
+            return Err(OpaqueError::from_static_str(
+                "CA cert or key missing in transparent proxy opaque config",
+            )
+            .into_box_error());
+        };
+        let ca_crt = rama::tls::boring::core::x509::X509::from_pem(ca_crt_pem.as_bytes())
+            .context("parse host-provided MITM CA certificate PEM")?;
+        let ca_key = rama::tls::boring::core::pkey::PKey::private_key_from_pem(
+            ca_key_pem.as_bytes(),
+        )
+        .context("parse host-provided MITM CA key PEM")?;
         let ca_crt_pem_bytes: &[u8] = ca_crt
             .to_pem()
             .context("encode root ca cert to pem")?

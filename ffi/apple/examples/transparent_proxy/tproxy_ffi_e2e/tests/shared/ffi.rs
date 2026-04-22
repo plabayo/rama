@@ -5,6 +5,13 @@ use std::{
     sync::Arc,
 };
 
+use rama::{
+    net::{
+        address::Domain,
+        tls::server::SelfSignedData,
+    },
+    tls::boring::server::utils::self_signed_server_auth_gen_ca,
+};
 use rama::tls::boring::core::x509::{X509, store::X509StoreBuilder};
 
 use super::{bindings, types::BADGE_LABEL};
@@ -52,11 +59,14 @@ impl Drop for EngineHandle {
 }
 
 pub(crate) fn default_engine() -> Arc<EngineHandle> {
+    let ca = test_mitm_ca();
     Arc::new(EngineHandle::new_with_json(&serde_json::json!({
         "html_badge_enabled": true,
         "html_badge_label": BADGE_LABEL,
         "peek_duration_s": 0.5,
         "exclude_domains": [],
+        "ca_cert_pem": ca.cert_pem,
+        "ca_key_pem": ca.key_pem,
     })))
 }
 
@@ -67,4 +77,40 @@ pub(crate) fn load_mitm_ca_store() -> Arc<rama::tls::boring::core::x509::store::
     let mut builder = X509StoreBuilder::new().expect("x509 store builder");
     builder.add_cert(cert).expect("add mitm ca cert");
     Arc::new(builder.build())
+}
+
+struct TestMitmCa {
+    cert_pem: String,
+    key_pem: String,
+}
+
+fn test_mitm_ca() -> TestMitmCa {
+    let storage_dir = test_storage_dir();
+    let cert_path = storage_dir.join("mitm-root-ca-cert-pem.pem");
+    let key_path = storage_dir.join("mitm-root-ca-key-pem.pem");
+
+    if let (Ok(cert_pem), Ok(key_pem)) = (std::fs::read_to_string(&cert_path), std::fs::read_to_string(&key_path)) {
+        return TestMitmCa { cert_pem, key_pem };
+    }
+
+    let (root_cert, root_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
+        organisation_name: Some("Rama Transparent Proxy FFI E2E".to_owned()),
+        common_name: Some(Domain::from_static("rama-tproxy-ffi-e2e.localhost")),
+        ..Default::default()
+    })
+    .expect("generate ffi e2e mitm ca");
+
+    let cert_pem = String::from_utf8(root_cert.to_pem().expect("encode ffi e2e mitm cert to pem"))
+        .expect("ffi e2e cert pem utf8");
+    let key_pem = String::from_utf8(
+        root_key
+            .private_key_to_pem_pkcs8()
+            .expect("encode ffi e2e mitm key to pem"),
+    )
+    .expect("ffi e2e key pem utf8");
+
+    std::fs::write(&cert_path, cert_pem.as_bytes()).expect("persist ffi e2e mitm cert");
+    std::fs::write(&key_path, key_pem.as_bytes()).expect("persist ffi e2e mitm key");
+
+    TestMitmCa { cert_pem, key_pem }
 }
