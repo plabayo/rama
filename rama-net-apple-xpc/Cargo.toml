@@ -21,8 +21,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 
 [dependencies]
-block = { workspace = true }
 rama-core = { workspace = true }
+rama-net = { workspace = true }
+rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 
 [build-dependencies]

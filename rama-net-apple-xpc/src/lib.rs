@@ -23,6 +23,7 @@
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
+#![cfg(target_vendor = "apple")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(
@@ -31,22 +32,24 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
-#[cfg(target_vendor = "apple")]
-mod imp;
-
-#[cfg(target_vendor = "apple")]
 #[doc(hidden)]
-pub mod ffi {
-    #![allow(
-        dead_code,
-        non_upper_case_globals,
-        non_camel_case_types,
-        non_snake_case,
-        clippy::all
-    )]
+pub mod ffi;
 
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-}
+mod block;
+mod client;
+mod connection;
+mod connector;
+mod error;
+mod listener;
+mod message;
+mod object;
+mod peer;
+mod util;
 
-#[cfg(target_vendor = "apple")]
-pub use imp::*;
+pub use client::XpcClientConfig;
+pub use connection::{ReceivedXpcMessage, XpcConnection, XpcEvent};
+pub use connector::XpcConnector;
+pub use error::{XpcConnectionError, XpcError};
+pub use listener::{XpcListener, XpcListenerConfig};
+pub use message::XpcMessage;
+pub use peer::PeerSecurityRequirement;
