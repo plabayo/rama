@@ -149,11 +149,19 @@ impl OwnedXpcObject {
             return Ok(XpcMessage::String(value));
         }
         if self.is_type(unsafe { &_xpc_type_data as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_DATA. Both pointers are valid and
-            // live as long as self.raw. We copy the bytes into a Vec before returning.
-            let ptr = unsafe { xpc_data_get_bytes_ptr(self.raw) }.cast::<u8>();
+            // SAFETY: Type confirmed as XPC_TYPE_DATA. xpc_data_get_length is always safe.
             let len = unsafe { xpc_data_get_length(self.raw) };
-            let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+            let bytes = if len == 0 {
+                // xpc_data_get_bytes_ptr returns null for zero-length data objects.
+                // slice::from_raw_parts requires a non-null pointer even for len=0, so
+                // we must short-circuit here rather than pass null to from_raw_parts.
+                vec![]
+            } else {
+                // SAFETY: len > 0, so xpc_data_get_bytes_ptr returns a non-null pointer
+                // to at least `len` initialised bytes, valid for the lifetime of self.raw.
+                let ptr = unsafe { xpc_data_get_bytes_ptr(self.raw) }.cast::<u8>();
+                unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
+            };
             return Ok(XpcMessage::Data(bytes));
         }
         if self.is_type(unsafe { &_xpc_type_fd as *const _ as *const c_void }) {
@@ -242,4 +250,219 @@ impl Drop for OwnedXpcObject {
         // releasing once here correctly balances the retain count.
         unsafe { xpc_release(self.raw) };
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    use crate::message::XpcMessage;
+
+    use super::OwnedXpcObject;
+
+    fn rt(msg: XpcMessage) -> XpcMessage {
+        OwnedXpcObject::from_message(msg)
+            .expect("from_message")
+            .to_message()
+            .expect("to_message")
+    }
+
+    // ── primitives ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn null() {
+        assert_eq!(rt(XpcMessage::Null), XpcMessage::Null);
+    }
+
+    #[test]
+    fn bool_values() {
+        assert_eq!(rt(XpcMessage::Bool(true)), XpcMessage::Bool(true));
+        assert_eq!(rt(XpcMessage::Bool(false)), XpcMessage::Bool(false));
+    }
+
+    #[test]
+    fn int64_boundaries() {
+        for v in [0, 1, -1, i64::MIN, i64::MAX] {
+            assert_eq!(rt(XpcMessage::Int64(v)), XpcMessage::Int64(v));
+        }
+    }
+
+    #[test]
+    fn uint64_boundaries() {
+        for v in [0u64, 1, u64::MAX] {
+            assert_eq!(rt(XpcMessage::Uint64(v)), XpcMessage::Uint64(v));
+        }
+    }
+
+    #[test]
+    fn double_values() {
+        for v in [0.0f64, 1.0, -1.0, f64::MIN, f64::MAX, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(rt(XpcMessage::Double(v)), XpcMessage::Double(v));
+        }
+        // NaN is not equal to itself, so check the type tag separately.
+        let nan = rt(XpcMessage::Double(f64::NAN));
+        assert!(matches!(nan, XpcMessage::Double(v) if v.is_nan()));
+    }
+
+    // ── string ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn string_empty() {
+        assert_eq!(rt(XpcMessage::String(String::new())), XpcMessage::String(String::new()));
+    }
+
+    #[test]
+    fn string_ascii() {
+        assert_eq!(
+            rt(XpcMessage::String("hello, xpc".into())),
+            XpcMessage::String("hello, xpc".into()),
+        );
+    }
+
+    #[test]
+    fn string_unicode() {
+        let s = "café 🦀".to_owned();
+        assert_eq!(rt(XpcMessage::String(s.clone())), XpcMessage::String(s));
+    }
+
+    #[test]
+    fn string_interior_nul_is_rejected() {
+        let result = OwnedXpcObject::from_message(XpcMessage::String("foo\0bar".into()));
+        assert!(result.is_err(), "interior NUL must be rejected");
+    }
+
+    // ── data ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn data_empty() {
+        assert_eq!(rt(XpcMessage::Data(vec![])), XpcMessage::Data(vec![]));
+    }
+
+    #[test]
+    fn data_bytes() {
+        let bytes: Vec<u8> = (0u8..=255).collect();
+        assert_eq!(rt(XpcMessage::Data(bytes.clone())), XpcMessage::Data(bytes));
+    }
+
+    // ── fd ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fd_is_duped() {
+        // xpc_fd_dup returns a *new* file descriptor, not the original.
+        let file = std::fs::File::open("/dev/null").expect("open /dev/null");
+        let original = file.as_raw_fd();
+        let result = rt(XpcMessage::Fd(original));
+        let XpcMessage::Fd(duped) = result else { panic!("expected Fd variant") };
+        assert_ne!(duped, original, "round-tripped fd must be a dup, not the original");
+        // Take ownership so the duped fd is closed on drop.
+        drop(unsafe { OwnedFd::from_raw_fd(duped) });
+    }
+
+    // ── uuid ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn uuid_all_zeros() {
+        let bytes = [0u8; 16];
+        assert_eq!(rt(XpcMessage::Uuid(bytes)), XpcMessage::Uuid(bytes));
+    }
+
+    #[test]
+    fn uuid_all_ones() {
+        let bytes = [0xFFu8; 16];
+        assert_eq!(rt(XpcMessage::Uuid(bytes)), XpcMessage::Uuid(bytes));
+    }
+
+    #[test]
+    fn uuid_distinct_bytes() {
+        let bytes: [u8; 16] = std::array::from_fn(|i| i as u8 + 1);
+        assert_eq!(rt(XpcMessage::Uuid(bytes)), XpcMessage::Uuid(bytes));
+    }
+
+    // ── date ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn date_values() {
+        for v in [0i64, 1, -1, i64::MIN, i64::MAX] {
+            assert_eq!(rt(XpcMessage::Date(v)), XpcMessage::Date(v));
+        }
+    }
+
+    // ── array ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn array_empty() {
+        assert_eq!(rt(XpcMessage::Array(vec![])), XpcMessage::Array(vec![]));
+    }
+
+    #[test]
+    fn array_of_primitives() {
+        let msg = XpcMessage::Array(vec![
+            XpcMessage::Int64(1),
+            XpcMessage::Bool(true),
+            XpcMessage::String("hi".into()),
+        ]);
+        assert_eq!(rt(msg.clone()), msg);
+    }
+
+    #[test]
+    fn array_nested() {
+        let inner = XpcMessage::Array(vec![XpcMessage::Uint64(99)]);
+        let outer = XpcMessage::Array(vec![inner]);
+        assert_eq!(rt(outer.clone()), outer);
+    }
+
+    // ── dictionary ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn dictionary_empty() {
+        assert_eq!(
+            rt(XpcMessage::Dictionary(BTreeMap::new())),
+            XpcMessage::Dictionary(BTreeMap::new()),
+        );
+    }
+
+    #[test]
+    fn dictionary_string_keys() {
+        let msg = XpcMessage::Dictionary(BTreeMap::from([
+            ("a".into(), XpcMessage::Int64(1)),
+            ("b".into(), XpcMessage::Bool(false)),
+            ("z".into(), XpcMessage::Null),
+        ]));
+        assert_eq!(rt(msg.clone()), msg);
+    }
+
+    #[test]
+    fn dictionary_nested() {
+        let inner = XpcMessage::Dictionary(BTreeMap::from([
+            ("inner_key".into(), XpcMessage::Uint64(42)),
+        ]));
+        let outer = XpcMessage::Dictionary(BTreeMap::from([
+            ("nested".into(), inner),
+            ("flag".into(), XpcMessage::Bool(true)),
+        ]));
+        assert_eq!(rt(outer.clone()), outer);
+    }
+
+    // ── complex nesting ──────────────────────────────────────────────────────
+
+    #[test]
+    fn dict_containing_array_of_dicts() {
+        let leaf = XpcMessage::Dictionary(BTreeMap::from([
+            ("x".into(), XpcMessage::Int64(-1)),
+            ("y".into(), XpcMessage::Double(std::f64::consts::PI)),
+        ]));
+        let array = XpcMessage::Array(vec![leaf.clone(), leaf]);
+        let root = XpcMessage::Dictionary(BTreeMap::from([
+            ("items".into(), array),
+            ("version".into(), XpcMessage::Uint64(1)),
+        ]));
+        assert_eq!(rt(root.clone()), root);
+    }
+
+    // ── note on XpcMessage::Endpoint ─────────────────────────────────────────
+    // Endpoint round-trips cannot be tested here: creating an XpcEndpoint requires a
+    // live XpcConnection, which requires a launchd-registered service or an existing
+    // endpoint passed out-of-band. Cover this in integration tests once an e2e harness
+    // exists.
 }
