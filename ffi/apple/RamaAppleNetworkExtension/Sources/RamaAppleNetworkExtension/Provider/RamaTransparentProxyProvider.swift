@@ -623,6 +623,21 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         completionHandler()
     }
 
+    public override func handleAppMessage(
+        _ messageData: Data,
+        completionHandler: ((Data?) -> Void)? = nil
+    ) {
+        logDebug("handleAppMessage bytes=\(messageData.count)")
+
+        guard let engine else {
+            logDebug("handleAppMessage ignored because engine is unavailable")
+            completionHandler?(nil)
+            return
+        }
+
+        completionHandler?(engine.handleAppMessage(messageData))
+    }
+
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
         if let tcp = flow as? NEAppProxyTCPFlow {
             let meta = Self.tcpMeta(flow: tcp)

@@ -2,6 +2,7 @@ use std::{convert::Infallible, future::Future, sync::Arc};
 
 use rama::{
     Service,
+    bytes::Bytes,
     net::{
         address::{Host, HostWithPort, ip::private::is_private_ip},
         apple::networkextension::{
@@ -14,8 +15,10 @@ use rama::{
             },
         },
     },
+    rt::Executor,
     telemetry::tracing,
 };
+use serde::{Deserialize, Serialize};
 
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
@@ -94,6 +97,22 @@ struct DemoTransparentProxyHandler {
     udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AppMessageRequest {
+    op: Option<String>,
+    sent_at: Option<String>,
+    source: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AppMessageReply {
+    op: &'static str,
+    source: &'static str,
+    received_bytes: usize,
+    acknowledged_source: Option<String>,
+    acknowledged_sent_at: Option<String>,
+}
+
 impl DemoTransparentProxyHandler {
     async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, rama::error::BoxError> {
         let tcp_mitm_service = self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
@@ -119,6 +138,72 @@ impl DemoTransparentProxyHandler {
 impl TransparentProxyHandler for DemoTransparentProxyHandler {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig {
         self.config.clone()
+    }
+
+    fn handle_app_message(
+        &self,
+        _exec: Executor,
+        message: Bytes,
+    ) -> impl Future<Output = Option<Bytes>> + Send + '_ {
+        async move {
+            let message_len = message.len();
+            let request = match serde_json::from_slice::<AppMessageRequest>(&message) {
+                Ok(request) => request,
+                Err(err) => {
+                    tracing::debug!(
+                        ?err,
+                        message_len,
+                        "transparent proxy demo failed to decode app message as JSON"
+                    );
+                    return None;
+                }
+            };
+
+            let Some(op) = request.op.as_deref() else {
+                tracing::debug!(message_len, "transparent proxy demo app message missing op");
+                return None;
+            };
+
+            match op {
+                "ping" => {
+                    let reply = AppMessageReply {
+                        op: "pong",
+                        source: "transparent-proxy-provider",
+                        received_bytes: message_len,
+                        acknowledged_source: request.source,
+                        acknowledged_sent_at: request.sent_at,
+                    };
+
+                    match serde_json::to_vec(&reply) {
+                        Ok(reply_bytes) => {
+                            tracing::debug!(
+                                request_op = op,
+                                message_len,
+                                reply_len = reply_bytes.len(),
+                                "transparent proxy demo replying to app message"
+                            );
+                            Some(Bytes::from(reply_bytes))
+                        }
+                        Err(err) => {
+                            tracing::debug!(
+                                ?err,
+                                request_op = op,
+                                "transparent proxy demo failed to encode app message reply"
+                            );
+                            None
+                        }
+                    }
+                }
+                _ => {
+                    tracing::debug!(
+                        request_op = op,
+                        message_len,
+                        "transparent proxy demo ignoring unknown app message op"
+                    );
+                    None
+                }
+            }
+        }
     }
 
     fn match_tcp_flow(

@@ -308,6 +308,21 @@ final class RamaTransparentProxyEngineHandle {
         enginePtr = nil
     }
 
+    func handleAppMessage(_ message: Data) -> Data? {
+        guard let p = enginePtr else { return nil }
+
+        let ownedReply = message.withUnsafeBytes { raw in
+            let ptr = raw.bindMemory(to: UInt8.self).baseAddress
+            return rama_transparent_proxy_engine_handle_app_message(
+                p,
+                RamaBytesView(ptr: ptr, len: raw.count)
+            )
+        }
+
+        let reply = dataFromOwnedBytes(ownedReply)
+        return reply.isEmpty ? nil : reply
+    }
+
     func newTcpSession(
         meta: RamaTransparentProxyFlowMetaBridge,
         onServerBytes: @escaping (Data) -> Void,

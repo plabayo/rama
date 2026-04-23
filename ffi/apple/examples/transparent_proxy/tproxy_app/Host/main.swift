@@ -87,6 +87,7 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var excludeDomainsMenuItem: NSMenuItem?
     private var resetDemoSettingsMenuItem: NSMenuItem?
     private var rotateCAMenuItem: NSMenuItem?
+    private var pingProviderMenuItem: NSMenuItem?
     private var resetMenuItem: NSMenuItem?
 
     private var activeManager: NETransparentProxyManager?
@@ -157,6 +158,10 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     @objc private func rotateCAAction(_: Any?) {
         rotateMITMCAAndApply()
+    }
+
+    @objc private func pingProviderAction(_: Any?) {
+        sendProviderPing()
     }
 
     @objc private func toggleHtmlBadgeAction(_: Any?) {
@@ -284,6 +289,14 @@ final class HostController: NSObject, NSApplicationDelegate {
         rotateCAItem.target = self
         menu.addItem(rotateCAItem)
 
+        let pingProviderItem = NSMenuItem(
+            title: "Ping Provider",
+            action: #selector(pingProviderAction(_:)),
+            keyEquivalent: ""
+        )
+        pingProviderItem.target = self
+        menu.addItem(pingProviderItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let resetItem = NSMenuItem(
@@ -314,6 +327,7 @@ final class HostController: NSObject, NSApplicationDelegate {
         self.excludeDomainsMenuItem = excludeDomainsItem
         self.resetDemoSettingsMenuItem = resetDemoSettingsItem
         self.rotateCAMenuItem = rotateCAItem
+        self.pingProviderMenuItem = pingProviderItem
         self.resetMenuItem = resetItem
         updateDemoSettingsMenu()
     }
@@ -750,6 +764,52 @@ final class HostController: NSObject, NSApplicationDelegate {
         log("rotating MITM CA")
         cleanSecrets()
         applyDemoSettings()
+    }
+
+    private func sendProviderPing() {
+        guard let manager = activeManager else {
+            logErrorText("provider ping failed: no active manager")
+            return
+        }
+
+        guard let session = manager.connection as? NETunnelProviderSession else {
+            logErrorText("provider ping failed: active connection is not a NETunnelProviderSession")
+            return
+        }
+
+        let payload: [String: Any] = [
+            "op": "ping",
+            "sent_at": ISO8601DateFormatter().string(from: Date()),
+            "source": "host-app",
+        ]
+
+        let data: Data
+        do {
+            data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        } catch {
+            logError("provider ping serialization failed", error)
+            return
+        }
+
+        log("sending provider message bytes=\(data.count)")
+        do {
+            try session.sendProviderMessage(data) { [weak self] reply in
+                guard let self else { return }
+                guard let reply else {
+                    self.log("provider message completed without reply payload")
+                    return
+                }
+
+                if let text = String(data: reply, encoding: .utf8) {
+                    self.log("provider message reply utf8=\(text)")
+                    return
+                }
+
+                self.log("provider message reply bytes=\(reply.count)")
+            }
+        } catch {
+            logError("provider ping sendProviderMessage failed", error)
+        }
     }
 
     private func stopProxyAndWaitForDisconnect(

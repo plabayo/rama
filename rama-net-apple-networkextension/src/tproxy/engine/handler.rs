@@ -1,6 +1,6 @@
 use std::{convert::Infallible, future::Future};
 
-use rama_core::{Service, error::BoxError, rt::Executor};
+use rama_core::{Service, bytes::Bytes, error::BoxError, rt::Executor};
 
 use crate::{
     TcpFlow, UdpFlow,
@@ -49,6 +49,18 @@ pub enum FlowAction<S> {
 
 pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig;
+
+    fn handle_app_message(
+        &self,
+        _exec: Executor,
+        message: Bytes,
+    ) -> impl Future<Output = Option<Bytes>> + Send + '_ {
+        tracing::debug!(
+            message_len = message.len(),
+            "transparent proxy app message received without custom handler implementation"
+        );
+        std::future::ready(None)
+    }
 
     fn match_tcp_flow(
         &self,

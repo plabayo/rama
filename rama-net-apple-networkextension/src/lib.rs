@@ -26,7 +26,6 @@
 pub mod ffi;
 #[doc(hidden)]
 #[macro_use]
-#[path = "macro.rs"]
 mod macros;
 pub mod process;
 pub mod tproxy;
@@ -36,3 +35,8 @@ mod udp;
 
 pub use self::{tcp::TcpFlow, udp::UdpFlow};
 pub use crate::__transparent_proxy_ffi as transparent_proxy_ffi;
+
+#[doc(hidden)]
+pub use rama_core::bytes::Bytes as __RamaBytes;
+#[doc(hidden)]
+pub use rama_core::telemetry::tracing as __tracing;
