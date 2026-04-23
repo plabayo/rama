@@ -90,10 +90,7 @@ jobs:
           cargo fmt --all --check
       - name: doc
         run: |
-          cargo doc --all-features --no-deps \
-            --workspace \
-            --exclude rama-cli \
-            --exclude rama-net-apple-xpc
+          cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
           cargo doc --all-features --no-deps -p rama-cli
 
   test-rust-base:

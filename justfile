@@ -69,10 +69,7 @@ _extra-checks-windows:
     @echo "Skipping extra checks on Windows"
 
 doc:
-    cargo doc --all-features --no-deps \
-        --workspace \
-        --exclude rama-cli \
-        --exclude rama-net-apple-xpc
+    cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
     just doc-crate rama-cli
 
 doc-crate CRATE:
