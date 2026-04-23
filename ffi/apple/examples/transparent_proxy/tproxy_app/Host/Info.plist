@@ -16,5 +16,7 @@
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
   <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+  <key>TPROXYSharedAccessGroup</key>
+  <string>$(TPROXY_SHARED_ACCESS_GROUP)</string>
 </dict>
 </plist>

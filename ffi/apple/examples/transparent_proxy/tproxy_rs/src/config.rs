@@ -10,9 +10,11 @@ pub struct DemoProxyConfig {
     pub tcp_connect_timeout_ms: u64,
     pub exclude_domains: Vec<String>,
     pub ca_cert_pem: Option<String>,
-    pub ca_key_xpc_service_name: Option<String>,
-    pub ca_key_xpc_service_code_requirement: Option<String>,
     pub ca_key_pem: Option<String>,
+    pub ca_cert_secret_name: Option<String>,
+    pub ca_key_secret_name: Option<String>,
+    pub ca_secret_account: Option<String>,
+    pub ca_secret_access_group: Option<String>,
 }
 
 impl Default for DemoProxyConfig {
@@ -28,9 +30,11 @@ impl Default for DemoProxyConfig {
                 "captive.apple.com".to_owned(),
             ],
             ca_cert_pem: None,
-            ca_key_xpc_service_name: None,
-            ca_key_xpc_service_code_requirement: None,
             ca_key_pem: None,
+            ca_cert_secret_name: None,
+            ca_key_secret_name: None,
+            ca_secret_account: None,
+            ca_secret_access_group: None,
         }
     }
 }

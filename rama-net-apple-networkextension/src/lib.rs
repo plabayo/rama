@@ -27,6 +27,7 @@ pub mod ffi;
 #[doc(hidden)]
 #[macro_use]
 mod macros;
+pub mod app_protected_storage;
 pub mod process;
 pub mod tproxy;
 

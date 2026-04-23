@@ -70,17 +70,10 @@ pub(super) struct DemoTcpMitmService {
 impl DemoTcpMitmService {
     pub(super) async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, BoxError> {
         let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
-        let Some(ca_crt_pem) = demo_config.ca_cert_pem.as_deref() else {
-            return Err(OpaqueError::from_static_str(
-                "CA cert missing in transparent proxy opaque config",
-            )
-            .into_box_error());
-        };
+        let ca_crt_pem = resolve_ca_cert_pem(&demo_config)?;
         let ca_crt = rama::tls::boring::core::x509::X509::from_pem(ca_crt_pem.as_bytes())
             .context("parse host-provided MITM CA certificate PEM")?;
-        let ca_cert_fingerprint_hex =
-            certificate_fingerprint_hex(&ca_crt).context("compute MITM CA certificate fingerprint")?;
-        let ca_key_pem = resolve_ca_key_pem(&demo_config, &ca_cert_fingerprint_hex).await?;
+        let ca_key_pem = resolve_ca_key_pem(&demo_config)?;
         let ca_key =
             rama::tls::boring::core::pkey::PKey::private_key_from_pem(ca_key_pem.as_bytes())
                 .context("parse host-provided MITM CA key PEM")?;
@@ -214,45 +207,79 @@ impl DemoTcpMitmService {
     }
 }
 
-async fn resolve_ca_key_pem(
-    demo_config: &DemoProxyConfig,
-    cert_fingerprint_hex: &str,
-) -> Result<String, BoxError> {
+fn resolve_ca_cert_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError> {
+    if let Some(ca_cert_pem) = demo_config.ca_cert_pem.clone() {
+        tracing::debug!("using MITM CA certificate from opaque config fallback");
+        return Ok(ca_cert_pem);
+    }
+
+    load_ca_secret_from_app_protected_storage(
+        demo_config,
+        demo_config.ca_cert_secret_name.as_deref(),
+        "certificate",
+    )
+}
+
+fn resolve_ca_key_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError> {
     if let Some(ca_key_pem) = demo_config.ca_key_pem.clone() {
         tracing::debug!("using MITM CA key from opaque config fallback");
         return Ok(ca_key_pem);
     }
 
-    let Some(service_name) = demo_config.ca_key_xpc_service_name.as_deref() else {
+    load_ca_secret_from_app_protected_storage(
+        demo_config,
+        demo_config.ca_key_secret_name.as_deref(),
+        "private key",
+    )
+}
+
+fn load_ca_secret_from_app_protected_storage(
+    demo_config: &DemoProxyConfig,
+    service_name: Option<&str>,
+    secret_kind: &'static str,
+) -> Result<String, BoxError> {
+    let Some(service_name) = service_name.filter(|value| !value.is_empty()) else {
         return Err(OpaqueError::from_static_str(
-            "CA key missing: host XPC service name not provided in transparent proxy opaque config",
+            "CA secret missing: protected-storage secret name not provided in transparent proxy opaque config",
         )
+        .context_field("secret_kind", secret_kind)
+        .into_box_error());
+    };
+    let Some(account_name) = demo_config
+        .ca_secret_account
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(OpaqueError::from_static_str(
+            "CA secret missing: protected-storage secret account not provided in transparent proxy opaque config",
+        )
+        .context_field("secret_kind", secret_kind)
         .into_box_error());
     };
 
-    tracing::info!(service = service_name, "requesting MITM CA key from host app over raw XPC");
-    crate::host_ca_xpc::request_ca_key_pem(
+    tracing::info!(
+        service = service_name,
+        account = account_name,
+        access_group = demo_config.ca_secret_access_group.as_deref().unwrap_or(""),
+        "loading MITM CA secret from app protected storage"
+    );
+
+    let secret = rama::net::apple::networkextension::app_protected_storage::load_raw_secret(
         service_name,
-        demo_config.ca_key_xpc_service_code_requirement.as_deref(),
-        cert_fingerprint_hex,
+        account_name,
+        demo_config.ca_secret_access_group.as_deref(),
     )
-        .await
-        .context("request MITM CA key from host app over XPC")
-}
+    .context("load MITM CA secret from app protected storage")?
+    .ok_or_else(|| {
+        OpaqueError::from_static_str(
+            "CA secret missing: app protected storage item was not found",
+        )
+        .context_field("secret_kind", secret_kind)
+        .context_field("service_name", service_name.to_owned())
+        .into_box_error()
+    })?;
 
-fn certificate_fingerprint_hex(
-    certificate: &rama::tls::boring::core::x509::X509,
-) -> Result<String, BoxError> {
-    use rama::tls::boring::core::hash::{MessageDigest, hash};
-
-    let certificate_der = certificate.to_der().context("encode certificate as DER")?;
-    let fingerprint = hash(MessageDigest::sha256(), &certificate_der)
-        .context("hash certificate DER with SHA-256")?;
-    Ok(fingerprint
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    String::from_utf8(secret).context("decode MITM CA secret as UTF-8")
 }
 
 #[derive(Clone)]

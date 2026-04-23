@@ -28,29 +28,26 @@ private struct ProxyEngineConfigPayload: Encodable {
     let htmlBadgeLabel: String
     let tcpConnectTimeoutMs: Int
     let excludeDomains: [String]
-    let caCertPEM: String
-    let caKeyXPCServiceName: String
-    let caKeyXPCServiceCodeRequirement: String
+    let caCertSecretName: String
+    let caKeySecretName: String
+    let caSecretAccount: String
+    let caSecretAccessGroup: String
 
     private enum CodingKeys: String, CodingKey {
         case htmlBadgeEnabled = "html_badge_enabled"
         case htmlBadgeLabel = "html_badge_label"
         case tcpConnectTimeoutMs = "tcp_connect_timeout_ms"
         case excludeDomains = "exclude_domains"
-        case caCertPEM = "ca_cert_pem"
-        case caKeyXPCServiceName = "ca_key_xpc_service_name"
-        case caKeyXPCServiceCodeRequirement = "ca_key_xpc_service_code_requirement"
+        case caCertSecretName = "ca_cert_secret_name"
+        case caKeySecretName = "ca_key_secret_name"
+        case caSecretAccount = "ca_secret_account"
+        case caSecretAccessGroup = "ca_secret_access_group"
     }
 }
 
 private struct MITMCASecrets: Equatable {
     let certPEM: String
     let keyPEM: String
-}
-
-private struct CodeSigningIdentity {
-    let identifier: String
-    let teamIdentifier: String?
 }
 
 final class HostController: NSObject, NSApplicationDelegate {
@@ -65,7 +62,6 @@ final class HostController: NSObject, NSApplicationDelegate {
     private static let secretAccount = "org.ramaproxy.example.tproxy.host"
     private static let secretServiceKeyPEM = "tls-root-selfsigned-ca-key"
     private static let secretServiceCertPEM = "tls-root-selfsigned-ca-crt"
-    private static let sharedKeychainAccessGroupSuffix = "org.ramaproxy.example.tproxy.shared"
     private static let secretServiceKeys = [
         secretServiceKeyPEM,
         secretServiceCertPEM,
@@ -98,11 +94,8 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var demoSettings = DemoProxySettings()
     private var systemExtensionActivationCompletions: [(Bool) -> Void] = []
     private var systemExtensionActivationInFlight = false
-    private lazy var hostCodeSigningIdentity = resolveHostCodeSigningIdentity()
     private lazy var resetProfileOnLaunch =
         ProcessInfo.processInfo.arguments.contains("--reset-profile-on-launch")
-    private lazy var caKeyXPCServiceName =
-        resolvedCAKeyXPCServiceName(bundleIdentifier: Bundle.main.bundleIdentifier)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -649,19 +642,26 @@ final class HostController: NSObject, NSApplicationDelegate {
     }
 
     private func currentEngineConfigJson() throws -> String {
-        let ca = try loadOrCreateMITMCA()
-        let caKeyXPCServiceCodeRequirement = codeSigningRequirementString(
-            bundleIdentifier: caKeyXPCServiceName,
-            hostIdentity: hostCodeSigningIdentity
-        )
+        _ = try loadOrCreateMITMCA()
+        guard let accessGroup = sharedKeychainAccessGroup() else {
+            throw NSError(
+                domain: "RamaTransparentProxyExampleHost",
+                code: 6,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "shared access group missing from host configuration"
+                ]
+            )
+        }
         let payload = ProxyEngineConfigPayload(
             htmlBadgeEnabled: demoSettings.htmlBadgeEnabled,
             htmlBadgeLabel: demoSettings.htmlBadgeLabel,
             tcpConnectTimeoutMs: demoSettings.tcpConnectTimeoutMs,
             excludeDomains: demoSettings.excludeDomains,
-            caCertPEM: ca.certPEM,
-            caKeyXPCServiceName: caKeyXPCServiceName,
-            caKeyXPCServiceCodeRequirement: caKeyXPCServiceCodeRequirement
+            caCertSecretName: Self.secretServiceCertPEM,
+            caKeySecretName: Self.secretServiceKeyPEM,
+            caSecretAccount: Self.secretAccount,
+            caSecretAccessGroup: accessGroup
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -1091,44 +1091,10 @@ final class HostController: NSObject, NSApplicationDelegate {
         return MITMCASecrets(certPEM: certPEM, keyPEM: keyPEM)
     }
 
-    private func certificateFingerprintHex(forPEM pem: String) throws -> String {
-        let certificate = try Certificate(pemEncoded: pem)
-        let secCertificate = try SecCertificate.makeWithCertificate(certificate)
-        let derData = SecCertificateCopyData(secCertificate) as Data
-        return Data(SHA256.hash(data: derData)).hexString
-    }
-
-    private func resolveHostCodeSigningIdentity() -> CodeSigningIdentity? {
-        resolveCodeSigningIdentityForCurrentProcess()
-    }
-
-    private func resolvedCAKeyXPCServiceName(bundleIdentifier: String?) -> String {
-        guard let bundleIdentifier, !bundleIdentifier.isEmpty else {
-            preconditionFailure("host bundle identifier missing for CA key XPC service name")
-        }
-        return "\(bundleIdentifier).xpc"
-    }
-
-    private func codeSigningRequirementString(
-        bundleIdentifier: String,
-        hostIdentity: CodeSigningIdentity?
-    ) -> String {
-        guard let teamIdentifier = hostIdentity?.teamIdentifier, !teamIdentifier.isEmpty else {
-            return "identifier \"\(bundleIdentifier)\""
-        }
-
-        return
-            "identifier \"\(bundleIdentifier)\" and anchor apple generic and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
-    }
-
     private func sharedKeychainAccessGroup() -> String? {
-        guard let teamIdentifier = hostCodeSigningIdentity?.teamIdentifier,
-            !teamIdentifier.isEmpty
-        else {
-            return nil
-        }
-
-        return "\(teamIdentifier).\(Self.sharedKeychainAccessGroupSuffix)"
+        (Bundle.main.object(forInfoDictionaryKey: "TPROXYSharedAccessGroup") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
     }
 
     private func createAccessControl() -> SecAccessControl? {
@@ -1147,59 +1113,6 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
 
         return access
-    }
-
-    private func resolveCodeSigningIdentityForCurrentProcess() -> CodeSigningIdentity? {
-        do {
-            guard let executableURL = Bundle.main.executableURL else {
-                logErrorText("bundle executable URL not found for code-signing identity resolution")
-                return nil
-            }
-
-            var codeRef: SecStaticCode?
-            let status = SecStaticCodeCreateWithPath(executableURL as CFURL, SecCSFlags(), &codeRef)
-            guard status == errSecSuccess, let codeRef else {
-                logErrorText("SecStaticCodeCreateWithPath failed with OSStatus \(status)")
-                return nil
-            }
-            return try resolveCodeSigningIdentity(codeRef)
-        } catch {
-            logError("failed to resolve host code-signing identity", error)
-            return nil
-        }
-    }
-
-    private func resolveCodeSigningIdentity(_ codeRef: SecStaticCode) throws -> CodeSigningIdentity
-    {
-        var signingInfoRef: CFDictionary?
-        let status = SecCodeCopySigningInformation(
-            codeRef,
-            SecCSFlags(rawValue: kSecCSSigningInformation),
-            &signingInfoRef
-        )
-        guard status == errSecSuccess, let signingInfo = signingInfoRef as? [String: Any] else {
-            throw NSError(
-                domain: "RamaTransparentProxyExampleHost",
-                code: Int(status),
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "SecCodeCopySigningInformation failed: OSStatus \(status)"
-                ]
-            )
-        }
-
-        guard let identifier = signingInfo[kSecCodeInfoIdentifier as String] as? String else {
-            throw NSError(
-                domain: "RamaTransparentProxyExampleHost",
-                code: 10,
-                userInfo: [NSLocalizedDescriptionKey: "signing information missing code identifier"]
-            )
-        }
-
-        return CodeSigningIdentity(
-            identifier: identifier,
-            teamIdentifier: signingInfo[kSecCodeInfoTeamIdentifier as String] as? String
-        )
     }
 
     private func save(
@@ -1567,6 +1480,12 @@ final class HostController: NSObject, NSApplicationDelegate {
 extension Data {
     fileprivate var hexString: String {
         map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+extension String {
+    fileprivate var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 
