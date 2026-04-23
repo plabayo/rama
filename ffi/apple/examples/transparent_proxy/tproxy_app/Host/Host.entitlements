@@ -8,8 +8,6 @@
 	</array>
 	<key>com.apple.developer.system-extension.install</key>
 	<true/>
-	<key>com.apple.security.app-sandbox</key>
-	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
 	<key>keychain-access-groups</key>

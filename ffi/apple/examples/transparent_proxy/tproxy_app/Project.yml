@@ -23,10 +23,22 @@ targets:
         embed: true
         codeSign: true
       - target: RamaTransparentProxyExampleXpcService
-        embed: true
-        codeSign: true
       - package: X509
         product: X509
+    postBuildScripts:
+      - name: Embed XPC Helper and LaunchDaemon Template
+        script: |
+          set -euo pipefail
+
+          HELPER_APP="$BUILT_PRODUCTS_DIR/RamaTransparentProxyExampleXpcService.app"
+          HOST_RESOURCES_DIR="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Resources"
+          HOST_DAEMONS_DIR="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchDaemons"
+          PLIST_SOURCE="$SRCROOT/XpcService/org.ramaproxy.example.tproxy.dev.xpc.plist"
+
+          mkdir -p "$HOST_RESOURCES_DIR" "$HOST_DAEMONS_DIR"
+          rm -rf "$HOST_RESOURCES_DIR/RamaTransparentProxyExampleXpcService.app"
+          ditto "$HELPER_APP" "$HOST_RESOURCES_DIR/RamaTransparentProxyExampleXpcService.app"
+          cp "$PLIST_SOURCE" "$HOST_DAEMONS_DIR/"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev
@@ -42,31 +54,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_HOST_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
-
-  RamaTransparentProxyExampleXpcService:
-    type: xpc-service
-    platform: macOS
-    sources:
-      - path: XpcService
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev.xpc
-        PRODUCT_NAME: RamaTransparentProxyExampleXpcService
-        CURRENT_PROJECT_VERSION: 1
-        INFOPLIST_FILE: XpcService/Info.plist
-        MARKETING_VERSION: 0.1
-        CODE_SIGN_ENTITLEMENTS: XpcService/XpcService.entitlements
-        CODE_SIGNING_ALLOWED: YES
-        CODE_SIGNING_REQUIRED: YES
-        CODE_SIGN_STYLE: Automatic
-        CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_HOST_SIGNING_IDENTITY)"
-        DEVELOPMENT_TEAM: "$(RAMA_TPROXY_DEVELOPMENT_TEAM)"
-        PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_XPCSERVICE_PROFILE_SPECIFIER)"
-        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
-        SKIP_INSTALL: YES
-        GCC_PREPROCESSOR_DEFINITIONS:
-          - "$(inherited)"
-          - _GNU_SOURCE=1
+        TPROXY_XPC_SERVICE_NAME: org.ramaproxy.example.tproxy.dev.xpc
 
   RamaTransparentProxyExampleExtension:
     type: system-extension
@@ -109,6 +97,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
+        TPROXY_XPC_SERVICE_NAME: org.ramaproxy.example.tproxy.dev.xpc
         ENABLE_DEBUG_DYLIB: NO
         OTHER_LDFLAGS:
           - "$(SRCROOT)/../tproxy_rs/target/universal/librama_tproxy_example.a"
@@ -117,3 +106,27 @@ targets:
           - "-framework"
           - "SystemConfiguration"
           - "-lz"
+
+  RamaTransparentProxyExampleXpcService:
+    type: application
+    platform: macOS
+    sources:
+      - path: XpcService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev.xpc
+        PRODUCT_NAME: RamaTransparentProxyExampleXpcService
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: XpcService/Info.agent.plist
+        MARKETING_VERSION: 0.1
+        CODE_SIGN_ENTITLEMENTS: XpcService/XpcService.entitlements
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_XPCSERVICE_SIGNING_IDENTITY)"
+        DEVELOPMENT_TEAM: "$(RAMA_TPROXY_DEVELOPMENT_TEAM)"
+        PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_XPCSERVICE_PROFILE_SPECIFIER)"
+        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
+        OTHER_CODE_SIGN_FLAGS:
+          - "-i"
+          - "$(PRODUCT_BUNDLE_IDENTIFIER)"

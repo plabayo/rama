@@ -54,11 +54,12 @@ private struct CodeSigningIdentity {
 }
 
 final class HostController: NSObject, NSApplicationDelegate {
-    #if TPROXY_DEV_IDENTIFIERS
-        private let extensionBundleId = "org.ramaproxy.example.tproxy.dev.provider"
-    #else
-        private let extensionBundleId = "org.ramaproxy.example.tproxy.dist.provider"
-    #endif
+    private lazy var extensionBundleId: String = {
+        guard let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty else {
+            return ""
+        }
+        return "\(bundleId).provider"
+    }()
     private let managerDescription = "Rama Transparent Proxy Example"
     private let managerServerAddress = "127.0.0.1"
     private static let secretAccount = "org.ramaproxy.example.tproxy.host"
@@ -1043,7 +1044,7 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     private func resolvedCAKeyXPCServiceName(bundleIdentifier: String?) -> String {
         guard let bundleIdentifier, !bundleIdentifier.isEmpty else {
-            return "org.ramaproxy.example.tproxy.xpc"
+            preconditionFailure("host bundle identifier missing for CA key XPC service name")
         }
         return "\(bundleIdentifier).xpc"
     }

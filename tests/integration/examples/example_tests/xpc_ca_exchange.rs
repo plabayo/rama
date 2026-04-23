@@ -13,6 +13,11 @@ async fn test_xpc_ca_exchange() {
         .run()
         .expect("cargo build xpc_ca_exchange")
         .command()
+        .env(
+            "RUST_LOG",
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "debug".into()),
+        )
+        .env("NO_COLOR", "1")
         .output()
         .expect("run xpc_ca_exchange");
 

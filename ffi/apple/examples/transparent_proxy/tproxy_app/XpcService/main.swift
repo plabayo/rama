@@ -216,7 +216,16 @@ private func isPeerCodeSigningRequirementError(_ event: xpc_object_t) -> Bool {
 }
 
 private func run() throws -> Never {
-    let serviceName = Bundle.main.bundleIdentifier ?? "org.ramaproxy.example.tproxy.xpc"
+    let serviceName: String
+    if let launchJobLabel = ProcessInfo.processInfo.environment["LAUNCH_JOB_LABEL"],
+        !launchJobLabel.isEmpty
+    {
+        serviceName = launchJobLabel
+    } else if let bundleIdentifier = Bundle.main.bundleIdentifier, !bundleIdentifier.isEmpty {
+        serviceName = bundleIdentifier
+    } else {
+        throw XpcServiceError.message("XPC service label missing from launch environment")
+    }
     let extensionBundleIdentifier = expectedExtensionBundleIdentifier(for: serviceName)
     let logger = Logger(subsystem: serviceName, category: "ca-xpc-service")
 
@@ -285,7 +294,11 @@ private func run() throws -> Never {
 do {
     try run()
 } catch {
-    let logger = Logger(subsystem: "org.ramaproxy.example.tproxy.xpc", category: "ca-xpc-service")
+    let subsystem =
+        ProcessInfo.processInfo.environment["LAUNCH_JOB_LABEL"]
+        ?? Bundle.main.bundleIdentifier
+        ?? "RamaTransparentProxyExampleXpcService"
+    let logger = Logger(subsystem: subsystem, category: "ca-xpc-service")
     logger.error("failed to start XPC service: \(error.localizedDescription, privacy: .public)")
     exit(EXIT_FAILURE)
 }
