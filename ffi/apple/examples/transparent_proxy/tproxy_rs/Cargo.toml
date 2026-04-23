@@ -13,7 +13,7 @@ crate-type = ["staticlib"]
 ahash = "0.8"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 moka = { version = "0.12", features = ["sync"] }
-rama = { path = "../../../../../", features = ["net-apple-networkextension", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
+rama = { path = "../../../../../", features = ["net-apple-networkextension", "net-apple-xpc", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.52", features = ["net"] }

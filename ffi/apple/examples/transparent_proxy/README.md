@@ -4,8 +4,19 @@ This example shows how to link a Rust staticlib that implements the
 Rama NetworkExtension C ABI into a macOS Transparent Proxy extension.
 
 The host app generates and stores the demo MITM root CA in the macOS
-keychain using `swift-certificates`, then forwards the PEM certificate/key to
-the Rust engine through the opaque Network Extension config blob.
+keychain using `swift-certificates`. The PEM certificate is still forwarded to
+the Rust engine through the opaque Network Extension config blob, but the
+private key is no longer sent that way. Instead, the host publishes the name
+and expected code-signing requirement for a bundled raw-XPC Mach service in the
+startup config, and the extension requests the key from that service during
+startup using `rama::net::apple::xpc`.
+
+The extension computes the CA certificate fingerprint locally from the
+host-provided certificate, sends that fingerprint over raw XPC, and the CA-key
+service only returns the private key when:
+
+- the connecting peer matches the transparent-proxy extension code signature
+- the requested fingerprint matches the currently active host CA certificate
 
 ## Build
 
@@ -58,8 +69,8 @@ The build helpers are:
 Both modes use the real system-extension product type. Developer mode uses the plain `app-proxy-provider` entitlement payload, while distribution mode switches the same entitlement template to `app-proxy-provider-systemextension`.
 
 At runtime, the host menu includes `Rotate MITM CA`, which deletes the stored CA
-material, generates a fresh CA on the host, updates the opaque config, and
-restarts the proxy when needed.
+material, generates a fresh CA on the host, updates the opaque config
+(certificate + XPC service metadata), and restarts the proxy when needed.
 
 ## Signing Setup
 
@@ -107,14 +118,17 @@ The host and extension now share one entitlement template each, with the Network
 
 A team `Account Holder` or `Admin` needs to do the one-time Apple Developer portal setup.
 
-1. Create or verify the four App IDs:
+1. Create or verify the six App IDs:
    - `org.ramaproxy.example.tproxy.dev`
    - `org.ramaproxy.example.tproxy.dev.provider`
+   - `org.ramaproxy.example.tproxy.dev.xpc`
    - `org.ramaproxy.example.tproxy.dist`
    - `org.ramaproxy.example.tproxy.dist.provider`
-2. Enable `Network Extensions` on both App IDs.
+   - `org.ramaproxy.example.tproxy.dist.xpc`
+2. Enable `Network Extensions` on the host and extension App IDs for both developer and distribution modes.
 3. Enable `System Extension` on the host App ID used for direct distribution.
-4. Create the Developer ID distribution profiles for the direct-distribution system extension path.
+4. Enable the keychain-sharing capability needed for the bundled CA-key XPC service on the host and service App IDs.
+5. Create the Developer ID distribution profiles for the direct-distribution host, extension, and CA-key service.
 
 ### What a normal developer needs locally
 
@@ -160,20 +174,23 @@ If you only want the signed `Release` app without notarization, use:
 just build-tproxy-dist
 ```
 
-For distribution mode, the example expects these Developer ID profile names for the distribution bundle IDs `org.ramaproxy.example.tproxy.dist` and `org.ramaproxy.example.tproxy.dist.provider`:
+For distribution mode, the example expects these Developer ID profile names for the distribution bundle IDs `org.ramaproxy.example.tproxy.dist`, `org.ramaproxy.example.tproxy.dist.provider`, and `org.ramaproxy.example.tproxy.dist.xpc`:
 
 - `Rama Transparent Proxy Example (Host)`
 - `Rama Transparent Proxy Example (Extension)`
+- `Rama Transparent Proxy Example (XPC Service)`
 
 Only for distribution mode, if you intentionally renamed those profiles, should you override:
 
 - `RAMA_TPROXY_HOST_PROFILE_SPECIFIER`
 - `RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER`
+- `RAMA_TPROXY_XPCSERVICE_PROFILE_SPECIFIER`
 
 If Xcode still fails to find the freshly downloaded Developer ID profiles, you can point the helper at the exact files and let it install them into the standard provisioning-profile directory before building:
 
 - `RAMA_TPROXY_HOST_PROFILE_PATH=/absolute/path/to/Rama_Transparent_Proxy_Example_Host.provisionprofile`
 - `RAMA_TPROXY_EXTENSION_PROFILE_PATH=/absolute/path/to/Rama_Transparent_Proxy_Example_Extension.provisionprofile`
+- `RAMA_TPROXY_XPCSERVICE_PROFILE_PATH=/absolute/path/to/Rama_Transparent_Proxy_Example_XPC_Service.provisionprofile`
 
 Distribution mode also requires a locally available `Developer ID Application` certificate with private key for team `ADPG6C355H`, unless your company uses an equivalent managed-signing service.
 

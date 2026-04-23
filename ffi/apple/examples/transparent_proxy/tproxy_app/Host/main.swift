@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import Foundation
 import NetworkExtension
 import OSLog
@@ -28,7 +29,8 @@ private struct ProxyEngineConfigPayload: Encodable {
     let tcpConnectTimeoutMs: Int
     let excludeDomains: [String]
     let caCertPEM: String
-    let caKeyPEM: String
+    let caKeyXPCServiceName: String
+    let caKeyXPCServiceCodeRequirement: String
 
     private enum CodingKeys: String, CodingKey {
         case htmlBadgeEnabled = "html_badge_enabled"
@@ -36,13 +38,19 @@ private struct ProxyEngineConfigPayload: Encodable {
         case tcpConnectTimeoutMs = "tcp_connect_timeout_ms"
         case excludeDomains = "exclude_domains"
         case caCertPEM = "ca_cert_pem"
-        case caKeyPEM = "ca_key_pem"
+        case caKeyXPCServiceName = "ca_key_xpc_service_name"
+        case caKeyXPCServiceCodeRequirement = "ca_key_xpc_service_code_requirement"
     }
 }
 
 private struct MITMCASecrets: Equatable {
     let certPEM: String
     let keyPEM: String
+}
+
+private struct CodeSigningIdentity {
+    let identifier: String
+    let teamIdentifier: String?
 }
 
 final class HostController: NSObject, NSApplicationDelegate {
@@ -56,6 +64,7 @@ final class HostController: NSObject, NSApplicationDelegate {
     private static let secretAccount = "org.ramaproxy.example.tproxy.host"
     private static let secretServiceKeyPEM = "tls-root-selfsigned-ca-key"
     private static let secretServiceCertPEM = "tls-root-selfsigned-ca-crt"
+    private static let sharedKeychainAccessGroupSuffix = "org.ramaproxy.example.tproxy.shared"
     private static let secretServiceKeys = [
         secretServiceKeyPEM,
         secretServiceCertPEM,
@@ -87,8 +96,11 @@ final class HostController: NSObject, NSApplicationDelegate {
     private var demoSettings = DemoProxySettings()
     private var systemExtensionActivationCompletions: [(Bool) -> Void] = []
     private var systemExtensionActivationInFlight = false
+    private lazy var hostCodeSigningIdentity = resolveHostCodeSigningIdentity()
     private lazy var resetProfileOnLaunch =
         ProcessInfo.processInfo.arguments.contains("--reset-profile-on-launch")
+    private lazy var caKeyXPCServiceName =
+        resolvedCAKeyXPCServiceName(bundleIdentifier: Bundle.main.bundleIdentifier)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -623,13 +635,18 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     private func currentEngineConfigJson() throws -> String {
         let ca = try loadOrCreateMITMCA()
+        let caKeyXPCServiceCodeRequirement = codeSigningRequirementString(
+            bundleIdentifier: caKeyXPCServiceName,
+            hostIdentity: hostCodeSigningIdentity
+        )
         let payload = ProxyEngineConfigPayload(
             htmlBadgeEnabled: demoSettings.htmlBadgeEnabled,
             htmlBadgeLabel: demoSettings.htmlBadgeLabel,
             tcpConnectTimeoutMs: demoSettings.tcpConnectTimeoutMs,
             excludeDomains: demoSettings.excludeDomains,
             caCertPEM: ca.certPEM,
-            caKeyPEM: ca.keyPEM
+            caKeyXPCServiceName: caKeyXPCServiceName,
+            caKeyXPCServiceCodeRequirement: caKeyXPCServiceCodeRequirement
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -798,16 +815,11 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     private func cleanSecrets() {
         for key in Self.secretServiceKeys {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: key,
-                kSecAttrAccount as String: Self.secretAccount,
-                kSecUseDataProtectionKeychain as String: true,
-            ]
-
-            let status = SecItemDelete(query as CFDictionary)
-            if status != errSecSuccess && status != errSecItemNotFound {
-                logErrorText("failed to delete keychain secret \(key): OSStatus \(status)")
+            for query in keychainQueries(service: key, includeLegacyFallback: true) {
+                let status = SecItemDelete(query as CFDictionary)
+                if status != errSecSuccess && status != errSecItemNotFound {
+                    logErrorText("failed to delete keychain secret \(key): OSStatus \(status)")
+                }
             }
         }
     }
@@ -833,44 +845,39 @@ final class HostController: NSObject, NSApplicationDelegate {
     }
 
     private func loadSecret(service: String) throws -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: Self.secretAccount,
-            kSecUseDataProtectionKeychain as String: true,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
+        for query in keychainQueries(service: service, includeLegacyFallback: true) {
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
 
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-
-        switch status {
-        case errSecSuccess:
-            guard let data = item as? Data else {
+            switch status {
+            case errSecSuccess:
+                guard let data = item as? Data else {
+                    throw NSError(
+                        domain: "RamaTransparentProxyExampleHost",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "keychain item for \(service) did not return Data"]
+                    )
+                }
+                guard let value = String(data: data, encoding: .utf8) else {
+                    throw NSError(
+                        domain: "RamaTransparentProxyExampleHost",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "keychain item for \(service) was not valid UTF-8"]
+                    )
+                }
+                return value
+            case errSecItemNotFound:
+                continue
+            default:
                 throw NSError(
                     domain: "RamaTransparentProxyExampleHost",
-                    code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "keychain item for \(service) did not return Data"]
+                    code: Int(status),
+                    userInfo: [NSLocalizedDescriptionKey: "failed to load keychain secret \(service): OSStatus \(status)"]
                 )
             }
-            guard let value = String(data: data, encoding: .utf8) else {
-                throw NSError(
-                    domain: "RamaTransparentProxyExampleHost",
-                    code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: "keychain item for \(service) was not valid UTF-8"]
-                )
-            }
-            return value
-        case errSecItemNotFound:
-            return nil
-        default:
-            throw NSError(
-                domain: "RamaTransparentProxyExampleHost",
-                code: Int(status),
-                userInfo: [NSLocalizedDescriptionKey: "failed to load keychain secret \(service): OSStatus \(status)"]
-            )
         }
+
+        return nil
     }
 
     private func storeSecret(service: String, value: String) throws {
@@ -882,12 +889,10 @@ final class HostController: NSObject, NSApplicationDelegate {
             )
         }
 
-        let baseQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: Self.secretAccount,
-            kSecUseDataProtectionKeychain as String: true,
-        ]
+        var baseQuery = baseKeychainQuery(service: service)
+        if let accessGroup = sharedKeychainAccessGroup() {
+            baseQuery[kSecAttrAccessGroup as String] = accessGroup
+        }
 
         let updateStatus = SecItemUpdate(
             baseQuery as CFDictionary,
@@ -919,6 +924,39 @@ final class HostController: NSObject, NSApplicationDelegate {
                 userInfo: [NSLocalizedDescriptionKey: "failed to add keychain secret \(service): OSStatus \(addStatus)"]
             )
         }
+    }
+
+    private func baseKeychainQuery(service: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: Self.secretAccount,
+            kSecUseDataProtectionKeychain as String: true,
+        ]
+    }
+
+    private func keychainQueries(
+        service: String,
+        includeLegacyFallback: Bool
+    ) -> [[String: Any]] {
+        var queries = [[String: Any]]()
+
+        var sharedQuery = baseKeychainQuery(service: service)
+        if let accessGroup = sharedKeychainAccessGroup() {
+            sharedQuery[kSecAttrAccessGroup as String] = accessGroup
+        }
+        sharedQuery[kSecReturnData as String] = true
+        sharedQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+        queries.append(sharedQuery)
+
+        if includeLegacyFallback {
+            var legacyQuery = baseKeychainQuery(service: service)
+            legacyQuery[kSecReturnData as String] = true
+            legacyQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+            queries.append(legacyQuery)
+        }
+
+        return queries
     }
 
     private func generateSelfSignedCAPEM() throws -> MITMCASecrets {
@@ -972,6 +1010,50 @@ final class HostController: NSObject, NSApplicationDelegate {
         return MITMCASecrets(certPEM: certPEM, keyPEM: keyPEM)
     }
 
+    private func certificateFingerprintHex(forPEM pem: String) throws -> String {
+        let certificate = try Certificate(pemEncoded: pem)
+        let secCertificate = try SecCertificate.makeWithCertificate(certificate)
+        let derData = SecCertificateCopyData(secCertificate) as Data
+        return Data(SHA256.hash(data: derData)).hexString
+    }
+
+    private func resolveHostCodeSigningIdentity() -> CodeSigningIdentity? {
+        resolveCodeSigningIdentityForCurrentProcess()
+    }
+
+    private func resolvedCAKeyXPCServiceName(bundleIdentifier: String?) -> String {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else {
+            return "org.ramaproxy.example.tproxy.xpc"
+        }
+        if let lastDotIndex = bundleIdentifier.lastIndex(of: ".") {
+            let prefix = bundleIdentifier[..<lastDotIndex]
+            return "\(prefix).xpc"
+        }
+        return "\(bundleIdentifier).xpc"
+    }
+
+    private func codeSigningRequirementString(
+        bundleIdentifier: String,
+        hostIdentity: CodeSigningIdentity?
+    ) -> String {
+        guard let teamIdentifier = hostIdentity?.teamIdentifier, !teamIdentifier.isEmpty else {
+            return "identifier \"\(bundleIdentifier)\""
+        }
+
+        return
+            "identifier \"\(bundleIdentifier)\" and anchor apple generic and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
+    }
+
+    private func sharedKeychainAccessGroup() -> String? {
+        guard let teamIdentifier = hostCodeSigningIdentity?.teamIdentifier,
+            !teamIdentifier.isEmpty
+        else {
+            return nil
+        }
+
+        return "\(teamIdentifier).\(Self.sharedKeychainAccessGroupSuffix)"
+    }
+
     private func createAccessControl() -> SecAccessControl? {
         var error: Unmanaged<CFError>?
         let access = SecAccessControlCreateWithFlags(
@@ -988,6 +1070,55 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
 
         return access
+    }
+
+    private func resolveCodeSigningIdentityForCurrentProcess() -> CodeSigningIdentity? {
+        do {
+            guard let executableURL = Bundle.main.executableURL else {
+                logErrorText("bundle executable URL not found for code-signing identity resolution")
+                return nil
+            }
+
+            var codeRef: SecStaticCode?
+            let status = SecStaticCodeCreateWithPath(executableURL as CFURL, SecCSFlags(), &codeRef)
+            guard status == errSecSuccess, let codeRef else {
+                logErrorText("SecStaticCodeCreateWithPath failed with OSStatus \(status)")
+                return nil
+            }
+            return try resolveCodeSigningIdentity(codeRef)
+        } catch {
+            logError("failed to resolve host code-signing identity", error)
+            return nil
+        }
+    }
+
+    private func resolveCodeSigningIdentity(_ codeRef: SecStaticCode) throws -> CodeSigningIdentity {
+        var signingInfoRef: CFDictionary?
+        let status = SecCodeCopySigningInformation(
+            codeRef,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInfoRef
+        )
+        guard status == errSecSuccess, let signingInfo = signingInfoRef as? [String: Any] else {
+            throw NSError(
+                domain: "RamaTransparentProxyExampleHost",
+                code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: "SecCodeCopySigningInformation failed: OSStatus \(status)"]
+            )
+        }
+
+        guard let identifier = signingInfo[kSecCodeInfoIdentifier as String] as? String else {
+            throw NSError(
+                domain: "RamaTransparentProxyExampleHost",
+                code: 10,
+                userInfo: [NSLocalizedDescriptionKey: "signing information missing code identifier"]
+            )
+        }
+
+        return CodeSigningIdentity(
+            identifier: identifier,
+            teamIdentifier: signingInfo[kSecCodeInfoTeamIdentifier as String] as? String
+        )
     }
 
     private func save(
@@ -1349,6 +1480,12 @@ final class HostController: NSObject, NSApplicationDelegate {
         default:
             return nil
         }
+    }
+}
+
+private extension Data {
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
     }
 }
 

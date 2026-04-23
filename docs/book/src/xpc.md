@@ -137,6 +137,8 @@ This is how configuration, start/stop commands, and telemetry flow between the s
 extension and the UI.
 
 See [Operating Transparent Proxies on macOS](./proxies/operate/transparent/macos.md).
+The transparent-proxy Apple FFI demo in this repo also uses raw XPC for host-side
+CA-key retrieval, which is a practical reference for this control-plane pattern.
 
 **Endpoint hand-off** — A server can accept a connection, create an `XpcEndpoint` from it,
 and embed that endpoint in a message to a third process. The third process calls
@@ -221,3 +223,8 @@ cargo run --example xpc_ca_exchange --features=net-apple-xpc
 That example models a client requesting CA material over XPC request/reply instead of
 pushing it through some unrelated opaque configuration transport.
 Source: [`examples/xpc_ca_exchange.rs`](https://github.com/plabayo/rama/blob/main/examples/xpc_ca_exchange.rs)
+
+For a practical Apple FFI usage of that pattern, see the transparent proxy demo at
+[`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy),
+where the Network Extension receives the CA certificate in startup config but requests the
+private key from the host app over local XPC during startup.

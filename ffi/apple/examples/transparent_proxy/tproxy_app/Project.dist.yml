@@ -17,8 +17,12 @@ targets:
     platform: macOS
     sources:
       - path: Host
+      - path: Shared
     dependencies:
       - target: RamaTransparentProxyExampleExtension
+        embed: true
+        codeSign: true
+      - target: RamaTransparentProxyExampleXpcService
         embed: true
         codeSign: true
       - package: X509
@@ -48,11 +52,43 @@ targets:
           - "$(inherited)"
           - TPROXY_DIST_IDENTIFIERS
 
+  RamaTransparentProxyExampleXpcService:
+    type: xpc-service
+    platform: macOS
+    sources:
+      - path: XpcService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dist.xpc
+        PRODUCT_NAME: RamaTransparentProxyExampleXpcService
+        CURRENT_PROJECT_VERSION: "$(RAMA_TPROXY_CURRENT_PROJECT_VERSION)"
+        INFOPLIST_FILE: XpcService/Info.plist
+        MARKETING_VERSION: "$(RAMA_TPROXY_MARKETING_VERSION)"
+        CODE_SIGN_ENTITLEMENTS: XpcService/XpcService.entitlements
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_HOST_SIGNING_IDENTITY)"
+        DEVELOPMENT_TEAM: "$(RAMA_TPROXY_DEVELOPMENT_TEAM)"
+        PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_XPCSERVICE_PROFILE_SPECIFIER)"
+        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        GENERATE_PROVISIONING_PROFILE: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        OTHER_CODE_SIGN_FLAGS:
+          - "--timestamp"
+          - "--options=runtime"
+        SKIP_INSTALL: YES
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - "$(inherited)"
+          - _GNU_SOURCE=1
+
   RamaTransparentProxyExampleExtension:
     type: system-extension
     platform: macOS
     sources:
       - path: Extension
+      - path: Shared
     dependencies:
       - package: RamaAppleNetworkExtension
         product: RamaAppleNetworkExtension

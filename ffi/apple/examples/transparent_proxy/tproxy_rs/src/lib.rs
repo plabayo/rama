@@ -23,6 +23,7 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 mod concurrency;
 mod config;
 mod demo_trace_traffic;
+mod host_ca_xpc;
 mod http;
 mod policy;
 mod tcp;
