@@ -1,4 +1,4 @@
-use std::{convert::Infallible, future::Future, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 
 use rama::{
     Service,
@@ -139,69 +139,60 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         self.config.clone()
     }
 
-    fn handle_app_message(
-        &self,
-        _exec: Executor,
-        message: Bytes,
-    ) -> impl Future<Output = Option<Bytes>> + Send + '_ {
-        async move {
-            let message_len = message.len();
-            let request = match serde_json::from_slice::<AppMessageRequest>(&message) {
-                Ok(request) => request,
-                Err(err) => {
-                    tracing::debug!(
-                        ?err,
-                        message_len,
-                        "transparent proxy demo failed to decode app message as JSON"
-                    );
-                    return None;
-                }
-            };
-
-            let Some(op) = request.op.as_deref() else {
-                tracing::debug!(message_len, "transparent proxy demo app message missing op");
+    async fn handle_app_message(&self, _exec: Executor, message: Bytes) -> Option<Bytes> {
+        let message_len = message.len();
+        let request = match serde_json::from_slice::<AppMessageRequest>(&message) {
+            Ok(request) => request,
+            Err(err) => {
+                tracing::debug!(
+                    ?err,
+                    message_len,
+                    "transparent proxy demo failed to decode app message as JSON"
+                );
                 return None;
+            }
+        };
+
+        let Some(op) = request.op.as_deref() else {
+            tracing::debug!(message_len, "transparent proxy demo app message missing op");
+            return None;
+        };
+
+        if op == "ping" {
+            let reply = AppMessageReply {
+                op: "pong",
+                source: "transparent-proxy-provider",
+                received_bytes: message_len,
+                acknowledged_source: request.source,
+                acknowledged_sent_at: request.sent_at,
             };
 
-            match op {
-                "ping" => {
-                    let reply = AppMessageReply {
-                        op: "pong",
-                        source: "transparent-proxy-provider",
-                        received_bytes: message_len,
-                        acknowledged_source: request.source,
-                        acknowledged_sent_at: request.sent_at,
-                    };
-
-                    match serde_json::to_vec(&reply) {
-                        Ok(reply_bytes) => {
-                            tracing::debug!(
-                                request_op = op,
-                                message_len,
-                                reply_len = reply_bytes.len(),
-                                "transparent proxy demo replying to app message"
-                            );
-                            Some(Bytes::from(reply_bytes))
-                        }
-                        Err(err) => {
-                            tracing::debug!(
-                                ?err,
-                                request_op = op,
-                                "transparent proxy demo failed to encode app message reply"
-                            );
-                            None
-                        }
-                    }
-                }
-                _ => {
+            match serde_json::to_vec(&reply) {
+                Ok(reply_bytes) => {
                     tracing::debug!(
                         request_op = op,
                         message_len,
-                        "transparent proxy demo ignoring unknown app message op"
+                        reply_len = reply_bytes.len(),
+                        "transparent proxy demo replying to app message"
+                    );
+                    Some(Bytes::from(reply_bytes))
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        ?err,
+                        request_op = op,
+                        "transparent proxy demo failed to encode app message reply"
                     );
                     None
                 }
             }
+        } else {
+            tracing::debug!(
+                request_op = op,
+                message_len,
+                "transparent proxy demo ignoring unknown app message op"
+            );
+            None
         }
     }
 

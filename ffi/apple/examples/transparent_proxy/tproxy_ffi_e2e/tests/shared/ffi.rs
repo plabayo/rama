@@ -16,6 +16,10 @@ use rama::tls::boring::core::x509::{X509, store::X509StoreBuilder};
 
 use super::{bindings, types::BADGE_LABEL};
 
+const TEST_CA_CERT_SECRET_NAME: &str = "mitm-root-ca-cert-pem";
+const TEST_CA_KEY_SECRET_NAME: &str = "mitm-root-ca-key-pem";
+const TEST_CA_SECRET_ACCOUNT: &str = "rama-tproxy-ffi-e2e";
+
 pub(crate) fn test_storage_dir() -> PathBuf {
     env::temp_dir().join("rama_tproxy_ffi_e2e")
 }
@@ -59,14 +63,15 @@ impl Drop for EngineHandle {
 }
 
 pub(crate) fn default_engine() -> Arc<EngineHandle> {
-    let ca = test_mitm_ca();
+    test_mitm_ca();
     Arc::new(EngineHandle::new_with_json(&serde_json::json!({
         "html_badge_enabled": true,
         "html_badge_label": BADGE_LABEL,
         "peek_duration_s": 0.5,
         "exclude_domains": [],
-        "ca_cert_pem": ca.cert_pem,
-        "ca_key_pem": ca.key_pem,
+        "ca_cert_secret_name": TEST_CA_CERT_SECRET_NAME,
+        "ca_key_secret_name": TEST_CA_KEY_SECRET_NAME,
+        "ca_secret_account": TEST_CA_SECRET_ACCOUNT,
     })))
 }
 
@@ -79,18 +84,20 @@ pub(crate) fn load_mitm_ca_store() -> Arc<rama::tls::boring::core::x509::store::
     Arc::new(builder.build())
 }
 
-struct TestMitmCa {
-    cert_pem: String,
-    key_pem: String,
-}
-
-fn test_mitm_ca() -> TestMitmCa {
+fn test_mitm_ca() {
     let storage_dir = test_storage_dir();
     let cert_path = storage_dir.join("mitm-root-ca-cert-pem.pem");
     let key_path = storage_dir.join("mitm-root-ca-key-pem.pem");
+    let secret_dir = storage_dir.join("secrets").join(TEST_CA_SECRET_ACCOUNT);
+    let cert_secret_path = secret_dir.join(format!("{TEST_CA_CERT_SECRET_NAME}.secret"));
+    let key_secret_path = secret_dir.join(format!("{TEST_CA_KEY_SECRET_NAME}.secret"));
 
-    if let (Ok(cert_pem), Ok(key_pem)) = (std::fs::read_to_string(&cert_path), std::fs::read_to_string(&key_path)) {
-        return TestMitmCa { cert_pem, key_pem };
+    if cert_path.exists()
+        && key_path.exists()
+        && cert_secret_path.exists()
+        && key_secret_path.exists()
+    {
+        return;
     }
 
     let (root_cert, root_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
@@ -109,8 +116,9 @@ fn test_mitm_ca() -> TestMitmCa {
     )
     .expect("ffi e2e key pem utf8");
 
+    std::fs::create_dir_all(&secret_dir).expect("create ffi e2e secret dir");
     std::fs::write(&cert_path, cert_pem.as_bytes()).expect("persist ffi e2e mitm cert");
     std::fs::write(&key_path, key_pem.as_bytes()).expect("persist ffi e2e mitm key");
-
-    TestMitmCa { cert_pem, key_pem }
+    std::fs::write(&cert_secret_path, cert_pem.as_bytes()).expect("persist ffi e2e mitm cert secret");
+    std::fs::write(&key_secret_path, key_pem.as_bytes()).expect("persist ffi e2e mitm key secret");
 }

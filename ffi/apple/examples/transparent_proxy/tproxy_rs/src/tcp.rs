@@ -208,12 +208,7 @@ impl DemoTcpMitmService {
 }
 
 fn resolve_ca_cert_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError> {
-    if let Some(ca_cert_pem) = demo_config.ca_cert_pem.clone() {
-        tracing::debug!("using MITM CA certificate from opaque config fallback");
-        return Ok(ca_cert_pem);
-    }
-
-    load_ca_secret_from_app_protected_storage(
+    load_ca_secret(
         demo_config,
         demo_config.ca_cert_secret_name.as_deref(),
         "certificate",
@@ -221,19 +216,14 @@ fn resolve_ca_cert_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError
 }
 
 fn resolve_ca_key_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError> {
-    if let Some(ca_key_pem) = demo_config.ca_key_pem.clone() {
-        tracing::debug!("using MITM CA key from opaque config fallback");
-        return Ok(ca_key_pem);
-    }
-
-    load_ca_secret_from_app_protected_storage(
+    load_ca_secret(
         demo_config,
         demo_config.ca_key_secret_name.as_deref(),
         "private key",
     )
 }
 
-fn load_ca_secret_from_app_protected_storage(
+fn load_ca_secret(
     demo_config: &DemoProxyConfig,
     service_name: Option<&str>,
     secret_kind: &'static str,
@@ -257,17 +247,39 @@ fn load_ca_secret_from_app_protected_storage(
         .into_box_error());
     };
 
+    if let Some(access_group) = demo_config
+        .ca_secret_access_group
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return load_ca_secret_from_app_protected_storage(
+            service_name,
+            account_name,
+            access_group,
+            secret_kind,
+        );
+    }
+
+    load_ca_secret_from_storage_dir(service_name, account_name, secret_kind)
+}
+
+fn load_ca_secret_from_app_protected_storage(
+    service_name: &str,
+    account_name: &str,
+    access_group: &str,
+    secret_kind: &'static str,
+) -> Result<String, BoxError> {
     tracing::info!(
         service = service_name,
         account = account_name,
-        access_group = demo_config.ca_secret_access_group.as_deref().unwrap_or(""),
+        access_group,
         "loading MITM CA secret from app protected storage"
     );
 
     let secret = rama::net::apple::networkextension::app_protected_storage::load_raw_secret(
         service_name,
         account_name,
-        demo_config.ca_secret_access_group.as_deref(),
+        Some(access_group),
     )
     .context("load MITM CA secret from app protected storage")?
     .ok_or_else(|| {
@@ -280,6 +292,35 @@ fn load_ca_secret_from_app_protected_storage(
     })?;
 
     String::from_utf8(secret).context("decode MITM CA secret as UTF-8")
+}
+
+fn load_ca_secret_from_storage_dir(
+    service_name: &str,
+    account_name: &str,
+    secret_kind: &'static str,
+) -> Result<String, BoxError> {
+    let storage_dir = crate::utils::storage_dir().ok_or_else(|| {
+        OpaqueError::from_static_str(
+            "CA secret missing: transparent proxy storage directory is not initialized",
+        )
+        .context_field("secret_kind", secret_kind)
+        .into_box_error()
+    })?;
+    let path = storage_dir
+        .join("secrets")
+        .join(account_name)
+        .join(format!("{service_name}.secret"));
+
+    tracing::info!(
+        path = %path.display(),
+        service = service_name,
+        account = account_name,
+        "loading MITM CA secret from transparent proxy storage directory"
+    );
+
+    std::fs::read_to_string(&path)
+        .context("read MITM CA secret from transparent proxy storage directory")
+        .context_field("path", path.display().to_string())
 }
 
 #[derive(Clone)]
