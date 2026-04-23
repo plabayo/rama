@@ -30,32 +30,39 @@ pub(crate) async fn request_ca_key_pem(
         XpcMessage::String(cert_fingerprint_hex.to_owned()),
     );
 
-    let reply = connection
-        .send_request(XpcMessage::Dictionary(request))
-        .await
-        .context("send host CA XPC request")?;
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        connection.send_request(XpcMessage::Dictionary(request)),
+    )
+    .await
+    .context(
+        "host CA XPC request timed out after 4s: \
+        XPC service did not reply — verify the host app is running \
+        and its XPC service is accessible from the extension sandbox",
+    )?
+    .context("send host CA XPC request")?;
 
     let reply = match reply {
         XpcMessage::Dictionary(reply) => reply,
         other => {
-            return Err(std::io::Error::other(format!(
-                "host CA XPC reply was not a dictionary: {other:?}"
-            ))
-            .into_box_error());
+            return Err(
+                OpaqueError::from_static_str("host CA XPC reply was not a dictionary")
+                    .context_debug_field("message", other.clone()),
+            );
         }
     };
 
     if let Some(XpcMessage::String(error)) = reply.get("error") {
-        return Err(std::io::Error::other(format!("host CA XPC request failed: {error}"))
-            .into_box_error());
+        return Err(OpaqueError::from_static_str("host CA XPC request failed")
+            .context_field("error", error.clone()));
     }
 
     match reply.get("ca_key_pem") {
         Some(XpcMessage::String(value)) => Ok(value.clone()),
-        Some(other) => Err(std::io::Error::other(format!(
-            "host CA XPC reply field `ca_key_pem` had unexpected type: {other:?}"
-        ))
-        .into_box_error()),
+        Some(other) => Err(OpaqueError::from_static_str(
+            "host CA XPC reply field `ca_key_pem` had unexpected type",
+        )
+        .context_debug_field("other", other.clone())),
         None => Err(
             OpaqueError::from_static_str("host CA XPC reply did not include `ca_key_pem`")
                 .into_box_error(),

@@ -42,9 +42,6 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_HOST_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS:
-          - "$(inherited)"
-          - TPROXY_DEV_IDENTIFIERS
 
   RamaTransparentProxyExampleXpcService:
     type: xpc-service

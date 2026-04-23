@@ -48,9 +48,6 @@ targets:
         OTHER_CODE_SIGN_FLAGS:
           - "--timestamp"
           - "--options=runtime"
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS:
-          - "$(inherited)"
-          - TPROXY_DIST_IDENTIFIERS
 
   RamaTransparentProxyExampleXpcService:
     type: xpc-service

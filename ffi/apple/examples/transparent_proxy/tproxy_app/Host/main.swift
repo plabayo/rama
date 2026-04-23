@@ -855,14 +855,20 @@ final class HostController: NSObject, NSApplicationDelegate {
                     throw NSError(
                         domain: "RamaTransparentProxyExampleHost",
                         code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "keychain item for \(service) did not return Data"]
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "keychain item for \(service) did not return Data"
+                        ]
                     )
                 }
                 guard let value = String(data: data, encoding: .utf8) else {
                     throw NSError(
                         domain: "RamaTransparentProxyExampleHost",
                         code: 3,
-                        userInfo: [NSLocalizedDescriptionKey: "keychain item for \(service) was not valid UTF-8"]
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "keychain item for \(service) was not valid UTF-8"
+                        ]
                     )
                 }
                 return value
@@ -872,7 +878,10 @@ final class HostController: NSObject, NSApplicationDelegate {
                 throw NSError(
                     domain: "RamaTransparentProxyExampleHost",
                     code: Int(status),
-                    userInfo: [NSLocalizedDescriptionKey: "failed to load keychain secret \(service): OSStatus \(status)"]
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "failed to load keychain secret \(service): OSStatus \(status)"
+                    ]
                 )
             }
         }
@@ -885,7 +894,10 @@ final class HostController: NSObject, NSApplicationDelegate {
             throw NSError(
                 domain: "RamaTransparentProxyExampleHost",
                 code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "failed to encode keychain secret \(service) as UTF-8"]
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "failed to encode keychain secret \(service) as UTF-8"
+                ]
             )
         }
 
@@ -906,7 +918,10 @@ final class HostController: NSObject, NSApplicationDelegate {
             throw NSError(
                 domain: "RamaTransparentProxyExampleHost",
                 code: Int(updateStatus),
-                userInfo: [NSLocalizedDescriptionKey: "failed to update keychain secret \(service): OSStatus \(updateStatus)"]
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "failed to update keychain secret \(service): OSStatus \(updateStatus)"
+                ]
             )
         }
 
@@ -921,7 +936,10 @@ final class HostController: NSObject, NSApplicationDelegate {
             throw NSError(
                 domain: "RamaTransparentProxyExampleHost",
                 code: Int(addStatus),
-                userInfo: [NSLocalizedDescriptionKey: "failed to add keychain secret \(service): OSStatus \(addStatus)"]
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "failed to add keychain secret \(service): OSStatus \(addStatus)"
+                ]
             )
         }
     }
@@ -967,7 +985,9 @@ final class HostController: NSObject, NSApplicationDelegate {
             throw NSError(
                 domain: "RamaTransparentProxyExampleHost",
                 code: 5,
-                userInfo: [NSLocalizedDescriptionKey: "failed to compute CA certificate expiry date"]
+                userInfo: [
+                    NSLocalizedDescriptionKey: "failed to compute CA certificate expiry date"
+                ]
             )
         }
 
@@ -1024,10 +1044,6 @@ final class HostController: NSObject, NSApplicationDelegate {
     private func resolvedCAKeyXPCServiceName(bundleIdentifier: String?) -> String {
         guard let bundleIdentifier, !bundleIdentifier.isEmpty else {
             return "org.ramaproxy.example.tproxy.xpc"
-        }
-        if let lastDotIndex = bundleIdentifier.lastIndex(of: ".") {
-            let prefix = bundleIdentifier[..<lastDotIndex]
-            return "\(prefix).xpc"
         }
         return "\(bundleIdentifier).xpc"
     }
@@ -1092,7 +1108,8 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func resolveCodeSigningIdentity(_ codeRef: SecStaticCode) throws -> CodeSigningIdentity {
+    private func resolveCodeSigningIdentity(_ codeRef: SecStaticCode) throws -> CodeSigningIdentity
+    {
         var signingInfoRef: CFDictionary?
         let status = SecCodeCopySigningInformation(
             codeRef,
@@ -1103,7 +1120,10 @@ final class HostController: NSObject, NSApplicationDelegate {
             throw NSError(
                 domain: "RamaTransparentProxyExampleHost",
                 code: Int(status),
-                userInfo: [NSLocalizedDescriptionKey: "SecCodeCopySigningInformation failed: OSStatus \(status)"]
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "SecCodeCopySigningInformation failed: OSStatus \(status)"
+                ]
             )
         }
 
@@ -1483,8 +1503,8 @@ final class HostController: NSObject, NSApplicationDelegate {
     }
 }
 
-private extension Data {
-    var hexString: String {
+extension Data {
+    fileprivate var hexString: String {
         map { String(format: "%02x", $0) }.joined()
     }
 }
