@@ -42,7 +42,8 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
         }
         // SAFETY: pointer + length validity is guaranteed by FFI contract.
         if let Some(app_group_dir) = unsafe { config.app_group_dir() } {
-            tracing::debug!(path = %app_group_dir.display(), "received app-group directory");
+            tracing::debug!(path = %app_group_dir.display(), "received app-group directory: pass to set_app_group_dir");
+            self::utils::set_app_group_dir(Some(app_group_dir));
         }
     }
 

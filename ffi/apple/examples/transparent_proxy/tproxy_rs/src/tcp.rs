@@ -232,8 +232,7 @@ fn load_ca_secret(
         return Err(OpaqueError::from_static_str(
             "CA secret missing: protected-storage secret name not provided in transparent proxy opaque config",
         )
-        .context_field("secret_kind", secret_kind)
-        .into_box_error());
+        .context_field("secret_kind", secret_kind));
     };
     let Some(account_name) = demo_config
         .ca_secret_account
@@ -243,8 +242,7 @@ fn load_ca_secret(
         return Err(OpaqueError::from_static_str(
             "CA secret missing: protected-storage secret account not provided in transparent proxy opaque config",
         )
-        .context_field("secret_kind", secret_kind)
-        .into_box_error());
+        .context_field("secret_kind", secret_kind));
     };
 
     if let Some(access_group) = demo_config
@@ -260,7 +258,12 @@ fn load_ca_secret(
         );
     }
 
-    load_ca_secret_from_storage_dir(service_name, account_name, secret_kind)
+    load_ca_secret_from_storage_dir(
+        service_name,
+        account_name,
+        secret_kind,
+        crate::utils::app_group_dir(),
+    )
 }
 
 fn load_ca_secret_from_app_protected_storage(
@@ -283,12 +286,9 @@ fn load_ca_secret_from_app_protected_storage(
     )
     .context("load MITM CA secret from app protected storage")?
     .ok_or_else(|| {
-        OpaqueError::from_static_str(
-            "CA secret missing: app protected storage item was not found",
-        )
-        .context_field("secret_kind", secret_kind)
-        .context_field("service_name", service_name.to_owned())
-        .into_box_error()
+        OpaqueError::from_static_str("CA secret missing: app protected storage item was not found")
+            .context_field("secret_kind", secret_kind)
+            .context_field("service_name", service_name.to_owned())
     })?;
 
     String::from_utf8(secret).context("decode MITM CA secret as UTF-8")
@@ -298,15 +298,20 @@ fn load_ca_secret_from_storage_dir(
     service_name: &str,
     account_name: &str,
     secret_kind: &'static str,
+    app_group_dir: Option<&'static std::path::PathBuf>,
 ) -> Result<String, BoxError> {
-    let storage_dir = crate::utils::storage_dir().ok_or_else(|| {
-        OpaqueError::from_static_str(
-            "CA secret missing: transparent proxy storage directory is not initialized",
-        )
-        .context_field("secret_kind", secret_kind)
-        .into_box_error()
-    })?;
-    let path = storage_dir
+    // System Extensions run as root and cannot access user-owned keychains.
+    // Prefer the shared app group container directory over the extension-private
+    // storage dir so that the host app can write secrets there as a regular user.
+    let base_dir = app_group_dir
+        .or_else(|| crate::utils::storage_dir())
+        .ok_or_else(|| {
+            OpaqueError::from_static_str(
+                "CA secret missing: neither app group directory nor transparent proxy storage directory is initialized",
+            )
+            .context_field("secret_kind", secret_kind)
+        })?;
+    let path = base_dir
         .join("secrets")
         .join(account_name)
         .join(format!("{service_name}.secret"));
