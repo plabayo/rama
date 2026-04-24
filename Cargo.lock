@@ -887,6 +887,7 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.117",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -2928,6 +2929,7 @@ dependencies = [
  "ahash",
  "base64",
  "bytes",
+ "derive_more",
  "divan",
  "escargot",
  "flate2",
@@ -3194,6 +3196,7 @@ dependencies = [
  "compression-core",
  "const_format",
  "csv",
+ "derive_more",
  "flate2",
  "http",
  "http-range-header",
