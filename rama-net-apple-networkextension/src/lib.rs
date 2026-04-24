@@ -24,8 +24,6 @@
 
 #[doc(hidden)]
 pub mod ffi;
-#[doc(hidden)]
-pub(crate) mod security_ffi;
 
 #[doc(hidden)]
 #[macro_use]

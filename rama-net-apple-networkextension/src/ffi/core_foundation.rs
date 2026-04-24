@@ -1,39 +1,51 @@
+//! Private CoreFoundation helpers used by Apple-specific raw bindings.
+//!
+//! This module intentionally stays crate-private. It wraps a small subset of
+//! CoreFoundation ownership and collection APIs so higher-level modules like
+//! `secure_enclave` can focus on Apple Security semantics instead of manual
+//! retain/release and dictionary assembly.
+
 use std::{ffi::CString, ptr};
 
 use libc::c_char;
 use rama_utils::str::arcstr::ArcStr;
 
-use crate::security_ffi as ffi;
-
-use super::super::SecureEnclaveKeyError;
+use crate::ffi::sys;
+use crate::secure_enclave::SecureEnclaveKeyError;
 
 pub(crate) fn cf_release(value: *const std::ffi::c_void) {
     if !value.is_null() {
-        unsafe { ffi::CFRelease(value) };
+        // SAFETY: `value` is a CoreFoundation object pointer obtained from APIs
+        // following the create/copy rule or retained elsewhere in this crate.
+        unsafe { sys::CFRelease(value) };
     }
 }
 
-pub(crate) fn cf_error(error: ffi::CFErrorRef) -> SecureEnclaveKeyError {
-    let description = unsafe { ffi::CFErrorCopyDescription(error) };
+pub(crate) fn cf_error(error: sys::CFErrorRef) -> SecureEnclaveKeyError {
+    // SAFETY: `error` is a valid CFErrorRef returned by a Security API.
+    let description = unsafe { sys::CFErrorCopyDescription(error) };
     let message: ArcStr = if description.is_null() {
         ArcStr::from("Security framework operation failed")
     } else {
+        // SAFETY: `CFErrorCopyDescription` follows the create rule.
         let description = unsafe { CfOwned::from_create_rule(description) };
         match cf_string_to_string(description.as_ptr()) {
             Ok(value) => ArcStr::from(value),
             Err(_) => ArcStr::from("Security framework operation failed"),
         }
     };
-    let code = Some(unsafe { ffi::CFErrorGetCode(error) as i64 });
+    // SAFETY: `error` is valid for the duration of this function.
+    let code = Some(unsafe { sys::CFErrorGetCode(error) as i64 });
     cf_release(error.cast());
     SecureEnclaveKeyError::new(code, message)
 }
 
-fn cf_string_to_string(value: ffi::CFStringRef) -> Result<String, SecureEnclaveKeyError> {
+fn cf_string_to_string(value: sys::CFStringRef) -> Result<String, SecureEnclaveKeyError> {
+    // SAFETY: `value` is expected to be a valid CFStringRef.
     let max_len = unsafe {
-        ffi::CFStringGetMaximumSizeForEncoding(
-            ffi::CFStringGetLength(value),
-            ffi::kCFStringEncodingUTF8,
+        sys::CFStringGetMaximumSizeForEncoding(
+            sys::CFStringGetLength(value),
+            sys::kCFStringEncodingUTF8,
         )
     };
     if max_len < 0 {
@@ -43,12 +55,14 @@ fn cf_string_to_string(value: ffi::CFStringRef) -> Result<String, SecureEnclaveK
         ));
     }
     let mut buffer = vec![0_u8; max_len as usize + 1];
+    // SAFETY: `buffer` is writable and sized according to the CFString API
+    // contract, and `value` remains valid during the call.
     let ok = unsafe {
-        ffi::CFStringGetCString(
+        sys::CFStringGetCString(
             value,
             buffer.as_mut_ptr().cast::<c_char>(),
             buffer.len() as i64,
-            ffi::kCFStringEncodingUTF8,
+            sys::kCFStringEncodingUTF8,
         )
     };
     if ok == 0 {
@@ -67,18 +81,19 @@ fn cf_string_to_string(value: ffi::CFStringRef) -> Result<String, SecureEnclaveK
 }
 
 pub(crate) struct QueryDictionary {
-    raw: ffi::CFMutableDictionaryRef,
+    raw: sys::CFMutableDictionaryRef,
     owned: Vec<Box<dyn CfOwnedValue>>,
 }
 
 impl QueryDictionary {
     pub(crate) fn new() -> Self {
+        // SAFETY: the callback tables are immutable globals from CoreFoundation.
         let raw = unsafe {
-            ffi::CFDictionaryCreateMutable(
-                ffi::kCFAllocatorDefault,
+            sys::CFDictionaryCreateMutable(
+                sys::kCFAllocatorDefault,
                 0,
-                &ffi::kCFTypeDictionaryKeyCallBacks,
-                &ffi::kCFTypeDictionaryValueCallBacks,
+                &sys::kCFTypeDictionaryKeyCallBacks,
+                &sys::kCFTypeDictionaryValueCallBacks,
             )
         };
         Self {
@@ -88,7 +103,9 @@ impl QueryDictionary {
     }
 
     pub(crate) fn set_ptr(&mut self, key: *const std::ffi::c_void, value: *const std::ffi::c_void) {
-        unsafe { ffi::CFDictionarySetValue(self.raw, key, value) };
+        // SAFETY: `self.raw` is a valid mutable dictionary and key/value point to
+        // live CF objects or constant CF singleton values.
+        unsafe { sys::CFDictionarySetValue(self.raw, key, value) };
     }
 
     pub(crate) fn set_owned<T>(&mut self, key: *const std::ffi::c_void, value: T)
@@ -96,11 +113,13 @@ impl QueryDictionary {
         T: CfOwnedValue + 'static,
     {
         let value_ptr = value.as_void_ptr();
-        unsafe { ffi::CFDictionarySetValue(self.raw, key, value_ptr) };
+        // SAFETY: same guarantees as `set_ptr`; ownership is retained on the Rust
+        // side by pushing `value` into `self.owned`.
+        unsafe { sys::CFDictionarySetValue(self.raw, key, value_ptr) };
         self.owned.push(Box::new(value));
     }
 
-    pub(crate) fn as_ptr(&self) -> ffi::CFDictionaryRef {
+    pub(crate) fn as_ptr(&self) -> sys::CFDictionaryRef {
         self.raw
     }
 }
@@ -131,13 +150,17 @@ impl<T> CfOwned<T> {
     }
 }
 
-impl CfOwned<ffi::__CFData> {
+impl CfOwned<sys::__CFData> {
     pub(crate) fn to_vec(&self) -> Vec<u8> {
-        let len = unsafe { ffi::CFDataGetLength(self.raw) as usize };
-        let ptr = unsafe { ffi::CFDataGetBytePtr(self.raw) };
+        // SAFETY: `self.raw` is a valid CFDataRef owned by this wrapper.
+        let len = unsafe { sys::CFDataGetLength(self.raw) as usize };
+        // SAFETY: `self.raw` is a valid CFDataRef owned by this wrapper.
+        let ptr = unsafe { sys::CFDataGetBytePtr(self.raw) };
         if ptr.is_null() || len == 0 {
             return Vec::new();
         }
+        // SAFETY: CoreFoundation guarantees the data pointer is valid for `len`
+        // bytes while the CFData object is alive.
         unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
     }
 }
@@ -155,7 +178,7 @@ impl<T> CfOwnedValue for CfOwned<T> {
 }
 
 pub(crate) struct CfString {
-    raw: ffi::CFStringRef,
+    raw: sys::CFStringRef,
 }
 
 impl CfString {
@@ -163,11 +186,13 @@ impl CfString {
         let value = CString::new(value).map_err(|_| {
             SecureEnclaveKeyError::new(None, "string input contained an interior NUL byte")
         })?;
+        // SAFETY: `value` is a valid NUL-terminated UTF-8 string for the duration
+        // of this call.
         let raw = unsafe {
-            ffi::CFStringCreateWithCString(
-                ffi::kCFAllocatorDefault,
+            sys::CFStringCreateWithCString(
+                sys::kCFAllocatorDefault,
                 value.as_ptr(),
-                ffi::kCFStringEncodingUTF8,
+                sys::kCFStringEncodingUTF8,
             )
         };
         if raw.is_null() {
@@ -193,18 +218,20 @@ impl CfOwnedValue for CfString {
 }
 
 pub(crate) struct CfData {
-    raw: ffi::CFDataRef,
+    raw: sys::CFDataRef,
 }
 
 impl CfData {
     pub(crate) fn new(value: &[u8]) -> Self {
+        // SAFETY: `value.as_ptr()` is valid for `value.len()` bytes for the duration
+        // of the call.
         let raw = unsafe {
-            ffi::CFDataCreate(ffi::kCFAllocatorDefault, value.as_ptr(), value.len() as i64)
+            sys::CFDataCreate(sys::kCFAllocatorDefault, value.as_ptr(), value.len() as i64)
         };
         Self { raw }
     }
 
-    pub(crate) fn as_ptr(&self) -> ffi::CFDataRef {
+    pub(crate) fn as_ptr(&self) -> sys::CFDataRef {
         self.raw
     }
 }
@@ -222,15 +249,16 @@ impl CfOwnedValue for CfData {
 }
 
 pub(crate) struct CfNumber {
-    raw: ffi::CFNumberRef,
+    raw: sys::CFNumberRef,
 }
 
 impl CfNumber {
     pub(crate) fn sint32(value: i32) -> Self {
+        // SAFETY: the pointer to `value` remains valid for the duration of the call.
         let raw = unsafe {
-            ffi::CFNumberCreate(
-                ffi::kCFAllocatorDefault,
-                ffi::kCFNumberSInt32Type as i64,
+            sys::CFNumberCreate(
+                sys::kCFAllocatorDefault,
+                sys::kCFNumberSInt32Type as i64,
                 ptr::from_ref(&value).cast(),
             )
         };
