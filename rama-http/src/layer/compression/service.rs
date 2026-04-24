@@ -6,6 +6,7 @@ use crate::headers::encoding::{AcceptEncoding, Encoding, parse_accept_encoding_h
 use crate::layer::remove_header::remove_payload_metadata_headers;
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
+use http::Method;
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
 use rama_http_headers::specifier::QualityValue;
@@ -163,11 +164,14 @@ where
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let accepted_encodings: SmallVec<[QualityValue<Encoding>; 4]> =
             parse_accept_encoding_headers(req.headers(), self.accept).collect();
-
+        let req_method = req.method().clone();
         let mut res = self.inner.serve(req).await?;
         let mut respected_encoding = None;
 
         let should_compress =
+            //never compress responses without body
+            !matches!(req_method, Method::HEAD | Method::CONNECT) &&
+            !matches!(res.status().as_u16(),  100..200 | 204 | 304) &&
             //never compress responses that are ranges
             !res.headers().contains_key(header::CONTENT_RANGE) &&
             self.predicate.should_compress(&mut res) &&
