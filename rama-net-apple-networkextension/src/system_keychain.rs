@@ -6,6 +6,30 @@
 //! The host application (running as a normal user) can write secrets here —
 //! macOS may prompt for administrator credentials — and the extension can read
 //! them without any user interaction.
+//!
+//! ## Access Groups
+//!
+//! When you collect related apps into an application group using the App Groups entitlement,
+//! they share access to a group container, and gain the ability to message
+//! each other in certain ways. You can use app group names as keychain access group names,
+//! without adding them to the Keychain Access Groups entitlement.
+//!
+//! Keep in mind that standard keychain access groups are protected
+//! the same way on all platforms, using the restricted Keychain Access Groups entitlement
+//! (keychain-access-groups).
+//!
+//! > See also: <https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.application-groups>
+//!
+//! This form of keychain item sharing applies to all iOS keychain items,
+//! and to macOS keychain items when you query with the kSecUseDataProtectionKeychain key,
+//! set the item’s kSecAttrSynchronizable attribute, or both.
+//!
+//! As such it is not available for system extensions!
+//!
+//! ## Tech Notes
+//!
+//! - [TN3137: On Mac keychain APIs and implementations](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains)
+//! - [Sharing access to keychain items among a collection of apps](https://developer.apple.com/documentation/Security/sharing-access-to-keychain-items-among-a-collection-of-apps)
 
 use std::fmt;
 

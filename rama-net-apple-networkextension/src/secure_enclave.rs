@@ -6,6 +6,9 @@
 //! intended for local cryptographic operations such as encrypting data that is
 //! later stored elsewhere.
 
+// TOOD: Delete module... only possible with  data protection keychain
+// which is not allowed in network extension as it requires user context
+
 use std::fmt;
 
 use rama_utils::str::arcstr::ArcStr;
