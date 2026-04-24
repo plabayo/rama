@@ -122,7 +122,9 @@
 //!
 //! - iCloud Keychain. See the kSecAttrSynchronizable attribute.
 //! - Protecting an item with biometrics (Touch ID and Face ID).
-//! - Protecting a key with the Secure Enclave. See Protecting keys with the Secure Enclave.
+//! - Protecting a key with the Secure Enclave.
+//!
+//! None of these are available to a sysex using the System Keychain.
 //!
 //! [XPC Resources]: https://developer.apple.com/forums/thread/708877
 //! [TN3137]: https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains
@@ -156,8 +158,6 @@ mod macros;
 
 pub mod process;
 pub mod tproxy;
-
-pub mod secure_enclave;
 
 #[cfg(target_os = "macos")]
 pub mod system_keychain;
