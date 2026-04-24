@@ -70,7 +70,7 @@ pub(super) struct DemoTcpMitmService {
 impl DemoTcpMitmService {
     pub(super) async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, BoxError> {
         let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
-        run_app_protected_storage_poc(&demo_config);
+        run_secure_enclave_poc(&demo_config);
         let ca_crt_pem = resolve_ca_cert_pem(&demo_config)?;
         let ca_crt = rama::tls::boring::core::x509::X509::from_pem(ca_crt_pem.as_bytes())
             .context("parse host-provided MITM CA certificate PEM")?;
@@ -208,149 +208,100 @@ impl DemoTcpMitmService {
     }
 }
 
-const APP_PROTECTED_STORAGE_POC_ACCOUNT: &str = "org.ramaproxy.example.tproxy.provider.poc";
-const APP_PROTECTED_STORAGE_POC_SERVICE_EXTENSION_ONLY: &str =
-    "rama-tproxy-app-protected-storage-extension-only";
-const APP_PROTECTED_STORAGE_POC_SERVICE_SHARED_GROUP: &str =
-    "rama-tproxy-app-protected-storage-shared-group";
-const APP_PROTECTED_STORAGE_POC_VALUE: &str = "hello world from transparent proxy extension";
+const SECURE_ENCLAVE_POC_TAG_EXTENSION_ONLY: &[u8] =
+    b"rama-tproxy-secure-enclave-extension-only";
+const SECURE_ENCLAVE_POC_TAG_SHARED_GROUP: &[u8] =
+    b"rama-tproxy-secure-enclave-shared-group";
+const SECURE_ENCLAVE_POC_VALUE: &[u8] = b"hello world from transparent proxy extension";
 
-fn run_app_protected_storage_poc(demo_config: &DemoProxyConfig) {
-    run_named_app_protected_storage_poc(
-        APP_PROTECTED_STORAGE_POC_SERVICE_EXTENSION_ONLY,
-        APP_PROTECTED_STORAGE_POC_ACCOUNT,
-        None,
-        "extension-only",
-    );
+fn run_secure_enclave_poc(demo_config: &DemoProxyConfig) {
+    run_named_secure_enclave_poc(SECURE_ENCLAVE_POC_TAG_EXTENSION_ONLY, None, "extension-only");
 
     if let Some(access_group) = demo_config
         .ca_secret_access_group
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        run_named_app_protected_storage_poc(
-            APP_PROTECTED_STORAGE_POC_SERVICE_SHARED_GROUP,
-            APP_PROTECTED_STORAGE_POC_ACCOUNT,
+        run_named_secure_enclave_poc(
+            SECURE_ENCLAVE_POC_TAG_SHARED_GROUP,
             Some(access_group),
             "shared-access-group",
         );
     } else {
         tracing::info!(
-            "app protected storage POC skipped for shared-access-group path: no access group configured"
+            "secure enclave POC skipped for shared-access-group path: no access group configured"
         );
     }
 }
 
-fn run_named_app_protected_storage_poc(
-    service_name: &str,
-    account_name: &str,
+fn run_named_secure_enclave_poc(
+    application_tag: &[u8],
     access_group: Option<&str>,
     label: &'static str,
 ) {
+    let application_tag_display = String::from_utf8_lossy(application_tag);
     tracing::info!(
         poc = label,
-        service = service_name,
-        account = account_name,
+        application_tag = application_tag_display.as_ref(),
         access_group = access_group.unwrap_or(""),
-        "app protected storage POC: attempt load-or-store"
+        "secure enclave POC: attempt load-or-create"
     );
 
-    match rama::net::apple::networkextension::app_protected_storage::load_raw_secret(
-        service_name,
-        account_name,
+    match rama::net::apple::networkextension::secure_enclave::SecureEnclaveKey::load_or_create_with_status(
+        application_tag,
         access_group,
     ) {
-        Ok(Some(secret)) => match String::from_utf8(secret) {
-            Ok(value) => {
-                tracing::info!(
-                    poc = label,
-                    service = service_name,
-                    account = account_name,
-                    access_group = access_group.unwrap_or(""),
-                    value,
-                    "app protected storage POC: loaded existing secret"
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    poc = label,
-                    service = service_name,
-                    account = account_name,
-                    access_group = access_group.unwrap_or(""),
-                    ?err,
-                    "app protected storage POC: loaded existing secret but value was not UTF-8"
-                );
-            }
-        },
-        Ok(None) => {
+        Ok((key, status)) => {
             tracing::info!(
                 poc = label,
-                service = service_name,
-                account = account_name,
+                application_tag = application_tag_display.as_ref(),
                 access_group = access_group.unwrap_or(""),
-                "app protected storage POC: no secret found, attempting to store new secret"
+                status = match status {
+                    rama::net::apple::networkextension::secure_enclave::SecureEnclaveKeyLoadStatus::Loaded => "loaded",
+                    rama::net::apple::networkextension::secure_enclave::SecureEnclaveKeyLoadStatus::Created => "created",
+                },
+                "secure enclave POC: key handle ready"
             );
 
-            match rama::net::apple::networkextension::app_protected_storage::store_raw_secret(
-                service_name,
-                account_name,
-                access_group,
-                APP_PROTECTED_STORAGE_POC_VALUE.as_bytes(),
-            ) {
-                Ok(()) => {
+            match key.encrypt(SECURE_ENCLAVE_POC_VALUE) {
+                Ok(ciphertext) => {
                     tracing::info!(
                         poc = label,
-                        service = service_name,
-                        account = account_name,
+                        application_tag = application_tag_display.as_ref(),
                         access_group = access_group.unwrap_or(""),
-                        "app protected storage POC: stored new secret"
+                        ciphertext_len = ciphertext.len(),
+                        "secure enclave POC: encrypted test payload"
                     );
 
-                    match rama::net::apple::networkextension::app_protected_storage::load_raw_secret(
-                        service_name,
-                        account_name,
-                        access_group,
-                    ) {
-                        Ok(Some(secret)) => match String::from_utf8(secret) {
+                    match key.decrypt(&ciphertext) {
+                        Ok(plaintext) => match String::from_utf8(plaintext) {
                             Ok(value) => {
                                 tracing::info!(
                                     poc = label,
-                                    service = service_name,
-                                    account = account_name,
+                                    application_tag = application_tag_display.as_ref(),
                                     access_group = access_group.unwrap_or(""),
                                     value,
-                                    "app protected storage POC: reloaded stored secret"
+                                    "secure enclave POC: decrypted roundtrip payload"
                                 );
                             }
                             Err(err) => {
                                 tracing::warn!(
                                     poc = label,
-                                    service = service_name,
-                                    account = account_name,
+                                    application_tag = application_tag_display.as_ref(),
                                     access_group = access_group.unwrap_or(""),
                                     ?err,
-                                    "app protected storage POC: reloaded stored secret but value was not UTF-8"
+                                    "secure enclave POC: decrypted payload was not UTF-8"
                                 );
                             }
                         },
-                        Ok(None) => {
-                            tracing::warn!(
-                                poc = label,
-                                service = service_name,
-                                account = account_name,
-                                access_group = access_group.unwrap_or(""),
-                                "app protected storage POC: store succeeded but secret could not be reloaded"
-                            );
-                        }
                         Err(err) => {
                             tracing::warn!(
                                 poc = label,
-                                service = service_name,
-                                account = account_name,
+                                application_tag = application_tag_display.as_ref(),
                                 access_group = access_group.unwrap_or(""),
                                 error_code = err.code(),
                                 error = %err,
-                                "app protected storage POC: failed to reload stored secret"
+                                "secure enclave POC: failed to decrypt roundtrip payload"
                             );
                         }
                     }
@@ -358,12 +309,11 @@ fn run_named_app_protected_storage_poc(
                 Err(err) => {
                     tracing::warn!(
                         poc = label,
-                        service = service_name,
-                        account = account_name,
+                        application_tag = application_tag_display.as_ref(),
                         access_group = access_group.unwrap_or(""),
                         error_code = err.code(),
                         error = %err,
-                        "app protected storage POC: failed to store new secret"
+                        "secure enclave POC: failed to encrypt test payload"
                     );
                 }
             }
@@ -371,12 +321,11 @@ fn run_named_app_protected_storage_poc(
         Err(err) => {
             tracing::warn!(
                 poc = label,
-                service = service_name,
-                account = account_name,
+                application_tag = application_tag_display.as_ref(),
                 access_group = access_group.unwrap_or(""),
                 error_code = err.code(),
                 error = %err,
-                "app protected storage POC: failed to load secret"
+                "secure enclave POC: failed to load or create key handle"
             );
         }
     }
