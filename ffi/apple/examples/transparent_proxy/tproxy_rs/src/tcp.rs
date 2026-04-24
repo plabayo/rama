@@ -70,6 +70,7 @@ pub(super) struct DemoTcpMitmService {
 impl DemoTcpMitmService {
     pub(super) async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, BoxError> {
         let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
+        run_app_protected_storage_poc(&demo_config);
         let ca_crt_pem = resolve_ca_cert_pem(&demo_config)?;
         let ca_crt = rama::tls::boring::core::x509::X509::from_pem(ca_crt_pem.as_bytes())
             .context("parse host-provided MITM CA certificate PEM")?;
@@ -207,6 +208,180 @@ impl DemoTcpMitmService {
     }
 }
 
+const APP_PROTECTED_STORAGE_POC_ACCOUNT: &str = "org.ramaproxy.example.tproxy.provider.poc";
+const APP_PROTECTED_STORAGE_POC_SERVICE_EXTENSION_ONLY: &str =
+    "rama-tproxy-app-protected-storage-extension-only";
+const APP_PROTECTED_STORAGE_POC_SERVICE_SHARED_GROUP: &str =
+    "rama-tproxy-app-protected-storage-shared-group";
+const APP_PROTECTED_STORAGE_POC_VALUE: &str = "hello world from transparent proxy extension";
+
+fn run_app_protected_storage_poc(demo_config: &DemoProxyConfig) {
+    run_named_app_protected_storage_poc(
+        APP_PROTECTED_STORAGE_POC_SERVICE_EXTENSION_ONLY,
+        APP_PROTECTED_STORAGE_POC_ACCOUNT,
+        None,
+        "extension-only",
+    );
+
+    if let Some(access_group) = demo_config
+        .ca_secret_access_group
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        run_named_app_protected_storage_poc(
+            APP_PROTECTED_STORAGE_POC_SERVICE_SHARED_GROUP,
+            APP_PROTECTED_STORAGE_POC_ACCOUNT,
+            Some(access_group),
+            "shared-access-group",
+        );
+    } else {
+        tracing::info!(
+            "app protected storage POC skipped for shared-access-group path: no access group configured"
+        );
+    }
+}
+
+fn run_named_app_protected_storage_poc(
+    service_name: &str,
+    account_name: &str,
+    access_group: Option<&str>,
+    label: &'static str,
+) {
+    tracing::info!(
+        poc = label,
+        service = service_name,
+        account = account_name,
+        access_group = access_group.unwrap_or(""),
+        "app protected storage POC: attempt load-or-store"
+    );
+
+    match rama::net::apple::networkextension::app_protected_storage::load_raw_secret(
+        service_name,
+        account_name,
+        access_group,
+    ) {
+        Ok(Some(secret)) => match String::from_utf8(secret) {
+            Ok(value) => {
+                tracing::info!(
+                    poc = label,
+                    service = service_name,
+                    account = account_name,
+                    access_group = access_group.unwrap_or(""),
+                    value,
+                    "app protected storage POC: loaded existing secret"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    poc = label,
+                    service = service_name,
+                    account = account_name,
+                    access_group = access_group.unwrap_or(""),
+                    ?err,
+                    "app protected storage POC: loaded existing secret but value was not UTF-8"
+                );
+            }
+        },
+        Ok(None) => {
+            tracing::info!(
+                poc = label,
+                service = service_name,
+                account = account_name,
+                access_group = access_group.unwrap_or(""),
+                "app protected storage POC: no secret found, attempting to store new secret"
+            );
+
+            match rama::net::apple::networkextension::app_protected_storage::store_raw_secret(
+                service_name,
+                account_name,
+                access_group,
+                APP_PROTECTED_STORAGE_POC_VALUE.as_bytes(),
+            ) {
+                Ok(()) => {
+                    tracing::info!(
+                        poc = label,
+                        service = service_name,
+                        account = account_name,
+                        access_group = access_group.unwrap_or(""),
+                        "app protected storage POC: stored new secret"
+                    );
+
+                    match rama::net::apple::networkextension::app_protected_storage::load_raw_secret(
+                        service_name,
+                        account_name,
+                        access_group,
+                    ) {
+                        Ok(Some(secret)) => match String::from_utf8(secret) {
+                            Ok(value) => {
+                                tracing::info!(
+                                    poc = label,
+                                    service = service_name,
+                                    account = account_name,
+                                    access_group = access_group.unwrap_or(""),
+                                    value,
+                                    "app protected storage POC: reloaded stored secret"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    poc = label,
+                                    service = service_name,
+                                    account = account_name,
+                                    access_group = access_group.unwrap_or(""),
+                                    ?err,
+                                    "app protected storage POC: reloaded stored secret but value was not UTF-8"
+                                );
+                            }
+                        },
+                        Ok(None) => {
+                            tracing::warn!(
+                                poc = label,
+                                service = service_name,
+                                account = account_name,
+                                access_group = access_group.unwrap_or(""),
+                                "app protected storage POC: store succeeded but secret could not be reloaded"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                poc = label,
+                                service = service_name,
+                                account = account_name,
+                                access_group = access_group.unwrap_or(""),
+                                error_code = err.code(),
+                                error = %err,
+                                "app protected storage POC: failed to reload stored secret"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        poc = label,
+                        service = service_name,
+                        account = account_name,
+                        access_group = access_group.unwrap_or(""),
+                        error_code = err.code(),
+                        error = %err,
+                        "app protected storage POC: failed to store new secret"
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                poc = label,
+                service = service_name,
+                account = account_name,
+                access_group = access_group.unwrap_or(""),
+                error_code = err.code(),
+                error = %err,
+                "app protected storage POC: failed to load secret"
+            );
+        }
+    }
+}
+
 fn resolve_ca_cert_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError> {
     load_ca_secret(
         demo_config,
@@ -304,7 +479,7 @@ fn load_ca_secret_from_storage_dir(
     // Prefer the shared app group container directory over the extension-private
     // storage dir so that the host app can write secrets there as a regular user.
     let base_dir = app_group_dir
-        .or_else(|| crate::utils::storage_dir())
+        .or_else(crate::utils::storage_dir)
         .ok_or_else(|| {
             OpaqueError::from_static_str(
                 "CA secret missing: neither app group directory nor transparent proxy storage directory is initialized",

@@ -37,5 +37,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 
+[build-dependencies]
+bindgen = { workspace = true }
+
 [lints]
 workspace = true

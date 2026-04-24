@@ -6,7 +6,7 @@
 
 use security_framework::{
     base::Error,
-    passwords::{PasswordOptions, generic_password},
+    passwords::{PasswordOptions, generic_password, set_generic_password_options},
 };
 use security_framework_sys::base::errSecItemNotFound;
 
@@ -33,6 +33,27 @@ pub fn load_raw_secret(
         Err(err) if err.code() == errSecItemNotFound => Ok(None),
         Err(err) => Err(err),
     }
+}
+
+/// Store a raw generic-password secret in the Apple Data Protection keychain.
+///
+/// `service` and `account` identify the generic-password item. When
+/// `access_group` is provided, the item is created or updated in that access
+/// group.
+pub fn store_raw_secret(
+    service: &str,
+    account: &str,
+    access_group: Option<&str>,
+    secret: &[u8],
+) -> Result<(), Error> {
+    let mut options = PasswordOptions::new_generic_password(service, account);
+    options.use_protected_keychain();
+
+    if let Some(access_group) = access_group.filter(|value| !value.is_empty()) {
+        options.set_access_group(access_group);
+    }
+
+    set_generic_password_options(secret, options)
 }
 
 #[cfg(test)]
