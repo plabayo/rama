@@ -56,7 +56,7 @@ pub use option::{OptionalFromPartsStateRefPair, OptionalFromRequest};
 pub trait FromPartsStateRefPair<State>: Sized + Send + Sync + 'static {
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
-    type Rejection: IntoResponse;
+    type Rejection;
 
     /// Perform the extraction.
     fn from_parts_state_ref_pair(
@@ -78,7 +78,7 @@ pub trait FromPartsStateRefPair<State>: Sized + Send + Sync + 'static {
 pub trait FromRequest: Sized + Send + 'static {
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
-    type Rejection: IntoResponse;
+    type Rejection;
 
     /// Perform the extraction.
     fn from_request(
