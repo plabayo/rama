@@ -13,6 +13,7 @@ pub struct DemoProxyConfig {
     pub ca_key_secret_name: Option<String>,
     pub ca_secret_account: Option<String>,
     pub ca_secret_access_group: Option<String>,
+    pub se_extension_access_group: Option<String>,
 }
 
 impl Default for DemoProxyConfig {
@@ -31,6 +32,7 @@ impl Default for DemoProxyConfig {
             ca_key_secret_name: None,
             ca_secret_account: None,
             ca_secret_access_group: None,
+            se_extension_access_group: None,
         }
     }
 }

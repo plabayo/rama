@@ -32,6 +32,7 @@ private struct ProxyEngineConfigPayload: Encodable {
     let caKeySecretName: String
     let caSecretAccount: String
     let caSecretAccessGroup: String
+    let seExtensionAccessGroup: String
 
     private enum CodingKeys: String, CodingKey {
         case htmlBadgeEnabled = "html_badge_enabled"
@@ -42,6 +43,7 @@ private struct ProxyEngineConfigPayload: Encodable {
         case caKeySecretName = "ca_key_secret_name"
         case caSecretAccount = "ca_secret_account"
         case caSecretAccessGroup = "ca_secret_access_group"
+        case seExtensionAccessGroup = "se_extension_access_group"
     }
 }
 
@@ -661,7 +663,8 @@ final class HostController: NSObject, NSApplicationDelegate {
             caCertSecretName: Self.secretServiceCertPEM,
             caKeySecretName: Self.secretServiceKeyPEM,
             caSecretAccount: Self.secretAccount,
-            caSecretAccessGroup: accessGroup
+            caSecretAccessGroup: accessGroup,
+            seExtensionAccessGroup: extensionKeychainAccessGroup(sharedGroup: accessGroup) ?? ""
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -1095,6 +1098,17 @@ final class HostController: NSObject, NSApplicationDelegate {
         (Bundle.main.object(forInfoDictionaryKey: "TPROXYSharedAccessGroup") as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .nilIfEmpty
+    }
+
+    /// Derives the extension's own keychain access group (TeamID.extensionBundleId) from the
+    /// shared access group's TeamID prefix. Only the extension has this group in its
+    /// keychain-access-groups entitlement, so items stored there are inaccessible to the host.
+    private func extensionKeychainAccessGroup(sharedGroup: String) -> String? {
+        guard let dotIndex = sharedGroup.firstIndex(of: "."), !extensionBundleId.isEmpty else {
+            return nil
+        }
+        let teamId = String(sharedGroup[..<dotIndex])
+        return "\(teamId).\(extensionBundleId)"
     }
 
     private func createAccessControl() -> SecAccessControl? {

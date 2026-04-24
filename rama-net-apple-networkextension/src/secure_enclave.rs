@@ -44,6 +44,22 @@ impl SecureEnclaveKey {
         Ok(key)
     }
 
+    /// Create a Secure Enclave key that lives only for the current process
+    /// session. The private key material is generated and held inside the Secure
+    /// Enclave hardware but no keychain item is written, so no keychain
+    /// entitlements are required. The key is lost when the process exits.
+    ///
+    /// This is useful for System Extensions (which run as root and have no
+    /// default keychain) when cross-restart key persistence is not needed.
+    pub fn create_ephemeral(application_tag: &[u8]) -> Result<Self, SecureEnclaveKeyError> {
+        let private_key = create_private_key(application_tag, None, false)?;
+        Ok(Self {
+            private_key,
+            application_tag: application_tag.to_vec(),
+            access_group: None,
+        })
+    }
+
     /// Same as [`Self::load_or_create`], but also returns whether the key was
     /// opened from storage or freshly created.
     pub fn load_or_create_with_status(
@@ -63,7 +79,7 @@ impl SecureEnclaveKey {
             ));
         }
 
-        let private_key = create_private_key(application_tag, access_group.as_deref())?;
+        let private_key = create_private_key(application_tag, access_group.as_deref(), true)?;
 
         Ok((
             Self {
@@ -180,7 +196,9 @@ fn find_private_key(
     query.set_ptr(unsafe { sys::kSecReturnRef.cast() }, unsafe {
         sys::kCFBooleanTrue.cast()
     });
-    // SAFETY: these are constant CFTypeRef keys/values provided by Apple Security.
+    // Required for Secure Enclave keys on macOS: they live in the Data Protection
+    // Keychain, which on macOS must be addressed with this flag + an explicit
+    // kSecAttrAccessGroup covered by keychain-access-groups entitlement.
     query.set_ptr(
         unsafe { sys::kSecUseDataProtectionKeychain.cast() },
         unsafe { sys::kCFBooleanTrue.cast() },
@@ -216,14 +234,17 @@ fn find_private_key(
 fn create_private_key(
     application_tag: &[u8],
     access_group: Option<&str>,
+    is_permanent: bool,
 ) -> Result<sys::SecKeyRef, SecureEnclaveKeyError> {
     let access_control = create_access_control()?;
 
     let mut private_attrs = QueryDictionary::new();
-    // SAFETY: these are constant CFTypeRef keys/values provided by Apple Security.
-    private_attrs.set_ptr(unsafe { sys::kSecAttrIsPermanent.cast() }, unsafe {
-        sys::kCFBooleanTrue.cast()
-    });
+    if is_permanent {
+        // SAFETY: these are constant CFTypeRef keys/values provided by Apple Security.
+        private_attrs.set_ptr(unsafe { sys::kSecAttrIsPermanent.cast() }, unsafe {
+            sys::kCFBooleanTrue.cast()
+        });
+    }
     private_attrs.set_owned(
         unsafe { sys::kSecAttrApplicationTag.cast() },
         CfData::new(application_tag),
@@ -246,7 +267,7 @@ fn create_private_key(
     attrs.set_ptr(unsafe { sys::kSecAttrTokenID.cast() }, unsafe {
         sys::kSecAttrTokenIDSecureEnclave.cast()
     });
-    // SAFETY: these are constant CFTypeRef keys/values provided by Apple Security.
+    // Required for Secure Enclave keys on macOS; see find_private_key for rationale.
     attrs.set_ptr(
         unsafe { sys::kSecUseDataProtectionKeychain.cast() },
         unsafe { sys::kCFBooleanTrue.cast() },
@@ -282,11 +303,13 @@ fn create_access_control() -> Result<CfOwned<sys::__SecAccessControl>, SecureEnc
     let mut error = std::ptr::null_mut();
     // SAFETY: the accessibility class and flag are constant identifiers from
     // Apple Security, and `error` points to writable storage.
+    // No kSecAccessControlPrivateKeyUsage: that flag requires interactive biometric/passcode
+    // authentication which is unavailable in a headless System Extension context.
     let access_control = unsafe {
         sys::SecAccessControlCreateWithFlags(
             sys::kCFAllocatorDefault,
-            sys::kSecAttrAccessibleWhenUnlockedThisDeviceOnly.cast(),
-            sys::kSecAccessControlPrivateKeyUsage as _,
+            sys::kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly.cast(),
+            0,
             &mut error,
         )
     };
