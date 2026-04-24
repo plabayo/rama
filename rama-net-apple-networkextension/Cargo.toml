@@ -29,16 +29,18 @@ rama-net = { workspace = true }
 rama-tcp = { workspace = true }
 rama-udp = { workspace = true }
 rama-utils = { workspace = true }
-security-framework = { version = "3.7.0", features = ["OSX_10_15"] }
-security-framework-sys = "2.17.0"
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "sync"] }
 tracing = { workspace = true }
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+[target.'cfg(target_vendor = "apple")'.dependencies]
+security-framework = { workspace = true }
+security-framework-sys = { workspace = true }
 
 [build-dependencies]
 bindgen = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
 
 [lints]
 workspace = true
