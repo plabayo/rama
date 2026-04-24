@@ -8,10 +8,26 @@
 use std::{ffi::CString, ptr};
 
 use libc::c_char;
-use rama_utils::str::arcstr::ArcStr;
 
 use crate::ffi::sys;
-use crate::secure_enclave::SecureEnclaveKeyError;
+
+/// Low-level error from a CoreFoundation or Apple Security API call.
+///
+/// Higher-level modules convert this into their own error types via `From`.
+#[derive(Debug, Clone)]
+pub(crate) struct CfError {
+    pub(crate) code: Option<i64>,
+    pub(crate) message: String,
+}
+
+impl CfError {
+    pub(crate) fn new(code: Option<i64>, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
 
 pub(crate) fn cf_release(value: *const std::ffi::c_void) {
     if !value.is_null() {
@@ -21,26 +37,26 @@ pub(crate) fn cf_release(value: *const std::ffi::c_void) {
     }
 }
 
-pub(crate) fn cf_error(error: sys::CFErrorRef) -> SecureEnclaveKeyError {
+pub(crate) fn cf_error(error: sys::CFErrorRef) -> CfError {
     // SAFETY: `error` is a valid CFErrorRef returned by a Security API.
     let description = unsafe { sys::CFErrorCopyDescription(error) };
-    let message: ArcStr = if description.is_null() {
-        ArcStr::from("Security framework operation failed")
+    let message: String = if description.is_null() {
+        "Security framework operation failed".to_owned()
     } else {
         // SAFETY: `CFErrorCopyDescription` follows the create rule.
         let description = unsafe { CfOwned::from_create_rule(description) };
         match cf_string_to_string(description.as_ptr()) {
-            Ok(value) => ArcStr::from(value),
-            Err(_) => ArcStr::from("Security framework operation failed"),
+            Ok(value) => value,
+            Err(_) => "Security framework operation failed".to_owned(),
         }
     };
     // SAFETY: `error` is valid for the duration of this function.
     let code = Some(unsafe { sys::CFErrorGetCode(error) as i64 });
     cf_release(error.cast());
-    SecureEnclaveKeyError::new(code, message)
+    CfError::new(code, message)
 }
 
-fn cf_string_to_string(value: sys::CFStringRef) -> Result<String, SecureEnclaveKeyError> {
+fn cf_string_to_string(value: sys::CFStringRef) -> Result<String, CfError> {
     // SAFETY: `value` is expected to be a valid CFStringRef.
     let max_len = unsafe {
         sys::CFStringGetMaximumSizeForEncoding(
@@ -49,7 +65,7 @@ fn cf_string_to_string(value: sys::CFStringRef) -> Result<String, SecureEnclaveK
         )
     };
     if max_len < 0 {
-        return Err(SecureEnclaveKeyError::new(
+        return Err(CfError::new(
             None,
             "CFStringGetMaximumSizeForEncoding returned a negative length",
         ));
@@ -66,18 +82,14 @@ fn cf_string_to_string(value: sys::CFStringRef) -> Result<String, SecureEnclaveK
         )
     };
     if ok == 0 {
-        return Err(SecureEnclaveKeyError::new(
-            None,
-            "CFStringGetCString failed",
-        ));
+        return Err(CfError::new(None, "CFStringGetCString failed"));
     }
     let end = buffer
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(buffer.len());
-    String::from_utf8(buffer[..end].to_vec()).map_err(|_| {
-        SecureEnclaveKeyError::new(None, "Security framework string was not valid UTF-8")
-    })
+    String::from_utf8(buffer[..end].to_vec())
+        .map_err(|_| CfError::new(None, "Security framework string was not valid UTF-8"))
 }
 
 pub(crate) struct QueryDictionary {
@@ -182,10 +194,9 @@ pub(crate) struct CfString {
 }
 
 impl CfString {
-    pub(crate) fn new(value: &str) -> Result<Self, SecureEnclaveKeyError> {
-        let value = CString::new(value).map_err(|_| {
-            SecureEnclaveKeyError::new(None, "string input contained an interior NUL byte")
-        })?;
+    pub(crate) fn new(value: &str) -> Result<Self, CfError> {
+        let value = CString::new(value)
+            .map_err(|_| CfError::new(None, "string input contained an interior NUL byte"))?;
         // SAFETY: `value` is a valid NUL-terminated UTF-8 string for the duration
         // of this call.
         let raw = unsafe {
@@ -196,7 +207,7 @@ impl CfString {
             )
         };
         if raw.is_null() {
-            return Err(SecureEnclaveKeyError::new(
+            return Err(CfError::new(
                 None,
                 "CFStringCreateWithCString returned null",
             ));

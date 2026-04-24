@@ -11,7 +11,7 @@ use std::fmt;
 use rama_utils::str::arcstr::ArcStr;
 
 use crate::ffi::core_foundation::{
-    CfData, CfNumber, CfOwned, CfString, QueryDictionary, cf_error, cf_release,
+    CfData, CfError, CfNumber, CfOwned, CfString, QueryDictionary, cf_error, cf_release,
 };
 use crate::ffi::sys;
 
@@ -179,6 +179,12 @@ impl fmt::Display for SecureEnclaveKeyError {
 
 impl std::error::Error for SecureEnclaveKeyError {}
 
+impl From<CfError> for SecureEnclaveKeyError {
+    fn from(err: CfError) -> Self {
+        Self::new(err.code, err.message)
+    }
+}
+
 fn find_private_key(
     application_tag: &[u8],
     access_group: Option<&str>,
@@ -288,7 +294,7 @@ fn create_private_key(
     // `error` points to writable storage for an optional CFErrorRef.
     let key = unsafe { sys::SecKeyCreateRandomKey(attrs.as_ptr(), &mut error) };
     if !error.is_null() {
-        return Err(cf_error(error));
+        return Err(cf_error(error).into());
     }
     if key.is_null() {
         return Err(SecureEnclaveKeyError::new(
@@ -314,7 +320,7 @@ fn create_access_control() -> Result<CfOwned<sys::__SecAccessControl>, SecureEnc
         )
     };
     if !error.is_null() {
-        return Err(cf_error(error));
+        return Err(cf_error(error).into());
     }
     if access_control.is_null() {
         return Err(SecureEnclaveKeyError::new(
@@ -349,7 +355,7 @@ fn create_encrypted_data(
     // `error` points to writable storage.
     let output = unsafe { sys::SecKeyCreateEncryptedData(key, algorithm, data, &mut error) };
     if !error.is_null() {
-        return Err(cf_error(error));
+        return Err(cf_error(error).into());
     }
     if output.is_null() {
         return Err(SecureEnclaveKeyError::new(
@@ -370,7 +376,7 @@ fn create_decrypted_data(
     // `error` points to writable storage.
     let output = unsafe { sys::SecKeyCreateDecryptedData(key, algorithm, data, &mut error) };
     if !error.is_null() {
-        return Err(cf_error(error));
+        return Err(cf_error(error).into());
     }
     if output.is_null() {
         return Err(SecureEnclaveKeyError::new(

@@ -21,7 +21,6 @@ pub(super) fn init_tracing() -> bool {
 }
 
 static STORAGE_DIR: OnceLock<PathBuf> = OnceLock::new();
-static APP_GROUP_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 pub(super) fn set_storage_dir(path: Option<PathBuf>) {
     if let Some(path) = path {
@@ -31,16 +30,6 @@ pub(super) fn set_storage_dir(path: Option<PathBuf>) {
 
 pub(super) fn storage_dir() -> Option<&'static PathBuf> {
     STORAGE_DIR.get()
-}
-
-pub(super) fn set_app_group_dir(path: Option<PathBuf>) {
-    if let Some(path) = path {
-        let _ = APP_GROUP_DIR.set(path);
-    }
-}
-
-pub(super) fn app_group_dir() -> Option<&'static PathBuf> {
-    APP_GROUP_DIR.get()
 }
 
 #[derive(Debug)]

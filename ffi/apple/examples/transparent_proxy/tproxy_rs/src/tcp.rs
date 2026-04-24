@@ -70,7 +70,6 @@ pub(super) struct DemoTcpMitmService {
 impl DemoTcpMitmService {
     pub(super) async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, BoxError> {
         let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
-        run_secure_enclave_poc(&demo_config);
         let ca_crt_pem = resolve_ca_cert_pem(&demo_config)?;
         let ca_crt = rama::tls::boring::core::x509::X509::from_pem(ca_crt_pem.as_bytes())
             .context("parse host-provided MITM CA certificate PEM")?;
@@ -208,185 +207,16 @@ impl DemoTcpMitmService {
     }
 }
 
-const SECURE_ENCLAVE_POC_TAG_EXTENSION_ONLY: &[u8] =
-    b"rama-tproxy-secure-enclave-extension-only";
-const SECURE_ENCLAVE_POC_TAG_SHARED_GROUP: &[u8] =
-    b"rama-tproxy-secure-enclave-shared-group";
-const SECURE_ENCLAVE_POC_VALUE: &[u8] = b"hello world from transparent proxy extension";
-
-fn run_secure_enclave_poc(demo_config: &DemoProxyConfig) {
-    // Persistent extension-only key: requires the extension's own bundle ID access group
-    // ($(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)) in keychain-access-groups, which
-    // must NOT be listed in the host app's entitlements.
-    if let Some(access_group) = demo_config
-        .se_extension_access_group
-        .as_deref()
-        .filter(|v| !v.is_empty())
-    {
-        run_named_secure_enclave_poc(
-            SECURE_ENCLAVE_POC_TAG_EXTENSION_ONLY,
-            Some(access_group),
-            "extension-only",
-        );
-    } else {
-        // Fall back to ephemeral (no persistence across restarts) when no access group
-        // is configured — useful for quickly verifying SE hardware is reachable.
-        tracing::info!(
-            "secure enclave POC: no se_extension_access_group configured, using ephemeral key"
-        );
-        run_ephemeral_secure_enclave_poc(SECURE_ENCLAVE_POC_TAG_EXTENSION_ONLY, "extension-only");
-    }
-
-    if let Some(access_group) = demo_config
-        .ca_secret_access_group
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        run_named_secure_enclave_poc(
-            SECURE_ENCLAVE_POC_TAG_SHARED_GROUP,
-            Some(access_group),
-            "shared-access-group",
-        );
-    } else {
-        tracing::info!(
-            "secure enclave POC skipped for shared-access-group path: no access group configured"
-        );
-    }
-}
-
-fn run_ephemeral_secure_enclave_poc(application_tag: &[u8], label: &'static str) {
-    let application_tag_display = String::from_utf8_lossy(application_tag);
-    tracing::info!(
-        poc = label,
-        application_tag = application_tag_display.as_ref(),
-        "secure enclave POC: attempt create-ephemeral"
-    );
-
-    match rama::net::apple::networkextension::secure_enclave::SecureEnclaveKey::create_ephemeral(
-        application_tag,
-    ) {
-        Ok(key) => {
-            run_secure_enclave_poc_roundtrip(&key, application_tag_display.as_ref(), None, label);
-        }
-        Err(err) => {
-            tracing::error!(
-                poc = label,
-                application_tag = application_tag_display.as_ref(),
-                error = %err,
-                error_code = err.code(),
-                "secure enclave POC: failed to create ephemeral key"
-            );
-        }
-    }
-}
-
-fn run_named_secure_enclave_poc(
-    application_tag: &[u8],
-    access_group: Option<&str>,
-    label: &'static str,
-) {
-    let application_tag_display = String::from_utf8_lossy(application_tag);
-    tracing::info!(
-        poc = label,
-        application_tag = application_tag_display.as_ref(),
-        access_group = access_group.unwrap_or(""),
-        "secure enclave POC: attempt load-or-create"
-    );
-
-    match rama::net::apple::networkextension::secure_enclave::SecureEnclaveKey::load_or_create_with_status(
-        application_tag,
-        access_group,
-    ) {
-        Ok((key, status)) => {
-            tracing::info!(
-                poc = label,
-                application_tag = application_tag_display.as_ref(),
-                access_group = access_group.unwrap_or(""),
-                status = match status {
-                    rama::net::apple::networkextension::secure_enclave::SecureEnclaveKeyLoadStatus::Loaded => "loaded",
-                    rama::net::apple::networkextension::secure_enclave::SecureEnclaveKeyLoadStatus::Created => "created",
-                },
-                "secure enclave POC: key handle ready"
-            );
-            run_secure_enclave_poc_roundtrip(&key, application_tag_display.as_ref(), access_group, label);
-        }
-        Err(err) => {
-            tracing::error!(
-                poc = label,
-                application_tag = application_tag_display.as_ref(),
-                access_group = access_group.unwrap_or(""),
-                error_code = err.code(),
-                error = %err,
-                "secure enclave POC: failed to load or create key handle"
-            );
-        }
-    }
-}
-
-fn run_secure_enclave_poc_roundtrip(
-    key: &rama::net::apple::networkextension::secure_enclave::SecureEnclaveKey,
-    application_tag_display: &str,
-    access_group: Option<&str>,
-    label: &'static str,
-) {
-    match key.encrypt(SECURE_ENCLAVE_POC_VALUE) {
-        Ok(ciphertext) => {
-            tracing::info!(
-                poc = label,
-                application_tag = application_tag_display,
-                access_group = access_group.unwrap_or(""),
-                ciphertext_len = ciphertext.len(),
-                "secure enclave POC: encrypted test payload"
-            );
-
-            match key.decrypt(&ciphertext) {
-                Ok(plaintext) => match String::from_utf8(plaintext) {
-                    Ok(value) => {
-                        tracing::info!(
-                            poc = label,
-                            application_tag = application_tag_display,
-                            access_group = access_group.unwrap_or(""),
-                            value,
-                            "secure enclave POC: decrypted roundtrip payload"
-                        );
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            poc = label,
-                            application_tag = application_tag_display,
-                            access_group = access_group.unwrap_or(""),
-                            ?err,
-                            "secure enclave POC: decrypted payload was not UTF-8"
-                        );
-                    }
-                },
-                Err(err) => {
-                    tracing::warn!(
-                        poc = label,
-                        application_tag = application_tag_display,
-                        access_group = access_group.unwrap_or(""),
-                        error_code = err.code(),
-                        error = %err,
-                        "secure enclave POC: failed to decrypt roundtrip payload"
-                    );
-                }
-            }
-        }
-        Err(err) => {
-            tracing::warn!(
-                poc = label,
-                application_tag = application_tag_display,
-                access_group = access_group.unwrap_or(""),
-                error_code = err.code(),
-                error = %err,
-                "secure enclave POC: failed to encrypt test payload"
-            );
-        }
-    }
-}
-
 fn resolve_ca_cert_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError> {
-    load_ca_secret(
+    if let Some(pem) = demo_config
+        .ca_cert_pem
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
+        tracing::info!("using MITM CA certificate PEM from engine config");
+        return Ok(pem.to_owned());
+    }
+    load_ca_secret_from_storage_dir(
         demo_config,
         demo_config.ca_cert_secret_name.as_deref(),
         "certificate",
@@ -394,21 +224,25 @@ fn resolve_ca_cert_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError
 }
 
 fn resolve_ca_key_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError> {
-    load_ca_secret(
+    if let Some(pem) = demo_config.ca_key_pem.as_deref().filter(|s| !s.is_empty()) {
+        tracing::info!("using MITM CA private key PEM from engine config");
+        return Ok(pem.to_owned());
+    }
+    load_ca_secret_from_storage_dir(
         demo_config,
         demo_config.ca_key_secret_name.as_deref(),
         "private key",
     )
 }
 
-fn load_ca_secret(
+fn load_ca_secret_from_storage_dir(
     demo_config: &DemoProxyConfig,
     service_name: Option<&str>,
     secret_kind: &'static str,
 ) -> Result<String, BoxError> {
     let Some(service_name) = service_name.filter(|value| !value.is_empty()) else {
         return Err(OpaqueError::from_static_str(
-            "CA secret missing: protected-storage secret name not provided in transparent proxy opaque config",
+            "CA secret missing: no PEM in config and no secret name for filesystem fallback",
         )
         .context_field("secret_kind", secret_kind));
     };
@@ -418,77 +252,17 @@ fn load_ca_secret(
         .filter(|value| !value.is_empty())
     else {
         return Err(OpaqueError::from_static_str(
-            "CA secret missing: protected-storage secret account not provided in transparent proxy opaque config",
+            "CA secret missing: no PEM in config and no account name for filesystem fallback",
         )
         .context_field("secret_kind", secret_kind));
     };
 
-    if let Some(access_group) = demo_config
-        .ca_secret_access_group
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        return load_ca_secret_from_app_protected_storage(
-            service_name,
-            account_name,
-            access_group,
-            secret_kind,
-        );
-    }
-
-    load_ca_secret_from_storage_dir(
-        service_name,
-        account_name,
-        secret_kind,
-        crate::utils::app_group_dir(),
-    )
-}
-
-fn load_ca_secret_from_app_protected_storage(
-    service_name: &str,
-    account_name: &str,
-    access_group: &str,
-    secret_kind: &'static str,
-) -> Result<String, BoxError> {
-    tracing::info!(
-        service = service_name,
-        account = account_name,
-        access_group,
-        "loading MITM CA secret from app protected storage"
-    );
-
-    let secret = rama::net::apple::networkextension::app_protected_storage::load_raw_secret(
-        service_name,
-        account_name,
-        Some(access_group),
-    )
-    .context("load MITM CA secret from app protected storage")?
-    .ok_or_else(|| {
-        OpaqueError::from_static_str("CA secret missing: app protected storage item was not found")
-            .context_field("secret_kind", secret_kind)
-            .context_field("service_name", service_name.to_owned())
+    let base_dir = crate::utils::storage_dir().ok_or_else(|| {
+        OpaqueError::from_static_str(
+            "CA secret missing: transparent proxy storage directory is not initialized",
+        )
+        .context_field("secret_kind", secret_kind)
     })?;
-
-    String::from_utf8(secret).context("decode MITM CA secret as UTF-8")
-}
-
-fn load_ca_secret_from_storage_dir(
-    service_name: &str,
-    account_name: &str,
-    secret_kind: &'static str,
-    app_group_dir: Option<&'static std::path::PathBuf>,
-) -> Result<String, BoxError> {
-    // System Extensions run as root and cannot access user-owned keychains.
-    // Prefer the shared app group container directory over the extension-private
-    // storage dir so that the host app can write secrets there as a regular user.
-    let base_dir = app_group_dir
-        .or_else(crate::utils::storage_dir)
-        .ok_or_else(|| {
-            OpaqueError::from_static_str(
-                "CA secret missing: neither app group directory nor transparent proxy storage directory is initialized",
-            )
-            .context_field("secret_kind", secret_kind)
-        })?;
     let path = base_dir
         .join("secrets")
         .join(account_name)

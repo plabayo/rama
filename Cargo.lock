@@ -3380,8 +3380,6 @@ dependencies = [
  "rama-tcp",
  "rama-udp",
  "rama-utils",
- "security-framework",
- "security-framework-sys",
  "tokio",
  "tracing",
 ]

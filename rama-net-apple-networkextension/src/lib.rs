@@ -29,9 +29,9 @@ pub mod ffi;
 #[macro_use]
 mod macros;
 
-pub mod app_protected_storage;
 pub mod process;
 pub mod secure_enclave;
+pub mod system_keychain;
 pub mod tproxy;
 
 mod tcp;

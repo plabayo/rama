@@ -32,10 +32,6 @@ rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "sync"] }
 tracing = { workspace = true }
 
-[target.'cfg(target_vendor = "apple")'.dependencies]
-security-framework = { workspace = true }
-security-framework-sys = { workspace = true }
-
 [build-dependencies]
 bindgen = { workspace = true }
 

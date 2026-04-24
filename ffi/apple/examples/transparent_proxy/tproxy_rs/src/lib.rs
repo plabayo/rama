@@ -40,11 +40,6 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
             tracing::debug!(path = %path.display(), "received storage directory: pass to set_storage_dir");
             self::utils::set_storage_dir(Some(path));
         }
-        // SAFETY: pointer + length validity is guaranteed by FFI contract.
-        if let Some(app_group_dir) = unsafe { config.app_group_dir() } {
-            tracing::debug!(path = %app_group_dir.display(), "received app-group directory: pass to set_app_group_dir");
-            self::utils::set_app_group_dir(Some(app_group_dir));
-        }
     }
 
     let init_status = self::utils::init_tracing();
