@@ -30,9 +30,12 @@ pub mod ffi;
 mod macros;
 
 pub mod process;
-pub mod secure_enclave;
-pub mod system_keychain;
 pub mod tproxy;
+
+pub mod secure_enclave;
+
+#[cfg(target_os = "macos")]
+pub mod system_keychain;
 
 mod tcp;
 mod udp;
