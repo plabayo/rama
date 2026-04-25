@@ -126,7 +126,7 @@ extension ContainerController {
 
     func rotateMITMCAAndApply() {
         log("rotating MITM CA")
-        cleanSecrets()
+        clearCA()
         applyDemoSettings()
     }
 

@@ -68,6 +68,22 @@ extension ContainerController {
         rotateCAItem.target = self
         menu.addItem(rotateCAItem)
 
+        let installCAItem = NSMenuItem(
+            title: "Install CA",
+            action: #selector(installCAAction(_:)),
+            keyEquivalent: ""
+        )
+        installCAItem.target = self
+        menu.addItem(installCAItem)
+
+        let clearCAItem = NSMenuItem(
+            title: "Clear CA",
+            action: #selector(clearCAAction(_:)),
+            keyEquivalent: ""
+        )
+        clearCAItem.target = self
+        menu.addItem(clearCAItem)
+
         let pingProviderItem = NSMenuItem(
             title: "Ping Provider",
             action: #selector(pingProviderAction(_:)),
@@ -106,6 +122,8 @@ extension ContainerController {
         self.excludeDomainsMenuItem = excludeDomainsItem
         self.resetDemoSettingsMenuItem = resetDemoSettingsItem
         self.rotateCAMenuItem = rotateCAItem
+        self.installCAMenuItem = installCAItem
+        self.clearCAMenuItem = clearCAItem
         self.pingProviderMenuItem = pingProviderItem
         self.resetMenuItem = resetItem
         updateDemoSettingsMenu()

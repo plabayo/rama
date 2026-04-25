@@ -13,8 +13,8 @@ use rama::{
     },
 };
 
-const CA_SERVICE_CERT: &str = "tls-root-selfsigned-ca-crt";
-const CA_SERVICE_KEY: &str = "tls-root-selfsigned-ca-key";
+const CA_SERVICE_CERT: &str = "rama-tproxy-demo-ca-crt";
+const CA_SERVICE_KEY: &str = "rama-tproxy-demo-ca-key";
 const CA_ACCOUNT: &str = "org.ramaproxy.example.tproxy";
 
 pub(crate) fn load_or_create_mitm_ca(

@@ -13,8 +13,8 @@ final class ContainerController: NSObject, NSApplicationDelegate {
     let managerDescription = "Rama Transparent Proxy Example"
     let managerServerAddress = "127.0.0.1"
     static let secretAccount = "org.ramaproxy.example.tproxy"
-    static let secretServiceKeyPEM = "tls-root-selfsigned-ca-key"
-    static let secretServiceCertPEM = "tls-root-selfsigned-ca-crt"
+    static let secretServiceKeyPEM = "rama-tproxy-demo-ca-key"
+    static let secretServiceCertPEM = "rama-tproxy-demo-ca-crt"
     static let secretServiceKeys = [secretServiceKeyPEM, secretServiceCertPEM]
     lazy var containerLogger = Logger(subsystem: "org.ramaproxy.example.tproxy", category: "container")
     lazy var logFileURL: URL = {
@@ -32,6 +32,8 @@ final class ContainerController: NSObject, NSApplicationDelegate {
     var excludeDomainsMenuItem: NSMenuItem?
     var resetDemoSettingsMenuItem: NSMenuItem?
     var rotateCAMenuItem: NSMenuItem?
+    var installCAMenuItem: NSMenuItem?
+    var clearCAMenuItem: NSMenuItem?
     var pingProviderMenuItem: NSMenuItem?
     var resetMenuItem: NSMenuItem?
 
@@ -52,8 +54,8 @@ final class ContainerController: NSObject, NSApplicationDelegate {
         setupStatusItem()
         log("container app launched")
         if cleanSecretsOnLaunch {
-            log("launch flag detected: cleaning MITM CA secrets before start")
-            cleanSecrets()
+            log("launch flag detected: clearing MITM CA before start")
+            clearCA()
         }
         if resetProfileOnLaunch {
             log("launch flag detected: resetting saved proxy profile before start")

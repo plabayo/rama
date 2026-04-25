@@ -17,6 +17,14 @@ extension ContainerController {
         rotateMITMCAAndApply()
     }
 
+    @objc func installCAAction(_: Any?) {
+        installMITMCA()
+    }
+
+    @objc func clearCAAction(_: Any?) {
+        clearCA()
+    }
+
     @objc func pingProviderAction(_: Any?) {
         sendProviderPing()
     }
