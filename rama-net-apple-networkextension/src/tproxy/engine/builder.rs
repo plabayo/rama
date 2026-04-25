@@ -63,6 +63,15 @@ where
         #[must_use]
         #[doc(hidden)]
         /// Unstable API only meant for generated code.
+        ///
+        /// # Security
+        ///
+        /// Opaque config is intended for non-sensitive runtime settings only
+        /// (timeouts, domain exclusions, feature flags, and similar public info).
+        /// Apple logs the payload automatically — it will appear in system diagnostic
+        /// output with no ability to suppress this. Never put secrets, private keys,
+        /// or credentials here; use the system keychain for sensitive material instead
+        /// or transport it over a secure XPC connection yourself.
         pub fn opaque_config(mut self, opaque_config: Option<Arc<[u8]>>) -> Self {
             self.opaque_config = opaque_config;
             self
