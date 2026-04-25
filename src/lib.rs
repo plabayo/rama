@@ -177,6 +177,7 @@
 //! - [`rama-crypto`](https://crates.io/crates/rama-crypto): rama crypto primitives and dependencies
 //! - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 //! - [`rama-net-apple-networkextension`](https://crates.io/crates/rama-net-apple-networkextension): Apple Network Extension support for rama
+//! - [`rama-net-apple-xpc`](https://crates.io/crates/rama-net-apple-xpc): Apple XPC support for rama
 //! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 //! - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 //! - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
@@ -313,15 +314,27 @@ pub mod net {
     #[doc(inline)]
     pub use ::rama_net::*;
 
-    #[cfg(all(target_vendor = "apple", feature = "net-apple-networkextension"))]
+    #[cfg(all(
+        target_vendor = "apple",
+        any(feature = "net-apple-networkextension", feature = "net-apple-xpc")
+    ))]
     #[cfg_attr(
         docsrs,
-        doc(cfg(all(target_vendor = "apple", feature = "net-apple-networkextension")))
+        doc(cfg(all(
+            target_vendor = "apple",
+            any(feature = "net-apple-networkextension", feature = "net-apple-xpc")
+        )))
     )]
     pub mod apple {
         //! Apple (vendor) specific network modules
+
+        #[cfg(feature = "net-apple-networkextension")]
         #[doc(inline)]
         pub use ::rama_net_apple_networkextension as networkextension;
+
+        #[cfg(feature = "net-apple-xpc")]
+        #[doc(inline)]
+        pub use ::rama_net_apple_xpc as xpc;
     }
 }
 

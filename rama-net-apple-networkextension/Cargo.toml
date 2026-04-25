@@ -32,6 +32,9 @@ rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "sync"] }
 tracing = { workspace = true }
 
+[build-dependencies]
+bindgen = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 

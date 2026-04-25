@@ -294,6 +294,15 @@ void rama_transparent_proxy_engine_free(RamaTransparentProxyEngine* engine);
 /// - https://developer.apple.com/documentation/networkextension/neproviderstopreason
 void rama_transparent_proxy_engine_stop(RamaTransparentProxyEngine* engine, int32_t reason);
 
+/// Forward an app-to-provider message into the transparent proxy handler.
+///
+/// `message` is borrowed for the duration of the call.
+/// Returns an owned reply payload. Empty reply means "no reply payload".
+RamaBytesOwned rama_transparent_proxy_engine_handle_app_message(
+    RamaTransparentProxyEngine* engine,
+    RamaBytesView message
+);
+
 // TCP flow lifecycle
 
 /// Create a TCP session for one intercepted flow.

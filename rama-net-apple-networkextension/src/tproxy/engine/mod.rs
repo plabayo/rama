@@ -61,6 +61,21 @@ where
         self.handler.transparent_proxy_config()
     }
 
+    pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
+        let Some(guard) = self.shutdown_guard() else {
+            tracing::error!(
+                message_len = message.len(),
+                "handle_app_message called after transparent proxy engine was already stopped"
+            );
+            return None;
+        };
+
+        let exec = Executor::graceful(guard);
+        let handler = self.handler.clone();
+
+        block_on_async_task(&self.rt, handler.handle_app_message(exec, message))
+    }
+
     pub fn new_tcp_session<OnBytes, OnClosed>(
         &self,
         meta: TransparentProxyFlowMeta,

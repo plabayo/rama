@@ -52,17 +52,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "apple-native-keyring-store"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cdab02b2a5e47c080382cb729e8fc53bedf4a498200fc72a4e6c691033a3f7b"
-dependencies = [
- "keyring-core",
- "log",
- "security-framework",
-]
-
-[[package]]
 name = "arc-swap"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -979,15 +968,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyring-core"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d8286c3ab222af2fa9e57874fe419893d967f739c7bf1743f98a88678edbf08"
-dependencies = [
- "log",
-]
-
-[[package]]
 name = "konst"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1875,6 +1855,7 @@ dependencies = [
 name = "rama-net-apple-networkextension"
 version = "0.3.0-rc1"
 dependencies = [
+ "bindgen",
  "libc",
  "parking_lot",
  "pin-project-lite",
@@ -2030,8 +2011,6 @@ name = "rama_tproxy_example"
 version = "0.1.0"
 dependencies = [
  "ahash",
- "apple-native-keyring-store",
- "keyring-core",
  "moka",
  "rama",
  "serde",

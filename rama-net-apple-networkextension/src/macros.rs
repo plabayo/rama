@@ -220,6 +220,41 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_handle_app_message(
+            engine: *mut RamaTransparentProxyEngine,
+            message: $crate::ffi::BytesView,
+        ) -> $crate::ffi::BytesOwned {
+            if engine.is_null() {
+                return $crate::ffi::BytesOwned {
+                    ptr: ::std::ptr::null_mut(),
+                    len: 0,
+                    cap: 0,
+                };
+            }
+
+            let engine = unsafe { &*engine };
+            let reply = engine.handle_app_message($crate::__RamaBytes::copy_from_slice(
+                unsafe { message.into_slice() },
+            ));
+
+            match reply
+                .map(|bytes| bytes.to_vec())
+                .unwrap_or_default()
+                .try_into()
+            {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    $crate::__tracing::debug!(%err, "failed to encode transparent proxy app message reply");
+                    $crate::ffi::BytesOwned {
+                        ptr: ::std::ptr::null_mut(),
+                        len: 0,
+                        cap: 0,
+                    }
+                }
+            }
+        }
+
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_engine_new_tcp_session(
             engine: *mut RamaTransparentProxyEngine,
             meta: *const RamaTransparentProxyFlowMeta,

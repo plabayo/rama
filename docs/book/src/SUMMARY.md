@@ -7,7 +7,6 @@
 - [Do It Yourself](./diy.md)
 - [Web Servers](./web_servers.md)
 - [Transport Protocols](./transport.md)
-- [dns](./dns.md)
 
 # Rama 101
 
@@ -26,6 +25,11 @@
     - [🔭 Telemetry](./intro/telemetry.md)
     - [👤 User Agent](./intro/user_agent.md)
     - [🏗 Patterns used inside rama](./intro/patterns.md)
+
+# Protocols
+
+- [dns](./dns.md)
+- [🍎 Apple XPC](./xpc.md)
 
 # Intro to Proxies
 

@@ -2,6 +2,7 @@ use super::*;
 use crate::tproxy::{TransparentProxyConfig, TransparentProxyFlowProtocol};
 use parking_lot::Mutex;
 use rama_core::{
+    bytes::Bytes,
     error::BoxError,
     service::{BoxService, service_fn},
 };
@@ -20,6 +21,7 @@ type TestUdpService = BoxService<UdpFlow, (), Infallible>;
 
 #[derive(Clone)]
 struct TestHandler {
+    app_message_handler: Arc<dyn Fn(Vec<u8>) -> Option<Vec<u8>> + Send + Sync>,
     tcp_matcher: Arc<dyn Fn(TransparentProxyFlowMeta) -> FlowAction<TestTcpService> + Send + Sync>,
     udp_matcher: Arc<dyn Fn(TransparentProxyFlowMeta) -> FlowAction<TestUdpService> + Send + Sync>,
 }
@@ -27,6 +29,7 @@ struct TestHandler {
 impl TestHandler {
     fn passthrough() -> Self {
         Self {
+            app_message_handler: Arc::new(|_| None),
             tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
             udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         }
@@ -36,6 +39,15 @@ impl TestHandler {
 impl TransparentProxyHandler for TestHandler {
     fn transparent_proxy_config(&self) -> crate::tproxy::TransparentProxyConfig {
         TransparentProxyConfig::new()
+    }
+
+    fn handle_app_message(
+        &self,
+        _exec: Executor,
+        message: Bytes,
+    ) -> impl Future<Output = Option<Bytes>> + Send + '_ {
+        let reply = (self.app_message_handler)(message.to_vec()).map(Bytes::from);
+        std::future::ready(reply)
     }
 
     fn match_tcp_flow(
@@ -129,6 +141,7 @@ fn udp_session_passthrough_by_default() {
 #[test]
 fn tcp_session_can_be_blocked() {
     let engine = build_engine(TestHandler {
+        app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Blocked),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
     });
@@ -143,6 +156,7 @@ fn tcp_session_can_be_blocked() {
 #[test]
 fn udp_session_can_be_blocked() {
     let engine = build_engine(TestHandler {
+        app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|_| FlowAction::Blocked),
     });
@@ -162,6 +176,7 @@ fn tcp_bridge_delivers_server_bytes() {
     let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
 
     let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
             service: service_fn(|mut stream: TcpFlow| async move {
@@ -202,6 +217,7 @@ fn udp_bridge_delivers_server_datagram() {
     let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
 
     let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
@@ -245,6 +261,7 @@ fn udp_session_requests_client_read_demand() {
     let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
 
     let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
@@ -284,6 +301,7 @@ fn tcp_flow_exposes_meta_extension() {
     let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
 
     let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(move |meta| {
             let seen_clone = seen_clone.clone();
             let notify_tx = notify_tx.clone();
@@ -329,6 +347,7 @@ fn udp_flow_exposes_meta_extension() {
     let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
 
     let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(move |meta| {
             let seen_clone = seen_clone.clone();
@@ -374,6 +393,7 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
     let bytes_count = Arc::new(AtomicUsize::new(0));
 
     let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
             service: service_fn(|mut stream: TcpFlow| async move {
@@ -417,4 +437,16 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
     let start = Instant::now();
     engine.stop(0);
     assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn app_message_can_return_reply() {
+    let engine = build_engine(TestHandler {
+        app_message_handler: Arc::new(|message| (message == b"ping").then(|| b"pong".to_vec())),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    });
+
+    let reply = engine.handle_app_message(Bytes::from_static(b"ping"));
+    assert_eq!(reply.as_deref(), Some(&b"pong"[..]));
 }

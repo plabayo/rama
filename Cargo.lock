@@ -2950,6 +2950,7 @@ dependencies = [
  "rama-http-core",
  "rama-net",
  "rama-net-apple-networkextension",
+ "rama-net-apple-xpc",
  "rama-proxy",
  "rama-socks5",
  "rama-tcp",
@@ -3370,6 +3371,7 @@ dependencies = [
 name = "rama-net-apple-networkextension"
 version = "0.3.0-rc1"
 dependencies = [
+ "bindgen",
  "libc",
  "parking_lot",
  "pin-project-lite",
@@ -3380,6 +3382,18 @@ dependencies = [
  "rama-utils",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "rama-net-apple-xpc"
+version = "0.3.0-rc1"
+dependencies = [
+ "bindgen",
+ "parking_lot",
+ "rama-core",
+ "rama-net",
+ "rama-utils",
+ "tokio",
 ]
 
 [[package]]

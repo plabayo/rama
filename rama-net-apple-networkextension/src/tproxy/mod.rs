@@ -1,3 +1,10 @@
+//! Apple Transparent Proxy Support
+//!
+//! ## Tech Notes
+//!
+//! - [App proxy provider — Implement a VPN client for a flow-oriented, custom VPN protocol](https://developer.apple.com/documentation/NetworkExtension/app-proxy-provider)
+//! - [NETransparentProxyProvider](https://developer.apple.com/documentation/NetworkExtension/NETransparentProxyProvider)
+
 mod engine;
 
 mod types;

@@ -9,11 +9,12 @@ packages:
     path: ../../../../..
 
 targets:
-  RamaTransparentProxyExampleHost:
+  RamaTransparentProxyExampleContainer:
     type: application
     platform: macOS
     sources:
-      - path: Host
+      - path: Container
+      - path: Shared
     dependencies:
       - target: RamaTransparentProxyExampleExtension
         embed: true
@@ -22,26 +23,25 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev
         CURRENT_PROJECT_VERSION: 1
-        INFOPLIST_FILE: Host/Info.plist
+        INFOPLIST_FILE: Container/Info.plist
         MARKETING_VERSION: 0.1
-        CODE_SIGN_ENTITLEMENTS: Host/Host.entitlements
+        CODE_SIGN_ENTITLEMENTS: Container/Container.entitlements
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
         CODE_SIGN_STYLE: Automatic
-        CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_HOST_SIGNING_IDENTITY)"
+        CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_CONTAINER_SIGNING_IDENTITY)"
         DEVELOPMENT_TEAM: "$(RAMA_TPROXY_DEVELOPMENT_TEAM)"
-        PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_HOST_PROFILE_SPECIFIER)"
+        PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_CONTAINER_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS:
-          - "$(inherited)"
-          - TPROXY_DEV_IDENTIFIERS
+        TPROXY_SHARED_ACCESS_GROUP: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev.group"
 
   RamaTransparentProxyExampleExtension:
     type: system-extension
     platform: macOS
     sources:
       - path: Extension
+      - path: Shared
     postBuildScripts:
       - name: Bump CFBundleVersion
         script: |
@@ -50,6 +50,11 @@ targets:
 
           echo "Updating CFBundleVersion in $PLIST to $VERSION"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
+
+          if [ "${CODE_SIGNING_ALLOWED:-YES}" != "YES" ] || [ -z "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
+            echo "Skipping re-sign because code signing is disabled or no identity is available"
+            exit 0
+          fi
 
           echo "Re-signing $CODESIGNING_FOLDER_PATH"
           /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$CODESIGNING_FOLDER_PATH"
@@ -72,6 +77,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
+        TPROXY_SHARED_ACCESS_GROUP: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev.group"
         ENABLE_DEBUG_DYLIB: NO
         OTHER_LDFLAGS:
           - "$(SRCROOT)/../tproxy_rs/target/universal/librama_tproxy_example.a"

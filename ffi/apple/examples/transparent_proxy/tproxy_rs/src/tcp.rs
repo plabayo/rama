@@ -70,8 +70,10 @@ pub(super) struct DemoTcpMitmService {
 impl DemoTcpMitmService {
     pub(super) async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, BoxError> {
         let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
-        let (ca_crt, ca_key) = crate::tls::certs::load_or_create_mitm_ca_crt_key_pair()
-            .context("load/create MITM CA Crt/Key pair")?;
+        let (ca_crt, ca_key) = crate::tls::load_or_create_mitm_ca(
+            demo_config.ca_cert_pem.as_deref(),
+            demo_config.ca_key_pem.as_deref(),
+        )?;
         let ca_crt_pem_bytes: &[u8] = ca_crt
             .to_pem()
             .context("encode root ca cert to pem")?
@@ -201,6 +203,7 @@ impl DemoTcpMitmService {
         )
     }
 }
+
 
 #[derive(Clone)]
 pub(super) struct TcpInterceptService {

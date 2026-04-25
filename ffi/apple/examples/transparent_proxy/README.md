@@ -3,6 +3,15 @@
 This example shows how to link a Rust staticlib that implements the
 Rama NetworkExtension C ABI into a macOS Transparent Proxy extension.
 
+The sysext generates and stores the demo MITM root CA in the macOS System
+Keychain (`/Library/Keychains/System.keychain`) using Rama's built-in boring TLS
+support. The CA is created on first startup and reused on subsequent starts.
+
+The container app can delete the stored CA material via the `Rotate MITM CA`
+menu command or the `--clean-secrets` launch flag; the sysext will create a
+fresh CA the next time it initialises. The container app does not create or
+read the CA.
+
 ## Build
 
 ```sh
@@ -10,7 +19,8 @@ cd ffi/apple/examples/transparent_proxy
 just build-tproxy-dev
 ```
 
-This builds the Rust staticlib and the developer-signed macOS host + system extension. The Rust staticlib is produced at:
+This builds the Rust staticlib and the developer-signed macOS container app + system extension.
+The Rust staticlib is produced at:
 
 ```
 ffi/apple/examples/transparent_proxy/tproxy_rs/target/universal/librama_tproxy_example.a
@@ -53,6 +63,10 @@ The build helpers are:
 
 Both modes use the real system-extension product type. Developer mode uses the plain `app-proxy-provider` entitlement payload, while distribution mode switches the same entitlement template to `app-proxy-provider-systemextension`.
 
+At runtime, the container app menu includes `Rotate MITM CA`, which deletes the
+CA material from the System Keychain and restarts the proxy. The sysext
+generates a fresh CA on the next startup.
+
 ## Signing Setup
 
 Apple docs relevant to this demo:
@@ -79,18 +93,18 @@ Distribution mode:
 
 - packaging: system extension (`.systemextension`)
 - signing: `Developer ID`
-- Network Extension entitlement payload: `app-proxy-provider-systemextension`
-- host app also carries `com.apple.developer.system-extension.install`
+- Network Extension sysext entitlement payload: `app-proxy-provider-systemextension`
+- container app also carries `com.apple.developer.system-extension.install`
 - intended for direct distribution outside the Mac App Store
 
 For the App IDs, the practical setup is:
 
-- developer host App ID: enable `Network Extensions` and `System Extension`
-- developer extension App ID: enable `Network Extensions`
-- distribution host App ID: enable `Network Extensions` and `System Extension`
-- distribution extension App ID: enable `Network Extensions`
+- developer container App ID: enable `Network Extensions` and `System Extension`
+- developer sysext App ID: enable `Network Extensions`
+- distribution container App ID: enable `Network Extensions` and `System Extension`
+- distribution sysext App ID: enable `Network Extensions`
 
-The host and extension now share one entitlement template each, with the Network Extension payload switched by `NE_ENTITLEMENT_SUFFIX`:
+The container app and sysext now share one entitlement template each, with the Network Extension sysext payload switched by `NE_ENTITLEMENT_SUFFIX`:
 
 - developer mode uses `NE_ENTITLEMENT_SUFFIX = ""`
 - distribution mode uses `NE_ENTITLEMENT_SUFFIX = "-systemextension"`
@@ -104,9 +118,13 @@ A team `Account Holder` or `Admin` needs to do the one-time Apple Developer port
    - `org.ramaproxy.example.tproxy.dev.provider`
    - `org.ramaproxy.example.tproxy.dist`
    - `org.ramaproxy.example.tproxy.dist.provider`
-2. Enable `Network Extensions` on both App IDs.
-3. Enable `System Extension` on the host App ID used for direct distribution.
-4. Create the Developer ID distribution profiles for the direct-distribution system extension path.
+2. Enable `Network Extensions` on the container app' and sysext App IDs for both developer and distribution modes.
+3. Enable `System Extension` on the container app's App ID used for direct distribution.
+4. Register the shared app-group identifiers used as protected-storage access groups:
+   - `group.org.ramaproxy.example.tproxy.dev.group`
+   - `group.org.ramaproxy.example.tproxy.dist.group`
+5. Enable the app-group / shared-keychain capability needed for the container app and sysext App IDs.
+6. Create the Developer ID distribution profiles for the direct-distribution container app and sysext.
 
 ### What a normal developer needs locally
 
@@ -154,17 +172,17 @@ just build-tproxy-dist
 
 For distribution mode, the example expects these Developer ID profile names for the distribution bundle IDs `org.ramaproxy.example.tproxy.dist` and `org.ramaproxy.example.tproxy.dist.provider`:
 
-- `Rama Transparent Proxy Example (Host)`
+- `Rama Transparent Proxy Example (Container)`
 - `Rama Transparent Proxy Example (Extension)`
 
 Only for distribution mode, if you intentionally renamed those profiles, should you override:
 
-- `RAMA_TPROXY_HOST_PROFILE_SPECIFIER`
+- `RAMA_TPROXY_CONTAINER_PROFILE_SPECIFIER`
 - `RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER`
 
 If Xcode still fails to find the freshly downloaded Developer ID profiles, you can point the helper at the exact files and let it install them into the standard provisioning-profile directory before building:
 
-- `RAMA_TPROXY_HOST_PROFILE_PATH=/absolute/path/to/Rama_Transparent_Proxy_Example_Host.provisionprofile`
+- `RAMA_TPROXY_CONTAINER_PROFILE_PATH=/absolute/path/to/Rama_Transparent_Proxy_Example_Container.provisionprofile`
 - `RAMA_TPROXY_EXTENSION_PROFILE_PATH=/absolute/path/to/Rama_Transparent_Proxy_Example_Extension.provisionprofile`
 
 Distribution mode also requires a locally available `Developer ID Application` certificate with private key for team `ADPG6C355H`, unless your company uses an equivalent managed-signing service.
@@ -237,7 +255,7 @@ So this example deliberately demonstrates both:
 
 ## Logs
 
-Stream all logs (host, extension, and Rust (incl. rama)):
+Stream all logs (container, extension, and Rust (incl. rama)):
 
 ```sh
 systemextensionsctl list
@@ -293,9 +311,9 @@ just install-tproxy-with-signing
 That target:
 
 - rebuilds the Rust staticlib
-- rebuilds the host app and system extension
-- replaces `/Applications/RamaTransparentProxyExampleHost.app`
-- refreshes LaunchServices registration for the host app
+- rebuilds the container app and system extension
+- replaces `/Applications/RamaTransparentProxyExampleContainer.app`
+- refreshes LaunchServices registration for the container app
 - launches the installed app so it can request system extension activation without recreating the saved proxy manager
 
 If the next launch connects, the problem was registration state.
@@ -324,13 +342,13 @@ Expected output should include something like:
 
 ```text
 org.ramaproxy.example.tproxy.dist.provider(0.1)
-Path = /Applications/RamaTransparentProxyExampleHost.app/Contents/Library/SystemExtensions/RamaTransparentProxyExampleExtension.systemextension
+Path = /Applications/RamaTransparentProxyExampleContainer.app/Contents/Library/SystemExtensions/RamaTransparentProxyExampleExtension.systemextension
 SDK = com.apple.networkextension.app-proxy
 ```
 
 If nothing is returned, macOS does not currently have the system extension activated. Run the reinstall command above and approve the system extension in System Settings if prompted.
 
-### 4. Inspect host and Network Extension logs around the failure
+### 4. Inspect container and (Network Extension) sysext logs around the failure
 
 Recent logs:
 

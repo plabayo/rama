@@ -90,7 +90,7 @@ jobs:
           cargo fmt --all --check
       - name: doc
         run: |
-          cargo doc --all-features --no-deps --workspace --exclude rama-cli
+          cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
           cargo doc --all-features --no-deps -p rama-cli
 
   test-rust-base:
@@ -156,6 +156,27 @@ jobs:
       - name: Run transparent proxy Apple FFI e2e tests
         working-directory: ./ffi/apple/examples/transparent_proxy
         run: just test-e2e
+
+  test-rama-apple-xpc:
+    runs-on: macos-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-xpc
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Install just
+        run: brew install just
+      - name: Run Apple XPC QA checks
+        run: just qa-xpc-apple
 
   test-rust-linux-musl:
     strategy:
@@ -549,6 +570,7 @@ jobs:
       - test-rust-base
       - test-ffi-apple-example-transparent-proxy-e2e
       - test-rust-linux-musl
+      - test-rama-apple-xpc
       - test-rust-extra
       - test-rust-e2e
       - test-rust-e2e-release

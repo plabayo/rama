@@ -28,11 +28,9 @@ pub(super) fn set_storage_dir(path: Option<PathBuf>) {
     }
 }
 
-pub(super) fn storage_dir() -> PathBuf {
-    STORAGE_DIR
-        .get()
-        .cloned()
-        .unwrap_or_else(|| std::env::temp_dir().join("rama_tproxy_example"))
+#[expect(unused)]
+pub(super) fn storage_dir() -> Option<&'static PathBuf> {
+    STORAGE_DIR.get()
 }
 
 #[derive(Debug)]

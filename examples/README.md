@@ -156,6 +156,18 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 ### Mutual TLS
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation
 
+## Apple XPC
+
+- [`xpc_echo.rs`](./xpc_echo.rs) - End-to-end XPC echo using an anonymous channel (no launchd required).
+  Demonstrates `XpcServer<S>`, anonymous listener acceptance, fire-and-forget send, request-reply,
+  graceful shutdown, and tracing output — Apple platforms only.
+- [`xpc_ca_exchange.rs`](./xpc_ca_exchange.rs) - A control-plane shaped XPC request/reply example.
+  Demonstrates fetching CA material over XPC, using the same service-driven anonymous-channel setup
+  that can later be moved behind a named Mach service with peer requirements.
+- [`../ffi/apple/examples/transparent_proxy`](../ffi/apple/examples/transparent_proxy) - A practical
+  Apple Network Extension demo that uses the same pattern to keep the MITM CA private key out of
+  the opaque startup config and request it from the host app over local XPC instead.
+
 ## Network and Transport
 - [`native_dns.rs`](./native_dns.rs) - Resolve domains using Rama's native DNS resolver,
   - with Apple-native DNS-SD support on Apple platforms
