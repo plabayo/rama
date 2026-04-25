@@ -1,13 +1,8 @@
-use std::{env, fs, path::PathBuf};
-
+#[cfg(target_os = "macos")]
 fn main() {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
+    use std::{env, path::PathBuf};
 
-    if env::var("CARGO_CFG_TARGET_VENDOR").ok().as_deref() != Some("apple") {
-        fs::write(out_dir.join("bindings.rs"), "// non-apple stub\n")
-            .expect("write non-apple security bindings stub");
-        return;
-    }
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
 
     println!("cargo:rerun-if-changed=wrapper.h");
 
@@ -50,3 +45,6 @@ fn main() {
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("write security bindings");
 }
+
+#[cfg(not(target_os = "macos"))]
+fn main() {}
