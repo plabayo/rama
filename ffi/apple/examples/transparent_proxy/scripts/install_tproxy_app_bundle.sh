@@ -10,7 +10,7 @@ MODE="$1"
 BUILT_APP="$2"
 RESET_PROFILE="$3"
 
-INSTALLED_APP="/Applications/RamaTransparentProxyExampleHost.app"
+INSTALLED_APP="/Applications/RamaTransparentProxyExampleContainer.app"
 
 case "$MODE" in
   dev|dist)
@@ -21,7 +21,7 @@ case "$MODE" in
     ;;
 esac
 
-pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true
+pkill -f '/Applications/RamaTransparentProxyExampleContainer.app/Contents/MacOS/RamaTransparentProxyExampleContainer' || true
 sleep 1
 rm -rf "$INSTALLED_APP"
 ditto "$BUILT_APP" "$INSTALLED_APP"

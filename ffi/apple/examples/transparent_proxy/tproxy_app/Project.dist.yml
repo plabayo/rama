@@ -12,11 +12,11 @@ packages:
     from: 1.0.0
 
 targets:
-  RamaTransparentProxyExampleHost:
+  RamaTransparentProxyExampleContainer:
     type: application
     platform: macOS
     sources:
-      - path: Host
+      - path: Container
       - path: Shared
     dependencies:
       - target: RamaTransparentProxyExampleExtension
@@ -28,15 +28,15 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dist
         CURRENT_PROJECT_VERSION: "$(RAMA_TPROXY_CURRENT_PROJECT_VERSION)"
-        INFOPLIST_FILE: Host/Info.plist
+        INFOPLIST_FILE: Container/Info.plist
         MARKETING_VERSION: "$(RAMA_TPROXY_MARKETING_VERSION)"
-        CODE_SIGN_ENTITLEMENTS: Host/Host.entitlements
+        CODE_SIGN_ENTITLEMENTS: Container/Container.entitlements
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
         CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_HOST_SIGNING_IDENTITY)"
+        CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_CONTAINER_SIGNING_IDENTITY)"
         DEVELOPMENT_TEAM: "$(RAMA_TPROXY_DEVELOPMENT_TEAM)"
-        PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_HOST_PROFILE_SPECIFIER)"
+        PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_CONTAINER_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: "-systemextension"
         CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO

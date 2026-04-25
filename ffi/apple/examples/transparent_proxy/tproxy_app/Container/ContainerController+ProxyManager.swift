@@ -1,7 +1,7 @@
 import Foundation
 import NetworkExtension
 
-extension HostController {
+extension ContainerController {
     func refreshManagerAndStatus() {
         loadManager { [weak self] manager in
             guard let self else { return }
@@ -144,7 +144,7 @@ extension HostController {
         let payload: [String: Any] = [
             "op": "ping",
             "sent_at": ISO8601DateFormatter().string(from: Date()),
-            "source": "host-app",
+            "source": "container-app",
         ]
 
         let data: Data
@@ -399,7 +399,7 @@ extension HostController {
         let data = try encoder.encode(payload)
         guard let json = String(data: data, encoding: .utf8) else {
             throw NSError(
-                domain: "RamaTransparentProxyExampleHost",
+                domain: "RamaTransparentProxyExampleContainer",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "failed to encode engineConfigJson as UTF-8"]
             )

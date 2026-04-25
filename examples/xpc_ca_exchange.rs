@@ -1,12 +1,12 @@
-//! XPC CA exchange — a service-style request/reply example mirroring a host/extension
+//! XPC CA exchange — a service-style request/reply example mirroring a container app/extension
 //! control plane.
 //!
 //! This example demonstrates the first practical use case for `rama-net-apple-xpc`:
-//! using XPC request/reply to fetch CA material from a more-privileged host process,
+//! using XPC request/reply to fetch CA material from a more-privileged container app process,
 //! instead of pushing private key material through some unrelated opaque config blob.
 //!
 //! It intentionally uses an anonymous XPC endpoint so the example stays self-contained
-//! and testable without launchd or plist setup. In a real host-app / Network Extension
+//! and testable without launchd or plist setup. In a real container app and Network Extension sysext
 //! deployment you would typically:
 //!
 //! - bind a named Mach service

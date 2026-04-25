@@ -15,6 +15,17 @@
 //!
 //! Below is relevant information communicated from some of the above sources.
 //!
+//! ## Terminology
+//!
+//! As clarified by Quinn "The Eskimo!" from Apple Developer Technical Support:
+//!
+//! > When talking about extensions on Apple platforms, it's important to get your terminology straight.
+//! >
+//! > - The application in which the extension is embedded is called the **container application**.
+//! > - The **host application** is the application using the extension.
+//! >
+//! > In this case, the host application isn't actually an application, but rather the system itself.
+//!
 //! ## Communicating with Extensions
 //!
 //! With an app extension there are two communication options:

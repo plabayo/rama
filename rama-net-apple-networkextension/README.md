@@ -58,7 +58,7 @@ See the macOS transparent proxy example in:
 
 It shows:
 
-- a host app and `NETransparentProxyProvider`
+- a container app and `NETransparentProxyProvider`
 - a Rust `staticlib` implementing the Apple C ABI contract
 - a macro-driven FFI entrypoint
 - end-to-end Apple FFI tests covering HTTP, HTTPS, HTTP/2, WebSocket, raw TCP/TLS, and basic UDP

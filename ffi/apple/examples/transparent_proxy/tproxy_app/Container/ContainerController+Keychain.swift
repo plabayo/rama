@@ -3,7 +3,7 @@ import Foundation
 import Security
 import X509
 
-extension HostController {
+extension ContainerController {
     func loadOrCreateMITMCA() throws -> MITMCASecrets {
         let existingKey = try loadSecret(service: Self.secretServiceKeyPEM)
         let existingCert = try loadSecret(service: Self.secretServiceCertPEM)
@@ -42,7 +42,7 @@ extension HostController {
         let calendar = Calendar(identifier: .gregorian)
         guard let notValidAfter = calendar.date(byAdding: .day, value: 3650, to: now) else {
             throw NSError(
-                domain: "RamaTransparentProxyExampleHost",
+                domain: "RamaTransparentProxyExampleContainer",
                 code: 5,
                 userInfo: [
                     NSLocalizedDescriptionKey: "failed to compute CA certificate expiry date"
@@ -106,7 +106,7 @@ extension HostController {
         guard let data = result as? Data else { return "" }
         guard let str = String(data: data, encoding: .utf8) else {
             throw NSError(
-                domain: "RamaTransparentProxyExampleHost",
+                domain: "RamaTransparentProxyExampleContainer",
                 code: 3,
                 userInfo: [
                     NSLocalizedDescriptionKey:
@@ -120,7 +120,7 @@ extension HostController {
     func storeSecret(service: String, value: String) throws {
         guard let data = value.data(using: .utf8) else {
             throw NSError(
-                domain: "RamaTransparentProxyExampleHost",
+                domain: "RamaTransparentProxyExampleContainer",
                 code: 4,
                 userInfo: [
                     NSLocalizedDescriptionKey:
@@ -154,7 +154,7 @@ extension HostController {
 
     private func keychainError(_ status: OSStatus, _ message: String) -> NSError {
         NSError(
-            domain: "RamaTransparentProxyExampleHost",
+            domain: "RamaTransparentProxyExampleContainer",
             code: Int(status),
             userInfo: [NSLocalizedDescriptionKey: "\(message) (OSStatus \(status))"]
         )

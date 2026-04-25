@@ -1,6 +1,6 @@
 import AppKit
 
-extension HostController {
+extension ContainerController {
     @objc func startProxyAction(_: Any?) {
         startProxy()
     }

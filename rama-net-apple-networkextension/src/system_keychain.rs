@@ -3,7 +3,7 @@
 //! Provides access to the macOS System Keychain at
 //! `/Library/Keychains/System.keychain`, which is accessible by
 //! root-running processes such as Network Extension System Extensions.
-//! The host application (running as a normal user) can write secrets here —
+//! The container application (running as a normal user) can write secrets here —
 //! macOS may prompt for administrator credentials — and the extension can read
 //! them without any user interaction.
 //!

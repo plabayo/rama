@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>RamaTransparentProxyExampleHost</string>
+  <string>RamaTransparentProxyExampleContainer</string>
   <key>CFBundleIdentifier</key>
   <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
   <key>CFBundleExecutable</key>

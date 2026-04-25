@@ -1,6 +1,6 @@
 import SystemExtensions
 
-extension HostController {
+extension ContainerController {
     func ensureSystemExtensionActivated(completion: @escaping (Bool) -> Void) {
         systemExtensionActivationCompletions.append(completion)
         guard !systemExtensionActivationInFlight else {
@@ -29,7 +29,7 @@ extension HostController {
     }
 }
 
-extension HostController: OSSystemExtensionRequestDelegate {
+extension ContainerController: OSSystemExtensionRequestDelegate {
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         log("system extension approval required for \(request.identifier)")
         setStatus(status: .disconnected, detail: "approve system extension in System Settings")

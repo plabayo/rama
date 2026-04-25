@@ -9,7 +9,7 @@ pub struct DemoProxyConfig {
     pub peek_duration_s: f64,
     pub tcp_connect_timeout_ms: u64,
     pub exclude_domains: Vec<String>,
-    // Preferred: CA PEM strings embedded directly in the config (host app path).
+    // Preferred: CA PEM strings embedded directly in the config (container app path).
     pub ca_cert_pem: Option<String>,
     pub ca_key_pem: Option<String>,
     // Fallback: filesystem path via storage_dir/secrets/{account}/{name}.secret (e2e test path).

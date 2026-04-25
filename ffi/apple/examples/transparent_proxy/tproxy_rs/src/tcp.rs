@@ -72,11 +72,11 @@ impl DemoTcpMitmService {
         let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
         let ca_crt_pem = resolve_ca_cert_pem(&demo_config)?;
         let ca_crt = rama::tls::boring::core::x509::X509::from_pem(ca_crt_pem.as_bytes())
-            .context("parse host-provided MITM CA certificate PEM")?;
+            .context("parse container-app-provided MITM CA certificate PEM")?;
         let ca_key_pem = resolve_ca_key_pem(&demo_config)?;
         let ca_key =
             rama::tls::boring::core::pkey::PKey::private_key_from_pem(ca_key_pem.as_bytes())
-                .context("parse host-provided MITM CA key PEM")?;
+                .context("parse container-app-provided MITM CA key PEM")?;
         let ca_crt_pem_bytes: &[u8] = ca_crt
             .to_pem()
             .context("encode root ca cert to pem")?

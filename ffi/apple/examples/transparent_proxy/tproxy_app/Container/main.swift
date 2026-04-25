@@ -3,7 +3,7 @@ import Foundation
 import NetworkExtension
 import OSLog
 
-final class HostController: NSObject, NSApplicationDelegate {
+final class ContainerController: NSObject, NSApplicationDelegate {
     lazy var extensionBundleId: String = {
         guard let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty else {
             return ""
@@ -12,15 +12,15 @@ final class HostController: NSObject, NSApplicationDelegate {
     }()
     let managerDescription = "Rama Transparent Proxy Example"
     let managerServerAddress = "127.0.0.1"
-    static let secretAccount = "org.ramaproxy.example.tproxy.host"
+    static let secretAccount = "org.ramaproxy.example.tproxy.container"
     static let secretServiceKeyPEM = "tls-root-selfsigned-ca-key"
     static let secretServiceCertPEM = "tls-root-selfsigned-ca-crt"
     static let secretServiceKeys = [secretServiceKeyPEM, secretServiceCertPEM]
-    lazy var hostLogger = Logger(subsystem: "org.ramaproxy.example.tproxy", category: "host")
+    lazy var containerLogger = Logger(subsystem: "org.ramaproxy.example.tproxy", category: "container")
     lazy var logFileURL: URL = {
         let base = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs", isDirectory: true)
-        return base.appendingPathComponent("RamaTransparentProxyExampleHost.log")
+        return base.appendingPathComponent("RamaTransparentProxyExampleContainer.log")
     }()
 
     var statusItem: NSStatusItem?
@@ -48,7 +48,7 @@ final class HostController: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
-        log("host app launched")
+        log("container app launched")
         if resetProfileOnLaunch {
             log("launch flag detected: resetting saved proxy profile before start")
         }
@@ -68,7 +68,7 @@ final class HostController: NSObject, NSApplicationDelegate {
         }
         statusTimer?.cancel()
         statusTimer = nil
-        log("host app terminated")
+        log("container app terminated")
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -100,7 +100,7 @@ extension String {
 }
 
 let app = NSApplication.shared
-let delegate = HostController()
+let delegate = ContainerController()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)
 app.run()

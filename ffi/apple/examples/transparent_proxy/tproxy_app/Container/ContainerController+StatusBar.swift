@@ -1,7 +1,7 @@
 import AppKit
 import NetworkExtension
 
-extension HostController {
+extension ContainerController {
     func setupStatusItem() {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
