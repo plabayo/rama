@@ -9,6 +9,11 @@ pub struct DemoProxyConfig {
     pub peek_duration_s: f64,
     pub tcp_connect_timeout_ms: u64,
     pub exclude_domains: Vec<String>,
+    // Optional inline PEM overrides — if both are set they bypass the System Keychain.
+    // Intended for environments (e.g. e2e test runners) that lack keychain access.
+    // The production app leaves these unset and always uses the System Keychain.
+    pub ca_cert_pem: Option<String>,
+    pub ca_key_pem: Option<String>,
 }
 
 impl Default for DemoProxyConfig {
@@ -23,6 +28,8 @@ impl Default for DemoProxyConfig {
                 "connectivitycheck.gstatic.com".to_owned(),
                 "captive.apple.com".to_owned(),
             ],
+            ca_cert_pem: None,
+            ca_key_pem: None,
         }
     }
 }

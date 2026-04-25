@@ -2,18 +2,36 @@ use std::{
     env,
     path::{Path, PathBuf},
     ptr,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use rama::{
-    net::apple::networkextension::system_keychain,
-    tls::boring::core::x509::{X509, store::X509StoreBuilder},
+    net::tls::server::SelfSignedData,
+    tls::boring::{
+        core::x509::{X509, store::X509StoreBuilder},
+        server::utils::self_signed_server_auth_gen_ca,
+    },
 };
 
 use super::{bindings, types::BADGE_LABEL};
 
-const CA_SERVICE_CERT: &str = "tls-root-selfsigned-ca-crt";
-const CA_ACCOUNT: &str = "org.ramaproxy.example.tproxy";
+static MITM_CA: OnceLock<(String, String)> = OnceLock::new();
+
+fn get_or_generate_mitm_ca() -> &'static (String, String) {
+    MITM_CA.get_or_init(|| {
+        let (cert, key) = self_signed_server_auth_gen_ca(&SelfSignedData {
+            organisation_name: Some("Rama Transparent Proxy E2E Test Root CA".to_owned()),
+            ..Default::default()
+        })
+        .expect("generate e2e test MITM CA");
+        let cert_pem = String::from_utf8(cert.to_pem().expect("encode cert to PEM"))
+            .expect("cert PEM is valid UTF-8");
+        let key_pem =
+            String::from_utf8(key.private_key_to_pem_pkcs8().expect("encode key to PEM"))
+                .expect("key PEM is valid UTF-8");
+        (cert_pem, key_pem)
+    })
+}
 
 pub(crate) fn test_storage_dir() -> PathBuf {
     env::temp_dir().join("rama_tproxy_ffi_e2e")
@@ -58,23 +76,20 @@ impl Drop for EngineHandle {
 }
 
 pub(crate) fn default_engine() -> Arc<EngineHandle> {
+    let (cert_pem, key_pem) = get_or_generate_mitm_ca();
     Arc::new(EngineHandle::new_with_json(&serde_json::json!({
         "html_badge_enabled": true,
         "html_badge_label": BADGE_LABEL,
         "peek_duration_s": 0.5,
         "exclude_domains": [],
+        "ca_cert_pem": cert_pem,
+        "ca_key_pem": key_pem,
     })))
 }
 
-/// Read the MITM CA certificate from the System Keychain.
-///
-/// The engine must be created first — engine creation triggers CA generation
-/// and storage in the System Keychain if no CA is present yet.
 pub(crate) fn load_mitm_ca_store() -> Arc<rama::tls::boring::core::x509::store::X509Store> {
-    let cert_bytes = system_keychain::load_secret(CA_SERVICE_CERT, CA_ACCOUNT)
-        .expect("load mitm ca cert from system keychain")
-        .expect("mitm ca cert must exist in system keychain after engine creation");
-    let cert = X509::from_pem(&cert_bytes).expect("parse mitm ca cert pem");
+    let (cert_pem, _) = get_or_generate_mitm_ca();
+    let cert = X509::from_pem(cert_pem.as_bytes()).expect("parse e2e test MITM CA cert");
     let mut builder = X509StoreBuilder::new().expect("x509 store builder");
     builder.add_cert(cert).expect("add mitm ca cert");
     Arc::new(builder.build())

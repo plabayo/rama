@@ -18,7 +18,15 @@ const CA_SERVICE_KEY: &str = "tls-root-selfsigned-ca-key";
 const CA_ACCOUNT: &str = "org.ramaproxy.example.tproxy";
 
 pub(crate) fn load_or_create_mitm_ca(
+    cert_pem_override: Option<&str>,
+    key_pem_override: Option<&str>,
 ) -> Result<(X509, PKey<Private>), BoxError> {
+    if let (Some(cert_pem), Some(key_pem)) = (cert_pem_override, key_pem_override) {
+        let cert = X509::from_pem(cert_pem.as_bytes()).context("parse override MITM CA cert PEM")?;
+        let key = PKey::private_key_from_pem(key_pem.as_bytes()).context("parse override MITM CA key PEM")?;
+        return Ok((cert, key));
+    }
+
     let cert_bytes = system_keychain::load_secret(CA_SERVICE_CERT, CA_ACCOUNT)
         .context("load MITM CA cert from system keychain")?;
     let key_bytes = system_keychain::load_secret(CA_SERVICE_KEY, CA_ACCOUNT)
