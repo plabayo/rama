@@ -29,7 +29,7 @@
 //!
 //! > For transparent proxy support provided by this crate this is
 //! > on the Rust (sysext) side as easy as implementing the
-//! > [`crate::tproxy::TransparentProxyHandler::handle_app_message`] trait method.
+//! > `TransparentProxyHandler::handle_app_message` trait method.
 //!
 //! An appex can also implement inter-process communication (IPC)
 //! using various system IPC primitives. Both the container app and the
@@ -116,7 +116,7 @@
 //! the digital identity into the keychain.
 //!
 //! > This crate offers system keychain support via
-//! > the [`system_keychain`] crate (only available on MacOS).
+//! > the `system_keychain` module (only available on macOS).
 //!
 //! Some keychain features require the data protection keychain, including:
 //!
