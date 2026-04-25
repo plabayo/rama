@@ -86,17 +86,13 @@ pub(crate) fn load_mitm_ca_store() -> Arc<rama::tls::boring::core::x509::store::
 
 fn test_mitm_ca() {
     let storage_dir = test_storage_dir();
+    // cert_path is read by load_mitm_ca_store(); secret paths are read by the engine.
     let cert_path = storage_dir.join("mitm-root-ca-cert-pem.pem");
-    let key_path = storage_dir.join("mitm-root-ca-key-pem.pem");
     let secret_dir = storage_dir.join("secrets").join(TEST_CA_SECRET_ACCOUNT);
     let cert_secret_path = secret_dir.join(format!("{TEST_CA_CERT_SECRET_NAME}.secret"));
     let key_secret_path = secret_dir.join(format!("{TEST_CA_KEY_SECRET_NAME}.secret"));
 
-    if cert_path.exists()
-        && key_path.exists()
-        && cert_secret_path.exists()
-        && key_secret_path.exists()
-    {
+    if cert_path.exists() && cert_secret_path.exists() && key_secret_path.exists() {
         return;
     }
 
@@ -118,7 +114,6 @@ fn test_mitm_ca() {
 
     std::fs::create_dir_all(&secret_dir).expect("create ffi e2e secret dir");
     std::fs::write(&cert_path, cert_pem.as_bytes()).expect("persist ffi e2e mitm cert");
-    std::fs::write(&key_path, key_pem.as_bytes()).expect("persist ffi e2e mitm key");
     std::fs::write(&cert_secret_path, cert_pem.as_bytes()).expect("persist ffi e2e mitm cert secret");
     std::fs::write(&key_secret_path, key_pem.as_bytes()).expect("persist ffi e2e mitm key secret");
 }
