@@ -1,6 +1,7 @@
 mod bytes;
 pub use bytes::{BytesOwned, BytesView};
 
+#[cfg(target_os = "macos")]
 pub(crate) mod core_foundation;
 
 mod log;

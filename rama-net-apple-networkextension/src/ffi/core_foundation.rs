@@ -1,4 +1,7 @@
 //! Private CoreFoundation helpers used by Apple-specific raw bindings.
+//!
+//! For now only used to support MacOS legacy keychain,
+//! but already reserved for future other use cases.
 
 use crate::ffi::sys;
 
