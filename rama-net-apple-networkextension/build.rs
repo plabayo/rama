@@ -1,6 +1,12 @@
-#[cfg(target_os = "macos")]
 fn main() {
     use std::{env, path::PathBuf};
+
+    // Build scripts compile for the host, not the target. Use CARGO_CFG_TARGET_OS
+    // to check the actual cross-compilation target. SecKeychain.h / cssmapple.h
+    // (needed for System Keychain bindings) are macOS-only and unavailable on iOS.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
 
@@ -45,6 +51,3 @@ fn main() {
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("write security bindings");
 }
-
-#[cfg(not(target_os = "macos"))]
-fn main() {}
