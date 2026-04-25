@@ -1,5 +1,12 @@
 //! Apple XPC support for rama.
 //!
+//! > **Scope:** this crate has been developed and tested primarily with **macOS System
+//! > Extensions** in mind. It may also work in other contexts — app extensions, regular
+//! > apps, iOS — but those have not been tested and are not a current maintainer priority.
+//! > If you have such a use case and run into issues, feel free to
+//! > [open a ticket on GitHub](https://github.com/plabayo/rama/issues/new) and we can
+//! > look into it together.
+//!
 //! XPC is Apple's inter-process communication framework. It provides structured,
 //! asynchronous message passing between processes on the same machine, carried over
 //! kernel Mach ports. It is the standard mechanism for privilege-separated macOS

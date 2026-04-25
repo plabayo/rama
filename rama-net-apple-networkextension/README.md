@@ -39,9 +39,13 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-net-apple-networkextension
 
-Rama network types and utilities.
-
 Apple Network Extension support for rama.
+
+> **Scope:** this crate has been developed and tested with **macOS System Extensions**
+> as the primary target. Other use cases — macOS app extensions, iOS app extensions,
+> and so on — may work but have not been tested and are not a current maintainer
+> priority. If you have such a use case and run into issues, please
+> [open a feature request on GitHub](https://github.com/plabayo/rama/issues/new).
 
 Crate used by the end-user `rama` crate and `rama` crate authors alike.
 

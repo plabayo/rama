@@ -1,5 +1,11 @@
 //! Apple Network Extension support for rama.
 //!
+//! > **Scope:** this crate has been developed and tested with **macOS System Extensions**
+//! > as the primary target. Other use cases — macOS app extensions, iOS app extensions,
+//! > and so on — may work but have not been tested and are not a current maintainer
+//! > priority. If you have such a use case and run into issues, please
+//! > [open a feature request on GitHub](https://github.com/plabayo/rama/issues/new).
+//!
 //! Official Apple documentation about the
 //! Network Extension Framework can be consulted at:
 //! <https://developer.apple.com/documentation/networkextension>.

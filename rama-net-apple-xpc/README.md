@@ -24,6 +24,13 @@
 
 Apple XPC support for rama.
 
+> **Scope:** this crate has been developed and tested primarily with **macOS System
+> Extensions** in mind. It may also work in other contexts — app extensions, regular
+> apps, iOS — but those have not been tested and are not a current maintainer priority.
+> If you have such a use case and run into issues, feel free to
+> [open a ticket on GitHub](https://github.com/plabayo/rama/issues/new) and we can
+> look into it together.
+
 This crate wraps the low-level `libXPC` C API through bindgen-generated bindings in
 [`ffi`](./src/lib.rs), then layers a small ergonomic Rust API on top for:
 
