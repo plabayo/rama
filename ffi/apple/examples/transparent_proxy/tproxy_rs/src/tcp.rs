@@ -3,7 +3,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use rama::{
     Layer, Service,
     combinators::Either,
-    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef,
     http::{
         Request, Response,
@@ -70,13 +70,7 @@ pub(super) struct DemoTcpMitmService {
 impl DemoTcpMitmService {
     pub(super) async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, BoxError> {
         let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
-        let ca_crt_pem = resolve_ca_cert_pem(&demo_config)?;
-        let ca_crt = rama::tls::boring::core::x509::X509::from_pem(ca_crt_pem.as_bytes())
-            .context("parse container-app-provided MITM CA certificate PEM")?;
-        let ca_key_pem = resolve_ca_key_pem(&demo_config)?;
-        let ca_key =
-            rama::tls::boring::core::pkey::PKey::private_key_from_pem(ca_key_pem.as_bytes())
-                .context("parse container-app-provided MITM CA key PEM")?;
+        let (ca_crt, ca_key) = crate::tls::load_or_create_mitm_ca()?;
         let ca_crt_pem_bytes: &[u8] = ca_crt
             .to_pem()
             .context("encode root ca cert to pem")?
@@ -207,78 +201,6 @@ impl DemoTcpMitmService {
     }
 }
 
-fn resolve_ca_cert_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError> {
-    if let Some(pem) = demo_config
-        .ca_cert_pem
-        .as_deref()
-        .filter(|s| !s.is_empty())
-    {
-        tracing::info!("using MITM CA certificate PEM from engine config");
-        return Ok(pem.to_owned());
-    }
-    load_ca_secret_from_storage_dir(
-        demo_config,
-        demo_config.ca_cert_secret_name.as_deref(),
-        "certificate",
-    )
-}
-
-fn resolve_ca_key_pem(demo_config: &DemoProxyConfig) -> Result<String, BoxError> {
-    if let Some(pem) = demo_config.ca_key_pem.as_deref().filter(|s| !s.is_empty()) {
-        tracing::info!("using MITM CA private key PEM from engine config");
-        return Ok(pem.to_owned());
-    }
-    load_ca_secret_from_storage_dir(
-        demo_config,
-        demo_config.ca_key_secret_name.as_deref(),
-        "private key",
-    )
-}
-
-fn load_ca_secret_from_storage_dir(
-    demo_config: &DemoProxyConfig,
-    service_name: Option<&str>,
-    secret_kind: &'static str,
-) -> Result<String, BoxError> {
-    let Some(service_name) = service_name.filter(|value| !value.is_empty()) else {
-        return Err(OpaqueError::from_static_str(
-            "CA secret missing: no PEM in config and no secret name for filesystem fallback",
-        )
-        .context_field("secret_kind", secret_kind));
-    };
-    let Some(account_name) = demo_config
-        .ca_secret_account
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    else {
-        return Err(OpaqueError::from_static_str(
-            "CA secret missing: no PEM in config and no account name for filesystem fallback",
-        )
-        .context_field("secret_kind", secret_kind));
-    };
-
-    let base_dir = crate::utils::storage_dir().ok_or_else(|| {
-        OpaqueError::from_static_str(
-            "CA secret missing: transparent proxy storage directory is not initialized",
-        )
-        .context_field("secret_kind", secret_kind)
-    })?;
-    let path = base_dir
-        .join("secrets")
-        .join(account_name)
-        .join(format!("{service_name}.secret"));
-
-    tracing::info!(
-        path = %path.display(),
-        service = service_name,
-        account = account_name,
-        "loading MITM CA secret from transparent proxy storage directory"
-    );
-
-    std::fs::read_to_string(&path)
-        .context("read MITM CA secret from transparent proxy storage directory")
-        .context_field("path", path.display().to_string())
-}
 
 #[derive(Clone)]
 pub(super) struct TcpInterceptService {

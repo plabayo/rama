@@ -385,14 +385,11 @@ extension ContainerController {
     }
 
     func currentEngineConfigJson() throws -> String {
-        let ca = try loadOrCreateMITMCA()
         let payload = ProxyEngineConfigPayload(
             htmlBadgeEnabled: demoSettings.htmlBadgeEnabled,
             htmlBadgeLabel: demoSettings.htmlBadgeLabel,
             tcpConnectTimeoutMs: demoSettings.tcpConnectTimeoutMs,
-            excludeDomains: demoSettings.excludeDomains,
-            caCertPEM: ca.certPEM,
-            caKeyPEM: ca.keyPEM
+            excludeDomains: demoSettings.excludeDomains
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

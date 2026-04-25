@@ -20,20 +20,11 @@ struct ProxyEngineConfigPayload: Encodable {
     let htmlBadgeLabel: String
     let tcpConnectTimeoutMs: Int
     let excludeDomains: [String]
-    let caCertPEM: String
-    let caKeyPEM: String
 
     private enum CodingKeys: String, CodingKey {
         case htmlBadgeEnabled = "html_badge_enabled"
         case htmlBadgeLabel = "html_badge_label"
         case tcpConnectTimeoutMs = "tcp_connect_timeout_ms"
         case excludeDomains = "exclude_domains"
-        case caCertPEM = "ca_cert_pem"
-        case caKeyPEM = "ca_key_pem"
     }
-}
-
-struct MITMCASecrets: Equatable {
-    let certPEM: String
-    let keyPEM: String
 }

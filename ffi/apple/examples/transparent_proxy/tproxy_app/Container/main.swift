@@ -12,7 +12,7 @@ final class ContainerController: NSObject, NSApplicationDelegate {
     }()
     let managerDescription = "Rama Transparent Proxy Example"
     let managerServerAddress = "127.0.0.1"
-    static let secretAccount = "org.ramaproxy.example.tproxy.container"
+    static let secretAccount = "org.ramaproxy.example.tproxy"
     static let secretServiceKeyPEM = "tls-root-selfsigned-ca-key"
     static let secretServiceCertPEM = "tls-root-selfsigned-ca-crt"
     static let secretServiceKeys = [secretServiceKeyPEM, secretServiceCertPEM]
@@ -45,10 +45,16 @@ final class ContainerController: NSObject, NSApplicationDelegate {
     var systemExtensionActivationInFlight = false
     lazy var resetProfileOnLaunch =
         ProcessInfo.processInfo.arguments.contains("--reset-profile-on-launch")
+    lazy var cleanSecretsOnLaunch =
+        ProcessInfo.processInfo.arguments.contains("--clean-secrets")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         log("container app launched")
+        if cleanSecretsOnLaunch {
+            log("launch flag detected: cleaning MITM CA secrets before start")
+            cleanSecrets()
+        }
         if resetProfileOnLaunch {
             log("launch flag detected: resetting saved proxy profile before start")
         }

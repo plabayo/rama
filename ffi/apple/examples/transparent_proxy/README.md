@@ -3,18 +3,14 @@
 This example shows how to link a Rust staticlib that implements the
 Rama NetworkExtension C ABI into a macOS Transparent Proxy extension.
 
-The container app generates and stores the demo MITM root CA in the macOS
-keychain using `swift-certificates`. The certificate and private key are stored
-under shared protected-storage secret names, and the opaque Network Extension
-config now only carries the lookup metadata:
+The sysext generates and stores the demo MITM root CA in the macOS System
+Keychain (`/Library/Keychains/System.keychain`) using Rama's built-in boring TLS
+support. The CA is created on first startup and reused on subsequent starts.
 
-- `ca_cert_secret_name`
-- `ca_key_secret_name`
-- `ca_secret_account`
-- `ca_secret_access_group`
-
-The extension loads both PEM blobs itself from protected storage at startup, so
-the private key is no longer shipped through opaque config.
+The container app can delete the stored CA material via the `Rotate MITM CA`
+menu command or the `--clean-secrets` launch flag; the sysext will create a
+fresh CA the next time it initialises. The container app does not create or
+read the CA.
 
 ## Build
 
@@ -67,9 +63,9 @@ The build helpers are:
 
 Both modes use the real system-extension product type. Developer mode uses the plain `app-proxy-provider` entitlement payload, while distribution mode switches the same entitlement template to `app-proxy-provider-systemextension`.
 
-At runtime, the container app menu includes `Rotate MITM CA`, which deletes the stored CA
-material, generates a fresh CA on the container app, updates the opaque config
-(secret lookup metadata), and restarts the proxy when needed.
+At runtime, the container app menu includes `Rotate MITM CA`, which deletes the
+CA material from the System Keychain and restarts the proxy. The sysext
+generates a fresh CA on the next startup.
 
 ## Signing Setup
 

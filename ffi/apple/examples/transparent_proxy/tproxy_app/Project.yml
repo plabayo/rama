@@ -7,9 +7,6 @@ options:
 packages:
   RamaAppleNetworkExtension:
     path: ../../../../..
-  X509:
-    url: https://github.com/apple/swift-certificates.git
-    from: 1.0.0
 
 targets:
   RamaTransparentProxyExampleContainer:
@@ -22,8 +19,6 @@ targets:
       - target: RamaTransparentProxyExampleExtension
         embed: true
         codeSign: true
-      - package: X509
-        product: X509
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev

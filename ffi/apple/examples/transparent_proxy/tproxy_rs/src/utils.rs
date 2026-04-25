@@ -28,6 +28,7 @@ pub(super) fn set_storage_dir(path: Option<PathBuf>) {
     }
 }
 
+#[expect(unused)]
 pub(super) fn storage_dir() -> Option<&'static PathBuf> {
     STORAGE_DIR.get()
 }

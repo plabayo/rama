@@ -6,19 +6,14 @@ use std::{
 };
 
 use rama::{
-    net::{
-        address::Domain,
-        tls::server::SelfSignedData,
-    },
-    tls::boring::server::utils::self_signed_server_auth_gen_ca,
+    net::apple::networkextension::system_keychain,
+    tls::boring::core::x509::{X509, store::X509StoreBuilder},
 };
-use rama::tls::boring::core::x509::{X509, store::X509StoreBuilder};
 
 use super::{bindings, types::BADGE_LABEL};
 
-const TEST_CA_CERT_SECRET_NAME: &str = "mitm-root-ca-cert-pem";
-const TEST_CA_KEY_SECRET_NAME: &str = "mitm-root-ca-key-pem";
-const TEST_CA_SECRET_ACCOUNT: &str = "rama-tproxy-ffi-e2e";
+const CA_SERVICE_CERT: &str = "tls-root-selfsigned-ca-crt";
+const CA_ACCOUNT: &str = "org.ramaproxy.example.tproxy";
 
 pub(crate) fn test_storage_dir() -> PathBuf {
     env::temp_dir().join("rama_tproxy_ffi_e2e")
@@ -63,57 +58,24 @@ impl Drop for EngineHandle {
 }
 
 pub(crate) fn default_engine() -> Arc<EngineHandle> {
-    test_mitm_ca();
     Arc::new(EngineHandle::new_with_json(&serde_json::json!({
         "html_badge_enabled": true,
         "html_badge_label": BADGE_LABEL,
         "peek_duration_s": 0.5,
         "exclude_domains": [],
-        "ca_cert_secret_name": TEST_CA_CERT_SECRET_NAME,
-        "ca_key_secret_name": TEST_CA_KEY_SECRET_NAME,
-        "ca_secret_account": TEST_CA_SECRET_ACCOUNT,
     })))
 }
 
+/// Read the MITM CA certificate from the System Keychain.
+///
+/// The engine must be created first — engine creation triggers CA generation
+/// and storage in the System Keychain if no CA is present yet.
 pub(crate) fn load_mitm_ca_store() -> Arc<rama::tls::boring::core::x509::store::X509Store> {
-    let cert_pem = std::fs::read(test_storage_dir().join("mitm-root-ca-cert-pem.pem"))
-        .expect("read mitm ca pem from filesystem storage");
-    let cert = X509::from_pem(&cert_pem).expect("parse mitm ca pem");
+    let cert_bytes = system_keychain::load_secret(CA_SERVICE_CERT, CA_ACCOUNT)
+        .expect("load mitm ca cert from system keychain")
+        .expect("mitm ca cert must exist in system keychain after engine creation");
+    let cert = X509::from_pem(&cert_bytes).expect("parse mitm ca cert pem");
     let mut builder = X509StoreBuilder::new().expect("x509 store builder");
     builder.add_cert(cert).expect("add mitm ca cert");
     Arc::new(builder.build())
-}
-
-fn test_mitm_ca() {
-    let storage_dir = test_storage_dir();
-    // cert_path is read by load_mitm_ca_store(); secret paths are read by the engine.
-    let cert_path = storage_dir.join("mitm-root-ca-cert-pem.pem");
-    let secret_dir = storage_dir.join("secrets").join(TEST_CA_SECRET_ACCOUNT);
-    let cert_secret_path = secret_dir.join(format!("{TEST_CA_CERT_SECRET_NAME}.secret"));
-    let key_secret_path = secret_dir.join(format!("{TEST_CA_KEY_SECRET_NAME}.secret"));
-
-    if cert_path.exists() && cert_secret_path.exists() && key_secret_path.exists() {
-        return;
-    }
-
-    let (root_cert, root_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-        organisation_name: Some("Rama Transparent Proxy FFI E2E".to_owned()),
-        common_name: Some(Domain::from_static("rama-tproxy-ffi-e2e.localhost")),
-        ..Default::default()
-    })
-    .expect("generate ffi e2e mitm ca");
-
-    let cert_pem = String::from_utf8(root_cert.to_pem().expect("encode ffi e2e mitm cert to pem"))
-        .expect("ffi e2e cert pem utf8");
-    let key_pem = String::from_utf8(
-        root_key
-            .private_key_to_pem_pkcs8()
-            .expect("encode ffi e2e mitm key to pem"),
-    )
-    .expect("ffi e2e key pem utf8");
-
-    std::fs::create_dir_all(&secret_dir).expect("create ffi e2e secret dir");
-    std::fs::write(&cert_path, cert_pem.as_bytes()).expect("persist ffi e2e mitm cert");
-    std::fs::write(&cert_secret_path, cert_pem.as_bytes()).expect("persist ffi e2e mitm cert secret");
-    std::fs::write(&key_secret_path, key_pem.as_bytes()).expect("persist ffi e2e mitm key secret");
 }
