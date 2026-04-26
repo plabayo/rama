@@ -16,14 +16,8 @@
   <string>SYSX</string>
   <key>LSMinimumSystemVersion</key>
   <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
-  <key>TProxyXpcServiceName</key>
-  <string>$(TPROXY_XPC_SERVICE_NAME)</string>
   <key>NSSystemExtensionUsageDescription</key>
   <string>Installs the transparent proxy system extension used by the demo.</string>
-
-  <key>NEMachServiceName</key>
-  <string>$(TPROXY_XPC_SERVICE_NAME)</string>
-
   <key>NetworkExtension</key>
   <dict>
     <key>NEProviderClasses</key>
@@ -31,6 +25,8 @@
       <key>com.apple.networkextension.app-proxy</key>
       <string>RamaAppleNetworkExtension.RamaTransparentProxyProvider</string>
     </dict>
+    <key>NEMachServiceName</key>
+    <string>$(APP_GROUP_ID).provider</string>
   </dict>
 </dict>
 </plist>

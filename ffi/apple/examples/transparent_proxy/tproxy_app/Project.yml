@@ -34,7 +34,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_CONTAINER_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
-        TPROXY_XPC_SERVICE_NAME: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev.xpc"
+        APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev"
 
   RamaTransparentProxyExampleExtension:
     type: system-extension
@@ -61,7 +61,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
-        TPROXY_XPC_SERVICE_NAME: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev.xpc"
+        APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev"
         ENABLE_DEBUG_DYLIB: NO
         OTHER_LDFLAGS:
           - "$(SRCROOT)/../tproxy_rs/target/universal/librama_tproxy_example.a"

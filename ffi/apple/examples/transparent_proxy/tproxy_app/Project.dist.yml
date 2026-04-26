@@ -40,7 +40,7 @@ targets:
         OTHER_CODE_SIGN_FLAGS:
           - "--timestamp"
           - "--options=runtime"
-        TPROXY_XPC_SERVICE_NAME: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dist.xpc"
+        APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dist"
 
   RamaTransparentProxyExampleExtension:
     type: system-extension
@@ -67,7 +67,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: "-systemextension"
-        TPROXY_XPC_SERVICE_NAME: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dist.xpc"
+        APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dist"
         CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
         GENERATE_PROVISIONING_PROFILE: NO
         ENABLE_HARDENED_RUNTIME: YES

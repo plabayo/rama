@@ -4,15 +4,17 @@ import NetworkExtension
 import OSLog
 
 final class ContainerController: NSObject, NSApplicationDelegate {
+    lazy var xpcServiceName: String = {
+        return Bundle.main.object(
+            forInfoDictionaryKey: "ProviderMachServiceName"
+        ) as? String ?? ""
+    }()
+
     lazy var extensionBundleId: String = {
         guard let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty else {
             return ""
         }
         return "\(bundleId).provider"
-    }()
-
-    lazy var xpcServiceName: String = {
-        Bundle.main.object(forInfoDictionaryKey: "TProxyXpcServiceName") as? String ?? ""
     }()
 
     let managerDescription = "Rama Transparent Proxy Example"

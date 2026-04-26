@@ -7,11 +7,14 @@ extension ContainerController {
     /// The sysext registers its mach service under its bundle ID (`NEMachServiceName`).
     /// The message is fire-and-forget: no reply is expected.
     func sendXpcUpdateSettings() {
-        let serviceName = extensionBundleId
+        let serviceName = xpcServiceName
+
         guard !serviceName.isEmpty else {
-            log("sendXpcUpdateSettings: extension bundle ID is empty, skipping")
+            log("sendXpcUpdateSettings: xpcServiceName is empty, skipping")
             return
         }
+
+        log("sendXpcUpdateSettings: xpcServiceName = \(serviceName)")
 
         let conn = xpc_connection_create_mach_service(
             serviceName, nil, UInt64(XPC_CONNECTION_MACH_SERVICE_PRIVILEGED))
@@ -33,6 +36,8 @@ extension ContainerController {
         xpc_connection_send_message(conn, msg)
         xpc_connection_cancel(conn)
 
-        log("sendXpcUpdateSettings: settings update sent (badge=\(demoSettings.htmlBadgeEnabled), excludeDomains=\(demoSettings.excludeDomains.count))")
+        log(
+            "sendXpcUpdateSettings: settings update sent (badge=\(demoSettings.htmlBadgeEnabled), excludeDomains=\(demoSettings.excludeDomains.count))"
+        )
     }
 }
