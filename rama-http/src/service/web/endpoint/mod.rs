@@ -1,6 +1,8 @@
-use crate::{Body, Request, Response, matcher::HttpMatcher};
-use rama_core::{Service, service::BoxService};
 use std::convert::Infallible;
+
+use rama_core::{Service, service::BoxService};
+
+use crate::{Body, Request, Response, matcher::HttpMatcher};
 
 pub mod extract;
 pub mod response;

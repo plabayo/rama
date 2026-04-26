@@ -1,7 +1,9 @@
-use crate::service::web::response::IntoResponse;
+use std::error::Error;
+
 use derive_more::Display;
 use rama_http_types::Response;
-use std::error::Error;
+
+use crate::service::web::response::IntoResponse;
 
 pub trait IntoResponseError: Error + Send + Sync + 'static {
     fn as_response(&self) -> Response;

@@ -1,26 +1,13 @@
-use crate::{
-    Request, Response,
-    headers::Allow,
-    matcher::{HttpMatcher, MethodMatcher, PathMatcher, UriParams},
-    service::web::{IntoEndpointService, ResponseError, response::layer::IntoResponseLayer},
-    service::{
-        fs::{DirectoryServeMode, ServeDir},
-        web::{
-            IntoEndpointServiceWithState,
-            response::{Headers, IntoResponse},
-        },
-    },
-};
+use std::{convert::Infallible, path::Path, sync::Arc};
+
 use http::Method;
 use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
-use std::{convert::Infallible, path::Path, sync::Arc};
-
-use rama_core::error::BoxError;
-use rama_core::layer::IntoErrLayer;
 use rama_core::{
     Layer,
+    error::BoxError,
     extensions::{Extensions, ExtensionsRef},
+    layer::IntoErrLayer,
     matcher::Matcher,
     service::{BoxService, Service},
     telemetry::tracing,
@@ -32,6 +19,19 @@ use rama_utils::{
     collections::NonEmptySmallVec,
     include_dir,
     str::smol_str::{StrExt as _, format_smolstr},
+};
+
+use crate::{
+    Request, Response,
+    headers::Allow,
+    matcher::{HttpMatcher, MethodMatcher, PathMatcher, UriParams},
+    service::{
+        fs::{DirectoryServeMode, ServeDir},
+        web::{
+            IntoEndpointService, IntoEndpointServiceWithState, ResponseError,
+            response::{Headers, IntoResponse, layer::IntoResponseLayer},
+        },
+    },
 };
 
 type DefaultLayer = (IntoErrLayer<BoxError>, IntoResponseLayer);
@@ -808,11 +808,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{matcher::UriParams, service::web::extract::State};
-
-    use super::*;
     use rama_core::{extensions::ExtensionsRef, service::service_fn};
     use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt, header};
+
+    use super::*;
+    use crate::{matcher::UriParams, service::web::extract::State};
 
     fn root_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {

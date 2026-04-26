@@ -1,6 +1,7 @@
-use crate::service::web::response::IntoResponse;
 use rama_core::{Layer, Service};
 use rama_http_types::{Request, Response};
+
+use crate::service::web::response::IntoResponse;
 
 /// A [`Service`] that maps response for an inner service using [`IntoResponse`].
 #[derive(Debug, Clone)]

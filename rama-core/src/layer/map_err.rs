@@ -1,8 +1,9 @@
-use crate::{Layer, Service};
+use std::{fmt, marker::PhantomData};
+
 use rama_error::{BoxError, ErrorExt, extra::OpaqueError};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
-use std::marker::PhantomData;
+
+use crate::{Layer, Service};
 
 /// Maps this service's error value to a different value.
 ///

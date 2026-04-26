@@ -1,24 +1,22 @@
+use std::{convert::Infallible, error::Error, io, iter::successors, sync::Arc};
+
 use derive_more::{Display, Error};
 use h2_support::prelude::Response;
-use rama::Service;
-use rama::error::BoxError;
-use rama::http::service::web::Router;
-use rama::http::service::web::extract::Host;
-use rama::http::{Body, Method, Request, StatusCode};
-use rama_core::Layer;
-use rama_core::layer::{MapErr, MapErrLayer};
-use rama_http::layer::error_handling::ErrorHandlerLayer;
-use rama_http::matcher::HttpMatcher;
-use rama_http::service::web::extract::host::MissingHost;
-use rama_http::service::web::response::IntoResponse;
-use rama_http::service::web::{
-    IntoEndpointService, IntoEndpointServiceWithState, ResponseError, RouterError,
+use rama::{
+    error::BoxError,
+    http::{
+        service::web::{extract::Host, Router}, Body, Method, Request,
+        StatusCode,
+    },
+    Service,
 };
-use std::convert::Infallible;
-use std::error::Error;
-use std::io;
-use std::iter::successors;
-use std::sync::Arc;
+use rama_http::{
+    matcher::HttpMatcher,
+    service::web::{
+        extract::host::MissingHost, response::IntoResponse,
+        ResponseError, RouterError,
+    },
+};
 
 pub fn downcast_ref<'a, E: Error + Send + Sync + 'static>(
     err: &'a (dyn Error + 'static),
