@@ -10,7 +10,12 @@ extension ContainerController {
                 return
             }
 
-            self.syncDemoSettings(from: manager.protocolConfiguration as? NETunnelProviderProtocol)
+            // Only restore demoSettings from NE preferences on first run.
+            // After that, in-memory demoSettings is authoritative.
+            if !self.settingsInitializedFromNE {
+                self.syncDemoSettings(from: manager.protocolConfiguration as? NETunnelProviderProtocol)
+                self.settingsInitializedFromNE = true
+            }
             self.activeManager = manager
             self.installStatusObserver(manager: manager)
             self.startStatusTimer(manager: manager)
@@ -82,15 +87,29 @@ extension ContainerController {
                 return
             }
 
-            self.log("calling stopVPNTunnel")
-            manager.connection.stopVPNTunnel()
-            self.setStatus(status: manager.connection.status, detail: nil)
-            completion?()
+            // Flush current in-memory settings to NE preferences before stopping so that
+            // any live XPC-pushed changes are picked up on the next start.
+            // preserveCurrentDemoSettings: true — use in-memory demoSettings, not NE values.
+            self.loadOrCreateAndConfigureManager(preserveCurrentDemoSettings: true) {
+                [weak self] _ in
+                guard let self else {
+                    completion?()
+                    return
+                }
+                self.log("calling stopVPNTunnel")
+                manager.connection.stopVPNTunnel()
+                self.setStatus(status: manager.connection.status, detail: nil)
+                completion?()
+            }
         }
     }
 
     func applyDemoSettings() {
-        let isActive = {
+        // If the proxy is already running, push changes live via XPC only.
+        // Calling loadOrCreateAndConfigureManager would save a new providerConfiguration
+        // to NE preferences; NE detects the change and tears down the running provider.
+        // Settings will be flushed to NE preferences when the proxy is stopped.
+        let isActive: Bool = {
             guard let activeManager else { return false }
             switch activeManager.connection.status {
             case .connected, .connecting, .reasserting:
@@ -100,26 +119,23 @@ extension ContainerController {
             }
         }()
 
+        if isActive {
+            log("proxy active: pushing settings update via XPC (skipping NE config save to avoid restart)")
+            sendXpcUpdateSettings()
+            setStatus(status: activeManager?.connection.status ?? .invalid, detail: "demo settings applied")
+            return
+        }
+
+        // Proxy not running: persist the new settings to NE preferences.
         loadOrCreateAndConfigureManager(preserveCurrentDemoSettings: true) { [weak self] manager in
             guard let self else { return }
             guard let manager else {
                 self.setStatus(status: .invalid, detail: "configuration failed")
                 return
             }
-
             self.activeManager = manager
             self.installStatusObserver(manager: manager)
             self.startStatusTimer(manager: manager)
-
-            if isActive {
-                // Proxy is running: push settings live via XPC (no restart needed).
-                // The NE config was already saved above for persistence across restarts.
-                self.log("proxy active: pushing settings update via XPC")
-                self.sendXpcUpdateSettings()
-                self.setStatus(status: manager.connection.status, detail: "demo settings applied")
-                return
-            }
-
             self.setStatus(status: manager.connection.status, detail: "demo settings saved")
         }
     }
@@ -244,10 +260,15 @@ extension ContainerController {
             }
 
             let existingManager = self.selectManager(from: managers)
-            if !preserveCurrentDemoSettings {
+            // Sync from NE preferences only on the very first call (app launch). After
+            // that, in-memory demoSettings is the authoritative source so that live XPC
+            // updates survive an unexpected provider stop followed by a manual restart,
+            // without the stale NE values overwriting what the user already changed.
+            if !preserveCurrentDemoSettings && !self.settingsInitializedFromNE {
                 self.syncDemoSettings(
                     from: existingManager?.protocolConfiguration as? NETunnelProviderProtocol
                 )
+                self.settingsInitializedFromNE = true
             }
             if forceReinstall {
                 let managersToRemove = self.matchingManagers(from: managers)

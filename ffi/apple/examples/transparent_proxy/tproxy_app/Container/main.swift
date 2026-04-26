@@ -51,6 +51,10 @@ final class ContainerController: NSObject, NSApplicationDelegate {
     var lastStatus: NEVPNStatus?
     var lastLoggedDisconnectSignature: String?
     var demoSettings = DemoProxySettings()
+    /// True after demoSettings has been initialised from NE preferences at least once.
+    /// Prevents subsequent loadOrCreateAndConfigureManager calls from overwriting in-memory
+    /// settings with stale NE values (e.g. after an unexpected provider stop + restart).
+    var settingsInitializedFromNE = false
     var systemExtensionActivationCompletions: [(Bool) -> Void] = []
     var systemExtensionActivationInFlight = false
     lazy var resetProfileOnLaunch =

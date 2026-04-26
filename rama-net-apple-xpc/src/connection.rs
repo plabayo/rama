@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CStr, CString},
+    ffi::{CStr, CString, c_void},
     ops::Deref,
     ptr,
 };
@@ -28,7 +28,7 @@ use crate::{
         xpc_connection_send_message, xpc_connection_send_message_with_reply,
         xpc_connection_set_event_handler, xpc_connection_suspend, xpc_connection_t,
         xpc_dictionary_create_reply, xpc_dictionary_get_string, xpc_dictionary_set_value,
-        xpc_object_t,
+        xpc_get_type, xpc_object_t,
     },
     message::XpcMessage,
     object::OwnedXpcObject,
@@ -157,9 +157,16 @@ impl XpcConnection {
         let raw_connection = connection.raw as xpc_connection_t;
 
         let block = ConcreteBlock::new(move |event: xpc_object_t| {
+            if raw_is_error(event) {
+                tracing::debug!("xpc peer got error event");
+                let _ = sender.send(XpcEvent::Error(XpcConnectionError::Invalidated(None)));
+                return;
+            }
+
             let Ok(retained) = OwnedXpcObject::retain(event, "peer event") else {
                 return;
             };
+
             let event = map_event(raw_connection, retained);
             let _ = sender.send(event);
         })
@@ -231,12 +238,13 @@ impl XpcConnection {
 
         {
             let block = ConcreteBlock::new(move |reply: xpc_object_t| {
-                let result = match OwnedXpcObject::retain(reply, "async reply") {
-                    Ok(reply) => match map_connection_error(raw_connection, &reply) {
-                        Some(err) => Err(XpcError::Connection(err)),
-                        None => reply.to_message(),
-                    },
-                    Err(err) => Err(err),
+                let result = if raw_is_error(reply) {
+                    Err(XpcError::Connection(XpcConnectionError::Invalidated(None)))
+                } else {
+                    match OwnedXpcObject::retain(reply, "async reply") {
+                        Ok(reply) => reply.to_message(),
+                        Err(err) => Err(err),
+                    }
                 };
 
                 if let Some(reply_sender) = reply_sender.lock().take() {
@@ -372,6 +380,17 @@ impl Service<XpcMessage> for XpcConnection {
     async fn serve(&self, input: XpcMessage) -> Result<Self::Output, Self::Error> {
         self.send(input)
     }
+}
+
+fn raw_is_type(event: xpc_object_t, ty: *const c_void) -> bool {
+    let value_type = unsafe { xpc_get_type(event) };
+    ptr::eq(value_type.cast::<c_void>(), ty)
+}
+
+fn raw_is_error(event: xpc_object_t) -> bool {
+    raw_is_type(event, unsafe {
+        &_xpc_type_error as *const _ as *const c_void
+    })
 }
 
 pub(crate) fn map_event(connection: xpc_connection_t, event: OwnedXpcObject) -> XpcEvent {

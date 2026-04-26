@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{ffi::c_void, ops::Deref, ptr};
 
 use rama_core::telemetry::tracing;
 use rama_utils::str::arcstr::ArcStr;
@@ -9,9 +9,9 @@ use crate::{
     connection::XpcConnection,
     error::XpcError,
     ffi::{
-        _xpc_type_connection, XPC_CONNECTION_MACH_SERVICE_LISTENER, xpc_connection_activate,
-        xpc_connection_cancel, xpc_connection_create_mach_service,
-        xpc_connection_set_event_handler, xpc_object_t,
+        _xpc_type_connection, _xpc_type_error, XPC_CONNECTION_MACH_SERVICE_LISTENER,
+        xpc_connection_activate, xpc_connection_cancel, xpc_connection_create_mach_service,
+        xpc_connection_set_event_handler, xpc_get_type, xpc_object_t,
     },
     object::OwnedXpcObject,
     peer::PeerSecurityRequirement,
@@ -121,20 +121,20 @@ impl XpcListener {
         let raw_connection = connection.raw as _;
 
         let block = ConcreteBlock::new(move |event: xpc_object_t| {
-            // Retain the incoming XPC object first so we own it.
+            if raw_is_error(event) {
+                tracing::debug!("xpc listener: ignoring error event");
+                return;
+            }
+
+            if !raw_is_connection(event) {
+                tracing::debug!("xpc listener: ignoring non-connection event");
+                return;
+            }
+
             let Ok(peer) = OwnedXpcObject::retain(event, "listener peer connection") else {
                 return;
             };
-            // Guard: only process actual xpc_connection_t objects. The listener's event
-            // handler also receives lifecycle error events (e.g. XPC_ERROR_CONNECTION_INVALID
-            // when the Mach service fails to register with launchd). Passing those error
-            // objects to from_owned_peer calls xpc_connection_set_event_handler on a
-            // non-connection object and triggers _xpc_api_misuse → EXC_BREAKPOINT crash.
-            // SAFETY: _xpc_type_connection is a valid extern static; we only read its address.
-            if !peer.is_type(unsafe { &_xpc_type_connection as *const _ as *const std::ffi::c_void }) {
-                tracing::debug!("xpc listener: ignoring non-connection event (mach service may have failed to register)");
-                return;
-            }
+
             if let Ok(peer_conn) = XpcConnection::from_owned_peer(peer) {
                 let _ = sender.send(peer_conn);
             }
@@ -187,4 +187,21 @@ impl Drop for XpcListener {
         // SAFETY: Same contract as cancel(). Called at most once because Drop runs once.
         unsafe { xpc_connection_cancel(self.connection.raw as _) };
     }
+}
+
+fn raw_is_type(event: xpc_object_t, ty: *const c_void) -> bool {
+    let value_type = unsafe { xpc_get_type(event) };
+    ptr::eq(value_type.cast::<c_void>(), ty)
+}
+
+fn raw_is_error(event: xpc_object_t) -> bool {
+    raw_is_type(event, unsafe {
+        &_xpc_type_error as *const _ as *const c_void
+    })
+}
+
+fn raw_is_connection(event: xpc_object_t) -> bool {
+    raw_is_type(event, unsafe {
+        &_xpc_type_connection as *const _ as *const c_void
+    })
 }

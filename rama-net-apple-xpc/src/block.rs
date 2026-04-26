@@ -4,6 +4,7 @@ use std::{
     ops::{Deref, DerefMut},
     os::raw::{c_int, c_ulong},
     ptr,
+    sync::Arc,
 };
 
 use crate::ffi::{_Block_copy, _Block_release, _NSConcreteStackBlock};
@@ -60,8 +61,8 @@ impl<A, R> Drop for RcBlock<A, R> {
 #[repr(C)]
 pub(crate) struct ConcreteBlock<A, R, F> {
     base: BlockBase<A, R>,
-    descriptor: Box<BlockDescriptor<Self>>,
-    closure: F,
+    descriptor: *const BlockDescriptor<Self>,
+    closure: ManuallyDrop<Arc<F>>,
 }
 
 impl<A, R, F> ConcreteBlock<A, R, F>
@@ -74,6 +75,11 @@ where
 }
 
 impl<A, R, F> ConcreteBlock<A, R, F> {
+    unsafe fn closure_ref(&self) -> &F {
+        let arc: &Arc<F> = &self.closure;
+        arc.as_ref()
+    }
+
     unsafe fn with_invoke(invoke: unsafe extern "C" fn(*mut Self, ...) -> R, closure: F) -> Self {
         Self {
             base: BlockBase {
@@ -87,8 +93,8 @@ impl<A, R, F> ConcreteBlock<A, R, F> {
                     >(invoke)
                 },
             },
-            descriptor: Box::new(BlockDescriptor::new()),
-            closure,
+            descriptor: Box::leak(Box::new(BlockDescriptor::new())),
+            closure: ManuallyDrop::new(Arc::new(closure)),
         }
     }
 }
@@ -99,8 +105,10 @@ where
 {
     pub(crate) fn copy(self) -> RcBlock<A, R> {
         unsafe {
-            let mut block = ManuallyDrop::new(self);
-            RcBlock::copy(&mut **block)
+            let mut block = self;
+            let copied = RcBlock::copy(&mut *block);
+            ManuallyDrop::drop(&mut block.closure);
+            copied
         }
     }
 }
@@ -119,27 +127,36 @@ impl<A, R, F> DerefMut for ConcreteBlock<A, R, F> {
     }
 }
 
-unsafe extern "C" fn block_context_dispose<B>(block: &mut B) {
-    unsafe { ptr::read(block) };
+unsafe extern "C" fn block_context_dispose<A, R, F>(block: *mut ConcreteBlock<A, R, F>) {
+    unsafe {
+        ManuallyDrop::drop(&mut (*block).closure);
+    }
 }
 
-unsafe extern "C" fn block_context_copy<B>(_dst: &mut B, _src: &B) {}
+unsafe extern "C" fn block_context_copy<A, R, F>(
+    dst: *mut ConcreteBlock<A, R, F>,
+    src: *const ConcreteBlock<A, R, F>,
+) {
+    unsafe {
+        ptr::addr_of_mut!((*dst).closure).write(ManuallyDrop::new(Arc::clone(&(*src).closure)));
+    }
+}
 
 #[repr(C)]
 struct BlockDescriptor<B> {
-    _reserved: c_ulong,
-    block_size: c_ulong,
-    copy_helper: unsafe extern "C" fn(&mut B, &B),
-    dispose_helper: unsafe extern "C" fn(&mut B),
+    reserved: c_ulong,
+    size: c_ulong,
+    copy_helper: unsafe extern "C" fn(*mut B, *const B),
+    dispose_helper: unsafe extern "C" fn(*mut B),
 }
 
-impl<B> BlockDescriptor<B> {
+impl<A, R, F> BlockDescriptor<ConcreteBlock<A, R, F>> {
     fn new() -> Self {
         Self {
-            _reserved: 0,
-            block_size: mem::size_of::<B>() as c_ulong,
-            copy_helper: block_context_copy::<B>,
-            dispose_helper: block_context_dispose::<B>,
+            reserved: 0,
+            size: mem::size_of::<ConcreteBlock<A, R, F>>() as c_ulong,
+            copy_helper: block_context_copy::<A, R, F>,
+            dispose_helper: block_context_dispose::<A, R, F>,
         }
     }
 }
@@ -156,7 +173,8 @@ where
             X: Fn() -> R,
         {
             let block = unsafe { &*block_ptr };
-            (block.closure)()
+            let f = unsafe { block.closure_ref() };
+            f()
         }
 
         let invoke_fn: unsafe extern "C" fn(*mut ConcreteBlock<(), R, X>) -> R = invoke;
@@ -184,7 +202,8 @@ where
             X: Fn(A) -> R,
         {
             let block = unsafe { &*block_ptr };
-            (block.closure)(a)
+            let f = unsafe { block.closure_ref() };
+            f(a)
         }
 
         let invoke_fn: unsafe extern "C" fn(*mut ConcreteBlock<(A,), R, X>, A) -> R = invoke;
@@ -216,7 +235,8 @@ where
             X: Fn(A, B) -> R,
         {
             let block = unsafe { &*block_ptr };
-            (block.closure)(a, b)
+            let f = unsafe { block.closure_ref() };
+            f(a, b)
         }
 
         let invoke_fn: unsafe extern "C" fn(*mut ConcreteBlock<(A, B), R, X>, A, B) -> R = invoke;
