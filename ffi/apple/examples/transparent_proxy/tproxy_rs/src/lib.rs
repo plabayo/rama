@@ -26,8 +26,10 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 mod concurrency;
 mod config;
 mod demo_trace_traffic;
+mod demo_xpc_server;
 mod http;
 mod policy;
+mod state;
 mod tcp;
 mod tls;
 mod udp;
@@ -110,8 +112,22 @@ struct AppMessageReply {
 
 impl DemoTransparentProxyHandler {
     async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, rama::error::BoxError> {
-        let tcp_mitm_service = self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
-        let udp_service = self::udp::try_new_service(ctx).await?.boxed();
+        let (tcp_mitm_service, shared_state) =
+            self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
+        let udp_service = self::udp::try_new_service(ctx.clone()).await?.boxed();
+
+        if let Some(xpc_service_name) =
+            self::config::DemoProxyConfig::from_opaque_config(ctx.opaque_config())?.xpc_service_name
+        {
+            self::demo_xpc_server::spawn_xpc_server(
+                xpc_service_name,
+                shared_state,
+                ctx.executor.clone(),
+            )
+            .unwrap_or_else(|err| {
+                tracing::error!(%err, "failed to spawn xpc server");
+            });
+        }
 
         let proxy_config = TransparentProxyConfig::new().with_rules(vec![
             TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),

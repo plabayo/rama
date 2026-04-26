@@ -1,14 +1,21 @@
 pub mod mitm_relay_policy;
 
+use rama::tls::boring::proxy::{
+    TlsMitmRelay,
+    cert_issuer::{CachedBoringMitmCertIssuer, InMemoryBoringMitmCertIssuer},
+};
+
+pub(crate) type DemoTlsMitmRelay =
+    TlsMitmRelay<CachedBoringMitmCertIssuer<InMemoryBoringMitmCertIssuer>>;
+
 use rama::{
     error::{BoxError, ErrorContext as _},
-    net::{
-        address::Domain,
-        apple::networkextension::system_keychain,
-        tls::server::SelfSignedData,
-    },
+    net::{address::Domain, apple::networkextension::system_keychain, tls::server::SelfSignedData},
     tls::boring::{
-        core::{pkey::{PKey, Private}, x509::X509},
+        core::{
+            pkey::{PKey, Private},
+            x509::X509,
+        },
         server::utils::self_signed_server_auth_gen_ca,
     },
 };
@@ -22,8 +29,10 @@ pub(crate) fn load_or_create_mitm_ca(
     key_pem_override: Option<&str>,
 ) -> Result<(X509, PKey<Private>), BoxError> {
     if let (Some(cert_pem), Some(key_pem)) = (cert_pem_override, key_pem_override) {
-        let cert = X509::from_pem(cert_pem.as_bytes()).context("parse override MITM CA cert PEM")?;
-        let key = PKey::private_key_from_pem(key_pem.as_bytes()).context("parse override MITM CA key PEM")?;
+        let cert =
+            X509::from_pem(cert_pem.as_bytes()).context("parse override MITM CA cert PEM")?;
+        let key = PKey::private_key_from_pem(key_pem.as_bytes())
+            .context("parse override MITM CA key PEM")?;
         return Ok((cert, key));
     }
 
@@ -35,8 +44,7 @@ pub(crate) fn load_or_create_mitm_ca(
     match (cert_bytes, key_bytes) {
         (Some(cert_pem), Some(key_pem)) => {
             let cert = X509::from_pem(&cert_pem).context("parse MITM CA cert PEM")?;
-            let key =
-                PKey::private_key_from_pem(&key_pem).context("parse MITM CA key PEM")?;
+            let key = PKey::private_key_from_pem(&key_pem).context("parse MITM CA key PEM")?;
             Ok((cert, key))
         }
         (cert_opt, key_opt) => {
@@ -53,8 +61,7 @@ pub(crate) fn load_or_create_mitm_ca(
     }
 }
 
-fn generate_and_store_mitm_ca(
-) -> Result<(X509, PKey<Private>), BoxError> {
+fn generate_and_store_mitm_ca() -> Result<(X509, PKey<Private>), BoxError> {
     let (cert, key) = self_signed_server_auth_gen_ca(&SelfSignedData {
         organisation_name: Some("Rama Transparent Proxy Example Root CA".to_owned()),
         common_name: Some(Domain::from_static("rama-tproxy-mitm-ca.localhost")),

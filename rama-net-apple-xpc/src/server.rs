@@ -6,7 +6,7 @@ use rama_core::{
 
 use crate::{
     ReceivedXpcMessage, XpcConnection, XpcConnectionError, XpcError, XpcEvent, XpcListener,
-    XpcListenerConfig, XpcMessage,
+    XpcMessage,
 };
 
 /// A Rama-native XPC server adapter built on top of [`XpcListener`] and [`XpcConnection`].
@@ -52,16 +52,6 @@ impl<S> XpcServer<S>
 where
     S: Service<XpcMessage, Output = Option<XpcMessage>, Error: Into<BoxError>>,
 {
-    /// Bind a named XPC listener and serve it until the listener stops.
-    pub async fn serve_named(
-        self,
-        config: XpcListenerConfig,
-        executor: Executor,
-    ) -> Result<(), BoxError> {
-        let listener = XpcListener::bind(config)?;
-        self.serve_listener(listener, executor).await
-    }
-
     /// Serve an already-bound named listener.
     ///
     /// Each accepted peer is handled concurrently on its own task.

@@ -90,10 +90,8 @@ extension ContainerController {
     }
 
     func applyDemoSettings() {
-        let shouldRestart = {
-            guard let activeManager else {
-                return false
-            }
+        let isActive = {
+            guard let activeManager else { return false }
             switch activeManager.connection.status {
             case .connected, .connecting, .reasserting:
                 return true
@@ -112,11 +110,13 @@ extension ContainerController {
             self.activeManager = manager
             self.installStatusObserver(manager: manager)
             self.startStatusTimer(manager: manager)
-            if shouldRestart {
-                self.log("proxy configuration changed; restarting proxy to apply")
-                self.stopProxyAndWaitForDisconnect(manager: manager) { [weak self] in
-                    self?.startProxy()
-                }
+
+            if isActive {
+                // Proxy is running: push settings live via XPC (no restart needed).
+                // The NE config was already saved above for persistence across restarts.
+                self.log("proxy active: pushing settings update via XPC")
+                self.sendXpcUpdateSettings()
+                self.setStatus(status: manager.connection.status, detail: "demo settings applied")
                 return
             }
 
@@ -389,7 +389,8 @@ extension ContainerController {
             htmlBadgeEnabled: demoSettings.htmlBadgeEnabled,
             htmlBadgeLabel: demoSettings.htmlBadgeLabel,
             tcpConnectTimeoutMs: demoSettings.tcpConnectTimeoutMs,
-            excludeDomains: demoSettings.excludeDomains
+            excludeDomains: demoSettings.excludeDomains,
+            xpcServiceName: xpcServiceName,
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

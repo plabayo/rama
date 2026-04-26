@@ -22,7 +22,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: "$(RAMA_TPROXY_CURRENT_PROJECT_VERSION)"
         INFOPLIST_FILE: Container/Info.plist
         MARKETING_VERSION: 0.1
         CODE_SIGN_ENTITLEMENTS: Container/Container.entitlements
@@ -34,7 +34,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_CONTAINER_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
-        TPROXY_SHARED_ACCESS_GROUP: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev.group"
+        TPROXY_XPC_SERVICE_NAME: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev.xpc"
 
   RamaTransparentProxyExampleExtension:
     type: system-extension
@@ -42,22 +42,6 @@ targets:
     sources:
       - path: Extension
       - path: Shared
-    postBuildScripts:
-      - name: Bump CFBundleVersion
-        script: |
-          VERSION=$(date +%Y%m%d%H%M%S)
-          PLIST="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
-
-          echo "Updating CFBundleVersion in $PLIST to $VERSION"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
-
-          if [ "${CODE_SIGNING_ALLOWED:-YES}" != "YES" ] || [ -z "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
-            echo "Skipping re-sign because code signing is disabled or no identity is available"
-            exit 0
-          fi
-
-          echo "Re-signing $CODESIGNING_FOLDER_PATH"
-          /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$CODESIGNING_FOLDER_PATH"
     dependencies:
       - package: RamaAppleNetworkExtension
         product: RamaAppleNetworkExtension
@@ -65,7 +49,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev.provider
         PRODUCT_NAME: org.ramaproxy.example.tproxy.dev.provider
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: "$(RAMA_TPROXY_CURRENT_PROJECT_VERSION)"
         INFOPLIST_FILE: Extension/Info.plist
         MARKETING_VERSION: 0.1
         CODE_SIGN_ENTITLEMENTS: Extension/Extension.entitlements
@@ -77,7 +61,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
-        TPROXY_SHARED_ACCESS_GROUP: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev.group"
+        TPROXY_XPC_SERVICE_NAME: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev.xpc"
         ENABLE_DEBUG_DYLIB: NO
         OTHER_LDFLAGS:
           - "$(SRCROOT)/../tproxy_rs/target/universal/librama_tproxy_example.a"

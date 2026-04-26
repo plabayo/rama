@@ -9,8 +9,9 @@ use crate::{
     connection::XpcConnection,
     error::XpcError,
     ffi::{
-        XPC_CONNECTION_MACH_SERVICE_LISTENER, xpc_connection_activate, xpc_connection_cancel,
-        xpc_connection_create_mach_service, xpc_connection_set_event_handler, xpc_object_t,
+        _xpc_type_connection, XPC_CONNECTION_MACH_SERVICE_LISTENER, xpc_connection_activate,
+        xpc_connection_cancel, xpc_connection_create_mach_service,
+        xpc_connection_set_event_handler, xpc_object_t,
     },
     object::OwnedXpcObject,
     peer::PeerSecurityRequirement,
@@ -120,9 +121,21 @@ impl XpcListener {
         let raw_connection = connection.raw as _;
 
         let block = ConcreteBlock::new(move |event: xpc_object_t| {
-            if let Ok(peer) = OwnedXpcObject::retain(event, "listener peer connection")
-                && let Ok(peer_conn) = XpcConnection::from_owned_peer(peer)
-            {
+            // Retain the incoming XPC object first so we own it.
+            let Ok(peer) = OwnedXpcObject::retain(event, "listener peer connection") else {
+                return;
+            };
+            // Guard: only process actual xpc_connection_t objects. The listener's event
+            // handler also receives lifecycle error events (e.g. XPC_ERROR_CONNECTION_INVALID
+            // when the Mach service fails to register with launchd). Passing those error
+            // objects to from_owned_peer calls xpc_connection_set_event_handler on a
+            // non-connection object and triggers _xpc_api_misuse → EXC_BREAKPOINT crash.
+            // SAFETY: _xpc_type_connection is a valid extern static; we only read its address.
+            if !peer.is_type(unsafe { &_xpc_type_connection as *const _ as *const std::ffi::c_void }) {
+                tracing::debug!("xpc listener: ignoring non-connection event (mach service may have failed to register)");
+                return;
+            }
+            if let Ok(peer_conn) = XpcConnection::from_owned_peer(peer) {
                 let _ = sender.send(peer_conn);
             }
         })

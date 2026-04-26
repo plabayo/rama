@@ -20,11 +20,13 @@ struct ProxyEngineConfigPayload: Encodable {
     let htmlBadgeLabel: String
     let tcpConnectTimeoutMs: Int
     let excludeDomains: [String]
+    let xpcServiceName: String
 
     private enum CodingKeys: String, CodingKey {
         case htmlBadgeEnabled = "html_badge_enabled"
         case htmlBadgeLabel = "html_badge_label"
         case tcpConnectTimeoutMs = "tcp_connect_timeout_ms"
         case excludeDomains = "exclude_domains"
+        case xpcServiceName = "xpc_service_name"
     }
 }

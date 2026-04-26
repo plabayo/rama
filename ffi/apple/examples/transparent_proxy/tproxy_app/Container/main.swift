@@ -10,13 +10,19 @@ final class ContainerController: NSObject, NSApplicationDelegate {
         }
         return "\(bundleId).provider"
     }()
+
+    lazy var xpcServiceName: String = {
+        Bundle.main.object(forInfoDictionaryKey: "TProxyXpcServiceName") as? String ?? ""
+    }()
+
     let managerDescription = "Rama Transparent Proxy Example"
     let managerServerAddress = "127.0.0.1"
     static let secretAccount = "org.ramaproxy.example.tproxy"
     static let secretServiceKeyPEM = "rama-tproxy-demo-ca-key"
     static let secretServiceCertPEM = "rama-tproxy-demo-ca-crt"
     static let secretServiceKeys = [secretServiceKeyPEM, secretServiceCertPEM]
-    lazy var containerLogger = Logger(subsystem: "org.ramaproxy.example.tproxy", category: "container")
+    lazy var containerLogger = Logger(
+        subsystem: "org.ramaproxy.example.tproxy", category: "container")
     lazy var logFileURL: URL = {
         let base = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs", isDirectory: true)

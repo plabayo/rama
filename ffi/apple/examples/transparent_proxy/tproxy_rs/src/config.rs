@@ -22,6 +22,9 @@ pub struct DemoProxyConfig {
     // The production app leaves these unset and always uses the System Keychain.
     pub ca_cert_pem: Option<String>,
     pub ca_key_pem: Option<String>,
+    // The XPC mach service name to listen on for live settings updates from the container app.
+    // Set to the extension's bundle ID by the Swift container. If absent, XPC server is skipped.
+    pub xpc_service_name: Option<String>,
 }
 
 impl Default for DemoProxyConfig {
@@ -38,6 +41,7 @@ impl Default for DemoProxyConfig {
             ],
             ca_cert_pem: None,
             ca_key_pem: None,
+            xpc_service_name: None,
         }
     }
 }
