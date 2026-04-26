@@ -28,36 +28,6 @@ pub trait IntoEndpointServiceWithState<T, O, E, State>: private::Sealed<T, O, E,
     fn into_endpoint_service_with_state(self, state: State) -> Self::Service;
 }
 
-/// A [`Service`] that maps response for an inner service.
-#[derive(Debug, Clone)]
-pub struct MapResponseService<S>(S);
-
-impl<S, R, E> MapResponseService<S>
-where
-    S: Service<Request, Output = R, Error = E>,
-    R: IntoResponse + Send + Sync + 'static,
-{
-    /// Create a new [`MapResponseService`] with the given service.
-    #[inline(always)]
-    pub fn new(svc: S) -> Self {
-        Self(svc)
-    }
-}
-
-impl<S, R, E> Service<Request> for MapResponseService<S>
-where
-    S: Service<Request, Output = R, Error = E>,
-    R: IntoResponse + Send + Sync + 'static,
-    E: Send + 'static,
-{
-    type Output = Response;
-    type Error = E;
-
-    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        self.0.serve(req).await.map(IntoResponse::into_response)
-    }
-}
-
 impl<S, O, E> IntoEndpointService<(S,), O, E> for S
 where
     S: Service<Request, Output = O, Error = E>,

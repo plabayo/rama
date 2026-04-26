@@ -2,6 +2,7 @@ use crate::{
     Request, Response,
     headers::Allow,
     matcher::{HttpMatcher, MethodMatcher, PathMatcher, UriParams},
+    service::web::{IntoEndpointService, ResponseError, response::layer::IntoResponseLayer},
     service::{
         fs::{DirectoryServeMode, ServeDir},
         web::{
@@ -15,7 +16,8 @@ use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
 use std::{convert::Infallible, path::Path, sync::Arc};
 
-use crate::service::web::{IntoEndpointService, ResponseError};
+use rama_core::error::BoxError;
+use rama_core::layer::IntoErrLayer;
 use rama_core::{
     Layer,
     extensions::{Extensions, ExtensionsRef},
@@ -32,66 +34,66 @@ use rama_utils::{
     str::smol_str::{StrExt as _, format_smolstr},
 };
 
+type DefaultLayer = (IntoErrLayer<BoxError>, IntoResponseLayer);
+
 /// A basic router that can be used to route requests to different services based on the request path.
 ///
 /// This router uses `matchit::Router` to efficiently match incoming requests
 /// to predefined routes. Each route is associated with an `HttpMatcher`
 /// and a corresponding service handler.
 #[allow(unused)]
-pub struct Router<O, E, L = (), State = ()> {
+pub struct Router<State = (), Layer = DefaultLayer, O = Response, E = BoxError> {
     routes: MatchitRouter<Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>>,
     sub_services: Option<Trie<String, SubService<O, E>>>,
     not_found: Option<BoxService<Request, O, E>>,
-    layer: L,
+    layer: Layer,
     state: State,
 }
 
-impl<O, E, L, S> std::fmt::Debug for Router<O, E, L, S> {
+impl<S, L, O, E> std::fmt::Debug for Router<S, L, O, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Router").finish()
     }
 }
 
-impl<O, E> Router<O, E, (), ()> {
+impl<O, E> Router<(), DefaultLayer, O, E> {
     /// create a new router.
     #[must_use]
     pub fn new() -> Self {
-        Self::new_with_layer_and_state((), ())
+        Self::new_with_state(())
     }
 }
 
-impl<O, E, State> Router<O, E, (), State>
+impl<State, O, E> Router<State, DefaultLayer, O, E>
 where
     State: Send + Sync + Clone + 'static,
 {
     #[must_use]
     /// Create a new router with state
     pub fn new_with_state(state: State) -> Self {
-        Self::new_with_layer_and_state((), state)
-    }
-}
-
-impl<O, E, L> Router<O, E, L, ()> {
-    #[must_use]
-    /// Create a new router with state
-    pub fn new_with_layer(layer: L) -> Self {
-        Self::new_with_layer_and_state(layer, ())
-    }
-}
-
-impl<O, E, L, State> Router<O, E, L, State>
-where
-    State: Send + Sync + Clone + 'static,
-{
-    #[must_use]
-    /// Create a new router with layer and state
-    pub fn new_with_layer_and_state(layer: L, state: State) -> Self {
         Self {
             routes: MatchitRouter::new(),
             sub_services: None,
             not_found: None,
-            layer,
+            layer: (IntoErrLayer::new(), IntoResponseLayer),
             state,
+        }
+    }
+}
+
+impl<State, L, O, E> Router<State, L, O, E>
+where
+    State: Send + Sync + Clone + 'static,
+{
+    /// Apply `layer` to every endpoint registered after this call.
+    /// Routes registered before this call keep whatever layer was in effect at the time of registration.
+    pub fn with_endpoint_layer<N>(self, layer: N) -> Router<State, N, O, E> {
+        Router {
+            routes: self.routes,
+            sub_services: self.sub_services,
+            not_found: self.not_found,
+            layer,
+            state: self.state,
         }
     }
 
@@ -615,7 +617,7 @@ where
     }
 }
 
-impl<O, E> Default for Router<O, E> {
+impl Default for Router {
     fn default() -> Self {
         Self::new()
     }
@@ -648,7 +650,7 @@ struct SubService<O, E> {
     matcher: Option<PathMatcher>,
 }
 
-impl<O, E, L, State> Service<Request> for Router<O, E, L, State>
+impl<State, L, O, E> Service<Request> for Router<State, L, O, E>
 where
     O: Send + 'static,
     E: Send + From<ResponseError> + 'static,

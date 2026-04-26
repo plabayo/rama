@@ -1,6 +1,5 @@
-use super::IntoResponse;
 use super::extract::{FromPartsStateRefPair, FromRequest};
-use crate::{Request, Response};
+use crate::Request;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
 // Generic T = (Function, Input, Output)

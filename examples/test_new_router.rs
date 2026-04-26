@@ -12,8 +12,7 @@ use rama_http::matcher::HttpMatcher;
 use rama_http::service::web::extract::host::MissingHost;
 use rama_http::service::web::response::IntoResponse;
 use rama_http::service::web::{
-    IntoEndpointService, IntoEndpointServiceWithState, MapResponseService, ResponseError,
-    RouterError,
+    IntoEndpointService, IntoEndpointServiceWithState, ResponseError, RouterError,
 };
 use std::convert::Infallible;
 use std::error::Error;
@@ -58,27 +57,6 @@ impl Service<Request> for TestService2 {
     }
 }
 
-struct MapResponseLayer;
-
-impl<S, O, E> Layer<S> for MapResponseLayer
-where
-    S: Service<Request, Output = O, Error = E>,
-    O: IntoResponse + Send + Sync + 'static,
-{
-    type Service = MapResponseService<S>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        MapResponseService::new(inner)
-    }
-}
-
-fn map_response_layer<S>(inner: S) -> MapResponseService<S>
-where
-    S: Service<Request, Output: IntoResponse + Send + Sync + 'static>,
-{
-    MapResponseService::new(inner)
-}
-
 #[derive(Clone)]
 struct Test {}
 
@@ -97,24 +75,20 @@ impl From<MissingHost> for MyCustomErr {
     }
 }
 
+impl From<ResponseError> for MyCustomErr {
+    fn from(value: ResponseError) -> Self {
+        Self
+    }
+}
+
 async fn test_func5(host: Host) -> Result<StatusCode, MyCustomErr> {
     // Err("test".into())
     Ok(StatusCode::OK)
 }
 
-struct IntoErrLayer;
-
-impl<S: Service<Request, Error = E>, E: Into<BoxError>> Layer<S> for IntoErrLayer {
-    type Service = MapErr<S, fn(S::Error) -> BoxError>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        MapErr::new(inner, |err| err.into())
-    }
-}
-
 #[tokio::main]
 async fn main() {
-    let mut router = Router::new_with_layer((MapResponseLayer, IntoErrLayer));
+    let mut router = Router::new();
     router.set_match_route("/test1", HttpMatcher::method_get(), test_func1);
     router.set_match_route("/test2", HttpMatcher::method_get(), test_func2);
 
@@ -161,4 +135,17 @@ async fn main() {
             let resp = err.as_response();
         }
     }
+
+    let mut router1 = Router::new().with_endpoint_layer(());
+    router1.set_match_route("/", HttpMatcher::method_get(), test_func5);
+
+    let res = router1
+        .serve(
+            Request::builder()
+                .uri("/test555")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    dbg!(res);
 }

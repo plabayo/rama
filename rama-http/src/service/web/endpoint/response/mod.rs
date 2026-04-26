@@ -58,6 +58,8 @@ pub mod redirect;
 pub use redirect::Redirect;
 
 pub mod sse;
+pub mod layer;
+
 pub use sse::Sse;
 
 /// An [`IntoResponse`]-based result type that uses [`ErrorResponse`] as the error type.
