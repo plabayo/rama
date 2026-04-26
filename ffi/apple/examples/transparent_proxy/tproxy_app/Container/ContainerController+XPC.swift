@@ -16,10 +16,12 @@ extension ContainerController {
 
         log("sendXpcUpdateSettings: xpcServiceName = \(serviceName)")
 
-        let conn = xpc_connection_create_mach_service(
-            serviceName, nil, UInt64(XPC_CONNECTION_MACH_SERVICE_PRIVILEGED))
+        let conn = xpc_connection_create_mach_service(serviceName, nil, 0)
 
-        xpc_connection_set_event_handler(conn) { _ in }
+        xpc_connection_set_event_handler(conn) { [weak self] event in
+            self?.log("xpc event: \(event)")
+        }
+
         xpc_connection_activate(conn)
 
         let msg = xpc_dictionary_create(nil, nil, 0)
@@ -33,8 +35,10 @@ extension ContainerController {
         }
         xpc_dictionary_set_value(msg, "exclude_domains", domainsArray)
 
-        xpc_connection_send_message(conn, msg)
-        xpc_connection_cancel(conn)
+        xpc_connection_send_message_with_reply(conn, msg, nil) { [weak self] reply in
+            self?.log("sendXpcUpdateSettings: reply: \(reply)")
+            xpc_connection_cancel(conn)
+        }
 
         log(
             "sendXpcUpdateSettings: settings update sent (badge=\(demoSettings.htmlBadgeEnabled), badge_label=\(demoSettings.htmlBadgeLabel), excludeDomains=\(demoSettings.excludeDomains.count))"

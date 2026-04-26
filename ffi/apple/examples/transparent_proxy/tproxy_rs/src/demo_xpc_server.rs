@@ -2,13 +2,10 @@ use std::sync::Arc;
 
 use rama::{
     error::{BoxError, ErrorContext},
-    net::apple::xpc::{
-        PeerSecurityRequirement, XpcListener, XpcListenerConfig, XpcMessage, XpcServer,
-    },
+    net::apple::xpc::{XpcListener, XpcListenerConfig, XpcMessage, XpcServer},
     rt::Executor,
     service::service_fn,
     telemetry::tracing,
-    utils::str::arcstr::arcstr,
 };
 
 use crate::state::{LiveSettings, SharedState};
@@ -21,9 +18,8 @@ pub(crate) fn spawn_xpc_server(
 ) -> Result<(), BoxError> {
     tracing::info!(%service_name, "xpc demo server: start config+spawn");
 
-    let config = XpcListenerConfig::new(service_name.clone()).with_peer_requirement(
-        PeerSecurityRequirement::TeamIdentity(Some(arcstr!("ADPG6C355H"))),
-    );
+    let config = XpcListenerConfig::new(service_name.clone());
+    // .with_peer_requirement(PeerSecurityRequirement::TeamIdentity(Some(arcstr!("ADPG6C355H"))))
 
     let server = XpcServer::new(service_fn({
         let state = state;

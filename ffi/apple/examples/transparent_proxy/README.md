@@ -39,14 +39,14 @@ Default local developer commands:
 
 ```sh
 cd ffi/apple/examples/transparent_proxy
-just install-tproxy-with-signing-reset-profile
+just install-tproxy-dev-reset-profile
 ```
 
 Developer ID distribution commands:
 
 ```sh
 cd ffi/apple/examples/transparent_proxy
-just install-tproxy-with-developer-id-signing-reset-profile
+just install-tproxy-dist-reset-profile
 ```
 
 That distribution command now performs the full shipping flow: build, sign, notarize, staple, install, then launch.
@@ -135,7 +135,7 @@ A normal developer should use developer mode.
 3. Use the developer-mode command:
 
 ```sh
-just install-tproxy-with-signing-reset-profile
+just install-tproxy-dev-reset-profile
 ```
 
 This mode is designed to work for developers who do not have admin-level access to create or distribute `Developer ID` identities. No explicit provisioning-profile selection is documented for this mode. It uses the developer-only bundle IDs `org.ramaproxy.example.tproxy.dev` and `org.ramaproxy.example.tproxy.dev.provider`.
@@ -145,7 +145,7 @@ This mode is designed to work for developers who do not have admin-level access 
 For the real direct-distribution system extension path, use Developer ID mode. This helper builds the Xcode project in `Release`, lets Xcode perform the final signing pass with hardened runtime and secure timestamps, notarizes the built app, staples the result, and only then installs it:
 
 ```sh
-just install-tproxy-with-developer-id-signing-reset-profile
+just install-tproxy-dist-reset-profile
 ```
 
 After launch, the app may report that system extension approval is required. The most reliable place to find the approval UI is:
@@ -229,7 +229,7 @@ An OpenSSL-based CSR is possible, but it is easier to end up with a `.crt`/`.cer
 To verify the certificate is available locally:
 
 ```sh
-security find-identity -p codesigning -v | rg 'Developer ID Application|ADPG6C355H'
+security find-identity -p codesigning -v | grep -E 'Developer ID Application|ADPG6C355H'
 ```
 
 If that command shows no matching identity, Xcode will not be able to perform the Developer ID distribution build.
@@ -255,32 +255,31 @@ So this example deliberately demonstrates both:
 
 ## Logs
 
-Stream all logs (container, extension, and Rust (incl. rama)):
+Check that the system extension is currently registered:
 
 ```sh
 systemextensionsctl list
 ```
 
-This is especially useful when the app reports that approval is required, because macOS will print the exact Settings location for Network Extension system extensions.
+When approval is pending, macOS prints the exact Settings location for Network Extension system extensions.
+
+Stream live logs from the extension process and NE daemons:
 
 ```sh
 log stream --info --debug \
-    --predicate 'subsystem == "org.ramaproxy.example.tproxy"'
+  --predicate 'process == "org.ramaproxy.example.tproxy.dev.provider" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd" OR process == "launchd"'
 ```
 
-more complete stream logs:
+For historical logs (e.g. after the fact), replace `log stream` with `log show`:
 
 ```sh
-log stream --info --debug \
-  --predicate 'subsystem == "org.ramaproxy.example.tproxy" OR process == "neagent" OR process == "nesessionmanager" OR process == "RamaTransparentProxyExampleExtension"'
+log show --last 5m --style compact --info --debug \
+  --predicate 'process == "org.ramaproxy.example.tproxy.dev.provider" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd" OR process == "launchd"'
 ```
 
-Or if you want historical logs:
-
-```sh
-log show --last 1h --style compact --info --debug \
-    --predicate 'subsystem == "org.ramaproxy.example.tproxy"'
-```
+> **Note:** The Rust extension writes tracing logs to stderr, which launchd captures under
+> the process name `org.ramaproxy.example.tproxy.dev.provider`. For the distribution
+> extension replace `dev` with `provider` in the predicate above.
 
 ## Troubleshooting
 
@@ -305,7 +304,7 @@ This is the fastest recovery path when app-extension registration is stale:
 
 ```sh
 cd ffi/apple/examples/transparent_proxy
-just install-tproxy-with-signing
+just install-tproxy-dev
 ```
 
 That target:
@@ -320,41 +319,43 @@ If the next launch connects, the problem was registration state.
 
 ### 2. Reinstall the app and explicitly recreate the saved profile
 
-Only do this when the saved `NETransparentProxyManager` profile itself is stale:
+Only do this when the saved `NETransparentProxyManager` profile itself is stale,
+or when you have changed `NEMachServiceName`, entitlements, or any Info.plist
+key that `sysextd` reads only at install time:
 
 ```sh
 cd ffi/apple/examples/transparent_proxy
-just install-tproxy-with-signing-reset-profile
+just install-tproxy-dev-reset-profile
 ```
 
 That uses the same reinstall flow, but launches once with
 `--reset-profile-on-launch`, which removes and recreates the saved proxy
 manager. Because macOS treats that as a new network configuration, it may ask
-for profile approval again.
+for profile approval again. It also forces `sysextd` to deactivate and
+reactivate the extension, causing it to re-read `Info.plist` and regenerate the
+launchd job (including `NEMachServiceName` and `MachServices` entries).
 
 ### 3. Check whether macOS currently sees the system extension
 
 ```sh
-systemextensionsctl list | rg 'org\.ramaproxy\.example\.tproxy|RamaTransparentProxyExample'
+systemextensionsctl list | grep 'org\.ramaproxy\.example\.tproxy'
 ```
 
 Expected output should include something like:
 
 ```text
-org.ramaproxy.example.tproxy.dist.provider(0.1)
-Path = /Applications/RamaTransparentProxyExampleContainer.app/Contents/Library/SystemExtensions/RamaTransparentProxyExampleExtension.systemextension
-SDK = com.apple.networkextension.app-proxy
+[activated enabled] org.ramaproxy.example.tproxy.dev.provider (0.1/20260426200600)
 ```
 
-If nothing is returned, macOS does not currently have the system extension activated. Run the reinstall command above and approve the system extension in System Settings if prompted.
+If nothing is returned, or the state is not `[activated enabled]`, macOS does not
+currently have the system extension active. Run the reinstall command above and
+approve the system extension in System Settings if prompted.
 
-### 4. Inspect container and (Network Extension) sysext logs around the failure
-
-Recent logs:
+### 4. Inspect container and sysext logs around the failure
 
 ```sh
-log show --last 5m --style compact \
-  --predicate 'subsystem == "org.ramaproxy.example.tproxy" OR process == "neagent" OR process == "nesessionmanager" OR process == "RamaTransparentProxyExampleExtension"'
+log show --last 5m --style compact --info --debug \
+  --predicate 'process == "org.ramaproxy.example.tproxy.dev.provider" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd"'
 ```
 
 Useful interpretations:
@@ -367,36 +368,84 @@ Useful interpretations:
   Provider runtime failure.
 - `last stop reason Plugin was disabled`
   Provider crashed earlier and macOS disabled it for the next start.
-- `Found 0 extension(s) with identifier org.ramaproxy.example.tproxy.dist.provider`
+- `Found 0 extension(s) with identifier org.ramaproxy.example.tproxy.dev.provider`
   Registration is missing; reinstall the app.
 
-### 5. Check for provider crash reports
+### 5. Check for XPC Mach service registration failure
+
+If the sysext starts but immediately crashes or the XPC channel between container
+and extension does not work, look for this pattern in the logs:
+
+```text
+launchd: failed activation: name = <TPROXY_XPC_SERVICE_NAME>
+requestor = org.ramaproxy.example.tproxy.dev.provider
+error = 1: Operation not permitted
+```
+
+This means launchd is rejecting the extension's attempt to register its named
+Mach service. The correct fix is `NEMachServiceName` in the extension's
+`Info.plist` (already present in this example), combined with a full
+force-reinstall so that `sysextd` regenerates the launchd job with a
+`MachServices` entry for that name.
+
+After reinstalling with `reset-profile`, verify the launchd job has the entry:
 
 ```sh
-find ~/Library/Logs/DiagnosticReports -maxdepth 1 \
-  \( -name 'RamaTransparentProxyExampleExtension*.ips' -o -name 'RamaTransparentProxyExampleExtension*.crash' \) \
-  -print | tail -n 10
+sudo launchctl print system/org.ramaproxy.example.tproxy.dev.provider \
+  | grep -A 5 -i machservices
+```
+
+Expected:
+
+```text
+MachServices = {
+    ADPG6C355H.org.ramaproxy.example.tproxy.dev.group.xpc => 0
+}
+```
+
+If the `MachServices` block is absent, `sysextd` did not pick up `NEMachServiceName`.
+Try a reboot followed by another `reset-profile` install.
+
+### 6. Check for provider crash reports
+
+Sysext crash reports are written to the system-level diagnostic directory
+(not the user-level `~/Library/...`):
+
+```sh
+ls -lt /Library/Logs/DiagnosticReports/ \
+  | grep 'org\.ramaproxy\.example\.tproxy\.dev\.provider' \
+  | head -5
 ```
 
 If you see a fresh `.ips` file near the failure time, the provider crashed and the
 later code `6` error is only fallout.
 
-To inspect the latest report:
+Also inspect what entitlements and `Info.plist` values ended up in the
+installed binary to rule out signing or plist issues:
 
 ```sh
-sed -n '1,240p' ~/Library/Logs/DiagnosticReports/RamaTransparentProxyExampleExtension-YYYY-MM-DD-HHMMSS.ips
+# Entitlements baked into the running binary
+codesign -d --entitlements - \
+  /Library/SystemExtensions/*/org.ramaproxy.example.tproxy.dev.provider \
+  2>&1 | grep -A2 -E 'mach-register|NEMach|networkextension'
+
+# Info.plist of the installed extension
+plutil -p /Library/SystemExtensions/*/\
+org.ramaproxy.example.tproxy.dev.provider.systemextension/Contents/Info.plist \
+  | grep -E 'NEMach|TProxy|XpcService|BundleVersion'
 ```
 
-### 6. Quick decision tree
+### 7. Quick decision tree
 
 1. Start fails with code `6`.
-2. Run `systemextensionsctl list | rg 'org\.ramaproxy\.example\.tproxy|RamaTransparentProxyExample'`.
-3. If nothing is registered: run `just install-tproxy-with-signing`.
+2. Run `systemextensionsctl list | grep 'org\.ramaproxy\.example\.tproxy'`.
+3. If nothing is registered or state is not `[activated enabled]`: run `just install-tproxy-dev`.
 4. If the system extension is registered: inspect logs with `log show --last 5m ...`.
-5. If logs show code `7`, `Plugin failed`, or `Plugin was disabled`: inspect the extension crash report.
-6. Only if registration is fine but the manager/profile is stale: run `just install-tproxy-with-signing-reset-profile`.
+5. If logs show `failed activation: error = 1: Operation not permitted` for the XPC service name: run `just install-tproxy-dev-reset-profile`, then verify `MachServices` via `sudo launchctl print ...`.
+6. If logs show code `7`, `Plugin failed`, or `Plugin was disabled`: inspect the extension crash report in `/Library/Logs/DiagnosticReports/`.
+7. Only if registration is fine but the manager/profile is stale: run `just install-tproxy-dev-reset-profile`.
 
-### 7. Common pattern in this demo
+### 8. Common pattern in this demo
 
 The failure sequence often looks like this:
 
