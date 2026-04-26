@@ -19,7 +19,9 @@ pub(crate) fn spawn_xpc_server(
     state: SharedState,
     executor: Executor,
 ) -> Result<(), BoxError> {
-    let config = XpcListenerConfig::new(service_name).with_peer_requirement(
+    tracing::info!(%service_name, "xpc demo server: start config+spawn");
+
+    let config = XpcListenerConfig::new(service_name.clone()).with_peer_requirement(
         PeerSecurityRequirement::TeamIdentity(Some(arcstr!("ADPG6C355H"))),
     );
 
@@ -31,12 +33,15 @@ pub(crate) fn spawn_xpc_server(
         }
     }));
 
-    let listener = XpcListener::bind(config).context("bind demo xpc listener")?;
+    let listener = XpcListener::bind(config)
+        .context("bind xpc demo listener")
+        .with_context_debug_field("serviceName", || service_name.clone())?;
 
     let exec2 = executor.clone();
     executor.spawn_cancellable_task(async move {
+        tracing::info!(%service_name, "xpc demo server listener active");
         if let Err(err) = server.serve_listener(listener, exec2).await {
-            tracing::error!(%err, "xpc demo server error");
+            tracing::error!(%service_name, %err, "xpc demo server error");
         }
     });
 
@@ -45,14 +50,14 @@ pub(crate) fn spawn_xpc_server(
 
 fn handle_xpc_message(state: &SharedState, msg: XpcMessage) -> Option<XpcMessage> {
     let XpcMessage::Dictionary(dict) = msg else {
-        tracing::debug!("xpc server: ignoring non-dictionary message");
+        tracing::debug!("xpc demo server: ignoring non-dictionary message");
         return None;
     };
 
     let op = if let Some(XpcMessage::String(s)) = dict.get("op") {
         s.as_str()
     } else {
-        tracing::debug!("xpc server: missing or non-string 'op' field");
+        tracing::debug!("xpc demo server: missing or non-string 'op' field");
         return None;
     };
 
@@ -95,13 +100,13 @@ fn handle_xpc_message(state: &SharedState, msg: XpcMessage) -> Option<XpcMessage
             html_badge_enabled = new_settings.html_badge_enabled,
             html_badge_label = %new_settings.html_badge_label,
             exclude_domains_count = new_settings.exclude_domains.len(),
-            "xpc server: applying settings update"
+            "xpc demo server: applying settings update"
         );
 
         state.store(Arc::new(new_settings));
         None
     } else {
-        tracing::debug!(op, "xpc server: unknown op");
+        tracing::debug!(op, "xpc demo server: unknown op");
         None
     }
 }

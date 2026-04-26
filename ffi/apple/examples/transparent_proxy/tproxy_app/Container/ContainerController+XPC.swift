@@ -37,7 +37,7 @@ extension ContainerController {
         xpc_connection_cancel(conn)
 
         log(
-            "sendXpcUpdateSettings: settings update sent (badge=\(demoSettings.htmlBadgeEnabled), excludeDomains=\(demoSettings.excludeDomains.count))"
+            "sendXpcUpdateSettings: settings update sent (badge=\(demoSettings.htmlBadgeEnabled), badge_label=\(demoSettings.htmlBadgeLabel), excludeDomains=\(demoSettings.excludeDomains.count))"
         )
     }
 }
