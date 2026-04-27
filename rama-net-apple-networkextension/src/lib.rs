@@ -93,6 +93,118 @@
 //! >
 //! > `[1]` Assuming that connection isn’t blocked by some other mechanism, like the App Sandbox.
 //!
+//! ### Wiring up XPC for a sysex NE provider in practice
+//!
+//! The notes above are accurate but skip the practical setup. The recipe below is
+//! distilled from the working transparent-proxy example shipped in this repository
+//! ([`ffi/apple/examples/transparent_proxy`]) — follow it and you should not need
+//! to repeat the trial-and-error we went through.
+//!
+//! What you need:
+//!
+//! 1. **An app group ID, shared by the container app and the sysex.** This is the
+//!    *prefix* macOS / launchd will accept as a Mach service name from a sandboxed
+//!    or NE-style process — without it, `xpc_connection_create_mach_service` (or
+//!    `NSXPCConnection`) traffic is silently dropped, and `launchd` will refuse
+//!    to register the listener inside the sysex.
+//!    - **macOS:** the legacy `<TEAM_ID>.<bundle-id-prefix>` form is enough
+//!      (e.g. `ADPG6C355H.org.example.tproxy`). It does not need to start with
+//!      `group.` on macOS, and does not have to be created in the Apple Developer
+//!      portal for local developer signing — Xcode automatic signing accepts
+//!      `<AppIdentifierPrefix><bundle-id>` directly.
+//!    - **iOS** (and macOS in distribution / App Store contexts where you cannot
+//!      rely on the legacy form): create a real App Group identifier in the
+//!      Apple Developer portal under
+//!      *Certificates, Identifiers & Profiles → Identifiers → App Groups*. These
+//!      identifiers must start with `group.` (e.g. `group.org.example.tproxy`).
+//!      Enable the *App Groups* capability on **both** App IDs (container and
+//!      provider) and add the identifier to each.
+//!
+//! 2. **The same app group ID listed in the entitlements of both binaries.**
+//!    Both the container app and the sysex must declare it under
+//!    `com.apple.security.application-groups`:
+//!
+//!    ```xml
+//!    <key>com.apple.security.application-groups</key>
+//!    <array>
+//!        <string>$(APP_GROUP_ID)</string>
+//!    </array>
+//!    ```
+//!
+//!    If only one side declares it, `launchd` will allow the listener to come up
+//!    but the peer will not be able to reach it: the connection appears to
+//!    succeed (XPC is lazy) and then fails on the first send.
+//!
+//! 3. **`NEMachServiceName` declared inside the `NetworkExtension` dict of the
+//!    sysex's `Info.plist`, prefixed by the app group ID.** This is the single
+//!    name that `sysextd` uses to generate the launchd `MachServices` entry for
+//!    the extension. The prefix-must-match-an-app-group rule applies here too —
+//!    pick any unique suffix you like, but the value must start with the app
+//!    group ID:
+//!
+//!    ```xml
+//!    <key>NetworkExtension</key>
+//!    <dict>
+//!        <key>NEProviderClasses</key>
+//!        <dict>
+//!            <key>com.apple.networkextension.app-proxy</key>
+//!            <string>YourModule.YourProviderClass</string>
+//!        </dict>
+//!        <key>NEMachServiceName</key>
+//!        <string>$(APP_GROUP_ID).provider</string>
+//!    </dict>
+//!    ```
+//!
+//!    The container app should read the **same** value (do not re-derive it from
+//!    `Bundle.main.bundleIdentifier`, the two namespaces are different). The
+//!    transparent-proxy example exposes it as a `ProviderMachServiceName` key in
+//!    the container's own `Info.plist` so both bundles share one source of truth
+//!    via the `APP_GROUP_ID` build setting.
+//!
+//! 4. **A reinstall after any change to `NEMachServiceName`.** `sysextd` only reads
+//!    `Info.plist` when the extension is (re)activated, and it only writes the
+//!    `MachServices` entry into the generated launchd job at that moment.
+//!    Editing `NEMachServiceName` in place and rebuilding is *not* enough; you
+//!    must trigger a deactivate + reactivate cycle (in the example this is
+//!    `just install-tproxy-dev-reset-profile`). Confirm afterwards with:
+//!
+//!    ```sh
+//!    sudo launchctl print system/<sysex-bundle-id> | grep -A 5 -i machservices
+//!    ```
+//!
+//!    A correctly registered listener shows up as e.g.:
+//!
+//!    ```text
+//!    MachServices = {
+//!        ADPG6C355H.org.example.tproxy.provider => 0
+//!    }
+//!    ```
+//!
+//!    If the `MachServices` block is empty or missing, the prefix does not match
+//!    a declared app group, the entitlements were stripped during signing, or
+//!    `sysextd` has a stale registration — see the example's *Troubleshooting*
+//!    section for the full decision tree.
+//!
+//! 5. **A handshake-friendly XPC protocol.** `XpcConnection` on the client side
+//!    is lazy, so peer-requirement and prefix mismatches surface as
+//!    `XpcConnectionError::PeerRequirementFailed` (or a silent disconnect) on the
+//!    first send, *not* at construction. Send something cheap and idempotent
+//!    early (a "ping" / `updateSettings` style call) so misconfigurations fail
+//!    loudly during development rather than the first time a real workload runs.
+//!
+//! On the Rust side the only thing you need to know is that the same
+//! `NEMachServiceName` string is what you pass to
+//! `rama::net::apple::xpc::XpcListenerConfig::new(service_name)` — there is no
+//! separate registration step. As long as the launchd `MachServices` entry above
+//! exists, `XpcListener::bind(...)` will succeed and the container app's
+//! `xpc_connection_create_mach_service(<same name>)` will reach it. The
+//! transparent-proxy example carries the service name from the container app to
+//! the sysex through `NETunnelProviderProtocol.providerConfiguration`, which is
+//! the simplest pattern when you want the sysex to learn its own name without
+//! re-reading `Info.plist`.
+//!
+//! [`ffi/apple/examples/transparent_proxy`]: https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy
+//!
 //! ## Inter-provider Communication
 //!
 //! A sysex can include multiple types of NE providers. For example, a single sysex
