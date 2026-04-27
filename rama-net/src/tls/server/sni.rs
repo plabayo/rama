@@ -9,7 +9,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     io::{HeapReader, PrefixedIo, StackReader},
     service::RejectService,
     telemetry::tracing,
@@ -145,6 +145,12 @@ pin_project! {
         #[pin]
         pub stream: SniPrefixedIo<S>,
         pub sni: Option<Domain>,
+    }
+}
+
+impl<S: ExtensionsRef> ExtensionsRef for SniRequest<S> {
+    fn extensions(&self) -> &Extensions {
+        self.stream.extensions()
     }
 }
 
