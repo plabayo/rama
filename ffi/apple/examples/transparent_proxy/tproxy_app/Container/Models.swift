@@ -21,6 +21,10 @@ struct ProxyEngineConfigPayload: Encodable {
     let tcpConnectTimeoutMs: Int
     let excludeDomains: [String]
     let xpcServiceName: String
+    /// Bundle ID of the container app, forwarded to the sysext so it can pin
+    /// the XPC listener via `PeerSecurityRequirement::TeamIdentity(Some(...))`
+    /// — same Apple Developer team **and** this exact signing identifier.
+    let containerSigningIdentifier: String
 
     private enum CodingKeys: String, CodingKey {
         case htmlBadgeEnabled = "html_badge_enabled"
@@ -28,5 +32,6 @@ struct ProxyEngineConfigPayload: Encodable {
         case tcpConnectTimeoutMs = "tcp_connect_timeout_ms"
         case excludeDomains = "exclude_domains"
         case xpcServiceName = "xpc_service_name"
+        case containerSigningIdentifier = "container_signing_identifier"
     }
 }

@@ -417,6 +417,9 @@ extension ContainerController {
             tcpConnectTimeoutMs: demoSettings.tcpConnectTimeoutMs,
             excludeDomains: demoSettings.excludeDomains,
             xpcServiceName: xpcServiceName,
+            // Forward our bundle ID so the sysext can lock the XPC listener to
+            // this container only (same Apple Developer team + this identifier).
+            containerSigningIdentifier: Bundle.main.bundleIdentifier ?? "",
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

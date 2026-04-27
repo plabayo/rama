@@ -24,6 +24,14 @@ pub struct DemoProxyConfig {
     // The XPC mach service name to listen on for live settings updates from the container app.
     // Set to the extension's bundle ID by the Swift container. If absent, XPC server is skipped.
     pub xpc_service_name: Option<String>,
+    // The signing identifier (bundle ID) of the **container app** allowed to talk to
+    // the XPC server. The sysext pins the listener via
+    // `PeerSecurityRequirement::TeamIdentity(Some(<this>))` — same Apple Developer team
+    // *and* this exact signing identifier. Set by the Swift container from
+    // `Bundle.main.bundleIdentifier`. If absent or empty, the sysext refuses to start
+    // the XPC server (fail-closed) so unrestricted access to install/uninstall routes
+    // is impossible.
+    pub container_signing_identifier: Option<String>,
 }
 
 impl Default for DemoProxyConfig {
@@ -40,6 +48,7 @@ impl Default for DemoProxyConfig {
             ca_cert_pem: None,
             ca_key_pem: None,
             xpc_service_name: None,
+            container_signing_identifier: None,
         }
     }
 }

@@ -349,9 +349,8 @@ impl TransparentProxyTcpSession {
 
         // spawn egress bridge (service ↔ NWConnection)
         self.egress_bridge_task = Some({
-            let guard = flow_guard.clone();
             rt_handle.spawn(async move {
-                let _guard = guard;
+                let _guard = flow_guard;
                 run_tcp_bridge(
                     egress_internal,
                     egress_client_rx,

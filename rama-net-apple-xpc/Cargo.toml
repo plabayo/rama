@@ -21,12 +21,12 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 
 [dependencies]
+ahash = { workspace = true }
 block2 = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
-ahash = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 

@@ -120,11 +120,11 @@ impl DemoTransparentProxyHandler {
             self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
         let udp_service = self::udp::try_new_service(ctx.clone()).await?.boxed();
 
-        if let Some(xpc_service_name) =
-            self::config::DemoProxyConfig::from_opaque_config(ctx.opaque_config())?.xpc_service_name
-        {
+        let demo_config = self::config::DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
+        if let Some(xpc_service_name) = demo_config.xpc_service_name {
             self::demo_xpc_server::spawn_xpc_server(
                 xpc_service_name,
+                demo_config.container_signing_identifier,
                 shared_state,
                 ctx.executor.clone(),
             )

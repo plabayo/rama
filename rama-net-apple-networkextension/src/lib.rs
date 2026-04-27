@@ -303,12 +303,14 @@ pub mod tproxy;
 #[cfg(target_os = "macos")]
 pub mod system_keychain;
 
-mod tcp;
-mod udp;
 mod nw_tcp_stream;
 mod nw_udp_socket;
+mod tcp;
+mod udp;
 
-pub use self::{tcp::TcpFlow, udp::UdpFlow, nw_tcp_stream::NwTcpStream, nw_udp_socket::NwUdpSocket};
+pub use self::{
+    nw_tcp_stream::NwTcpStream, nw_udp_socket::NwUdpSocket, tcp::TcpFlow, udp::UdpFlow,
+};
 pub use crate::__transparent_proxy_ffi as transparent_proxy_ffi;
 
 #[doc(hidden)]

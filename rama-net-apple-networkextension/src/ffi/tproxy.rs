@@ -11,8 +11,8 @@ use crate::ffi::BytesView;
 use crate::process::AuditToken;
 use crate::tproxy::{
     self, NwAttribution, NwEgressParameters as RustNwEgressParameters, NwInterfaceType,
-    NwMultipathServiceType, NwServiceClass, TransparentProxyFlowAction as RustTransparentProxyFlowAction,
-    TransparentProxyFlowProtocol,
+    NwMultipathServiceType, NwServiceClass,
+    TransparentProxyFlowAction as RustTransparentProxyFlowAction, TransparentProxyFlowProtocol,
 };
 
 #[repr(C)]

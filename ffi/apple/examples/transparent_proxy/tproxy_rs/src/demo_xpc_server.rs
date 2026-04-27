@@ -3,10 +3,13 @@ use std::sync::Arc;
 use base64::Engine as _;
 use rama::{
     error::{BoxError, ErrorContext},
-    net::apple::xpc::{XpcListener, XpcListenerConfig, XpcMessageRouter, XpcServer},
+    net::apple::xpc::{
+        PeerSecurityRequirement, XpcListener, XpcListenerConfig, XpcMessageRouter, XpcServer,
+    },
     rt::Executor,
     service::service_fn,
     telemetry::tracing,
+    utils::str::arcstr::ArcStr,
 };
 use serde::{Deserialize, Serialize};
 
@@ -86,13 +89,42 @@ impl RootCaCommandReply {
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn spawn_xpc_server(
     service_name: String,
+    container_signing_identifier: Option<String>,
     state: SharedState,
     executor: Executor,
 ) -> Result<(), BoxError> {
-    tracing::info!(%service_name, "xpc demo server: start config+spawn");
+    // SECURITY: pin the listener to the container app's signing identifier so that
+    // only a binary signed by the **same Apple Developer team** *and* carrying that
+    // exact bundle ID is allowed to talk to the install/uninstall/settings routes.
+    // Equivalent to the new (macOS 26+) `XPCPeerRequirement.isFromSameTeam(
+    // andMatchesSigningIdentifier:)` Swift API but works on macOS 11+ via the
+    // underlying `xpc_connection_set_peer_team_identity_requirement` C primitive.
+    //
+    // Fail-closed: if the container did not provide its bundle ID through the
+    // engine config, we refuse to bind. This avoids accidentally exposing the
+    // routes to any local process when the wiring is broken.
+    let signing_identifier = container_signing_identifier
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ArcStr::from)
+        .ok_or_else(|| -> BoxError {
+            tracing::error!(
+                "xpc demo server: container_signing_identifier is missing or empty in engine \
+                 config; refusing to bind XPC listener (fail-closed). Set it from the container \
+                 app's `Bundle.main.bundleIdentifier`.",
+            );
+            "xpc demo server: missing container_signing_identifier (fail-closed)".into()
+        })?;
 
-    let config = XpcListenerConfig::new(service_name.clone());
-    // .with_peer_requirement(PeerSecurityRequirement::TeamIdentity(Some(arcstr!("ADPG6C355H"))))
+    tracing::info!(
+        %service_name,
+        %signing_identifier,
+        "xpc demo server: start config+spawn (peer pinned to same-team + signing identifier)",
+    );
+
+    let config = XpcListenerConfig::new(service_name.clone())
+        .with_peer_requirement(PeerSecurityRequirement::TeamIdentity(Some(signing_identifier)));
 
     let router = XpcMessageRouter::new()
         .with_typed_route::<UpdateSettingsRequest, UpdateSettingsReply, _>(

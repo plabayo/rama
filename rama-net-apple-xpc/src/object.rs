@@ -223,16 +223,15 @@ impl OwnedXpcObject {
         if self.is_type(unsafe { &_xpc_type_dictionary as *const _ as *const c_void }) {
             let (sender, receiver) = mpsc::channel();
             // Return u8 (1 = continue, 0 = stop) — same reasoning as the array case above.
-            let mut block =
-                StackBlock::new(move |key: *const c_char, value: xpc_object_t| -> u8 {
-                    // SAFETY: key is a valid null-terminated C string borrowed from the XPC
-                    // dictionary for the duration of this callback invocation.
-                    let key = unsafe { CStr::from_ptr(key) }
-                        .to_string_lossy()
-                        .into_owned();
-                    let _ = sender.send((key, Self::retain(value, "dictionary value")));
-                    1
-                });
+            let mut block = StackBlock::new(move |key: *const c_char, value: xpc_object_t| -> u8 {
+                // SAFETY: key is a valid null-terminated C string borrowed from the XPC
+                // dictionary for the duration of this callback invocation.
+                let key = unsafe { CStr::from_ptr(key) }
+                    .to_string_lossy()
+                    .into_owned();
+                let _ = sender.send((key, Self::retain(value, "dictionary value")));
+                1
+            });
             // SAFETY: self.raw is a valid XPC dictionary. xpc_dictionary_apply calls the
             // block synchronously for each entry before returning.
             unsafe {

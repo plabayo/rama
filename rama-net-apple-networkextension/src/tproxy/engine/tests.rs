@@ -420,8 +420,7 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
             meta,
             // Sessions are cancelled before activate — the service body never runs.
             // The type must still match BridgeIo<TcpFlow, NwTcpStream>.
-            service: service_fn(|_: BridgeIo<TcpFlow, NwTcpStream>| async move { Ok(()) })
-                .boxed(),
+            service: service_fn(|_: BridgeIo<TcpFlow, NwTcpStream>| async move { Ok(()) }).boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
     };
