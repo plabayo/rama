@@ -4,7 +4,10 @@ use std::{
     ops::{Deref, DerefMut},
     os::raw::{c_int, c_ulong},
     ptr,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicPtr, Ordering},
+    },
 };
 
 use crate::ffi::{_Block_copy, _Block_release, _NSConcreteStackBlock};
@@ -93,9 +96,19 @@ impl<A, R, F> ConcreteBlock<A, R, F> {
                     >(invoke)
                 },
             },
-            descriptor: Box::leak(Box::new(BlockDescriptor::new())),
+            descriptor: descriptor_for::<A, R, F>(),
             closure: ManuallyDrop::new(Arc::new(closure)),
         }
+    }
+}
+
+impl<A, R, F> Drop for ConcreteBlock<A, R, F> {
+    fn drop(&mut self) {
+        // SAFETY: closure is always initialised in with_invoke. This is the sole drop
+        // site for stack blocks (used without copy()). copy() wraps self in ManuallyDrop
+        // to suppress this impl and handles the Arc decrement manually, so there is no
+        // double-drop. block_context_dispose handles the heap-copy side.
+        unsafe { ManuallyDrop::drop(&mut self.closure) }
     }
 }
 
@@ -105,8 +118,13 @@ where
 {
     pub(crate) fn copy(self) -> RcBlock<A, R> {
         unsafe {
-            let mut block = self;
-            let copied = RcBlock::copy(&mut *block);
+            // ManuallyDrop::new suppresses the Drop impl so it does not fire when
+            // `block` goes out of scope at the end of this function — we handle the
+            // Arc decrement ourselves below.
+            let mut block = ManuallyDrop::new(self);
+            // `**block`: ManuallyDrop<ConcreteBlock> → ConcreteBlock → Block (DerefMut).
+            let copied = RcBlock::copy(&mut **block);
+            // Decrement the Arc that was cloned into the heap copy by block_context_copy.
             ManuallyDrop::drop(&mut block.closure);
             copied
         }
@@ -139,6 +157,41 @@ unsafe extern "C" fn block_context_copy<A, R, F>(
 ) {
     unsafe {
         ptr::addr_of_mut!((*dst).closure).write(ManuallyDrop::new(Arc::clone(&(*src).closure)));
+    }
+}
+
+/// Returns a pointer to the one-per-type `BlockDescriptor` for `ConcreteBlock<A, R, F>`.
+///
+/// The descriptor is allocated at most once per concrete `(A, R, F)` triple and then
+/// intentionally leaked so that it remains valid for the entire lifetime of the process
+/// (XPC may retain the descriptor pointer across block copies and releases).
+///
+/// # Per-monomorphisation statics
+///
+/// The `static DESCRIPTOR` inside this function is instantiated separately for every
+/// monomorphisation of the generic function — a property of rustc/LLVM that is relied
+/// upon throughout the Rust ecosystem (e.g. `once_cell`). The language reference does
+/// not formally guarantee it, but it is stable in practice.
+fn descriptor_for<A, R, F>() -> *const BlockDescriptor<ConcreteBlock<A, R, F>> {
+    static DESCRIPTOR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+
+    let p = DESCRIPTOR.load(Ordering::Acquire);
+    if !p.is_null() {
+        return p.cast();
+    }
+
+    // First call for this monomorphisation: allocate one descriptor and publish it.
+    // If two threads race we allocate two but keep only the winner; the loser is freed.
+    let fresh =
+        Box::into_raw(Box::new(BlockDescriptor::<ConcreteBlock<A, R, F>>::new())).cast::<()>();
+    match DESCRIPTOR.compare_exchange(ptr::null_mut(), fresh, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => fresh.cast(),
+        Err(winner) => {
+            // Another thread beat us; drop our allocation and return theirs.
+            // SAFETY: fresh was just produced by Box::into_raw for this exact type.
+            drop(unsafe { Box::from_raw(fresh.cast::<BlockDescriptor<ConcreteBlock<A, R, F>>>()) });
+            winner.cast()
+        }
     }
 }
 
