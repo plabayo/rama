@@ -398,7 +398,7 @@ pub mod controller {
             const HOT_RELOAD: &str = r##"
                 <div
                     id="hotreload"
-                    data-init="@get('/hotreload', {retryMaxCount: 1000,retryInterval:20, retryMaxWaitMs:200})"
+                    data-init="@get('/hotreload', {retryMaxCount: 1000,retryInterval:20, retryMaxWait:200})"
                 ></div>
             "##;
 
