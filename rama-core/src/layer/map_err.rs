@@ -179,8 +179,14 @@ where
 }
 
 /// A [`Layer`] that produces [`IntoErr`] services.
-#[derive(Debug, Clone)]
-pub struct IntoErrLayer<E>(PhantomData<E>);
+#[derive(Debug)]
+pub struct IntoErrLayer<E>(PhantomData<fn(E)>);
+
+impl<E> Clone for IntoErrLayer<E> {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
 
 impl<E> IntoErrLayer<E> {
     /// Create a new [`IntoErrLayer`] layer

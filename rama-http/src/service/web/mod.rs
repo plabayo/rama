@@ -8,7 +8,7 @@ mod endpoint;
 #[doc(inline)]
 pub use endpoint::{
     EndpointServiceFn, EndpointServiceFnWrapper, IntoEndpointService, IntoEndpointServiceWithState,
-    StaticService, extract, response,
+    extract, response,
 };
 
 // pub mod k8s;

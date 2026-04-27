@@ -432,32 +432,46 @@ where
     // /// The prefix is used to match the request path and strip it from the request URI.
     // ///
     // /// Note: this sub-router is configured with the same State this router has.
-    // #[must_use]
-    // #[inline]
-    // pub fn with_sub_router_make_fn(
-    //     mut self,
-    //     prefix: impl AsRef<str>,
-    //     configure_router: impl FnOnce(Self) -> Self,
-    // ) -> Self {
-    //     self.set_sub_router_make_fn(prefix, configure_router);
-    //     self
-    // }
-    //
+    #[must_use]
+    #[inline]
+    pub fn with_sub_router_make_fn(
+        mut self,
+        prefix: impl AsRef<str>,
+        configure_router: impl FnOnce(Self) -> Self,
+    ) -> Self
+    where
+        L: Clone,
+        Self: Service<Request, Output = O, Error = E>,
+    {
+        self.set_sub_router_make_fn(prefix, configure_router);
+        self
+    }
+
     // /// register a nested router under a prefix (path).
     // ///
     // /// The prefix is used to match the request path and strip it from the request URI.
     // ///
     // /// Note: this sub-router is configured with the same State this router has.
-    // pub fn set_sub_router_make_fn(
-    //     &mut self,
-    //     prefix: impl AsRef<str>,
-    //     configure_router: impl FnOnce(Self) -> Self,
-    // ) -> &mut Self {
-    //     let router = Self::new_with_state(self.state.clone());
-    //     let router = configure_router(router);
-    //     let nested = router.boxed();
-    //     self.set_sub_service_inner(prefix, nested)
-    // }
+    pub fn set_sub_router_make_fn(
+        &mut self,
+        prefix: impl AsRef<str>,
+        configure_router: impl FnOnce(Self) -> Self,
+    ) -> &mut Self
+    where
+        L: Clone,
+        Self: Service<Request, Output = O, Error = E>,
+    {
+        let router = Self {
+            routes: MatchitRouter::new(),
+            sub_services: None,
+            not_found: None,
+            layer: self.layer.clone(),
+            state: self.state.clone(),
+        };
+        let router = configure_router(router);
+        let nested = router.boxed();
+        self.set_sub_service_inner(prefix, nested)
+    }
 
     /// Register a nested service under a prefix (path).
     ///

@@ -28,11 +28,14 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer,
+    error::BoxError,
     http::{
         Method,
         headers::exotic::XClacksOverhead,
-        layer::set_header::SetResponseHeaderLayer,
-        layer::{match_redirect::UriMatchRedirectLayer, trace::TraceLayer},
+        layer::{
+            error_handling::ErrorHandlerLayer, match_redirect::UriMatchRedirectLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer,
+        },
         server::HttpServer,
         service::web::{
             Router,
@@ -80,15 +83,15 @@ async fn main() {
     }
 
     let router = Router::new()
-        .with_get("/", Html(r##"<h1>Rama - Web Router</h1>"##.to_owned()))
+        .with_get("/", Ok(Html(r##"<h1>Rama - Web Router</h1>"##.to_owned())))
         // route with a parameter
         .with_post(
             "/greet/{name}",
             async |method: Method, Path(PostGreetForPathParams { name }): Path<PostGreetForPathParams>| {
-                Json(json!({
+                Ok::<_, BoxError>(Json(json!({
                     "method": method.as_str(),
                     "message": format!("Hello, {name}!"),
-                }))
+                })))
             },
         )
         // catch-all route
@@ -106,22 +109,22 @@ async fn main() {
                     .map(|(_, message)| *message)
                     .unwrap_or("Language not supported");
 
-                Json(json!({
+                Ok::<_, BoxError>(Json(json!({
                     "message": message,
-                }))
+                })))
             },
         )
         // sub route support - api version health check
         .with_sub_router_make_fn("/api", |router| {
             router.with_sub_router_make_fn("/v2", |router| {
                 router.with_get("/status", async || {
-                    Json(json!({
+                    Ok::<_, BoxError>(Json(json!({
                         "status": "API v2 is up and running",
-                    }))
+                    })))
                 })
             })
         })
-        .with_not_found(Redirect::temporary("/"));
+        .with_not_found(Ok(Redirect::temporary("/")));
 
     let middlewares = (
         TraceLayer::new_for_http(),
@@ -134,6 +137,7 @@ async fn main() {
             // and instead either preserve or drop the query parameter
             UriMatchReplaceRule::try_new("*/greet\\?lang=*", "$1/lang/$2").unwrap(),
         ]),
+        ErrorHandlerLayer::new(),
     );
 
     graceful.spawn_task_fn(async |guard| {

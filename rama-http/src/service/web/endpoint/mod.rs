@@ -1,6 +1,9 @@
 use std::convert::Infallible;
 
-use rama_core::{Service, service::BoxService};
+use rama_core::{
+    Service,
+    service::{BoxService, StaticService},
+};
 
 use crate::{Body, Request, Response, matcher::HttpMatcher};
 
@@ -53,55 +56,25 @@ where
     }
 }
 
-impl<O, E> IntoEndpointService<(), O, E> for Result<O, E>
+impl<O> IntoEndpointService<(), O, Infallible> for Result<O, Infallible>
 where
     O: Clone + Send + Sync + 'static,
-    E: Clone + Send + Sync + 'static,
 {
-    type Service = StaticService<Self>;
+    type Service = StaticService<O>;
 
     fn into_endpoint_service(self) -> Self::Service {
-        StaticService::new(self)
+        StaticService::new(self.unwrap())
     }
 }
 
-impl<O, E, State> IntoEndpointServiceWithState<(), O, E, State> for Result<O, E>
+impl<O, State> IntoEndpointServiceWithState<(), O, Infallible, State> for Result<O, Infallible>
 where
     O: Clone + Send + Sync + 'static,
-    E: Clone + Send + Sync + 'static,
 {
-    type Service = StaticService<Self>;
+    type Service = StaticService<O>;
 
     fn into_endpoint_service_with_state(self, _state: State) -> Self::Service {
         self.into_endpoint_service()
-    }
-}
-
-/// A static [`Service`] that serves a pre-defined response.
-#[derive(Debug, Clone)]
-pub struct StaticService<R>(R);
-
-impl<R> StaticService<R>
-where
-    R: Clone + Send + Sync + 'static,
-{
-    /// Create a new [`StaticService`] with the given response.
-    #[inline(always)]
-    pub fn new(response: R) -> Self {
-        Self(response)
-    }
-}
-
-impl<O, E> Service<Request> for StaticService<Result<O, E>>
-where
-    O: Clone + Send + Sync + 'static,
-    E: Clone + Send + Sync + 'static,
-{
-    type Output = O;
-    type Error = E;
-
-    async fn serve(&self, _: Request) -> Result<Self::Output, Self::Error> {
-        self.0.clone()
     }
 }
 
@@ -206,7 +179,7 @@ mod private {
     impl<S, O, E, State> Sealed<(S,), O, E, State> for S where S: Service<Request, Output = O, Error = E>
     {}
 
-    impl<O, E, State> Sealed<(), O, E, State> for Result<O, E> {}
+    impl<O, State> Sealed<(), O, Infallible, State> for Result<O, Infallible> {}
 
     impl<F, O, E, T, State> Sealed<(F, T), O, E, State> for F where F: EndpointServiceFn<T, O, E, State> {}
 }

@@ -5,16 +5,15 @@ use h2_support::prelude::Response;
 use rama::{
     error::BoxError,
     http::{
-        service::web::{extract::Host, Router}, Body, Method, Request,
-        StatusCode,
+        service::web::{extract::Host, Router},
+        Body, Method, Request, StatusCode,
     },
     Service,
 };
 use rama_http::{
     matcher::HttpMatcher,
     service::web::{
-        extract::host::MissingHost, response::IntoResponse,
-        ResponseError, RouterError,
+        extract::host::MissingHost, response::IntoResponse, ResponseError, RouterError,
     },
 };
 
@@ -95,16 +94,7 @@ async fn main() {
 
     router.set_match_route("/test5", HttpMatcher::method_get(), test_func5);
 
-    router.set_match_route(
-        "/test6",
-        HttpMatcher::method_get(),
-        Ok::<_, Infallible>("test"),
-    );
-    router.set_match_route(
-        "/test7",
-        HttpMatcher::method_get(),
-        Err::<Infallible, _>(Arc::new(io::Error::from(io::ErrorKind::BrokenPipe))),
-    );
+    router.set_match_route("/test6", HttpMatcher::method_get(), Ok("test"));
 
     // let router = (ErrorHandlerLayer::new()).layer(router);
 
