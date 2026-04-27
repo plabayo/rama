@@ -110,4 +110,21 @@ extension ContainerController {
 
         return textField.stringValue
     }
+
+    func showPingError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Ping Failed"
+        alert.informativeText = message
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    func flashPingSuccess() {
+        guard let button = statusItem?.button else { return }
+        button.title = "🟢 tproxy demo"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak button] in
+            button?.title = "🦙 tproxy demo"
+        }
+    }
 }

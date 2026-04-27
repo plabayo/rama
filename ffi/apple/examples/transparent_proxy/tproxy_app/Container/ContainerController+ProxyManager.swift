@@ -149,11 +149,13 @@ extension ContainerController {
     func sendProviderPing() {
         guard let manager = activeManager else {
             logErrorText("provider ping failed: no active manager")
+            showPingError("No active manager. Is the proxy running?")
             return
         }
 
         guard let session = manager.connection as? NETunnelProviderSession else {
             logErrorText("provider ping failed: active connection is not a NETunnelProviderSession")
+            showPingError("Active connection is not a tunnel session.")
             return
         }
 
@@ -168,6 +170,7 @@ extension ContainerController {
             data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         } catch {
             logError("provider ping serialization failed", error)
+            showPingError("Failed to serialize ping payload: \(error.localizedDescription)")
             return
         }
 
@@ -177,18 +180,20 @@ extension ContainerController {
                 guard let self else { return }
                 guard let reply else {
                     self.log("provider message completed without reply payload")
+                    DispatchQueue.main.async { self.showPingError("Provider returned no reply.") }
                     return
                 }
 
                 if let text = String(data: reply, encoding: .utf8) {
                     self.log("provider message reply utf8=\(text)")
-                    return
+                } else {
+                    self.log("provider message reply bytes=\(reply.count)")
                 }
-
-                self.log("provider message reply bytes=\(reply.count)")
+                DispatchQueue.main.async { self.flashPingSuccess() }
             }
         } catch {
             logError("provider ping sendProviderMessage failed", error)
+            showPingError("Failed to send ping: \(error.localizedDescription)")
         }
     }
 
