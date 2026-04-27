@@ -7,10 +7,9 @@ use crate::service::web::response::IntoResponse;
 #[derive(Debug, Clone)]
 pub struct IntoResponseService<S>(S);
 
-impl<S, R, E> IntoResponseService<S>
+impl<S> IntoResponseService<S>
 where
-    S: Service<Request, Output = R, Error = E>,
-    R: IntoResponse + Send + Sync + 'static,
+    S: Service<Request, Output: IntoResponse>,
 {
     /// Create a new [`IntoResponseService`] with the given service.
     #[inline(always)]
@@ -19,15 +18,13 @@ where
     }
 }
 
-impl<S, I, O, E> Service<I> for IntoResponseService<S>
+impl<S, I> Service<I> for IntoResponseService<S>
 where
-    S: Service<I, Output = O, Error = E>,
+    S: Service<I, Output: IntoResponse>,
     I: Send + 'static,
-    O: IntoResponse + Send + Sync + 'static,
-    E: Send + 'static,
 {
     type Output = Response;
-    type Error = E;
+    type Error = S::Error;
 
     async fn serve(&self, req: I) -> Result<Self::Output, Self::Error> {
         self.0.serve(req).await.map(IntoResponse::into_response)
