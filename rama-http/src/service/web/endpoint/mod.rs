@@ -112,7 +112,7 @@ pub use service::EndpointServiceFn;
 /// Wrapper svc used for creating a endpoint service from a function.
 pub struct EndpointServiceFnWrapper<F, T, O, E, State> {
     inner: F,
-    _marker: std::marker::PhantomData<fn(T, O, E) -> ()>,
+    _marker: std::marker::PhantomData<fn(T) -> Result<O, E>>,
     state: State,
 }
 
