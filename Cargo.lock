@@ -3388,11 +3388,13 @@ dependencies = [
 name = "rama-net-apple-xpc"
 version = "0.3.0-rc1"
 dependencies = [
+ "ahash",
  "bindgen",
  "parking_lot",
  "rama-core",
  "rama-net",
  "rama-utils",
+ "serde",
  "tokio",
 ]
 

@@ -5,7 +5,21 @@ extension ContainerController {
     /// Send the current demo settings to the running sysext over XPC.
     ///
     /// The sysext registers its mach service under its bundle ID (`NEMachServiceName`).
-    /// The message is fire-and-forget: no reply is expected.
+    /// The message is fire-and-forget: no reply is inspected (success/failure is logged).
+    ///
+    /// Wire format follows the NSXPC-inspired `$selector` / `$arguments` convention
+    /// handled by `XpcMessageRouter` on the Rust side:
+    ///
+    ///     {
+    ///       "$selector": "updateSettings:withReply:",
+    ///       "$arguments": [
+    ///         {
+    ///           "html_badge_enabled": <bool>,
+    ///           "html_badge_label": <string>,
+    ///           "exclude_domains": [<string>, ...]
+    ///         }
+    ///       ]
+    ///     }
     func sendXpcUpdateSettings() {
         let serviceName = xpcServiceName
 
@@ -24,16 +38,25 @@ extension ContainerController {
 
         xpc_connection_activate(conn)
 
-        let msg = xpc_dictionary_create(nil, nil, 0)
-        xpc_dictionary_set_string(msg, "op", "update_settings")
-        xpc_dictionary_set_bool(msg, "html_badge_enabled", demoSettings.htmlBadgeEnabled)
-        xpc_dictionary_set_string(msg, "html_badge_label", demoSettings.htmlBadgeLabel)
+        // Build the settings payload (first $arguments entry).
+        let payload = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_bool(payload, "html_badge_enabled", demoSettings.htmlBadgeEnabled)
+        xpc_dictionary_set_string(payload, "html_badge_label", demoSettings.htmlBadgeLabel)
 
         let domainsArray = xpc_array_create(nil, 0)
         for domain in demoSettings.excludeDomains {
             xpc_array_append_value(domainsArray, xpc_string_create(domain))
         }
-        xpc_dictionary_set_value(msg, "exclude_domains", domainsArray)
+        xpc_dictionary_set_value(payload, "exclude_domains", domainsArray)
+
+        // Wrap in the $arguments array.
+        let arguments = xpc_array_create(nil, 0)
+        xpc_array_append_value(arguments, payload)
+
+        // Build the top-level call dictionary.
+        let msg = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_string(msg, "$selector", "updateSettings:withReply:")
+        xpc_dictionary_set_value(msg, "$arguments", arguments)
 
         xpc_connection_send_message_with_reply(conn, msg, nil) { [weak self] reply in
             self?.log("sendXpcUpdateSettings: reply: \(reply)")

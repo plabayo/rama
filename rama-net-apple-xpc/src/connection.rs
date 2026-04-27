@@ -18,6 +18,7 @@ use tokio::sync::{
 
 use crate::{
     block::ConcreteBlock,
+    call::XpcCall,
     error::{XpcConnectionError, XpcError},
     ffi::{
         _xpc_error_connection_interrupted, _xpc_error_connection_invalid,
@@ -32,7 +33,9 @@ use crate::{
     },
     message::XpcMessage,
     object::OwnedXpcObject,
+    router::extract_result,
     util::make_c_string,
+    xpc_serde,
 };
 
 /// An event received on an [`XpcConnection`].
@@ -272,6 +275,59 @@ impl XpcConnection {
             .map_err(|_| XpcError::ReplyCanceled)??;
         tracing::trace!(reply = ?reply, "xpc received reply");
         Ok(reply)
+    }
+
+    /// Send a selector call to the peer without waiting for a reply.
+    ///
+    /// Encodes `selector` and `arguments` into the standard
+    /// `{"$selector": …, "$arguments": […]}` wire format and calls [`send`](Self::send).
+    pub fn send_selector(
+        &self,
+        selector: ArcStr,
+        arguments: Vec<XpcMessage>,
+    ) -> Result<(), XpcError> {
+        let call = XpcCall::with_arguments(selector, arguments);
+        self.send(call.into())
+    }
+
+    /// Send a selector call and await a reply [`XpcMessage`].
+    ///
+    /// Encodes the call in the standard wire format and calls
+    /// [`send_request`](Self::send_request).  The raw reply dictionary is returned
+    /// as-is; use [`extract_result`](crate::router::extract_result) to decode a
+    /// `{"$result": …}` reply produced by a typed [`XpcMessageRouter`](crate::XpcMessageRouter) handler.
+    ///
+    /// **Not cancel-safe** — see [`send_request`](Self::send_request).
+    pub async fn request_selector(
+        &self,
+        selector: ArcStr,
+        arguments: Vec<XpcMessage>,
+    ) -> Result<XpcMessage, XpcError> {
+        let call = XpcCall::with_arguments(selector, arguments);
+        self.send_request(call.into()).await
+    }
+
+    /// Send a typed request to a selector and await a deserialized reply.
+    ///
+    /// `req` is serialized via [`to_xpc_message`](crate::to_xpc_message) and
+    /// placed as the sole entry in the `$arguments` array.  The reply is expected to
+    /// be a `{"$result": …}` dictionary as produced by a typed
+    /// [`XpcMessageRouter`](crate::XpcMessageRouter) handler; the `$result` value is
+    /// deserialized as `Res`.
+    ///
+    /// **Not cancel-safe** — see [`send_request`](Self::send_request).
+    pub async fn request_typed<Req, Res>(
+        &self,
+        selector: ArcStr,
+        req: &Req,
+    ) -> Result<Res, XpcError>
+    where
+        Req: serde::Serialize,
+        Res: serde::de::DeserializeOwned,
+    {
+        let arg = xpc_serde::to_xpc_message(req)?;
+        let reply = self.request_selector(selector, vec![arg]).await?;
+        extract_result(reply)
     }
 
     /// Process ID of the remote peer at the time the connection was established.

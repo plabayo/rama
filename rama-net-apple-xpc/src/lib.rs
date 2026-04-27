@@ -145,6 +145,7 @@
 mod ffi;
 
 mod block;
+mod call;
 mod client;
 mod connection;
 mod connector;
@@ -154,9 +155,13 @@ mod listener;
 mod message;
 mod object;
 mod peer;
+mod router;
 mod server;
 mod util;
 
+pub mod xpc_serde;
+
+pub use call::XpcCall;
 pub use client::XpcClientConfig;
 pub use connection::{ReceivedXpcMessage, XpcConnection, XpcEvent};
 pub use connector::XpcConnector;
@@ -165,4 +170,6 @@ pub use error::{XpcConnectionError, XpcError};
 pub use listener::{XpcListener, XpcListenerConfig};
 pub use message::XpcMessage;
 pub use peer::PeerSecurityRequirement;
+pub use router::{XpcMessageRouter, extract_result};
 pub use server::XpcServer;
+pub use xpc_serde::{from_xpc_message, to_xpc_message};

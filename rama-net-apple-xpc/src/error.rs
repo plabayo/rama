@@ -41,6 +41,13 @@ pub enum XpcError {
     ReplyCanceled,
     /// A connection-level error received from the XPC event stream.
     Connection(XpcConnectionError),
+    /// An XPC message does not conform to the expected protocol structure
+    /// (e.g. missing `$selector` key, wrong argument type).
+    InvalidMessage(ArcStr),
+    /// A Rust value could not be serialized into an [`XpcMessage`](crate::XpcMessage).
+    SerializationFailed(ArcStr),
+    /// An [`XpcMessage`](crate::XpcMessage) could not be deserialized into the expected Rust type.
+    DeserializationFailed(ArcStr),
 }
 
 impl fmt::Display for XpcError {
@@ -61,6 +68,9 @@ impl fmt::Display for XpcError {
                 f.write_str("xpc reply callback dropped before delivering a response")
             }
             Self::Connection(err) => write!(f, "{err:?}"),
+            Self::InvalidMessage(msg) => write!(f, "invalid xpc message structure: {msg}"),
+            Self::SerializationFailed(msg) => write!(f, "xpc serialization failed: {msg}"),
+            Self::DeserializationFailed(msg) => write!(f, "xpc deserialization failed: {msg}"),
         }
     }
 }
