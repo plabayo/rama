@@ -1,10 +1,13 @@
 use std::{convert::Infallible, future::Future};
 
-use rama_core::{Service, bytes::Bytes, error::BoxError, rt::Executor};
+use rama_core::{Service, bytes::Bytes, error::BoxError, io::BridgeIo, rt::Executor};
 
 use crate::{
-    TcpFlow, UdpFlow,
-    tproxy::{TransparentProxyConfig, TransparentProxyFlowMeta},
+    NwTcpStream, NwUdpSocket, TcpFlow, UdpFlow,
+    tproxy::{
+        TransparentProxyConfig, TransparentProxyFlowMeta,
+        types::{NwTcpConnectOptions, NwUdpConnectOptions},
+    },
 };
 
 use super::TransparentProxyServiceContext;
@@ -62,12 +65,30 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
         std::future::ready(None)
     }
 
+    /// Return custom options for the egress `NWConnection` on TCP flows.
+    ///
+    /// Called by the Swift layer before opening the intercepted flow.
+    /// Return `None` (the default) to let Swift use sane `NWParameters` defaults.
+    fn egress_tcp_connect_options(&self) -> Option<NwTcpConnectOptions> {
+        None
+    }
+
+    /// Return custom options for the egress `NWConnection` on UDP flows.
+    ///
+    /// Return `None` (the default) to let Swift use sane `NWParameters` defaults.
+    fn egress_udp_connect_options(&self) -> Option<NwUdpConnectOptions> {
+        None
+    }
+
     fn match_tcp_flow(
         &self,
         _exec: Executor,
         _meta: TransparentProxyFlowMeta,
-    ) -> impl Future<Output = FlowAction<impl Service<TcpFlow, Output = (), Error = Infallible>>>
-    + Send
+    ) -> impl Future<
+        Output = FlowAction<
+            impl Service<BridgeIo<TcpFlow, NwTcpStream>, Output = (), Error = Infallible>,
+        >,
+    > + Send
     + '_ {
         std::future::ready(FlowAction::<NopSvc>::Passthrough)
     }
@@ -76,8 +97,11 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
         &self,
         _exec: Executor,
         _meta: TransparentProxyFlowMeta,
-    ) -> impl Future<Output = FlowAction<impl Service<UdpFlow, Output = (), Error = Infallible>>>
-    + Send
+    ) -> impl Future<
+        Output = FlowAction<
+            impl Service<BridgeIo<UdpFlow, NwUdpSocket>, Output = (), Error = Infallible>,
+        >,
+    > + Send
     + '_ {
         std::future::ready(FlowAction::<NopSvc>::Passthrough)
     }

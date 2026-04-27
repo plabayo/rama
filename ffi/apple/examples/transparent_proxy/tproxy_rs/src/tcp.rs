@@ -25,21 +25,17 @@ use rama::{
         },
     },
     io::{BridgeIo, Io},
-    layer::{ArcLayer, ConsumeErrLayer, HijackLayer, TimeoutLayer},
+    layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
     net::{
         address::Domain,
-        apple::networkextension::{TcpFlow, tproxy::TransparentProxyServiceContext},
-        client::{ConnectorService, EstablishedClientConnection},
+        apple::networkextension::{NwTcpStream, TcpFlow, tproxy::TransparentProxyServiceContext},
         http::server::HttpPeekRouter,
-        proxy::{IoForwardService, ProxyTarget},
-        socket::{SocketOptions, opts::TcpKeepAlive},
+        proxy::IoForwardService,
         tls::server::PeekTlsClientHelloService,
     },
     proxy::socks5::{proxy::mitm::Socks5MitmRelayService, server::Socks5PeekRouter},
     rt::Executor,
     service::MirrorService,
-    tcp::client::service::TcpConnector,
-    telemetry::tracing,
     tls::boring::proxy::TlsMitmRelay,
 };
 
@@ -52,14 +48,9 @@ use crate::{
 
 const HIJACK_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
 
-const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
-const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const TCP_KEEPALIVE_RETRIES: u32 = 5;
-
 #[derive(Clone)]
 pub(super) struct DemoTcpMitmService {
     state: SharedState,
-    connect_timeout: Duration,
     peek_duration_s: f64,
 }
 
@@ -85,7 +76,6 @@ impl DemoTcpMitmService {
 
         let service = Self {
             state: state.clone(),
-            connect_timeout: Duration::from_millis(demo_config.tcp_connect_timeout_ms.max(50)),
             peek_duration_s: demo_config.peek_duration_s,
         };
 
@@ -216,60 +206,23 @@ pub(super) struct TcpInterceptService {
     reservation: ConcurrencyReservation,
 }
 
-impl Service<TcpFlow> for TcpInterceptService {
+impl Service<BridgeIo<TcpFlow, NwTcpStream>> for TcpInterceptService {
     type Output = ();
     type Error = Infallible;
 
-    async fn serve(&self, ingress: TcpFlow) -> Result<Self::Output, Self::Error> {
-        let Some(ProxyTarget(egress_addr)) = ingress.extensions().get_ref().cloned() else {
-            tracing::debug!("missing ProxyTarget in transparent proxy example tcp service");
-            return Ok(());
-        };
+    async fn serve(
+        &self,
+        bridge: BridgeIo<TcpFlow, NwTcpStream>,
+    ) -> Result<Self::Output, Self::Error> {
+        let BridgeIo(ingress, egress) = bridge;
 
+        // The egress NWConnection is already established by Swift — no TcpConnector needed.
         let permit = self.reservation.activate();
-
-        let flow_exec = ingress.executor().cloned().unwrap_or_default();
-        let connector = tcp_connector_service(flow_exec.clone(), self.mitm.connect_timeout);
-        let tcp_req = rama::tcp::client::Request::new_with_extensions(
-            egress_addr.clone(),
-            ingress.extensions().clone(),
-        );
-
-        let EstablishedClientConnection { conn: egress, .. } = match connector
-            .connect(tcp_req)
-            .await
-            .context("establish tcp connection")
-            .context_field("address", egress_addr.clone())
-        {
-            Ok(connection) => connection,
-            Err(err) => {
-                tracing::debug!(error = ?err, address = %egress_addr, "transparent proxy tcp connect failed");
-                return Ok(());
-            }
-        };
-
         ingress.extensions().insert(permit);
 
+        let flow_exec = ingress.executor().cloned().unwrap_or_default();
         let mitm_svc = self.mitm.new_bridge_service(flow_exec, false);
-        let _ = mitm_svc.serve(BridgeIo(ingress, egress)).await;
-        Ok(())
-    }
-}
 
-fn tcp_connector_service(
-    exec: Executor,
-    connect_timeout: Duration,
-) -> impl ConnectorService<rama::tcp::client::Request, Connection: Io + Unpin + ExtensionsRef> + Clone
-{
-    TimeoutLayer::new(connect_timeout).into_layer(TcpConnector::new(exec).with_connector(Arc::new(
-        SocketOptions {
-            keep_alive: Some(true),
-            tcp_keep_alive: Some(TcpKeepAlive {
-                time: Some(TCP_KEEPALIVE_TIME),
-                interval: Some(TCP_KEEPALIVE_INTERVAL),
-                retries: Some(TCP_KEEPALIVE_RETRIES),
-            }),
-            ..SocketOptions::default_tcp()
-        },
-    )))
+        mitm_svc.serve(BridgeIo(ingress, egress)).await
+    }
 }

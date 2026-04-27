@@ -91,7 +91,11 @@ struct DemoTransparentProxyHandler {
     config: TransparentProxyConfig,
     concurrency_limiter: Arc<concurrency::ConcurrencyLimiter>,
     tcp_mitm_service: tcp::DemoTcpMitmService,
-    udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
+    udp_service: rama::service::BoxService<
+        rama::io::BridgeIo<apple_ne::UdpFlow, apple_ne::NwUdpSocket>,
+        (),
+        Infallible,
+    >,
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,7 +217,13 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         _exec: rama::rt::Executor,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
-        Output = FlowAction<impl rama::Service<apple_ne::TcpFlow, Output = (), Error = Infallible>>,
+        Output = FlowAction<
+            impl rama::Service<
+                rama::io::BridgeIo<apple_ne::TcpFlow, apple_ne::NwTcpStream>,
+                Output = (),
+                Error = Infallible,
+            >,
+        >,
     > + Send
     + '_ {
         let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
@@ -255,7 +265,13 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         _exec: rama::rt::Executor,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
-        Output = FlowAction<impl rama::Service<apple_ne::UdpFlow, Output = (), Error = Infallible>>,
+        Output = FlowAction<
+            impl rama::Service<
+                rama::io::BridgeIo<apple_ne::UdpFlow, apple_ne::NwUdpSocket>,
+                Output = (),
+                Error = Infallible,
+            >,
+        >,
     > + Send
     + '_ {
         // Pass through DNS (port 53), the NE sandbox cannot bind raw UDP sockets,

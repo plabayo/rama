@@ -18,8 +18,10 @@ pub use self::{
         TransparentProxyTcpSession, TransparentProxyUdpSession, log_engine_build_error,
     },
     types::{
-        TransparentProxyConfig, TransparentProxyFlowAction, TransparentProxyFlowMeta,
-        TransparentProxyFlowProtocol, TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+        NwAttribution, NwEgressParameters, NwInterfaceType, NwMultipathServiceType, NwServiceClass,
+        NwTcpConnectOptions, NwUdpConnectOptions, TransparentProxyConfig,
+        TransparentProxyFlowAction, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
+        TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
     },
 };
 pub use crate::process::AuditToken;

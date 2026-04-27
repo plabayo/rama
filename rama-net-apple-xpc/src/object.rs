@@ -5,8 +5,9 @@ use std::{
     sync::mpsc,
 };
 
+use block2::StackBlock;
+
 use crate::{
-    block::{Block, ConcreteBlock},
     endpoint::XpcEndpoint,
     error::XpcError,
     ffi::{
@@ -194,15 +195,18 @@ impl OwnedXpcObject {
         }
         if self.is_type(unsafe { &_xpc_type_array as *const _ as *const c_void }) {
             let (sender, receiver) = mpsc::channel();
-            let mut block = ConcreteBlock::new(move |_idx: usize, value: xpc_object_t| {
+            // Return u8 (1 = continue, 0 = stop) because bool does not implement
+            // objc2's Encode trait. The ABI is identical: XPC reads the 1-byte
+            // return value and treats any non-zero as "continue".
+            let mut block = StackBlock::new(move |_idx: usize, value: xpc_object_t| -> u8 {
                 let _ = sender.send(Self::retain(value, "array element"));
-                true
+                1
             });
             // SAFETY: self.raw is a valid XPC array. xpc_array_apply calls the block
             // synchronously for each element before returning, so all sends complete
             // before the subsequent recv() calls below.
             unsafe {
-                xpc_array_apply(self.raw, &mut *block as *mut Block<_, _> as *mut c_void);
+                xpc_array_apply(self.raw, ptr::from_mut(&mut block).cast::<c_void>());
             }
             let mut values = Vec::new();
             // SAFETY: xpc_array_get_count on a valid XPC array returns the element count.
@@ -218,19 +222,21 @@ impl OwnedXpcObject {
         }
         if self.is_type(unsafe { &_xpc_type_dictionary as *const _ as *const c_void }) {
             let (sender, receiver) = mpsc::channel();
-            let mut block = ConcreteBlock::new(move |key: *const c_char, value: xpc_object_t| {
-                // SAFETY: key is a valid null-terminated C string borrowed from the XPC
-                // dictionary for the duration of this callback invocation.
-                let key = unsafe { CStr::from_ptr(key) }
-                    .to_string_lossy()
-                    .into_owned();
-                let _ = sender.send((key, Self::retain(value, "dictionary value")));
-                true
-            });
+            // Return u8 (1 = continue, 0 = stop) — same reasoning as the array case above.
+            let mut block =
+                StackBlock::new(move |key: *const c_char, value: xpc_object_t| -> u8 {
+                    // SAFETY: key is a valid null-terminated C string borrowed from the XPC
+                    // dictionary for the duration of this callback invocation.
+                    let key = unsafe { CStr::from_ptr(key) }
+                        .to_string_lossy()
+                        .into_owned();
+                    let _ = sender.send((key, Self::retain(value, "dictionary value")));
+                    1
+                });
             // SAFETY: self.raw is a valid XPC dictionary. xpc_dictionary_apply calls the
             // block synchronously for each entry before returning.
             unsafe {
-                xpc_dictionary_apply(self.raw, &mut *block as *mut Block<_, _> as *mut c_void);
+                xpc_dictionary_apply(self.raw, ptr::from_mut(&mut block).cast::<c_void>());
             }
             let mut values = BTreeMap::new();
             // SAFETY: xpc_dictionary_get_count on a valid XPC dictionary returns the entry

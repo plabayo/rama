@@ -1,6 +1,5 @@
 use std::{
     ffi::{CStr, CString, c_void},
-    ops::Deref,
     ptr,
 };
 
@@ -16,8 +15,9 @@ use tokio::sync::{
     oneshot,
 };
 
+use block2::RcBlock;
+
 use crate::{
-    block::ConcreteBlock,
     call::XpcCall,
     error::{XpcConnectionError, XpcError},
     ffi::{
@@ -159,7 +159,7 @@ impl XpcConnection {
         let (sender, receiver) = unbounded_channel();
         let raw_connection = connection.raw as xpc_connection_t;
 
-        let block = ConcreteBlock::new(move |event: xpc_object_t| {
+        let block = RcBlock::new(move |event: xpc_object_t| {
             if raw_is_error(event) {
                 tracing::debug!("xpc peer got error event");
                 let _ = sender.send(XpcEvent::Error(XpcConnectionError::Invalidated(None)));
@@ -172,16 +172,18 @@ impl XpcConnection {
 
             let event = map_event(raw_connection, retained);
             let _ = sender.send(event);
-        })
-        .copy();
+        });
 
         // SAFETY: raw_connection is a valid, non-null xpc_connection_t from OwnedXpcObject.
-        // block is a heap-allocated copied Block whose lifetime is managed by XPC after
-        // xpc_connection_set_event_handler transfers ownership. xpc_connection_resume
-        // activates the connection; it must be called exactly once before any messages
-        // are sent or received.
+        // RcBlock is a heap-allocated reference-counted Block; XPC retains it internally
+        // after xpc_connection_set_event_handler so it remains valid for the connection's
+        // lifetime. xpc_connection_resume activates the connection; it must be called
+        // exactly once before any messages are sent or received.
         unsafe {
-            xpc_connection_set_event_handler(raw_connection, block.deref() as *const _ as *mut _);
+            xpc_connection_set_event_handler(
+                raw_connection,
+                RcBlock::as_ptr(&block).cast::<c_void>(),
+            );
             xpc_connection_resume(raw_connection);
         }
 
@@ -240,7 +242,7 @@ impl XpcConnection {
         let raw_connection = self.connection.raw as xpc_connection_t;
 
         {
-            let block = ConcreteBlock::new(move |reply: xpc_object_t| {
+            let block = RcBlock::new(move |reply: xpc_object_t| {
                 let result = if raw_is_error(reply) {
                     Err(XpcError::Connection(XpcConnectionError::Invalidated(None)))
                 } else {
@@ -253,19 +255,18 @@ impl XpcConnection {
                 if let Some(reply_sender) = reply_sender.lock().take() {
                     let _ = reply_sender.send(result);
                 }
-            })
-            .copy();
+            });
 
             // SAFETY: raw_connection is a valid xpc_connection_t. object.raw is a valid
             // retained XPC object. The queue argument is null, so XPC uses the connection's
-            // own queue. block is a heap-allocated copied Block; XPC retains it until after
-            // the callback fires, at which point it is released.
+            // own queue. RcBlock is a heap-allocated reference-counted Block; XPC retains
+            // it until after the callback fires, at which point it is released.
             unsafe {
                 xpc_connection_send_message_with_reply(
                     raw_connection,
                     object.raw,
                     ptr::null_mut(),
-                    block.deref() as *const _ as *mut _,
+                    RcBlock::as_ptr(&block).cast::<c_void>(),
                 );
             }
         }

@@ -139,9 +139,21 @@
 //!
 //! - iCloud Keychain. See the kSecAttrSynchronizable attribute.
 //! - Protecting an item with biometrics (Touch ID and Face ID).
-//! - Protecting a key with the Secure Enclave.
+//! - Protecting a keychain item with the Secure Enclave.
 //!
 //! None of these are available to a sysex using the System Keychain.
+//!
+//! However, a sysex *can* still use the Secure Enclave directly via Apple
+//! CryptoKit's `SecureEnclave.P256.KeyAgreement.PrivateKey`, which does not
+//! go through the Data Protection Keychain. The
+//! [`system_keychain::secure_enclave`] submodule wraps that path: mint a key
+//! with `kSecAttrAccessibleAlways` accessibility (the only class that works
+//! before login in a sysex daemon), persist its opaque blob anywhere, and
+//! use it to encrypt arbitrary bytes. The Rust API is backed by the
+//! `RamaAppleSecureEnclave` Swift product shipped from this repository's
+//! `Package.swift`; the consumer's final binary must link it. See
+//! <https://developer.apple.com/forums/thread/804612> for the underlying
+//! Apple guidance.
 //!
 //! [XPC Resources]: https://developer.apple.com/forums/thread/708877
 //! [TN3137]: https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains
@@ -181,8 +193,10 @@ pub mod system_keychain;
 
 mod tcp;
 mod udp;
+mod nw_tcp_stream;
+mod nw_udp_socket;
 
-pub use self::{tcp::TcpFlow, udp::UdpFlow};
+pub use self::{tcp::TcpFlow, udp::UdpFlow, nw_tcp_stream::NwTcpStream, nw_udp_socket::NwUdpSocket};
 pub use crate::__transparent_proxy_ffi as transparent_proxy_ffi;
 
 #[doc(hidden)]

@@ -144,7 +144,6 @@
 
 mod ffi;
 
-mod block;
 mod call;
 mod client;
 mod connection;

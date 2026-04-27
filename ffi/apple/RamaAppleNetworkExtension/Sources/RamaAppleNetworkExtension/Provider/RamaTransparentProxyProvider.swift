@@ -416,6 +416,8 @@ private final class UdpClientWritePump {
     private var writing = false
     private var closed = false
     private var opened = false
+    /// Most-recently-seen source endpoint from `readDatagrams`.
+    /// Used as the `sentBy` endpoint when writing datagrams back.
     private var sentByEndpoint: NWEndpoint?
 
     init(
@@ -503,6 +505,240 @@ private final class UdpClientWritePump {
         }
     }
 }
+
+// ── NWConnection helpers ──────────────────────────────────────────────────────
+
+/// Creates TCP `NWParameters` from optional Rust-supplied egress options.
+///
+/// Falls back to plain `NWParameters(tls: nil, tcp: NWProtocolTCP.Options())`
+/// (no TLS, no custom TCP options) when `opts` is `nil`.
+private func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
+    let tcpOpts = NWProtocolTCP.Options()
+    if let opts, opts.has_connect_timeout_ms {
+        tcpOpts.connectionTimeout = max(1, Int(opts.connect_timeout_ms / 1000))
+    }
+    let params = NWParameters(tls: nil, tcp: tcpOpts)
+    if let opts {
+        applyNwEgressParameters(opts.parameters, to: params)
+    }
+    return params
+}
+
+/// Creates UDP `NWParameters` from optional Rust-supplied egress options.
+private func makeUdpNwParameters(_ opts: RamaUdpEgressConnectOptions?) -> NWParameters {
+    let params = NWParameters.udp
+    if let opts {
+        applyNwEgressParameters(opts.parameters, to: params)
+    }
+    return params
+}
+
+private func applyNwEgressParameters(_ p: RamaNwEgressParameters, to params: NWParameters) {
+    if p.has_service_class, let sc = nwServiceClass(p.service_class) {
+        params.serviceClass = sc
+    }
+    if p.has_multipath_service_type {
+        params.multipathServiceType = nwMultipathServiceType(p.multipath_service_type)
+    }
+    if p.has_required_interface_type {
+        params.requiredInterfaceType = nwInterfaceType(p.required_interface_type)
+    }
+    if #available(macOS 11.3, *), p.has_attribution {
+        params.attribution = p.attribution == 1 ? .user : .developer
+    }
+    var prohibited: [NWInterface.InterfaceType] = []
+    let mask = p.prohibited_interface_types_mask
+    if mask & (1 << 0) != 0 { prohibited.append(.cellular) }
+    if mask & (1 << 1) != 0 { prohibited.append(.loopback) }
+    if mask & (1 << 2) != 0 { prohibited.append(.other) }
+    if mask & (1 << 3) != 0 { prohibited.append(.wifi) }
+    if mask & (1 << 4) != 0 { prohibited.append(.wiredEthernet) }
+    if !prohibited.isEmpty {
+        params.prohibitedInterfaceTypes = prohibited
+    }
+}
+
+private func nwServiceClass(_ raw: UInt8) -> NWParameters.ServiceClass? {
+    switch raw {
+    case 0: return nil  // Default: don't override — omit the field entirely
+    case 1: return .background
+    case 2: return .interactiveVideo
+    case 3: return .interactiveVoice
+    case 4: return .responsiveData
+    case 5: return .signaling
+    default: return nil
+    }
+}
+
+private func nwMultipathServiceType(_ raw: UInt8) -> NWParameters.MultipathServiceType {
+    switch raw {
+    case 1: return .handover
+    case 2: return .interactive
+    case 3: return .aggregate
+    default: return .disabled
+    }
+}
+
+private func nwInterfaceType(_ raw: UInt8) -> NWInterface.InterfaceType {
+    switch raw {
+    case 0: return .cellular
+    case 1: return .loopback
+    case 3: return .wifi
+    case 4: return .wiredEthernet
+    default: return .other
+    }
+}
+
+/// Reads from a `NWConnection` in a loop and forwards data to a Rust TCP session.
+///
+/// Calls `session.onEgressBytes(_:)` for each received chunk and
+/// `session.onEgressEof()` when the connection closes or fails.
+private final class NwTcpConnectionReadPump {
+    private let connection: NWConnection
+    private let session: RamaTcpSessionHandle
+    private let queue: DispatchQueue
+    private var closed = false
+
+    init(connection: NWConnection, session: RamaTcpSessionHandle, queue: DispatchQueue) {
+        self.connection = connection
+        self.session = session
+        self.queue = queue
+    }
+
+    func start() {
+        scheduleRead()
+    }
+
+    private func scheduleRead() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) {
+            [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            self.queue.async {
+                guard !self.closed else { return }
+                if let data, !data.isEmpty {
+                    self.session.onEgressBytes(data)
+                }
+                if isComplete || error != nil {
+                    self.closed = true
+                    self.session.onEgressEof()
+                    return
+                }
+                self.scheduleRead()
+            }
+        }
+    }
+
+    func cancel() {
+        queue.async { self.closed = true }
+    }
+}
+
+/// Queues outbound bytes and sends them to a `NWConnection` one at a time.
+///
+/// When `closeWhenDrained()` is called Rust signals it is done writing;
+/// the pump drains its queue and then sends an empty final `send` to
+/// signal half-close to the remote.
+private final class NwTcpConnectionWritePump {
+    private let connection: NWConnection
+    private let queue: DispatchQueue
+    private var pending: [Data] = []
+    private var writing = false
+    private var closeRequested = false
+    private var closed = false
+
+    init(connection: NWConnection, queue: DispatchQueue) {
+        self.connection = connection
+        self.queue = queue
+    }
+
+    func enqueue(_ data: Data) {
+        guard !data.isEmpty else { return }
+        queue.async {
+            guard !self.closed, !self.closeRequested else { return }
+            self.pending.append(data)
+            self.flush()
+        }
+    }
+
+    func closeWhenDrained() {
+        queue.async {
+            guard !self.closed else { return }
+            self.closeRequested = true
+            self.finishCloseIfDrained()
+        }
+    }
+
+    private func flush() {
+        guard !writing, !pending.isEmpty, !closed else { return }
+        writing = true
+        let chunk = pending.removeFirst()
+        connection.send(content: chunk, completion: .contentProcessed({ [weak self] error in
+            guard let self else { return }
+            self.queue.async {
+                self.writing = false
+                if error != nil {
+                    self.closed = true
+                    self.closeRequested = true
+                    self.pending.removeAll(keepingCapacity: false)
+                    return
+                }
+                self.flush()
+                self.finishCloseIfDrained()
+            }
+        }))
+    }
+
+    private func finishCloseIfDrained() {
+        guard closeRequested, !closed, !writing, pending.isEmpty else { return }
+        closed = true
+        // Send an empty isComplete=true message to signal FIN to the remote peer.
+        connection.send(
+            content: nil, isComplete: true,
+            completion: .contentProcessed({ _ in }))
+    }
+}
+
+/// Reads datagrams from a `NWConnection` in a loop and delivers them to a Rust UDP session.
+private final class NwUdpConnectionReadPump {
+    private let connection: NWConnection
+    private let session: RamaUdpSessionHandle
+    private let queue: DispatchQueue
+    private var closed = false
+
+    init(connection: NWConnection, session: RamaUdpSessionHandle, queue: DispatchQueue) {
+        self.connection = connection
+        self.session = session
+        self.queue = queue
+    }
+
+    func start() {
+        scheduleRead()
+    }
+
+    private func scheduleRead() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_535) {
+            [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            self.queue.async {
+                guard !self.closed else { return }
+                if let data, !data.isEmpty {
+                    self.session.onEgressDatagram(data)
+                }
+                if isComplete || error != nil {
+                    self.closed = true
+                    return
+                }
+                self.scheduleRead()
+            }
+        }
+    }
+
+    func cancel() {
+        queue.async { self.closed = true }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     private var engine: RamaTransparentProxyEngineHandle?
@@ -656,6 +892,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         -> Bool
     {
         let flowId = ObjectIdentifier(flow)
+        let egressQueue = DispatchQueue(label: "rama.tproxy.tcp.egress", qos: .utility)
 
         let writer = TcpClientWritePump(
             flow: flow,
@@ -709,64 +946,132 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return true
         }
 
-        let createdReadPump = TcpClientReadPump(
-            flow: flow,
-            session: session,
-            logger: { [weak self] message in
-                self?.logFlowMessage(message)
-            },
-            onTerminal: { [weak self] error in
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                self?.stateQueue.async {
-                    self?.tcpSessions.removeValue(forKey: flowId)
-                }
-                session.cancel()
-            }
-        )
+        // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
+        guard let remoteHost = meta.remoteHost, meta.remotePort > 0 else {
+            logDebug("handleTcpFlow: missing remote endpoint; cancelling session")
+            session.cancel()
+            return true
+        }
+
+        let egressOpts = session.getEgressConnectOptions()
+        let connectTimeoutMs = egressOpts?.has_connect_timeout_ms == true
+            ? egressOpts!.connect_timeout_ms : 30_000
+        let nwParams = makeTcpNwParameters(egressOpts)
+
+        let connection = makeNwConnection(host: remoteHost, port: meta.remotePort, using: nwParams)
 
         stateQueue.async {
             self.tcpSessions[flowId] = session
         }
-        flow.open(withLocalEndpoint: nil) { [weak self] error in
-            if let error {
-                self?.logDebug("flow.open error: \(error)")
-                writer.failOpen(error)
-                session.cancel()
-                self?.stateQueue.async {
-                    self?.tcpSessions.removeValue(forKey: flowId)
-                }
-                return
-            }
-            self?.logTrace("flow.open ok (tcp)")
-            writer.markOpened()
-            createdReadPump.requestRead()
+
+        // Track whether the egress connection succeeded before flow.open was called.
+        var egressReady = false
+
+        // Timeout: cancel if NWConnection doesn't reach .ready in time.
+        let timeoutMs = Int(connectTimeoutMs)
+        let timeoutWork = DispatchWorkItem { [weak self] in
+            guard !egressReady else { return }
+            self?.logDebug("egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)")
+            connection.cancel()
+            session.cancel()
+            self?.stateQueue.async { self?.tcpSessions.removeValue(forKey: flowId) }
         }
+        egressQueue.asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: timeoutWork)
+
+        connection.stateUpdateHandler = { [weak self] (state: NWConnection.State) in
+            egressQueue.async {
+                switch state {
+                case .ready:
+                    guard !egressReady else { return }
+                    egressReady = true
+                    timeoutWork.cancel()
+
+                    let writePump = NwTcpConnectionWritePump(
+                        connection: connection, queue: egressQueue)
+                    let readPump = NwTcpConnectionReadPump(
+                        connection: connection, session: session, queue: egressQueue)
+
+                    session.activate(
+                        onWriteToEgress: { data in writePump.enqueue(data) },
+                        onCloseEgress: { writePump.closeWhenDrained() }
+                    )
+
+                    flow.open(withLocalEndpoint: nil) { [weak self] error in
+                        egressQueue.async {
+                            if let error {
+                                self?.logDebug("flow.open error after egress ready: \(error)")
+                                connection.cancel()
+                                session.cancel()
+                                self?.stateQueue.async {
+                                    self?.tcpSessions.removeValue(forKey: flowId)
+                                }
+                                return
+                            }
+                            self?.logTrace("flow.open ok (tcp, egress pre-connected)")
+                            writer.markOpened()
+                            readPump.start()
+
+                            let flowReadPump = TcpClientReadPump(
+                                flow: flow,
+                                session: session,
+                                logger: { [weak self] message in self?.logFlowMessage(message) },
+                                onTerminal: { [weak self] readError in
+                                    flow.closeReadWithError(readError)
+                                    flow.closeWriteWithError(readError)
+                                    connection.cancel()
+                                    readPump.cancel()
+                                    self?.stateQueue.async {
+                                        self?.tcpSessions.removeValue(forKey: flowId)
+                                    }
+                                    session.cancel()
+                                }
+                            )
+                            flowReadPump.requestRead()
+                        }
+                    }
+
+                case .failed(let error):
+                    guard !egressReady else { return }
+                    timeoutWork.cancel()
+                    self?.logDebug(
+                        "egress NWConnection failed before flow opened: \(String(describing: error))"
+                    )
+                    session.cancel()
+                    self?.stateQueue.async { self?.tcpSessions.removeValue(forKey: flowId) }
+
+                case .cancelled:
+                    break  // our own cancel() call; nothing extra needed
+
+                default:
+                    break
+                }
+            }
+        }
+
+        connection.start(queue: egressQueue)
         return true
     }
 
     private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) -> Bool {
         let flowId = ObjectIdentifier(flow)
-        let stateQueue = DispatchQueue(label: "rama.tproxy.udp.flow", qos: .utility)
-        var activeSession: RamaUdpSessionHandle?
+        let egressQueue = DispatchQueue(label: "rama.tproxy.udp.egress", qos: .utility)
+        let flowQueue = DispatchQueue(label: "rama.tproxy.udp.flow", qos: .utility)
         var readPending = false
         var demandPending = false
         var closed = false
         var writer: UdpClientWritePump!
 
         let terminate: (Error?) -> Void = { [weak self] error in
-            stateQueue.async {
+            flowQueue.async {
                 if closed { return }
                 closed = true
-                if let session = activeSession {
-                    session.onClientClose()
-                    activeSession = nil
-                }
                 writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 self?.stateQueue.async {
-                    self?.udpSessions.removeValue(forKey: flowId)
+                    if let session = self?.udpSessions.removeValue(forKey: flowId) {
+                        session.onClientClose()
+                    }
                 }
             }
         }
@@ -789,14 +1094,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         var requestRead: (() -> Void)!
         requestRead = { [weak self] in
-            stateQueue.async {
+            flowQueue.async {
                 guard !closed else { return }
                 demandPending = true
                 guard !readPending else { return }
                 readPending = true
                 demandPending = false
                 flow.readDatagrams { datagrams, endpoints, error in
-                    stateQueue.async {
+                    flowQueue.async {
                         if closed { return }
                         readPending = false
                         if let error {
@@ -816,16 +1121,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         let endpoint = endpoints?.first
                         writer.setSentByEndpoint(endpoint)
 
-                        guard let activeSession else {
+                        guard let session = self?.udpSessions[flowId] else {
                             self?.logDebug(
-                                "udp flow read received before an intercepted session existed; closing flow"
+                                "udp flow read received but session no longer active; closing flow"
                             )
                             terminate(nil)
                             return
                         }
 
                         for datagram in datagrams where !datagram.isEmpty {
-                            activeSession.onClientDatagram(datagram)
+                            session.onClientDatagram(datagram)
                         }
 
                         if demandPending {
@@ -836,47 +1141,111 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
         }
 
-        switch engine?.newUdpSession(
+        let decision = engine?.newUdpSession(
             meta: bootMeta,
-            onServerDatagram: { data in
-                writer.enqueue(data)
-            },
-            onClientReadDemand: {
-                requestRead()
-            },
-            onServerClosed: {
-                terminate(nil)
-            }
-        ) ?? .passthrough {
+            onServerDatagram: { data in writer.enqueue(data) },
+            onClientReadDemand: { requestRead() },
+            onServerClosed: { terminate(nil) }
+        ) ?? .passthrough
+
+        let session: RamaUdpSessionHandle
+        switch decision {
         case .intercept(let createdSession):
-            stateQueue.async {
-                activeSession = createdSession
-                self.udpSessions[flowId] = createdSession
-            }
+            session = createdSession
         case .passthrough:
-            logDebug("handleNewFlow udp bypassed by rust flow policy before opening flow")
+            logDebug("handleNewFlow udp bypassed by rust flow policy")
             return false
         case .blocked:
-            logInfo("handleNewFlow udp blocked by rust flow policy before opening flow")
+            logInfo("handleNewFlow udp blocked by rust flow policy")
             blockFlow(flow)
             return true
         }
 
-        flow.open(withLocalEndpoint: nil) { [weak self] error in
-            stateQueue.async {
-                if closed { return }
-                if let error {
-                    self?.logDebug("udp flow.open error: \(error)")
-                    writer.failOpen(error)
-                    return
-                }
+        // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
+        guard let remoteHost = bootMeta.remoteHost, bootMeta.remotePort > 0 else {
+            logDebug("handleUdpFlow: missing remote endpoint; cancelling session")
+            session.onClientClose()
+            return true
+        }
 
-                self?.logTrace("flow.open ok (udp)")
-                writer.markOpened()
-                requestRead()
+        let egressOpts = session.getEgressConnectOptions()
+        let nwParams = makeUdpNwParameters(egressOpts)
+
+        let connection = makeNwConnection(host: remoteHost, port: bootMeta.remotePort, using: nwParams)
+
+        stateQueue.async {
+            self.udpSessions[flowId] = session
+        }
+
+        var egressReady = false
+
+        // 30-second default timeout for UDP egress connection.
+        let timeoutWork = DispatchWorkItem { [weak self] in
+            guard !egressReady else { return }
+            self?.logDebug(
+                "egress NWConnection timed out for udp flow remote=\(remoteHost):\(bootMeta.remotePort)"
+            )
+            connection.cancel()
+            session.onClientClose()
+            self?.stateQueue.async { self?.udpSessions.removeValue(forKey: flowId) }
+        }
+        egressQueue.asyncAfter(deadline: .now() + 30, execute: timeoutWork)
+
+        connection.stateUpdateHandler = { [weak self] (state: NWConnection.State) in
+            egressQueue.async {
+                switch state {
+                case .ready:
+                    guard !egressReady else { return }
+                    egressReady = true
+                    timeoutWork.cancel()
+
+                    let readPump = NwUdpConnectionReadPump(
+                        connection: connection, session: session, queue: egressQueue)
+
+                    session.activate(onSendToEgress: { data in
+                        connection.send(
+                            content: data,
+                            completion: .contentProcessed({ _ in }))
+                    })
+
+                    flow.open(withLocalEndpoint: nil) { [weak self] error in
+                        egressQueue.async {
+                            if let error {
+                                self?.logDebug("udp flow.open error after egress ready: \(error)")
+                                connection.cancel()
+                                readPump.cancel()
+                                session.onClientClose()
+                                self?.stateQueue.async {
+                                    self?.udpSessions.removeValue(forKey: flowId)
+                                }
+                                return
+                            }
+                            self?.logTrace("flow.open ok (udp, egress pre-connected)")
+                            writer.markOpened()
+                            readPump.start()
+                            requestRead()
+                        }
+                    }
+
+                case .failed(let error):
+                    guard !egressReady else { return }
+                    timeoutWork.cancel()
+                    self?.logDebug(
+                        "egress NWConnection failed before udp flow opened: \(String(describing: error))"
+                    )
+                    session.onClientClose()
+                    self?.stateQueue.async { self?.udpSessions.removeValue(forKey: flowId) }
+
+                case .cancelled:
+                    break
+
+                default:
+                    break
+                }
             }
         }
 
+        connection.start(queue: egressQueue)
         return true
     }
 

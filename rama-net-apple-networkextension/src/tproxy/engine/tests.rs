@@ -16,8 +16,8 @@ use std::{
     },
 };
 
-type TestTcpService = BoxService<TcpFlow, (), Infallible>;
-type TestUdpService = BoxService<UdpFlow, (), Infallible>;
+type TestTcpService = BoxService<BridgeIo<TcpFlow, NwTcpStream>, (), Infallible>;
+type TestUdpService = BoxService<BridgeIo<UdpFlow, NwUdpSocket>, (), Infallible>;
 
 #[derive(Clone)]
 struct TestHandler {
@@ -54,8 +54,11 @@ impl TransparentProxyHandler for TestHandler {
         &self,
         _exec: Executor,
         meta: TransparentProxyFlowMeta,
-    ) -> impl Future<Output = FlowAction<impl Service<TcpFlow, Output = (), Error = Infallible>>>
-    + Send
+    ) -> impl Future<
+        Output = FlowAction<
+            impl Service<BridgeIo<TcpFlow, NwTcpStream>, Output = (), Error = Infallible>,
+        >,
+    > + Send
     + '_ {
         std::future::ready((self.tcp_matcher)(meta))
     }
@@ -64,8 +67,11 @@ impl TransparentProxyHandler for TestHandler {
         &self,
         _exec: Executor,
         meta: TransparentProxyFlowMeta,
-    ) -> impl Future<Output = FlowAction<impl Service<UdpFlow, Output = (), Error = Infallible>>>
-    + Send
+    ) -> impl Future<
+        Output = FlowAction<
+            impl Service<BridgeIo<UdpFlow, NwUdpSocket>, Output = (), Error = Infallible>,
+        >,
+    > + Send
     + '_ {
         std::future::ready((self.udp_matcher)(meta))
     }
@@ -96,7 +102,8 @@ impl TransparentProxyAsyncRuntimeFactory for TestRuntimeFactory {
         self,
         _cfg: Option<&[u8]>,
     ) -> Result<tokio::runtime::Runtime, Self::Error> {
-        Ok(tokio::runtime::Builder::new_current_thread()
+        Ok(tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_time()
             .build()?)
     }
@@ -179,8 +186,9 @@ fn tcp_bridge_delivers_server_bytes() {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(|mut stream: TcpFlow| async move {
-                let _ = stream.write_all(b"pong").await;
+            service: service_fn(|bridge: BridgeIo<TcpFlow, NwTcpStream>| async move {
+                let BridgeIo(mut ingress, _egress) = bridge;
+                let _ = ingress.write_all(b"pong").await;
                 Ok(())
             })
             .boxed(),
@@ -202,6 +210,8 @@ fn tcp_bridge_delivers_server_bytes() {
         panic!("expected intercept session");
     };
 
+    // Phase 2: activate egress (no-op callbacks) so the service task starts.
+    session.activate(|_| {}, || {});
     session.on_client_bytes(b"ping");
 
     let _ = notify_rx.recv_timeout(Duration::from_secs(1));
@@ -221,9 +231,10 @@ fn udp_bridge_delivers_server_datagram() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(|mut flow: UdpFlow| async move {
-                if let Some(datagram) = flow.recv().await {
-                    flow.send(datagram);
+            service: service_fn(|bridge: BridgeIo<UdpFlow, NwUdpSocket>| async move {
+                let BridgeIo(mut ingress, _egress) = bridge;
+                if let Some(datagram) = ingress.recv().await {
+                    ingress.send(datagram);
                 }
                 Ok(())
             })
@@ -246,6 +257,8 @@ fn udp_bridge_delivers_server_datagram() {
         panic!("expected intercept session");
     };
 
+    // Phase 2: activate egress so the service task starts.
+    session.activate(|_| {});
     session.on_client_datagram(b"ping");
 
     let _ = notify_rx.recv_timeout(Duration::from_secs(1));
@@ -265,8 +278,9 @@ fn udp_session_requests_client_read_demand() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(|mut flow: UdpFlow| async move {
-                let _ = flow.recv().await;
+            service: service_fn(|bridge: BridgeIo<UdpFlow, NwUdpSocket>| async move {
+                let BridgeIo(mut ingress, _egress) = bridge;
+                let _ = ingress.recv().await;
                 Ok(())
             })
             .boxed(),
@@ -286,6 +300,8 @@ fn udp_session_requests_client_read_demand() {
         panic!("expected intercept session");
     };
 
+    // Phase 2: activate egress so the service task starts.
+    session.activate(|_| {});
     session.on_client_datagram(b"x");
 
     let _ = notify_rx.recv_timeout(Duration::from_secs(1));
@@ -307,10 +323,11 @@ fn tcp_flow_exposes_meta_extension() {
             let notify_tx = notify_tx.clone();
             FlowAction::Intercept {
                 meta,
-                service: service_fn(move |stream: TcpFlow| {
+                service: service_fn(move |bridge: BridgeIo<TcpFlow, NwTcpStream>| {
                     let seen_clone = seen_clone.clone();
                     let notify_tx = notify_tx.clone();
                     async move {
+                        let BridgeIo(stream, _egress) = bridge;
                         *seen_clone.lock() =
                             stream.extensions().get_arc::<TransparentProxyFlowMeta>();
                         let _ = notify_tx.send(());
@@ -324,13 +341,15 @@ fn tcp_flow_exposes_meta_extension() {
     };
     let engine = build_engine(handler);
 
-    let SessionFlowAction::Intercept(_session) = engine.new_tcp_session(
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp).with_source_app_pid(777),
         |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
     };
+    // Phase 2: activate so the service task runs and reads extensions.
+    session.activate(|_| {}, || {});
     let _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
@@ -354,10 +373,11 @@ fn udp_flow_exposes_meta_extension() {
             let notify_tx = notify_tx.clone();
             FlowAction::Intercept {
                 meta,
-                service: service_fn(move |flow: UdpFlow| {
+                service: service_fn(move |bridge: BridgeIo<UdpFlow, NwUdpSocket>| {
                     let seen_clone = seen_clone.clone();
                     let notify_tx = notify_tx.clone();
                     async move {
+                        let BridgeIo(flow, _egress) = bridge;
                         *seen_clone.lock() =
                             flow.extensions().get_arc::<TransparentProxyFlowMeta>();
                         let _ = notify_tx.send(());
@@ -370,7 +390,7 @@ fn udp_flow_exposes_meta_extension() {
     };
     let engine = build_engine(handler);
 
-    let SessionFlowAction::Intercept(_session) = engine.new_udp_session(
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp).with_source_app_pid(888),
         |_| {},
         || {},
@@ -378,6 +398,8 @@ fn udp_flow_exposes_meta_extension() {
     ) else {
         panic!("expected intercept session");
     };
+    // Phase 2: activate so the service task runs and reads extensions.
+    session.activate(|_| {});
     let _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
@@ -396,12 +418,10 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(|mut stream: TcpFlow| async move {
-                let mut buf = [0u8; 1];
-                let _ = stream.read(&mut buf).await;
-                Ok(())
-            })
-            .boxed(),
+            // Sessions are cancelled before activate — the service body never runs.
+            // The type must still match BridgeIo<TcpFlow, NwTcpStream>.
+            service: service_fn(|_: BridgeIo<TcpFlow, NwTcpStream>| async move { Ok(()) })
+                .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
     };

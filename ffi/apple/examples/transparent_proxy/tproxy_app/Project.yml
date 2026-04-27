@@ -45,6 +45,8 @@ targets:
     dependencies:
       - package: RamaAppleNetworkExtension
         product: RamaAppleNetworkExtension
+      - package: RamaAppleNetworkExtension
+        product: RamaAppleSecureEnclave
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev.provider

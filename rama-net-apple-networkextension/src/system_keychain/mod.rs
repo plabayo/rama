@@ -10,9 +10,19 @@
 //! A sysex uses the legacy file-based System Keychain. Access groups and the
 //! Data Protection Keychain are not available in this context.
 //!
+//! ## Secure Enclave
+//!
+//! The System Keychain itself cannot protect items with the Secure Enclave.
+//! The [`secure_enclave`] submodule provides SE-backed hybrid encryption that
+//! you can layer on top: mint a key once, persist its opaque blob via
+//! [`store_secret`] (or anywhere else), and use it to encrypt arbitrary
+//! bytes. The encryption hardware binds the ciphertext to this Mac.
+//!
 //! ## Tech Notes
 //!
 //! - [TN3137: On Mac keychain APIs and implementations](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains)
+
+pub mod secure_enclave;
 
 use std::fmt;
 

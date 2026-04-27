@@ -1,11 +1,12 @@
-use std::{ffi::c_void, ops::Deref, ptr};
+use std::{ffi::c_void, ptr};
 
 use rama_core::telemetry::tracing;
 use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
+use block2::RcBlock;
+
 use crate::{
-    block::ConcreteBlock,
     connection::XpcConnection,
     error::XpcError,
     ffi::{
@@ -120,7 +121,7 @@ impl XpcListener {
         let (sender, receiver) = unbounded_channel();
         let raw_connection = connection.raw as _;
 
-        let block = ConcreteBlock::new(move |event: xpc_object_t| {
+        let block = RcBlock::new(move |event: xpc_object_t| {
             if raw_is_error(event) {
                 tracing::debug!("xpc listener: ignoring error event");
                 return;
@@ -138,15 +139,17 @@ impl XpcListener {
             if let Ok(peer_conn) = XpcConnection::from_owned_peer(peer) {
                 let _ = sender.send(peer_conn);
             }
-        })
-        .copy();
+        });
 
         // SAFETY: raw_connection is a valid, non-null xpc_connection_t from OwnedXpcObject.
-        // block is a heap-allocated copied Block; XPC retains it after
-        // xpc_connection_set_event_handler. xpc_connection_activate must be called
-        // exactly once to begin accepting connections.
+        // RcBlock is a heap-allocated reference-counted Block; XPC retains it internally
+        // after xpc_connection_set_event_handler so it remains valid beyond this scope.
+        // xpc_connection_activate must be called exactly once to begin accepting connections.
         unsafe {
-            xpc_connection_set_event_handler(raw_connection, block.deref() as *const _ as *mut _);
+            xpc_connection_set_event_handler(
+                raw_connection,
+                RcBlock::as_ptr(&block).cast::<c_void>(),
+            );
             xpc_connection_activate(raw_connection);
         }
 
