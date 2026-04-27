@@ -2052,6 +2052,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "arc-swap",
+ "base64",
  "moka",
  "rama",
  "serde",

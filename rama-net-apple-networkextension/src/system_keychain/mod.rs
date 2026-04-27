@@ -22,7 +22,10 @@
 //!
 //! - [TN3137: On Mac keychain APIs and implementations](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains)
 
+mod ca;
 pub mod secure_enclave;
+
+pub use ca::{install_system_ca, uninstall_system_ca};
 
 use std::fmt;
 

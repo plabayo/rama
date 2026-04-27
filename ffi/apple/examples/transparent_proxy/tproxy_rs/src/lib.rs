@@ -114,6 +114,67 @@ struct AppMessageReply {
     acknowledged_sent_at: Option<String>,
 }
 
+/// Generic reply for fire-and-acknowledge commands such as `install_root_ca`
+/// and `uninstall_root_ca`. The container app inspects `ok` and surfaces
+/// `error` to the user when the command failed.
+///
+/// `cert_der_b64` carries the DER-encoded MITM CA certificate (base64) for
+/// the CA-related ops so the container can act on it — specifically, set or
+/// remove the **admin** trust setting locally, since trust changes go
+/// through Authorization Services and need an interactive admin auth dialog
+/// that a sysext daemon cannot present.
+#[derive(Debug, Serialize)]
+struct CommandReply {
+    op: &'static str,
+    source: &'static str,
+    ok: bool,
+    error: Option<String>,
+    cert_der_b64: Option<String>,
+}
+
+impl CommandReply {
+    fn ok(op: &'static str) -> Self {
+        Self {
+            op,
+            source: "transparent-proxy-provider",
+            ok: true,
+            error: None,
+            cert_der_b64: None,
+        }
+    }
+
+    fn ok_with_cert(op: &'static str, cert_der: &[u8]) -> Self {
+        use base64::Engine;
+        Self {
+            op,
+            source: "transparent-proxy-provider",
+            ok: true,
+            error: None,
+            cert_der_b64: Some(base64::engine::general_purpose::STANDARD.encode(cert_der)),
+        }
+    }
+
+    fn err(op: &'static str, err: &rama::error::BoxError) -> Self {
+        Self {
+            op,
+            source: "transparent-proxy-provider",
+            ok: false,
+            error: Some(format!("{err:#}")),
+            cert_der_b64: None,
+        }
+    }
+}
+
+fn encode_command_reply(reply: &CommandReply) -> Option<Bytes> {
+    match serde_json::to_vec(reply) {
+        Ok(bytes) => Some(Bytes::from(bytes)),
+        Err(err) => {
+            tracing::warn!(?err, op = reply.op, "failed to encode command reply");
+            None
+        }
+    }
+}
+
 impl DemoTransparentProxyHandler {
     async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, rama::error::BoxError> {
         let (tcp_mitm_service, shared_state) =
@@ -174,41 +235,67 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
             return None;
         };
 
-        if op == "ping" {
-            let reply = AppMessageReply {
-                op: "pong",
-                source: "transparent-proxy-provider",
-                received_bytes: message_len,
-                acknowledged_source: request.source,
-                acknowledged_sent_at: request.sent_at,
-            };
+        match op {
+            "ping" => {
+                let reply = AppMessageReply {
+                    op: "pong",
+                    source: "transparent-proxy-provider",
+                    received_bytes: message_len,
+                    acknowledged_source: request.source,
+                    acknowledged_sent_at: request.sent_at,
+                };
 
-            match serde_json::to_vec(&reply) {
-                Ok(reply_bytes) => {
-                    tracing::debug!(
-                        request_op = op,
-                        message_len,
-                        reply_len = reply_bytes.len(),
-                        "transparent proxy demo replying to app message"
-                    );
-                    Some(Bytes::from(reply_bytes))
-                }
-                Err(err) => {
-                    tracing::debug!(
-                        ?err,
-                        request_op = op,
-                        "transparent proxy demo failed to encode app message reply"
-                    );
-                    None
+                match serde_json::to_vec(&reply) {
+                    Ok(reply_bytes) => {
+                        tracing::debug!(
+                            request_op = op,
+                            message_len,
+                            reply_len = reply_bytes.len(),
+                            "transparent proxy demo replying to app message"
+                        );
+                        Some(Bytes::from(reply_bytes))
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            ?err,
+                            request_op = op,
+                            "transparent proxy demo failed to encode app message reply"
+                        );
+                        None
+                    }
                 }
             }
-        } else {
-            tracing::debug!(
-                request_op = op,
-                message_len,
-                "transparent proxy demo ignoring unknown app message op"
-            );
-            None
+            "install_root_ca" => {
+                tracing::info!(message_len, "transparent proxy demo handling install_root_ca");
+                let reply = match self::tls::install_root_ca() {
+                    Ok(der) => CommandReply::ok_with_cert("install_root_ca", &der),
+                    Err(err) => {
+                        tracing::error!(error = %err, "install_root_ca failed");
+                        CommandReply::err("install_root_ca", &err)
+                    }
+                };
+                encode_command_reply(&reply)
+            }
+            "uninstall_root_ca" => {
+                tracing::info!(message_len, "transparent proxy demo handling uninstall_root_ca");
+                let reply = match self::tls::uninstall_root_ca() {
+                    Ok(Some(der)) => CommandReply::ok_with_cert("uninstall_root_ca", &der),
+                    Ok(None) => CommandReply::ok("uninstall_root_ca"),
+                    Err(err) => {
+                        tracing::error!(error = %err, "uninstall_root_ca failed");
+                        CommandReply::err("uninstall_root_ca", &err)
+                    }
+                };
+                encode_command_reply(&reply)
+            }
+            _ => {
+                tracing::debug!(
+                    request_op = op,
+                    message_len,
+                    "transparent proxy demo ignoring unknown app message op"
+                );
+                None
+            }
         }
     }
 

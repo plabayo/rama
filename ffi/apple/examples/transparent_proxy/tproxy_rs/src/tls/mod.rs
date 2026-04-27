@@ -68,6 +68,61 @@ pub(crate) fn load_or_create_mitm_ca(
     }
 }
 
+/// Best-effort load of the existing MITM CA from the system keychain
+/// without regenerating one when the state is missing or broken.
+///
+/// Returns `Ok(None)` if no CA is currently stored — useful for the
+/// `uninstall_root_ca` flow, which should be a no-op when there's nothing to
+/// remove.
+pub(crate) fn try_load_existing_mitm_ca() -> Result<Option<(X509, PKey<Private>)>, BoxError> {
+    if secure_enclave_is_available() {
+        secure_enclave::try_load_existing()
+    } else {
+        plaintext_fallback::try_load_existing()
+    }
+}
+
+/// Install the current MITM CA into the macOS System Keychain.
+///
+/// If no CA has been minted yet, one is generated first. The cert is added
+/// as a keychain item under `/Library/Keychains/System.keychain`. Trust
+/// settings are intentionally **not** modified here — the admin trust
+/// domain requires an interactive auth dialog (the sysext can't present
+/// one), so the container app handles the trust step on the cert DER
+/// returned by this function.
+///
+/// Returns the DER-encoded cert. Idempotent on the keychain side.
+pub(crate) fn install_root_ca() -> Result<Vec<u8>, BoxError> {
+    tracing::info!("tls: install_root_ca requested");
+    let (cert, _key) = load_or_create_mitm_ca(None, None)?;
+    let der = cert.to_der().context("encode MITM CA cert to DER")?;
+    tracing::debug!(der_len = der.len(), "tls: installing MITM CA into System Keychain");
+    system_keychain::install_system_ca(&der).context("install_system_ca failed")?;
+    tracing::info!("tls: MITM CA cert added to System Keychain (trust handled by container)");
+    Ok(der)
+}
+
+/// Inverse of [`install_root_ca`]: delete the current MITM CA from the
+/// System Keychain.
+///
+/// Returns `Ok(Some(der))` for the cert that was uninstalled (so the
+/// container can drop the matching admin-domain trust setting), or
+/// `Ok(None)` when no CA is stored — the call is idempotent. The stored
+/// (SE-encrypted or plaintext) CA blobs in the System Keychain are left
+/// untouched, so the next provider start loads the same CA again.
+pub(crate) fn uninstall_root_ca() -> Result<Option<Vec<u8>>, BoxError> {
+    tracing::info!("tls: uninstall_root_ca requested");
+    let Some((cert, _key)) = try_load_existing_mitm_ca()? else {
+        tracing::info!("tls: no MITM CA stored; uninstall_root_ca is a no-op");
+        return Ok(None);
+    };
+    let der = cert.to_der().context("encode MITM CA cert to DER")?;
+    tracing::debug!(der_len = der.len(), "tls: removing MITM CA from System Keychain");
+    system_keychain::uninstall_system_ca(&der).context("uninstall_system_ca failed")?;
+    tracing::info!("tls: MITM CA cert removed from System Keychain (trust handled by container)");
+    Ok(Some(der))
+}
+
 fn generate_ca_pair() -> Result<(X509, PKey<Private>), BoxError> {
     let pair = self_signed_server_auth_gen_ca(&SelfSignedData {
         organisation_name: Some("Rama Transparent Proxy Example Root CA".to_owned()),

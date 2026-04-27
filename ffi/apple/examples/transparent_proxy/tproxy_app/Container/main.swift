@@ -22,7 +22,15 @@ final class ContainerController: NSObject, NSApplicationDelegate {
     static let secretAccount = "org.ramaproxy.example.tproxy"
     static let secretServiceKeyPEM = "rama-tproxy-demo-ca-key"
     static let secretServiceCertPEM = "rama-tproxy-demo-ca-crt"
-    static let secretServiceKeys = [secretServiceKeyPEM, secretServiceCertPEM]
+    /// Secure-Enclave-wrapped key blob stored next to the (now-encrypted)
+    /// PEMs. The container cannot decrypt these but can still delete them
+    /// by service name, which is what the rotate flow needs.
+    static let secretServiceSEKey = "rama-tproxy-demo-ca-se-key"
+    static let secretServiceKeys = [
+        secretServiceKeyPEM,
+        secretServiceCertPEM,
+        secretServiceSEKey,
+    ]
     lazy var containerLogger = Logger(
         subsystem: "org.ramaproxy.example.tproxy", category: "container")
     lazy var logFileURL: URL = {

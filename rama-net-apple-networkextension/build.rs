@@ -32,8 +32,11 @@ fn main() {
         .clang_arg(format!("-isysroot{sdk_path}"))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .formatter(bindgen::Formatter::Rustfmt)
-        // CoreFoundation — only CFRelease is needed (system_keychain cleanup).
+        // CoreFoundation.
         .allowlist_function("CFRelease")
+        .allowlist_function("CFDataCreate")
+        .allowlist_function("CFDataGetLength")
+        .allowlist_function("CFDataGetBytePtr")
         .allowlist_var("kCFAllocatorDefault")
         // System Keychain (legacy file-based; the only keychain accessible from a sysext).
         .allowlist_function("SecKeychainOpen")
@@ -42,10 +45,22 @@ fn main() {
         .allowlist_function("SecKeychainItemDelete")
         .allowlist_function("SecKeychainItemFreeContent")
         .allowlist_function("SecKeychainItemModifyAttributesAndData")
+        .allowlist_function("SecKeychainSearchCreateFromAttributes")
+        .allowlist_function("SecKeychainSearchCopyNext")
         .allowlist_type("SecKeychainRef")
         .allowlist_type("SecKeychainItemRef")
+        .allowlist_type("SecKeychainSearchRef")
         .allowlist_type("SecKeychainAttribute")
         .allowlist_type("SecKeychainAttributeList")
+        // Certificate install / uninstall (used by `system_keychain::ca`).
+        // Trust settings are intentionally not bound here — modifying admin
+        // trust requires interactive Authorization Services, which a sysext
+        // daemon cannot provide; trust must be done from a UI process.
+        .allowlist_function("SecCertificateCreateWithData")
+        .allowlist_function("SecCertificateCopyData")
+        .allowlist_function("SecCertificateAddToKeychain")
+        .allowlist_type("SecCertificateRef")
+        .allowlist_type("CFDataRef")
         .generate()
         .expect("generate security bindings")
         .write_to_file(out_dir.join("bindings.rs"))

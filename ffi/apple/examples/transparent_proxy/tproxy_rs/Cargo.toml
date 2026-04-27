@@ -12,6 +12,7 @@ crate-type = ["staticlib"]
 [dependencies]
 ahash = "0.8"
 arc-swap = "1"
+base64 = "0.22"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 moka = { version = "0.12", features = ["sync"] }
 rama = { path = "../../../../../", features = ["net-apple-networkextension", "net-apple-xpc", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }

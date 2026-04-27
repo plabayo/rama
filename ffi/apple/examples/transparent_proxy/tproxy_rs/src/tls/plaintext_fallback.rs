@@ -82,6 +82,25 @@ fn generate_and_store() -> Result<(X509, PKey<Private>), BoxError> {
     Ok((cert, key))
 }
 
+/// Best-effort load of the existing plaintext MITM CA without regeneration.
+/// Returns `Ok(None)` when the entries are missing or unparseable.
+pub(super) fn try_load_existing() -> Result<Option<(X509, PKey<Private>)>, BoxError> {
+    let cert_blob = system_keychain::load_secret(CA_SERVICE_CERT, CA_ACCOUNT)
+        .context("load plaintext MITM CA cert PEM")?;
+    let key_blob = system_keychain::load_secret(CA_SERVICE_KEY, CA_ACCOUNT)
+        .context("load plaintext MITM CA key PEM")?;
+    let (Some(cert_pem), Some(key_pem)) = (cert_blob, key_blob) else {
+        return Ok(None);
+    };
+    match parse_pair(&cert_pem, &key_pem) {
+        Ok(pair) => Ok(Some(pair)),
+        Err(err) => {
+            tracing::warn!(error = %err, "tls: try_load_existing plaintext parse failed; treating as absent");
+            Ok(None)
+        }
+    }
+}
+
 fn parse_pair(cert_pem: &[u8], key_pem: &[u8]) -> Result<(X509, PKey<Private>), BoxError> {
     let cert = X509::from_pem(cert_pem).context("parse plaintext MITM CA cert PEM")?;
     let key = PKey::private_key_from_pem(key_pem).context("parse plaintext MITM CA key PEM")?;

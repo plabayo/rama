@@ -197,6 +197,166 @@ extension ContainerController {
         }
     }
 
+    /// Send a single provider message identified by `op` to the sysext.
+    ///
+    /// If the provider is currently active, the message is sent on the live
+    /// session. Otherwise the provider is started, the message is sent once
+    /// the session reaches `.connected`, and the provider is stopped again
+    /// regardless of the command result. Errors at any stage flow into
+    /// `completion` and the stop-after-temporary-start is still attempted.
+    ///
+    /// `completion` is called on the main queue.
+    func sendProviderCommand(
+        op: String,
+        completion: @escaping (Result<Data?, Error>) -> Void
+    ) {
+        let activeSession: NETunnelProviderSession? = {
+            guard let manager = activeManager,
+                let session = manager.connection as? NETunnelProviderSession
+            else {
+                return nil
+            }
+            switch session.status {
+            case .connected, .connecting, .reasserting:
+                return session
+            default:
+                return nil
+            }
+        }()
+
+        if let activeSession {
+            log("provider command \(op): provider active; sending on existing session")
+            sendMessageOnSession(activeSession, op: op) { result in
+                DispatchQueue.main.async { completion(result) }
+            }
+            return
+        }
+
+        log("provider command \(op): provider not active; activating sysext + starting temporarily")
+        ensureSystemExtensionActivated { [weak self] activated in
+            guard let self else { return }
+            guard activated else {
+                self.logErrorText(
+                    "provider command \(op): system extension activation failed; aborting")
+                let error = self.commandError(
+                    "system extension is not activated; approve it in System Settings and retry")
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            self.startTemporaryAndSend(op: op, completion: completion)
+        }
+    }
+
+    private func startTemporaryAndSend(
+        op: String,
+        completion: @escaping (Result<Data?, Error>) -> Void
+    ) {
+        loadOrCreateAndConfigureManager(preserveCurrentDemoSettings: true) { [weak self] manager in
+            guard let self else { return }
+            guard let manager else {
+                let error = self.commandError("configuration failed before sending \(op)")
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            self.activeManager = manager
+            self.installStatusObserver(manager: manager)
+            self.startStatusTimer(manager: manager)
+            do {
+                self.log("provider command \(op): calling startVPNTunnel")
+                try manager.connection.startVPNTunnel()
+            } catch {
+                self.logError("provider command \(op): startVPNTunnel failed", error)
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            self.waitUntilConnected(manager: manager, remainingAttempts: 80) { [weak self] connected in
+                guard let self else { return }
+                guard connected,
+                    let session = manager.connection as? NETunnelProviderSession
+                else {
+                    self.log("provider command \(op): connect timed out or no session; stopping")
+                    manager.connection.stopVPNTunnel()
+                    let error = self.commandError(
+                        "provider failed to reach connected state for \(op)")
+                    DispatchQueue.main.async { completion(.failure(error)) }
+                    return
+                }
+                self.sendMessageOnSession(session, op: op) { [weak self] result in
+                    guard let self else { return }
+                    self.log("provider command \(op): stopping temporary tunnel")
+                    manager.connection.stopVPNTunnel()
+                    DispatchQueue.main.async { completion(result) }
+                }
+            }
+        }
+    }
+
+    private func sendMessageOnSession(
+        _ session: NETunnelProviderSession,
+        op: String,
+        completion: @escaping (Result<Data?, Error>) -> Void
+    ) {
+        let payload: [String: Any] = [
+            "op": op,
+            "sent_at": ISO8601DateFormatter().string(from: Date()),
+            "source": "container-app",
+        ]
+        let data: Data
+        do {
+            data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        } catch {
+            logError("provider command \(op): payload serialization failed", error)
+            completion(.failure(error))
+            return
+        }
+
+        do {
+            log("provider command \(op): sending bytes=\(data.count)")
+            try session.sendProviderMessage(data) { reply in
+                completion(.success(reply))
+            }
+        } catch {
+            logError("provider command \(op): sendProviderMessage failed", error)
+            completion(.failure(error))
+        }
+    }
+
+    private func waitUntilConnected(
+        manager: NETransparentProxyManager,
+        remainingAttempts: Int,
+        completion: @escaping (Bool) -> Void
+    ) {
+        switch manager.connection.status {
+        case .connected:
+            completion(true)
+        case .invalid:
+            completion(false)
+        case .disconnected, .disconnecting, .connecting, .reasserting:
+            guard remainingAttempts > 0 else {
+                completion(false)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self else { return }
+                self.waitUntilConnected(
+                    manager: manager,
+                    remainingAttempts: remainingAttempts - 1,
+                    completion: completion
+                )
+            }
+        @unknown default:
+            completion(false)
+        }
+    }
+
+    private func commandError(_ message: String) -> NSError {
+        NSError(
+            domain: "RamaTransparentProxyExampleContainer",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+    }
+
     func stopProxyAndWaitForDisconnect(
         manager: NETransparentProxyManager,
         completion: @escaping () -> Void

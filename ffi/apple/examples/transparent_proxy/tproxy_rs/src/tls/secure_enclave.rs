@@ -125,6 +125,36 @@ fn generate_and_store() -> Result<(X509, PKey<Private>), BoxError> {
     Ok((cert, key))
 }
 
+/// Best-effort load of the existing SE-encrypted MITM CA without any
+/// regeneration. Returns `Ok(None)` when the entries are missing, partial,
+/// look like leftover plaintext, or fail to decrypt — never wipes anything.
+pub(super) fn try_load_existing() -> Result<Option<(X509, PKey<Private>)>, BoxError> {
+    let se_blob = system_keychain::load_secret(SE_SERVICE_KEY, CA_ACCOUNT)
+        .context("load Secure Enclave key blob")?;
+    let cert_blob = system_keychain::load_secret(CA_SERVICE_CERT, CA_ACCOUNT)
+        .context("load MITM CA cert blob")?;
+    let key_blob = system_keychain::load_secret(CA_SERVICE_KEY, CA_ACCOUNT)
+        .context("load MITM CA key blob")?;
+
+    let (Some(se_blob), Some(cert_blob), Some(key_blob)) = (se_blob, cert_blob, key_blob) else {
+        return Ok(None);
+    };
+    if is_pem_plaintext(&cert_blob) || is_pem_plaintext(&key_blob) {
+        // Pre-encryption leftover; the caller (uninstall flow) doesn't need
+        // these — we don't have the SE key's matching ciphertext.
+        return Ok(None);
+    }
+
+    let se_key = SecureEnclaveKey::from_data_representation(se_blob);
+    match decrypt_pair(&se_key, &cert_blob, &key_blob) {
+        Ok(pair) => Ok(Some(pair)),
+        Err(err) => {
+            tracing::warn!(error = %err, "tls: try_load_existing decrypt failed; treating as absent");
+            Ok(None)
+        }
+    }
+}
+
 fn decrypt_pair(
     se_key: &SecureEnclaveKey,
     cert_envelope: &[u8],
