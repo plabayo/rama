@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use base64::Engine as _;
 use rama::{
     error::{BoxError, ErrorContext},
     net::apple::xpc::{XpcListener, XpcListenerConfig, XpcMessageRouter, XpcServer},
@@ -34,6 +35,50 @@ struct UpdateSettingsReply {
     ok: bool,
 }
 
+/// Empty payload for the CA-related XPC routes.
+#[derive(Debug, Default, Deserialize)]
+struct EmptyRequest {}
+
+/// Shared reply shape for `installRootCA:withReply:` and
+/// `uninstallRootCA:withReply:`.
+///
+/// `cert_der_b64` carries the DER-encoded MITM CA certificate (base64) so
+/// the container app can set / remove the **admin** trust setting locally —
+/// trust changes go through Authorization Services and need an interactive
+/// admin auth dialog that the sysext daemon cannot present.
+#[derive(Debug, Serialize)]
+struct RootCaCommandReply {
+    ok: bool,
+    error: Option<String>,
+    cert_der_b64: Option<String>,
+}
+
+impl RootCaCommandReply {
+    fn ok_with_cert(cert_der: &[u8]) -> Self {
+        Self {
+            ok: true,
+            error: None,
+            cert_der_b64: Some(base64::engine::general_purpose::STANDARD.encode(cert_der)),
+        }
+    }
+
+    fn ok_without_cert() -> Self {
+        Self {
+            ok: true,
+            error: None,
+            cert_der_b64: None,
+        }
+    }
+
+    fn err(err: &BoxError) -> Self {
+        Self {
+            ok: false,
+            error: Some(format!("{err:#}")),
+            cert_der_b64: None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -58,6 +103,52 @@ pub(crate) fn spawn_xpc_server(
                     let state = state.clone();
                     async move { Ok::<_, BoxError>(apply_settings(&state, req)) }
                 }
+            }),
+        )
+        .with_typed_route::<EmptyRequest, RootCaCommandReply, _>(
+            "installRootCA:withReply:",
+            service_fn(|_req: EmptyRequest| async move {
+                tracing::info!("xpc demo server: installRootCA:withReply: invoked");
+                let reply = match crate::tls::install_root_ca() {
+                    Ok(der) => {
+                        tracing::info!(
+                            der_len = der.len(),
+                            "xpc demo server: installRootCA succeeded"
+                        );
+                        RootCaCommandReply::ok_with_cert(&der)
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "xpc demo server: installRootCA failed");
+                        RootCaCommandReply::err(&err)
+                    }
+                };
+                Ok::<_, BoxError>(reply)
+            }),
+        )
+        .with_typed_route::<EmptyRequest, RootCaCommandReply, _>(
+            "uninstallRootCA:withReply:",
+            service_fn(|_req: EmptyRequest| async move {
+                tracing::info!("xpc demo server: uninstallRootCA:withReply: invoked");
+                let reply = match crate::tls::uninstall_root_ca() {
+                    Ok(Some(der)) => {
+                        tracing::info!(
+                            der_len = der.len(),
+                            "xpc demo server: uninstallRootCA removed cert"
+                        );
+                        RootCaCommandReply::ok_with_cert(&der)
+                    }
+                    Ok(None) => {
+                        tracing::info!(
+                            "xpc demo server: uninstallRootCA found no stored CA (no-op)"
+                        );
+                        RootCaCommandReply::ok_without_cert()
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "xpc demo server: uninstallRootCA failed");
+                        RootCaCommandReply::err(&err)
+                    }
+                };
+                Ok::<_, BoxError>(reply)
             }),
         );
 

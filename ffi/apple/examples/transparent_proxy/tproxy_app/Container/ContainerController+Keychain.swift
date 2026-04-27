@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Security
+import XPC
 
 /// MITM CA management split across the container app and the system extension.
 ///
@@ -8,38 +9,43 @@ import Security
 /// a Secure-Enclave-bound key (see `tls/secure_enclave.rs` in the Rust
 /// example). The container app cannot decrypt those PEMs, so the cert
 /// keychain item add/delete is performed by the sysext (running as root, no
-/// auth prompt). The sysext returns the DER-encoded cert in its reply, and
-/// the container then sets or removes the **admin** trust setting locally —
-/// trust changes go through Authorization Services and require the
-/// interactive admin auth dialog, which only a UI process can present.
+/// auth prompt) over a **typed XPC route** — see
+/// `installRootCA:withReply:` and `uninstallRootCA:withReply:` in
+/// `demo_xpc_server.rs`.
+///
+/// The sysext returns the DER-encoded cert in its reply, and the container
+/// then sets or removes the **admin** trust setting locally — trust
+/// changes go through Authorization Services and require the interactive
+/// admin auth dialog, which only a UI process can present.
 extension ContainerController {
     private static let trustDomain: SecTrustSettingsDomain = .admin
 
     /// Install root CA flow:
-    ///   1. Send `install_root_ca` to the sysext (auto-starts the provider
-    ///      if needed). The sysext adds the cert to
-    ///      `/Library/Keychains/System.keychain` and returns the DER.
+    ///   1. Send the `installRootCA:withReply:` typed XPC request
+    ///      (auto-starts the provider if needed). The sysext adds the cert
+    ///      to `/Library/Keychains/System.keychain` and returns the DER.
     ///   2. Locally call `SecTrustSettingsSetTrustSettings(.admin, NULL)`
     ///      on that cert. macOS will prompt for administrator credentials.
     func installMITMCA() {
-        log("installMITMCA: dispatching install_root_ca to sysext")
-        sendProviderCommand(op: "install_root_ca") { [weak self] result in
+        log("installMITMCA: dispatching installRootCA:withReply: over XPC")
+        sendXpcRequestEnsuringActive(selector: "installRootCA:withReply:") { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let reply):
                 self.handleInstallReply(reply)
             case .failure(let error):
-                self.logError("installMITMCA: provider command failed", error)
-                self.showCommandErrorAlert(title: "Install Root CA", message: error.localizedDescription)
+                self.logError("installMITMCA: xpc command failed", error)
+                self.showCommandErrorAlert(
+                    title: "Install Root CA", message: error.localizedDescription)
             }
         }
     }
 
     /// Uninstall root CA flow:
-    ///   1. Send `uninstall_root_ca` to the sysext (auto-starts if needed).
-    ///      The sysext removes the cert from the System Keychain and
-    ///      returns the DER for any cert it actually deleted (or `null`
-    ///      when no CA is stored).
+    ///   1. Send the `uninstallRootCA:withReply:` typed XPC request
+    ///      (auto-starts if needed). The sysext removes the cert from the
+    ///      System Keychain and returns the DER for any cert it actually
+    ///      deleted (or `null` when no CA is stored).
     ///   2. Locally call `SecTrustSettingsRemoveTrustSettings(.admin)` on
     ///      that cert (admin prompt) — best-effort, as the trust setting
     ///      may not exist if the user never installed it.
@@ -47,14 +53,14 @@ extension ContainerController {
     ///      regardless of the remote outcome, so the next provider start
     ///      regenerates a fresh CA.
     func clearCA() {
-        log("clearCA: dispatching uninstall_root_ca to sysext")
-        sendProviderCommand(op: "uninstall_root_ca") { [weak self] result in
+        log("clearCA: dispatching uninstallRootCA:withReply: over XPC")
+        sendXpcRequestEnsuringActive(selector: "uninstallRootCA:withReply:") { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let reply):
                 self.handleUninstallReply(reply)
             case .failure(let error):
-                self.logError("clearCA: provider command failed; continuing with local wipe", error)
+                self.logError("clearCA: xpc command failed; continuing with local wipe", error)
             }
             self.wipeStoredCASecretsLocally()
         }
@@ -62,8 +68,8 @@ extension ContainerController {
 
     // MARK: - Reply handling
 
-    private func handleInstallReply(_ reply: Data?) {
-        let parsed = parseCommandReply(reply, op: "install_root_ca", title: "Install Root CA")
+    private func handleInstallReply(_ reply: xpc_object_t) {
+        let parsed = parseRootCaReply(reply, op: "installRootCA", title: "Install Root CA")
         guard parsed.ok, let cert = parsed.certificate else {
             return
         }
@@ -81,13 +87,13 @@ extension ContainerController {
         }
     }
 
-    private func handleUninstallReply(_ reply: Data?) {
-        let parsed = parseCommandReply(reply, op: "uninstall_root_ca", title: "Clear Root CA")
+    private func handleUninstallReply(_ reply: xpc_object_t) {
+        let parsed = parseRootCaReply(reply, op: "uninstallRootCA", title: "Clear Root CA")
         guard parsed.ok else { return }
         guard let cert = parsed.certificate else {
-            // Sysext reported success but had no cert to return — nothing was
-            // installed to begin with, so there's no admin-domain trust to
-            // remove either.
+            // Sysext reported success but had no cert to return — nothing
+            // was installed to begin with, so there's no admin-domain
+            // trust to remove either.
             log("clearCA: sysext reported no stored CA; skipping local trust removal")
             return
         }
@@ -103,35 +109,39 @@ extension ContainerController {
         }
     }
 
-    private struct ParsedReply {
+    // MARK: - Reply parsing
+
+    private struct ParsedRootCaReply {
         let ok: Bool
         let certificate: SecCertificate?
     }
 
-    private func parseCommandReply(_ reply: Data?, op: String, title: String) -> ParsedReply {
-        guard let reply, !reply.isEmpty else {
-            log("\(op): provider returned no reply payload")
-            return ParsedReply(ok: false, certificate: nil)
+    /// Parse the `$result` dictionary returned by the typed XPC router,
+    /// expressing `RootCaCommandReply { ok, error, cert_der_b64 }`.
+    private func parseRootCaReply(
+        _ reply: xpc_object_t,
+        op: String,
+        title: String
+    ) -> ParsedRootCaReply {
+        guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY else {
+            logErrorText("\(op): xpc reply is not a dictionary")
+            return ParsedRootCaReply(ok: false, certificate: nil)
         }
-        guard let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any] else {
-            if let text = String(data: reply, encoding: .utf8) {
-                log("\(op): non-JSON reply utf8=\(text)")
-            } else {
-                log("\(op): non-JSON reply bytes=\(reply.count)")
-            }
-            return ParsedReply(ok: false, certificate: nil)
+        guard let resultDict = xpc_dictionary_get_dictionary(reply, "$result") else {
+            logErrorText("\(op): xpc reply missing $result")
+            return ParsedRootCaReply(ok: false, certificate: nil)
         }
 
-        let ok = (object["ok"] as? Bool) ?? false
+        let ok = xpc_dictionary_get_bool(resultDict, "ok")
         guard ok else {
-            let message = (object["error"] as? String) ?? "unknown sysext error"
+            let message = xpcDictionaryString(resultDict, "error") ?? "unknown sysext error"
             logErrorText("\(op): sysext reported failure: \(message)")
             showCommandErrorAlert(title: title, message: message)
-            return ParsedReply(ok: false, certificate: nil)
+            return ParsedRootCaReply(ok: false, certificate: nil)
         }
 
         let certificate: SecCertificate? = {
-            guard let b64 = object["cert_der_b64"] as? String,
+            guard let b64 = xpcDictionaryString(resultDict, "cert_der_b64"),
                 let derData = Data(base64Encoded: b64)
             else {
                 return nil
@@ -144,7 +154,13 @@ extension ContainerController {
         }()
 
         log("\(op): success; cert_der_present=\(certificate != nil)")
-        return ParsedReply(ok: true, certificate: certificate)
+        return ParsedRootCaReply(ok: true, certificate: certificate)
+    }
+
+    private func xpcDictionaryString(_ dict: xpc_object_t, _ key: String) -> String? {
+        guard let cstr = xpc_dictionary_get_string(dict, key) else { return nil }
+        let str = String(cString: cstr)
+        return str.isEmpty ? nil : str
     }
 
     // MARK: - Local secret wipe (no decryption needed)
