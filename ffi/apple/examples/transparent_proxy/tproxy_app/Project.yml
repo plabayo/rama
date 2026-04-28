@@ -19,6 +19,10 @@ targets:
       - target: RamaTransparentProxyExampleExtension
         embed: true
         codeSign: true
+      - package: RamaAppleNetworkExtension
+        product: RamaAppleNetworkExtension
+      - package: RamaAppleNetworkExtension
+        product: RamaAppleXpcClient
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev

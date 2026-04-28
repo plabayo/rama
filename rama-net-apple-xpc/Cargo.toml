@@ -22,13 +22,15 @@ default = []
 
 [dependencies]
 ahash = { workspace = true }
-block2 = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+block2 = { workspace = true }
 
 [build-dependencies]
 bindgen = { workspace = true }

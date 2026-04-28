@@ -16,6 +16,10 @@ let package = Package(
             name: "RamaAppleSecureEnclave",
             targets: ["RamaAppleSecureEnclave"]
         ),
+        .library(
+            name: "RamaAppleXpcClient",
+            targets: ["RamaAppleXpcClient"]
+        ),
     ],
     targets: [
         .target(
@@ -39,6 +43,10 @@ let package = Package(
             name: "RamaAppleSecureEnclave",
             dependencies: ["RamaAppleSEFFI"],
             path: "ffi/apple/RamaAppleSecureEnclave/Sources/RamaAppleSecureEnclave"
+        ),
+        .target(
+            name: "RamaAppleXpcClient",
+            path: "ffi/apple/RamaAppleXpcClient/Sources/RamaAppleXpcClient"
         ),
     ]
 )
