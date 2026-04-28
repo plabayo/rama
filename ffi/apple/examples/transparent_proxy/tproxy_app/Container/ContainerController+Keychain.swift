@@ -1,28 +1,19 @@
 import AppKit
 import Foundation
-import RamaAppleNetworkExtension
+import RamaAppleNetworkExtensionAsync
 import RamaAppleXpcClient
 import Security
 
-/// MITM CA management split across the container app and the system extension.
-///
-/// The CA cert and private key PEM live in the System Keychain encrypted by
-/// a Secure-Enclave-bound key (see `tls/secure_enclave.rs` in the Rust
-/// example). The container app cannot decrypt those PEMs, so the cert
-/// keychain item add/delete is performed by the sysext (running as root, no
-/// auth prompt) over the typed XPC routes
-/// `RamaTproxyInstallRootCA` / `RamaTproxyUninstallRootCA`.
-///
-/// The sysext returns the DER-encoded cert in its reply, and the container
-/// then sets or removes the **admin** trust setting locally — trust changes
-/// go through Authorization Services and need an interactive admin auth
-/// dialog, which only a UI process can present.
+/// MITM CA management. Split between sysext (cert add/delete in System
+/// Keychain — runs as root, no prompt) and container (admin trust
+/// add/remove — needs the auth dialog only a UI process can show).
+/// PEMs are SE-encrypted, so the sysext does the keychain side and
+/// returns the DER for the container to act on.
 extension ContainerController {
     private static let trustDomain: SecTrustSettingsDomain = .admin
 
-    /// Install root CA flow: send the typed XPC request (auto-starts the
-    /// provider if needed), then locally apply admin trust to the
-    /// returned cert.
+    /// Send `installRootCA` to the sysext (auto-starting if needed),
+    /// then add admin trust locally to the returned cert.
     func installMITMCA() {
         log("installMITMCA: dispatching installRootCA over XPC")
         let client = RamaXpcClient(serviceName: xpcServiceName)
@@ -43,9 +34,9 @@ extension ContainerController {
         }
     }
 
-    /// Uninstall root CA flow: send the typed XPC request (auto-starts if
-    /// needed), drop admin trust on the returned cert, then locally wipe
-    /// the SE-encrypted PEM blobs so the next provider start regenerates.
+    /// Send `uninstallRootCA` to the sysext (auto-starting if needed),
+    /// drop admin trust on the returned cert, then wipe the SE-encrypted
+    /// PEM blobs so the next provider start regenerates.
     func clearCA() {
         log("clearCA: dispatching uninstallRootCA over XPC")
         let client = RamaXpcClient(serviceName: xpcServiceName)
@@ -62,8 +53,6 @@ extension ContainerController {
             self.wipeStoredCASecretsLocally()
         }
     }
-
-    // MARK: - Reply handling
 
     private func applyInstallReply(_ reply: RamaTproxyRootCaReply) {
         guard let cert = certificateFromReply(reply, op: "installRootCA") else { return }
@@ -104,9 +93,9 @@ extension ContainerController {
         }
     }
 
-    /// Decode the optional `cert_der_b64` field into a `SecCertificate`.
-    /// Returns `nil` if the sysext reported failure, the field is absent,
-    /// or the DER fails to parse.
+    /// Decode `cert_der_b64` to `SecCertificate`, surfacing sysext-side
+    /// errors via an alert. Returns nil when the sysext returned no
+    /// cert (e.g. uninstall with nothing stored) or DER is unparseable.
     private func certificateFromReply(
         _ reply: RamaTproxyRootCaReply,
         op: String
@@ -129,12 +118,9 @@ extension ContainerController {
         return cert
     }
 
-    // MARK: - Local secret wipe (no decryption needed)
-
-    /// Delete the CA-related generic-password entries from the System
-    /// Keychain. These store the SE-encrypted (or plaintext-fallback)
-    /// PEMs and the SE key blob; deleting them does not require
-    /// decryption. macOS may prompt for administrator credentials.
+    /// Delete the CA-related generic-password entries (SE-encrypted PEMs
+    /// + SE key blob) from the System Keychain. Deletion doesn't need
+    /// decryption; macOS prompts for admin credentials.
     private func wipeStoredCASecretsLocally() {
         var keychainRef: SecKeychain?
         let openStatus = SecKeychainOpen("/Library/Keychains/System.keychain", &keychainRef)

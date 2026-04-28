@@ -3,14 +3,10 @@ import NetworkExtension
 
 /// Errors thrown by the async helpers on `NETransparentProxyManager`.
 public enum RamaNetworkExtensionError: Error, CustomStringConvertible {
-    /// The connection reached `.invalid` while we were waiting for it
-    /// to come up. The caller usually needs to recreate the manager.
+    /// Connection reached `.invalid` while waiting; caller usually has
+    /// to recreate the manager.
     case invalidConnection
-    /// `waitUntilConnected` exceeded its timeout without seeing
-    /// `.connected`.
     case connectTimedOut
-    /// `waitUntilDisconnected` exceeded its timeout without seeing
-    /// `.disconnected` / `.invalid`.
     case disconnectTimedOut
 
     public var description: String {
@@ -26,8 +22,7 @@ public enum RamaNetworkExtensionError: Error, CustomStringConvertible {
 }
 
 extension NETransparentProxyManager {
-    /// `true` while the connection is `.connected`, `.connecting`, or
-    /// `.reasserting`. Useful as a quick "should we auto-start?" probe.
+    /// `true` while `.connected` / `.connecting` / `.reasserting`.
     public var isActive: Bool {
         switch connection.status {
         case .connected, .connecting, .reasserting:
@@ -37,12 +32,7 @@ extension NETransparentProxyManager {
         }
     }
 
-    /// Poll the connection until it reaches `.connected` or the timeout
-    /// elapses.
-    ///
-    /// Throws ``RamaNetworkExtensionError/invalidConnection`` if the
-    /// connection enters `.invalid`, or
-    /// ``RamaNetworkExtensionError/connectTimedOut`` on timeout.
+    /// Poll until `.connected`. Throws on `.invalid` or timeout.
     public func waitUntilConnected(
         timeout: TimeInterval = 20,
         pollInterval: TimeInterval = 0.25
@@ -64,8 +54,7 @@ extension NETransparentProxyManager {
         }
     }
 
-    /// Poll the connection until it reaches `.disconnected` /
-    /// `.invalid`, or the timeout elapses.
+    /// Poll until `.disconnected` / `.invalid`. Throws on timeout.
     public func waitUntilDisconnected(
         timeout: TimeInterval = 10,
         pollInterval: TimeInterval = 0.25
@@ -85,9 +74,7 @@ extension NETransparentProxyManager {
         }
     }
 
-    /// Convenience: call `startVPNTunnel()` and `await` the connection
-    /// reaching `.connected`. Throws if the start fails or the tunnel
-    /// doesn't come up in time.
+    /// `startVPNTunnel()` + `waitUntilConnected`.
     public func startAndWaitUntilConnected(
         timeout: TimeInterval = 20,
         pollInterval: TimeInterval = 0.25

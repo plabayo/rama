@@ -20,7 +20,7 @@ targets:
         embed: true
         codeSign: true
       - package: RamaAppleNetworkExtension
-        product: RamaAppleNetworkExtension
+        product: RamaAppleNetworkExtensionAsync
       - package: RamaAppleNetworkExtension
         product: RamaAppleXpcClient
     settings:

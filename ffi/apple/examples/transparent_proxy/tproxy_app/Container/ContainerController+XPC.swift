@@ -1,18 +1,16 @@
 import Foundation
 import NetworkExtension
-import RamaAppleNetworkExtension
+import RamaAppleNetworkExtensionAsync
 import RamaAppleXpcClient
 
 extension ContainerController {
-    /// One-shot connections, no persistent state — fine to recreate per call.
     fileprivate var ramaXpcClient: RamaXpcClient {
         RamaXpcClient(serviceName: xpcServiceName)
     }
 
-    /// Lifecycle hook that brings the sysext up on demand and returns a
-    /// teardown closure that stops the temporarily-started tunnel. Pass
-    /// to `RamaXpcClient.call(... ensuringActive: …)` for routes that
-    /// require an active provider (install / uninstall CA).
+    /// Lifecycle hook for `RamaXpcClient.call(... ensuringActive: …)`.
+    /// Brings the sysext up on demand; returns a teardown that stops it
+    /// again if we were the ones who started it.
     var ensureProviderActive: RamaXpcLifecycle {
         { [weak self] in
             guard let self else { return {} }
@@ -20,11 +18,8 @@ extension ContainerController {
         }
     }
 
-    /// Push the current demo settings to the running sysext over typed XPC.
-    ///
-    /// Fire-and-forget: settings updates only run while the proxy is
-    /// active (see `applyDemoSettings()` in the proxy manager). No
-    /// auto-start lifecycle here.
+    /// Push the current demo settings to the running sysext.
+    /// Fire-and-forget; only runs when the proxy is already active.
     func sendXpcUpdateSettings() {
         guard !xpcServiceName.isEmpty else {
             log("sendXpcUpdateSettings: xpcServiceName is empty, skipping")
@@ -52,12 +47,8 @@ extension ContainerController {
         }
     }
 
-    // MARK: - Auto-start lifecycle
-
-    /// Implementation of ``ensureProviderActive``. If the manager is
-    /// already active returns a no-op teardown; otherwise activates the
-    /// sysext, starts the tunnel, waits until connected, and returns a
-    /// teardown closure that stops the tunnel.
+    /// Activate the sysext + start a temporary tunnel if the provider
+    /// isn't already running. The returned closure stops it again.
     private func activateProviderIfNeeded() async throws -> RamaXpcLifecycleTeardown {
         if let manager = activeManager, manager.isActive {
             return {}
@@ -78,8 +69,6 @@ extension ContainerController {
             manager?.connection.stopVPNTunnel()
         }
     }
-
-    // MARK: - Async wrappers around the demo's existing callback APIs
 
     private func ensureSystemExtensionActivatedAsync() async throws {
         try await withCheckedThrowingContinuation {

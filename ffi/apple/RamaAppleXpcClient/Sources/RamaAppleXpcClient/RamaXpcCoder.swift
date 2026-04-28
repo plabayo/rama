@@ -1,19 +1,13 @@
 import Foundation
 @preconcurrency import XPC
 
-// MARK: - Codable ↔ xpc_object_t bridge
-//
-// The `XpcMessageRouter` on the Rust side exchanges values using the
-// XPC-native types (`xpc_dictionary`, `xpc_array`, strings, integers,
-// doubles, bools, data, null) via `xpc_serde`. Swift's `Codable` and
-// Foundation's JSON layer share the same data model — JSON object →
-// dictionary, JSON array → array, primitives → primitives — so we round
-// `Encodable` / `Decodable` values through `JSONEncoder` /
-// `JSONSerialization` and translate the resulting `Foundation` graph to
-// and from `xpc_object_t`. This avoids hand-rolling a Codable-aware
-// `Encoder` / `Decoder` while staying wire-compatible with the existing
-// Rust router.
-
+/// Bridge `Codable` values to and from `xpc_object_t`.
+///
+/// JSON and the XPC native object model share the same shape (objects,
+/// arrays, primitives), so we round-trip via `JSONEncoder` /
+/// `JSONSerialization` and walk the resulting Foundation graph. Saves
+/// us writing a Codable-aware encoder/decoder, stays wire-compatible
+/// with the Rust router's `xpc_serde`.
 enum RamaXpcCoder {
     static func encode<T: Encodable>(_ value: T) throws -> xpc_object_t {
         let data: Data
@@ -68,8 +62,7 @@ private func foundationToXpc(_ value: Any) throws -> xpc_object_t {
         return xpc_string_create(string)
     }
     if let number = value as? NSNumber {
-        // CFBoolean (which is what JSON parses true/false to) is bridged
-        // to NSNumber, so distinguish bools from numerics first.
+        // JSON booleans bridge to NSNumber-wrapped CFBoolean; check that first.
         if CFGetTypeID(number) == CFBooleanGetTypeID() {
             return xpc_bool_create(number.boolValue)
         }
@@ -138,8 +131,7 @@ private func xpcToFoundation(_ object: xpc_object_t) -> Any {
     if type == XPC_TYPE_NULL {
         return NSNull()
     }
-    // Unknown / unsupported leaf type — fall back to NSNull so JSON
-    // serialization can at least proceed; it'll surface as a decode
-    // error if the consumer expected a meaningful value here.
+    // Unknown leaf — fall through as null; surfaces as a decode error
+    // if the consumer expected a real value.
     return NSNull()
 }

@@ -1,14 +1,9 @@
 import Foundation
 import RamaAppleXpcClient
 
-/// Demo XPC routes exposed by the sysext's `XpcMessageRouter` in
-/// `tproxy_rs/src/demo_xpc_server.rs`.
-///
-/// Each enum mirrors a single typed Rust route declared with
-/// `with_typed_route::<Request, Reply, _>(selector, …)`. Selectors,
-/// field names and value shapes must stay in sync with the Rust side —
-/// the wire format is plain JSON-over-XPC under the hood
-/// (see `RamaXpcCoder`).
+/// Typed XPC routes exposed by the sysext's router in
+/// `tproxy_rs/src/demo_xpc_server.rs`. Selectors, field names and
+/// shapes must stay in sync with the Rust `serde` types on each route.
 
 enum RamaTproxyUpdateSettings: RamaXpcRoute {
     static let selector = "updateSettings:withReply:"
@@ -34,8 +29,7 @@ enum RamaTproxyUninstallRootCA: RamaXpcRoute {
     typealias Reply = RamaTproxyRootCaReply
 }
 
-/// Shared shape for the install/uninstall replies. Matches the Rust
-/// `RootCaCommandReply` struct.
+/// Shared reply for install/uninstall (matches Rust `RootCaCommandReply`).
 struct RamaTproxyRootCaReply: Decodable {
     let ok: Bool
     let error: String?

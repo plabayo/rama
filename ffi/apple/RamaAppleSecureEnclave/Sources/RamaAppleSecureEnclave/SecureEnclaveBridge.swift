@@ -4,21 +4,9 @@ import Foundation
 import RamaAppleSEFFI
 import Security
 
-// MARK: - Envelope format
-//
-// Envelope layout produced by `rama_apple_se_p256_encrypt` and consumed by
-// `rama_apple_se_p256_decrypt`:
-//
-//   [ 1 byte  version (= 1)                                  ]
-//   [65 bytes ephemeral P-256 public key (X9.63 uncompressed)]
-//   [12 bytes AES-GCM nonce                                  ]
-//   [ N bytes ciphertext                                     ]
-//   [16 bytes AES-GCM tag                                    ]
-//
-// Total overhead: 94 bytes.
-//
-// Hybrid scheme: ECDH(ephemeral, recipient SE key) → HKDF-SHA256 → AES-GCM.
-// HKDF salt binds both public keys; HKDF info domain-separates this scheme.
+// Envelope: [version(1)][ephem-pub-X9.63(65)][nonce(12)][ct][tag(16)].
+// ECDH(ephemeral, SE key) → HKDF-SHA256 (salt = both pubkeys, info =
+// hkdfInfo) → AES-GCM.
 
 private let envelopeVersion: UInt8 = 1
 private let p256X963PublicKeySize = 65
@@ -27,8 +15,6 @@ private let aesGcmTagSize = 16
 private let envelopeHeaderSize = 1 + p256X963PublicKeySize  // 66
 private let envelopeMinSize = envelopeHeaderSize + aesGcmNonceSize + aesGcmTagSize  // 94
 private let hkdfInfo = Data("rama-apple-se-p256-ecies-v1".utf8)
-
-// MARK: - Memory helpers
 
 private let emptySeBytes = RamaSeBytes(ptr: nil, len: 0)
 
@@ -64,14 +50,10 @@ private func borrowedData(_ ptr: UnsafePointer<UInt8>?, _ len: Int) -> Data? {
     return Data(bytes: ptr, count: len)
 }
 
-// MARK: - Access control
-
-// `kSecAttrAccessibleAlways` is deprecated by Apple but is the only accessibility
-// class that lets a Network Extension System Extension daemon use the SE before
-// any user has logged in. Apple acknowledges this in
-// https://developer.apple.com/forums/thread/804612 and notes that Swift has no
-// good way to silence the deprecation diagnostic — we accept the warning here
-// for the one intentional call site.
+// `kSecAttrAccessibleAlways` is deprecated but it's the only class that
+// lets a sysext use the SE before any user has logged in.
+// See https://developer.apple.com/forums/thread/804612. Swift has no
+// way to silence the diagnostic — accepted at this one call site.
 @available(macOS 10.15, *)
 private func makeAccessControl(
     _ accessibility: RamaSeAccessibility
@@ -87,8 +69,6 @@ private func makeAccessControl(
     }
     return SecAccessControlCreateWithFlags(nil, protection, [], nil)
 }
-
-// MARK: - HKDF salt + key derivation
 
 @available(macOS 10.15, *)
 private func deriveSymmetricKey(
@@ -106,8 +86,6 @@ private func deriveSymmetricKey(
         outputByteCount: 32
     )
 }
-
-// MARK: - Public bridge entry points
 
 @_cdecl("rama_apple_se_is_available")
 public func rama_apple_se_is_available() -> Bool {

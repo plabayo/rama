@@ -2,24 +2,10 @@ import Foundation
 @preconcurrency import XPC
 
 /// Typed client for an `XpcMessageRouter`-shaped XPC service.
-///
-/// Each call opens a one-shot mach-service XPC connection, sends an
-/// envelope `{ "$selector": <route.selector>, "$arguments": [<request>] }`,
-/// and decodes the reply's `$result` payload back into the route's typed
-/// `Reply`.
-///
-/// The wire format mirrors `rama-net-apple-xpc`'s `XpcMessageRouter`
-/// expectations exactly, so the Rust side does not need any changes.
-///
-/// ```swift
-/// let client = RamaXpcClient(serviceName: "com.example.foo.provider")
-/// let reply = try await client.call(InstallRootCA.self)
-/// ```
-///
-/// For routes that need the XPC peer (e.g. a sysext) running before the
-/// call, pass a ``RamaXpcLifecycle`` closure. It runs immediately before
-/// the request and the returned teardown closure runs after the reply is
-/// received (or an error is thrown). See ``RamaXpcLifecycle``.
+/// Each call opens a one-shot mach-service connection, sends
+/// `{ "$selector": …, "$arguments": [<request>] }`, and decodes the
+/// reply's `$result`. Pass `ensuringActive` to bring an XPC peer up
+/// (e.g. a sysext) on demand before the call.
 public struct RamaXpcClient: Sendable {
     public let serviceName: String
 
@@ -27,12 +13,9 @@ public struct RamaXpcClient: Sendable {
         self.serviceName = serviceName
     }
 
-    /// Send a typed request and await its typed reply.
-    ///
-    /// - Parameter ensuringActive: Optional lifecycle hook. If provided,
-    ///   it runs before the request is sent (e.g. start a NE provider,
-    ///   wake a daemon) and its returned teardown closure runs after,
-    ///   regardless of success or failure.
+    /// Send a typed request and await its typed reply. If
+    /// `ensuringActive` is set, it runs before the call and its
+    /// returned teardown runs after (success or failure).
     public func call<R: RamaXpcRoute>(
         _ route: R.Type,
         _ request: R.Request,
@@ -115,14 +98,8 @@ extension RamaXpcClient {
     }
 }
 
-/// Closure that brings an XPC peer into a state where it can answer
-/// requests, returning a teardown closure to call afterwards.
-///
-/// Typical use: start a Network Extension provider on demand and stop it
-/// again once the call completes. Passed to
-/// ``RamaXpcClient/call(_:_:ensuringActive:)``.
+/// Bring an XPC peer up before a call; returned teardown runs after.
+/// Typically starts a Network Extension provider on demand.
 public typealias RamaXpcLifecycle = @Sendable () async throws -> RamaXpcLifecycleTeardown
 
-/// Teardown side of ``RamaXpcLifecycle``. Runs after the call regardless
-/// of success or failure; expected to be cheap and non-throwing.
 public typealias RamaXpcLifecycleTeardown = @Sendable () -> Void
