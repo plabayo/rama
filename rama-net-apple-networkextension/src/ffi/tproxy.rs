@@ -244,6 +244,25 @@ impl TransparentProxyConfig {
     }
 }
 
+/// Callbacks Swift provides for Rust TCP session events.
+///
+/// # Lifetime / threading contract for `context`
+///
+/// * `context` must remain valid (and the pointee must not move) until the
+///   corresponding session is freed via
+///   `rama_transparent_proxy_tcp_session_free`.
+///   `rama_transparent_proxy_tcp_session_cancel` guarantees no further
+///   callbacks fire after it returns, but `context` must still outlive the
+///   `_free` call — concurrent callbacks already in flight may still observe
+///   the pointer until they complete.
+///
+///   Only to be used for "public" information... its contents are logged
+///   to the native log system of Apple, by Apple.
+/// * Callbacks may be invoked from any Tokio worker thread. The Swift caller
+///   is responsible for any synchronization the pointee requires.
+/// * `BytesView` arguments are borrowed for the duration of the call and must
+///   be copied before the callback returns if the receiver wants to retain
+///   the data.
 #[repr(C)]
 pub struct TransparentProxyTcpSessionCallbacks {
     pub context: *mut c_void,
@@ -251,6 +270,10 @@ pub struct TransparentProxyTcpSessionCallbacks {
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
+/// Callbacks Swift provides for Rust UDP session events.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above. Same rules apply.
 #[repr(C)]
 pub struct TransparentProxyUdpSessionCallbacks {
     pub context: *mut c_void,
@@ -374,6 +397,11 @@ pub struct UdpEgressConnectOptions {
 ///
 /// These are Rust→Swift channels: Rust calls these when it has data for the
 /// egress `NWConnection`.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above. The pointee must outlive the
+/// corresponding `_session_free` call, callbacks may run on any thread, and
+/// `BytesView` is borrowed for the call's duration.
 #[repr(C)]
 pub struct TransparentProxyTcpEgressCallbacks {
     pub context: *mut c_void,
@@ -384,6 +412,9 @@ pub struct TransparentProxyTcpEgressCallbacks {
 }
 
 /// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above.
 #[repr(C)]
 pub struct TransparentProxyUdpEgressCallbacks {
     pub context: *mut c_void,

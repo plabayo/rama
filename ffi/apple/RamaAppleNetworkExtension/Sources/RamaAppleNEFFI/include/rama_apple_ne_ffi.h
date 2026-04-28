@@ -208,8 +208,22 @@ typedef void (*RamaTcpServerBytesFn)(void* context, RamaBytesView bytes);
 typedef void (*RamaTcpServerClosedFn)(void* context);
 
 /// Callbacks Swift provides for Rust TCP session events.
+///
+/// Lifetime / threading contract for `context`:
+///   * `context` MUST remain valid (and the pointee MUST NOT move) until the
+///     corresponding session has been freed via
+///     `rama_transparent_proxy_tcp_session_free`. Calling
+///     `rama_transparent_proxy_tcp_session_cancel` guarantees that no further
+///     callbacks fire, but `context` must still outlive the `_free` call —
+///     concurrent callbacks already in flight can still observe the pointer
+///     until they complete.
+///   * Callbacks may be invoked from any thread (Rust async runtime worker
+///     threads). The Swift side is responsible for any synchronization the
+///     pointee requires.
+///   * `bytes` passed to `on_server_bytes` is borrowed for the duration of the
+///     call; the receiver MUST copy any data it needs to retain.
 typedef struct {
-    /// Opaque user context passed back to callbacks.
+    /// Opaque user context passed back to callbacks. See lifetime contract above.
     void* context;
     /// Called when Rust has bytes to write to client-side TCP flow.
     RamaTcpServerBytesFn on_server_bytes;
@@ -222,8 +236,13 @@ typedef void (*RamaUdpClientReadDemandFn)(void* context);
 typedef void (*RamaUdpServerClosedFn)(void* context);
 
 /// Callbacks Swift provides for Rust UDP session events.
+///
+/// `context` lifetime / threading contract: see the matching contract on
+/// `RamaTransparentProxyTcpSessionCallbacks` above. Same rules apply here — the
+/// pointee must outlive the `*_free` call, callbacks may run on any thread, and
+/// `bytes` is borrowed for the duration of each call.
 typedef struct {
-    /// Opaque user context passed back to callbacks.
+    /// Opaque user context passed back to callbacks. See lifetime contract above.
     void* context;
     /// Called when Rust has one datagram to write to client-side UDP flow.
     RamaUdpServerDatagramFn on_server_datagram;
@@ -289,7 +308,16 @@ typedef void (*RamaTcpEgressCloseFn)(void* context);
 /// These are the Rust→Swift data path: Rust calls `on_write_to_egress` when
 /// the service has bytes to send to the remote server via the NWConnection,
 /// and `on_close_egress` when the service is done writing.
+///
+/// `context` lifetime / threading contract: see the matching contract on
+/// `RamaTransparentProxyTcpSessionCallbacks` above. The pointee must outlive
+/// the corresponding `_session_free` call, callbacks may run on any thread,
+/// and `bytes` is borrowed for the call's duration.
 typedef struct {
+    /// Opaque user context passed back to callbacks. See lifetime contract above.
+    ///
+    /// Do NOT use if for sensitive information and other secrets,
+    /// as it is is information freely logged by Apple code.
     void* context;
     RamaTcpEgressWriteFn on_write_to_egress;
     RamaTcpEgressCloseFn on_close_egress;
@@ -298,7 +326,11 @@ typedef struct {
 typedef void (*RamaUdpEgressSendFn)(void* context, RamaBytesView bytes);
 
 /// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
+///
+/// `context` lifetime / threading contract: see the matching contract on
+/// `RamaTransparentProxyTcpSessionCallbacks` above.
 typedef struct {
+    /// Opaque user context passed back to callbacks. See lifetime contract above.
     void* context;
     RamaUdpEgressSendFn on_send_to_egress;
 } RamaTransparentProxyUdpEgressCallbacks;

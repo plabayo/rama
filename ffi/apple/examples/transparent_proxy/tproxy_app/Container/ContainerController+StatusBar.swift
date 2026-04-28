@@ -61,7 +61,7 @@ extension ContainerController {
         menu.addItem(resetDemoSettingsItem)
 
         let rotateCAItem = NSMenuItem(
-            title: "Rotate MITM CA",
+            title: "Rotate CA",
             action: #selector(rotateCAAction(_:)),
             keyEquivalent: ""
         )
@@ -134,7 +134,7 @@ extension ContainerController {
         badgeLabelMenuItem?.title = "Badge Label… (\(demoSettings.htmlBadgeLabel))"
         excludeDomainsMenuItem?.title =
             "Excluded Domains… (\(demoSettings.excludeDomains.count))"
-        rotateCAMenuItem?.title = "Rotate MITM CA"
+        rotateCAMenuItem?.title = "Rotate CA"
     }
 
     func setStatus(status: NEVPNStatus, detail: String?) {

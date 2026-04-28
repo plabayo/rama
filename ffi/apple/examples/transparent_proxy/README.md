@@ -7,7 +7,7 @@ The sysext generates and stores the demo MITM root CA in the macOS System
 Keychain (`/Library/Keychains/System.keychain`) using Rama's built-in boring TLS
 support. The CA is created on first startup and reused on subsequent starts.
 
-The container app can delete the stored CA material via the `Rotate MITM CA`
+The container app can delete the stored CA material via the `Rotate CA`
 menu command or the `--clean-secrets` launch flag; the sysext will create a
 fresh CA the next time it initialises. The container app does not create or
 read the CA.
@@ -63,7 +63,7 @@ The build helpers are:
 
 Both modes use the real system-extension product type. Developer mode uses the plain `app-proxy-provider` entitlement payload, while distribution mode switches the same entitlement template to `app-proxy-provider-systemextension`.
 
-At runtime, the container app menu includes `Rotate MITM CA`, which deletes the
+At runtime, the container app menu includes `Rotate CA`, which deletes the
 CA material from the System Keychain and restarts the proxy. The sysext
 generates a fresh CA on the next startup.
 

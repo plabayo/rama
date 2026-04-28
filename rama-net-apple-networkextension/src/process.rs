@@ -125,9 +125,14 @@ fn last_os_error_as_empty_vec() -> io::Result<Vec<String>> {
 ///
 /// # Safety
 ///
-/// The target process is externally managed and may exit or change between
-/// inspection steps. Callers must treat the returned data as a best-effort
-/// snapshot only.
+/// This function performs no unchecked memory access — all raw pointers handed
+/// to `proc_pidpath` originate from local `Vec` allocations of known size, and
+/// `pid` is a plain `i32`.
+///
+/// The `unsafe` marker is preserved as a discoverability
+/// signal: the target process is externally managed by the kernel, so the
+/// returned path may already be stale by the time the caller observes it. Treat
+/// the result as a best-effort, racy snapshot — not a security boundary.
 pub unsafe fn pid_path(pid: i32) -> io::Result<Option<PathBuf>> {
     if pid <= 0 {
         return Ok(None);
@@ -171,9 +176,15 @@ fn sysctl_read(mib: &mut [c_int], out: *mut c_void, out_len: &mut usize) -> io::
 ///
 /// # Safety
 ///
-/// The target process is externally managed and may exit or change between
-/// inspection steps. Callers must treat the returned data as a best-effort
-/// snapshot only.
+/// This function performs no unchecked memory access — all raw pointers handed
+/// to `sysctl` originate from local `Vec` allocations of known size, and `pid`
+/// is a plain `i32`.
+///
+/// The `unsafe` marker is preserved as a discoverability
+/// signal: the target process is externally managed by the kernel, so its
+/// PROCARGS2 buffer may be malformed, truncated, or already stale by the time
+/// the caller observes it (the parser is defensive against all of those).
+/// Treat the result as a best-effort, racy snapshot — not a security boundary.
 pub unsafe fn pid_arguments(pid: i32) -> io::Result<Vec<String>> {
     if pid <= 0 {
         return Ok(Vec::new());

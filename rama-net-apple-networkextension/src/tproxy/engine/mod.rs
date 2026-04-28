@@ -367,6 +367,16 @@ impl TransparentProxyTcpSession {
     }
 
     pub fn cancel(&mut self) {
+        // Soundness note for the Swift `context` lifetime contract:
+        // bridge tasks dispatch to the user-supplied closures only after
+        // re-checking `callback_active` under this synchronous Mutex (see
+        // `guarded_bytes_sink`/`guarded_closed_sink` at the bottom of this
+        // file). Flipping the flag here, *before* aborting the tasks and
+        // dropping the channels, ensures that any callback already past the
+        // check has its dispatch dropped instead of reaching the Swift
+        // `context` after `cancel` has returned. Keep this Mutex sync — an
+        // async lock would let callbacks slip through the gap between the
+        // check and the actual call.
         *self.callback_active.lock() = false;
         self.client_tx = None;
         self.egress_tx = None;

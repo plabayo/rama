@@ -1,7 +1,16 @@
 use std::{
-    ffi::{CStr, CString, c_void},
+    ffi::{CStr, c_void},
     ptr,
 };
+
+// `xpc_connection_copy_invalidation_reason` returns a libc-malloc'd C string that the
+// caller must `free`. We declare `free` locally rather than pulling in the `libc` crate
+// for one symbol; `extern "C" { fn free(p: *mut c_void); }` is exactly Apple's libSystem
+// signature and resolves through the standard libc the process is already linked against.
+unsafe extern "C" {
+    #[link_name = "free"]
+    fn libc_free(ptr: *mut c_void);
+}
 
 use parking_lot::Mutex;
 use rama_core::{
@@ -59,6 +68,10 @@ pub struct ReceivedXpcMessage {
     raw_event: OwnedXpcObject,
 }
 
+// SAFETY: `connection` is an `xpc_connection_t`, which Apple documents as thread-safe
+// (xpc_connection_send_message and friends may be called from any thread). `raw_event`
+// is held inside an `OwnedXpcObject` whose own Send+Sync impls cover its xpc_object_t.
+// `message` is owned, plain Rust data. No mutable shared state is exposed.
 unsafe impl Send for ReceivedXpcMessage {}
 unsafe impl Sync for ReceivedXpcMessage {}
 
@@ -188,6 +201,9 @@ impl XpcConnection {
         }
 
         tracing::debug!(
+            // SAFETY: `raw_connection` is the live xpc_connection_t we just resumed
+            // above; it remains valid for the remainder of this scope. Returns the
+            // peer's pid or 0 if not yet known — both are safe values.
             pid = unsafe { xpc_connection_get_pid(raw_connection) },
             "xpc peer connection activated"
         );
@@ -523,9 +539,23 @@ fn connection_error_description(
     connection: xpc_connection_t,
     event: xpc_object_t,
 ) -> Option<ArcStr> {
+    // SAFETY: `connection` is a live xpc_connection_t (we hold an OwnedXpcObject that
+    // outlives this call). `xpc_connection_copy_invalidation_reason` either returns
+    // NULL or a libc-malloc'd, NUL-terminated C string that the caller must `free()`.
+    // We must NOT use `CString::from_raw` here — its `Drop` deallocates with Rust's
+    // global allocator using a layout derived from string length, which is
+    // incompatible with libc `free`. Instead we copy the string contents into an
+    // `ArcStr` while the buffer is still live, then free it with libc::free.
     let copied = unsafe { xpc_connection_copy_invalidation_reason(connection) };
     if !copied.is_null() {
-        let value = ArcStr::from(unsafe { CString::from_raw(copied) }.to_string_lossy());
+        // SAFETY: `copied` is non-null and points to a NUL-terminated C string owned
+        // by libxpc (malloc'd) until we call `free` below. The borrow ends before the
+        // free.
+        let value = ArcStr::from(unsafe { CStr::from_ptr(copied) }.to_string_lossy());
+        // SAFETY: `copied` was returned by `xpc_connection_copy_invalidation_reason`
+        // (which malloc's the buffer per Apple's <xpc/connection.h>); the contract
+        // requires the caller to `free` it. No other code holds the pointer.
+        unsafe { libc_free(copied.cast::<c_void>()) };
         return Some(value);
     }
 
