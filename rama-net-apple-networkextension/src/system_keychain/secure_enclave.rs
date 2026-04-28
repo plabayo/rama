@@ -2,7 +2,7 @@
 //!
 //! The macOS Data Protection Keychain — and therefore the standard
 //! `kSecAttrTokenIDSecureEnclave` keychain integration — is not available to
-//! Network Extension System Extensions (see [TN3137]). Apple CryptoKit's
+//! Network Extension System Extensions (see [TN3137]). [Apple CryptoKit][cryptokit]'s
 //! `SecureEnclave.P256.KeyAgreement.PrivateKey` reaches the SE directly,
 //! without going through the Data Protection Keychain, and so is the only way
 //! a sysext can use SE-protected keys.
@@ -15,13 +15,15 @@
 //!
 //! # Sysext accessibility
 //!
-//! The default CryptoKit accessibility is
+//! The default [CryptoKit][cryptokit] accessibility is
 //! `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, which makes the key
 //! unusable before any user has logged in. A sysext daemon may run before that
 //! point, so for sysext use pick [`SecureEnclaveAccessibility::Always`], which
 //! maps to the (deprecated but still functional) `kSecAttrAccessibleAlways`.
 //! Apple acknowledges this exact pattern in
 //! <https://developer.apple.com/forums/thread/804612>.
+//!
+//! [cryptokit]: https://developer.apple.com/documentation/cryptokit
 //!
 //! # Encryption scheme
 //!

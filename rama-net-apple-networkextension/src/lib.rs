@@ -18,6 +18,7 @@
 //! - [iOS memory limits](https://developer.apple.com/forums/thread/73148)
 //!   - ~ 15 MiB for App/Dns proxy providers on iOS, no limit on MacOS
 //! - [Exporting a Developer ID Network Extension](https://developer.apple.com/forums/thread/737894)
+//! - [Debugging a Network Extension Provider](https://developer.apple.com/forums/thread/725805)
 //!
 //! Below is relevant information communicated from some of the above sources.
 //!
