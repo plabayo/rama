@@ -106,6 +106,13 @@ Key responsibilities are split as follows:
 
 This separation keeps platform specific concerns isolated from your proxy logic.
 
+> **Security note:** The opaque config payload is intended for non-sensitive runtime
+> settings only — things like timeouts, domain exclusions, and feature flags.
+> Apple logs this payload automatically; it will appear in system diagnostic output
+> with no ability to suppress it. Never embed secrets, private keys, or credentials
+> in the opaque config. Use the system keychain for any sensitive material
+> or transport it over a secure XPC connection yourself.
+
 ## 5. TLS and Certificate Authority Modes
 
 Transparent MITM proxies require a Certificate Authority. On macOS, there are two common approaches.

@@ -9,6 +9,12 @@ fmt *ARGS:
 fmt-crate CRATE *ARGS:
     cargo fmt --all -p {{CRATE}} {{ARGS}}
 
+fmt-check *ARGS:
+    cargo fmt --all --check {{ARGS}}
+
+fmt-check-crate CRATE *ARGS:
+    cargo fmt --all -p {{CRATE}} --check {{ARGS}}
+
 sort:
     @cargo install cargo-sort
     cargo sort --workspace --grouped
@@ -63,7 +69,7 @@ _extra-checks-windows:
     @echo "Skipping extra checks on Windows"
 
 doc:
-    cargo doc --all-features --no-deps --workspace --exclude rama-cli
+    cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
     just doc-crate rama-cli
 
 doc-crate CRATE:
@@ -104,11 +110,12 @@ test-loom:
     @cargo install cargo-nextest --locked
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
-qq: lint check clippy doc extra-checks
+qq: fmt-check check clippy doc extra-checks
 
 qa: qq test test-doc deny
 
 qa-crate CRATE:
+    just fmt-check-crate {{CRATE}}
     just check-crate {{CRATE}}
     just clippy-crate {{CRATE}}
     just doc-crate {{CRATE}}
@@ -117,6 +124,14 @@ qa-crate CRATE:
 
 qa-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/qa
+
+qa-xpc-apple:
+    cargo check -p rama-net-apple-xpc
+    cargo clippy -p rama-net-apple-xpc --all-targets -- -D warnings
+    cargo doc --all-features --no-deps -p rama-net-apple-xpc
+    cargo check -p rama --features net-apple-xpc
+    cargo run --example xpc_echo --features=net-apple-xpc
+    cargo run --example xpc_ca_exchange --features=net-apple-xpc
 
 test-e2e-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/test-e2e

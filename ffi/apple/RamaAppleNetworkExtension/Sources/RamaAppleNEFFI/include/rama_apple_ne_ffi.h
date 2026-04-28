@@ -208,8 +208,22 @@ typedef void (*RamaTcpServerBytesFn)(void* context, RamaBytesView bytes);
 typedef void (*RamaTcpServerClosedFn)(void* context);
 
 /// Callbacks Swift provides for Rust TCP session events.
+///
+/// Lifetime / threading contract for `context`:
+///   * `context` MUST remain valid (and the pointee MUST NOT move) until the
+///     corresponding session has been freed via
+///     `rama_transparent_proxy_tcp_session_free`. Calling
+///     `rama_transparent_proxy_tcp_session_cancel` guarantees that no further
+///     callbacks fire, but `context` must still outlive the `_free` call —
+///     concurrent callbacks already in flight can still observe the pointer
+///     until they complete.
+///   * Callbacks may be invoked from any thread (Rust async runtime worker
+///     threads). The Swift side is responsible for any synchronization the
+///     pointee requires.
+///   * `bytes` passed to `on_server_bytes` is borrowed for the duration of the
+///     call; the receiver MUST copy any data it needs to retain.
 typedef struct {
-    /// Opaque user context passed back to callbacks.
+    /// Opaque user context passed back to callbacks. See lifetime contract above.
     void* context;
     /// Called when Rust has bytes to write to client-side TCP flow.
     RamaTcpServerBytesFn on_server_bytes;
@@ -222,8 +236,13 @@ typedef void (*RamaUdpClientReadDemandFn)(void* context);
 typedef void (*RamaUdpServerClosedFn)(void* context);
 
 /// Callbacks Swift provides for Rust UDP session events.
+///
+/// `context` lifetime / threading contract: see the matching contract on
+/// `RamaTransparentProxyTcpSessionCallbacks` above. Same rules apply here — the
+/// pointee must outlive the `*_free` call, callbacks may run on any thread, and
+/// `bytes` is borrowed for the duration of each call.
 typedef struct {
-    /// Opaque user context passed back to callbacks.
+    /// Opaque user context passed back to callbacks. See lifetime contract above.
     void* context;
     /// Called when Rust has one datagram to write to client-side UDP flow.
     RamaUdpServerDatagramFn on_server_datagram;
@@ -232,6 +251,89 @@ typedef struct {
     /// Called when Rust closes server-side UDP flow.
     RamaUdpServerClosedFn on_server_closed;
 } RamaTransparentProxyUdpSessionCallbacks;
+
+// ── Egress (NWConnection) options ────────────────────────────────────────────
+
+/// NWParameters-level settings shared between TCP and UDP egress NWConnections.
+///
+/// service_class values:
+///   0=Default 1=Background 2=InteractiveVideo 3=InteractiveVoice
+///   4=ResponsiveData 5=Signaling
+///
+/// multipath_service_type values:
+///   0=Disabled 1=Handover 2=Interactive 3=Aggregate
+///
+/// required_interface_type / prohibited mask bits:
+///   0=Cellular 1=Loopback 2=Other 3=Wifi 4=Wired
+///
+/// attribution values:
+///   0=Developer 1=User
+///
+/// Apple references:
+/// - https://developer.apple.com/documentation/network/nwparameters
+typedef struct {
+    bool has_service_class;
+    uint8_t service_class;
+    bool has_multipath_service_type;
+    uint8_t multipath_service_type;
+    bool has_required_interface_type;
+    uint8_t required_interface_type;
+    bool has_attribution;
+    uint8_t attribution;
+    /// Bitmask: bit0=Cellular bit1=Loopback bit2=Other bit3=Wifi bit4=Wired.
+    uint8_t prohibited_interface_types_mask;
+} RamaNwEgressParameters;
+
+/// Options for the egress NWConnection on TCP flows.
+///
+/// Apple reference:
+/// - https://developer.apple.com/documentation/network/nwprotocoltcp/options/connectiontimeout
+typedef struct {
+    RamaNwEgressParameters parameters;
+    bool has_connect_timeout_ms;
+    /// TCP connection timeout in milliseconds (maps to NWProtocolTCP.Options.connectionTimeout).
+    uint32_t connect_timeout_ms;
+} RamaTcpEgressConnectOptions;
+
+/// Options for the egress NWConnection on UDP flows.
+typedef struct {
+    RamaNwEgressParameters parameters;
+} RamaUdpEgressConnectOptions;
+
+typedef void (*RamaTcpEgressWriteFn)(void* context, RamaBytesView bytes);
+typedef void (*RamaTcpEgressCloseFn)(void* context);
+
+/// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
+///
+/// These are the Rust→Swift data path: Rust calls `on_write_to_egress` when
+/// the service has bytes to send to the remote server via the NWConnection,
+/// and `on_close_egress` when the service is done writing.
+///
+/// `context` lifetime / threading contract: see the matching contract on
+/// `RamaTransparentProxyTcpSessionCallbacks` above. The pointee must outlive
+/// the corresponding `_session_free` call, callbacks may run on any thread,
+/// and `bytes` is borrowed for the call's duration.
+typedef struct {
+    /// Opaque user context passed back to callbacks. See lifetime contract above.
+    ///
+    /// Do NOT use if for sensitive information and other secrets,
+    /// as it is is information freely logged by Apple code.
+    void* context;
+    RamaTcpEgressWriteFn on_write_to_egress;
+    RamaTcpEgressCloseFn on_close_egress;
+} RamaTransparentProxyTcpEgressCallbacks;
+
+typedef void (*RamaUdpEgressSendFn)(void* context, RamaBytesView bytes);
+
+/// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
+///
+/// `context` lifetime / threading contract: see the matching contract on
+/// `RamaTransparentProxyTcpSessionCallbacks` above.
+typedef struct {
+    /// Opaque user context passed back to callbacks. See lifetime contract above.
+    void* context;
+    RamaUdpEgressSendFn on_send_to_egress;
+} RamaTransparentProxyUdpEgressCallbacks;
 
 // Logging
 
@@ -294,6 +396,15 @@ void rama_transparent_proxy_engine_free(RamaTransparentProxyEngine* engine);
 /// - https://developer.apple.com/documentation/networkextension/neproviderstopreason
 void rama_transparent_proxy_engine_stop(RamaTransparentProxyEngine* engine, int32_t reason);
 
+/// Forward an app-to-provider message into the transparent proxy handler.
+///
+/// `message` is borrowed for the duration of the call.
+/// Returns an owned reply payload. Empty reply means "no reply payload".
+RamaBytesOwned rama_transparent_proxy_engine_handle_app_message(
+    RamaTransparentProxyEngine* engine,
+    RamaBytesView message
+);
+
 // TCP flow lifecycle
 
 /// Create a TCP session for one intercepted flow.
@@ -325,6 +436,42 @@ void rama_transparent_proxy_tcp_session_on_client_eof(RamaTransparentProxyTcpSes
 /// Cancel TCP session and suppress any future server callbacks for this session.
 void rama_transparent_proxy_tcp_session_cancel(RamaTransparentProxyTcpSession* session);
 
+/// Query handler-supplied egress connect options for a TCP session.
+///
+/// Fills `out_options` and returns `true` when the handler provided custom
+/// options. Returns `false` when Swift should use default NWParameters.
+///
+/// `out_options` must point to caller-allocated storage.
+bool rama_transparent_proxy_tcp_session_get_egress_connect_options(
+    RamaTransparentProxyTcpSession* session,
+    RamaTcpEgressConnectOptions* out_options
+);
+
+/// Activate a TCP session after the egress NWConnection is ready and the
+/// intercepted flow has been successfully opened.
+///
+/// `callbacks` provides the Rust→Swift write channel for the egress direction.
+void rama_transparent_proxy_tcp_session_activate(
+    RamaTransparentProxyTcpSession* session,
+    RamaTransparentProxyTcpEgressCallbacks callbacks
+);
+
+/// Deliver bytes from the egress NWConnection to the Rust TCP session.
+///
+/// Called by Swift when NWConnection.receive delivers data from the remote server.
+/// `bytes` is borrowed for the duration of the call.
+void rama_transparent_proxy_tcp_session_on_egress_bytes(
+    RamaTransparentProxyTcpSession* session,
+    RamaBytesView bytes
+);
+
+/// Signal EOF on the egress NWConnection direction.
+///
+/// Called by Swift when the NWConnection closes or enters a failed state.
+void rama_transparent_proxy_tcp_session_on_egress_eof(
+    RamaTransparentProxyTcpSession* session
+);
+
 // UDP flow lifecycle
 
 /// Create a UDP session for one intercepted flow.
@@ -352,6 +499,33 @@ void rama_transparent_proxy_udp_session_on_client_datagram(
 
 /// Signal UDP flow closure from client side.
 void rama_transparent_proxy_udp_session_on_client_close(RamaTransparentProxyUdpSession* session);
+
+/// Query handler-supplied egress connect options for a UDP session.
+///
+/// Fills `out_options` and returns `true` when the handler provided custom
+/// options. Returns `false` when Swift should use default NWParameters.
+bool rama_transparent_proxy_udp_session_get_egress_connect_options(
+    RamaTransparentProxyUdpSession* session,
+    RamaUdpEgressConnectOptions* out_options
+);
+
+/// Activate a UDP session after the egress NWConnection is ready.
+///
+/// `callbacks.on_send_to_egress` is called by Rust to deliver datagrams to
+/// the egress NWConnection.
+void rama_transparent_proxy_udp_session_activate(
+    RamaTransparentProxyUdpSession* session,
+    RamaTransparentProxyUdpEgressCallbacks callbacks
+);
+
+/// Deliver one datagram from the egress NWConnection to the Rust UDP session.
+///
+/// Called by Swift when NWConnection.receive delivers a datagram from the remote.
+/// `bytes` is borrowed for the duration of the call.
+void rama_transparent_proxy_udp_session_on_egress_datagram(
+    RamaTransparentProxyUdpSession* session,
+    RamaBytesView bytes
+);
 
 // RAII
 

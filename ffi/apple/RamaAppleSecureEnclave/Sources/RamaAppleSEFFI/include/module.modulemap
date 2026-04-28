@@ -1,0 +1,4 @@
+module RamaAppleSEFFI {
+  header "rama_apple_se_ffi.h"
+  export *
+}

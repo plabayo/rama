@@ -1,3 +1,10 @@
+//! Apple Transparent Proxy Support
+//!
+//! ## Tech Notes
+//!
+//! - [App proxy provider — Implement a VPN client for a flow-oriented, custom VPN protocol](https://developer.apple.com/documentation/NetworkExtension/app-proxy-provider)
+//! - [NETransparentProxyProvider](https://developer.apple.com/documentation/NetworkExtension/NETransparentProxyProvider)
+
 mod engine;
 
 mod types;
@@ -11,8 +18,10 @@ pub use self::{
         TransparentProxyTcpSession, TransparentProxyUdpSession, log_engine_build_error,
     },
     types::{
-        TransparentProxyConfig, TransparentProxyFlowAction, TransparentProxyFlowMeta,
-        TransparentProxyFlowProtocol, TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+        NwAttribution, NwEgressParameters, NwInterfaceType, NwMultipathServiceType, NwServiceClass,
+        NwTcpConnectOptions, NwUdpConnectOptions, TransparentProxyConfig,
+        TransparentProxyFlowAction, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
+        TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
     },
 };
 pub use crate::process::AuditToken;

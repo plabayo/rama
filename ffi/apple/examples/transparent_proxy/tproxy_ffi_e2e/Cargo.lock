@@ -1912,6 +1912,7 @@ dependencies = [
 name = "rama-net-apple-networkextension"
 version = "0.3.0-rc1"
 dependencies = [
+ "bindgen",
  "libc",
  "parking_lot",
  "pin-project-lite",
@@ -2069,6 +2070,7 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "bytes",
+ "cc",
  "rama",
  "serde_json",
  "serial_test",

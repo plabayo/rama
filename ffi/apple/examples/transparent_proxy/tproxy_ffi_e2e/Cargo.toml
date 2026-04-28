@@ -31,6 +31,7 @@ tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "net", "io-
 
 [build-dependencies]
 bindgen = "0.72"
+cc = "1"
 
 [lints.rust]
 unused_imports = "warn"

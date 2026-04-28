@@ -4,51 +4,41 @@ use rama::{
     Service,
     error::BoxError,
     extensions::ExtensionsRef as _,
+    io::BridgeIo,
     net::{
-        apple::networkextension::{UdpFlow, tproxy::TransparentProxyServiceContext},
+        apple::networkextension::{NwUdpSocket, UdpFlow, tproxy::TransparentProxyServiceContext},
         proxy::ProxyTarget,
     },
     service::service_fn,
     telemetry::tracing,
-    udp::bind_udp_socket_with_connect_default_dns,
 };
 
 pub(super) async fn try_new_service(
     _: TransparentProxyServiceContext,
-) -> Result<impl Service<UdpFlow, Output = (), Error = Infallible>, BoxError> {
+) -> Result<
+    impl Service<BridgeIo<UdpFlow, NwUdpSocket>, Output = (), Error = Infallible>,
+    BoxError,
+> {
     Ok(service_fn(service))
 }
 
 /// UDP flow handler used by the transparent proxy engine.
 ///
-/// This resolves the remote target, binds a local UDP socket, connects it to the upstream,
-/// then forwards datagrams in both directions until either side closes or an error occurs.
-async fn service(mut flow: UdpFlow) -> Result<(), Infallible> {
-    let Some(ProxyTarget(target_addr)) = flow.extensions().get_ref().cloned() else {
-        tracing::error!("tproxy udp missing target endpoint, draining flow");
-        while flow.recv().await.is_some() {}
-        return Ok(());
-    };
+/// The egress `NwUdpSocket` is pre-connected by Swift via `NWConnection`.
+/// This service simply forwards datagrams between the intercepted flow and the
+/// egress socket until either side closes.
+async fn service(bridge: BridgeIo<UdpFlow, NwUdpSocket>) -> Result<(), Infallible> {
+    let BridgeIo(mut ingress, mut egress) = bridge;
 
-    let socket = match bind_udp_socket_with_connect_default_dns(
-        target_addr.clone(),
-        Some(flow.extensions()),
-    )
-    .await
-    {
-        Ok(socket) => socket,
-        Err(err) => {
-            tracing::error!(error = %err, "tproxy udp bind failed w/ bind + connect to address: {target_addr}");
-            while flow.recv().await.is_some() {}
-            return Ok(());
-        }
+    let Some(ProxyTarget(target_addr)) = ingress.extensions().get_ref().cloned() else {
+        tracing::error!("tproxy udp missing target endpoint, draining flow");
+        while ingress.recv().await.is_some() {}
+        return Ok(());
     };
 
     tracing::info!(
         remote = %target_addr,
-        local_addr = ?socket.local_addr().ok(),
-        peer_addr = ?socket.peer_addr().ok(),
-        "tproxy udp forwarding started"
+        "tproxy udp forwarding started (pre-connected egress)"
     );
 
     let mut up_packets: u64 = 0;
@@ -56,10 +46,9 @@ async fn service(mut flow: UdpFlow) -> Result<(), Infallible> {
     let mut up_bytes: u64 = 0;
     let mut down_bytes: u64 = 0;
 
-    let mut buf = vec![0u8; 64 * 1024];
     loop {
         tokio::select! {
-            maybe_datagram = flow.recv() => {
+            maybe_datagram = ingress.recv() => {
                 let Some(datagram) = maybe_datagram else {
                     break;
                 };
@@ -69,25 +58,19 @@ async fn service(mut flow: UdpFlow) -> Result<(), Infallible> {
 
                 up_packets += 1;
                 up_bytes += datagram.len() as u64;
-
-                if let Err(err) = socket.send(&datagram).await {
-                    tracing::error!(error = %err, "tproxy udp upstream send failed");
-                    break;
-                }
+                egress.send(datagram);
             }
-            recv_result = socket.recv(&mut buf) => {
-                match recv_result {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        down_packets += 1;
-                        down_bytes += n as u64;
-                        flow.send(rama::bytes::Bytes::copy_from_slice(&buf[..n]));
-                    }
-                    Err(err) => {
-                        tracing::error!(error = %err, "tproxy udp upstream recv failed");
-                        break;
-                    }
+            maybe_datagram = egress.recv() => {
+                let Some(datagram) = maybe_datagram else {
+                    break;
+                };
+                if datagram.is_empty() {
+                    continue;
                 }
+
+                down_packets += 1;
+                down_bytes += datagram.len() as u64;
+                ingress.send(datagram);
             }
         }
     }

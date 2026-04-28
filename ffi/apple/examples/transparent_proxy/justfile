@@ -3,8 +3,8 @@ set working-directory := '.'
 
 xcode_derived_data_dev := "./.xcode-derived/tproxy-app-dev"
 xcode_derived_data_dist := "./.xcode-derived/tproxy-app-dist"
-tproxy_built_app_dev := xcode_derived_data_dev + "/Build/Products/Debug/RamaTransparentProxyExampleHost.app"
-tproxy_built_app_dist := xcode_derived_data_dist + "/Build/Products/Release/RamaTransparentProxyExampleHost.app"
+tproxy_built_app_dev := xcode_derived_data_dev + "/Build/Products/Debug/RamaTransparentProxyExampleContainer.app"
+tproxy_built_app_dist := xcode_derived_data_dist + "/Build/Products/Release/RamaTransparentProxyExampleContainer.app"
 
 [working-directory: './tproxy_rs']
 build-tproxy-rs:
@@ -21,57 +21,31 @@ notarize-tproxy-app-dist:
 
 install-tproxy-app-dev:
     ./scripts/build_tproxy_app_with_signing.sh
-    INSTALLED_APP=/Applications/RamaTransparentProxyExampleHost.app; \
+    INSTALLED_APP=/Applications/RamaTransparentProxyExampleContainer.app; \
     INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.dev.provider.systemextension"; \
-    pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true; \
-    sleep 1; \
-    rm -rf "$INSTALLED_APP"; \
-    ditto "{{tproxy_built_app_dev}}" "$INSTALLED_APP"; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dev}}" || true; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dist}}" || true; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
-    echo "Installed Development system extension bundle at $INSTALLED_SYSEXT"; \
-    open "$INSTALLED_APP"
+    ./scripts/install_tproxy_app_bundle.sh dev "{{tproxy_built_app_dev}}" 0; \
+    echo "Installed Development system extension bundle at $INSTALLED_SYSEXT"
 
 install-tproxy-app-dist:
     ./scripts/notarize_tproxy_app_with_developer_id_signing.sh
-    INSTALLED_APP=/Applications/RamaTransparentProxyExampleHost.app; \
+    INSTALLED_APP=/Applications/RamaTransparentProxyExampleContainer.app; \
     INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.provider.systemextension"; \
-    pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true; \
-    sleep 1; \
-    rm -rf "$INSTALLED_APP"; \
-    ditto "{{tproxy_built_app_dist}}" "$INSTALLED_APP"; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dev}}" || true; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dist}}" || true; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
-    echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"; \
-    open "$INSTALLED_APP"
+    ./scripts/install_tproxy_app_bundle.sh dist "{{tproxy_built_app_dist}}" 0; \
+    echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"
 
 install-tproxy-app-dev-reset-profile:
     ./scripts/build_tproxy_app_with_signing.sh
-    INSTALLED_APP=/Applications/RamaTransparentProxyExampleHost.app; \
+    INSTALLED_APP=/Applications/RamaTransparentProxyExampleContainer.app; \
     INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.dev.provider.systemextension"; \
-    pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true; \
-    sleep 1; \
-    rm -rf "$INSTALLED_APP"; \
-    ditto "{{tproxy_built_app_dev}}" "$INSTALLED_APP"; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dev}}" || true; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
-    echo "Installed Development system extension bundle at $INSTALLED_SYSEXT"; \
-    open -a "$INSTALLED_APP" --args --reset-profile-on-launch
+    ./scripts/install_tproxy_app_bundle.sh dev "{{tproxy_built_app_dev}}" 1; \
+    echo "Installed Development system extension bundle at $INSTALLED_SYSEXT"
 
 install-tproxy-app-dist-reset-profile:
     ./scripts/notarize_tproxy_app_with_developer_id_signing.sh
-    INSTALLED_APP=/Applications/RamaTransparentProxyExampleHost.app; \
+    INSTALLED_APP=/Applications/RamaTransparentProxyExampleContainer.app; \
     INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.provider.systemextension"; \
-    pkill -f '/Applications/RamaTransparentProxyExampleHost.app/Contents/MacOS/RamaTransparentProxyExampleHost' || true; \
-    sleep 1; \
-    rm -rf "$INSTALLED_APP"; \
-    ditto "{{tproxy_built_app_dist}}" "$INSTALLED_APP"; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "{{tproxy_built_app_dist}}" || true; \
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_APP"; \
-    echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"; \
-    open -a "$INSTALLED_APP" --args --reset-profile-on-launch
+    ./scripts/install_tproxy_app_bundle.sh dist "{{tproxy_built_app_dist}}" 1; \
+    echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"
 
 build-tproxy-dev: build-tproxy-rs build-tproxy-app-dev
 

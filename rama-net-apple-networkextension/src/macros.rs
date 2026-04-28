@@ -94,6 +94,13 @@ macro_rules! __transparent_proxy_ffi_emit {
             $crate::ffi::tproxy::TransparentProxyTcpSessionCallbacks;
         pub type RamaTransparentProxyUdpSessionCallbacks =
             $crate::ffi::tproxy::TransparentProxyUdpSessionCallbacks;
+        pub type RamaNwEgressParameters = $crate::ffi::tproxy::NwEgressParameters;
+        pub type RamaTcpEgressConnectOptions = $crate::ffi::tproxy::TcpEgressConnectOptions;
+        pub type RamaUdpEgressConnectOptions = $crate::ffi::tproxy::UdpEgressConnectOptions;
+        pub type RamaTransparentProxyTcpEgressCallbacks =
+            $crate::ffi::tproxy::TransparentProxyTcpEgressCallbacks;
+        pub type RamaTransparentProxyUdpEgressCallbacks =
+            $crate::ffi::tproxy::TransparentProxyUdpEgressCallbacks;
 
         #[repr(C)]
         pub struct RamaTransparentProxyTcpSessionResult {
@@ -217,6 +224,41 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             let engine = unsafe { ::std::boxed::Box::from_raw(engine) };
             engine.stop(reason);
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_handle_app_message(
+            engine: *mut RamaTransparentProxyEngine,
+            message: $crate::ffi::BytesView,
+        ) -> $crate::ffi::BytesOwned {
+            if engine.is_null() {
+                return $crate::ffi::BytesOwned {
+                    ptr: ::std::ptr::null_mut(),
+                    len: 0,
+                    cap: 0,
+                };
+            }
+
+            let engine = unsafe { &*engine };
+            let reply = engine.handle_app_message($crate::__RamaBytes::copy_from_slice(
+                unsafe { message.into_slice() },
+            ));
+
+            match reply
+                .map(|bytes| bytes.to_vec())
+                .unwrap_or_default()
+                .try_into()
+            {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    $crate::__tracing::debug!(%err, "failed to encode transparent proxy app message reply");
+                    $crate::ffi::BytesOwned {
+                        ptr: ::std::ptr::null_mut(),
+                        len: 0,
+                        cap: 0,
+                    }
+                }
+            }
         }
 
         #[unsafe(no_mangle)]
@@ -452,6 +494,195 @@ macro_rules! __transparent_proxy_ffi_emit {
             }
 
             unsafe { (*session).on_client_close() };
+        }
+
+        // ── TCP egress ──────────────────────────────────────────────────────────
+
+        /// Query handler-supplied egress connect options for a TCP session.
+        ///
+        /// Returns `true` and fills `out_options` when the handler provided custom
+        /// options. Returns `false` when Swift should use `NWParameters` defaults.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_get_egress_connect_options(
+            session: *mut RamaTransparentProxyTcpSession,
+            out_options: *mut RamaTcpEgressConnectOptions,
+        ) -> bool {
+            if session.is_null() || out_options.is_null() {
+                return false;
+            }
+
+            let session = unsafe { &*session };
+            let Some(opts) = session.egress_connect_options() else {
+                return false;
+            };
+
+            let c_opts = RamaTcpEgressConnectOptions {
+                parameters: $crate::ffi::tproxy::NwEgressParameters::from_rust_type(&opts.parameters),
+                has_connect_timeout_ms: opts.connect_timeout.is_some(),
+                connect_timeout_ms: opts
+                    .connect_timeout
+                    .map(|d| d.as_millis() as u32)
+                    .unwrap_or(0),
+            };
+            unsafe { *out_options = c_opts };
+            true
+        }
+
+        /// Activate a TCP session after the egress `NWConnection` is ready and the
+        /// intercepted flow has been successfully opened.
+        ///
+        /// `callbacks` provides the Rust→Swift write channel: Rust calls
+        /// `on_write_to_egress` to push bytes to the NWConnection, and
+        /// `on_close_egress` when the egress write direction is done.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_activate(
+            session: *mut RamaTransparentProxyTcpSession,
+            callbacks: RamaTransparentProxyTcpEgressCallbacks,
+        ) {
+            if session.is_null() {
+                return;
+            }
+
+            let context = callbacks.context as usize;
+            let on_write_to_egress = callbacks.on_write_to_egress;
+            let on_close_egress = callbacks.on_close_egress;
+
+            unsafe {
+                (*session).activate(
+                    move |bytes: $crate::__RamaBytes| {
+                        let Some(callback) = on_write_to_egress else {
+                            return;
+                        };
+                        if bytes.is_empty() {
+                            return;
+                        }
+                        unsafe {
+                            callback(
+                                context as *mut ::std::ffi::c_void,
+                                $crate::ffi::BytesView {
+                                    ptr: bytes.as_ptr(),
+                                    len: bytes.len(),
+                                },
+                            );
+                        }
+                    },
+                    move || {
+                        if let Some(callback) = on_close_egress {
+                            unsafe { callback(context as *mut ::std::ffi::c_void) };
+                        }
+                    },
+                )
+            };
+        }
+
+        /// Deliver bytes from the egress `NWConnection` into the Rust TCP session.
+        ///
+        /// Called by Swift when the NWConnection receives data from the remote server.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_egress_bytes(
+            session: *mut RamaTransparentProxyTcpSession,
+            bytes: $crate::ffi::BytesView,
+        ) {
+            if session.is_null() {
+                return;
+            }
+
+            let slice = unsafe { bytes.into_slice() };
+            unsafe { (*session).on_egress_bytes(slice) };
+        }
+
+        /// Signal EOF on the egress `NWConnection` direction.
+        ///
+        /// Called by Swift when the NWConnection closes or fails.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_egress_eof(
+            session: *mut RamaTransparentProxyTcpSession,
+        ) {
+            if session.is_null() {
+                return;
+            }
+
+            unsafe { (*session).on_egress_eof() };
+        }
+
+        // ── UDP egress ──────────────────────────────────────────────────────────
+
+        /// Query handler-supplied egress connect options for a UDP session.
+        ///
+        /// Returns `true` and fills `out_options` when the handler provided custom
+        /// options. Returns `false` when Swift should use `NWParameters` defaults.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_udp_session_get_egress_connect_options(
+            session: *mut RamaTransparentProxyUdpSession,
+            out_options: *mut RamaUdpEgressConnectOptions,
+        ) -> bool {
+            if session.is_null() || out_options.is_null() {
+                return false;
+            }
+
+            let session = unsafe { &*session };
+            let Some(opts) = session.egress_connect_options() else {
+                return false;
+            };
+
+            let c_opts = RamaUdpEgressConnectOptions {
+                parameters: $crate::ffi::tproxy::NwEgressParameters::from_rust_type(&opts.parameters),
+            };
+            unsafe { *out_options = c_opts };
+            true
+        }
+
+        /// Activate a UDP session after the egress `NWConnection` is ready.
+        ///
+        /// `callbacks.on_send_to_egress` is called by Rust whenever the service
+        /// has a datagram to deliver to the egress NWConnection.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_udp_session_activate(
+            session: *mut RamaTransparentProxyUdpSession,
+            callbacks: RamaTransparentProxyUdpEgressCallbacks,
+        ) {
+            if session.is_null() {
+                return;
+            }
+
+            let context = callbacks.context as usize;
+            let on_send_to_egress = callbacks.on_send_to_egress;
+
+            unsafe {
+                (*session).activate(move |bytes: $crate::__RamaBytes| {
+                    let Some(callback) = on_send_to_egress else {
+                        return;
+                    };
+                    if bytes.is_empty() {
+                        return;
+                    }
+                    unsafe {
+                        callback(
+                            context as *mut ::std::ffi::c_void,
+                            $crate::ffi::BytesView {
+                                ptr: bytes.as_ptr(),
+                                len: bytes.len(),
+                            },
+                        );
+                    }
+                })
+            };
+        }
+
+        /// Deliver one datagram from the egress `NWConnection` into the Rust UDP session.
+        ///
+        /// Called by Swift when the NWConnection receives a datagram from the remote.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_egress_datagram(
+            session: *mut RamaTransparentProxyUdpSession,
+            bytes: $crate::ffi::BytesView,
+        ) {
+            if session.is_null() {
+                return;
+            }
+
+            let slice = unsafe { bytes.into_slice() };
+            unsafe { (*session).on_egress_datagram(slice) };
         }
 
         #[unsafe(no_mangle)]

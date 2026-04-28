@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use rama_core::extensions::Extension;
 use rama_net::address::{Host, HostWithPort};
 use rama_utils::{
@@ -6,6 +8,102 @@ use rama_utils::{
 };
 
 use crate::process::AuditToken;
+
+/// NWParameters service class — maps to `NWParameters.serviceClass`.
+///
+/// Variants mirror the cases in `NWParameters.ServiceClass` from Apple's Network framework
+/// (available on macOS 10.14+, iOS 12+).
+///
+/// | Variant         | Swift case             | Notes                                  |
+/// |-----------------|------------------------|----------------------------------------|
+/// | Default         | *(not set)*            | Use the system default (best-effort)   |
+/// | Background      | `.background`          | Best effort, low priority              |
+/// | InteractiveVideo| `.interactiveVideo`    | Video calls                            |
+/// | InteractiveVoice| `.interactiveVoice`    | VoIP calls                             |
+/// | ResponsiveData  | `.responsiveData`      | Interactive network traffic            |
+/// | Signaling       | `.signaling`           | Control / signalling traffic           |
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NwServiceClass {
+    /// Do not override; use the system default (`bestEffort`).
+    #[default]
+    Default,
+    Background,
+    InteractiveVideo,
+    InteractiveVoice,
+    ResponsiveData,
+    /// Maps to `NWParameters.ServiceClass.signaling` (formerly `responsiveAV`).
+    Signaling,
+}
+
+/// NWParameters multipath service type — maps to `NWParameters.multipathServiceType`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NwMultipathServiceType {
+    #[default]
+    Disabled,
+    Handover,
+    Interactive,
+    Aggregate,
+}
+
+/// NWParameters interface type — maps to `NWParameters.requiredInterfaceType`
+/// and `NWParameters.prohibitedInterfaceTypes`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NwInterfaceType {
+    Cellular,
+    Loopback,
+    Other,
+    Wifi,
+    Wired,
+}
+
+/// NWParameters attribution — maps to `NWParameters.attribution`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NwAttribution {
+    #[default]
+    Developer,
+    User,
+}
+
+/// Non-protocol `NWParameters` settings that apply equally to TCP and UDP egress connections.
+///
+/// All fields map directly to top-level `NWParameters` properties (not protocol-specific options).
+/// Only parameters meaningful for a `NETransparentProxyProvider` egress connection are included.
+#[derive(Clone, Debug, Default)]
+pub struct NwEgressParameters {
+    /// Maps to `NWParameters.serviceClass`.
+    pub service_class: Option<NwServiceClass>,
+    /// Maps to `NWParameters.multipathServiceType`.
+    pub multipath_service_type: Option<NwMultipathServiceType>,
+    /// Maps to `NWParameters.prohibitedInterfaceTypes`.
+    pub prohibited_interface_types: Vec<NwInterfaceType>,
+    /// Maps to `NWParameters.requiredInterfaceType`.
+    pub required_interface_type: Option<NwInterfaceType>,
+    /// Maps to `NWParameters.attribution` — attribute outbound traffic to the
+    /// originating app rather than the extension process.
+    pub attribution: Option<NwAttribution>,
+}
+
+/// Options for the egress `NWConnection` on TCP flows.
+///
+/// TCP-specific: wraps [`NwEgressParameters`] and adds a connection timeout
+/// that maps to `NWProtocolTCP.Options.connectionTimeout`.
+#[derive(Clone, Debug, Default)]
+pub struct NwTcpConnectOptions {
+    /// Shared `NWParameters`-level settings.
+    pub parameters: NwEgressParameters,
+    /// Maps to `NWProtocolTCP.Options.connectionTimeout`.
+    pub connect_timeout: Option<Duration>,
+}
+
+/// Options for the egress `NWConnection` on UDP flows.
+///
+/// For UDP there is no handshake timeout, so only the shared
+/// [`NwEgressParameters`] are exposed.
+#[derive(Clone, Debug, Default)]
+pub struct NwUdpConnectOptions {
+    /// Shared `NWParameters`-level settings.
+    pub parameters: NwEgressParameters,
+}
 
 /// Protocol filter used by transparent-proxy network rules.
 #[repr(u32)]

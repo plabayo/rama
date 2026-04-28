@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::tproxy::{SessionFlowAction, TransparentProxyConfig, TransparentProxyFlowMeta};
+use rama_core::bytes::Bytes;
 
 use super::{
     TransparentProxyEngine, TransparentProxyHandler, TransparentProxyTcpSession,
@@ -13,6 +14,7 @@ pub type BoxedDemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
 
 trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig;
+    fn handle_app_message(&self, message: Bytes) -> Option<Bytes>;
     fn stop_box(self: Box<Self>, reason: i32);
     fn new_tcp_session(
         &self,
@@ -35,6 +37,10 @@ where
 {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig {
         self.transparent_proxy_config()
+    }
+
+    fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
+        self.handle_app_message(message)
     }
 
     fn stop_box(self: Box<Self>, reason: i32) {
@@ -75,6 +81,10 @@ pub struct BoxedTransparentProxyEngine(Box<dyn BoxedTransparentProxyEngineInner>
 impl BoxedTransparentProxyEngine {
     pub fn transparent_proxy_config(&self) -> TransparentProxyConfig {
         self.0.transparent_proxy_config()
+    }
+
+    pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
+        self.0.handle_app_message(message)
     }
 
     pub fn stop(self, reason: i32) {

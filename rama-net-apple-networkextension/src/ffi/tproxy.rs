@@ -10,8 +10,9 @@ use rama_utils::str::NonEmptyStr;
 use crate::ffi::BytesView;
 use crate::process::AuditToken;
 use crate::tproxy::{
-    self, TransparentProxyFlowAction as RustTransparentProxyFlowAction,
-    TransparentProxyFlowProtocol,
+    self, NwAttribution, NwEgressParameters as RustNwEgressParameters, NwInterfaceType,
+    NwMultipathServiceType, NwServiceClass,
+    TransparentProxyFlowAction as RustTransparentProxyFlowAction, TransparentProxyFlowProtocol,
 };
 
 #[repr(C)]
@@ -243,6 +244,25 @@ impl TransparentProxyConfig {
     }
 }
 
+/// Callbacks Swift provides for Rust TCP session events.
+///
+/// # Lifetime / threading contract for `context`
+///
+/// * `context` must remain valid (and the pointee must not move) until the
+///   corresponding session is freed via
+///   `rama_transparent_proxy_tcp_session_free`.
+///   `rama_transparent_proxy_tcp_session_cancel` guarantees no further
+///   callbacks fire after it returns, but `context` must still outlive the
+///   `_free` call — concurrent callbacks already in flight may still observe
+///   the pointer until they complete.
+///
+///   Only to be used for "public" information... its contents are logged
+///   to the native log system of Apple, by Apple.
+/// * Callbacks may be invoked from any Tokio worker thread. The Swift caller
+///   is responsible for any synchronization the pointee requires.
+/// * `BytesView` arguments are borrowed for the duration of the call and must
+///   be copied before the callback returns if the receiver wants to retain
+///   the data.
 #[repr(C)]
 pub struct TransparentProxyTcpSessionCallbacks {
     pub context: *mut c_void,
@@ -250,12 +270,156 @@ pub struct TransparentProxyTcpSessionCallbacks {
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
+/// Callbacks Swift provides for Rust UDP session events.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above. Same rules apply.
 #[repr(C)]
 pub struct TransparentProxyUdpSessionCallbacks {
     pub context: *mut c_void,
     pub on_server_datagram: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
     pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+// ── Egress (NWConnection) options ─────────────────────────────────────────────
+
+/// C representation of `NwEgressParameters` — NWParameters-level settings
+/// shared between TCP and UDP egress `NWConnection`s.
+///
+/// Discriminant values for service_class:
+///   0=Default 1=Background 2=InteractiveVideo 3=InteractiveVoice
+///   4=ResponsiveData 5=Signaling
+///
+/// Discriminant values for multipath_service_type:
+///   0=Disabled 1=Handover 2=Interactive 3=Aggregate
+///
+/// Discriminant values for required_interface_type / prohibited mask bits:
+///   0=Cellular 1=Loopback 2=Other 3=Wifi 4=Wired
+///
+/// Discriminant values for attribution:
+///   0=Developer 1=User
+#[repr(C)]
+pub struct NwEgressParameters {
+    pub has_service_class: bool,
+    pub service_class: u8,
+    pub has_multipath_service_type: bool,
+    pub multipath_service_type: u8,
+    pub has_required_interface_type: bool,
+    pub required_interface_type: u8,
+    pub has_attribution: bool,
+    pub attribution: u8,
+    /// Bitmask of prohibited interface types (bit0=Cellular bit1=Loopback
+    /// bit2=Other bit3=Wifi bit4=Wired).
+    pub prohibited_interface_types_mask: u8,
+}
+
+impl NwEgressParameters {
+    pub fn from_rust_type(p: &RustNwEgressParameters) -> Self {
+        Self {
+            has_service_class: p.service_class.is_some(),
+            service_class: p.service_class.map(service_class_to_u8).unwrap_or(0),
+            has_multipath_service_type: p.multipath_service_type.is_some(),
+            multipath_service_type: p.multipath_service_type.map(multipath_to_u8).unwrap_or(0),
+            has_required_interface_type: p.required_interface_type.is_some(),
+            required_interface_type: p
+                .required_interface_type
+                .map(interface_type_to_u8)
+                .unwrap_or(0),
+            has_attribution: p.attribution.is_some(),
+            attribution: p.attribution.map(attribution_to_u8).unwrap_or(0),
+            prohibited_interface_types_mask: interface_types_to_mask(&p.prohibited_interface_types),
+        }
+    }
+}
+
+fn service_class_to_u8(sc: NwServiceClass) -> u8 {
+    match sc {
+        NwServiceClass::Default => 0,
+        NwServiceClass::Background => 1,
+        NwServiceClass::InteractiveVideo => 2,
+        NwServiceClass::InteractiveVoice => 3,
+        NwServiceClass::ResponsiveData => 4,
+        NwServiceClass::Signaling => 5,
+    }
+}
+
+fn multipath_to_u8(m: NwMultipathServiceType) -> u8 {
+    match m {
+        NwMultipathServiceType::Disabled => 0,
+        NwMultipathServiceType::Handover => 1,
+        NwMultipathServiceType::Interactive => 2,
+        NwMultipathServiceType::Aggregate => 3,
+    }
+}
+
+fn interface_type_to_u8(t: NwInterfaceType) -> u8 {
+    match t {
+        NwInterfaceType::Cellular => 0,
+        NwInterfaceType::Loopback => 1,
+        NwInterfaceType::Other => 2,
+        NwInterfaceType::Wifi => 3,
+        NwInterfaceType::Wired => 4,
+    }
+}
+
+fn attribution_to_u8(a: NwAttribution) -> u8 {
+    match a {
+        NwAttribution::Developer => 0,
+        NwAttribution::User => 1,
+    }
+}
+
+fn interface_types_to_mask(types: &[NwInterfaceType]) -> u8 {
+    let mut mask: u8 = 0;
+    for &t in types {
+        mask |= 1 << interface_type_to_u8(t);
+    }
+    mask
+}
+
+/// C representation of egress options for TCP `NWConnection`s.
+#[repr(C)]
+pub struct TcpEgressConnectOptions {
+    pub parameters: NwEgressParameters,
+    pub has_connect_timeout_ms: bool,
+    /// Connection timeout in milliseconds (maps to `NWProtocolTCP.Options.connectionTimeout`).
+    pub connect_timeout_ms: u32,
+}
+
+/// C representation of egress options for UDP `NWConnection`s.
+#[repr(C)]
+pub struct UdpEgressConnectOptions {
+    pub parameters: NwEgressParameters,
+}
+
+/// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
+///
+/// These are Rust→Swift channels: Rust calls these when it has data for the
+/// egress `NWConnection`.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above. The pointee must outlive the
+/// corresponding `_session_free` call, callbacks may run on any thread, and
+/// `BytesView` is borrowed for the call's duration.
+#[repr(C)]
+pub struct TransparentProxyTcpEgressCallbacks {
+    pub context: *mut c_void,
+    /// Rust calls this to send bytes from the service to the egress NWConnection.
+    pub on_write_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
+    /// Rust calls this when the service is done writing to the egress NWConnection.
+    pub on_close_egress: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+/// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above.
+#[repr(C)]
+pub struct TransparentProxyUdpEgressCallbacks {
+    pub context: *mut c_void,
+    /// Rust calls this to send one datagram to the egress NWConnection.
+    pub on_send_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
 }
 
 fn opt_string_as_utf8_array(value: Option<String>) -> (*const c_char, usize) {

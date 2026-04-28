@@ -11,7 +11,15 @@ let package = Package(
         .library(
             name: "RamaAppleNetworkExtension",
             targets: ["RamaAppleNetworkExtension"]
-        )
+        ),
+        .library(
+            name: "RamaAppleSecureEnclave",
+            targets: ["RamaAppleSecureEnclave"]
+        ),
+        .library(
+            name: "RamaAppleXpcClient",
+            targets: ["RamaAppleXpcClient"]
+        ),
     ],
     targets: [
         .target(
@@ -26,6 +34,19 @@ let package = Package(
             name: "RamaAppleNetworkExtension",
             dependencies: ["RamaAppleNEFFI"],
             path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension"
+        ),
+        .target(
+            name: "RamaAppleSEFFI",
+            path: "ffi/apple/RamaAppleSecureEnclave/Sources/RamaAppleSEFFI"
+        ),
+        .target(
+            name: "RamaAppleSecureEnclave",
+            dependencies: ["RamaAppleSEFFI"],
+            path: "ffi/apple/RamaAppleSecureEnclave/Sources/RamaAppleSecureEnclave"
+        ),
+        .target(
+            name: "RamaAppleXpcClient",
+            path: "ffi/apple/RamaAppleXpcClient/Sources/RamaAppleXpcClient"
         ),
     ]
 )

@@ -9,13 +9,15 @@ use tokio::{
 
 use super::{bindings, ffi::EngineHandle};
 
-struct TcpCallbackContext {
+// ── Ingress (client → service) callback context ───────────────────────────────
+
+struct TcpServerCallbackContext {
     sender: mpsc::UnboundedSender<Vec<u8>>,
     closed: Arc<Notify>,
 }
 
 unsafe extern "C" fn on_tcp_server_bytes(ctx: *mut c_void, bytes: bindings::RamaBytesView) {
-    let ctx = unsafe { &*(ctx as *const TcpCallbackContext) };
+    let ctx = unsafe { &*(ctx as *const TcpServerCallbackContext) };
     let payload = if bytes.ptr.is_null() || bytes.len == 0 {
         Vec::new()
     } else {
@@ -25,7 +27,29 @@ unsafe extern "C" fn on_tcp_server_bytes(ctx: *mut c_void, bytes: bindings::Rama
 }
 
 unsafe extern "C" fn on_tcp_server_closed(ctx: *mut c_void) {
-    let ctx = unsafe { &*(ctx as *const TcpCallbackContext) };
+    let ctx = unsafe { &*(ctx as *const TcpServerCallbackContext) };
+    ctx.closed.notify_waiters();
+}
+
+// ── Egress (service → upstream) callback context ─────────────────────────────
+
+struct TcpEgressCallbackContext {
+    sender: mpsc::UnboundedSender<Vec<u8>>,
+    closed: Arc<Notify>,
+}
+
+unsafe extern "C" fn on_tcp_write_to_egress(ctx: *mut c_void, bytes: bindings::RamaBytesView) {
+    let ctx = unsafe { &*(ctx as *const TcpEgressCallbackContext) };
+    let payload = if bytes.ptr.is_null() || bytes.len == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
+    };
+    let _ = ctx.sender.send(payload);
+}
+
+unsafe extern "C" fn on_tcp_close_egress(ctx: *mut c_void) {
+    let ctx = unsafe { &*(ctx as *const TcpEgressCallbackContext) };
     ctx.closed.notify_waiters();
 }
 
@@ -115,18 +139,48 @@ pub(crate) async fn spawn_ingress_listener(
     }
 }
 
+/// Serve one intercepted client connection end-to-end.
+///
+/// The Rust engine became "Swift-driven" in a recent refactor: after
+/// `new_tcp_session` returns, the bridge tasks remain dormant until
+/// `tcp_session_activate` is called with the egress callbacks. That mirrors
+/// the production flow where Swift opens an `NWConnection` to the upstream
+/// before activating the session. This test harness has no `NWConnection`,
+/// so we open a plain `TcpStream` to `remote_addr` and pretend to be one:
+/// `on_write_to_egress` enqueues bytes for our writer task, and we read
+/// from the upstream socket and feed the bytes back via
+/// `tcp_session_on_egress_bytes`.
 async fn serve_one_ingress_connection(
     engine: Arc<EngineHandle>,
     stream: TcpStream,
     remote_addr: std::net::SocketAddr,
     shutdown: Arc<Notify>,
 ) {
-    let (read_half, mut write_half) = stream.into_split();
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let closed = Arc::new(Notify::new());
-    let ctx_ptr = Box::into_raw(Box::new(TcpCallbackContext {
-        sender: tx,
-        closed: closed.clone(),
+    // Open the egress side first; if the upstream rejects, there's no point
+    // creating an FFI session at all.
+    let Ok(egress_stream) = TcpStream::connect(remote_addr).await else {
+        return;
+    };
+
+    let (client_read, mut client_write) = stream.into_split();
+    let (egress_read, mut egress_write) = egress_stream.into_split();
+
+    // Ingress (client) side: server callbacks deliver bytes from the Rust
+    // service back to the client connection.
+    let (server_bytes_tx, mut server_bytes_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let server_closed = Arc::new(Notify::new());
+    let server_ctx_ptr = Box::into_raw(Box::new(TcpServerCallbackContext {
+        sender: server_bytes_tx,
+        closed: server_closed.clone(),
+    })) as usize;
+
+    // Egress side: callbacks deliver bytes from the Rust service to the
+    // upstream socket.
+    let (egress_bytes_tx, mut egress_bytes_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let egress_closed = Arc::new(Notify::new());
+    let egress_ctx_ptr = Box::into_raw(Box::new(TcpEgressCallbackContext {
+        sender: egress_bytes_tx,
+        closed: egress_closed.clone(),
     })) as usize;
 
     let session = {
@@ -158,7 +212,7 @@ async fn serve_one_ingress_connection(
                 engine.raw,
                 &meta,
                 bindings::RamaTransparentProxyTcpSessionCallbacks {
-                    context: ctx_ptr as *mut c_void,
+                    context: server_ctx_ptr as *mut c_void,
                     on_server_bytes: Some(on_tcp_server_bytes),
                     on_server_closed: Some(on_tcp_server_closed),
                 },
@@ -174,15 +228,81 @@ async fn serve_one_ingress_connection(
         raw as usize
     };
 
-    let writer = tokio::spawn(async move {
-        while let Some(chunk) = rx.recv().await {
-            if write_half.write_all(&chunk).await.is_err() {
+    // Activate the session. Until this is called, bytes pushed via
+    // `on_client_bytes` queue up in the engine's pending state and never
+    // reach the service.
+    unsafe {
+        bindings::rama_transparent_proxy_tcp_session_activate(
+            session as *mut bindings::RamaTransparentProxyTcpSession,
+            bindings::RamaTransparentProxyTcpEgressCallbacks {
+                context: egress_ctx_ptr as *mut c_void,
+                on_write_to_egress: Some(on_tcp_write_to_egress),
+                on_close_egress: Some(on_tcp_close_egress),
+            },
+        );
+    }
+
+    // Ingress writer: service-bound bytes → client socket.
+    let server_writer = tokio::spawn(async move {
+        while let Some(chunk) = server_bytes_rx.recv().await {
+            if client_write.write_all(&chunk).await.is_err() {
                 break;
+            }
+        }
+        let _ = client_write.shutdown().await;
+    });
+
+    // Egress writer: service-bound bytes → upstream socket.
+    let egress_closed_for_writer = egress_closed.clone();
+    let egress_writer = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                next = egress_bytes_rx.recv() => {
+                    match next {
+                        Some(chunk) => {
+                            if egress_write.write_all(&chunk).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = egress_closed_for_writer.notified() => break,
+            }
+        }
+        let _ = egress_write.shutdown().await;
+    });
+
+    // Egress reader: upstream socket → on_egress_bytes / on_egress_eof.
+    let egress_session = session;
+    let egress_reader = tokio::spawn(async move {
+        let mut reader = egress_read;
+        let mut buf = [0_u8; 16 * 1024];
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) | Err(_) => {
+                    unsafe {
+                        bindings::rama_transparent_proxy_tcp_session_on_egress_eof(
+                            egress_session as *mut bindings::RamaTransparentProxyTcpSession,
+                        );
+                    }
+                    break;
+                }
+                Ok(n) => unsafe {
+                    bindings::rama_transparent_proxy_tcp_session_on_egress_bytes(
+                        egress_session as *mut bindings::RamaTransparentProxyTcpSession,
+                        bindings::RamaBytesView {
+                            ptr: buf.as_ptr(),
+                            len: n,
+                        },
+                    );
+                },
             }
         }
     });
 
-    let mut reader = read_half;
+    // Ingress reader: client socket → on_client_bytes / on_client_eof.
+    let mut reader = client_read;
     let mut buf = [0_u8; 16 * 1024];
     loop {
         tokio::select! {
@@ -215,10 +335,16 @@ async fn serve_one_ingress_connection(
                 }
                 break;
             }
-            _ = closed.notified() => break,
+            _ = server_closed.notified() => break,
         }
     }
 
-    writer.abort();
-    let _ = writer.await;
+    // Tear down the bridges. Aborting is fine because the FFI session owns
+    // the underlying tokio tasks via its own shutdown guard.
+    server_writer.abort();
+    egress_writer.abort();
+    egress_reader.abort();
+    let _ = server_writer.await;
+    let _ = egress_writer.await;
+    let _ = egress_reader.await;
 }

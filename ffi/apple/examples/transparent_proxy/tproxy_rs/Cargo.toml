@@ -11,14 +11,14 @@ crate-type = ["staticlib"]
 
 [dependencies]
 ahash = "0.8"
-apple-native-keyring-store = { version = "0.2", features = ["protected"] }
+arc-swap = "1"
+base64 = "0.22"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
-keyring-core = "0.7"
 moka = { version = "0.12", features = ["sync"] }
-rama = { path = "../../../../../", features = ["net-apple-networkextension", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
+rama = { path = "../../../../../", features = ["net-apple-networkextension", "net-apple-xpc", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1.52", features = ["net"] }
+tokio = { version = "1.52", features = ["net", "time"] }
 tracing-oslog = "0.3"
 
 [lints.rust]

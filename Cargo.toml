@@ -47,6 +47,7 @@ members = [
     "rama-macros/tests/macros",
     "rama-net",
     "rama-net-apple-networkextension",
+    "rama-net-apple-xpc",
     "rama-proxy",
     "rama-socks5",
     "rama-tcp",
@@ -91,6 +92,7 @@ bb8 = "0.9"
 bb8-postgres = "0.9"
 bindgen = "0.72"
 bitflags = "2.11"
+block2 = "0.6"
 brotli = "8"
 byteorder = "1.5"
 bytes = "1"
@@ -171,6 +173,7 @@ rama-http-types = { version = "0.3.0-rc1", path = "./rama-http-types", default-f
 rama-macros = { version = "0.3.0-rc1", path = "./rama-macros", default-features = false }
 rama-net = { version = "0.3.0-rc1", path = "./rama-net", default-features = false }
 rama-net-apple-networkextension = { version = "0.3.0-rc1", path = "./rama-net-apple-networkextension", default-features = false }
+rama-net-apple-xpc = { version = "0.3.0-rc1", path = "./rama-net-apple-xpc", default-features = false }
 rama-proxy = { version = "0.3.0-rc1", path = "./rama-proxy", default-features = false }
 rama-socks5 = { version = "0.3.0-rc1", path = "./rama-socks5", default-features = false }
 rama-tcp = { version = "0.3.0-rc1", path = "./rama-tcp", default-features = false }
@@ -324,6 +327,7 @@ cli = [
 ]
 net = ["dep:rama-net"]
 net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
+net-apple-xpc = ["net", "dep:rama-net-apple-xpc"]
 dns = ["net", "dep:rama-dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["dns", "dep:rama-tcp"]
@@ -386,6 +390,7 @@ rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }
 rama-net-apple-networkextension = { workspace = true, optional = true }
+rama-net-apple-xpc = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
@@ -682,6 +687,14 @@ required-features = ["tcp"]
 [[example]]
 name = "linux_tproxy_tcp"
 required-features = ["tcp"]
+
+[[example]]
+name = "xpc_echo"
+required-features = ["net-apple-xpc"]
+
+[[example]]
+name = "xpc_ca_exchange"
+required-features = ["net-apple-xpc"]
 
 [[example]]
 name = "tcp_nd_json"

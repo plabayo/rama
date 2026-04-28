@@ -9,7 +9,8 @@
 //! - Resolving and socket-loop integration (`DNSServiceRefSockFD` + `DNSServiceProcessResult`):
 //!   <https://developer.apple.com/library/archive/documentation/Networking/Conceptual/dns_discovery_api/Articles/resolving.html>
 //! - DNS-SD C API reference / `dns_sd.h` landing page:
-//!   <https://developer.apple.com/documentation/dnssd/dns_sd_h>
+//!   - <https://developer.apple.com/documentation/dnssd>
+//!   - <https://developer.apple.com/documentation/dnssd/dns_sd_h>
 //!
 //! Implementation notes:
 //! - `A`, `AAAA`, and `TXT` lookups are all backed by `DNSServiceQueryRecord`.
