@@ -9,7 +9,10 @@ pub trait IntoResponseError: Error + Send + Sync + 'static {
     fn as_response(&self) -> Response;
 }
 
-impl<T: IntoResponse + Clone + Error + Send + Sync + 'static> IntoResponseError for T {
+impl<T> IntoResponseError for T
+where
+    T: IntoResponse + Clone + Error + Send + Sync + 'static,
+{
     fn as_response(&self) -> Response {
         self.clone().into_response()
     }

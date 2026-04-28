@@ -20,12 +20,12 @@ use crate::{
         server::HttpServer,
         service::{
             fs::{DirectoryServeMode, ServeDir, ServeFile},
-            web::StaticService,
             web::response::{Html, IntoResponse},
         },
     },
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    service::StaticOutput,
     net::stream::layer::http::BodyLimitLayer,
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
@@ -314,7 +314,7 @@ where
         };
 
         let serve_service = match &self.content_path {
-            None => Either3::A(StaticService::new(Html(include_str!(
+            None => Either3::A(StaticOutput::new(Html(include_str!(
                 "../../../docs/index.html"
             )))),
             Some(path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
@@ -343,5 +343,5 @@ where
     }
 }
 
-type ServeStaticHtml = StaticService<Html<&'static str>>;
+type ServeStaticHtml = StaticOutput<Html<&'static str>>;
 type ServeService = Either3<ServeStaticHtml, ServeFile, ServeDir>;

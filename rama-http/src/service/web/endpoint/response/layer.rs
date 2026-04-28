@@ -32,8 +32,15 @@ where
 }
 
 /// A [`Layer`] that maps response for an inner service using [`IntoResponse`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct IntoResponseLayer;
+
+impl IntoResponseLayer {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 impl<S> Layer<S> for IntoResponseLayer {
     type Service = IntoResponseService<S>;

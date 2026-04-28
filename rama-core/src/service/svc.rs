@@ -308,20 +308,20 @@ where
 
 /// A static [`Service`] that always returns pre-defined output.
 #[derive(Debug, Clone)]
-pub struct StaticService<O>(O);
+pub struct StaticOutput<O>(O);
 
-impl<O> StaticService<O>
+impl<O> StaticOutput<O>
 where
     O: Clone + Send + Sync + 'static,
 {
-    /// Create a new [`StaticService`] with the given value.
+    /// Create a new [`StaticOutput`] with the given value.
     #[inline(always)]
     pub fn new(value: O) -> Self {
         Self(value)
     }
 }
 
-impl<I, O> Service<I> for StaticService<O>
+impl<I, O> Service<I> for StaticOutput<O>
 where
     I: Send + 'static,
     O: Clone + Send + Sync + 'static,

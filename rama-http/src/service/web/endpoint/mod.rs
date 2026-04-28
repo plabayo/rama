@@ -2,7 +2,7 @@ use std::convert::Infallible;
 
 use rama_core::{
     Service,
-    service::{BoxService, StaticService},
+    service::{BoxService, StaticOutput},
 };
 
 use crate::{Body, Request, Response, matcher::HttpMatcher};
@@ -60,10 +60,10 @@ impl<O> IntoEndpointService<(), O, Infallible> for Result<O, Infallible>
 where
     O: Clone + Send + Sync + 'static,
 {
-    type Service = StaticService<O>;
+    type Service = StaticOutput<O>;
 
     fn into_endpoint_service(self) -> Self::Service {
-        StaticService::new(self.unwrap())
+        StaticOutput::new(self.unwrap())
     }
 }
 
@@ -71,7 +71,7 @@ impl<O, State> IntoEndpointServiceWithState<(), O, Infallible, State> for Result
 where
     O: Clone + Send + Sync + 'static,
 {
-    type Service = StaticService<O>;
+    type Service = StaticOutput<O>;
 
     fn into_endpoint_service_with_state(self, _state: State) -> Self::Service {
         self.into_endpoint_service()
@@ -98,7 +98,7 @@ impl<F: std::fmt::Debug, T, O, E, State: std::fmt::Debug> std::fmt::Debug
             .field("state", &self.state)
             .field(
                 "_marker",
-                &format_args!("{}", std::any::type_name::<fn(T) -> ()>()),
+                &format_args!("{}", std::any::type_name::<fn(T) -> Result<O, E>>()),
             )
             .finish()
     }
