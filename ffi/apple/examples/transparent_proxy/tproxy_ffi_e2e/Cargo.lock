@@ -2070,6 +2070,7 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "bytes",
+ "cc",
  "rama",
  "serde_json",
  "serial_test",

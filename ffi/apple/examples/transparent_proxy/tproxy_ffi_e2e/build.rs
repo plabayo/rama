@@ -27,6 +27,19 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=rama_tproxy_example");
 
+    // The `librama_tproxy_example.a` static lib references the
+    // `rama_apple_se_*` symbols from the `RamaAppleSecureEnclave` Swift
+    // product. In a real sysext bundle Xcode links that product, but this
+    // pure-Rust e2e test binary doesn't, so we provide stubs that report
+    // "Secure Enclave unavailable" — enough to satisfy the linker; the
+    // tests themselves use inline PEM overrides and never exercise the
+    // SE code path.
+    let stub = manifest_dir.join("stubs/rama_apple_se_stubs.c");
+    println!("cargo:rerun-if-changed={}", stub.display());
+    cc::Build::new()
+        .file(&stub)
+        .compile("rama_apple_se_stubs");
+
     let bindings = bindgen::Builder::default()
         .header(header.display().to_string())
         .allowlist_function("rama_.*")
