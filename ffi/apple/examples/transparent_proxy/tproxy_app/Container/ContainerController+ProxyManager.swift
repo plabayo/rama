@@ -140,12 +140,6 @@ extension ContainerController {
         }
     }
 
-    func rotateMITMCAAndApply() {
-        log("rotating MITM CA")
-        clearCA()
-        applyDemoSettings()
-    }
-
     func sendProviderPing() {
         guard let manager = activeManager else {
             logErrorText("provider ping failed: no active manager")

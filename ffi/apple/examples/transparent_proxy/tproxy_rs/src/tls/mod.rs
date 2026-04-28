@@ -102,6 +102,62 @@ pub(crate) fn install_root_ca() -> Result<Vec<u8>, BoxError> {
     Ok(der)
 }
 
+/// Outcome of [`rotate_root_ca`].
+pub(crate) struct RotatedCa {
+    pub cert: X509,
+    pub key: PKey<Private>,
+    pub der: Vec<u8>,
+    /// DER of the previously stored CA, if any. Lets the caller drop
+    /// the matching admin trust setting (which the sysext can't touch).
+    pub previous_der: Option<Vec<u8>>,
+}
+
+/// Mint a fresh MITM CA, replacing whatever was stored in the system
+/// keychain (encrypted or plaintext) and the cert keychain item. The
+/// caller is responsible for swapping the new cert into live state and
+/// for trust settings on both old and new DER.
+pub(crate) fn rotate_root_ca() -> Result<RotatedCa, BoxError> {
+    tracing::info!("tls: rotate_root_ca requested");
+
+    let previous_der = match try_load_existing_mitm_ca()? {
+        Some((cert, _)) => Some(cert.to_der().context("encode previous MITM CA cert to DER")?),
+        None => None,
+    };
+
+    wipe_all_ca_entries()?;
+
+    let (cert, key) = if secure_enclave_is_available() {
+        secure_enclave::generate_and_store()?
+    } else {
+        tracing::warn!(
+            "tls: Secure Enclave NOT available on this Mac; storing rotated MITM CA in plaintext"
+        );
+        plaintext_fallback::generate_and_store()?
+    };
+
+    let der = cert.to_der().context("encode rotated MITM CA cert to DER")?;
+
+    // Best-effort System Keychain item swap. Either side may be absent
+    // (e.g. user never clicked Install) — we don't fail the rotation
+    // for that.
+    if let Some(prev) = previous_der.as_deref()
+        && let Err(err) = system_keychain::uninstall_system_ca(prev)
+    {
+        tracing::warn!(error = %err, "tls: failed to remove previous CA from System Keychain");
+    }
+    if let Err(err) = system_keychain::install_system_ca(&der) {
+        tracing::warn!(error = %err, "tls: failed to add rotated CA to System Keychain");
+    }
+
+    tracing::info!(
+        der_len = der.len(),
+        previous_present = previous_der.is_some(),
+        "tls: MITM CA rotated"
+    );
+
+    Ok(RotatedCa { cert, key, der, previous_der })
+}
+
 /// Inverse of [`install_root_ca`]: delete the current MITM CA from the
 /// System Keychain.
 ///

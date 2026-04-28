@@ -29,6 +29,17 @@ enum RamaTproxyUninstallRootCA: RamaXpcRoute {
     typealias Reply = RamaTproxyRootCaReply
 }
 
+enum RamaTproxyRotateRootCA: RamaXpcRoute {
+    static let selector = "rotateRootCA:withReply:"
+
+    struct Reply: Decodable {
+        let ok: Bool
+        let error: String?
+        let previous_cert_der_b64: String?
+        let new_cert_der_b64: String?
+    }
+}
+
 /// Shared reply for install/uninstall (matches Rust `RootCaCommandReply`).
 struct RamaTproxyRootCaReply: Decodable {
     let ok: Bool

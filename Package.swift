@@ -13,10 +13,6 @@ let package = Package(
             targets: ["RamaAppleNetworkExtension"]
         ),
         .library(
-            name: "RamaAppleNetworkExtensionAsync",
-            targets: ["RamaAppleNetworkExtensionAsync"]
-        ),
-        .library(
             name: "RamaAppleSecureEnclave",
             targets: ["RamaAppleSecureEnclave"]
         ),
@@ -38,10 +34,6 @@ let package = Package(
             name: "RamaAppleNetworkExtension",
             dependencies: ["RamaAppleNEFFI"],
             path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension"
-        ),
-        .target(
-            name: "RamaAppleNetworkExtensionAsync",
-            path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtensionAsync"
         ),
         .target(
             name: "RamaAppleSEFFI",

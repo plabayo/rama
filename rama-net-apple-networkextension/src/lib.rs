@@ -258,7 +258,7 @@
 //! However, a sysex *can* still use the Secure Enclave directly via Apple
 //! CryptoKit's `SecureEnclave.P256.KeyAgreement.PrivateKey`, which does not
 //! go through the Data Protection Keychain. The
-//! [`system_keychain::secure_enclave`] submodule wraps that path: mint a key
+//! `system_keychain::secure_enclave` submodule wraps that path: mint a key
 //! with `kSecAttrAccessibleAlways` accessibility (the only class that works
 //! before login in a sysex daemon), persist its opaque blob anywhere, and
 //! use it to encrypt arbitrary bytes. The Rust API is backed by the

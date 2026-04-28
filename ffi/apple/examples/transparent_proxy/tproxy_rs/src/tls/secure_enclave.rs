@@ -80,7 +80,7 @@ pub(super) fn load_or_create() -> Result<(X509, PKey<Private>), BoxError> {
     }
 }
 
-fn generate_and_store() -> Result<(X509, PKey<Private>), BoxError> {
+pub(super) fn generate_and_store() -> Result<(X509, PKey<Private>), BoxError> {
     tracing::info!("tls: generating fresh MITM CA + Secure Enclave key");
     let (cert, key) = generate_ca_pair()?;
     let cert_pem = cert.to_pem().context("encode MITM CA cert to PEM")?;

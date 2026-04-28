@@ -4,8 +4,7 @@ import Foundation
 /// Typed client for an `XpcMessageRouter`-shaped XPC service.
 /// Each call opens a one-shot mach-service connection, sends
 /// `{ "$selector": …, "$arguments": [<request>] }`, and decodes the
-/// reply's `$result`. Pass `ensuringActive` to bring an XPC peer up
-/// (e.g. a sysext) on demand before the call.
+/// reply's `$result`.
 public struct RamaXpcClient: Sendable {
     public let serviceName: String
 
@@ -13,32 +12,17 @@ public struct RamaXpcClient: Sendable {
         self.serviceName = serviceName
     }
 
-    /// Send a typed request and await its typed reply. If
-    /// `ensuringActive` is set, it runs before the call and its
-    /// returned teardown runs after (success or failure).
+    /// Send a typed request and await its typed reply.
     public func call<R: RamaXpcRoute>(
         _ route: R.Type,
-        _ request: R.Request,
-        ensuringActive: RamaXpcLifecycle? = nil
+        _ request: R.Request
     ) async throws -> R.Reply {
         guard !serviceName.isEmpty else {
             throw RamaXpcError.emptyServiceName
         }
 
-        let teardown: RamaXpcLifecycleTeardown?
-        if let ensuringActive {
-            teardown = try await ensuringActive()
-        } else {
-            teardown = nil
-        }
-        defer { teardown?() }
-
-        // Encode the typed request → xpc_dictionary (or whichever leaf
-        // shape the request type encodes to).
         let payload = try RamaXpcCoder.encode(request)
 
-        // Build the `$selector` / `$arguments` envelope that the Rust
-        // router expects.
         let arguments = xpc_array_create(nil, 0)
         xpc_array_append_value(arguments, payload)
 
@@ -62,9 +46,8 @@ public struct RamaXpcClient: Sendable {
         let serviceName = self.serviceName
         return try await withCheckedThrowingContinuation { continuation in
             let connection = xpc_connection_create_mach_service(serviceName, nil, 0)
-            // Stream events (peer death, invalidation) surface via the
-            // reply handler below for our one-shot request shape, so this
-            // is a no-op.
+            // Stream events surface via the reply handler for our
+            // one-shot request shape, so this is a no-op.
             xpc_connection_set_event_handler(connection) { _ in }
             xpc_connection_activate(connection)
 
@@ -90,16 +73,8 @@ public struct RamaXpcClient: Sendable {
 
 extension RamaXpcClient {
     /// Convenience overload for routes whose `Request` is ``RamaXpcEmpty``.
-    public func call<R: RamaXpcRoute>(
-        _ route: R.Type,
-        ensuringActive: RamaXpcLifecycle? = nil
-    ) async throws -> R.Reply where R.Request == RamaXpcEmpty {
-        try await call(route, RamaXpcEmpty(), ensuringActive: ensuringActive)
+    public func call<R: RamaXpcRoute>(_ route: R.Type) async throws -> R.Reply
+    where R.Request == RamaXpcEmpty {
+        try await call(route, RamaXpcEmpty())
     }
 }
-
-/// Bring an XPC peer up before a call; returned teardown runs after.
-/// Typically starts a Network Extension provider on demand.
-public typealias RamaXpcLifecycle = @Sendable () async throws -> RamaXpcLifecycleTeardown
-
-public typealias RamaXpcLifecycleTeardown = @Sendable () -> Void

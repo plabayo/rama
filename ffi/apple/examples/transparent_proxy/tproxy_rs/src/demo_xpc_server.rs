@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use rama::{
+    bytes::Bytes,
     error::{BoxError, ErrorContext},
     net::apple::xpc::{
         PeerSecurityRequirement, XpcListener, XpcListenerConfig, XpcMessageRouter, XpcServer,
@@ -9,6 +10,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     telemetry::tracing,
+    tls::boring::proxy::TlsMitmRelay,
     utils::str::arcstr::ArcStr,
 };
 use serde::{Deserialize, Serialize};
@@ -82,6 +84,38 @@ impl RootCaCommandReply {
     }
 }
 
+/// Reply for `rotateRootCA:withReply:`. Carries both the previous DER
+/// (so the container can drop its admin trust setting) and the new
+/// DER (to set fresh admin trust on).
+#[derive(Debug, Serialize)]
+struct RotateRootCaReply {
+    ok: bool,
+    error: Option<String>,
+    previous_cert_der_b64: Option<String>,
+    new_cert_der_b64: Option<String>,
+}
+
+impl RotateRootCaReply {
+    fn ok(previous: Option<&[u8]>, new: &[u8]) -> Self {
+        Self {
+            ok: true,
+            error: None,
+            previous_cert_der_b64: previous
+                .map(|d| base64::engine::general_purpose::STANDARD.encode(d)),
+            new_cert_der_b64: Some(base64::engine::general_purpose::STANDARD.encode(new)),
+        }
+    }
+
+    fn err(err: &BoxError) -> Self {
+        Self {
+            ok: false,
+            error: Some(format!("{err:#}")),
+            previous_cert_der_b64: None,
+            new_cert_der_b64: None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -130,7 +164,7 @@ pub(crate) fn spawn_xpc_server(
         .with_typed_route::<UpdateSettingsRequest, UpdateSettingsReply, _>(
             "updateSettings:withReply:",
             service_fn({
-                let state = state;
+                let state = state.clone();
                 move |req: UpdateSettingsRequest| {
                     let state = state.clone();
                     async move { Ok::<_, BoxError>(apply_settings(&state, req)) }
@@ -181,6 +215,33 @@ pub(crate) fn spawn_xpc_server(
                     }
                 };
                 Ok::<_, BoxError>(reply)
+            }),
+        )
+        .with_typed_route::<EmptyRequest, RotateRootCaReply, _>(
+            "rotateRootCA:withReply:",
+            service_fn({
+                let state = state;
+                move |_req: EmptyRequest| {
+                    let state = state.clone();
+                    async move {
+                        tracing::info!("xpc demo server: rotateRootCA:withReply: invoked");
+                        let reply = match rotate_and_swap(&state) {
+                            Ok((previous, new)) => {
+                                tracing::info!(
+                                    new_der_len = new.len(),
+                                    previous_present = previous.is_some(),
+                                    "xpc demo server: rotateRootCA succeeded"
+                                );
+                                RotateRootCaReply::ok(previous.as_deref(), &new)
+                            }
+                            Err(err) => {
+                                tracing::error!(error = %err, "xpc demo server: rotateRootCA failed");
+                                RotateRootCaReply::err(&err)
+                            }
+                        };
+                        Ok::<_, BoxError>(reply)
+                    }
+                }
             }),
         );
 
@@ -238,4 +299,27 @@ fn apply_settings(state: &SharedState, req: UpdateSettingsRequest) -> UpdateSett
 
     state.store(Arc::new(new_settings));
     UpdateSettingsReply { ok: true }
+}
+
+/// Mint a fresh CA, persist it, swap it into the live `LiveSettings` so
+/// new flows pick it up without restart, and return `(previous_der, new_der)`.
+fn rotate_and_swap(state: &SharedState) -> Result<(Option<Vec<u8>>, Vec<u8>), BoxError> {
+    let rotated = crate::tls::rotate_root_ca()?;
+
+    let cert_pem = rotated
+        .cert
+        .to_pem()
+        .context("encode rotated MITM CA cert to PEM")?;
+
+    let current = state.load_full();
+    let new_settings = LiveSettings {
+        html_badge_enabled: current.html_badge_enabled,
+        html_badge_label: current.html_badge_label.clone(),
+        exclude_domains: current.exclude_domains.clone(),
+        ca_crt_pem: Bytes::from(cert_pem),
+        tls_mitm_relay: TlsMitmRelay::new_cached_in_memory(rotated.cert, rotated.key),
+    };
+    state.store(Arc::new(new_settings));
+
+    Ok((rotated.previous_der, rotated.der))
 }
