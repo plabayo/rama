@@ -42,6 +42,8 @@ pub mod service;
 
 pub mod io;
 
+pub mod protocols;
+
 pub mod utils;
 
 #[doc(hidden)]

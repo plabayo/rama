@@ -2869,6 +2869,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
 
 [[package]]
+name = "quick-xml"
+version = "0.37.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quickcheck"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2937,6 +2946,7 @@ dependencies = [
  "indexmap",
  "itertools 0.14.0",
  "itoa",
+ "jiff",
  "libc",
  "parking_lot",
  "pin-project-lite",
@@ -3204,6 +3214,7 @@ dependencies = [
  "matchit",
  "parking_lot",
  "pin-project-lite",
+ "quick-xml",
  "radix_trie",
  "rama-core",
  "rama-http-headers",

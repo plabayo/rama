@@ -25,6 +25,29 @@ and even rama net crates.
   fields that control cache behavior or indicate cacheable response
   messages.
 
+#### RSS and Atom Feeds
+
+* [RSS 2.0 Specification](https://www.rssboard.org/rss-specification)  
+  RSS 2.0 channel and item format, including `<enclosure>`, `<guid>`, and RFC 2822 date fields.
+
+* [RFC 4287](https://www.rfc-editor.org/rfc/rfc4287)  
+  The Atom Syndication Format. Defines `<feed>`, `<entry>`, text constructs, and RFC 3339 dates.
+
+* [RFC 822 §5](https://www.rfc-editor.org/rfc/rfc822#section-5)  
+  Internet Message Format date/time used in RSS 2.0 `<pubDate>` and `<lastBuildDate>`.
+
+* [iTunes Podcast Tag Specification](https://podcasters.apple.com/support/823-podcast-requirements)  
+  Apple iTunes namespace (`itunes:`) extensions for podcast feeds.
+
+* [Podcasting 2.0 Namespace](https://podcastindex.org/namespace/1.0)  
+  The `podcast:` namespace for open podcast extensions (chapters, transcripts, persons, etc.).
+
+* [Media RSS Specification](https://www.rssboard.org/media-rss)  
+  The `media:` namespace for multimedia content metadata in RSS feeds.
+
+* [Dublin Core Metadata Element Set](https://www.dublincore.org/specifications/dublin-core/dces/)  
+  The `dc:` namespace providing 15 metadata elements (title, creator, date, etc.).
+
 #### Content Encoding and Compression
 
 * [rfc1950.txt](./content-encoding-and-compression/rfc1950.txt)  
