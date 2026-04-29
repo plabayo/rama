@@ -139,17 +139,17 @@ pub use sse::Sse;
 /// ```
 pub type Result<T, E = ErrorResponse> = std::result::Result<T, E>;
 
-impl<T> IntoResponse for Result<T>
-where
-    T: IntoResponse,
-{
-    fn into_response(self) -> Response {
-        match self {
-            Ok(ok) => ok.into_response(),
-            Err(err) => err.0,
-        }
-    }
-}
+// impl<T> IntoResponse for Result<T>
+// where
+//     T: IntoResponse,
+// {
+//     fn into_response(self) -> Response {
+//         match self {
+//             Ok(ok) => ok.into_response(),
+//             Err(err) => err.0,
+//         }
+//     }
+// }
 
 /// An [`IntoResponse`]-based error type
 ///

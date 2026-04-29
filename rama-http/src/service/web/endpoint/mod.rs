@@ -67,9 +67,31 @@ where
     }
 }
 
+impl<O> IntoEndpointService<Response> for O
+where
+    O: IntoResponse + Clone + Send + Sync + 'static,
+{
+    type Service = StaticOutput<O>;
+
+    fn into_endpoint_service(self) -> Self::Service {
+        StaticOutput::new(self)
+    }
+}
+
 impl<O, State> IntoEndpointServiceWithState<(), State> for Result<O, Infallible>
 where
     O: Clone + Send + Sync + 'static,
+{
+    type Service = StaticOutput<O>;
+
+    fn into_endpoint_service_with_state(self, _state: State) -> Self::Service {
+        self.into_endpoint_service()
+    }
+}
+
+impl<O, State> IntoEndpointServiceWithState<Response, State> for O
+where
+    O: IntoResponse + Clone + Send + Sync + 'static,
 {
     type Service = StaticOutput<O>;
 
@@ -173,6 +195,8 @@ mod private {
     impl<S, State> Sealed<(S,), State> for S where S: Service<Request> {}
 
     impl<O, State> Sealed<(), State> for Result<O, Infallible> {}
+
+    impl<O, State> Sealed<Response, State> for O {}
 
     impl<F, T, State> Sealed<(F, T), State> for F where F: EndpointServiceFn<T, State> {}
 }

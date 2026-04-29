@@ -1,7 +1,15 @@
-use rama_utils::macros::all_the_tuples_no_last_special_case;
+use std::convert::Infallible;
 
-use super::extract::{FromPartsStateRefPair, FromRequest};
-use crate::Request;
+use rama_utils::macros::all_the_tuples_no_last_special_case;
+use rama_core::error::BoxError;
+
+use crate::{
+    Request,
+    service::web::{
+        extract::{FromPartsStateRefPair, FromRequest},
+        response::IntoResponse,
+    },
+};
 
 // Generic T = (Function, Input, Output)
 // Input = ((FromPartsStateRefPair), (FromRequest))
@@ -22,6 +30,15 @@ where
 {
 }
 
+impl<F, R, O, State> EndpointServiceFn<(F, ((), ()), (R, O), Infallible), State> for F
+where
+    F: Fn() -> R + Clone + Send + Sync + 'static,
+    R: Future<Output = O> + Send + 'static,
+    O: IntoResponse + Send + 'static,
+    State: Send + Sync + 'static,
+{
+}
+
 impl<F, R, O, E, I, State> EndpointServiceFn<(F, ((), (I,)), (R, O)), State> for F
 where
     F: Fn(I) -> R + Clone + Send + Sync + 'static,
@@ -29,6 +46,17 @@ where
     O: Send + 'static,
     E: Send + From<I::Rejection> + 'static,
     I: FromRequest,
+    State: Send + Sync + 'static,
+{
+}
+
+impl<F, R, O, I, State> EndpointServiceFn<(F, ((), (I,)), (R, O), Infallible), State> for F
+where
+    F: Fn(I) -> R + Clone + Send + Sync + 'static,
+    R: Future<Output = O> + Send + 'static,
+    O: IntoResponse + Send + 'static,
+    I: FromRequest,
+    BoxError: From<I::Rejection>,
     State: Send + Sync + 'static,
 {
 }
@@ -45,6 +73,18 @@ macro_rules! impl_endpoint_service_fn_tuple {
                 State: Send + Sync + 'static,
                 $($ty: FromPartsStateRefPair<State>),+,
                 $(E: From<$ty::Rejection>),+,
+        {
+        }
+
+        #[allow(non_snake_case)]
+        impl<F, R, O, State, $($ty),+> EndpointServiceFn<(F, (($($ty),+,), ()), (R, O), Infallible), State> for F
+            where
+                F: Fn($($ty),+) -> R + Clone + Send + Sync + 'static,
+                R: Future<Output = O> + Send + 'static,
+                O: IntoResponse + Send + 'static,
+                State: Send + Sync + 'static,
+                $($ty: FromPartsStateRefPair<State>),+,
+                $(BoxError: From<$ty::Rejection>),+,
         {
         }
     };
@@ -66,6 +106,20 @@ macro_rules! impl_endpoint_service_fn_tuple_with_from_request {
                 E: From<I::Rejection>,
                 $($ty: FromPartsStateRefPair<State>),+,
                 $(E: From<$ty::Rejection>),+,
+        {
+        }
+
+        #[allow(non_snake_case)]
+        impl<F, R, O, State, $($ty),+, I> EndpointServiceFn<(F, (($($ty),+,), I), (R, O), Infallible), State> for F
+            where
+                F: Fn($($ty),+, I) -> R + Clone + Send + Sync + 'static,
+                R: Future<Output = O> + Send + 'static,
+                O: IntoResponse + Send + 'static,
+                State: Send + Sync + 'static,
+                I: FromRequest,
+                BoxError: From<I::Rejection>,
+                $($ty: FromPartsStateRefPair<State>),+,
+                $(BoxError: From<$ty::Rejection>),+,
         {
         }
     };
@@ -111,6 +165,21 @@ mod private {
         }
     }
 
+    impl<F, R, O, State> Sealed<(F, ((), ()), (R, O), Infallible), State> for F
+    where
+        F: Fn() -> R + Clone + Send + Sync + 'static,
+        R: Future<Output = O> + Send + 'static,
+        O: IntoResponse + Send + 'static,
+        State: Send + Sync + 'static,
+    {
+        type Output = O;
+        type Error = BoxError;
+
+        async fn call(&self, _req: Request, _state: &State) -> Result<Self::Output, Self::Error> {
+            Ok(self().await)
+        }
+    }
+
     impl<F, R, O, E, I, State> Sealed<(F, ((), (I,)), (R, O)), State> for F
     where
         F: Fn(I) -> R + Clone + Send + Sync + 'static,
@@ -126,6 +195,24 @@ mod private {
         async fn call(&self, req: Request, _state: &State) -> Result<Self::Output, Self::Error> {
             let param = I::from_request(req).await?;
             self(param).await
+        }
+    }
+
+    impl<F, R, O, I, State> Sealed<(F, ((), (I,)), (R, O), Infallible), State> for F
+    where
+        F: Fn(I) -> R + Clone + Send + Sync + 'static,
+        R: Future<Output = O> + Send + 'static,
+        O: IntoResponse + Send + 'static,
+        I: FromRequest,
+        BoxError: From<I::Rejection>,
+        State: Send + Sync + 'static,
+    {
+        type Output = O;
+        type Error = BoxError;
+
+        async fn call(&self, req: Request, _state: &State) -> Result<Self::Output, Self::Error> {
+            let param = I::from_request(req).await?;
+            Ok(self(param).await)
         }
     }
 
@@ -149,6 +236,26 @@ mod private {
                     let (parts, _body) = req.into_parts();
                     $(let $ty = $ty::from_parts_state_ref_pair(&parts, &state).await?);+;
                     self($($ty),+).await
+                }
+            }
+
+            #[allow(non_snake_case)]
+            impl<F, R, O, State, $($ty),+> Sealed<(F, (($($ty),+,), ()), (R, O), Infallible), State> for F
+                where
+                    F: Fn($($ty),+) -> R + Clone + Send + Sync + 'static,
+                    R: Future<Output = O> + Send + 'static,
+                    O: IntoResponse + Send + 'static,
+                    State: Send + Sync + 'static,
+                    $($ty: FromPartsStateRefPair<State>),+,
+                    $(BoxError: From<$ty::Rejection>),+,
+            {
+                type Output = O;
+                type Error = BoxError;
+
+                async fn call(&self, req: Request, state: &State) -> Result<Self::Output, Self::Error> {
+                    let (parts, _body) = req.into_parts();
+                    $(let $ty = $ty::from_parts_state_ref_pair(&parts, &state).await?);+;
+                    Ok(self($($ty),+).await)
                 }
             }
         };
@@ -180,6 +287,30 @@ mod private {
                     let req = Request::from_parts(parts, body);
                     let last = I::from_request(req).await?;
                     self($($ty),+, last).await
+                }
+            }
+
+            #[allow(non_snake_case)]
+            impl<F, R, O, State, $($ty),+, I> Sealed<(F, (($($ty),+,), I), (R, O), Infallible), State> for F
+                where
+                    F: Fn($($ty),+, I) -> R + Clone + Send + Sync + 'static,
+                    R: Future<Output = O> + Send + 'static,
+                    O: IntoResponse + Send + 'static,
+                    State: Send + Sync + 'static,
+                    I: FromRequest,
+                    BoxError: From<I::Rejection>,
+                    $($ty: FromPartsStateRefPair<State>),+,
+                    $(BoxError: From<$ty::Rejection>),+,
+            {
+                type Output = O;
+                type Error = BoxError;
+
+                async fn call(&self, req: Request, state: &State) -> Result<Self::Output, Self::Error> {
+                    let (parts, body) = req.into_parts();
+                    $(let $ty = $ty::from_parts_state_ref_pair(&parts, &state).await?);+;
+                    let req = Request::from_parts(parts, body);
+                    let last = I::from_request(req).await?;
+                    Ok(self($($ty),+, last).await)
                 }
             }
         };
