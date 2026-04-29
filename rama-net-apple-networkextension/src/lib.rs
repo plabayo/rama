@@ -283,7 +283,6 @@
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![cfg(target_vendor = "apple")]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(
     not(test),
@@ -291,31 +290,47 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
+#[cfg(target_vendor = "apple")]
 #[doc(hidden)]
 pub mod ffi;
 
+#[cfg(target_vendor = "apple")]
 #[doc(hidden)]
 #[macro_use]
 mod macros;
 
+#[cfg(any(all(doc, docsrs), target_vendor = "apple"))]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub mod process;
+#[cfg(any(all(doc, docsrs), target_vendor = "apple"))]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub mod tproxy;
 
 #[cfg(target_os = "macos")]
 #[cfg_attr(docsrs, doc(cfg(target_os = "macos")))]
 pub mod system_keychain;
 
+#[cfg(any(all(doc, docsrs), target_vendor = "apple"))]
 mod nw_tcp_stream;
+#[cfg(any(all(doc, docsrs), target_vendor = "apple"))]
 mod nw_udp_socket;
+#[cfg(any(all(doc, docsrs), target_vendor = "apple"))]
 mod tcp;
+#[cfg(any(all(doc, docsrs), target_vendor = "apple"))]
 mod udp;
 
+#[cfg(any(all(doc, docsrs), target_vendor = "apple"))]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use self::{
     nw_tcp_stream::NwTcpStream, nw_udp_socket::NwUdpSocket, tcp::TcpFlow, udp::UdpFlow,
 };
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use crate::__transparent_proxy_ffi as transparent_proxy_ffi;
 
+#[cfg(target_vendor = "apple")]
 #[doc(hidden)]
 pub use rama_core::bytes::Bytes as __RamaBytes;
+#[cfg(target_vendor = "apple")]
 #[doc(hidden)]
 pub use rama_core::telemetry::tracing as __tracing;

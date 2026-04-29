@@ -48,7 +48,11 @@ jobs:
       - name: Generate Apple Rust Docs
         run: cargo +nightly doc --all-features --no-deps -p rama-net-apple-networkextension -p rama-net-apple-xpc
         env:
-          RUSTDOCFLAGS: --cfg docsrs
+          RUSTDOCFLAGS: --cfg docsrs --cfg rama_docsrs
+          # `rama_docsrs` propagates to dep-resolution so target tables that gate
+          # on it pull in the docs-only platform deps. We use a custom name (not
+          # `docsrs`) so upstream crates don't react to our flag.
+          RUSTFLAGS: --cfg rama_docsrs
       - name: Stage Apple doc subdirs
         run: |
           mkdir -p apple-docs
@@ -82,7 +86,8 @@ jobs:
       - name: Generate Rust Docs
         run: cargo +nightly doc --all-features --no-deps
         env:
-          RUSTDOCFLAGS: --cfg docsrs
+          RUSTDOCFLAGS: --cfg docsrs --cfg rama_docsrs
+          RUSTFLAGS: --cfg rama_docsrs
       - name: Download Apple docs artifact
         uses: actions/download-artifact@v4
         with:

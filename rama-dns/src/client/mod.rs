@@ -12,9 +12,9 @@ mod tokio;
 #[doc(inline)]
 pub use self::tokio::{TokioDnsResolver, TokioDnsTxtUnsupportedError};
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(doc, docsrs), target_vendor = "apple"))]
 mod apple;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(doc, docsrs), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 #[doc(inline)]
 pub use self::apple::AppleDnsResolver;
@@ -22,9 +22,9 @@ pub use self::apple::AppleDnsResolver;
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub type NativeDnsResolver = AppleDnsResolver;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(all(doc, docsrs), target_os = "windows"))]
 mod windows;
-#[cfg(target_os = "windows")]
+#[cfg(any(all(doc, docsrs), target_os = "windows"))]
 #[cfg_attr(docsrs, doc(cfg(target_os = "windows")))]
 #[doc(inline)]
 pub use self::windows::WindowsDnsResolver;

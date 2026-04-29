@@ -133,7 +133,6 @@
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
-#![cfg(target_vendor = "apple")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(
@@ -142,33 +141,73 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
+#[cfg(target_vendor = "apple")]
 mod ffi;
 
+#[cfg(target_vendor = "apple")]
 mod call;
+#[cfg(target_vendor = "apple")]
 mod client;
+#[cfg(target_vendor = "apple")]
 mod connection;
+#[cfg(target_vendor = "apple")]
 mod connector;
+#[cfg(target_vendor = "apple")]
 mod endpoint;
+#[cfg(target_vendor = "apple")]
 mod error;
+#[cfg(target_vendor = "apple")]
 mod listener;
+#[cfg(target_vendor = "apple")]
 mod message;
+#[cfg(target_vendor = "apple")]
 mod object;
+#[cfg(target_vendor = "apple")]
 mod peer;
+#[cfg(target_vendor = "apple")]
 mod router;
+#[cfg(target_vendor = "apple")]
 mod server;
+#[cfg(target_vendor = "apple")]
 mod util;
 
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub mod xpc_serde;
 
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use call::XpcCall;
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use client::XpcClientConfig;
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use connection::{ReceivedXpcMessage, XpcConnection, XpcEvent};
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use connector::XpcConnector;
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use endpoint::XpcEndpoint;
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use error::{XpcConnectionError, XpcError};
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use listener::{XpcListener, XpcListenerConfig};
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use message::XpcMessage;
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use peer::PeerSecurityRequirement;
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use router::{XpcMessageRouter, extract_result};
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use server::XpcServer;
+#[cfg(target_vendor = "apple")]
+#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use xpc_serde::{from_xpc_message, to_xpc_message};

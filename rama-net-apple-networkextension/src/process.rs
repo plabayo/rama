@@ -50,7 +50,12 @@ pub const KERN_PROCARGS2: libc::c_int = 49;
 ///
 /// - `proc_pidpath` (libproc)
 /// - `<libproc.h>`
+// `libc::MAXPATHLEN` only exists on Apple/BSD targets; on the Linux doc-build host
+// we substitute a placeholder (4096 = Linux PATH_MAX) so rustdoc type-checks.
+#[cfg(target_vendor = "apple")]
 pub const PROC_PIDPATHINFO_MAXSIZE: usize = 4 * libc::MAXPATHLEN as usize;
+#[cfg(all(doc, docsrs, not(target_vendor = "apple")))]
+pub const PROC_PIDPATHINFO_MAXSIZE: usize = 4 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
