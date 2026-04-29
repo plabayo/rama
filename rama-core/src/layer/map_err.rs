@@ -188,6 +188,12 @@ impl<E> Clone for IntoErrLayer<E> {
     }
 }
 
+impl<E> Default for IntoErrLayer<E> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
 impl<E> IntoErrLayer<E> {
     /// Create a new [`IntoErrLayer`] layer
     pub fn new() -> Self {

@@ -75,7 +75,7 @@ where
             routes: MatchitRouter::new(),
             sub_services: None,
             not_found: None,
-            layer: (IntoErrLayer::new(), IntoResponseLayer),
+            layer: Default::default(),
             state,
         }
     }
@@ -102,9 +102,9 @@ where
     /// the path can also contain a catch call, e.g. `/assets/{*path}`.
     #[must_use]
     #[inline]
-    pub fn with_get<I, Io, Ie, T>(self, path: impl AsRef<str>, service: I) -> Self
+    pub fn with_get<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_get();
@@ -115,9 +115,9 @@ where
     /// the path can contain parameters, e.g. `/users/{id}`.
     /// the path can also contain a catch call, e.g. `/assets/{*path}`.
     #[inline]
-    pub fn set_get<I, Io, Ie, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_get<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_get();
@@ -127,9 +127,9 @@ where
     /// add a POST route to the router.
     #[must_use]
     #[inline]
-    pub fn with_post<I, Io, Ie, T>(self, path: impl AsRef<str>, service: I) -> Self
+    pub fn with_post<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_post();
@@ -138,9 +138,9 @@ where
 
     /// add a POST route to the router.
     #[inline]
-    pub fn set_post<I, Io, Ie, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_post<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_post();
@@ -150,9 +150,9 @@ where
     /// add a PUT route to the router.
     #[must_use]
     #[inline]
-    pub fn with_put<I, Io, Ie, T>(self, path: impl AsRef<str>, service: I) -> Self
+    pub fn with_put<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_put();
@@ -161,9 +161,9 @@ where
 
     /// add a PUT route to the router.
     #[inline]
-    pub fn set_put<I, Io, Ie, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_put<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_put();
@@ -173,9 +173,9 @@ where
     /// add a DELETE route to the router.
     #[must_use]
     #[inline]
-    pub fn with_delete<I, Io, Ie, T>(self, path: impl AsRef<str>, service: I) -> Self
+    pub fn with_delete<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_delete();
@@ -184,9 +184,9 @@ where
 
     /// add a DELETE route to the router.
     #[inline]
-    pub fn set_delete<I, Io, Ie, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_delete<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_delete();
@@ -196,9 +196,9 @@ where
     /// add a PATCH route to the router.
     #[must_use]
     #[inline]
-    pub fn with_patch<I, Io, Ie, T>(self, path: impl AsRef<str>, service: I) -> Self
+    pub fn with_patch<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_patch();
@@ -207,9 +207,9 @@ where
 
     /// add a PATCH route to the router.
     #[inline]
-    pub fn set_patch<I, Io, Ie, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_patch<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_patch();
@@ -219,9 +219,9 @@ where
     /// add a HEAD route to the router.
     #[must_use]
     #[inline]
-    pub fn with_head<I, Io, Ie, T>(self, path: impl AsRef<str>, service: I) -> Self
+    pub fn with_head<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_head();
@@ -230,9 +230,9 @@ where
 
     /// add a HEAD route to the router.
     #[inline]
-    pub fn set_head<I, Io, Ie, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_head<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_head();
@@ -242,9 +242,9 @@ where
     /// add a OPTIONS route to the router.
     #[must_use]
     #[inline]
-    pub fn with_options<I, Io, Ie, T>(self, path: impl AsRef<str>, service: I) -> Self
+    pub fn with_options<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_options();
@@ -253,9 +253,9 @@ where
 
     /// add a OPTIONS route to the router.
     #[inline]
-    pub fn set_options<I, Io, Ie, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_options<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_options();
@@ -265,9 +265,9 @@ where
     /// add a TRACE route to the router.
     #[must_use]
     #[inline]
-    pub fn with_trace<I, Io, Ie, T>(self, path: impl AsRef<str>, service: I) -> Self
+    pub fn with_trace<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_trace();
@@ -276,9 +276,9 @@ where
 
     /// add a TRACE route to the router.
     #[inline]
-    pub fn set_trace<I, Io, Ie, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_trace<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_trace();
@@ -288,9 +288,9 @@ where
     /// add a CONNECT route to the router.
     #[must_use]
     #[inline]
-    pub fn with_connect<I, Io, Ie, T>(self, path: impl AsRef<str>, service: I) -> Self
+    pub fn with_connect<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_connect();
@@ -299,9 +299,9 @@ where
 
     /// add a CONNECT route to the router.
     #[inline]
-    pub fn set_connect<I, Io, Ie, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_connect<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let matcher = HttpMatcher::method_connect();
@@ -481,9 +481,9 @@ where
     /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
     #[must_use]
     #[inline]
-    pub fn with_sub_service<I, Io, Ie, T>(mut self, prefix: impl AsRef<str>, service: I) -> Self
+    pub fn with_sub_service<I, T>(mut self, prefix: impl AsRef<str>, service: I) -> Self
     where
-        I: IntoEndpointService<T, Io, Ie>,
+        I: IntoEndpointService<T>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         self.set_sub_service(prefix, service);
@@ -497,13 +497,9 @@ where
     /// Warning: This sub-service has no notion of the state this router has. If you want
     /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
     #[inline]
-    pub fn set_sub_service<I, Io, Ie, T>(
-        &mut self,
-        prefix: impl AsRef<str>,
-        service: I,
-    ) -> &mut Self
+    pub fn set_sub_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
     where
-        I: IntoEndpointService<T, Io, Ie>,
+        I: IntoEndpointService<T>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let nested = self.layer.layer(service.into_endpoint_service()).boxed();
@@ -556,14 +552,14 @@ where
     /// add a route to the router with it's matcher and service.
     #[inline(always)]
     #[must_use]
-    pub fn with_match_route<I, Io, Ie, T>(
+    pub fn with_match_route<I, T>(
         mut self,
         path: impl AsRef<str>,
         matcher: HttpMatcher<Body>,
         service: I,
     ) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         self.set_match_route(path, matcher, service);
@@ -574,14 +570,14 @@ where
     // and also do not allow empty path, instead folks should use `not_found` for that
 
     /// add a route to the router with it's matcher and service.
-    pub fn set_match_route<I, Io, Ie, T>(
+    pub fn set_match_route<I, T>(
         &mut self,
         path: impl AsRef<str>,
         matcher: HttpMatcher<Body>,
         service: I,
     ) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         let service = self
@@ -607,9 +603,9 @@ where
     /// use the provided service when no route matches the request.
     #[inline(always)]
     #[must_use]
-    pub fn with_not_found<I, Io, Ie, T>(mut self, service: I) -> Self
+    pub fn with_not_found<I, T>(mut self, service: I) -> Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         self.set_not_found(service);
@@ -617,9 +613,9 @@ where
     }
 
     /// use the provided service when no route matches the request.
-    pub fn set_not_found<I, Io, Ie, T>(&mut self, service: I) -> &mut Self
+    pub fn set_not_found<I, T>(&mut self, service: I) -> &mut Self
     where
-        I: IntoEndpointServiceWithState<T, Io, Ie, State>,
+        I: IntoEndpointServiceWithState<T, State>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
         self.not_found = Some(

@@ -19,23 +19,23 @@ pub(crate) struct Endpoint {
 }
 
 /// utility trait to accept multiple types as an endpoint service for [`super::WebService`]
-pub trait IntoEndpointService<T, O, E>: private::Sealed<T, O, E, ()> {
-    type Service: Service<Request, Output = O, Error = E>;
+pub trait IntoEndpointService<T>: private::Sealed<T, ()> {
+    type Service: Service<Request>;
 
     /// convert the type into a [`rama_core::Service`].
     fn into_endpoint_service(self) -> Self::Service;
 }
 
-pub trait IntoEndpointServiceWithState<T, O, E, State>: private::Sealed<T, O, E, State> {
-    type Service: Service<Request, Output = O, Error = E>;
+pub trait IntoEndpointServiceWithState<T, State>: private::Sealed<T, State> {
+    type Service: Service<Request>;
 
     /// convert the type into a [`rama_core::Service`] with state.
     fn into_endpoint_service_with_state(self, state: State) -> Self::Service;
 }
 
-impl<S, O, E> IntoEndpointService<(S,), O, E> for S
+impl<S> IntoEndpointService<(S,)> for S
 where
-    S: Service<Request, Output = O, Error = E>,
+    S: Service<Request>,
 {
     type Service = Self;
 
@@ -45,9 +45,9 @@ where
     }
 }
 
-impl<S, O, E, State> IntoEndpointServiceWithState<(S,), O, E, State> for S
+impl<S, State> IntoEndpointServiceWithState<(S,), State> for S
 where
-    S: Service<Request, Output = O, Error = E>,
+    S: Service<Request>,
 {
     type Service = Self;
 
@@ -56,7 +56,7 @@ where
     }
 }
 
-impl<O> IntoEndpointService<(), O, Infallible> for Result<O, Infallible>
+impl<O> IntoEndpointService<()> for Result<O, Infallible>
 where
     O: Clone + Send + Sync + 'static,
 {
@@ -67,7 +67,7 @@ where
     }
 }
 
-impl<O, State> IntoEndpointServiceWithState<(), O, Infallible, State> for Result<O, Infallible>
+impl<O, State> IntoEndpointServiceWithState<(), State> for Result<O, Infallible>
 where
     O: Clone + Send + Sync + 'static,
 {
@@ -83,14 +83,14 @@ mod service;
 pub use service::EndpointServiceFn;
 
 /// Wrapper svc used for creating a endpoint service from a function.
-pub struct EndpointServiceFnWrapper<F, T, O, E, State> {
+pub struct EndpointServiceFnWrapper<F, T, State> {
     inner: F,
-    _marker: std::marker::PhantomData<fn(T) -> Result<O, E>>,
+    _marker: std::marker::PhantomData<fn(T)>,
     state: State,
 }
 
-impl<F: std::fmt::Debug, T, O, E, State: std::fmt::Debug> std::fmt::Debug
-    for EndpointServiceFnWrapper<F, T, O, E, State>
+impl<F: std::fmt::Debug, T, State: std::fmt::Debug> std::fmt::Debug
+    for EndpointServiceFnWrapper<F, T, State>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EndpointServiceFnWrapper")
@@ -98,13 +98,13 @@ impl<F: std::fmt::Debug, T, O, E, State: std::fmt::Debug> std::fmt::Debug
             .field("state", &self.state)
             .field(
                 "_marker",
-                &format_args!("{}", std::any::type_name::<fn(T) -> Result<O, E>>()),
+                &format_args!("{}", std::any::type_name::<fn(T)>()),
             )
             .finish()
     }
 }
 
-impl<F, T, O, E, State> Clone for EndpointServiceFnWrapper<F, T, O, E, State>
+impl<F, T, State> Clone for EndpointServiceFnWrapper<F, T, State>
 where
     F: Clone,
     State: Clone,
@@ -118,30 +118,26 @@ where
     }
 }
 
-impl<F, O, E, T, State> Service<Request> for EndpointServiceFnWrapper<F, T, O, E, State>
+impl<F, T, State> Service<Request> for EndpointServiceFnWrapper<F, T, State>
 where
-    F: EndpointServiceFn<T, O, E, State>,
+    F: EndpointServiceFn<T, State>,
     T: Send + 'static,
-    O: Send + 'static,
-    E: Send + 'static,
     State: Send + Sync + Clone + 'static,
 {
-    type Output = O;
-    type Error = E;
+    type Output = F::Output;
+    type Error = F::Error;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         self.inner.call(req, &self.state).await
     }
 }
 
-impl<F, T, O, E> IntoEndpointService<(F, T), O, E> for F
+impl<F, T> IntoEndpointService<(F, T)> for F
 where
-    F: EndpointServiceFn<T, O, E, ()>,
+    F: EndpointServiceFn<T, ()>,
     T: Send + 'static,
-    O: Send + 'static,
-    E: Send + 'static,
 {
-    type Service = EndpointServiceFnWrapper<F, T, O, E, ()>;
+    type Service = EndpointServiceFnWrapper<F, T, ()>;
 
     fn into_endpoint_service(self) -> Self::Service {
         EndpointServiceFnWrapper {
@@ -152,15 +148,13 @@ where
     }
 }
 
-impl<F, O, E, T, State> IntoEndpointServiceWithState<(F, T), O, E, State> for F
+impl<F, T, State> IntoEndpointServiceWithState<(F, T), State> for F
 where
-    F: EndpointServiceFn<T, O, E, State>,
+    F: EndpointServiceFn<T, State>,
     T: Send + 'static,
-    O: Send + 'static,
-    E: Send + 'static,
     State: Send + Sync + Clone + 'static,
 {
-    type Service = EndpointServiceFnWrapper<F, T, O, E, State>;
+    type Service = EndpointServiceFnWrapper<F, T, State>;
 
     fn into_endpoint_service_with_state(self, state: State) -> Self::Service {
         EndpointServiceFnWrapper {
@@ -174,14 +168,13 @@ where
 mod private {
     use super::*;
 
-    pub trait Sealed<T, O, E, State> {}
+    pub trait Sealed<T, State> {}
 
-    impl<S, O, E, State> Sealed<(S,), O, E, State> for S where S: Service<Request, Output = O, Error = E>
-    {}
+    impl<S, State> Sealed<(S,), State> for S where S: Service<Request> {}
 
-    impl<O, State> Sealed<(), O, Infallible, State> for Result<O, Infallible> {}
+    impl<O, State> Sealed<(), State> for Result<O, Infallible> {}
 
-    impl<F, O, E, T, State> Sealed<(F, T), O, E, State> for F where F: EndpointServiceFn<T, O, E, State> {}
+    impl<F, T, State> Sealed<(F, T), State> for F where F: EndpointServiceFn<T, State> {}
 }
 
 // #[cfg(test)]
