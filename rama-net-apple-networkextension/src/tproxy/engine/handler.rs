@@ -74,15 +74,27 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     /// Return custom options for the egress `NWConnection` on TCP flows.
     ///
     /// Called by the Swift layer before opening the intercepted flow.
+    /// `meta` is the same metadata that will subsequently be passed to
+    /// [`match_tcp_flow`](Self::match_tcp_flow).
+    ///
     /// Return `None` (the default) to let Swift use sane `NWParameters` defaults.
-    fn egress_tcp_connect_options(&self) -> Option<NwTcpConnectOptions> {
+    fn egress_tcp_connect_options(
+        &self,
+        _meta: &TransparentProxyFlowMeta,
+    ) -> Option<NwTcpConnectOptions> {
         None
     }
 
     /// Return custom options for the egress `NWConnection` on UDP flows.
     ///
+    /// `meta` is the same metadata that will subsequently be passed to
+    /// [`match_udp_flow`](Self::match_udp_flow).
+    ///
     /// Return `None` (the default) to let Swift use sane `NWParameters` defaults.
-    fn egress_udp_connect_options(&self) -> Option<NwUdpConnectOptions> {
+    fn egress_udp_connect_options(
+        &self,
+        _meta: &TransparentProxyFlowMeta,
+    ) -> Option<NwUdpConnectOptions> {
         None
     }
 

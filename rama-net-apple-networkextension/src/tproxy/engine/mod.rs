@@ -423,7 +423,7 @@ where
     OnClosed: Fn() + Send + Sync + 'static,
     H: TransparentProxyHandler,
 {
-    let egress_connect_options = handler.egress_tcp_connect_options();
+    let egress_connect_options = handler.egress_tcp_connect_options(&meta);
     let flow_action = handler.match_tcp_flow(exec, meta).await;
 
     let (service, meta) = match flow_action {
@@ -632,7 +632,7 @@ where
     OnDemand: Fn() + Send + Sync + 'static,
     H: TransparentProxyHandler,
 {
-    let egress_connect_options = handler.egress_udp_connect_options();
+    let egress_connect_options = handler.egress_udp_connect_options(&meta);
     let flow_action = handler.match_udp_flow(exec, meta).await;
     let (service, meta) = match flow_action {
         FlowAction::Intercept { service, meta } => (service, meta),
