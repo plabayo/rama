@@ -282,6 +282,10 @@ typedef struct {
     uint8_t attribution;
     /// Bitmask: bit0=Cellular bit1=Loopback bit2=Other bit3=Wifi bit4=Wired.
     uint8_t prohibited_interface_types_mask;
+    /// When true, Swift stamps the intercepted flow's NEFlowMetaData onto the
+    /// egress NWParameters via NEAppProxyFlow.setMetadata(_:) before
+    /// constructing the NWConnection. Defaults to true on the Rust side.
+    bool preserve_original_meta_data;
 } RamaNwEgressParameters;
 
 /// Options for the egress NWConnection on TCP flows.

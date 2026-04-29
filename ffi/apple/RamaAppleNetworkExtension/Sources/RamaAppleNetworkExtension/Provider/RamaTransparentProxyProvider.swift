@@ -539,6 +539,23 @@ private func makeUdpNwParameters(_ opts: RamaUdpEgressConnectOptions?) -> NWPara
     return params
 }
 
+/// Stamp the intercepted flow's `NEFlowMetaData` onto the given egress
+/// `NWParameters` via `NEAppProxyFlow.setMetadata(_:)`.
+///
+/// On macOS 15.0+ we call the typed Swift overlay (`setMetadata(on:)`).
+/// On macOS 12.0–14.x we fall back to the Obj-C selector via
+/// `perform(_:with:)`: the underlying selector `setMetadata:` is available
+/// since macOS 10.15.4, but as of the macOS 26 SDK the Swift overlay only
+/// exposes it under the renamed name gated on macOS 15.0+, even though the
+/// runtime method exists earlier.
+private func applyFlowMetadata(_ flow: NEAppProxyFlow, _ params: NWParameters) {
+    if #available(macOS 15.0, *) {
+        flow.setMetadata(on: params)
+    } else {
+        _ = flow.perform(NSSelectorFromString("setMetadata:"), with: params)
+    }
+}
+
 private func applyNwEgressParameters(_ p: RamaNwEgressParameters, to params: NWParameters) {
     if p.has_service_class, let sc = nwServiceClass(p.service_class) {
         params.serviceClass = sc
@@ -1004,6 +1021,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             ? egressOpts!.connect_timeout_ms : 30_000
         let nwParams = makeTcpNwParameters(egressOpts)
 
+        // Stamp the intercepted flow's NEFlowMetaData (source app identifier,
+        // audit token, …) onto the egress NWParameters when the handler asks
+        // for it (default true). Downstream NEAppProxyProviders that
+        // intercept our egress see the original app rather than this
+        // extension. Must run before the NWConnection is constructed from
+        // these params.
+        if egressOpts?.parameters.preserve_original_meta_data ?? true {
+            applyFlowMetadata(flow, nwParams)
+        }
+
         guard let connection = makeNwConnection(
             host: remoteHost, port: meta.remotePort, using: nwParams)
         else {
@@ -1222,6 +1249,11 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         let egressOpts = session.getEgressConnectOptions()
         let nwParams = makeUdpNwParameters(egressOpts)
+
+        // See TCP path for rationale; same metadata-propagation behavior.
+        if egressOpts?.parameters.preserve_original_meta_data ?? true {
+            applyFlowMetadata(flow, nwParams)
+        }
 
         guard let connection = makeNwConnection(
             host: remoteHost, port: bootMeta.remotePort, using: nwParams)

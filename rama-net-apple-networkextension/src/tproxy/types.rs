@@ -68,7 +68,7 @@ pub enum NwAttribution {
 ///
 /// All fields map directly to top-level `NWParameters` properties (not protocol-specific options).
 /// Only parameters meaningful for a `NETransparentProxyProvider` egress connection are included.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct NwEgressParameters {
     /// Maps to `NWParameters.serviceClass`.
     pub service_class: Option<NwServiceClass>,
@@ -81,6 +81,34 @@ pub struct NwEgressParameters {
     /// Maps to `NWParameters.attribution` — attribute outbound traffic to the
     /// originating app rather than the extension process.
     pub attribution: Option<NwAttribution>,
+    /// When `true`, Swift calls `NEAppProxyFlow.setMetadata(_:)` on the egress
+    /// `NWParameters` before constructing the `NWConnection`, propagating the
+    /// intercepted flow's `NEFlowMetaData` (source app identifier / audit
+    /// token) onto the egress connection.
+    ///
+    /// This is good-citizen behavior for stacked-proxy deployments: a
+    /// downstream `NEAppProxyProvider` that intercepts our egress sees the
+    /// **original** app rather than this extension's process.
+    ///
+    /// Defaults to `true`. Note that this propagates *identity*, it does not
+    /// mark the flow as already-proxied — it cannot prevent infinite loops
+    /// between two providers that both claim the same destinations. Disable
+    /// it if you need downstream observers to see this extension as the
+    /// source.
+    pub preserve_original_meta_data: bool,
+}
+
+impl Default for NwEgressParameters {
+    fn default() -> Self {
+        Self {
+            service_class: None,
+            multipath_service_type: None,
+            prohibited_interface_types: Vec::new(),
+            required_interface_type: None,
+            attribution: None,
+            preserve_original_meta_data: true,
+        }
+    }
 }
 
 /// Options for the egress `NWConnection` on TCP flows.

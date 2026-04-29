@@ -541,7 +541,8 @@ final class RamaTcpSessionHandle {
                 has_multipath_service_type: false, multipath_service_type: 0,
                 has_required_interface_type: false, required_interface_type: 0,
                 has_attribution: false, attribution: 0,
-                prohibited_interface_types_mask: 0
+                prohibited_interface_types_mask: 0,
+                preserve_original_meta_data: true
             ),
             has_connect_timeout_ms: false,
             connect_timeout_ms: 0
@@ -671,7 +672,8 @@ final class RamaUdpSessionHandle {
                 has_multipath_service_type: false, multipath_service_type: 0,
                 has_required_interface_type: false, required_interface_type: 0,
                 has_attribution: false, attribution: 0,
-                prohibited_interface_types_mask: 0
+                prohibited_interface_types_mask: 0,
+                preserve_original_meta_data: true
             )
         )
         let hasCustom = rama_transparent_proxy_udp_session_get_egress_connect_options(s, &opts)
