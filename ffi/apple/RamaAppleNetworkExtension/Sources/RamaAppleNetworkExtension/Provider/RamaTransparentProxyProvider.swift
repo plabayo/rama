@@ -1004,7 +1004,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             ? egressOpts!.connect_timeout_ms : 30_000
         let nwParams = makeTcpNwParameters(egressOpts)
 
-        let connection = makeNwConnection(host: remoteHost, port: meta.remotePort, using: nwParams)
+        guard let connection = makeNwConnection(
+            host: remoteHost, port: meta.remotePort, using: nwParams)
+        else {
+            logDebug(
+                "handleTcpFlow: invalid remote port \(meta.remotePort); cancelling session"
+            )
+            session.cancel()
+            removeTcpFlow(flowId)
+            return true
+        }
 
         // Track whether the egress connection succeeded before flow.open was called.
         var egressReady = false
@@ -1214,7 +1223,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let egressOpts = session.getEgressConnectOptions()
         let nwParams = makeUdpNwParameters(egressOpts)
 
-        let connection = makeNwConnection(host: remoteHost, port: bootMeta.remotePort, using: nwParams)
+        guard let connection = makeNwConnection(
+            host: remoteHost, port: bootMeta.remotePort, using: nwParams)
+        else {
+            logDebug(
+                "handleUdpFlow: invalid remote port \(bootMeta.remotePort); cancelling session"
+            )
+            session.onClientClose()
+            removeUdpFlow(flowId)
+            return true
+        }
 
         var egressReady = false
 

@@ -13,12 +13,12 @@ import Network
 
 /// Create an `NWConnection` to the given host/port using the supplied parameters.
 ///
-/// The port falls back to `80` if `rawValue` produces `nil` (port 0 is invalid for
-/// `NWEndpoint.Port`).
-func makeNwConnection(host: String, port: UInt16, using params: NWParameters) -> NWConnection {
-    NWConnection(
-        host: NWEndpoint.Host(host),
-        port: NWEndpoint.Port(rawValue: port) ?? 80,
-        using: params
-    )
+/// Returns `nil` when the port is invalid (`NWEndpoint.Port(rawValue:)` rejects 0).
+/// Callers must surface that as a connect failure rather than silently substituting
+/// a default port — connecting to the wrong destination is worse than not connecting.
+func makeNwConnection(host: String, port: UInt16, using params: NWParameters) -> NWConnection? {
+    guard let port = NWEndpoint.Port(rawValue: port) else {
+        return nil
+    }
+    return NWConnection(host: NWEndpoint.Host(host), port: port, using: params)
 }

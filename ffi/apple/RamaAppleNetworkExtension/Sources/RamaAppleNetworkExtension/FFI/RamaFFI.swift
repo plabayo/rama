@@ -361,6 +361,13 @@ final class RamaTransparentProxyEngineHandle {
         enginePtr = nil
     }
 
+    /// Forward a provider message into Rust and return the reply (or `nil` for
+    /// "no reply").
+    ///
+    /// The Rust shim already maps `None` and `Some(empty)` to the same empty
+    /// payload, so an empty `Data` reaching this point is indistinguishable
+    /// from "no reply" — we surface both as `nil`. Rust handlers that want a
+    /// distinguishable ack must return a non-empty payload.
     func handleAppMessage(_ message: Data) -> Data? {
         guard let p = enginePtr else { return nil }
 
