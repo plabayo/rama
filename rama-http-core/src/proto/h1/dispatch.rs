@@ -557,7 +557,7 @@ where
         *req.uri_mut() = msg.subject.1;
         *req.headers_mut() = msg.headers;
         *req.version_mut() = msg.version;
-        req.extensions().extend(&msg.extensions);
+        *req.extensions_mut() = msg.extensions;
         let fut = {
             let svc = self.service.clone();
             async move { svc.serve(req).await }

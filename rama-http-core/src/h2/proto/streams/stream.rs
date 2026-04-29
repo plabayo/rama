@@ -75,8 +75,14 @@ pub(super) struct Stream {
     /// Set to true when a push is pending for this stream
     pub is_pending_push: bool,
 
-    /// The extensions of this stream
+    /// The stream's own extensions
+    ///
+    /// An h2 stream is a sub-connection layered on the multiplexer/TCP.
     pub extensions: Extensions,
+
+    /// Captured at `send_request` time and carried so the response builder can fork
+    /// it to create the response extensions
+    pub req_extensions: Option<Extensions>,
 
     // ===== Fields related to receiving =====
     /// Next node in the accept linked list
@@ -203,7 +209,7 @@ impl Stream {
         id: StreamId,
         init_send_window: WindowSize,
         init_recv_window: WindowSize,
-        extensions: Extensions,
+        connection_extensions: &Extensions,
     ) -> Result<Self, Reason> {
         let mut send_flow = FlowControl::new();
         let mut recv_flow = FlowControl::new();
@@ -229,10 +235,14 @@ impl Stream {
             return Err(reason);
         }
 
+        // Create extensions for this specific stream
+        let extensions = connection_extensions.fork();
+
         Ok(Self {
             id,
             state: State::default(),
             extensions,
+            req_extensions: None,
             ref_count: 0,
             is_counted: false,
 

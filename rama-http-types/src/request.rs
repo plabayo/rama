@@ -667,6 +667,12 @@ impl<T> Request<T> {
             head: self.head,
         }
     }
+
+    /// Mutable reference to this request's extensions
+    #[inline]
+    pub fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.head.extensions
+    }
 }
 
 impl<T: Default> Default for Request<T> {
