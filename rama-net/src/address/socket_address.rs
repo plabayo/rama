@@ -353,6 +353,7 @@ impl TryFrom<&str> for SocketAddress {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl TryFrom<HeaderValue> for SocketAddress {
     type Error = BoxError;
 
@@ -362,6 +363,7 @@ impl TryFrom<HeaderValue> for SocketAddress {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl TryFrom<&HeaderValue> for SocketAddress {
     type Error = BoxError;
 

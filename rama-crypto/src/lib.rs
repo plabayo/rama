@@ -28,6 +28,7 @@
 )]
 
 #[cfg(feature = "aws-lc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "aws-lc")))]
 pub mod jose;
 
 pub mod dep {
@@ -36,6 +37,7 @@ pub mod dep {
     //! Exported for your convenience
 
     #[cfg(feature = "aws-lc")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "aws-lc")))]
     pub mod aws_lc_rs {
         //! Re-export of the [`aws-lc-rs`] crate.
         //!
@@ -46,6 +48,7 @@ pub mod dep {
     }
 
     #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "aws-lc", feature = "ring"))))]
     pub mod rcgen {
         //! Re-export of the [`rcgen`] crate.
         //!

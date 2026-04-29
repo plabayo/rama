@@ -721,6 +721,7 @@ fn invalid_header_value_byte<Error: fmt::Display>(err: Error) -> Status {
 }
 
 #[cfg(feature = "transport")]
+#[cfg_attr(docsrs, doc(cfg(feature = "transport")))]
 impl From<rama_http_core::h2::Error> for Status {
     #[inline(always)]
     fn from(err: rama_http_core::h2::Error) -> Self {
@@ -729,6 +730,7 @@ impl From<rama_http_core::h2::Error> for Status {
 }
 
 #[cfg(feature = "transport")]
+#[cfg_attr(docsrs, doc(cfg(feature = "transport")))]
 impl From<Status> for rama_http_core::h2::Error {
     #[inline(always)]
     fn from(status: Status) -> Self {

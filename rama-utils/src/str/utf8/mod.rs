@@ -19,6 +19,7 @@ pub use lossy::LossyDecoder;
 mod read;
 
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use read::{BufReadDecoder, BufReadDecoderError};
 
 use core::cmp;

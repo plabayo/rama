@@ -267,6 +267,7 @@ impl TryFrom<&str> for Host {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl TryFrom<HeaderValue> for Host {
     type Error = BoxError;
 
@@ -276,6 +277,7 @@ impl TryFrom<HeaderValue> for Host {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl TryFrom<&HeaderValue> for Host {
     type Error = BoxError;
 

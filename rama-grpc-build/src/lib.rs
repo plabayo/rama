@@ -15,6 +15,7 @@ use quote::TokenStreamExt;
 pub mod manual;
 
 #[cfg(feature = "protobuf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "protobuf")))]
 pub mod protobuf;
 
 /// Service code generation for client

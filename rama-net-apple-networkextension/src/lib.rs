@@ -302,6 +302,7 @@ pub mod process;
 pub mod tproxy;
 
 #[cfg(target_os = "macos")]
+#[cfg_attr(docsrs, doc(cfg(target_os = "macos")))]
 pub mod system_keychain;
 
 mod nw_tcp_stream;

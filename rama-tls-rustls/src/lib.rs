@@ -89,6 +89,7 @@ pub mod dep {
     }
 
     #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "aws-lc", feature = "ring"))))]
     pub mod rcgen {
         //! Re-export of the [`rcgen`] crate.
         //!

@@ -243,6 +243,7 @@ impl TcpListener {
     }
 
     #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
     pub fn try_from_socket(
         socket: rama_net::socket::core::Socket,
         exec: Executor,

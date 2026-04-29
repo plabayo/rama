@@ -314,9 +314,18 @@ pub mod net {
     #[doc(inline)]
     pub use ::rama_net::*;
 
-    #[cfg(all(
-        target_vendor = "apple",
-        any(feature = "net-apple-networkextension", feature = "net-apple-xpc")
+    // Visible under `--cfg docsrs` on any host so the published docs site (built on
+    // Linux) cross-links to the Apple crate docs that are produced by a parallel
+    // macOS doc job and merged into the same target/doc tree. We deliberately do not
+    // use `#[doc(inline)]` here: on Linux the underlying Apple crates compile to
+    // empty libraries, so inlining would produce empty pages — instead we let
+    // rustdoc emit a re-export thunk that points at the (merged) full crate docs.
+    #[cfg(any(
+        all(doc, docsrs),
+        all(
+            target_vendor = "apple",
+            any(feature = "net-apple-networkextension", feature = "net-apple-xpc")
+        )
     ))]
     #[cfg_attr(
         docsrs,
@@ -329,11 +338,11 @@ pub mod net {
         //! Apple (vendor) specific network modules
 
         #[cfg(feature = "net-apple-networkextension")]
-        #[doc(inline)]
+        #[cfg_attr(docsrs, doc(cfg(feature = "net-apple-networkextension")))]
         pub use ::rama_net_apple_networkextension as networkextension;
 
         #[cfg(feature = "net-apple-xpc")]
-        #[doc(inline)]
+        #[cfg_attr(docsrs, doc(cfg(feature = "net-apple-xpc")))]
         pub use ::rama_net_apple_xpc as xpc;
     }
 }

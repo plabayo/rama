@@ -90,6 +90,7 @@ pub use response::Response;
 pub use status::{Code, ConnectError, Status, TimeoutExpired};
 
 #[cfg(feature = "protobuf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "protobuf")))]
 pub mod protobuf;
 
 #[doc(hidden)]
