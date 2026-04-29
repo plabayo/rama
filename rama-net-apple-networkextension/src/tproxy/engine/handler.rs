@@ -53,6 +53,12 @@ pub enum FlowAction<S> {
 pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig;
 
+    /// Handle a provider message from the container app.
+    ///
+    /// The FFI bridge collapses `None` and `Some(Bytes::new())` to the same
+    /// "no reply" outcome on the Swift side (see the `BytesOwned` shim in
+    /// `rama_transparent_proxy_engine_handle_app_message`). To send a
+    /// distinguishable acknowledgement, return a non-empty payload.
     fn handle_app_message(
         &self,
         _exec: Executor,

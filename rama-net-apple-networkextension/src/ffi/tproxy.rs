@@ -312,6 +312,10 @@ pub struct NwEgressParameters {
     /// Bitmask of prohibited interface types (bit0=Cellular bit1=Loopback
     /// bit2=Other bit3=Wifi bit4=Wired).
     pub prohibited_interface_types_mask: u8,
+    /// When `true`, Swift calls `NEAppProxyFlow.setMetadata(_:)` to stamp the
+    /// intercepted flow's `NEFlowMetaData` onto the egress `NWParameters`.
+    /// See `tproxy::types::NwEgressParameters::preserve_original_meta_data`.
+    pub preserve_original_meta_data: bool,
 }
 
 impl NwEgressParameters {
@@ -329,6 +333,7 @@ impl NwEgressParameters {
             has_attribution: p.attribution.is_some(),
             attribution: p.attribution.map(attribution_to_u8).unwrap_or(0),
             prohibited_interface_types_mask: interface_types_to_mask(&p.prohibited_interface_types),
+            preserve_original_meta_data: p.preserve_original_meta_data,
         }
     }
 }
