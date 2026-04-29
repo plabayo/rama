@@ -501,11 +501,8 @@ final class RamaTcpSessionHandle {
         guard !data.isEmpty else { return }
 
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
-        lock.unlock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
 
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
@@ -517,11 +514,8 @@ final class RamaTcpSessionHandle {
 
     func onClientEof() {
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
-        lock.unlock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
         rama_transparent_proxy_tcp_session_on_client_eof(s)
     }
 
@@ -531,11 +525,8 @@ final class RamaTcpSessionHandle {
     /// `nil` when Swift should use `NWParameters` defaults.
     func getEgressConnectOptions() -> RamaTcpEgressConnectOptions? {
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return nil
-        }
-        lock.unlock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return nil }
 
         var opts = RamaTcpEgressConnectOptions(
             parameters: RamaNwEgressParameters(
@@ -564,17 +555,14 @@ final class RamaTcpSessionHandle {
         onCloseEgress: @escaping () -> Void
     ) {
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
         let box = Unmanaged.passRetained(
             TcpEgressCallbackBox(
                 onWriteToEgress: onWriteToEgress,
                 onCloseEgress: onCloseEgress
             ))
         egressCallbackBox = box
-        lock.unlock()
 
         let callbacks = RamaTransparentProxyTcpEgressCallbacks(
             context: box.toOpaque(),
@@ -589,11 +577,8 @@ final class RamaTcpSessionHandle {
         guard !data.isEmpty else { return }
 
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
-        lock.unlock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
 
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
@@ -606,22 +591,16 @@ final class RamaTcpSessionHandle {
     /// Signal that the egress `NWConnection` has closed or failed.
     func onEgressEof() {
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
-        lock.unlock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
         rama_transparent_proxy_tcp_session_on_egress_eof(s)
     }
 
     func cancel() {
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
         cancelled = true
-        lock.unlock()
         rama_transparent_proxy_tcp_session_cancel(s)
     }
 }
@@ -659,11 +638,8 @@ final class RamaUdpSessionHandle {
         guard !data.isEmpty else { return }
 
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
-        lock.unlock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
 
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
@@ -679,11 +655,8 @@ final class RamaUdpSessionHandle {
     /// `nil` when Swift should use `NWParameters` defaults.
     func getEgressConnectOptions() -> RamaUdpEgressConnectOptions? {
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return nil
-        }
-        lock.unlock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return nil }
 
         var opts = RamaUdpEgressConnectOptions(
             parameters: RamaNwEgressParameters(
@@ -704,13 +677,10 @@ final class RamaUdpSessionHandle {
     ///   to deliver via the egress NWConnection.
     func activate(onSendToEgress: @escaping (Data) -> Void) {
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
         let box = Unmanaged.passRetained(UdpEgressCallbackBox(onSendToEgress: onSendToEgress))
         egressCallbackBox = box
-        lock.unlock()
 
         let callbacks = RamaTransparentProxyUdpEgressCallbacks(
             context: box.toOpaque(),
@@ -724,11 +694,8 @@ final class RamaUdpSessionHandle {
         guard !data.isEmpty else { return }
 
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
-        lock.unlock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
 
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
@@ -740,12 +707,9 @@ final class RamaUdpSessionHandle {
 
     func onClientClose() {
         lock.lock()
-        guard !cancelled, let s = sessionPtr else {
-            lock.unlock()
-            return
-        }
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
         cancelled = true
-        lock.unlock()
         rama_transparent_proxy_udp_session_on_client_close(s)
     }
 }

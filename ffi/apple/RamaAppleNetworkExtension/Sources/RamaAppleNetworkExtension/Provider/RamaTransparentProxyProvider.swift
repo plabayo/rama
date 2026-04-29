@@ -165,18 +165,20 @@ private final class TcpClientReadPump {
     private let session: RamaTcpSessionHandle
     private let logger: (FlowLogMessage) -> Void
     private let onTerminal: (Error?) -> Void
-    private let queue = DispatchQueue(label: "rama.tproxy.tcp.read", qos: .utility)
+    private let queue: DispatchQueue
     private var readPending = false
     private var closed = false
 
     init(
         flow: NEAppProxyTCPFlow,
         session: RamaTcpSessionHandle,
+        queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminal: @escaping (Error?) -> Void
     ) {
         self.flow = flow
         self.session = session
+        self.queue = queue
         self.logger = logger
         self.onTerminal = onTerminal
     }
@@ -305,7 +307,7 @@ private final class TcpClientWritePump {
     private let flow: NEAppProxyTCPFlow
     private let logger: (FlowLogMessage) -> Void
     private let onTerminalError: (Error) -> Void
-    private let queue = DispatchQueue(label: "rama.tproxy.tcp.write", qos: .utility)
+    private let queue: DispatchQueue
     private var pending: [Data] = []
     private var writing = false
     private var closeRequested = false
@@ -315,10 +317,12 @@ private final class TcpClientWritePump {
 
     init(
         flow: NEAppProxyTCPFlow,
+        queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminalError: @escaping (Error) -> Void
     ) {
         self.flow = flow
+        self.queue = queue
         self.logger = logger
         self.onTerminalError = onTerminalError
     }
@@ -411,7 +415,7 @@ private final class UdpClientWritePump {
     private let flow: NEAppProxyUDPFlow
     private let logger: (FlowLogMessage) -> Void
     private let onTerminalError: (Error) -> Void
-    private let queue = DispatchQueue(label: "rama.tproxy.udp.write", qos: .utility)
+    private let queue: DispatchQueue
     private var pending: [Data] = []
     private var writing = false
     private var closed = false
@@ -422,10 +426,12 @@ private final class UdpClientWritePump {
 
     init(
         flow: NEAppProxyUDPFlow,
+        queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminalError: @escaping (Error) -> Void
     ) {
         self.flow = flow
+        self.queue = queue
         self.logger = logger
         self.onTerminalError = onTerminalError
     }
@@ -740,11 +746,48 @@ private final class NwUdpConnectionReadPump {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Per-flow late-binding container for the Rust session handle.
+///
+/// `engine.newTcpSession(...)` and `engine.newUdpSession(...)` accept callbacks
+/// that may need to refer back to the session, but the session is only
+/// returned *after* those calls. The context lets early closures capture a
+/// stable reference and read the session once it's set.
+///
+/// `weak` keeps the session map (`tcpSessions`/`udpSessions`) as the single
+/// strong owner: once that map drops the session, late callbacks see `nil`
+/// and become no-ops, avoiding a retain cycle through closures.
+///
+/// Swift weak references are thread-safe for both load and store on modern
+/// runtimes, so no extra locking is required here.
+private final class TcpFlowContext {
+    weak var session: RamaTcpSessionHandle?
+}
+
+private final class UdpFlowContext {
+    weak var session: RamaUdpSessionHandle?
+}
+
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     private var engine: RamaTransparentProxyEngineHandle?
     private let stateQueue = DispatchQueue(label: "rama.tproxy.state")
     private var tcpSessions: [ObjectIdentifier: RamaTcpSessionHandle] = [:]
     private var udpSessions: [ObjectIdentifier: RamaUdpSessionHandle] = [:]
+
+    private func registerTcpFlow(_ flowId: ObjectIdentifier, session: RamaTcpSessionHandle) {
+        stateQueue.async { self.tcpSessions[flowId] = session }
+    }
+
+    private func registerUdpFlow(_ flowId: ObjectIdentifier, session: RamaUdpSessionHandle) {
+        stateQueue.async { self.udpSessions[flowId] = session }
+    }
+
+    private func removeTcpFlow(_ flowId: ObjectIdentifier) {
+        stateQueue.async { self.tcpSessions.removeValue(forKey: flowId) }
+    }
+
+    private func removeUdpFlow(_ flowId: ObjectIdentifier) {
+        stateQueue.async { self.udpSessions.removeValue(forKey: flowId) }
+    }
 
     public override func startProxy(
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
@@ -892,21 +935,20 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         -> Bool
     {
         let flowId = ObjectIdentifier(flow)
-        let egressQueue = DispatchQueue(label: "rama.tproxy.tcp.egress", qos: .utility)
+        let flowQueue = DispatchQueue(label: "rama.tproxy.tcp.flow", qos: .utility)
+        let ctx = TcpFlowContext()
 
         let writer = TcpClientWritePump(
             flow: flow,
+            queue: flowQueue,
             logger: { [weak self] message in
                 self?.logFlowMessage(message)
             },
             onTerminalError: { [weak self] error in
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
-                self?.stateQueue.async {
-                    if let session = self?.tcpSessions.removeValue(forKey: flowId) {
-                        session.cancel()
-                    }
-                }
+                ctx.session?.cancel()
+                self?.removeTcpFlow(flowId)
             }
         )
 
@@ -917,7 +959,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     writer.enqueue(data)
                 },
                 onServerClosed: { [weak self] in
-                    writer.closeWhenDrained { [weak self] wasOpened in
+                    writer.closeWhenDrained { wasOpened in
                         if wasOpened {
                             flow.closeReadWithError(nil)
                             flow.closeWriteWithError(nil)
@@ -926,9 +968,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             flow.closeReadWithError(error)
                             flow.closeWriteWithError(error)
                         }
-                        self?.stateQueue.async {
-                            self?.tcpSessions.removeValue(forKey: flowId)
-                        }
+                        self?.removeTcpFlow(flowId)
                     }
                 }
             ) ?? .passthrough
@@ -946,10 +986,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return true
         }
 
+        // Publish the session before any callback that may observe it can fire.
+        // The session map is the single strong owner; ctx holds a weak ref.
+        registerTcpFlow(flowId, session: session)
+        ctx.session = session
+
         // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
         guard let remoteHost = meta.remoteHost, meta.remotePort > 0 else {
             logDebug("handleTcpFlow: missing remote endpoint; cancelling session")
             session.cancel()
+            removeTcpFlow(flowId)
             return true
         }
 
@@ -959,10 +1005,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let nwParams = makeTcpNwParameters(egressOpts)
 
         let connection = makeNwConnection(host: remoteHost, port: meta.remotePort, using: nwParams)
-
-        stateQueue.async {
-            self.tcpSessions[flowId] = session
-        }
 
         // Track whether the egress connection succeeded before flow.open was called.
         var egressReady = false
@@ -974,12 +1016,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             self?.logDebug("egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)")
             connection.cancel()
             session.cancel()
-            self?.stateQueue.async { self?.tcpSessions.removeValue(forKey: flowId) }
+            self?.removeTcpFlow(flowId)
         }
-        egressQueue.asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: timeoutWork)
+        flowQueue.asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: timeoutWork)
 
         connection.stateUpdateHandler = { [weak self] (state: NWConnection.State) in
-            egressQueue.async {
+            flowQueue.async {
                 switch state {
                 case .ready:
                     guard !egressReady else { return }
@@ -987,9 +1029,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     timeoutWork.cancel()
 
                     let writePump = NwTcpConnectionWritePump(
-                        connection: connection, queue: egressQueue)
+                        connection: connection, queue: flowQueue)
                     let readPump = NwTcpConnectionReadPump(
-                        connection: connection, session: session, queue: egressQueue)
+                        connection: connection, session: session, queue: flowQueue)
 
                     session.activate(
                         onWriteToEgress: { data in writePump.enqueue(data) },
@@ -997,14 +1039,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     )
 
                     flow.open(withLocalEndpoint: nil) { [weak self] error in
-                        egressQueue.async {
+                        flowQueue.async {
                             if let error {
                                 self?.logDebug("flow.open error after egress ready: \(error)")
                                 connection.cancel()
                                 session.cancel()
-                                self?.stateQueue.async {
-                                    self?.tcpSessions.removeValue(forKey: flowId)
-                                }
+                                self?.removeTcpFlow(flowId)
                                 return
                             }
                             self?.logTrace("flow.open ok (tcp, egress pre-connected)")
@@ -1014,16 +1054,15 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             let flowReadPump = TcpClientReadPump(
                                 flow: flow,
                                 session: session,
+                                queue: flowQueue,
                                 logger: { [weak self] message in self?.logFlowMessage(message) },
                                 onTerminal: { [weak self] readError in
                                     flow.closeReadWithError(readError)
                                     flow.closeWriteWithError(readError)
                                     connection.cancel()
                                     readPump.cancel()
-                                    self?.stateQueue.async {
-                                        self?.tcpSessions.removeValue(forKey: flowId)
-                                    }
                                     session.cancel()
+                                    self?.removeTcpFlow(flowId)
                                 }
                             )
                             flowReadPump.requestRead()
@@ -1037,7 +1076,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         "egress NWConnection failed before flow opened: \(String(describing: error))"
                     )
                     session.cancel()
-                    self?.stateQueue.async { self?.tcpSessions.removeValue(forKey: flowId) }
+                    self?.removeTcpFlow(flowId)
 
                 case .cancelled:
                     break  // our own cancel() call; nothing extra needed
@@ -1048,14 +1087,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
         }
 
-        connection.start(queue: egressQueue)
+        connection.start(queue: flowQueue)
         return true
     }
 
     private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) -> Bool {
         let flowId = ObjectIdentifier(flow)
-        let egressQueue = DispatchQueue(label: "rama.tproxy.udp.egress", qos: .utility)
         let flowQueue = DispatchQueue(label: "rama.tproxy.udp.flow", qos: .utility)
+        let ctx = UdpFlowContext()
         var readPending = false
         var demandPending = false
         var closed = false
@@ -1068,16 +1107,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
-                self?.stateQueue.async {
-                    if let session = self?.udpSessions.removeValue(forKey: flowId) {
-                        session.onClientClose()
-                    }
-                }
+                ctx.session?.onClientClose()
+                self?.removeUdpFlow(flowId)
             }
         }
 
         writer = UdpClientWritePump(
             flow: flow,
+            queue: flowQueue,
             logger: { [weak self] message in
                 self?.logFlowMessage(message)
             },
@@ -1121,7 +1158,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         let endpoint = endpoints?.first
                         writer.setSentByEndpoint(endpoint)
 
-                        guard let session = self?.udpSessions[flowId] else {
+                        guard let session = ctx.session else {
                             self?.logDebug(
                                 "udp flow read received but session no longer active; closing flow"
                             )
@@ -1161,10 +1198,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return true
         }
 
+        // Publish the session before any callback that may observe it can fire.
+        // The session map is the single strong owner; ctx holds a weak ref.
+        registerUdpFlow(flowId, session: session)
+        ctx.session = session
+
         // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
         guard let remoteHost = bootMeta.remoteHost, bootMeta.remotePort > 0 else {
             logDebug("handleUdpFlow: missing remote endpoint; cancelling session")
             session.onClientClose()
+            removeUdpFlow(flowId)
             return true
         }
 
@@ -1172,10 +1215,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let nwParams = makeUdpNwParameters(egressOpts)
 
         let connection = makeNwConnection(host: remoteHost, port: bootMeta.remotePort, using: nwParams)
-
-        stateQueue.async {
-            self.udpSessions[flowId] = session
-        }
 
         var egressReady = false
 
@@ -1187,12 +1226,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             )
             connection.cancel()
             session.onClientClose()
-            self?.stateQueue.async { self?.udpSessions.removeValue(forKey: flowId) }
+            self?.removeUdpFlow(flowId)
         }
-        egressQueue.asyncAfter(deadline: .now() + 30, execute: timeoutWork)
+        flowQueue.asyncAfter(deadline: .now() + 30, execute: timeoutWork)
 
         connection.stateUpdateHandler = { [weak self] (state: NWConnection.State) in
-            egressQueue.async {
+            flowQueue.async {
                 switch state {
                 case .ready:
                     guard !egressReady else { return }
@@ -1200,7 +1239,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     timeoutWork.cancel()
 
                     let readPump = NwUdpConnectionReadPump(
-                        connection: connection, session: session, queue: egressQueue)
+                        connection: connection, session: session, queue: flowQueue)
 
                     session.activate(onSendToEgress: { data in
                         connection.send(
@@ -1209,15 +1248,13 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     })
 
                     flow.open(withLocalEndpoint: nil) { [weak self] error in
-                        egressQueue.async {
+                        flowQueue.async {
                             if let error {
                                 self?.logDebug("udp flow.open error after egress ready: \(error)")
                                 connection.cancel()
                                 readPump.cancel()
                                 session.onClientClose()
-                                self?.stateQueue.async {
-                                    self?.udpSessions.removeValue(forKey: flowId)
-                                }
+                                self?.removeUdpFlow(flowId)
                                 return
                             }
                             self?.logTrace("flow.open ok (udp, egress pre-connected)")
@@ -1234,7 +1271,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         "egress NWConnection failed before udp flow opened: \(String(describing: error))"
                     )
                     session.onClientClose()
-                    self?.stateQueue.async { self?.udpSessions.removeValue(forKey: flowId) }
+                    self?.removeUdpFlow(flowId)
 
                 case .cancelled:
                     break
@@ -1245,7 +1282,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
         }
 
-        connection.start(queue: egressQueue)
+        connection.start(queue: flowQueue)
         return true
     }
 
