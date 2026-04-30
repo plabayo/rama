@@ -1038,11 +1038,36 @@ async fn run_tcp_bridge(
     // Set to true once `on_server_bytes` reports the session is gone; we then
     // exit the loop and fire `on_server_closed` once.
     let mut server_closed = false;
+    // Bytes that `on_server_bytes` rejected with `Paused`. Swift does NOT
+    // take ownership on a `Paused` return, so we MUST replay this chunk
+    // after `server_write_notify` fires before reading any more from the
+    // duplex — otherwise we punch a hole in the byte stream and the
+    // downstream TLS layer surfaces "bad record MAC" once the gap reaches
+    // the decryptor. Symmetric to the Swift-side `pendingData` retain
+    // pattern for the Swift → Rust direction.
+    let mut pending_to_server: Option<Bytes> = None;
 
     loop {
         if server_closed {
             break;
         }
+
+        // Drain any pending replay before reading more from the duplex.
+        if let Some(bytes) = pending_to_server.take() {
+            match on_server_bytes(bytes.clone()) {
+                TcpDeliverStatus::Accepted => {}
+                TcpDeliverStatus::Paused => {
+                    pending_to_server = Some(bytes);
+                    server_write_notify.notified().await;
+                    continue;
+                }
+                TcpDeliverStatus::Closed => {
+                    server_closed = true;
+                    continue;
+                }
+            }
+        }
+
         tokio::select! {
             maybe = client_rx.recv(), if !write_done => {
                 if let Some(bytes) = maybe {
@@ -1098,11 +1123,14 @@ async fn run_tcp_bridge(
                         // full. We must not just hand it more bytes — that's
                         // what leads to unbounded `pending` growth and
                         // eventually `ENOBUFS` on `flow.write` /
-                        // `connection.send`. On `Paused`, suspend the bridge
-                        // until Swift signals via `signal_*_drain`.
-                        match on_server_bytes(Bytes::copy_from_slice(&buf[..n])) {
+                        // `connection.send`. On `Paused`, hold the chunk
+                        // (Swift did NOT take it) and suspend the bridge
+                        // until `signal_*_drain` fires.
+                        let bytes = Bytes::copy_from_slice(&buf[..n]);
+                        match on_server_bytes(bytes.clone()) {
                             TcpDeliverStatus::Accepted => {}
                             TcpDeliverStatus::Paused => {
+                                pending_to_server = Some(bytes);
                                 server_write_notify.notified().await;
                             }
                             TcpDeliverStatus::Closed => {
