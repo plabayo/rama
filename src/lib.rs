@@ -339,10 +339,12 @@ pub mod net {
 
         #[cfg(feature = "net-apple-networkextension")]
         #[cfg_attr(docsrs, doc(cfg(feature = "net-apple-networkextension")))]
+        #[doc(inline)]
         pub use ::rama_net_apple_networkextension as networkextension;
 
         #[cfg(feature = "net-apple-xpc")]
         #[cfg_attr(docsrs, doc(cfg(feature = "net-apple-xpc")))]
+        #[doc(inline)]
         pub use ::rama_net_apple_xpc as xpc;
     }
 }

@@ -20,6 +20,7 @@ pub mod opentelemetry {
 pub mod tracing {
     //! Tracing core rexport and utilities, for your conveneince
 
+    #[doc(inline)]
     pub use ::rama_core::telemetry::tracing::*;
 
     pub use ::tracing_subscriber as subscriber;

@@ -35,7 +35,7 @@ concurrency:
 
 jobs:
   # ---- Per-target rustdoc builds ------------------------------------------
-  # Each job runs `cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli` for one target
+  # Each job runs `cargo +nightly doc --all-features --no-deps -p rama` for one target
   # and uploads its `target/[<triple>/]doc/` tree as an artifact. The merge
   # `build` job assembles them into a single site.
 
@@ -48,7 +48,7 @@ jobs:
         with:
           key: doc-linux
       - name: cargo doc (linux)
-        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli
+        run: cargo +nightly doc --all-features --no-deps -p rama
         env:
           RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
       - uses: actions/upload-artifact@v4
@@ -66,7 +66,7 @@ jobs:
         with:
           key: doc-macos
       - name: cargo doc (macos)
-        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli
+        run: cargo +nightly doc --all-features --no-deps -p rama
         env:
           RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
       - uses: actions/upload-artifact@v4
@@ -85,7 +85,7 @@ jobs:
         with:
           key: doc-windows
       - name: cargo doc (windows)
-        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli
+        run: cargo +nightly doc --all-features --no-deps -p rama
         env:
           RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
       - uses: actions/upload-artifact@v4
@@ -140,7 +140,7 @@ jobs:
           echo "CXX=${CXX_PATH}" >> "$GITHUB_ENV"
           echo "AR=${AR_PATH}" >> "$GITHUB_ENV"
       - name: cargo doc (android)
-        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli --target $TARGET_TRIPLE
+        run: cargo +nightly doc --all-features --no-deps -p rama --target $TARGET_TRIPLE
         env:
           RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
       - uses: actions/upload-artifact@v4
@@ -165,7 +165,7 @@ jobs:
         with:
           key: doc-ios
       - name: cargo doc (ios)
-        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli --target $TARGET_TRIPLE
+        run: cargo +nightly doc --all-features --no-deps -p rama --target $TARGET_TRIPLE
         env:
           RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
       - uses: actions/upload-artifact@v4
