@@ -18,6 +18,7 @@ use rama_net::{conn::is_connection_error, proxy::ProxyTarget};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{
+        Notify,
         mpsc::{self, error::TrySendError},
         oneshot, watch,
     },
@@ -57,18 +58,30 @@ const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
 /// demand callback to resume. Each chunk is whatever Swift hands us in one
 /// `flow.readData` / `connection.receive` callback (typically 4–64 KiB).
 ///
-/// 8 chunks is a small multiple of `DEFAULT_TCP_FLOW_BUFFER_SIZE` to keep
-/// per-flow worst-case memory bounded under load: the prior unbounded design
-/// let one slow flow buffer arbitrary amounts of pending bytes, which under
-/// sustained traffic exhausts Apple's per-flow NE kernel buffer and aborts the
-/// shared NEAppProxyProvider director, killing every flow on the extension.
-const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 8;
+/// We bound this to keep per-flow worst-case memory in check: the prior
+/// unbounded design let one slow flow buffer arbitrary pending bytes, which
+/// under sustained traffic exhausted Apple's per-flow NE kernel buffer and
+/// aborted the shared NEAppProxyProvider director, killing every flow on the
+/// extension.
+///
+/// 1024 chunks is sized for HTTP/2 multiplexing: a single TCP flow can carry
+/// hundreds of concurrent streams, each with its own ~1 MiB initial flow
+/// window. With 1024 × 64 KiB = ~64 MiB of headroom per direction we comfortably
+/// absorb a handful of in-flight streams before Swift has to pause kernel
+/// reads. Smaller values starve high-fan-in h2 connections
+/// and cause stalls on large body transfers.
+const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 1024;
 /// Bound on the UDP ingress and egress channels. UDP datagrams are inherently
 /// lossy, so on a full channel we drop the datagram rather than block; the
 /// bound is just a memory cap.
-const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 64;
+const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 1024;
 
 type BytesSink = Arc<dyn Fn(Bytes) + Send + Sync + 'static>;
+/// Variant of [`BytesSink`] used for the response / upstream-write directions
+/// where Swift's writer pump is the consumer. Returns a [`TcpDeliverStatus`]
+/// so the Rust producer (the bridge) can pause when Swift's pending queue is
+/// full and resume only after the matching `signal_*_drain` call from Swift.
+type BytesStatusSink = Arc<dyn Fn(Bytes) -> TcpDeliverStatus + Send + Sync + 'static>;
 type ClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
 type DemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
 
@@ -154,7 +167,7 @@ where
         on_server_closed: OnClosed,
     ) -> SessionFlowAction<TransparentProxyTcpSession>
     where
-        OnBytes: Fn(Bytes) + Send + Sync + 'static,
+        OnBytes: Fn(Bytes) -> TcpDeliverStatus + Send + Sync + 'static,
         OnDemand: Fn() + Send + Sync + 'static,
         OnClosed: Fn() + Send + Sync + 'static,
     {
@@ -253,7 +266,14 @@ struct TcpSessionPendingData {
     /// Ingress EOF watch; handed to the ingress bridge at activate.
     eof_rx: watch::Receiver<bool>,
     /// Rust→Swift: response bytes back to the intercepted client flow.
-    on_server_bytes: BytesSink,
+    /// Returns a [`TcpDeliverStatus`] so the bridge can pause when Swift's
+    /// writer pump is full and wait for the matching `signal_server_drain`.
+    on_server_bytes: BytesStatusSink,
+    /// Notified by `TransparentProxyTcpSession::signal_server_drain` when the
+    /// Swift writer pump for the intercepted flow has drained capacity.
+    /// The ingress bridge awaits on it after `on_server_bytes` returns
+    /// `Paused`.
+    server_write_notify: Arc<Notify>,
     /// Rust→Swift: ingress response stream done.
     on_server_closed: ClosedSink,
     /// Both ingress and egress duplex buffer size.
@@ -285,6 +305,11 @@ pub struct TransparentProxyTcpSession {
     client_paused: Arc<AtomicBool>,
     eof_tx: watch::Sender<bool>,
     saw_client_bytes: bool,
+    /// Symmetric counterpart of `client_paused` for the response direction
+    /// (Rust → Swift writer pump). Notified by Swift via
+    /// [`Self::signal_server_drain`] when its writer drains capacity, awaited
+    /// by the ingress bridge after `on_server_bytes` returns `Paused`.
+    server_write_notify: Arc<Notify>,
 
     // egress data path (populated by activate)
     egress_tx: Option<mpsc::Sender<Bytes>>,
@@ -292,6 +317,10 @@ pub struct TransparentProxyTcpSession {
     /// channel; populated at `activate`.
     egress_paused: Option<Arc<AtomicBool>>,
     egress_eof_tx: Option<watch::Sender<bool>>,
+    /// Symmetric counterpart for the egress request direction (Rust →
+    /// Swift NWConnection writer pump); populated at `activate`. Notified by
+    /// Swift via [`Self::signal_egress_drain`].
+    egress_write_notify: Option<Arc<Notify>>,
 
     // lifecycle
     callback_active: Arc<parking_lot::Mutex<bool>>,
@@ -364,6 +393,25 @@ impl TransparentProxyTcpSession {
         }
     }
 
+    /// Called by Swift when its `TcpClientWritePump` (response writer) has
+    /// drained capacity after `on_server_bytes` returned `Paused`.
+    ///
+    /// Wakes the ingress bridge so it can resume forwarding response bytes.
+    /// Idempotent — the underlying `Notify` collapses redundant signals into
+    /// a single permit.
+    pub fn signal_server_drain(&self) {
+        self.server_write_notify.notify_one();
+    }
+
+    /// Symmetric counterpart of [`Self::signal_server_drain`] for the egress
+    /// request direction. Called by Swift when its `NwTcpConnectionWritePump`
+    /// has drained capacity after `on_write_to_egress` returned `Paused`.
+    pub fn signal_egress_drain(&self) {
+        if let Some(notify) = &self.egress_write_notify {
+            notify.notify_one();
+        }
+    }
+
     /// Called by Swift when the egress `NWConnection` closes or fails.
     pub fn on_egress_eof(&mut self) {
         if let Some(tx) = self.egress_eof_tx.as_mut() {
@@ -382,8 +430,10 @@ impl TransparentProxyTcpSession {
     /// intercepted flow has been successfully opened.
     ///
     /// * `on_write_to_egress` — Rust→Swift: service bytes destined for the remote server.
+    ///   Returns a [`TcpDeliverStatus`] so the egress bridge can pause when
+    ///   Swift's `NwTcpConnectionWritePump` is full.
     /// * `on_egress_read_demand` — Rust→Swift: signal Swift it can resume reading
-    ///   from the egress `NWConnection` after `on_egress_bytes` returned `false`.
+    ///   from the egress `NWConnection` after `on_egress_bytes` returned `Paused`.
     /// * `on_close_egress` — Rust→Swift: egress stream is done writing.
     pub fn activate<OnEgressWrite, OnEgressDemand, OnEgressClose>(
         &mut self,
@@ -391,7 +441,7 @@ impl TransparentProxyTcpSession {
         on_egress_read_demand: OnEgressDemand,
         on_close_egress: OnEgressClose,
     ) where
-        OnEgressWrite: Fn(Bytes) + Send + Sync + 'static,
+        OnEgressWrite: Fn(Bytes) -> TcpDeliverStatus + Send + Sync + 'static,
         OnEgressDemand: Fn() + Send + Sync + 'static,
         OnEgressClose: Fn() + Send + Sync + 'static,
     {
@@ -409,6 +459,7 @@ impl TransparentProxyTcpSession {
             on_client_read_demand,
             eof_rx,
             on_server_bytes,
+            server_write_notify,
             on_server_closed,
             tcp_flow_buffer_size,
             tcp_channel_capacity,
@@ -435,16 +486,18 @@ impl TransparentProxyTcpSession {
         let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
         let (egress_eof_tx, egress_eof_rx) = watch::channel(false);
         let egress_paused = Arc::new(AtomicBool::new(false));
+        let egress_write_notify = Arc::new(Notify::new());
         self.egress_tx = Some(egress_client_tx);
         self.egress_paused = Some(egress_paused.clone());
         self.egress_eof_tx = Some(egress_eof_tx);
+        self.egress_write_notify = Some(egress_write_notify.clone());
 
         // guard egress callbacks
-        let egress_bytes_sink: BytesSink = Arc::new(on_write_to_egress);
+        let egress_bytes_sink: BytesStatusSink = Arc::new(on_write_to_egress);
         let egress_closed_sink: ClosedSink = Arc::new(on_close_egress);
         let egress_demand_sink: DemandSink = Arc::new(on_egress_read_demand);
         let guarded_egress_bytes =
-            guarded_bytes_sink(self.callback_active.clone(), egress_bytes_sink);
+            guarded_bytes_status_sink(self.callback_active.clone(), egress_bytes_sink);
         let guarded_egress_closed =
             guarded_closed_sink(self.callback_active.clone(), egress_closed_sink);
         let guarded_egress_demand =
@@ -467,6 +520,7 @@ impl TransparentProxyTcpSession {
                     on_client_read_demand,
                     eof_rx,
                     on_server_bytes,
+                    server_write_notify,
                     on_server_closed,
                 )
                 .await;
@@ -484,6 +538,7 @@ impl TransparentProxyTcpSession {
                     guarded_egress_demand,
                     egress_eof_rx,
                     guarded_egress_bytes,
+                    egress_write_notify,
                     guarded_egress_closed,
                 )
                 .await;
@@ -509,6 +564,14 @@ impl TransparentProxyTcpSession {
         self.client_tx = None;
         self.egress_tx = None;
         self.egress_paused = None;
+        // Wake any bridge that's parked in `notify.notified().await` so it
+        // can observe the cancellation and exit promptly. Notify is
+        // sticky — these are no-ops if nobody's waiting.
+        self.server_write_notify.notify_one();
+        if let Some(notify) = &self.egress_write_notify {
+            notify.notify_one();
+        }
+        self.egress_write_notify = None;
         let _ = self.eof_tx.send(true);
         if let Some(tx) = self.egress_eof_tx.as_mut() {
             let _ = tx.send(true);
@@ -550,7 +613,7 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     handler: H,
 ) -> SessionFlowAction<TransparentProxyTcpSession>
 where
-    OnBytes: Fn(Bytes) + Send + Sync + 'static,
+    OnBytes: Fn(Bytes) -> TcpDeliverStatus + Send + Sync + 'static,
     OnDemand: Fn() + Send + Sync + 'static,
     OnClosed: Fn() + Send + Sync + 'static,
     H: TransparentProxyHandler,
@@ -577,10 +640,11 @@ where
     let client_paused = Arc::new(AtomicBool::new(false));
     let (eof_tx, eof_rx) = watch::channel(false);
     let (bridge_tx, bridge_rx) = oneshot::channel::<BridgeIo<TcpFlow, NwTcpStream>>();
+    let server_write_notify = Arc::new(Notify::new());
 
     let callback_active = Arc::new(parking_lot::Mutex::new(true));
     let on_server_bytes_guarded =
-        guarded_bytes_sink(callback_active.clone(), Arc::new(on_server_bytes));
+        guarded_bytes_status_sink(callback_active.clone(), Arc::new(on_server_bytes));
     let on_server_closed_guarded =
         guarded_closed_sink(callback_active.clone(), Arc::new(on_server_closed));
     let on_client_read_demand_guarded =
@@ -607,6 +671,7 @@ where
         on_client_read_demand: on_client_read_demand_guarded,
         eof_rx,
         on_server_bytes: on_server_bytes_guarded,
+        server_write_notify: server_write_notify.clone(),
         on_server_closed: on_server_closed_guarded,
         tcp_flow_buffer_size,
         tcp_channel_capacity,
@@ -621,9 +686,11 @@ where
         client_paused,
         eof_tx,
         saw_client_bytes: false,
+        server_write_notify,
         egress_tx: None,
         egress_paused: None,
         egress_eof_tx: None,
+        egress_write_notify: None,
         callback_active,
         flow_stop_tx: Some(flow_stop_tx),
         pending: Some(pending),
@@ -898,15 +965,17 @@ impl<H> TransparentProxyEngine<H> {
     }
 }
 
-fn guarded_bytes_sink(
+fn guarded_bytes_status_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
-    user_bytes_sink: BytesSink,
-) -> BytesSink {
-    Arc::new(move |bytes: Bytes| {
+    user_bytes_sink: BytesStatusSink,
+) -> BytesStatusSink {
+    Arc::new(move |bytes: Bytes| -> TcpDeliverStatus {
         if !*callback_active.lock() {
-            return;
+            // Session is being torn down: report Closed so the bridge breaks
+            // its select loop and `on_server_closed` fires once at the end.
+            return TcpDeliverStatus::Closed;
         }
-        user_bytes_sink(bytes);
+        user_bytes_sink(bytes)
     })
 }
 
@@ -934,13 +1003,15 @@ fn guarded_demand_sink(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_tcp_bridge(
     internal: tokio::io::DuplexStream,
     mut client_rx: mpsc::Receiver<Bytes>,
     paused: Arc<AtomicBool>,
     on_read_demand: DemandSink,
     mut eof_rx: watch::Receiver<bool>,
-    on_server_bytes: BytesSink,
+    on_server_bytes: BytesStatusSink,
+    server_write_notify: Arc<Notify>,
     on_server_closed: ClosedSink,
 ) {
     let (mut read_half, mut write_half) = tokio::io::split(internal);
@@ -950,8 +1021,14 @@ async fn run_tcp_bridge(
     // response bytes.  Without this flag, a write failure would cause a `break` that
     // races against any already-buffered server response bytes.
     let mut write_done = false;
+    // Set to true once `on_server_bytes` reports the session is gone; we then
+    // exit the loop and fire `on_server_closed` once.
+    let mut server_closed = false;
 
     loop {
+        if server_closed {
+            break;
+        }
         tokio::select! {
             maybe = client_rx.recv(), if !write_done => {
                 if let Some(bytes) = maybe {
@@ -1002,7 +1079,27 @@ async fn run_tcp_bridge(
                         }
                         break;
                     }
-                    Ok(n) => on_server_bytes(Bytes::copy_from_slice(&buf[..n])),
+                    Ok(n) => {
+                        // Symmetric backpressure: Swift's writer pump may be
+                        // full. We must not just hand it more bytes — that's
+                        // what leads to unbounded `pending` growth and
+                        // eventually `ENOBUFS` on `flow.write` /
+                        // `connection.send`. On `Paused`, suspend the bridge
+                        // until Swift signals via `signal_*_drain`.
+                        match on_server_bytes(Bytes::copy_from_slice(&buf[..n])) {
+                            TcpDeliverStatus::Accepted => {}
+                            TcpDeliverStatus::Paused => {
+                                server_write_notify.notified().await;
+                            }
+                            TcpDeliverStatus::Closed => {
+                                // Session torn down on the Swift side; no
+                                // demand will follow. Stop the loop after
+                                // this iteration so `on_server_closed`
+                                // fires exactly once.
+                                server_closed = true;
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -138,7 +138,7 @@ fn tcp_session_passthrough_by_default() {
     let engine = build_engine(TestHandler::passthrough());
     let decision = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
-        |_| {},
+        |_| TcpDeliverStatus::Accepted,
         || {},
         || {},
     );
@@ -166,7 +166,7 @@ fn tcp_session_can_be_blocked() {
     });
     let decision = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
-        |_| {},
+        |_| TcpDeliverStatus::Accepted,
         || {},
         || {},
     );
@@ -217,6 +217,7 @@ fn tcp_bridge_delivers_server_bytes() {
             let mut lock = got_clone.lock();
             lock.extend_from_slice(&bytes);
             let _ = notify_tx.send(());
+            TcpDeliverStatus::Accepted
         },
         || {},
         || {},
@@ -225,7 +226,7 @@ fn tcp_bridge_delivers_server_bytes() {
     };
 
     // Phase 2: activate egress (no-op callbacks) so the service task starts.
-    session.activate(|_| {}, || {}, || {});
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
     let _ = session.on_client_bytes(b"ping");
 
     let _ = notify_rx.recv_timeout(Duration::from_secs(1));
@@ -357,14 +358,14 @@ fn tcp_flow_exposes_meta_extension() {
 
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp).with_source_app_pid(777),
-        |_| {},
+        |_| TcpDeliverStatus::Accepted,
         || {},
         || {},
     ) else {
         panic!("expected intercept session");
     };
     // Phase 2: activate so the service task runs and reads extensions.
-    session.activate(|_| {}, || {}, || {});
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
     let _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
@@ -450,6 +451,7 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
                 .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
             move |_bytes| {
                 bytes_count.fetch_add(1, Ordering::Relaxed);
+                TcpDeliverStatus::Accepted
             },
             || {},
             move || {
@@ -494,7 +496,7 @@ fn tcp_on_client_bytes_signals_paused_when_ingress_channel_full() {
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
-        |_| {},
+        |_| TcpDeliverStatus::Accepted,
         || {},
         || {},
     ) else {
@@ -556,7 +558,7 @@ fn tcp_demand_callback_fires_after_ingress_channel_drains() {
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
-        |_| {},
+        |_| TcpDeliverStatus::Accepted,
         move || {
             demand_count_clone.fetch_add(1, Ordering::Relaxed);
             let _ = notify_tx.send(());
@@ -566,7 +568,7 @@ fn tcp_demand_callback_fires_after_ingress_channel_drains() {
         panic!("expected intercept session");
     };
 
-    session.activate(|_| {}, || {}, || {});
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
 
     // Pump until we hit backpressure. With a slow service and capacity=2 we
     // expect this within a handful of iterations.
@@ -613,7 +615,7 @@ fn tcp_bridge_write_failure_closes_ingress_channel() {
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
-        |_| {},
+        |_| TcpDeliverStatus::Accepted,
         || {},
         move || {
             let _ = closed_tx.send(());
@@ -622,7 +624,7 @@ fn tcp_bridge_write_failure_closes_ingress_channel() {
         panic!("expected intercept session");
     };
 
-    session.activate(|_| {}, || {}, || {});
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
 
     // The service has nothing to do and exits, dropping ingress; the bridge's
     // first `write_all` will fail and close the receiver. Pump bytes until
@@ -665,14 +667,14 @@ fn tcp_on_bytes_signals_closed_after_session_cancel() {
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
-        |_| {},
+        |_| TcpDeliverStatus::Accepted,
         || {},
         || {},
     ) else {
         panic!("expected intercept session");
     };
 
-    session.activate(|_| {}, || {}, || {});
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
     session.cancel();
 
     let chunk = vec![0u8; 16];

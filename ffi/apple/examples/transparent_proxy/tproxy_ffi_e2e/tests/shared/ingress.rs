@@ -16,7 +16,10 @@ struct TcpServerCallbackContext {
     closed: Arc<Notify>,
 }
 
-unsafe extern "C" fn on_tcp_server_bytes(ctx: *mut c_void, bytes: bindings::RamaBytesView) {
+unsafe extern "C" fn on_tcp_server_bytes(
+    ctx: *mut c_void,
+    bytes: bindings::RamaBytesView,
+) -> bindings::RamaTcpDeliverStatus {
     let ctx = unsafe { &*(ctx as *const TcpServerCallbackContext) };
     let payload = if bytes.ptr.is_null() || bytes.len == 0 {
         Vec::new()
@@ -24,6 +27,9 @@ unsafe extern "C" fn on_tcp_server_bytes(ctx: *mut c_void, bytes: bindings::Rama
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
     let _ = ctx.sender.send(payload);
+    // The e2e harness uses an unbounded mpsc + tight-loop writer, so there's
+    // no Swift-side backpressure to surface here.
+    bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED
 }
 
 unsafe extern "C" fn on_tcp_server_closed(ctx: *mut c_void) {
@@ -45,7 +51,10 @@ struct TcpEgressCallbackContext {
     closed: Arc<Notify>,
 }
 
-unsafe extern "C" fn on_tcp_write_to_egress(ctx: *mut c_void, bytes: bindings::RamaBytesView) {
+unsafe extern "C" fn on_tcp_write_to_egress(
+    ctx: *mut c_void,
+    bytes: bindings::RamaBytesView,
+) -> bindings::RamaTcpDeliverStatus {
     let ctx = unsafe { &*(ctx as *const TcpEgressCallbackContext) };
     let payload = if bytes.ptr.is_null() || bytes.len == 0 {
         Vec::new()
@@ -53,6 +62,7 @@ unsafe extern "C" fn on_tcp_write_to_egress(ctx: *mut c_void, bytes: bindings::R
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
     let _ = ctx.sender.send(payload);
+    bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED
 }
 
 unsafe extern "C" fn on_tcp_close_egress(ctx: *mut c_void) {

@@ -120,6 +120,46 @@ fn http_app(
                     }
                 }
             })
+            .with_get("/large", {
+                let observations = Arc::clone(observations);
+                move |req: Request| {
+                    let observations = Arc::clone(&observations);
+                    async move {
+                        record_http_observation(observations, &req).await;
+                        // Pseudo-random body sized via `?kb=N` (default 4096 = 4 MiB).
+                        // Used to exercise the symmetric-backpressure path that fired
+                        // ENOBUFS for large h2 responses (`go mod download` etc.) before
+                        // the writer pumps were bounded with drain signaling.
+                        let size_kb = req
+                            .uri()
+                            .query()
+                            .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("kb=")))
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(4096)
+                            .min(64 * 1024); // cap at 64 MiB to keep test runtime sane
+                        let total = size_kb * 1024;
+                        let body = Body::from_stream(stream_fn(move |mut yielder| async move {
+                            // 16 KiB chunks — same shape as the bridge's read buffer.
+                            let chunk_size: usize = 16 * 1024;
+                            let mut sent: usize = 0;
+                            let mut counter: u8 = 0;
+                            while sent < total {
+                                let remaining = total - sent;
+                                let n = remaining.min(chunk_size);
+                                let chunk: Vec<u8> = (0..n)
+                                    .map(|i| counter.wrapping_add(i as u8))
+                                    .collect();
+                                counter = counter.wrapping_add(n as u8);
+                                sent += n;
+                                yielder
+                                    .yield_item(Ok::<_, io::Error>(RamaBytes::from(chunk)))
+                                    .await;
+                            }
+                        }));
+                        (Headers::single(ContentType::octet_stream()), body).into_response()
+                    }
+                }
+            })
             .with_get("/sse", {
                 let observations = Arc::clone(observations);
                 move |req: Request| {

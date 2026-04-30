@@ -136,6 +136,50 @@ private let expectedDisconnectPosixCodes: Set<Int32> = [
     EPIPE,
 ]
 
+/// POSIX errors we treat as **transient backpressure** when a write into
+/// `NEAppProxyFlow.writeData` (or the egress `NWConnection.send`) fails.
+///
+/// Hitting these does NOT mean the flow is dead — Apple's per-flow NE kernel
+/// buffer is temporarily full because the destination app drains slower than
+/// upstream produces. The correct response is to back off briefly and retry
+/// the same chunk, not to tear the flow down. Tearing down on the first
+/// `ENOBUFS` is what surfaces large-h2-response downloads (`go mod download`,
+/// large github / golang artifacts) as "random unrelated errors" mid-transfer.
+private let transientWriteBackpressurePosixCodes: Set<Int32> = [
+    ENOBUFS,
+    EAGAIN,
+    // EWOULDBLOCK aliases EAGAIN on macOS.
+]
+
+/// Returns true when `error` should make a writer pump retry the same chunk
+/// after a short backoff instead of tearing the flow down.
+private func isTransientWriteBackpressure(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    if nsError.domain == NSPOSIXErrorDomain,
+        transientWriteBackpressurePosixCodes.contains(Int32(nsError.code))
+    {
+        return true
+    }
+    // `NWError` from `NWConnection.send` bridges to `NSError` with a `.posix`
+    // domain only when the underlying cause is a POSIX errno; the bridged
+    // domain in that case is also `NSPOSIXErrorDomain`, so the check above
+    // covers both `NEAppProxyFlow` and `NWConnection` write paths.
+    return false
+}
+
+/// Initial / capped backoff delays (ms) for transient-error retry. Capped so
+/// we keep retrying but at a bounded rate; the caller's natural drain cycle
+/// is sub-second on a working flow, so 200 ms is plenty.
+private let writeRetryInitialDelayMs: Int = 5
+private let writeRetryMaxDelayMs: Int = 200
+
+/// Maximum number of in-flight chunks each writer pump (TCP response and
+/// TCP egress) keeps queued before it tells the Rust bridge to pause. Small
+/// enough to bound memory but large enough to absorb h2 multiplexing where
+/// many concurrent streams interleave their data through one TCP flow.
+/// Mirrors the rough scale of `DEFAULT_TCP_CHANNEL_CAPACITY` on the Rust side.
+private let writePumpMaxPending: Int = 256
+
 private func blockedFlowError() -> NSError {
     NSError(
         domain: "NEAppProxyFlowErrorDomain",
@@ -349,6 +393,11 @@ private final class TcpClientWritePump {
     private let flow: NEAppProxyTCPFlow
     private let logger: (FlowLogMessage) -> Void
     private let onTerminalError: (Error) -> Void
+    /// Fired when `pending` drops back below `writePumpMaxPending` after a
+    /// previous `enqueue` returned `.paused`. Wired to
+    /// `RamaTcpSessionHandle.signalServerDrain` so the Rust bridge resumes
+    /// pulling response bytes through the duplex.
+    private let onDrained: () -> Void
     private let queue: DispatchQueue
     private var pending: [Data] = []
     private var writing = false
@@ -356,17 +405,27 @@ private final class TcpClientWritePump {
     private var closed = false
     private var opened = false
     private var onDrainedClose: ((Bool) -> Void)?
+    /// Set when an `enqueue` was rejected with `.paused`. We fire `onDrained`
+    /// on the first removal that drops `pending.count` below the cap, then
+    /// clear this flag — edge-triggered so we never spam Rust with redundant
+    /// drain signals while the queue churns at-cap.
+    private var pausedSignaled: Bool = false
+    /// Current exponential backoff for transient write errors (ms). Reset to
+    /// `writeRetryInitialDelayMs` on every successful write.
+    private var retryDelayMs: Int = writeRetryInitialDelayMs
 
     init(
         flow: NEAppProxyTCPFlow,
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
-        onTerminalError: @escaping (Error) -> Void
+        onTerminalError: @escaping (Error) -> Void,
+        onDrained: @escaping () -> Void
     ) {
         self.flow = flow
         self.queue = queue
         self.logger = logger
         self.onTerminalError = onTerminalError
+        self.onDrained = onDrained
     }
 
     func markOpened() {
@@ -388,13 +447,40 @@ private final class TcpClientWritePump {
         }
     }
 
-    func enqueue(_ data: Data) {
-        guard !data.isEmpty else { return }
-        queue.async {
-            if self.closed || self.closeRequested { return }
+    /// Enqueue a chunk for delivery via `flow.writeData`.
+    ///
+    /// Synchronous so the caller (the Rust bridge, via the FFI thunk) gets a
+    /// `RamaTcpDeliverStatusBridge` back in the same call:
+    ///   - `.accepted` — chunk queued; Rust may keep producing.
+    ///   - `.paused` — `pending` is at `writePumpMaxPending`. Rust must wait
+    ///     for `signalServerDrain` (wired to `onDrained` below) before
+    ///     producing more.
+    ///   - `.closed` — pump is being torn down; no further drain will fire.
+    @discardableResult
+    func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        guard !data.isEmpty else { return .accepted }
+        var status: RamaTcpDeliverStatusBridge = .accepted
+        // queue.sync runs the closure on `flowQueue` and blocks the FFI
+        // thread (a Tokio worker) until it completes. Each per-flow queue is
+        // serial and the items it processes never await, so the wait is
+        // bounded; using `.async` here would force us to maintain a parallel
+        // atomic counter to give the FFI a synchronous bound check, which is
+        // what we used to (asymmetrically) avoid by leaving `pending`
+        // unbounded — exactly the bug we're fixing.
+        queue.sync {
+            if self.closed || self.closeRequested {
+                status = .closed
+                return
+            }
+            if self.pending.count >= writePumpMaxPending {
+                self.pausedSignaled = true
+                status = .paused
+                return
+            }
             self.pending.append(data)
             self.flushLocked()
         }
+        return status
     }
 
     func closeWhenDrained(_ onDrainedClose: @escaping (_ wasOpened: Bool) -> Void) {
@@ -418,10 +504,33 @@ private final class TcpClientWritePump {
 
         writing = true
         let chunk = pending.removeFirst()
+        // Edge-triggered drain signal: if Rust was paused and we just dropped
+        // `pending` below the cap, wake it once. Honouring this from the
+        // pre-write site (rather than the completion handler) lets Rust
+        // start producing the next chunk in parallel with the current write.
+        if pausedSignaled && pending.count < writePumpMaxPending {
+            pausedSignaled = false
+            onDrained()
+        }
         self.flow.write(chunk) { error in
             self.queue.async {
                 self.writing = false
                 if let error {
+                    if isTransientWriteBackpressure(error) {
+                        // Apple's per-flow NE kernel buffer is full. Re-queue
+                        // the chunk at the head of `pending` (preserves order)
+                        // and back off briefly. Tearing the flow down here
+                        // would surface as a "random" mid-stream connection
+                        // drop to the originating app — exactly what was
+                        // breaking large h2 downloads.
+                        self.pending.insert(chunk, at: 0)
+                        let delay = self.retryDelayMs
+                        self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
+                        self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) {
+                            self.flushLocked()
+                        }
+                        return
+                    }
                     self.logger(
                         classifyFlowCallbackError(
                             error,
@@ -437,6 +546,9 @@ private final class TcpClientWritePump {
                     return
                 }
 
+                // Reset backoff after any clean write — keeps subsequent
+                // transient hiccups from inheriting an old long delay.
+                self.retryDelayMs = writeRetryInitialDelayMs
                 self.flushLocked()
             }
         }
@@ -749,24 +861,42 @@ private final class NwTcpConnectionReadPump {
 /// signal half-close to the remote.
 private final class NwTcpConnectionWritePump {
     private let connection: NWConnection
+    /// See `TcpClientWritePump.onDrained`. Wired to
+    /// `RamaTcpSessionHandle.signalEgressDrain`.
+    private let onDrained: () -> Void
     private let queue: DispatchQueue
     private var pending: [Data] = []
     private var writing = false
     private var closeRequested = false
     private var closed = false
+    private var pausedSignaled = false
+    private var retryDelayMs: Int = writeRetryInitialDelayMs
 
-    init(connection: NWConnection, queue: DispatchQueue) {
+    init(connection: NWConnection, queue: DispatchQueue, onDrained: @escaping () -> Void) {
         self.connection = connection
         self.queue = queue
+        self.onDrained = onDrained
     }
 
-    func enqueue(_ data: Data) {
-        guard !data.isEmpty else { return }
-        queue.async {
-            guard !self.closed, !self.closeRequested else { return }
+    /// Same status contract as [`TcpClientWritePump.enqueue`].
+    @discardableResult
+    func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        guard !data.isEmpty else { return .accepted }
+        var status: RamaTcpDeliverStatusBridge = .accepted
+        queue.sync {
+            if self.closed || self.closeRequested {
+                status = .closed
+                return
+            }
+            if self.pending.count >= writePumpMaxPending {
+                self.pausedSignaled = true
+                status = .paused
+                return
+            }
             self.pending.append(data)
             self.flush()
         }
+        return status
     }
 
     func closeWhenDrained() {
@@ -781,16 +911,33 @@ private final class NwTcpConnectionWritePump {
         guard !writing, !pending.isEmpty, !closed else { return }
         writing = true
         let chunk = pending.removeFirst()
+        if pausedSignaled && pending.count < writePumpMaxPending {
+            pausedSignaled = false
+            onDrained()
+        }
         connection.send(content: chunk, completion: .contentProcessed({ [weak self] error in
             guard let self else { return }
             self.queue.async {
                 self.writing = false
-                if error != nil {
+                if let error {
+                    if isTransientWriteBackpressure(error) {
+                        // Same retry logic as `TcpClientWritePump`: kernel
+                        // socket buffer is temporarily full, back off rather
+                        // than tearing down the connection.
+                        self.pending.insert(chunk, at: 0)
+                        let delay = self.retryDelayMs
+                        self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
+                        self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) {
+                            self.flush()
+                        }
+                        return
+                    }
                     self.closed = true
                     self.closeRequested = true
                     self.pending.removeAll(keepingCapacity: false)
                     return
                 }
+                self.retryDelayMs = writeRetryInitialDelayMs
                 self.flush()
                 self.finishCloseIfDrained()
             }
@@ -1073,6 +1220,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 ctx.connection?.cancel()
                 ctx.session?.cancel()
                 self?.removeTcpFlow(flowId)
+            },
+            onDrained: { [weak ctx] in
+                // Wired below to RamaTcpSessionHandle.signalServerDrain via
+                // the weak ctx → session ref so we don't pin the session
+                // alive past its natural teardown.
+                ctx?.session?.signalServerDrain()
             }
         )
 
@@ -1184,7 +1337,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     timeoutWork.cancel()
 
                     let writePump = NwTcpConnectionWritePump(
-                        connection: connection, queue: flowQueue)
+                        connection: connection,
+                        queue: flowQueue,
+                        onDrained: { [weak ctx] in
+                            ctx?.session?.signalEgressDrain()
+                        }
+                    )
                     let readPump = NwTcpConnectionReadPump(
                         connection: connection, session: session, queue: flowQueue)
                     ctx.egressReadPump = readPump

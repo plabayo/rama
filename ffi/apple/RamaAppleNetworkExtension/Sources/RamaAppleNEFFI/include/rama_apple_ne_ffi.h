@@ -226,7 +226,12 @@ typedef enum : uint8_t {
     RAMA_TCP_DELIVER_CLOSED = 2,
 } RamaTcpDeliverStatus;
 
-typedef void (*RamaTcpServerBytesFn)(void* context, RamaBytesView bytes);
+/// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's
+/// `TcpClientWritePump` is full. Swift MUST call
+/// `rama_transparent_proxy_tcp_session_signal_server_drain` after its writer
+/// drains capacity following a `Paused` return — without that the bridge
+/// stays parked forever.
+typedef RamaTcpDeliverStatus (*RamaTcpServerBytesFn)(void* context, RamaBytesView bytes);
 typedef void (*RamaTcpServerClosedFn)(void* context);
 typedef void (*RamaTcpClientReadDemandFn)(void* context);
 
@@ -334,7 +339,11 @@ typedef struct {
     RamaNwEgressParameters parameters;
 } RamaUdpEgressConnectOptions;
 
-typedef void (*RamaTcpEgressWriteFn)(void* context, RamaBytesView bytes);
+/// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's
+/// `NwTcpConnectionWritePump` is full. Swift MUST call
+/// `rama_transparent_proxy_tcp_session_signal_egress_drain` after its writer
+/// drains capacity following a `Paused` return.
+typedef RamaTcpDeliverStatus (*RamaTcpEgressWriteFn)(void* context, RamaBytesView bytes);
 typedef void (*RamaTcpEgressCloseFn)(void* context);
 typedef void (*RamaTcpEgressReadDemandFn)(void* context);
 
@@ -519,6 +528,22 @@ RamaTcpDeliverStatus rama_transparent_proxy_tcp_session_on_egress_bytes(
 ///
 /// Called by Swift when the NWConnection closes or enters a failed state.
 void rama_transparent_proxy_tcp_session_on_egress_eof(
+    RamaTransparentProxyTcpSession* session
+);
+
+/// Swift → Rust: signal that the response writer pump (`TcpClientWritePump`)
+/// has drained capacity after `on_server_bytes` returned `RAMA_TCP_DELIVER_PAUSED`.
+///
+/// Wakes the Rust bridge so it resumes pulling response bytes through the
+/// duplex. Idempotent — collapses redundant calls into a single permit.
+void rama_transparent_proxy_tcp_session_signal_server_drain(
+    RamaTransparentProxyTcpSession* session
+);
+
+/// Swift → Rust: signal that the egress writer pump
+/// (`NwTcpConnectionWritePump`) has drained capacity after
+/// `on_write_to_egress` returned `RAMA_TCP_DELIVER_PAUSED`.
+void rama_transparent_proxy_tcp_session_signal_egress_drain(
     RamaTransparentProxyTcpSession* session
 );
 

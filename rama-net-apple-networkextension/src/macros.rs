@@ -291,12 +291,15 @@ macro_rules! __transparent_proxy_ffi_emit {
             let engine = unsafe { &*engine };
             let result = engine.new_tcp_session(
                 typed_meta,
-                ::std::sync::Arc::new(move |bytes: &[u8]| {
+                ::std::sync::Arc::new(move |bytes: &[u8]| -> RamaTcpDeliverStatus {
                     let Some(callback) = on_server_bytes else {
-                        return;
+                        // No Swift writer registered → behave as accepted
+                        // so the bridge keeps draining the duplex; bytes
+                        // simply go nowhere.
+                        return RamaTcpDeliverStatus::Accepted;
                     };
                     if bytes.is_empty() {
-                        return;
+                        return RamaTcpDeliverStatus::Accepted;
                     }
                     unsafe {
                         callback(
@@ -305,7 +308,7 @@ macro_rules! __transparent_proxy_ffi_emit {
                                 ptr: bytes.as_ptr(),
                                 len: bytes.len(),
                             },
-                        );
+                        )
                     }
                 }),
                 ::std::sync::Arc::new(move || {
@@ -568,12 +571,15 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             unsafe {
                 (*session).activate(
-                    move |bytes: $crate::__RamaBytes| {
+                    move |bytes: $crate::__RamaBytes| -> RamaTcpDeliverStatus {
                         let Some(callback) = on_write_to_egress else {
-                            return;
+                            // No Swift writer registered: behave as accepted
+                            // so the bridge keeps pulling bytes; they go
+                            // nowhere but at least the session doesn't stall.
+                            return RamaTcpDeliverStatus::Accepted;
                         };
                         if bytes.is_empty() {
-                            return;
+                            return RamaTcpDeliverStatus::Accepted;
                         }
                         unsafe {
                             callback(
@@ -582,7 +588,7 @@ macro_rules! __transparent_proxy_ffi_emit {
                                     ptr: bytes.as_ptr(),
                                     len: bytes.len(),
                                 },
-                            );
+                            )
                         }
                     },
                     move || {
@@ -597,6 +603,33 @@ macro_rules! __transparent_proxy_ffi_emit {
                     },
                 )
             };
+        }
+
+        /// Swift → Rust: signal that the `TcpClientWritePump` has drained
+        /// capacity after `on_server_bytes` returned `Paused`.
+        ///
+        /// Wakes the Rust bridge so it resumes forwarding response bytes.
+        /// Idempotent — collapses redundant calls into a single permit.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_signal_server_drain(
+            session: *mut RamaTransparentProxyTcpSession,
+        ) {
+            if session.is_null() {
+                return;
+            }
+            unsafe { (*session).signal_server_drain() };
+        }
+
+        /// Swift → Rust: signal that the `NwTcpConnectionWritePump` has
+        /// drained capacity after `on_write_to_egress` returned `Paused`.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_signal_egress_drain(
+            session: *mut RamaTransparentProxyTcpSession,
+        ) {
+            if session.is_null() {
+                return;
+            }
+            unsafe { (*session).signal_egress_drain() };
         }
 
         /// Deliver bytes from the egress `NWConnection` into the Rust TCP session.

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::tproxy::{SessionFlowAction, TransparentProxyConfig, TransparentProxyFlowMeta};
+use crate::tproxy::{
+    SessionFlowAction, TcpDeliverStatus, TransparentProxyConfig, TransparentProxyFlowMeta,
+};
 use rama_core::bytes::Bytes;
 
 use super::{
@@ -9,6 +11,11 @@ use super::{
 };
 
 pub type BoxedServerBytesSink = Arc<dyn Fn(&[u8]) + Send + Sync + 'static>;
+/// Variant of [`BoxedServerBytesSink`] for the TCP response direction. Returns
+/// a [`TcpDeliverStatus`] so the bridge can pause when Swift's writer pump is
+/// full.
+pub(crate) type BoxedServerBytesStatusSink =
+    Arc<dyn Fn(&[u8]) -> TcpDeliverStatus + Send + Sync + 'static>;
 pub type BoxedClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
 pub type BoxedDemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
 
@@ -19,7 +26,7 @@ trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn new_tcp_session(
         &self,
         meta: TransparentProxyFlowMeta,
-        on_server_bytes: BoxedServerBytesSink,
+        on_server_bytes: BoxedServerBytesStatusSink,
         on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyTcpSession>;
@@ -51,13 +58,13 @@ where
     fn new_tcp_session(
         &self,
         meta: TransparentProxyFlowMeta,
-        on_server_bytes: BoxedServerBytesSink,
+        on_server_bytes: BoxedServerBytesStatusSink,
         on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyTcpSession> {
         self.new_tcp_session(
             meta,
-            move |bytes| on_server_bytes(bytes.as_ref()),
+            move |bytes: Bytes| -> TcpDeliverStatus { on_server_bytes(bytes.as_ref()) },
             move || on_client_read_demand(),
             move || on_server_closed(),
         )
@@ -97,7 +104,7 @@ impl BoxedTransparentProxyEngine {
     pub fn new_tcp_session(
         &self,
         meta: TransparentProxyFlowMeta,
-        on_server_bytes: BoxedServerBytesSink,
+        on_server_bytes: BoxedServerBytesStatusSink,
         on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyTcpSession> {
