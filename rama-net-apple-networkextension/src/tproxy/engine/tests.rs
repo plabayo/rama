@@ -116,6 +116,17 @@ fn build_engine(handler: TestHandler) -> TransparentProxyEngine<TestHandler> {
         .expect("build engine")
 }
 
+fn build_engine_with_tcp_channel_capacity(
+    handler: TestHandler,
+    capacity: usize,
+) -> TransparentProxyEngine<TestHandler> {
+    TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_tcp_channel_capacity(capacity)
+        .build()
+        .expect("build engine")
+}
+
 #[test]
 fn engine_builds_live_and_stop_is_terminal() {
     let engine = build_engine(TestHandler::passthrough());
@@ -128,6 +139,7 @@ fn tcp_session_passthrough_by_default() {
     let decision = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
         |_| {},
+        || {},
         || {},
     );
     assert!(matches!(decision, SessionFlowAction::Passthrough));
@@ -155,6 +167,7 @@ fn tcp_session_can_be_blocked() {
     let decision = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
         |_| {},
+        || {},
         || {},
     );
     assert!(matches!(decision, SessionFlowAction::Blocked));
@@ -206,13 +219,14 @@ fn tcp_bridge_delivers_server_bytes() {
             let _ = notify_tx.send(());
         },
         || {},
+        || {},
     ) else {
         panic!("expected intercept session");
     };
 
     // Phase 2: activate egress (no-op callbacks) so the service task starts.
-    session.activate(|_| {}, || {});
-    session.on_client_bytes(b"ping");
+    session.activate(|_| {}, || {}, || {});
+    let _ = session.on_client_bytes(b"ping");
 
     let _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
@@ -345,11 +359,12 @@ fn tcp_flow_exposes_meta_extension() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp).with_source_app_pid(777),
         |_| {},
         || {},
+        || {},
     ) else {
         panic!("expected intercept session");
     };
     // Phase 2: activate so the service task runs and reads extensions.
-    session.activate(|_| {}, || {});
+    session.activate(|_| {}, || {}, || {});
     let _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
@@ -436,6 +451,7 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
             move |_bytes| {
                 bytes_count.fetch_add(1, Ordering::Relaxed);
             },
+            || {},
             move || {
                 closed_count.fetch_add(1, Ordering::Relaxed);
             },
@@ -456,6 +472,244 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
     let start = Instant::now();
     engine.stop(0);
     assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn tcp_on_client_bytes_signals_paused_when_ingress_channel_full() {
+    // Without `activate`, the bridge tasks never start, so the channel never
+    // drains: any send beyond `tcp_channel_capacity` must come back as
+    // `Paused`. This proves `on_client_bytes` is non-blocking and surfaces
+    // fullness as a pause signal — the load-bearing property the Swift FFI
+    // relies on.
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|_: BridgeIo<TcpFlow, NwTcpStream>| async move { Ok(()) }).boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine_with_tcp_channel_capacity(handler, 2);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
+        |_| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    let chunk = vec![0u8; 16];
+    let mut accepted = 0usize;
+    let mut paused = 0usize;
+    for _ in 0..10 {
+        match session.on_client_bytes(&chunk) {
+            TcpDeliverStatus::Accepted => accepted += 1,
+            TcpDeliverStatus::Paused => paused += 1,
+            TcpDeliverStatus::Closed => panic!("unexpected Closed before teardown"),
+        }
+    }
+
+    assert_eq!(accepted, 2, "channel capacity is 2");
+    assert_eq!(paused, 8);
+
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_demand_callback_fires_after_ingress_channel_drains() {
+    // The bridge runs and the service drains the duplex, so the bounded
+    // channel transitions from full → empty. After every successful `recv`
+    // the bridge swaps `client_paused` and fires `on_client_read_demand`
+    // exactly once per pause event. We expect at least one demand callback
+    // by the time the service finishes draining.
+    let demand_count = Arc::new(AtomicUsize::new(0));
+    let demand_count_clone = demand_count.clone();
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|bridge: BridgeIo<TcpFlow, NwTcpStream>| async move {
+                let BridgeIo(mut ingress, _egress) = bridge;
+                let mut buf = vec![0u8; 4096];
+                // Slow drain: forces the bounded channel + duplex to back up
+                // while the test pumps bytes from another thread.
+                loop {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    match ingress.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+                Ok(())
+            })
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine_with_tcp_channel_capacity(handler, 2);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
+        |_| {},
+        move || {
+            demand_count_clone.fetch_add(1, Ordering::Relaxed);
+            let _ = notify_tx.send(());
+        },
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate(|_| {}, || {}, || {});
+
+    // Pump until we hit backpressure. With a slow service and capacity=2 we
+    // expect this within a handful of iterations.
+    let chunk = vec![0u8; 4096];
+    let mut got_paused = false;
+    for _ in 0..1000 {
+        if matches!(session.on_client_bytes(&chunk), TcpDeliverStatus::Paused) {
+            got_paused = true;
+            break;
+        }
+    }
+    assert!(got_paused, "expected the bounded channel to fill up");
+
+    // Give the bridge time to drain at least one chunk and fire demand.
+    let _ = notify_rx.recv_timeout(Duration::from_secs(2));
+    assert!(
+        demand_count.load(Ordering::Relaxed) >= 1,
+        "demand callback should fire when the bridge frees a slot"
+    );
+
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_bridge_write_failure_closes_ingress_channel() {
+    // When the service finishes (and drops its half of the duplex) the
+    // bridge's `write_all` fails and we close the receiver. From that point
+    // on `on_client_bytes` MUST report `Closed` (not `Paused`) — Swift uses
+    // that to terminate the read pump immediately rather than waiting on a
+    // demand callback that will never come.
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            // Service exits immediately, dropping its end of the duplex.
+            service: service_fn(|_: BridgeIo<TcpFlow, NwTcpStream>| async move { Ok(()) }).boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine_with_tcp_channel_capacity(handler, 2);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
+        |_| {},
+        || {},
+        move || {
+            let _ = closed_tx.send(());
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate(|_| {}, || {}, || {});
+
+    // The service has nothing to do and exits, dropping ingress; the bridge's
+    // first `write_all` will fail and close the receiver. Pump bytes until
+    // we observe the Closed status.
+    let chunk = vec![0u8; 1024];
+    let mut saw_closed = false;
+    for _ in 0..200 {
+        if matches!(session.on_client_bytes(&chunk), TcpDeliverStatus::Closed) {
+            saw_closed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        saw_closed,
+        "on_client_bytes must report Closed after a bridge write failure"
+    );
+
+    let _ = closed_rx.recv_timeout(Duration::from_secs(1));
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_on_bytes_signals_closed_after_session_cancel() {
+    // After `cancel()`, the FFI byte-delivery calls MUST surface
+    // `Closed` (not `Paused`) so the Swift pumps terminate immediately.
+    // Regression: the egress read pump previously dropped the chunk on
+    // a nil-session and rescheduled another `connection.receive`, leaving
+    // NWConnection traffic alive after the session was gone.
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|_: BridgeIo<TcpFlow, NwTcpStream>| async move { Ok(()) }).boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
+        |_| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate(|_| {}, || {}, || {});
+    session.cancel();
+
+    let chunk = vec![0u8; 16];
+    assert_eq!(
+        session.on_client_bytes(&chunk),
+        TcpDeliverStatus::Closed,
+        "on_client_bytes must report Closed after cancel"
+    );
+    assert_eq!(
+        session.on_egress_bytes(&chunk),
+        TcpDeliverStatus::Closed,
+        "on_egress_bytes must report Closed after cancel — \
+         this is the contract the Swift egress read pump relies on to \
+         terminate instead of looping on connection.receive forever"
+    );
+
+    engine.stop(0);
+}
+
+#[test]
+fn builder_rejects_zero_channel_capacity() {
+    // `tokio::sync::mpsc::channel(0)` panics; an explicit `Some(0)` is
+    // treated as a misconfiguration rather than silently substituting the
+    // default. `None` continues to mean "use default".
+    let make = |tcp: Option<usize>, udp: Option<usize>| {
+        let mut builder =
+            TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+                .with_runtime_factory(TestRuntimeFactory);
+        builder = builder.maybe_with_tcp_channel_capacity(tcp);
+        builder = builder.maybe_with_udp_channel_capacity(udp);
+        builder.build()
+    };
+
+    assert!(make(Some(0), None).is_err(), "Some(0) tcp must error");
+    assert!(make(None, Some(0)).is_err(), "Some(0) udp must error");
+    let engine = make(None, None).expect("None defaults must build");
+    engine.stop(0);
 }
 
 #[test]

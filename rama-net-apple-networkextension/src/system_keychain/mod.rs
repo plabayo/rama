@@ -142,6 +142,9 @@ pub fn load_secret(service: &str, account: &str) -> Result<Option<Vec<u8>>, Syst
             std::slice::from_raw_parts(password_data.cast::<u8>(), password_length as usize)
         };
         let vec = slice.to_vec();
+        // SAFETY: `password_data` was returned by
+        // `SecKeychainFindGenericPassword` and has not yet been freed; we
+        // copied the bytes into `vec` above so freeing is safe.
         unsafe { sys::SecKeychainItemFreeContent(std::ptr::null_mut(), password_data) };
         vec
     };

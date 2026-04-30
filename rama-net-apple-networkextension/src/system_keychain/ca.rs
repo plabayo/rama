@@ -154,6 +154,7 @@ pub fn uninstall_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
 
         // SAFETY: cf_data is a valid non-null CFDataRef.
         let len = unsafe { sys::CFDataGetLength(cf_data) } as usize;
+        // SAFETY: cf_data is a valid non-null CFDataRef.
         let bytes_ptr = unsafe { sys::CFDataGetBytePtr(cf_data) };
         if bytes_ptr.is_null() || len != cert_der.len() {
             continue;

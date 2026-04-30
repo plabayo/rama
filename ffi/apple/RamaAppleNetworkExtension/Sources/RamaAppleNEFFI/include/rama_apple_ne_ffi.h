@@ -204,8 +204,31 @@ typedef struct {
     size_t app_group_dir_utf8_len;
 } RamaTransparentProxyInitConfig;
 
+/// Outcome of `rama_transparent_proxy_tcp_session_on_client_bytes` /
+/// `rama_transparent_proxy_tcp_session_on_egress_bytes`.
+///
+/// Swift MUST distinguish `Paused` from `Closed`:
+///   * On `Paused`, pause reads and resume only when the matching
+///     `on_*_read_demand` callback fires.
+///   * On `Closed`, terminate the read pump immediately — no demand
+///     callback will ever follow.
+///
+/// The underlying type is fixed at `uint8_t` to match the Rust side's
+/// `#[repr(u8)]` exactly. Without the explicit `: uint8_t` the C standard
+/// leaves the enum width implementation-defined (typically `int`), which
+/// would mismatch the 1-byte Rust return on some ABIs / bindgen configs.
+typedef enum : uint8_t {
+    /// Bytes were queued; Swift may continue reading from the kernel.
+    RAMA_TCP_DELIVER_ACCEPTED = 0,
+    /// Per-flow channel is full; pause until on_*_read_demand fires.
+    RAMA_TCP_DELIVER_PAUSED = 1,
+    /// Per-flow channel is closed (session teardown); stop reading.
+    RAMA_TCP_DELIVER_CLOSED = 2,
+} RamaTcpDeliverStatus;
+
 typedef void (*RamaTcpServerBytesFn)(void* context, RamaBytesView bytes);
 typedef void (*RamaTcpServerClosedFn)(void* context);
+typedef void (*RamaTcpClientReadDemandFn)(void* context);
 
 /// Callbacks Swift provides for Rust TCP session events.
 ///
@@ -229,6 +252,13 @@ typedef struct {
     RamaTcpServerBytesFn on_server_bytes;
     /// Called when Rust closes server-side TCP direction.
     RamaTcpServerClosedFn on_server_closed;
+    /// Called when the Rust ingress channel has space again after
+    /// `rama_transparent_proxy_tcp_session_on_client_bytes` returned `false`.
+    /// Swift MUST keep `flow.readData` paused between the `false` return and
+    /// this callback firing — otherwise bytes pile up in Apple's per-flow NE
+    /// kernel buffer and eventually abort the shared NEAppProxyProvider
+    /// director.
+    RamaTcpClientReadDemandFn on_client_read_demand;
 } RamaTransparentProxyTcpSessionCallbacks;
 
 typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes);
@@ -306,6 +336,7 @@ typedef struct {
 
 typedef void (*RamaTcpEgressWriteFn)(void* context, RamaBytesView bytes);
 typedef void (*RamaTcpEgressCloseFn)(void* context);
+typedef void (*RamaTcpEgressReadDemandFn)(void* context);
 
 /// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
 ///
@@ -325,6 +356,11 @@ typedef struct {
     void* context;
     RamaTcpEgressWriteFn on_write_to_egress;
     RamaTcpEgressCloseFn on_close_egress;
+    /// Called when the Rust egress channel has space again after
+    /// `rama_transparent_proxy_tcp_session_on_egress_bytes` returned `false`.
+    /// Swift MUST keep `connection.receive(...)` paused between the `false`
+    /// return and this callback firing.
+    RamaTcpEgressReadDemandFn on_egress_read_demand;
 } RamaTransparentProxyTcpEgressCallbacks;
 
 typedef void (*RamaUdpEgressSendFn)(void* context, RamaBytesView bytes);
@@ -426,10 +462,17 @@ RamaTransparentProxyTcpSessionResult rama_transparent_proxy_engine_new_tcp_sessi
 /// NULL is allowed and ignored.
 void rama_transparent_proxy_tcp_session_free(RamaTransparentProxyTcpSession* session);
 
-/// Deliver client->server TCP bytes into Rust session.
+/// Deliver client->server TCP bytes into the Rust session.
 ///
 /// `bytes` is borrowed for duration of the call.
-void rama_transparent_proxy_tcp_session_on_client_bytes(
+///
+/// Returns a `RamaTcpDeliverStatus`:
+///   * `RAMA_TCP_DELIVER_ACCEPTED`: Swift may keep reading from the kernel.
+///   * `RAMA_TCP_DELIVER_PAUSED`: per-flow ingress channel is full; pause
+///     `flow.readData` until `on_client_read_demand` fires.
+///   * `RAMA_TCP_DELIVER_CLOSED`: session has been torn down; terminate the
+///     read pump immediately, no demand callback will follow.
+RamaTcpDeliverStatus rama_transparent_proxy_tcp_session_on_client_bytes(
     RamaTransparentProxyTcpSession* session,
     RamaBytesView bytes
 );
@@ -464,7 +507,10 @@ void rama_transparent_proxy_tcp_session_activate(
 ///
 /// Called by Swift when NWConnection.receive delivers data from the remote server.
 /// `bytes` is borrowed for the duration of the call.
-void rama_transparent_proxy_tcp_session_on_egress_bytes(
+///
+/// Same `RamaTcpDeliverStatus` return contract as
+/// `rama_transparent_proxy_tcp_session_on_client_bytes`.
+RamaTcpDeliverStatus rama_transparent_proxy_tcp_session_on_egress_bytes(
     RamaTransparentProxyTcpSession* session,
     RamaBytesView bytes
 );

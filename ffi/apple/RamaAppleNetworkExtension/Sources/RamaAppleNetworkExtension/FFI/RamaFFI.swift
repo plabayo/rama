@@ -38,6 +38,24 @@ enum RamaTransparentProxyTcpSessionDecision {
     case blocked
 }
 
+/// Outcome of a Swift → Rust TCP byte-delivery call.
+///
+/// Mirrors the C-side `RamaTcpDeliverStatus` enum exactly. Swift code must
+/// distinguish `.paused` from `.closed`: `.paused` means wait for the
+/// matching `onClientReadDemand` / `onEgressReadDemand` callback before
+/// resuming; `.closed` is terminal and the read pump must stop immediately.
+enum RamaTcpDeliverStatusBridge: UInt8 {
+    case accepted = 0
+    case paused = 1
+    case closed = 2
+}
+
+private func tcpDeliverStatus(_ raw: RamaTcpDeliverStatus) -> RamaTcpDeliverStatusBridge {
+    // The C enum is `repr(u8)` with the same discriminants; treat any
+    // unknown value as `.closed` rather than silently dropping the signal.
+    RamaTcpDeliverStatusBridge(rawValue: UInt8(raw.rawValue)) ?? .closed
+}
+
 enum RamaTransparentProxyUdpSessionDecision {
     case intercept(RamaUdpSessionHandle)
     case passthrough
@@ -46,13 +64,16 @@ enum RamaTransparentProxyUdpSessionDecision {
 
 final class TcpSessionCallbackBox {
     let onServerBytes: (Data) -> Void
+    let onClientReadDemand: () -> Void
     let onServerClosed: () -> Void
 
     init(
         onServerBytes: @escaping (Data) -> Void,
+        onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) {
         self.onServerBytes = onServerBytes
+        self.onClientReadDemand = onClientReadDemand
         self.onServerClosed = onServerClosed
     }
 }
@@ -79,13 +100,16 @@ final class UdpSessionCallbackBox {
 /// while the egress `NWConnection` is active.
 final class TcpEgressCallbackBox {
     let onWriteToEgress: (Data) -> Void
+    let onEgressReadDemand: () -> Void
     let onCloseEgress: () -> Void
 
     init(
         onWriteToEgress: @escaping (Data) -> Void,
+        onEgressReadDemand: @escaping () -> Void,
         onCloseEgress: @escaping () -> Void
     ) {
         self.onWriteToEgress = onWriteToEgress
+        self.onEgressReadDemand = onEgressReadDemand
         self.onCloseEgress = onCloseEgress
     }
 }
@@ -202,6 +226,13 @@ private let ramaTcpOnServerBytesCallback:
             box.onServerBytes(data)
         }
 
+private let ramaTcpOnClientReadDemandCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void =
+    { context in
+        guard let context else { return }
+        let box = Unmanaged<TcpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        box.onClientReadDemand()
+    }
+
 private let ramaTcpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
     context in
     guard let context else { return }
@@ -251,6 +282,13 @@ private let ramaTcpOnCloseEgressCallback: @convention(c) (UnsafeMutableRawPointe
     let box = Unmanaged<TcpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
     box.onCloseEgress()
 }
+
+private let ramaTcpOnEgressReadDemandCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void =
+    { context in
+        guard let context else { return }
+        let box = Unmanaged<TcpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        box.onEgressReadDemand()
+    }
 
 private let ramaUdpOnSendToEgressCallback:
     @convention(c) (UnsafeMutableRawPointer?, RamaBytesView) -> Void = { context, view in
@@ -386,6 +424,7 @@ final class RamaTransparentProxyEngineHandle {
     func newTcpSession(
         meta: RamaTransparentProxyFlowMetaBridge,
         onServerBytes: @escaping (Data) -> Void,
+        onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyTcpSessionDecision {
         guard let p = enginePtr else { return .passthrough }
@@ -393,12 +432,14 @@ final class RamaTransparentProxyEngineHandle {
         let callbackBox = Unmanaged.passRetained(
             TcpSessionCallbackBox(
                 onServerBytes: onServerBytes,
+                onClientReadDemand: onClientReadDemand,
                 onServerClosed: onServerClosed
             ))
         let callbacks = RamaTransparentProxyTcpSessionCallbacks(
             context: callbackBox.toOpaque(),
             on_server_bytes: ramaTcpOnServerBytesCallback,
-            on_server_closed: ramaTcpOnServerClosedCallback
+            on_server_closed: ramaTcpOnServerClosedCallback,
+            on_client_read_demand: ramaTcpOnClientReadDemandCallback
         )
 
         let result = withFlowMeta(meta) { metaPtr in
@@ -504,18 +545,27 @@ final class RamaTcpSessionHandle {
         egressBox?.release()
     }
 
-    func onClientBytes(_ data: Data) {
-        guard !data.isEmpty else { return }
+    /// Deliver bytes from the intercepted flow to the Rust session.
+    ///
+    /// Returns the FFI delivery status. Callers MUST honor the status:
+    ///   * `.accepted` — keep reading from the kernel.
+    ///   * `.paused` — pause `flow.readData` until `onClientReadDemand` fires.
+    ///   * `.closed` — terminate the read pump; no demand will follow.
+    @discardableResult
+    func onClientBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        guard !data.isEmpty else { return .accepted }
 
         lock.lock()
         defer { lock.unlock() }
-        guard !cancelled, let s = sessionPtr else { return }
+        guard !cancelled, let s = sessionPtr else { return .closed }
 
-        data.withUnsafeBytes { raw in
+        return data.withUnsafeBytes { raw -> RamaTcpDeliverStatusBridge in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return }
+            guard let base else { return .closed }
             let view = RamaBytesView(ptr: base, len: Int(data.count))
-            rama_transparent_proxy_tcp_session_on_client_bytes(s, view)
+            return tcpDeliverStatus(
+                rama_transparent_proxy_tcp_session_on_client_bytes(s, view)
+            )
         }
     }
 
@@ -560,6 +610,7 @@ final class RamaTcpSessionHandle {
     ///   - onCloseEgress: Called by Rust when the egress write direction is done.
     func activate(
         onWriteToEgress: @escaping (Data) -> Void,
+        onEgressReadDemand: @escaping () -> Void,
         onCloseEgress: @escaping () -> Void
     ) {
         lock.lock()
@@ -568,6 +619,7 @@ final class RamaTcpSessionHandle {
         let box = Unmanaged.passRetained(
             TcpEgressCallbackBox(
                 onWriteToEgress: onWriteToEgress,
+                onEgressReadDemand: onEgressReadDemand,
                 onCloseEgress: onCloseEgress
             ))
         egressCallbackBox = box
@@ -575,24 +627,30 @@ final class RamaTcpSessionHandle {
         let callbacks = RamaTransparentProxyTcpEgressCallbacks(
             context: box.toOpaque(),
             on_write_to_egress: ramaTcpOnWriteToEgressCallback,
-            on_close_egress: ramaTcpOnCloseEgressCallback
+            on_close_egress: ramaTcpOnCloseEgressCallback,
+            on_egress_read_demand: ramaTcpOnEgressReadDemandCallback
         )
         rama_transparent_proxy_tcp_session_activate(s, callbacks)
     }
 
     /// Deliver bytes from the egress `NWConnection` to the Rust session.
-    func onEgressBytes(_ data: Data) {
-        guard !data.isEmpty else { return }
+    ///
+    /// Same status contract as [`onClientBytes`] — see there.
+    @discardableResult
+    func onEgressBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        guard !data.isEmpty else { return .accepted }
 
         lock.lock()
         defer { lock.unlock() }
-        guard !cancelled, let s = sessionPtr else { return }
+        guard !cancelled, let s = sessionPtr else { return .closed }
 
-        data.withUnsafeBytes { raw in
+        return data.withUnsafeBytes { raw -> RamaTcpDeliverStatusBridge in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return }
+            guard let base else { return .closed }
             let view = RamaBytesView(ptr: base, len: data.count)
-            rama_transparent_proxy_tcp_session_on_egress_bytes(s, view)
+            return tcpDeliverStatus(
+                rama_transparent_proxy_tcp_session_on_egress_bytes(s, view)
+            )
         }
     }
 

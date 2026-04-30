@@ -20,6 +20,7 @@ trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_bytes: BoxedServerBytesSink,
+        on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyTcpSession>;
     fn new_udp_session(
@@ -51,11 +52,13 @@ where
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_bytes: BoxedServerBytesSink,
+        on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyTcpSession> {
         self.new_tcp_session(
             meta,
             move |bytes| on_server_bytes(bytes.as_ref()),
+            move || on_client_read_demand(),
             move || on_server_closed(),
         )
     }
@@ -95,10 +98,15 @@ impl BoxedTransparentProxyEngine {
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_bytes: BoxedServerBytesSink,
+        on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyTcpSession> {
-        self.0
-            .new_tcp_session(meta, on_server_bytes, on_server_closed)
+        self.0.new_tcp_session(
+            meta,
+            on_server_bytes,
+            on_client_read_demand,
+            on_server_closed,
+        )
     }
 
     pub fn new_udp_session(

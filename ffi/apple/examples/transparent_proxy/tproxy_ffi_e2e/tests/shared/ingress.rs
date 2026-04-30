@@ -31,6 +31,13 @@ unsafe extern "C" fn on_tcp_server_closed(ctx: *mut c_void) {
     ctx.closed.notify_waiters();
 }
 
+/// Resume signal from Rust. The e2e test reads in a tight loop so it never
+/// has to honor a backpressure pause — but we still log the call to keep the
+/// FFI shape exercised.
+unsafe extern "C" fn on_tcp_client_read_demand(_ctx: *mut c_void) {}
+
+unsafe extern "C" fn on_tcp_egress_read_demand(_ctx: *mut c_void) {}
+
 // ── Egress (service → upstream) callback context ─────────────────────────────
 
 struct TcpEgressCallbackContext {
@@ -215,6 +222,7 @@ async fn serve_one_ingress_connection(
                     context: server_ctx_ptr as *mut c_void,
                     on_server_bytes: Some(on_tcp_server_bytes),
                     on_server_closed: Some(on_tcp_server_closed),
+                    on_client_read_demand: Some(on_tcp_client_read_demand),
                 },
             )
         };
@@ -238,6 +246,7 @@ async fn serve_one_ingress_connection(
                 context: egress_ctx_ptr as *mut c_void,
                 on_write_to_egress: Some(on_tcp_write_to_egress),
                 on_close_egress: Some(on_tcp_close_egress),
+                on_egress_read_demand: Some(on_tcp_egress_read_demand),
             },
         );
     }

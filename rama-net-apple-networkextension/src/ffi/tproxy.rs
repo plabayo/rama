@@ -77,6 +77,7 @@ impl TransparentProxyFlowMeta {
     /// All pointer + length fields in `self` must be valid for reads during
     /// this call.
     pub unsafe fn as_owned_rust_type(&self) -> tproxy::TransparentProxyFlowMeta {
+        // SAFETY: pointer + length validity is guaranteed by caller contract.
         let source_app_audit_token = unsafe {
             opt_audit_token(
                 self.source_app_audit_token_bytes,
@@ -268,6 +269,10 @@ pub struct TransparentProxyTcpSessionCallbacks {
     pub context: *mut c_void,
     pub on_server_bytes: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// Rust → Swift: signal that the per-flow ingress channel has space again
+    /// after [`crate::tproxy::TransparentProxyTcpSession::on_client_bytes`] returned `false`.
+    /// Swift must keep `flow.readData` paused until this fires.
+    pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 /// Callbacks Swift provides for Rust UDP session events.
@@ -414,6 +419,10 @@ pub struct TransparentProxyTcpEgressCallbacks {
     pub on_write_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
     /// Rust calls this when the service is done writing to the egress NWConnection.
     pub on_close_egress: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// Rust → Swift: signal that the per-flow egress channel has space again
+    /// after [`crate::tproxy::TransparentProxyTcpSession::on_egress_bytes`] returned `false`.
+    /// Swift must keep `connection.receive` paused until this fires.
+    pub on_egress_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 /// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
@@ -539,6 +548,8 @@ mod tests {
             source_app_pid_is_set: true,
         };
 
+        // SAFETY: every pointer field is null with matching len 0 above, so
+        // the read-validity contract is trivially satisfied.
         let owned = unsafe { meta.as_owned_rust_type() };
         assert_eq!(owned.source_app_pid, Some(4242));
         assert!(owned.source_app_audit_token.is_none());

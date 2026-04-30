@@ -162,12 +162,21 @@ private func tcpUpstreamUnavailableError() -> NSError {
 
 private final class TcpClientReadPump {
     private let flow: NEAppProxyTCPFlow
-    private let session: RamaTcpSessionHandle
+    /// `weak` so the pump doesn't pin the session alive (the session map is
+    /// the single strong owner). Equally important: stops the strong-ref
+    /// cycle ctx → pump → session → callback closures → ctx.
+    private weak var session: RamaTcpSessionHandle?
     private let logger: (FlowLogMessage) -> Void
     private let onTerminal: (Error?) -> Void
     private let queue: DispatchQueue
     private var readPending = false
     private var closed = false
+    /// Set when the Rust ingress channel signaled "full". While paused we
+    /// stop calling `flow.readData` so kernel buffer pressure is propagated
+    /// upstream to the originating app instead of accumulating on our side.
+    /// Cleared by `resume()`, which is wired to the Rust → Swift
+    /// `onClientReadDemand` callback.
+    private var paused = false
 
     init(
         flow: NEAppProxyTCPFlow,
@@ -184,35 +193,68 @@ private final class TcpClientReadPump {
     }
 
     func requestRead() {
+        queue.async { self.requestReadLocked() }
+    }
+
+    /// Resume reading after the Rust side has freed capacity in the per-flow
+    /// ingress channel. Idempotent — calling while not paused is a no-op.
+    func resume() {
         queue.async {
-            guard !self.closed, !self.readPending else { return }
-            self.readPending = true
-            self.flow.readData { data, error in
-                self.queue.async {
-                    guard !self.closed else { return }
-                    self.readPending = false
+            guard !self.closed else { return }
+            self.paused = false
+            self.requestReadLocked()
+        }
+    }
 
-                    if let error {
-                        self.logger(
-                            classifyFlowCallbackError(error, operation: "tcp flow.read")
+    private func requestReadLocked() {
+        guard !self.closed, !self.readPending, !self.paused else { return }
+        self.readPending = true
+        self.flow.readData { data, error in
+            self.queue.async {
+                guard !self.closed else { return }
+                self.readPending = false
+
+                if let error {
+                    self.logger(
+                        classifyFlowCallbackError(error, operation: "tcp flow.read")
+                    )
+                    self.terminate(with: error)
+                    return
+                }
+
+                guard let data, !data.isEmpty else {
+                    self.logger(
+                        FlowLogMessage(
+                            level: .trace,
+                            text: "flow.readData eof"
                         )
-                        self.terminate(with: error)
-                        return
-                    }
+                    )
+                    self.terminate(with: nil)
+                    return
+                }
 
-                    guard let data, !data.isEmpty else {
-                        self.logger(
-                            FlowLogMessage(
-                                level: .trace,
-                                text: "flow.readData eof"
-                            )
-                        )
-                        self.terminate(with: nil)
-                        return
-                    }
-
-                    self.session.onClientBytes(data)
-                    self.requestRead()
+                guard let session = self.session else {
+                    // Session was torn down while a read was in flight — drop
+                    // the bytes and stop reading.
+                    self.terminate(with: nil)
+                    return
+                }
+                switch session.onClientBytes(data) {
+                case .accepted:
+                    self.requestReadLocked()
+                case .paused:
+                    // Rust signaled the ingress channel is full — hold off
+                    // reading until `resume()` is called from the demand
+                    // callback. Without this, every `flow.readData` we issue
+                    // would hand bytes to a Rust side that has nowhere to
+                    // put them, defeating the bound.
+                    self.paused = true
+                case .closed:
+                    // Rust signaled the session is gone (teardown or
+                    // bridge-side write failure). No demand callback will
+                    // ever follow, so terminate the pump now instead of
+                    // waiting for an outer cleanup path.
+                    self.terminate(with: nil)
                 }
             }
         }
@@ -616,11 +658,23 @@ private func nwInterfaceType(_ raw: UInt8) -> NWInterface.InterfaceType {
 ///
 /// Calls `session.onEgressBytes(_:)` for each received chunk and
 /// `session.onEgressEof()` when the connection closes or fails.
+///
+/// Honors backpressure: when `onEgressBytes` returns `false` the Rust side's
+/// per-flow egress channel is full, and we stop scheduling further
+/// `connection.receive` calls until the matching `onEgressReadDemand`
+/// callback flips `paused` back to `false` via `resume()`.
 private final class NwTcpConnectionReadPump {
     private let connection: NWConnection
-    private let session: RamaTcpSessionHandle
+    /// `weak` for the same retain-cycle / ownership reasons as
+    /// [`TcpClientReadPump.session`].
+    private weak var session: RamaTcpSessionHandle?
     private let queue: DispatchQueue
     private var closed = false
+    private var paused = false
+    /// Tracks whether a `connection.receive(...)` call is in flight. Prevents
+    /// `resume()` (or repeated `start()`s) from issuing a second concurrent
+    /// receive, which `Network.framework` does not support.
+    private var receiving = false
 
     init(connection: NWConnection, session: RamaTcpSessionHandle, queue: DispatchQueue) {
         self.connection = connection
@@ -629,24 +683,56 @@ private final class NwTcpConnectionReadPump {
     }
 
     func start() {
-        scheduleRead()
+        queue.async { self.scheduleReadLocked() }
     }
 
-    private func scheduleRead() {
+    /// Resume scheduling receives after the Rust side has freed egress
+    /// capacity. Idempotent.
+    func resume() {
+        queue.async {
+            guard !self.closed else { return }
+            self.paused = false
+            self.scheduleReadLocked()
+        }
+    }
+
+    private func scheduleReadLocked() {
+        guard !self.closed, !self.paused, !self.receiving else { return }
+        self.receiving = true
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
             self.queue.async {
+                self.receiving = false
                 guard !self.closed else { return }
+
                 if let data, !data.isEmpty {
-                    self.session.onEgressBytes(data)
+                    guard let session = self.session else {
+                        // Session was torn down while a receive was in
+                        // flight — drop the bytes and stop. Re-issuing
+                        // another `connection.receive` here would keep the
+                        // NWConnection's read side draining bytes that have
+                        // nowhere to go.
+                        self.closed = true
+                        return
+                    }
+                    switch session.onEgressBytes(data) {
+                    case .accepted:
+                        break
+                    case .paused:
+                        self.paused = true
+                    case .closed:
+                        // No demand will follow; tear the pump down now.
+                        self.closed = true
+                        return
+                    }
                 }
                 if isComplete || error != nil {
                     self.closed = true
-                    self.session.onEgressEof()
+                    self.session?.onEgressEof()
                     return
                 }
-                self.scheduleRead()
+                self.scheduleReadLocked()
             }
         }
     }
@@ -778,10 +864,30 @@ private final class NwUdpConnectionReadPump {
 /// runtimes, so no extra locking is required here.
 private final class TcpFlowContext {
     weak var session: RamaTcpSessionHandle?
+    /// Egress NWConnection.
+    ///
+    /// Stored so late callbacks (Rust `onServerClosed`, writer terminal-error)
+    /// that are wired up *before* the connection is created can still call
+    /// `cancel()` on it. Without that explicit cancel the kernel's NECP flow
+    /// slot (Skywalk nexus channel) is never returned, accumulating thousands
+    /// of "undead" flows under sustained traffic until the kernel hands back
+    /// `ENOMEM` on every new outbound connection.
+    var connection: NWConnection?
+    /// Read pumps reachable from the Rust → Swift demand callbacks set up at
+    /// `newTcpSession` / `activate` time, before the pumps themselves exist.
+    ///
+    /// Strong refs because while paused, a pump has no in-flight
+    /// `flow.readData` / `connection.receive` callback to keep it alive — the
+    /// session map is the only thing that holds it (via this context). Cleared
+    /// on terminal teardown so the pump deallocates with the rest of the flow.
+    var clientReadPump: TcpClientReadPump?
+    var egressReadPump: NwTcpConnectionReadPump?
 }
 
 private final class UdpFlowContext {
     weak var session: RamaUdpSessionHandle?
+    /// See `TcpFlowContext.connection`.
+    var connection: NWConnection?
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
@@ -964,6 +1070,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             onTerminalError: { [weak self] error in
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
+                ctx.connection?.cancel()
                 ctx.session?.cancel()
                 self?.removeTcpFlow(flowId)
             }
@@ -975,6 +1082,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 onServerBytes: { data in
                     writer.enqueue(data)
                 },
+                onClientReadDemand: { [weak ctx] in
+                    // Rust → Swift: the per-flow ingress channel has space
+                    // again, so we may resume `flow.readData`. Hop onto the
+                    // flow's queue before touching `ctx`, since this fires
+                    // from a Rust worker thread. `weak ctx` breaks the cycle
+                    // ctx → clientReadPump → session → callbackBox → here.
+                    flowQueue.async { [weak ctx] in
+                        ctx?.clientReadPump?.resume()
+                    }
+                },
                 onServerClosed: { [weak self] in
                     writer.closeWhenDrained { wasOpened in
                         if wasOpened {
@@ -985,6 +1102,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             flow.closeReadWithError(error)
                             flow.closeWriteWithError(error)
                         }
+                        ctx.connection?.cancel()
                         self?.removeTcpFlow(flowId)
                     }
                 }
@@ -1041,6 +1159,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             removeTcpFlow(flowId)
             return true
         }
+        ctx.connection = connection
 
         // Track whether the egress connection succeeded before flow.open was called.
         var egressReady = false
@@ -1068,9 +1187,15 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         connection: connection, queue: flowQueue)
                     let readPump = NwTcpConnectionReadPump(
                         connection: connection, session: session, queue: flowQueue)
+                    ctx.egressReadPump = readPump
 
                     session.activate(
                         onWriteToEgress: { data in writePump.enqueue(data) },
+                        onEgressReadDemand: { [weak ctx] in
+                            flowQueue.async { [weak ctx] in
+                                ctx?.egressReadPump?.resume()
+                            }
+                        },
                         onCloseEgress: { writePump.closeWhenDrained() }
                     )
 
@@ -1101,6 +1226,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                     self?.removeTcpFlow(flowId)
                                 }
                             )
+                            ctx.clientReadPump = flowReadPump
                             flowReadPump.requestRead()
                         }
                     }
@@ -1111,11 +1237,22 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     self?.logDebug(
                         "egress NWConnection failed before flow opened: \(String(describing: error))"
                     )
+                    // Explicit cancel() releases the kernel NECP flow slot and
+                    // drives the connection to .cancelled, where we drop the
+                    // stateUpdateHandler reference to break the retain cycle
+                    // (handler captures connection; connection retains handler).
+                    connection.cancel()
                     session.cancel()
                     self?.removeTcpFlow(flowId)
 
                 case .cancelled:
-                    break  // our own cancel() call; nothing extra needed
+                    // Drop the handler so the closure's strong capture of
+                    // `connection` is released, allowing the NWConnection to
+                    // deallocate. Without this, `connection.cancel()` returns
+                    // the kernel slot but the Swift object lingers (which is
+                    // fine in itself — but together with bugs that skip
+                    // cancel() it caused thousands of orphaned flows).
+                    connection.stateUpdateHandler = nil
 
                 default:
                     break
@@ -1143,6 +1280,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
+                ctx.connection?.cancel()
                 ctx.session?.onClientClose()
                 self?.removeUdpFlow(flowId)
             }
@@ -1265,6 +1403,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             removeUdpFlow(flowId)
             return true
         }
+        ctx.connection = connection
 
         var egressReady = false
 
@@ -1320,11 +1459,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     self?.logDebug(
                         "egress NWConnection failed before udp flow opened: \(String(describing: error))"
                     )
+                    // See TCP path: explicit cancel() returns the kernel flow
+                    // slot; .cancelled drops the handler to break the cycle.
+                    connection.cancel()
                     session.onClientClose()
                     self?.removeUdpFlow(flowId)
 
                 case .cancelled:
-                    break
+                    connection.stateUpdateHandler = nil
 
                 default:
                     break
