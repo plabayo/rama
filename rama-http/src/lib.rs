@@ -29,6 +29,7 @@ pub use ::rama_http_types::{
     request, response, sse, status, uri, version,
 };
 
+#[doc(inline)]
 pub use ::rama_http_headers as headers;
 
 pub mod body;

@@ -140,6 +140,7 @@ pub enum Type {
     /// Type corresponding to `SOCK_SEQPACKET`.
     SequencePacket,
     #[cfg(not(any(target_os = "redox", target_os = "espidf")))]
+    #[cfg_attr(docsrs, doc(cfg(not(any(target_os = "redox", target_os = "espidf")))))]
     /// Type corresponding to `SOCK_RAW`.
     Raw,
 }
@@ -164,7 +165,7 @@ impl From<Type> for SocketType {
             #[cfg_attr(docsrs, doc(cfg(not(target_os = "espidf"))))]
             Type::SequencePacket => Self::SEQPACKET,
             #[cfg(not(any(target_os = "redox", target_os = "espidf")))]
-            #[cfg_attr(docsrs, doc(cfg(any(target_os = "redox", target_os = "espidf"))))]
+            #[cfg_attr(docsrs, doc(cfg(not(any(target_os = "redox", target_os = "espidf")))))]
             Type::Raw => Self::RAW,
         }
     }
@@ -506,7 +507,7 @@ pub struct SocketOptions {
     pub write_timeout: Option<Duration>,
 
     #[cfg(not(any(target_os = "redox", target_os = "espidf")))]
-    #[cfg_attr(docsrs, doc(cfg(any(target_os = "redox", target_os = "espidf"))))]
+    #[cfg_attr(docsrs, doc(cfg(not(any(target_os = "redox", target_os = "espidf")))))]
     /// Set the value of the `IP_HDRINCL` option on this [`Socket`].
     ///
     /// If enabled, the user supplies an IP header in front of the user data.

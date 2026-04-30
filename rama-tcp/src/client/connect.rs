@@ -114,6 +114,10 @@ impl TcpStreamConnector for SocketAddress {
 }
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+)]
 impl TcpStreamConnector for rama_net::socket::DeviceName {
     type Error = BoxError;
 

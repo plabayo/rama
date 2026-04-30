@@ -32,6 +32,7 @@ impl ForwardedVersion {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl ForwardedVersion {
     /// Returns this [`ForwardedVersion`] as a [`Version`] if it is defined as http.
     #[must_use]

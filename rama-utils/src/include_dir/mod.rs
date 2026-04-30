@@ -42,6 +42,7 @@ mod metadata;
 
 pub use self::{dir::Dir, dir_entry::DirEntry, file::File, metadata::Metadata};
 
+#[doc(inline)]
 pub use ::rama_macros::include_dir;
 
 #[cfg(test)]

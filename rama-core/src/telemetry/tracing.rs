@@ -7,6 +7,7 @@ pub use tracing::*;
 pub use ::tracing_appender as appender;
 
 #[cfg(feature = "opentelemetry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 #[doc(inline)]
 pub use tracing_opentelemetry::*;
 

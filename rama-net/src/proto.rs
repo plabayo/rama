@@ -276,6 +276,7 @@ impl FromStr for Protocol {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl From<Scheme> for Protocol {
     #[inline]
     fn from(s: Scheme) -> Self {
@@ -290,6 +291,7 @@ impl From<Scheme> for Protocol {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl From<&Scheme> for Protocol {
     fn from(s: &Scheme) -> Self {
         #[allow(

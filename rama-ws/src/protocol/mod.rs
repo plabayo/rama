@@ -199,6 +199,7 @@ pub struct PerMessageDeflateConfig {
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 impl From<&sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDeflateConfig {
     fn from(value: &sec_websocket_extensions::PerMessageDeflateConfig) -> Self {
         Self {
@@ -211,6 +212,7 @@ impl From<&sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDefl
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 impl From<sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDeflateConfig {
     #[inline]
     fn from(value: sec_websocket_extensions::PerMessageDeflateConfig) -> Self {
@@ -219,6 +221,7 @@ impl From<sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDefla
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 impl From<&PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDeflateConfig {
     fn from(value: &PerMessageDeflateConfig) -> Self {
         Self {
@@ -232,6 +235,7 @@ impl From<&PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDefl
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 impl From<PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDeflateConfig {
     #[inline]
     fn from(value: PerMessageDeflateConfig) -> Self {
@@ -240,6 +244,7 @@ impl From<PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDefla
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 #[allow(clippy::derivable_impls)]
 impl Default for PerMessageDeflateConfig {
     fn default() -> Self {

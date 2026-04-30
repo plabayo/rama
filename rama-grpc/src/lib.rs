@@ -90,11 +90,13 @@ pub use response::Response;
 pub use status::{Code, ConnectError, Status, TimeoutExpired};
 
 #[cfg(feature = "protobuf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "protobuf")))]
 pub mod protobuf;
 
 #[doc(hidden)]
 pub mod codegen;
 
+#[doc(inline)]
 pub use ::rama_grpc_build as build;
 
 /// `Result` is a type that represents either success ([`Ok`]) or failure ([`Err`]).

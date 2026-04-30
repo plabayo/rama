@@ -202,6 +202,7 @@ impl TlsAcceptorDataBuilder {
 }
 
 #[cfg(not(any(feature = "aws-lc", feature = "ring")))]
+#[cfg_attr(docsrs, doc(cfg(not(any(feature = "aws-lc", feature = "ring")))))]
 pub fn self_signed_server_auth(
     _: SelfSignedData,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
@@ -214,6 +215,7 @@ pub fn self_signed_server_auth(
 }
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "aws-lc", feature = "ring"))))]
 pub fn self_signed_server_auth(
     data: SelfSignedData,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {

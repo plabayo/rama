@@ -108,6 +108,7 @@ impl HickoryDnsResolver {
     }
 
     #[cfg(any(target_family = "unix", target_os = "windows"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_family = "unix", target_os = "windows"))))]
     /// Construct a new [`HickoryDnsResolver`] with the system configuration.
     ///
     /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
@@ -116,6 +117,7 @@ impl HickoryDnsResolver {
     }
 
     #[cfg(any(target_family = "unix", target_os = "windows"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_family = "unix", target_os = "windows"))))]
     /// Construct a new [`HickoryDnsResolver`] with the system configuration,
     /// and provided (resolver) options...
     ///

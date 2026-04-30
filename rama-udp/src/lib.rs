@@ -28,6 +28,10 @@ pub use socket::{
 };
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+)]
 pub use socket::bind_udp_with_device;
 
 #[doc(inline)]

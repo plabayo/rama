@@ -129,6 +129,7 @@ impl<'de> Deserialize<'de> for StringFilter {
 }
 
 #[cfg(feature = "memory-db")]
+#[cfg_attr(docsrs, doc(cfg(feature = "memory-db")))]
 impl venndb::Any for StringFilter {
     fn is_any(&self) -> bool {
         Self::is_any(self)

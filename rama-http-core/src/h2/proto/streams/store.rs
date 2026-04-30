@@ -236,6 +236,7 @@ impl Store {
 // help to make sure we've cleaned up in cases where we could (like, the
 // runtime isn't suddenly dropping the task for unknown reasons).
 #[cfg(feature = "unstable")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
 impl Drop for Store {
     fn drop(&mut self) {
         use std::thread;
