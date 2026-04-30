@@ -140,74 +140,117 @@
     warn(clippy::print_stdout, clippy::dbg_macro),
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
+// Build the docs from non-Apple hosts under `--cfg rama_docsrs` exposes a stub
+// `mod ffi` and stub `mod block_compat`; `cargo check` in that environment
+// (without `--cfg doc`) does NOT include those modules, so unused-import
+// warnings would fire on `use crate::block_compat::*` etc. Silence them — the
+// imports are intentional and used by the rustdoc build.
+#![cfg_attr(
+    all(rama_docsrs, not(target_vendor = "apple"), not(doc)),
+    allow(unused_imports)
+)]
 
-#[cfg(target_vendor = "apple")]
+// Internal FFI surface: bindgen output on Apple, a checked-in copy of that
+// output on non-Apple hosts running under `--cfg rama_docsrs` so the rest of
+// the crate type-checks during the cross-platform docs build.
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod ffi;
 
+// Indirection over `block2`: re-exports the real crate on Apple, doc-only stubs
+// elsewhere. Source modules import `RcBlock` / `StackBlock` from
+// `crate::block_compat` so name resolution works without relying on an extern
+// crate that isn't in the dep graph on non-Apple hosts.
 #[cfg(target_vendor = "apple")]
+mod block_compat {
+    pub use block2::{RcBlock, StackBlock};
+}
+
+#[cfg(all(rama_docsrs, doc, not(target_vendor = "apple")))]
+mod block_compat {
+    use std::{ffi::c_void, marker::PhantomData, ptr};
+
+    pub struct RcBlock<F>(PhantomData<F>);
+    impl<F> RcBlock<F> {
+        pub fn new(_f: F) -> Self {
+            Self(PhantomData)
+        }
+        pub fn as_ptr(_: &Self) -> *const c_void {
+            ptr::null()
+        }
+    }
+
+    pub struct StackBlock<F>(PhantomData<F>);
+    impl<F> StackBlock<F> {
+        pub fn new(_f: F) -> Self {
+            Self(PhantomData)
+        }
+    }
+}
+
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod call;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod client;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod connection;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod connector;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod endpoint;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod error;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod listener;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod message;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod object;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod peer;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod router;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod server;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod util;
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub mod xpc_serde;
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use call::XpcCall;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use client::XpcClientConfig;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use connection::{ReceivedXpcMessage, XpcConnection, XpcEvent};
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use connector::XpcConnector;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use endpoint::XpcEndpoint;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use error::{XpcConnectionError, XpcError};
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use listener::{XpcListener, XpcListenerConfig};
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use message::XpcMessage;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use peer::PeerSecurityRequirement;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use router::{XpcMessageRouter, extract_result};
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use server::XpcServer;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use xpc_serde::{from_xpc_message, to_xpc_message};
