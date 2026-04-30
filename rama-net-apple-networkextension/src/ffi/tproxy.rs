@@ -267,10 +267,15 @@ impl TransparentProxyConfig {
 #[repr(C)]
 pub struct TransparentProxyTcpSessionCallbacks {
     pub context: *mut c_void,
-    pub on_server_bytes: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
+    /// Rust → Swift: deliver response bytes to the intercepted client flow.
+    /// Returns a [`crate::tproxy::TcpDeliverStatus`] so the Rust bridge can
+    /// pause when Swift's writer pump (`TcpClientWritePump`) is full and
+    /// resume only after the matching `signal_server_drain` call from Swift.
+    pub on_server_bytes:
+        Option<unsafe extern "C" fn(*mut c_void, BytesView) -> crate::tproxy::TcpDeliverStatus>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
     /// Rust → Swift: signal that the per-flow ingress channel has space again
-    /// after [`crate::tproxy::TransparentProxyTcpSession::on_client_bytes`] returned `false`.
+    /// after [`crate::tproxy::TransparentProxyTcpSession::on_client_bytes`] returned `Paused`.
     /// Swift must keep `flow.readData` paused until this fires.
     pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
 }
@@ -416,11 +421,15 @@ pub struct UdpEgressConnectOptions {
 pub struct TransparentProxyTcpEgressCallbacks {
     pub context: *mut c_void,
     /// Rust calls this to send bytes from the service to the egress NWConnection.
-    pub on_write_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
+    /// Returns a [`crate::tproxy::TcpDeliverStatus`] so the Rust bridge can
+    /// pause when Swift's `NwTcpConnectionWritePump` is full and resume only
+    /// after the matching `signal_egress_drain` call from Swift.
+    pub on_write_to_egress:
+        Option<unsafe extern "C" fn(*mut c_void, BytesView) -> crate::tproxy::TcpDeliverStatus>,
     /// Rust calls this when the service is done writing to the egress NWConnection.
     pub on_close_egress: Option<unsafe extern "C" fn(*mut c_void)>,
     /// Rust → Swift: signal that the per-flow egress channel has space again
-    /// after [`crate::tproxy::TransparentProxyTcpSession::on_egress_bytes`] returned `false`.
+    /// after [`crate::tproxy::TransparentProxyTcpSession::on_egress_bytes`] returned `Paused`.
     /// Swift must keep `connection.receive` paused until this fires.
     pub on_egress_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
 }

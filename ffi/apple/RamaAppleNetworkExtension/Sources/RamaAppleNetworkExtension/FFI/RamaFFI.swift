@@ -56,6 +56,17 @@ private func tcpDeliverStatus(_ raw: RamaTcpDeliverStatus) -> RamaTcpDeliverStat
     RamaTcpDeliverStatusBridge(rawValue: UInt8(raw.rawValue)) ?? .closed
 }
 
+/// Inverse of [`tcpDeliverStatus`] — used when Swift returns a status to
+/// Rust through the byte-delivery callbacks (`on_server_bytes`,
+/// `on_write_to_egress`).
+private func cTcpDeliverStatus(_ status: RamaTcpDeliverStatusBridge) -> RamaTcpDeliverStatus {
+    switch status {
+    case .accepted: return RAMA_TCP_DELIVER_ACCEPTED
+    case .paused: return RAMA_TCP_DELIVER_PAUSED
+    case .closed: return RAMA_TCP_DELIVER_CLOSED
+    }
+}
+
 enum RamaTransparentProxyUdpSessionDecision {
     case intercept(RamaUdpSessionHandle)
     case passthrough
@@ -63,12 +74,16 @@ enum RamaTransparentProxyUdpSessionDecision {
 }
 
 final class TcpSessionCallbackBox {
-    let onServerBytes: (Data) -> Void
+    /// Returns a [`RamaTcpDeliverStatusBridge`] so the Rust bridge can pause
+    /// when the writer pump is full. `onServerBytes` MUST honor the
+    /// contract: `.paused` requires Swift to call `signalServerDrain` once
+    /// the writer drains; `.closed` is terminal.
+    let onServerBytes: (Data) -> RamaTcpDeliverStatusBridge
     let onClientReadDemand: () -> Void
     let onServerClosed: () -> Void
 
     init(
-        onServerBytes: @escaping (Data) -> Void,
+        onServerBytes: @escaping (Data) -> RamaTcpDeliverStatusBridge,
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) {
@@ -99,12 +114,15 @@ final class UdpSessionCallbackBox {
 /// Retained for the lifetime of the session; Rust may call these at any time
 /// while the egress `NWConnection` is active.
 final class TcpEgressCallbackBox {
-    let onWriteToEgress: (Data) -> Void
+    /// See `TcpSessionCallbackBox.onServerBytes` — same status contract for
+    /// the egress (NWConnection-write) direction. `.paused` requires Swift
+    /// to call `signalEgressDrain` once the writer drains.
+    let onWriteToEgress: (Data) -> RamaTcpDeliverStatusBridge
     let onEgressReadDemand: () -> Void
     let onCloseEgress: () -> Void
 
     init(
-        onWriteToEgress: @escaping (Data) -> Void,
+        onWriteToEgress: @escaping (Data) -> RamaTcpDeliverStatusBridge,
         onEgressReadDemand: @escaping () -> Void,
         onCloseEgress: @escaping () -> Void
     ) {
@@ -217,14 +235,14 @@ private func withFlowMeta<T>(
 }
 
 private let ramaTcpOnServerBytesCallback:
-    @convention(c) (UnsafeMutableRawPointer?, RamaBytesView)
-        -> Void = { context, view in
-            guard let context else { return }
-            let box = Unmanaged<TcpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
-            let data = dataFromView(view)
-            if data.isEmpty { return }
-            box.onServerBytes(data)
-        }
+    @convention(c) (UnsafeMutableRawPointer?, RamaBytesView) -> RamaTcpDeliverStatus = {
+        context, view in
+        guard let context else { return RAMA_TCP_DELIVER_CLOSED }
+        let box = Unmanaged<TcpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        let data = dataFromView(view)
+        if data.isEmpty { return RAMA_TCP_DELIVER_ACCEPTED }
+        return cTcpDeliverStatus(box.onServerBytes(data))
+    }
 
 private let ramaTcpOnClientReadDemandCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void =
     { context in
@@ -268,12 +286,13 @@ private let ramaUdpOnClientReadDemandCallback: @convention(c) (UnsafeMutableRawP
 // ── Egress C callbacks ────────────────────────────────────────────────────────
 
 private let ramaTcpOnWriteToEgressCallback:
-    @convention(c) (UnsafeMutableRawPointer?, RamaBytesView) -> Void = { context, view in
-        guard let context else { return }
+    @convention(c) (UnsafeMutableRawPointer?, RamaBytesView) -> RamaTcpDeliverStatus = {
+        context, view in
+        guard let context else { return RAMA_TCP_DELIVER_CLOSED }
         let box = Unmanaged<TcpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
         let data = dataFromView(view)
-        if data.isEmpty { return }
-        box.onWriteToEgress(data)
+        if data.isEmpty { return RAMA_TCP_DELIVER_ACCEPTED }
+        return cTcpDeliverStatus(box.onWriteToEgress(data))
     }
 
 private let ramaTcpOnCloseEgressCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
@@ -423,7 +442,7 @@ final class RamaTransparentProxyEngineHandle {
 
     func newTcpSession(
         meta: RamaTransparentProxyFlowMetaBridge,
-        onServerBytes: @escaping (Data) -> Void,
+        onServerBytes: @escaping (Data) -> RamaTcpDeliverStatusBridge,
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyTcpSessionDecision {
@@ -609,7 +628,7 @@ final class RamaTcpSessionHandle {
     ///     egress NWConnection.
     ///   - onCloseEgress: Called by Rust when the egress write direction is done.
     func activate(
-        onWriteToEgress: @escaping (Data) -> Void,
+        onWriteToEgress: @escaping (Data) -> RamaTcpDeliverStatusBridge,
         onEgressReadDemand: @escaping () -> Void,
         onCloseEgress: @escaping () -> Void
     ) {
@@ -660,6 +679,25 @@ final class RamaTcpSessionHandle {
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
         rama_transparent_proxy_tcp_session_on_egress_eof(s)
+    }
+
+    /// Wake the Rust bridge after our `TcpClientWritePump` drains capacity
+    /// following a `.paused` return from `onServerBytes`. Idempotent —
+    /// redundant calls collapse to a single permit on the Rust side.
+    func signalServerDrain() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
+        rama_transparent_proxy_tcp_session_signal_server_drain(s)
+    }
+
+    /// Same as [`signalServerDrain`] but for the egress (NWConnection-write)
+    /// direction.
+    func signalEgressDrain() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
+        rama_transparent_proxy_tcp_session_signal_egress_drain(s)
     }
 
     func cancel() {
