@@ -192,19 +192,27 @@ impl Drop for XpcListener {
     }
 }
 
+/// Caller must pass a valid, non-null `xpc_object_t` (we always do — these
+/// helpers are reached only from the listener event-handler block where
+/// libxpc hands us a retained event).
 fn raw_is_type(event: xpc_object_t, ty: *const c_void) -> bool {
+    // SAFETY: see function-level comment — `event` is a valid xpc_object_t.
     let value_type = unsafe { xpc_get_type(event) };
     ptr::eq(value_type.cast::<c_void>(), ty)
 }
 
 fn raw_is_error(event: xpc_object_t) -> bool {
     raw_is_type(event, unsafe {
+        // SAFETY: `_xpc_type_error` is a static XPC type singleton exported
+        // by libxpc and valid for the lifetime of the process.
         &_xpc_type_error as *const _ as *const c_void
     })
 }
 
 fn raw_is_connection(event: xpc_object_t) -> bool {
     raw_is_type(event, unsafe {
+        // SAFETY: `_xpc_type_connection` is a static XPC type singleton
+        // exported by libxpc and valid for the lifetime of the process.
         &_xpc_type_connection as *const _ as *const c_void
     })
 }

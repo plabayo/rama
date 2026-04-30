@@ -17,7 +17,7 @@ impl LogLevel {
             // SAFETY: repr(u32) and valid range 0..=4 maps to a real variant
             unsafe { ::std::mem::transmute::<u32, Self>(x) }
         } else {
-            tracing::debug!("invalid raw u32 value transmuted as u32: {x} (defaulting it to DEBUG");
+            tracing::debug!("invalid raw u32 value for LogLevel: {x} (defaulting to DEBUG)");
             Self::Debug
         }
     }

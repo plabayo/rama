@@ -164,7 +164,17 @@ pub struct XpcConnection {
     receiver: UnboundedReceiver<XpcEvent>,
 }
 
+// SAFETY: `XpcConnection` wraps an `OwnedXpcObject` (an `xpc_connection_t`), an
+// `Extensions` map, and an `UnboundedReceiver<XpcEvent>`. Apple documents
+// `xpc_connection_t` as safe to use from any thread. `Extensions` is `Send`.
+// `UnboundedReceiver` is `Send` for `T: Send`.
 unsafe impl Send for XpcConnection {}
+// SAFETY: every `&self` method on `XpcConnection` only touches the
+// xpc_connection_t (Apple-documented thread-safe) and `Extensions`. The
+// `UnboundedReceiver` is exclusively reached via `&mut self` (`recv`), so two
+// threads sharing `&XpcConnection` cannot race on it. The auto `Sync` derive
+// is blocked only because `UnboundedReceiver` is not `Sync`; we re-assert
+// here under that exclusive-access guarantee.
 unsafe impl Sync for XpcConnection {}
 
 impl XpcConnection {
@@ -455,13 +465,19 @@ impl Service<XpcMessage> for XpcConnection {
     }
 }
 
+/// Caller must pass a valid, non-null `xpc_object_t` (we always do — these
+/// helpers are reached only from the connection event-handler block where
+/// libxpc hands us a retained event).
 fn raw_is_type(event: xpc_object_t, ty: *const c_void) -> bool {
+    // SAFETY: see function-level comment — `event` is a valid xpc_object_t.
     let value_type = unsafe { xpc_get_type(event) };
     ptr::eq(value_type.cast::<c_void>(), ty)
 }
 
 fn raw_is_error(event: xpc_object_t) -> bool {
     raw_is_type(event, unsafe {
+        // SAFETY: `_xpc_type_error` is a static XPC type singleton exported by
+        // libxpc and valid for the lifetime of the process.
         &_xpc_type_error as *const _ as *const c_void
     })
 }
@@ -472,6 +488,8 @@ pub(crate) fn map_event(connection: xpc_connection_t, event: OwnedXpcObject) -> 
         return XpcEvent::Error(error);
     }
 
+    // SAFETY: `_xpc_type_connection` is a static XPC type singleton exported
+    // by libxpc and valid for the lifetime of the process.
     if event.is_type(unsafe { &_xpc_type_connection as *const _ as *const std::ffi::c_void }) {
         tracing::debug!("xpc listener received peer connection");
         return match XpcConnection::from_owned_peer(event) {
@@ -501,6 +519,8 @@ pub(crate) fn map_connection_error(
     connection: xpc_connection_t,
     event: &OwnedXpcObject,
 ) -> Option<XpcConnectionError> {
+    // SAFETY: `_xpc_type_error` is a static XPC type singleton exported by
+    // libxpc and valid for the lifetime of the process.
     if !event.is_type(unsafe { &_xpc_type_error as *const _ as *const std::ffi::c_void }) {
         return None;
     }
@@ -559,17 +579,26 @@ fn connection_error_description(
         return Some(value);
     }
 
+    // SAFETY: `_xpc_error_key_description` is a static XPC dictionary key
+    // exported by libxpc; reading it is always sound.
     let key = unsafe { _xpc_error_key_description };
     if key.is_null() {
         return None;
     }
 
+    // SAFETY: `event` is a valid retained xpc_object_t (caller passed it down
+    // from the live OwnedXpcObject). `key` is a valid XPC dictionary key
+    // checked non-null above. `xpc_dictionary_get_string` returns a borrowed
+    // NUL-terminated C string (or NULL if the key is absent / type mismatch),
+    // valid for the lifetime of `event`.
     let value = unsafe { xpc_dictionary_get_string(event, key) };
     if value.is_null() {
         return None;
     }
 
     Some(ArcStr::from(
+        // SAFETY: `value` was just checked non-null and is a NUL-terminated
+        // C string borrowed from `event`; the borrow ends before this scope.
         unsafe { CStr::from_ptr(value) }.to_string_lossy(),
     ))
 }

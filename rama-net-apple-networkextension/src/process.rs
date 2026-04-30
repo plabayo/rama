@@ -221,6 +221,11 @@ pub unsafe fn pid_arguments(pid: i32) -> io::Result<Vec<String>> {
         return Ok(Vec::new());
     }
 
+    // The unsafe read below dereferences via `buf.as_ptr()`, so the relevant
+    // invariant is on `buf.len()` (the allocation size), not `buf_len` (the
+    // bytes the kernel reported). They satisfy `buf.len() >= buf_len`, but
+    // make that explicit so a future change to either side trips this in dev.
+    debug_assert!(buf.len() >= size_of::<i32>());
     // SAFETY: `buf` is at least `size_of::<i32>()` bytes long.
     let argc =
         (unsafe { ptr::read_unaligned(buf.as_ptr().cast::<i32>()) }.max(0) as usize).min(4096);
