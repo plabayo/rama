@@ -77,6 +77,7 @@ impl TransparentProxyFlowMeta {
     /// All pointer + length fields in `self` must be valid for reads during
     /// this call.
     pub unsafe fn as_owned_rust_type(&self) -> tproxy::TransparentProxyFlowMeta {
+        // SAFETY: pointer + length validity is guaranteed by caller contract.
         let source_app_audit_token = unsafe {
             opt_audit_token(
                 self.source_app_audit_token_bytes,
@@ -547,6 +548,8 @@ mod tests {
             source_app_pid_is_set: true,
         };
 
+        // SAFETY: every pointer field is null with matching len 0 above, so
+        // the read-validity contract is trivially satisfied.
         let owned = unsafe { meta.as_owned_rust_type() };
         assert_eq!(owned.source_app_pid, Some(4242));
         assert!(owned.source_app_audit_token.is_none());

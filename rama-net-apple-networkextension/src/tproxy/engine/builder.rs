@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use rama_core::{
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     graceful::Shutdown,
     rt::Executor,
 };
@@ -124,10 +124,14 @@ where
         // capacity is more useful as a build-time error than as a footgun.
         // `None` continues to mean "use the default".
         if matches!(tcp_channel_capacity, Some(0)) {
-            return Err("tcp_channel_capacity must be > 0".into());
+            return Err(
+                OpaqueError::from_static_str("tcp_channel_capacity must be > 0").into_box_error(),
+            );
         }
         if matches!(udp_channel_capacity, Some(0)) {
-            return Err("udp_channel_capacity must be > 0".into());
+            return Err(
+                OpaqueError::from_static_str("udp_channel_capacity must be > 0").into_box_error(),
+            );
         }
 
         let rt = runtime_factory

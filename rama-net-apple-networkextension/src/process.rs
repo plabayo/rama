@@ -275,6 +275,8 @@ mod tests {
     #[test]
     fn current_process_path_is_available() {
         let current = std::process::id() as i32;
+        // SAFETY: querying our own pid is always safe — `proc_pidpath`
+        // accepts any valid pid and the current process necessarily exists.
         let path = unsafe { pid_path(current) }
             .expect("read process path")
             .expect("current process path");
@@ -288,6 +290,7 @@ mod tests {
     #[test]
     fn current_process_arguments_are_available() {
         let current = std::process::id() as i32;
+        // SAFETY: same as above — querying our own pid is always valid.
         let args = unsafe { pid_arguments(current) }.expect("read process arguments");
         assert!(!args.is_empty(), "current process should expose argv");
         assert!(!args[0].is_empty(), "argv[0] should not be empty");
