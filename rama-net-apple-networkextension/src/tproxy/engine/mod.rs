@@ -20,7 +20,7 @@ use tokio::{
     sync::{
         Notify,
         mpsc::{self, error::TrySendError},
-        oneshot, watch,
+        oneshot,
     },
 };
 
@@ -263,8 +263,6 @@ struct TcpSessionPendingData {
     /// Fired by the ingress bridge after it drained a chunk while
     /// `client_paused` was set.
     on_client_read_demand: DemandSink,
-    /// Ingress EOF watch; handed to the ingress bridge at activate.
-    eof_rx: watch::Receiver<bool>,
     /// Rust→Swift: response bytes back to the intercepted client flow.
     /// Returns a [`TcpDeliverStatus`] so the bridge can pause when Swift's
     /// writer pump is full and wait for the matching `signal_server_drain`.
@@ -303,7 +301,6 @@ pub struct TransparentProxyTcpSession {
     /// after it drains a chunk; the bridge then fires
     /// `on_client_read_demand` to wake Swift.
     client_paused: Arc<AtomicBool>,
-    eof_tx: watch::Sender<bool>,
     saw_client_bytes: bool,
     /// Symmetric counterpart of `client_paused` for the response direction
     /// (Rust → Swift writer pump). Notified by Swift via
@@ -316,7 +313,6 @@ pub struct TransparentProxyTcpSession {
     /// Same role as `client_paused` but for the egress (NWConnection→Rust)
     /// channel; populated at `activate`.
     egress_paused: Option<Arc<AtomicBool>>,
-    egress_eof_tx: Option<watch::Sender<bool>>,
     /// Symmetric counterpart for the egress request direction (Rust →
     /// Swift NWConnection writer pump); populated at `activate`. Notified by
     /// Swift via [`Self::signal_egress_drain`].
@@ -371,12 +367,19 @@ impl TransparentProxyTcpSession {
     }
 
     /// Called by Swift when the intercepted flow signals read-EOF.
+    ///
+    /// We drop the per-flow ingress sender so the bridge's `recv()` drains
+    /// any buffered chunks and then returns `None`, which is its natural
+    /// EOF signal. Using a side-channel (e.g. a `watch::Sender<bool>`)
+    /// would create a select-fairness race against `read_half.read()`
+    /// that can either drop the last chunk (too-eager EOF) or starve the
+    /// response direction (over-prioritised EOF).
     pub fn on_client_eof(&mut self) {
         if !self.saw_client_bytes {
             self.cancel();
             return;
         }
-        let _ = self.eof_tx.send(true);
+        self.client_tx = None;
     }
 
     /// Called by Swift when bytes arrive from the egress `NWConnection`.
@@ -427,10 +430,10 @@ impl TransparentProxyTcpSession {
     }
 
     /// Called by Swift when the egress `NWConnection` closes or fails.
+    ///
+    /// Same channel-close pattern as [`Self::on_client_eof`].
     pub fn on_egress_eof(&mut self) {
-        if let Some(tx) = self.egress_eof_tx.as_mut() {
-            let _ = tx.send(true);
-        }
+        self.egress_tx = None;
     }
 
     /// Return the handler-supplied egress connect options, if any.
@@ -471,7 +474,6 @@ impl TransparentProxyTcpSession {
             client_rx,
             client_paused,
             on_client_read_demand,
-            eof_rx,
             on_server_bytes,
             server_write_notify,
             on_server_closed,
@@ -498,12 +500,10 @@ impl TransparentProxyTcpSession {
         let egress_stream = NwTcpStream::new(egress_user);
 
         let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
-        let (egress_eof_tx, egress_eof_rx) = watch::channel(false);
         let egress_paused = Arc::new(AtomicBool::new(false));
         let egress_write_notify = Arc::new(Notify::new());
         self.egress_tx = Some(egress_client_tx);
         self.egress_paused = Some(egress_paused.clone());
-        self.egress_eof_tx = Some(egress_eof_tx);
         self.egress_write_notify = Some(egress_write_notify.clone());
 
         // guard egress callbacks
@@ -532,7 +532,6 @@ impl TransparentProxyTcpSession {
                     client_rx,
                     client_paused,
                     on_client_read_demand,
-                    eof_rx,
                     on_server_bytes,
                     server_write_notify,
                     on_server_closed,
@@ -550,7 +549,6 @@ impl TransparentProxyTcpSession {
                     egress_client_rx,
                     egress_paused,
                     guarded_egress_demand,
-                    egress_eof_rx,
                     guarded_egress_bytes,
                     egress_write_notify,
                     guarded_egress_closed,
@@ -575,6 +573,9 @@ impl TransparentProxyTcpSession {
         // async lock would let callbacks slip through the gap between the
         // check and the actual call.
         *self.callback_active.lock() = false;
+        // Drop the senders so the bridge's `recv()` returns `None` after
+        // draining anything still buffered. This is the natural EOF
+        // signal — no separate watch channel needed.
         self.client_tx = None;
         self.egress_tx = None;
         self.egress_paused = None;
@@ -586,10 +587,6 @@ impl TransparentProxyTcpSession {
             notify.notify_one();
         }
         self.egress_write_notify = None;
-        let _ = self.eof_tx.send(true);
-        if let Some(tx) = self.egress_eof_tx.as_mut() {
-            let _ = tx.send(true);
-        }
         if let Some(tx) = self.flow_stop_tx.take() {
             let _ = tx.send(());
         }
@@ -652,7 +649,6 @@ where
 
     let (client_tx, client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
     let client_paused = Arc::new(AtomicBool::new(false));
-    let (eof_tx, eof_rx) = watch::channel(false);
     let (bridge_tx, bridge_rx) = oneshot::channel::<BridgeIo<TcpFlow, NwTcpStream>>();
     let server_write_notify = Arc::new(Notify::new());
 
@@ -683,7 +679,6 @@ where
         client_rx,
         client_paused: client_paused.clone(),
         on_client_read_demand: on_client_read_demand_guarded,
-        eof_rx,
         on_server_bytes: on_server_bytes_guarded,
         server_write_notify: server_write_notify.clone(),
         on_server_closed: on_server_closed_guarded,
@@ -698,12 +693,10 @@ where
     SessionFlowAction::Intercept(TransparentProxyTcpSession {
         client_tx: Some(client_tx),
         client_paused,
-        eof_tx,
         saw_client_bytes: false,
         server_write_notify,
         egress_tx: None,
         egress_paused: None,
-        egress_eof_tx: None,
         egress_write_notify: None,
         callback_active,
         flow_stop_tx: Some(flow_stop_tx),
@@ -1023,7 +1016,6 @@ async fn run_tcp_bridge(
     mut client_rx: mpsc::Receiver<Bytes>,
     paused: Arc<AtomicBool>,
     on_read_demand: DemandSink,
-    mut eof_rx: watch::Receiver<bool>,
     on_server_bytes: BytesStatusSink,
     server_write_notify: Arc<Notify>,
     on_server_closed: ClosedSink,
@@ -1069,13 +1061,15 @@ async fn run_tcp_bridge(
         }
 
         tokio::select! {
-            // `biased`: when both `client_rx` has a pending chunk AND
-            // `eof_rx.changed()` is ready (the caller signalled EOF
-            // immediately after the last `on_*_bytes`), drain the channel
-            // first. Without this the unbiased random pick can shut down
-            // the write half before the last chunk reaches the service —
-            // observable as a 4-byte hole at end-of-stream.
-            biased;
+            // No `biased;` directive — both arms must remain fair so that
+            // sustained traffic in one direction can't starve the other
+            // (think a busy h2 connection with continuous response data
+            // arriving while the client also pumps WINDOW_UPDATEs).
+            //
+            // EOF is intentionally signalled by dropping the FFI sender,
+            // not via a side-channel: `recv()` then drains any buffered
+            // chunks and only after that returns `None`, which is the
+            // canonical mpsc EOF.
 
             maybe = client_rx.recv(), if !write_done => {
                 if let Some(bytes) = maybe {
@@ -1105,12 +1099,8 @@ async fn run_tcp_bridge(
                         client_rx.close();
                     }
                 } else {
-                    let _ = write_half.shutdown().await;
-                    write_done = true;
-                }
-            }
-            _ = eof_rx.changed(), if !write_done => {
-                if *eof_rx.borrow() {
+                    // FFI sender dropped (EOF or cancel). Drain done; close
+                    // the write side so the service sees end-of-stream.
                     let _ = write_half.shutdown().await;
                     write_done = true;
                 }
