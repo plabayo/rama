@@ -173,12 +173,19 @@ private func isTransientWriteBackpressure(_ error: Error) -> Bool {
 private let writeRetryInitialDelayMs: Int = 5
 private let writeRetryMaxDelayMs: Int = 200
 
-/// Maximum number of in-flight chunks each writer pump (TCP response and
-/// TCP egress) keeps queued before it tells the Rust bridge to pause. Small
-/// enough to bound memory but large enough to absorb h2 multiplexing where
-/// many concurrent streams interleave their data through one TCP flow.
-/// Mirrors the rough scale of `DEFAULT_TCP_CHANNEL_CAPACITY` on the Rust side.
-private let writePumpMaxPending: Int = 256
+/// Memory budget (in bytes) each writer pump (TCP response and TCP egress)
+/// keeps queued before it tells the Rust bridge to pause.
+///
+/// Byte-based rather than chunk-count based: a chunk-count cap of N bounds
+/// worst-case memory at `N * max_chunk_size`, which with our 16–64 KiB
+/// chunks blows up fast under h2 multiplexing (many concurrent flows each
+/// holding the full chunk-count budget). A byte budget is constant
+/// regardless of chunk size.
+///
+/// 4 MiB sits comfortably above a typical h2 stream window (1–2 MiB) so
+/// the writer can absorb a full window's worth of frames without pausing
+/// per-stream-worth of bytes, while keeping per-flow memory bounded.
+private let writePumpMaxPendingBytes: Int = 4 * 1024 * 1024
 
 private func blockedFlowError() -> NSError {
     NSError(
@@ -428,13 +435,16 @@ private final class TcpClientWritePump {
     private let onDrained: () -> Void
     private let queue: DispatchQueue
     private var pending: [Data] = []
+    /// Sum of `pending[i].count` — the byte budget we use for backpressure.
+    /// Tracked separately so the FFI bound check stays O(1).
+    private var pendingBytes: Int = 0
     private var writing = false
     private var closeRequested = false
     private var closed = false
     private var opened = false
     private var onDrainedClose: ((Bool) -> Void)?
     /// Set when an `enqueue` was rejected with `.paused`. We fire `onDrained`
-    /// on the first removal that drops `pending.count` below the cap, then
+    /// on the first removal that drops `pendingBytes` below the cap, then
     /// clear this flag — edge-triggered so we never spam Rust with redundant
     /// drain signals while the queue churns at-cap.
     private var pausedSignaled: Bool = false
@@ -470,6 +480,7 @@ private final class TcpClientWritePump {
             self.closed = true
             self.closeRequested = true
             self.pending.removeAll(keepingCapacity: false)
+            self.pendingBytes = 0
             self.onDrainedClose = nil
             self.onTerminalError(error)
         }
@@ -480,9 +491,9 @@ private final class TcpClientWritePump {
     /// Synchronous so the caller (the Rust bridge, via the FFI thunk) gets a
     /// `RamaTcpDeliverStatusBridge` back in the same call:
     ///   - `.accepted` — chunk queued; Rust may keep producing.
-    ///   - `.paused` — `pending` is at `writePumpMaxPending`. Rust must wait
-    ///     for `signalServerDrain` (wired to `onDrained` below) before
-    ///     producing more.
+    ///   - `.paused` — `pendingBytes` reached `writePumpMaxPendingBytes`.
+    ///     Rust must wait for `signalServerDrain` (wired to `onDrained`
+    ///     below) before producing more.
     ///   - `.closed` — pump is being torn down; no further drain will fire.
     @discardableResult
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
@@ -500,11 +511,18 @@ private final class TcpClientWritePump {
                 status = .closed
                 return
             }
-            if self.pending.count >= writePumpMaxPending {
+            // Allow the first chunk through unconditionally so a single
+            // oversized chunk (larger than the cap) can never deadlock us;
+            // pause only when there's already queued bytes that need to be
+            // drained first.
+            if !self.pending.isEmpty
+                && self.pendingBytes + data.count > writePumpMaxPendingBytes
+            {
                 self.pausedSignaled = true
                 status = .paused
                 return
             }
+            self.pendingBytes += data.count
             self.pending.append(data)
             self.flushLocked()
         }
@@ -532,11 +550,12 @@ private final class TcpClientWritePump {
 
         writing = true
         let chunk = pending.removeFirst()
+        pendingBytes -= chunk.count
         // Edge-triggered drain signal: if Rust was paused and we just dropped
-        // `pending` below the cap, wake it once. Honouring this from the
-        // pre-write site (rather than the completion handler) lets Rust
+        // `pendingBytes` below the cap, wake it once. Honouring this from
+        // the pre-write site (rather than the completion handler) lets Rust
         // start producing the next chunk in parallel with the current write.
-        if pausedSignaled && pending.count < writePumpMaxPending {
+        if pausedSignaled && pendingBytes < writePumpMaxPendingBytes {
             pausedSignaled = false
             onDrained()
         }
@@ -552,6 +571,7 @@ private final class TcpClientWritePump {
                         // drop to the originating app — exactly what was
                         // breaking large h2 downloads.
                         self.pending.insert(chunk, at: 0)
+                        self.pendingBytes += chunk.count
                         let delay = self.retryDelayMs
                         self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
                         self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) {
@@ -569,6 +589,7 @@ private final class TcpClientWritePump {
                     self.closed = true
                     self.closeRequested = true
                     self.pending.removeAll(keepingCapacity: false)
+                    self.pendingBytes = 0
                     self.onDrainedClose = nil
                     self.onTerminalError(error)
                     return
@@ -926,6 +947,8 @@ private final class NwTcpConnectionWritePump {
     private let onDrained: () -> Void
     private let queue: DispatchQueue
     private var pending: [Data] = []
+    /// See [`TcpClientWritePump.pendingBytes`].
+    private var pendingBytes: Int = 0
     private var writing = false
     private var closeRequested = false
     private var closed = false
@@ -948,11 +971,14 @@ private final class NwTcpConnectionWritePump {
                 status = .closed
                 return
             }
-            if self.pending.count >= writePumpMaxPending {
+            if !self.pending.isEmpty
+                && self.pendingBytes + data.count > writePumpMaxPendingBytes
+            {
                 self.pausedSignaled = true
                 status = .paused
                 return
             }
+            self.pendingBytes += data.count
             self.pending.append(data)
             self.flush()
         }
@@ -971,7 +997,8 @@ private final class NwTcpConnectionWritePump {
         guard !writing, !pending.isEmpty, !closed else { return }
         writing = true
         let chunk = pending.removeFirst()
-        if pausedSignaled && pending.count < writePumpMaxPending {
+        pendingBytes -= chunk.count
+        if pausedSignaled && pendingBytes < writePumpMaxPendingBytes {
             pausedSignaled = false
             onDrained()
         }
@@ -985,6 +1012,7 @@ private final class NwTcpConnectionWritePump {
                         // socket buffer is temporarily full, back off rather
                         // than tearing down the connection.
                         self.pending.insert(chunk, at: 0)
+                        self.pendingBytes += chunk.count
                         let delay = self.retryDelayMs
                         self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
                         self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) {
@@ -995,6 +1023,7 @@ private final class NwTcpConnectionWritePump {
                     self.closed = true
                     self.closeRequested = true
                     self.pending.removeAll(keepingCapacity: false)
+                    self.pendingBytes = 0
                     return
                 }
                 self.retryDelayMs = writeRetryInitialDelayMs
