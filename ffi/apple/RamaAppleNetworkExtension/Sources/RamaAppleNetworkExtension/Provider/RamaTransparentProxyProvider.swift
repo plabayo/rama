@@ -778,10 +778,21 @@ private final class NwUdpConnectionReadPump {
 /// runtimes, so no extra locking is required here.
 private final class TcpFlowContext {
     weak var session: RamaTcpSessionHandle?
+    /// Egress NWConnection.
+    ///
+    /// Stored so late callbacks (Rust `onServerClosed`, writer terminal-error)
+    /// that are wired up *before* the connection is created can still call
+    /// `cancel()` on it. Without that explicit cancel the kernel's NECP flow
+    /// slot (Skywalk nexus channel) is never returned, accumulating thousands
+    /// of "undead" flows under sustained traffic until the kernel hands back
+    /// `ENOMEM` on every new outbound connection.
+    var connection: NWConnection?
 }
 
 private final class UdpFlowContext {
     weak var session: RamaUdpSessionHandle?
+    /// See `TcpFlowContext.connection`.
+    var connection: NWConnection?
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
@@ -964,6 +975,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             onTerminalError: { [weak self] error in
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
+                ctx.connection?.cancel()
                 ctx.session?.cancel()
                 self?.removeTcpFlow(flowId)
             }
@@ -985,6 +997,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             flow.closeReadWithError(error)
                             flow.closeWriteWithError(error)
                         }
+                        ctx.connection?.cancel()
                         self?.removeTcpFlow(flowId)
                     }
                 }
@@ -1041,6 +1054,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             removeTcpFlow(flowId)
             return true
         }
+        ctx.connection = connection
 
         // Track whether the egress connection succeeded before flow.open was called.
         var egressReady = false
@@ -1111,11 +1125,22 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     self?.logDebug(
                         "egress NWConnection failed before flow opened: \(String(describing: error))"
                     )
+                    // Explicit cancel() releases the kernel NECP flow slot and
+                    // drives the connection to .cancelled, where we drop the
+                    // stateUpdateHandler reference to break the retain cycle
+                    // (handler captures connection; connection retains handler).
+                    connection.cancel()
                     session.cancel()
                     self?.removeTcpFlow(flowId)
 
                 case .cancelled:
-                    break  // our own cancel() call; nothing extra needed
+                    // Drop the handler so the closure's strong capture of
+                    // `connection` is released, allowing the NWConnection to
+                    // deallocate. Without this, `connection.cancel()` returns
+                    // the kernel slot but the Swift object lingers (which is
+                    // fine in itself — but together with bugs that skip
+                    // cancel() it caused thousands of orphaned flows).
+                    connection.stateUpdateHandler = nil
 
                 default:
                     break
@@ -1143,6 +1168,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
+                ctx.connection?.cancel()
                 ctx.session?.onClientClose()
                 self?.removeUdpFlow(flowId)
             }
@@ -1265,6 +1291,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             removeUdpFlow(flowId)
             return true
         }
+        ctx.connection = connection
 
         var egressReady = false
 
@@ -1320,11 +1347,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     self?.logDebug(
                         "egress NWConnection failed before udp flow opened: \(String(describing: error))"
                     )
+                    // See TCP path: explicit cancel() returns the kernel flow
+                    // slot; .cancelled drops the handler to break the cycle.
+                    connection.cancel()
                     session.onClientClose()
                     self?.removeUdpFlow(flowId)
 
                 case .cancelled:
-                    break
+                    connection.stateUpdateHandler = nil
 
                 default:
                     break
