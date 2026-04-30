@@ -290,11 +290,11 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[doc(hidden)]
 pub mod ffi;
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[doc(hidden)]
 #[macro_use]
 mod macros;
@@ -306,7 +306,7 @@ pub mod process;
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub mod tproxy;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(all(rama_docsrs, doc), target_os = "macos"))]
 #[cfg_attr(docsrs, doc(cfg(target_os = "macos")))]
 pub mod system_keychain;
 
@@ -324,13 +324,13 @@ mod udp;
 pub use self::{
     nw_tcp_stream::NwTcpStream, nw_udp_socket::NwUdpSocket, tcp::TcpFlow, udp::UdpFlow,
 };
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use crate::__transparent_proxy_ffi as transparent_proxy_ffi;
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[doc(hidden)]
 pub use rama_core::bytes::Bytes as __RamaBytes;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 #[doc(hidden)]
 pub use rama_core::telemetry::tracing as __tracing;

@@ -29,46 +29,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Apple-vendor crates (rama-net-apple-networkextension, rama-net-apple-xpc) are gated on
-  # `target_vendor = "apple"` and depend on Apple SDK headers via bindgen + Apple-only FFI
-  # symbols, so they cannot be documented from a Linux runner. We build them here in a
-  # parallel job and merge the resulting per-crate doc directories into the main docs
-  # site below.
-  build-apple-docs:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-          key: macos-apple-docs
-      - name: Generate Apple Rust Docs
-        run: cargo +nightly doc --all-features --no-deps -p rama-net-apple-networkextension -p rama-net-apple-xpc
-        env:
-          RUSTDOCFLAGS: --cfg docsrs --cfg rama_docsrs
-          # `rama_docsrs` propagates to dep-resolution so target tables that gate
-          # on it pull in the docs-only platform deps. We use a custom name (not
-          # `docsrs`) so upstream crates don't react to our flag.
-          RUSTFLAGS: --cfg rama_docsrs
-      - name: Stage Apple doc subdirs
-        run: |
-          mkdir -p apple-docs
-          cp -R target/doc/rama_net_apple_networkextension apple-docs/
-          cp -R target/doc/rama_net_apple_xpc apple-docs/
-      - name: Upload Apple docs artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: apple-docs
-          path: apple-docs
-          retention-days: 1
-
-  # Build job
+  # Build job. The Apple-vendor crates (rama-net-apple-networkextension,
+  # rama-net-apple-xpc) document fully from Linux thanks to checked-in bindgen
+  # stubs (`src/_doc_*_stub.rs`) and a `block_compat` indirection — see those
+  # crates for details. `RUSTFLAGS=--cfg rama_docsrs` opts cargo into the
+  # docs-only platform deps; `RUSTDOCFLAGS` adds the standard `docsrs` cfg for
+  # rendering the platform/feature badges.
   build:
     runs-on: ubuntu-latest
-    needs: build-apple-docs
     env:
       MDBOOK_VERSION: 0.5.2
       MDBOOK_GRAPHVIZ_VERSION: 0.3.1
@@ -88,13 +56,6 @@ jobs:
         env:
           RUSTDOCFLAGS: --cfg docsrs --cfg rama_docsrs
           RUSTFLAGS: --cfg rama_docsrs
-      - name: Download Apple docs artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: apple-docs
-          path: apple-docs
-      - name: Merge Apple doc subdirs into target/doc
-        run: cp -R apple-docs/* target/doc/
       - name: Install Graphviz
         run: sudo apt-get install graphviz
       - name: Install mdBook
@@ -127,8 +88,12 @@ jobs:
         with:
           path: ./docs/www
 
-  # Deployment job
+  # Deployment job — only runs from `main`. On feature branches the build job
+  # still runs (so the artifact is available for download / debugging), but the
+  # actual GitHub Pages deploy is skipped because it would fail without the
+  # required environment + permissions on a non-default branch.
   deploy:
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
