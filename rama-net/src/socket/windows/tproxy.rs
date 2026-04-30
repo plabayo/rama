@@ -1,25 +1,8 @@
-use std::{io, ptr};
-
-#[cfg(target_os = "windows")]
-use std::os::windows::io::{AsRawSocket, RawSocket};
-
-// Doc-only stubs: when rendering docs on a non-Windows host with `rama_docsrs`,
-// the `std::os::windows::io` module isn't in std at all. We provide same-shape
-// local definitions so the public bound `Input: AsRawSocket` resolves and the
-// rendered API has correct signatures. The `cfg_attr(docsrs, doc(cfg(...)))`
-// labels on items make the platform requirement explicit to readers.
-#[cfg(all(rama_docsrs, not(target_os = "windows")))]
-mod _doc_std_os_windows_io {
-    /// Doc-only stub for [`std::os::windows::io::RawSocket`].
-    pub type RawSocket = u64;
-    /// Doc-only stub for [`std::os::windows::io::AsRawSocket`].
-    pub trait AsRawSocket {
-        /// Stub for [`std::os::windows::io::AsRawSocket::as_raw_socket`].
-        fn as_raw_socket(&self) -> RawSocket;
-    }
-}
-#[cfg(all(rama_docsrs, not(target_os = "windows")))]
-use _doc_std_os_windows_io::{AsRawSocket, RawSocket};
+use std::{
+    io,
+    os::windows::io::{AsRawSocket, RawSocket},
+    ptr,
+};
 
 use rama_core::{
     Layer, Service,

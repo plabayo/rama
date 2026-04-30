@@ -33,7 +33,7 @@ rama-utils = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "sync"] }
 
-[target.'cfg(any(target_vendor = "apple", target_os = "windows", rama_docsrs))'.dependencies]
+[target.'cfg(any(target_vendor = "apple", target_os = "windows"))'.dependencies]
 parking_lot = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -41,7 +41,7 @@ ahash = { workspace = true }
 libc = { workspace = true }
 moka = { workspace = true, features = ["sync"] }
 
-[target.'cfg(any(target_os = "windows", rama_docsrs))'.dependencies]
+[target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_Dns"] }
 
 [build-dependencies]

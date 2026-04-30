@@ -5,7 +5,7 @@ use std::{
     sync::mpsc,
 };
 
-use crate::block_compat::StackBlock;
+use block2::StackBlock;
 
 use crate::{
     endpoint::XpcEndpoint,

@@ -4,7 +4,7 @@ use rama_core::telemetry::tracing;
 use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-use crate::block_compat::RcBlock;
+use block2::RcBlock;
 
 use crate::{
     connection::XpcConnection,

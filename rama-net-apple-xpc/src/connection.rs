@@ -24,7 +24,7 @@ use tokio::sync::{
     oneshot,
 };
 
-use crate::block_compat::RcBlock;
+use block2::RcBlock;
 
 use crate::{
     call::XpcCall,

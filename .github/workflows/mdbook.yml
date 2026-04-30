@@ -1,45 +1,46 @@
-# Sample workflow for building and deploying a mdBook site to GitHub Pages
+# Builds & deploys the mdBook site + per-target rustdoc trees to GitHub Pages.
 #
-# To get started with mdBook see: https://rust-lang.github.io/mdBook/index.html
+# - Linux is the default (root /docs/).
+# - macOS, Windows, Android, iOS each get their own subdirectory under /docs/.
+# - A `target-picker.html` is injected into every rustdoc page via
+#   `--html-before-content` so users can switch platform from any deep link.
 #
+# `deploy` only runs on `main`; on feature branches the build still runs so the
+# Pages artifact is downloadable for debugging.
 name: Deploy mdBook site to Pages
 
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: stable
+  # rustdoc env shared by every doc job. Each job appends nothing platform-
+  # specific; the platform comes from `--target` (or native target for
+  # ubuntu/macos/windows-latest runners).
+  RUSTDOCFLAGS_BASE: --cfg docsrs --html-before-content docs/target-picker.html
 
 on:
-  # Runs on pushes targeting the default branch
   push:
     branches: ["main"]
-
-  # Allows you to run this workflow manually from the Actions tab
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  # Build job. The Apple-vendor crates (rama-net-apple-networkextension,
-  # rama-net-apple-xpc) document fully from Linux thanks to checked-in bindgen
-  # stubs (`src/_doc_*_stub.rs`) and a `block_compat` indirection — see those
-  # crates for details. `RUSTFLAGS=--cfg rama_docsrs` opts cargo into the
-  # docs-only platform deps; `RUSTDOCFLAGS` adds the standard `docsrs` cfg for
-  # rendering the platform/feature badges.
-  build:
+  # ---- Per-target rustdoc builds ------------------------------------------
+  # Each job runs `cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli` for one target
+  # and uploads its `target/[<triple>/]doc/` tree as an artifact. The merge
+  # `build` job assembles them into a single site.
+
+  doc-linux:
     runs-on: ubuntu-latest
-    env:
-      MDBOOK_VERSION: 0.5.2
-      MDBOOK_GRAPHVIZ_VERSION: 0.3.1
     steps:
       - uses: actions/checkout@v6
       - uses: arduino/setup-protoc@v3
@@ -50,18 +51,168 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
         with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Generate Rust Docs
-        run: cargo +nightly doc --all-features --no-deps
+          key: doc-linux
+      - name: cargo doc (linux)
+        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli
         env:
-          RUSTDOCFLAGS: --cfg docsrs --cfg rama_docsrs
-          RUSTFLAGS: --cfg rama_docsrs
+          RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doc-linux
+          path: target/doc
+          retention-days: 1
+
+  doc-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: doc-macos
+      - name: cargo doc (macos)
+        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli
+        env:
+          RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doc-macos
+          path: target/doc
+          retention-days: 1
+
+  doc-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ilammy/setup-nasm@v1
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: doc-windows
+      - name: cargo doc (windows)
+        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli
+        env:
+          RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doc-windows
+          path: target/doc
+          retention-days: 1
+
+  # Android: cross-compile from ubuntu-latest using the runner's pre-installed
+  # NDK (via $ANDROID_NDK_HOME). Mirrors the toolchain env setup from
+  # `precheck-rust-tier2` in CI.yml — keep these in sync.
+  doc-android:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_TRIPLE: aarch64-linux-android
+    steps:
+      - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: doc-android
+      - name: Configure Android toolchain env
+        shell: bash
+        run: |
+          ANDROID_API=21
+
+          # Normalize NDK env vars
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-$ANDROID_NDK}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=${ANDROID_NDK:-$ANDROID_NDK_HOME}" >> "$GITHUB_ENV"
+
+          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "${TOOLCHAIN}" >> "$GITHUB_PATH"
+
+          TRIPLE="${TARGET_TRIPLE}"
+          TARGET_UPPER="$(echo "${TRIPLE}" | tr '[:lower:]-' '[:upper:]_')"
+          TARGET_LOWER_UNDERSCORES="$(echo "${TRIPLE}" | tr '-' '_' | tr '[:upper:]' '[:lower:]')"
+          NDK_TRIPLE="$(echo "${TRIPLE}" | sed 's/^armv7/armv7a/')"
+
+          CC_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang"
+          CXX_PATH="${TOOLCHAIN}/${NDK_TRIPLE}${ANDROID_API}-clang++"
+          AR_PATH="${TOOLCHAIN}/llvm-ar"
+
+          echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${CXX_PATH}" >> "$GITHUB_ENV"
+
+          echo "CC_${TARGET_LOWER_UNDERSCORES}=${CC_PATH}" >> "$GITHUB_ENV"
+          echo "CXX_${TARGET_LOWER_UNDERSCORES}=${CXX_PATH}" >> "$GITHUB_ENV"
+          echo "AR_${TARGET_LOWER_UNDERSCORES}=${AR_PATH}" >> "$GITHUB_ENV"
+
+          echo "CC=${CC_PATH}" >> "$GITHUB_ENV"
+          echo "CXX=${CXX_PATH}" >> "$GITHUB_ENV"
+          echo "AR=${AR_PATH}" >> "$GITHUB_ENV"
+      - name: cargo doc (android)
+        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli --target $TARGET_TRIPLE
+        env:
+          RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doc-android
+          path: target/aarch64-linux-android/doc
+          retention-days: 1
+
+  # iOS: native macos-latest runner with `aarch64-apple-ios` target. Mirrors
+  # `precheck-rust-tier2` (same `IPHONEOS_DEPLOYMENT_TARGET`).
+  doc-ios:
+    runs-on: macos-latest
+    env:
+      TARGET_TRIPLE: aarch64-apple-ios
+      IPHONEOS_DEPLOYMENT_TARGET: 17.5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: doc-ios
+      - name: cargo doc (ios)
+        run: cargo +nightly doc --all-features --no-deps --workspace --exclude rama-cli --target $TARGET_TRIPLE
+        env:
+          RUSTDOCFLAGS: ${{env.RUSTDOCFLAGS_BASE}}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doc-ios
+          path: target/aarch64-apple-ios/doc
+          retention-days: 1
+
+  # ---- Compose the site --------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    needs: [doc-linux, doc-macos, doc-windows, doc-android, doc-ios]
+    env:
+      MDBOOK_VERSION: 0.5.2
+      MDBOOK_GRAPHVIZ_VERSION: 0.3.1
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
       - name: Install Graphviz
-        run: sudo apt-get install graphviz
+        run: sudo apt-get install -y graphviz
       - name: Install mdBook
         run: |
-          curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
-          rustup update
           cargo install --version ${MDBOOK_VERSION} mdbook 2>/dev/null || true
           cargo install --version ${MDBOOK_GRAPHVIZ_VERSION} mdbook-graphviz 2>/dev/null || true
       - name: Setup Pages
@@ -70,15 +221,24 @@ jobs:
       - name: Build with mdBook
         working-directory: ./docs/book
         run: mdbook build
-      - name: Create artifact
+      - name: Download per-target rustdoc artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: doc-artifacts
+      - name: Compose site layout
         working-directory: ./docs
         run: |
-          mkdir -p www/book
-          cp -r book/book/* www/book
-          mkdir -p www/docs
-          cp -r ../target/doc/* www/docs
-          mkdir -p www/static
-          cp -r ./static/* www/static
+          set -eux
+          mkdir -p www/book www/docs www/static
+          cp -r book/book/* www/book/
+          # Linux at the root of /docs/ — the canonical default target.
+          cp -r ../doc-artifacts/doc-linux/. www/docs/
+          # Other targets in their own subdirectory.
+          for t in macos windows android ios; do
+            mkdir -p "www/docs/${t}"
+            cp -r "../doc-artifacts/doc-${t}/." "www/docs/${t}/"
+          done
+          cp -r ./static/* www/static/
           cp index.html www/index.html
           cp trademark.html www/trademark.html
           cp sitemap.xml www/sitemap.xml
@@ -88,10 +248,10 @@ jobs:
         with:
           path: ./docs/www
 
-  # Deployment job — only runs from `main`. On feature branches the build job
-  # still runs (so the artifact is available for download / debugging), but the
-  # actual GitHub Pages deploy is skipped because it would fail without the
-  # required environment + permissions on a non-default branch.
+  # Deployment only runs from `main`. On feature branches & PRs the build job
+  # still runs (so the Pages artifact is downloadable for debugging), but the
+  # actual deploy is skipped because it would fail without the required
+  # environment / permissions.
   deploy:
     if: github.ref == 'refs/heads/main'
     environment:

@@ -133,6 +133,7 @@
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
+#![cfg(target_vendor = "apple")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(
@@ -140,117 +141,34 @@
     warn(clippy::print_stdout, clippy::dbg_macro),
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
-// Build the docs from non-Apple hosts under `--cfg rama_docsrs` exposes a stub
-// `mod ffi` and stub `mod block_compat`; `cargo check` in that environment
-// (without `--cfg doc`) does NOT include those modules, so unused-import
-// warnings would fire on `use crate::block_compat::*` etc. Silence them — the
-// imports are intentional and used by the rustdoc build.
-#![cfg_attr(
-    all(rama_docsrs, not(target_vendor = "apple"), not(doc)),
-    allow(unused_imports)
-)]
 
-// Internal FFI surface: bindgen output on Apple, a checked-in copy of that
-// output on non-Apple hosts running under `--cfg rama_docsrs` so the rest of
-// the crate type-checks during the cross-platform docs build.
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod ffi;
 
-// Indirection over `block2`: re-exports the real crate on Apple, doc-only stubs
-// elsewhere. Source modules import `RcBlock` / `StackBlock` from
-// `crate::block_compat` so name resolution works without relying on an extern
-// crate that isn't in the dep graph on non-Apple hosts.
-#[cfg(target_vendor = "apple")]
-mod block_compat {
-    pub(crate) use block2::{RcBlock, StackBlock};
-}
-
-#[cfg(all(rama_docsrs, doc, not(target_vendor = "apple")))]
-mod block_compat {
-    use std::{ffi::c_void, marker::PhantomData, ptr};
-
-    pub(crate) struct RcBlock<F>(PhantomData<F>);
-    impl<F> RcBlock<F> {
-        pub(crate) fn new(_f: F) -> Self {
-            Self(PhantomData)
-        }
-        pub(crate) fn as_ptr(_: &Self) -> *const c_void {
-            ptr::null()
-        }
-    }
-
-    pub(crate) struct StackBlock<F>(PhantomData<F>);
-    impl<F> StackBlock<F> {
-        pub(crate) fn new(_f: F) -> Self {
-            Self(PhantomData)
-        }
-    }
-}
-
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod call;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod client;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod connection;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod connector;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod endpoint;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod error;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod listener;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod message;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod object;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod peer;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod router;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod server;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
 mod util;
 
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub mod xpc_serde;
 
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use call::XpcCall;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use client::XpcClientConfig;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use connection::{ReceivedXpcMessage, XpcConnection, XpcEvent};
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use connector::XpcConnector;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use endpoint::XpcEndpoint;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use error::{XpcConnectionError, XpcError};
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use listener::{XpcListener, XpcListenerConfig};
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use message::XpcMessage;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use peer::PeerSecurityRequirement;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use router::{XpcMessageRouter, extract_result};
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use server::XpcServer;
-#[cfg(any(all(rama_docsrs, doc), target_vendor = "apple"))]
-#[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
 pub use xpc_serde::{from_xpc_message, to_xpc_message};
