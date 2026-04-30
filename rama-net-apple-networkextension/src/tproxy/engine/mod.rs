@@ -340,8 +340,14 @@ impl TransparentProxyTcpSession {
     ///
     /// See [`TcpDeliverStatus`] for the return contract. Never blocks the
     /// calling thread: this is invoked synchronously from a Swift dispatch
-    /// queue, so we use `try_send` and surface fullness as a pause signal
+    /// queue, so we use `try_reserve` and surface fullness as a pause signal
     /// instead of awaiting capacity.
+    ///
+    /// Important: when this returns `Paused` the bytes are NOT taken — we
+    /// reserve the channel slot only on the success path, so no allocation
+    /// happens on overflow. Swift MUST retain the rejected `Data` and replay
+    /// it before issuing the next `flow.readData`, otherwise the byte stream
+    /// gets a hole and the downstream TLS layer surfaces "bad record MAC".
     #[must_use = "the caller must honor the returned backpressure / closed signal"]
     pub fn on_client_bytes(&mut self, bytes: &[u8]) -> TcpDeliverStatus {
         if bytes.is_empty() {
@@ -351,13 +357,16 @@ impl TransparentProxyTcpSession {
         let Some(tx) = self.client_tx.as_mut() else {
             return TcpDeliverStatus::Closed;
         };
-        match tx.try_send(Bytes::copy_from_slice(bytes)) {
-            Ok(()) => TcpDeliverStatus::Accepted,
-            Err(TrySendError::Full(_)) => {
+        match tx.try_reserve() {
+            Ok(permit) => {
+                permit.send(Bytes::copy_from_slice(bytes));
+                TcpDeliverStatus::Accepted
+            }
+            Err(TrySendError::Full(())) => {
                 self.client_paused.store(true, Ordering::Release);
                 TcpDeliverStatus::Paused
             }
-            Err(TrySendError::Closed(_)) => TcpDeliverStatus::Closed,
+            Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
         }
     }
 
@@ -372,7 +381,9 @@ impl TransparentProxyTcpSession {
 
     /// Called by Swift when bytes arrive from the egress `NWConnection`.
     ///
-    /// See [`TcpDeliverStatus`] for the return contract.
+    /// See [`Self::on_client_bytes`] for the return contract — same shape and
+    /// the same "Swift MUST replay rejected bytes before its next receive"
+    /// requirement.
     #[must_use = "the caller must honor the returned backpressure / closed signal"]
     pub fn on_egress_bytes(&mut self, bytes: &[u8]) -> TcpDeliverStatus {
         if bytes.is_empty() {
@@ -381,15 +392,18 @@ impl TransparentProxyTcpSession {
         let Some(tx) = self.egress_tx.as_mut() else {
             return TcpDeliverStatus::Closed;
         };
-        match tx.try_send(Bytes::copy_from_slice(bytes)) {
-            Ok(()) => TcpDeliverStatus::Accepted,
-            Err(TrySendError::Full(_)) => {
+        match tx.try_reserve() {
+            Ok(permit) => {
+                permit.send(Bytes::copy_from_slice(bytes));
+                TcpDeliverStatus::Accepted
+            }
+            Err(TrySendError::Full(())) => {
                 if let Some(paused) = self.egress_paused.as_ref() {
                     paused.store(true, Ordering::Release);
                 }
                 TcpDeliverStatus::Paused
             }
-            Err(TrySendError::Closed(_)) => TcpDeliverStatus::Closed,
+            Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
         }
     }
 

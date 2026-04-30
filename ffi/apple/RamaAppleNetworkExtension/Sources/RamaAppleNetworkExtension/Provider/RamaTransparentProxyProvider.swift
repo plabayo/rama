@@ -221,6 +221,12 @@ private final class TcpClientReadPump {
     /// Cleared by `resume()`, which is wired to the Rust → Swift
     /// `onClientReadDemand` callback.
     private var paused = false
+    /// Bytes Rust rejected with `.paused` on a previous `onClientBytes`. We
+    /// MUST replay them before issuing the next `flow.readData` — Rust does
+    /// not take ownership on a `.paused` return, so dropping `data` here
+    /// would punch a hole in the byte stream and the downstream TLS layer
+    /// would surface "bad record MAC" once the gap reaches the decryptor.
+    private var pendingData: Data?
 
     init(
         flow: NEAppProxyTCPFlow,
@@ -252,6 +258,30 @@ private final class TcpClientReadPump {
 
     private func requestReadLocked() {
         guard !self.closed, !self.readPending, !self.paused else { return }
+
+        // Replay any chunk Rust rejected with `.paused` last time before we
+        // ask the kernel for new bytes. If this still gets `.paused` we hold
+        // the chunk and wait for the next `resume()`.
+        if let pending = self.pendingData {
+            guard let session = self.session else {
+                self.pendingData = nil
+                self.terminate(with: nil)
+                return
+            }
+            switch session.onClientBytes(pending) {
+            case .accepted:
+                self.pendingData = nil
+                // fall through to issue a fresh readData
+            case .paused:
+                self.paused = true
+                return
+            case .closed:
+                self.pendingData = nil
+                self.terminate(with: nil)
+                return
+            }
+        }
+
         self.readPending = true
         self.flow.readData { data, error in
             self.queue.async {
@@ -287,11 +317,9 @@ private final class TcpClientReadPump {
                 case .accepted:
                     self.requestReadLocked()
                 case .paused:
-                    // Rust signaled the ingress channel is full — hold off
-                    // reading until `resume()` is called from the demand
-                    // callback. Without this, every `flow.readData` we issue
-                    // would hand bytes to a Rust side that has nowhere to
-                    // put them, defeating the bound.
+                    // Rust did NOT take these bytes. Save them for replay on
+                    // the next `resume()` and stop reading.
+                    self.pendingData = data
                     self.paused = true
                 case .closed:
                     // Rust signaled the session is gone (teardown or
@@ -787,6 +815,10 @@ private final class NwTcpConnectionReadPump {
     /// `resume()` (or repeated `start()`s) from issuing a second concurrent
     /// receive, which `Network.framework` does not support.
     private var receiving = false
+    /// See [`TcpClientReadPump.pendingData`] — same contract for the egress
+    /// (NWConnection-receive) direction. Dropping rejected bytes here is what
+    /// the wails-zip / golang-module repro showed as TLS "bad record MAC".
+    private var pendingData: Data?
 
     init(connection: NWConnection, session: RamaTcpSessionHandle, queue: DispatchQueue) {
         self.connection = connection
@@ -810,6 +842,29 @@ private final class NwTcpConnectionReadPump {
 
     private func scheduleReadLocked() {
         guard !self.closed, !self.paused, !self.receiving else { return }
+
+        // Replay any chunk Rust rejected with `.paused` last time before
+        // issuing a new receive.
+        if let pending = self.pendingData {
+            guard let session = self.session else {
+                self.pendingData = nil
+                self.closed = true
+                return
+            }
+            switch session.onEgressBytes(pending) {
+            case .accepted:
+                self.pendingData = nil
+                // fall through to schedule the next receive
+            case .paused:
+                self.paused = true
+                return
+            case .closed:
+                self.pendingData = nil
+                self.closed = true
+                return
+            }
+        }
+
         self.receiving = true
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) {
             [weak self] data, _, isComplete, error in
@@ -832,7 +887,12 @@ private final class NwTcpConnectionReadPump {
                     case .accepted:
                         break
                     case .paused:
+                        // Rust did NOT take these bytes. Save them for
+                        // replay; do NOT issue another receive until
+                        // `resume()`.
+                        self.pendingData = data
                         self.paused = true
+                        return
                     case .closed:
                         // No demand will follow; tear the pump down now.
                         self.closed = true
