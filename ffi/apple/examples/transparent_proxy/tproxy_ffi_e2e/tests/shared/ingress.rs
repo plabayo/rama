@@ -14,6 +14,12 @@ use super::{bindings, ffi::EngineHandle};
 struct TcpServerCallbackContext {
     sender: mpsc::UnboundedSender<Vec<u8>>,
     closed: Arc<Notify>,
+    /// Fired by the FFI when the per-flow ingress channel transitions from
+    /// full to has-space after `on_client_bytes` returned `Paused`. The
+    /// ingress reader awaits on this before retrying a rejected chunk.
+    /// Without this we'd drop the chunk and corrupt the byte stream — same
+    /// bug that surfaced as `tls: bad record MAC` for large h2 transfers.
+    client_read_demand: Arc<Notify>,
 }
 
 unsafe extern "C" fn on_tcp_server_bytes(
@@ -37,18 +43,27 @@ unsafe extern "C" fn on_tcp_server_closed(ctx: *mut c_void) {
     ctx.closed.notify_waiters();
 }
 
-/// Resume signal from Rust. The e2e test reads in a tight loop so it never
-/// has to honor a backpressure pause — but we still log the call to keep the
-/// FFI shape exercised.
-unsafe extern "C" fn on_tcp_client_read_demand(_ctx: *mut c_void) {}
+/// Resume signal from Rust: the per-flow ingress channel has space again.
+/// Wakes the harness's ingress reader, which is parked waiting to retry a
+/// chunk Rust rejected with `Paused`.
+unsafe extern "C" fn on_tcp_client_read_demand(ctx: *mut c_void) {
+    let ctx = unsafe { &*(ctx as *const TcpServerCallbackContext) };
+    ctx.client_read_demand.notify_one();
+}
 
-unsafe extern "C" fn on_tcp_egress_read_demand(_ctx: *mut c_void) {}
+unsafe extern "C" fn on_tcp_egress_read_demand(ctx: *mut c_void) {
+    let ctx = unsafe { &*(ctx as *const TcpEgressCallbackContext) };
+    ctx.egress_read_demand.notify_one();
+}
 
 // ── Egress (service → upstream) callback context ─────────────────────────────
 
 struct TcpEgressCallbackContext {
     sender: mpsc::UnboundedSender<Vec<u8>>,
     closed: Arc<Notify>,
+    /// See `TcpServerCallbackContext.client_read_demand` — same role for
+    /// the egress (NWConnection-receive) direction.
+    egress_read_demand: Arc<Notify>,
 }
 
 unsafe extern "C" fn on_tcp_write_to_egress(
@@ -186,18 +201,22 @@ async fn serve_one_ingress_connection(
     // service back to the client connection.
     let (server_bytes_tx, mut server_bytes_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let server_closed = Arc::new(Notify::new());
+    let client_read_demand = Arc::new(Notify::new());
     let server_ctx_ptr = Box::into_raw(Box::new(TcpServerCallbackContext {
         sender: server_bytes_tx,
         closed: server_closed.clone(),
+        client_read_demand: client_read_demand.clone(),
     })) as usize;
 
     // Egress side: callbacks deliver bytes from the Rust service to the
     // upstream socket.
     let (egress_bytes_tx, mut egress_bytes_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let egress_closed = Arc::new(Notify::new());
+    let egress_read_demand = Arc::new(Notify::new());
     let egress_ctx_ptr = Box::into_raw(Box::new(TcpEgressCallbackContext {
         sender: egress_bytes_tx,
         closed: egress_closed.clone(),
+        egress_read_demand: egress_read_demand.clone(),
     })) as usize;
 
     let session = {
@@ -293,11 +312,39 @@ async fn serve_one_ingress_connection(
     });
 
     // Egress reader: upstream socket → on_egress_bytes / on_egress_eof.
+    //
+    // Honours backpressure: on `Paused` we retain the rejected chunk and
+    // wait for the matching `egress_read_demand` notify before retrying.
+    // Without this we'd silently drop the chunk and corrupt the byte
+    // stream (see `tcp_byte_stream_preserved_under_egress_backpressure`).
     let egress_session = session;
+    let egress_read_demand_for_reader = egress_read_demand.clone();
     let egress_reader = tokio::spawn(async move {
         let mut reader = egress_read;
         let mut buf = [0_u8; 16 * 1024];
-        loop {
+        let mut pending: Option<Vec<u8>> = None;
+        'outer: loop {
+            // Replay any pending rejected chunk before reading new data.
+            while let Some(chunk) = pending.take() {
+                let status = unsafe {
+                    bindings::rama_transparent_proxy_tcp_session_on_egress_bytes(
+                        egress_session as *mut bindings::RamaTransparentProxyTcpSession,
+                        bindings::RamaBytesView {
+                            ptr: chunk.as_ptr(),
+                            len: chunk.len(),
+                        },
+                    )
+                };
+                match status {
+                    bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED => {}
+                    bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_PAUSED => {
+                        pending = Some(chunk);
+                        egress_read_demand_for_reader.notified().await;
+                    }
+                    _ => break 'outer, // closed
+                }
+            }
+
             match reader.read(&mut buf).await {
                 Ok(0) | Err(_) => {
                     unsafe {
@@ -307,23 +354,69 @@ async fn serve_one_ingress_connection(
                     }
                     break;
                 }
-                Ok(n) => unsafe {
-                    bindings::rama_transparent_proxy_tcp_session_on_egress_bytes(
-                        egress_session as *mut bindings::RamaTransparentProxyTcpSession,
-                        bindings::RamaBytesView {
-                            ptr: buf.as_ptr(),
-                            len: n,
-                        },
-                    );
-                },
+                Ok(n) => {
+                    let status = unsafe {
+                        bindings::rama_transparent_proxy_tcp_session_on_egress_bytes(
+                            egress_session as *mut bindings::RamaTransparentProxyTcpSession,
+                            bindings::RamaBytesView {
+                                ptr: buf.as_ptr(),
+                                len: n,
+                            },
+                        )
+                    };
+                    match status {
+                        bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED => {}
+                        bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_PAUSED => {
+                            // Save the rejected chunk for replay.
+                            pending = Some(buf[..n].to_vec());
+                            egress_read_demand_for_reader.notified().await;
+                        }
+                        _ => break, // closed
+                    }
+                }
             }
         }
     });
 
     // Ingress reader: client socket → on_client_bytes / on_client_eof.
+    //
+    // Same backpressure-honouring shape as the egress reader above.
     let mut reader = client_read;
     let mut buf = [0_u8; 16 * 1024];
-    loop {
+    let mut pending: Option<Vec<u8>> = None;
+    'ingress: loop {
+        // Replay before reading new data.
+        while let Some(chunk) = pending.take() {
+            let status = unsafe {
+                bindings::rama_transparent_proxy_tcp_session_on_client_bytes(
+                    session as *mut bindings::RamaTransparentProxyTcpSession,
+                    bindings::RamaBytesView {
+                        ptr: chunk.as_ptr(),
+                        len: chunk.len(),
+                    },
+                )
+            };
+            match status {
+                bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED => {}
+                bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_PAUSED => {
+                    pending = Some(chunk);
+                    tokio::select! {
+                        _ = client_read_demand.notified() => {}
+                        _ = shutdown.notified() => {
+                            unsafe {
+                                bindings::rama_transparent_proxy_tcp_session_on_client_eof(
+                                    session as *mut bindings::RamaTransparentProxyTcpSession,
+                                );
+                            }
+                            break 'ingress;
+                        }
+                        _ = server_closed.notified() => break 'ingress,
+                    }
+                }
+                _ => break 'ingress, // closed
+            }
+        }
+
         tokio::select! {
             result = reader.read(&mut buf) => {
                 match result {
@@ -335,15 +428,24 @@ async fn serve_one_ingress_connection(
                         }
                         break;
                     }
-                    Ok(n) => unsafe {
-                        bindings::rama_transparent_proxy_tcp_session_on_client_bytes(
-                            session as *mut bindings::RamaTransparentProxyTcpSession,
-                            bindings::RamaBytesView {
-                                ptr: buf.as_ptr(),
-                                len: n,
-                            },
-                        );
-                    },
+                    Ok(n) => {
+                        let status = unsafe {
+                            bindings::rama_transparent_proxy_tcp_session_on_client_bytes(
+                                session as *mut bindings::RamaTransparentProxyTcpSession,
+                                bindings::RamaBytesView {
+                                    ptr: buf.as_ptr(),
+                                    len: n,
+                                },
+                            )
+                        };
+                        match status {
+                            bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED => {}
+                            bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_PAUSED => {
+                                pending = Some(buf[..n].to_vec());
+                            }
+                            _ => break, // closed
+                        }
+                    }
                 }
             }
             _ = shutdown.notified() => {

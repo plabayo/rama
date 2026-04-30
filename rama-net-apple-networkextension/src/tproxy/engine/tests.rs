@@ -714,6 +714,189 @@ fn builder_rejects_zero_channel_capacity() {
     engine.stop(0);
 }
 
+/// Pin the load-bearing FFI invariant: when `on_client_bytes` returns
+/// `Paused` the bytes are NOT taken by the Rust side, and a caller that
+/// retains + replays them sees the full byte stream delivered in order.
+///
+/// Capacity 1 means every send after the first is `Paused`, so this test
+/// hammers the pause/resume path on every chunk. A regression that drops
+/// bytes (e.g. discarding the rejected chunk in the `TrySendError::Full`
+/// arm — which is exactly the bug that surfaced as `tls: bad record MAC`
+/// on large h2 transfers) corrupts the recovered byte sequence and fails
+/// the equality check below.
+#[test]
+fn tcp_byte_stream_preserved_under_ingress_backpressure() {
+    let received = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let received_clone = received.clone();
+    let (eof_tx, eof_rx) = std::sync::mpsc::channel::<()>();
+    let eof_tx_handler = Mutex::new(Some(eof_tx));
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let received = received_clone.clone();
+            let eof_tx = eof_tx_handler.lock().take().expect("single intercept");
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |bridge: BridgeIo<TcpFlow, NwTcpStream>| {
+                    let received = received.clone();
+                    let eof_tx = eof_tx.clone();
+                    async move {
+                        let BridgeIo(mut ingress, _egress) = bridge;
+                        let mut buf = vec![0u8; 4096];
+                        loop {
+                            match ingress.read(&mut buf).await {
+                                Ok(0) | Err(_) => {
+                                    let _ = eof_tx.send(());
+                                    return Ok(());
+                                }
+                                Ok(n) => {
+                                    received.lock().extend_from_slice(&buf[..n]);
+                                }
+                            }
+                        }
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+
+    let engine = build_engine_with_tcp_channel_capacity(handler, 1);
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+    // Deterministic 4000-byte stream split into 1000 4-byte chunks. Each
+    // chunk encodes its own index so any reordering / loss is detectable
+    // by inspection if the equality assertion ever fails in the future.
+    let mut expected = Vec::with_capacity(4000);
+    for i in 0..1000_u16 {
+        let chunk = [
+            (i >> 8) as u8,
+            i as u8,
+            i.wrapping_add(0xa5) as u8,
+            i.wrapping_add(0x5a) as u8,
+        ];
+        expected.extend_from_slice(&chunk);
+        loop {
+            match session.on_client_bytes(&chunk) {
+                TcpDeliverStatus::Accepted => break,
+                TcpDeliverStatus::Paused => {
+                    // Spin lightly — bridge drains in the background. A
+                    // production caller (Swift's `TcpClientReadPump`)
+                    // waits on a demand callback; for the unit test we
+                    // can just yield.
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                TcpDeliverStatus::Closed => panic!("session unexpectedly closed"),
+            }
+        }
+    }
+    session.on_client_eof();
+
+    let _ = eof_rx.recv_timeout(Duration::from_secs(5));
+    let recv = received.lock().clone();
+    assert_eq!(recv.len(), expected.len(), "byte count mismatch");
+    assert_eq!(recv, expected, "byte stream corrupted (gap or reorder)");
+
+    engine.stop(0);
+}
+
+/// Same shape as `tcp_byte_stream_preserved_under_ingress_backpressure`
+/// but for the egress (NWConnection → service) direction. Pins the
+/// `on_egress_bytes` FFI contract: `Paused` does not take ownership and
+/// the caller must replay.
+#[test]
+fn tcp_byte_stream_preserved_under_egress_backpressure() {
+    let received = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let received_clone = received.clone();
+    let (eof_tx, eof_rx) = std::sync::mpsc::channel::<()>();
+    let eof_tx_handler = Mutex::new(Some(eof_tx));
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let received = received_clone.clone();
+            let eof_tx = eof_tx_handler.lock().take().expect("single intercept");
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |bridge: BridgeIo<TcpFlow, NwTcpStream>| {
+                    let received = received.clone();
+                    let eof_tx = eof_tx.clone();
+                    async move {
+                        // Drain the egress side (i.e. bytes flowing from the
+                        // NWConnection → service direction).
+                        let BridgeIo(_ingress, mut egress) = bridge;
+                        let mut buf = vec![0u8; 4096];
+                        loop {
+                            match egress.read(&mut buf).await {
+                                Ok(0) | Err(_) => {
+                                    let _ = eof_tx.send(());
+                                    return Ok(());
+                                }
+                                Ok(n) => {
+                                    received.lock().extend_from_slice(&buf[..n]);
+                                }
+                            }
+                        }
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+
+    let engine = build_engine_with_tcp_channel_capacity(handler, 1);
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+    let mut expected = Vec::with_capacity(4000);
+    for i in 0..1000_u16 {
+        let chunk = [
+            (i >> 8) as u8,
+            i as u8,
+            i.wrapping_add(0xa5) as u8,
+            i.wrapping_add(0x5a) as u8,
+        ];
+        expected.extend_from_slice(&chunk);
+        loop {
+            match session.on_egress_bytes(&chunk) {
+                TcpDeliverStatus::Accepted => break,
+                TcpDeliverStatus::Paused => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                TcpDeliverStatus::Closed => panic!("session unexpectedly closed"),
+            }
+        }
+    }
+    session.on_egress_eof();
+
+    let _ = eof_rx.recv_timeout(Duration::from_secs(5));
+    let recv = received.lock().clone();
+    assert_eq!(recv.len(), expected.len(), "byte count mismatch");
+    assert_eq!(recv, expected, "byte stream corrupted (gap or reorder)");
+
+    engine.stop(0);
+}
+
 #[test]
 fn app_message_can_return_reply() {
     let engine = build_engine(TestHandler {

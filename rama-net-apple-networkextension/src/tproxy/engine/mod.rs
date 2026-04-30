@@ -1069,6 +1069,14 @@ async fn run_tcp_bridge(
         }
 
         tokio::select! {
+            // `biased`: when both `client_rx` has a pending chunk AND
+            // `eof_rx.changed()` is ready (the caller signalled EOF
+            // immediately after the last `on_*_bytes`), drain the channel
+            // first. Without this the unbiased random pick can shut down
+            // the write half before the last chunk reaches the service —
+            // observable as a 4-byte hole at end-of-stream.
+            biased;
+
             maybe = client_rx.recv(), if !write_done => {
                 if let Some(bytes) = maybe {
                     // We just freed a slot — if Swift was paused waiting for capacity,
