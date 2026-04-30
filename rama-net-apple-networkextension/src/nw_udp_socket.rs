@@ -9,13 +9,13 @@ use tokio::sync::mpsc;
 /// Datagrams arriving from the NWConnection are delivered via [`recv`](Self::recv),
 /// and datagrams to send to the NWConnection are dispatched via [`send`](Self::send).
 pub struct NwUdpSocket {
-    incoming: mpsc::UnboundedReceiver<Bytes>,
+    incoming: mpsc::Receiver<Bytes>,
     outgoing: Arc<dyn Fn(Bytes) + Send + Sync + 'static>,
 }
 
 impl NwUdpSocket {
     pub(crate) fn new(
-        incoming: mpsc::UnboundedReceiver<Bytes>,
+        incoming: mpsc::Receiver<Bytes>,
         outgoing: Arc<dyn Fn(Bytes) + Send + Sync + 'static>,
     ) -> Self {
         Self { incoming, outgoing }

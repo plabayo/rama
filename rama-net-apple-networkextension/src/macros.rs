@@ -284,6 +284,7 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             let context = callbacks.context as usize;
             let on_server_bytes = callbacks.on_server_bytes;
+            let on_client_read_demand = callbacks.on_client_read_demand;
             let on_server_closed = callbacks.on_server_closed;
 
             let engine = unsafe { &*engine };
@@ -304,6 +305,11 @@ macro_rules! __transparent_proxy_ffi_emit {
                                 len: bytes.len(),
                             },
                         );
+                    }
+                }),
+                ::std::sync::Arc::new(move || {
+                    if let Some(callback) = on_client_read_demand {
+                        unsafe { callback(context as *mut ::std::ffi::c_void) };
                     }
                 }),
                 ::std::sync::Arc::new(move || {
@@ -346,17 +352,25 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { drop(::std::boxed::Box::from_raw(session)) };
         }
 
+        /// Deliver bytes from the intercepted client flow into the Rust TCP
+        /// session.
+        ///
+        /// Returns `true` when Swift may continue reading from the kernel and
+        /// `false` when the per-flow ingress channel is full or the session
+        /// has been torn down. On `false` the caller MUST stop calling
+        /// `flow.readData` until the matching `on_client_read_demand`
+        /// callback fires.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_client_bytes(
             session: *mut RamaTransparentProxyTcpSession,
             bytes: $crate::ffi::BytesView,
-        ) {
+        ) -> bool {
             if session.is_null() {
-                return;
+                return false;
             }
 
             let slice = unsafe { bytes.into_slice() };
-            unsafe { (*session).on_client_bytes(slice) };
+            unsafe { (*session).on_client_bytes(slice) }
         }
 
         #[unsafe(no_mangle)]
@@ -546,6 +560,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             let context = callbacks.context as usize;
             let on_write_to_egress = callbacks.on_write_to_egress;
             let on_close_egress = callbacks.on_close_egress;
+            let on_egress_read_demand = callbacks.on_egress_read_demand;
 
             unsafe {
                 (*session).activate(
@@ -567,6 +582,11 @@ macro_rules! __transparent_proxy_ffi_emit {
                         }
                     },
                     move || {
+                        if let Some(callback) = on_egress_read_demand {
+                            unsafe { callback(context as *mut ::std::ffi::c_void) };
+                        }
+                    },
+                    move || {
                         if let Some(callback) = on_close_egress {
                             unsafe { callback(context as *mut ::std::ffi::c_void) };
                         }
@@ -577,18 +597,22 @@ macro_rules! __transparent_proxy_ffi_emit {
 
         /// Deliver bytes from the egress `NWConnection` into the Rust TCP session.
         ///
-        /// Called by Swift when the NWConnection receives data from the remote server.
+        /// Called by Swift when the NWConnection receives data from the remote
+        /// server. Returns `true` when Swift may keep calling
+        /// `connection.receive`, and `false` when the per-flow egress channel
+        /// is full or the session has been torn down — Swift must then pause
+        /// receives until the matching `on_egress_read_demand` callback fires.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_egress_bytes(
             session: *mut RamaTransparentProxyTcpSession,
             bytes: $crate::ffi::BytesView,
-        ) {
+        ) -> bool {
             if session.is_null() {
-                return;
+                return false;
             }
 
             let slice = unsafe { bytes.into_slice() };
-            unsafe { (*session).on_egress_bytes(slice) };
+            unsafe { (*session).on_egress_bytes(slice) }
         }
 
         /// Signal EOF on the egress `NWConnection` direction.

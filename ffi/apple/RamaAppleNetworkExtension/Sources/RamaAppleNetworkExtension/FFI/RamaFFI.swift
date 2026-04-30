@@ -46,13 +46,16 @@ enum RamaTransparentProxyUdpSessionDecision {
 
 final class TcpSessionCallbackBox {
     let onServerBytes: (Data) -> Void
+    let onClientReadDemand: () -> Void
     let onServerClosed: () -> Void
 
     init(
         onServerBytes: @escaping (Data) -> Void,
+        onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) {
         self.onServerBytes = onServerBytes
+        self.onClientReadDemand = onClientReadDemand
         self.onServerClosed = onServerClosed
     }
 }
@@ -79,13 +82,16 @@ final class UdpSessionCallbackBox {
 /// while the egress `NWConnection` is active.
 final class TcpEgressCallbackBox {
     let onWriteToEgress: (Data) -> Void
+    let onEgressReadDemand: () -> Void
     let onCloseEgress: () -> Void
 
     init(
         onWriteToEgress: @escaping (Data) -> Void,
+        onEgressReadDemand: @escaping () -> Void,
         onCloseEgress: @escaping () -> Void
     ) {
         self.onWriteToEgress = onWriteToEgress
+        self.onEgressReadDemand = onEgressReadDemand
         self.onCloseEgress = onCloseEgress
     }
 }
@@ -202,6 +208,13 @@ private let ramaTcpOnServerBytesCallback:
             box.onServerBytes(data)
         }
 
+private let ramaTcpOnClientReadDemandCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void =
+    { context in
+        guard let context else { return }
+        let box = Unmanaged<TcpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        box.onClientReadDemand()
+    }
+
 private let ramaTcpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
     context in
     guard let context else { return }
@@ -251,6 +264,13 @@ private let ramaTcpOnCloseEgressCallback: @convention(c) (UnsafeMutableRawPointe
     let box = Unmanaged<TcpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
     box.onCloseEgress()
 }
+
+private let ramaTcpOnEgressReadDemandCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void =
+    { context in
+        guard let context else { return }
+        let box = Unmanaged<TcpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        box.onEgressReadDemand()
+    }
 
 private let ramaUdpOnSendToEgressCallback:
     @convention(c) (UnsafeMutableRawPointer?, RamaBytesView) -> Void = { context, view in
@@ -386,6 +406,7 @@ final class RamaTransparentProxyEngineHandle {
     func newTcpSession(
         meta: RamaTransparentProxyFlowMetaBridge,
         onServerBytes: @escaping (Data) -> Void,
+        onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyTcpSessionDecision {
         guard let p = enginePtr else { return .passthrough }
@@ -393,12 +414,14 @@ final class RamaTransparentProxyEngineHandle {
         let callbackBox = Unmanaged.passRetained(
             TcpSessionCallbackBox(
                 onServerBytes: onServerBytes,
+                onClientReadDemand: onClientReadDemand,
                 onServerClosed: onServerClosed
             ))
         let callbacks = RamaTransparentProxyTcpSessionCallbacks(
             context: callbackBox.toOpaque(),
             on_server_bytes: ramaTcpOnServerBytesCallback,
-            on_server_closed: ramaTcpOnServerClosedCallback
+            on_server_closed: ramaTcpOnServerClosedCallback,
+            on_client_read_demand: ramaTcpOnClientReadDemandCallback
         )
 
         let result = withFlowMeta(meta) { metaPtr in
@@ -504,18 +527,27 @@ final class RamaTcpSessionHandle {
         egressBox?.release()
     }
 
-    func onClientBytes(_ data: Data) {
-        guard !data.isEmpty else { return }
+    /// Deliver bytes from the intercepted flow to the Rust session.
+    ///
+    /// Returns `true` when the caller may keep reading from the kernel and
+    /// `false` when Rust signaled backpressure (per-flow ingress channel was
+    /// full or closed). On `false` the caller MUST stop calling
+    /// `flow.readData` until the matching `onClientReadDemand` callback
+    /// fires; ignoring this lets bytes accumulate in Apple's per-flow NE
+    /// kernel buffer and eventually aborts the shared director.
+    @discardableResult
+    func onClientBytes(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return true }
 
         lock.lock()
         defer { lock.unlock() }
-        guard !cancelled, let s = sessionPtr else { return }
+        guard !cancelled, let s = sessionPtr else { return false }
 
-        data.withUnsafeBytes { raw in
+        return data.withUnsafeBytes { raw -> Bool in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return }
+            guard let base else { return false }
             let view = RamaBytesView(ptr: base, len: Int(data.count))
-            rama_transparent_proxy_tcp_session_on_client_bytes(s, view)
+            return rama_transparent_proxy_tcp_session_on_client_bytes(s, view)
         }
     }
 
@@ -560,6 +592,7 @@ final class RamaTcpSessionHandle {
     ///   - onCloseEgress: Called by Rust when the egress write direction is done.
     func activate(
         onWriteToEgress: @escaping (Data) -> Void,
+        onEgressReadDemand: @escaping () -> Void,
         onCloseEgress: @escaping () -> Void
     ) {
         lock.lock()
@@ -568,6 +601,7 @@ final class RamaTcpSessionHandle {
         let box = Unmanaged.passRetained(
             TcpEgressCallbackBox(
                 onWriteToEgress: onWriteToEgress,
+                onEgressReadDemand: onEgressReadDemand,
                 onCloseEgress: onCloseEgress
             ))
         egressCallbackBox = box
@@ -575,24 +609,30 @@ final class RamaTcpSessionHandle {
         let callbacks = RamaTransparentProxyTcpEgressCallbacks(
             context: box.toOpaque(),
             on_write_to_egress: ramaTcpOnWriteToEgressCallback,
-            on_close_egress: ramaTcpOnCloseEgressCallback
+            on_close_egress: ramaTcpOnCloseEgressCallback,
+            on_egress_read_demand: ramaTcpOnEgressReadDemandCallback
         )
         rama_transparent_proxy_tcp_session_activate(s, callbacks)
     }
 
     /// Deliver bytes from the egress `NWConnection` to the Rust session.
-    func onEgressBytes(_ data: Data) {
-        guard !data.isEmpty else { return }
+    ///
+    /// Returns `true` when the caller may keep calling
+    /// `connection.receive(...)` and `false` when Rust signaled backpressure.
+    /// On `false`, pause receives until `onEgressReadDemand` fires.
+    @discardableResult
+    func onEgressBytes(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return true }
 
         lock.lock()
         defer { lock.unlock() }
-        guard !cancelled, let s = sessionPtr else { return }
+        guard !cancelled, let s = sessionPtr else { return false }
 
-        data.withUnsafeBytes { raw in
+        return data.withUnsafeBytes { raw -> Bool in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return }
+            guard let base else { return false }
             let view = RamaBytesView(ptr: base, len: data.count)
-            rama_transparent_proxy_tcp_session_on_egress_bytes(s, view)
+            return rama_transparent_proxy_tcp_session_on_egress_bytes(s, view)
         }
     }
 

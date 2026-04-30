@@ -268,6 +268,10 @@ pub struct TransparentProxyTcpSessionCallbacks {
     pub context: *mut c_void,
     pub on_server_bytes: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// Rust → Swift: signal that the per-flow ingress channel has space again
+    /// after [`crate::tproxy::TransparentProxyTcpSession::on_client_bytes`] returned `false`.
+    /// Swift must keep `flow.readData` paused until this fires.
+    pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 /// Callbacks Swift provides for Rust UDP session events.
@@ -414,6 +418,10 @@ pub struct TransparentProxyTcpEgressCallbacks {
     pub on_write_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
     /// Rust calls this when the service is done writing to the egress NWConnection.
     pub on_close_egress: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// Rust → Swift: signal that the per-flow egress channel has space again
+    /// after [`crate::tproxy::TransparentProxyTcpSession::on_egress_bytes`] returned `false`.
+    /// Swift must keep `connection.receive` paused until this fires.
+    pub on_egress_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 /// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.

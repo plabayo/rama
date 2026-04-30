@@ -1,4 +1,10 @@
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use rama_core::{
     bytes::Bytes,
@@ -11,7 +17,10 @@ use rama_core::{
 use rama_net::{conn::is_connection_error, proxy::ProxyTarget};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::{mpsc, oneshot, watch},
+    sync::{
+        mpsc::{self, error::TrySendError},
+        oneshot, watch,
+    },
 };
 
 use crate::{
@@ -43,6 +52,21 @@ pub use self::runtime::{
 };
 
 const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
+/// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress) will
+/// buffer before we tell Swift to stop reading from the kernel and wait for a
+/// demand callback to resume. Each chunk is whatever Swift hands us in one
+/// `flow.readData` / `connection.receive` callback (typically 4–64 KiB).
+///
+/// 8 chunks is a small multiple of `DEFAULT_TCP_FLOW_BUFFER_SIZE` to keep
+/// per-flow worst-case memory bounded under load: the prior unbounded design
+/// let one slow flow buffer arbitrary amounts of pending bytes, which under
+/// sustained traffic exhausts Apple's per-flow NE kernel buffer and aborts the
+/// shared NEAppProxyProvider director, killing every flow on the extension.
+const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 8;
+/// Bound on the UDP ingress and egress channels. UDP datagrams are inherently
+/// lossy, so on a full channel we drop the datagram rather than block; the
+/// bound is just a memory cap.
+const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 64;
 
 type BytesSink = Arc<dyn Fn(Bytes) + Send + Sync + 'static>;
 type ClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
@@ -58,6 +82,8 @@ pub struct TransparentProxyEngine<H> {
     rt: tokio::runtime::Runtime,
     handler: H,
     tcp_flow_buffer_size: usize,
+    tcp_channel_capacity: usize,
+    udp_channel_capacity: usize,
     shutdown: Option<Shutdown>,
     stop_trigger: Option<oneshot::Sender<()>>,
 }
@@ -85,14 +111,16 @@ where
         block_on_async_task(&self.rt, handler.handle_app_message(exec, message))
     }
 
-    pub fn new_tcp_session<OnBytes, OnClosed>(
+    pub fn new_tcp_session<OnBytes, OnDemand, OnClosed>(
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_bytes: OnBytes,
+        on_client_read_demand: OnDemand,
         on_server_closed: OnClosed,
     ) -> SessionFlowAction<TransparentProxyTcpSession>
     where
         OnBytes: Fn(Bytes) + Send + Sync + 'static,
+        OnDemand: Fn() + Send + Sync + 'static,
         OnClosed: Fn() + Send + Sync + 'static,
     {
         let Some(guard) = self.shutdown_guard() else {
@@ -104,6 +132,7 @@ where
         };
 
         let tcp_flow_buffer_size = self.tcp_flow_buffer_size;
+        let tcp_channel_capacity = self.tcp_channel_capacity;
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
@@ -114,7 +143,9 @@ where
                 exec,
                 meta,
                 tcp_flow_buffer_size,
+                tcp_channel_capacity,
                 on_server_bytes,
+                on_client_read_demand,
                 on_server_closed,
                 handler,
             ),
@@ -141,6 +172,7 @@ where
             return SessionFlowAction::Passthrough;
         };
 
+        let udp_channel_capacity = self.udp_channel_capacity;
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
@@ -150,6 +182,7 @@ where
                 guard,
                 exec,
                 meta,
+                udp_channel_capacity,
                 on_server_datagram,
                 on_client_read_demand,
                 on_server_closed,
@@ -174,7 +207,14 @@ struct TcpSessionPendingData {
     /// Delivers the completed `BridgeIo` to the waiting service task.
     bridge_tx: oneshot::Sender<BridgeIo<TcpFlow, NwTcpStream>>,
     /// Ingress (client→Rust) bytes; handed to the ingress bridge at activate.
-    client_rx: mpsc::UnboundedReceiver<Bytes>,
+    client_rx: mpsc::Receiver<Bytes>,
+    /// Ingress paused flag, shared with `on_client_bytes` and the bridge.
+    /// See [`TransparentProxyTcpSession::client_paused`].
+    client_paused: Arc<AtomicBool>,
+    /// Rust→Swift: signal Swift it can resume reading from the intercepted flow.
+    /// Fired by the ingress bridge after it drained a chunk while
+    /// `client_paused` was set.
+    on_client_read_demand: DemandSink,
     /// Ingress EOF watch; handed to the ingress bridge at activate.
     eof_rx: watch::Receiver<bool>,
     /// Rust→Swift: response bytes back to the intercepted client flow.
@@ -183,6 +223,8 @@ struct TcpSessionPendingData {
     on_server_closed: ClosedSink,
     /// Both ingress and egress duplex buffer size.
     tcp_flow_buffer_size: usize,
+    /// Capacity of the bounded ingress and egress mpsc channels (in chunks).
+    tcp_channel_capacity: usize,
     /// Per-flow metadata inserted into `TcpFlow` extensions at activate.
     meta: TransparentProxyFlowMeta,
     /// Flow-scoped guard; held by bridge tasks to delay shutdown until they finish.
@@ -200,12 +242,20 @@ struct TcpSessionPendingData {
 
 pub struct TransparentProxyTcpSession {
     // ingress data path
-    client_tx: Option<mpsc::UnboundedSender<Bytes>>,
+    client_tx: Option<mpsc::Sender<Bytes>>,
+    /// `true` while Swift has been told to stop calling `on_client_bytes`
+    /// (because the ingress channel was full). Cleared by the ingress bridge
+    /// after it drains a chunk; the bridge then fires
+    /// `on_client_read_demand` to wake Swift.
+    client_paused: Arc<AtomicBool>,
     eof_tx: watch::Sender<bool>,
     saw_client_bytes: bool,
 
     // egress data path (populated by activate)
-    egress_tx: Option<mpsc::UnboundedSender<Bytes>>,
+    egress_tx: Option<mpsc::Sender<Bytes>>,
+    /// Same role as `client_paused` but for the egress (NWConnection→Rust)
+    /// channel; populated at `activate`.
+    egress_paused: Option<Arc<AtomicBool>>,
     egress_eof_tx: Option<watch::Sender<bool>>,
 
     // lifecycle
@@ -223,13 +273,34 @@ pub struct TransparentProxyTcpSession {
 
 impl TransparentProxyTcpSession {
     /// Called by Swift when client bytes arrive on the intercepted flow.
-    pub fn on_client_bytes(&mut self, bytes: &[u8]) {
+    ///
+    /// Returns `true` when the bytes were accepted (Swift may continue reading
+    /// from the kernel) and `false` when the per-flow ingress channel was full
+    /// or has been closed (Swift must stop reading and wait for the
+    /// `on_client_read_demand` callback before resuming).
+    ///
+    /// Never blocks the calling thread: this is invoked synchronously from a
+    /// Swift dispatch queue, so we use `try_send` and surface fullness as a
+    /// pause signal instead of awaiting capacity.
+    #[must_use = "the caller must honor the returned backpressure signal"]
+    pub fn on_client_bytes(&mut self, bytes: &[u8]) -> bool {
         if bytes.is_empty() {
-            return;
+            return true;
         }
         self.saw_client_bytes = true;
-        if let Some(tx) = self.client_tx.as_mut() {
-            let _ = tx.send(Bytes::copy_from_slice(bytes));
+        let Some(tx) = self.client_tx.as_mut() else {
+            // Session is being torn down; tell Swift to pause. The follow-up
+            // `on_server_closed` callback (or a future cancel) will tear down
+            // the flow on the Swift side.
+            return false;
+        };
+        match tx.try_send(Bytes::copy_from_slice(bytes)) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                self.client_paused.store(true, Ordering::Release);
+                false
+            }
+            Err(TrySendError::Closed(_)) => false,
         }
     }
 
@@ -243,12 +314,25 @@ impl TransparentProxyTcpSession {
     }
 
     /// Called by Swift when bytes arrive from the egress `NWConnection`.
-    pub fn on_egress_bytes(&mut self, bytes: &[u8]) {
+    ///
+    /// See [`Self::on_client_bytes`] for the bool-return contract.
+    #[must_use = "the caller must honor the returned backpressure signal"]
+    pub fn on_egress_bytes(&mut self, bytes: &[u8]) -> bool {
         if bytes.is_empty() {
-            return;
+            return true;
         }
-        if let Some(tx) = self.egress_tx.as_mut() {
-            let _ = tx.send(Bytes::copy_from_slice(bytes));
+        let Some(tx) = self.egress_tx.as_mut() else {
+            return false;
+        };
+        match tx.try_send(Bytes::copy_from_slice(bytes)) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                if let Some(paused) = self.egress_paused.as_ref() {
+                    paused.store(true, Ordering::Release);
+                }
+                false
+            }
+            Err(TrySendError::Closed(_)) => false,
         }
     }
 
@@ -270,13 +354,17 @@ impl TransparentProxyTcpSession {
     /// intercepted flow has been successfully opened.
     ///
     /// * `on_write_to_egress` — Rust→Swift: service bytes destined for the remote server.
+    /// * `on_egress_read_demand` — Rust→Swift: signal Swift it can resume reading
+    ///   from the egress `NWConnection` after `on_egress_bytes` returned `false`.
     /// * `on_close_egress` — Rust→Swift: egress stream is done writing.
-    pub fn activate<OnEgressWrite, OnEgressClose>(
+    pub fn activate<OnEgressWrite, OnEgressDemand, OnEgressClose>(
         &mut self,
         on_write_to_egress: OnEgressWrite,
+        on_egress_read_demand: OnEgressDemand,
         on_close_egress: OnEgressClose,
     ) where
         OnEgressWrite: Fn(Bytes) + Send + Sync + 'static,
+        OnEgressDemand: Fn() + Send + Sync + 'static,
         OnEgressClose: Fn() + Send + Sync + 'static,
     {
         let Some(pending) = self.pending.take() else {
@@ -289,10 +377,13 @@ impl TransparentProxyTcpSession {
         let TcpSessionPendingData {
             bridge_tx,
             client_rx,
+            client_paused,
+            on_client_read_demand,
             eof_rx,
             on_server_bytes,
             on_server_closed,
             tcp_flow_buffer_size,
+            tcp_channel_capacity,
             meta,
             flow_guard,
             rt_handle,
@@ -313,18 +404,23 @@ impl TransparentProxyTcpSession {
         let (egress_user, egress_internal) = tokio::io::duplex(tcp_flow_buffer_size);
         let egress_stream = NwTcpStream::new(egress_user);
 
-        let (egress_client_tx, egress_client_rx) = mpsc::unbounded_channel::<Bytes>();
+        let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
         let (egress_eof_tx, egress_eof_rx) = watch::channel(false);
+        let egress_paused = Arc::new(AtomicBool::new(false));
         self.egress_tx = Some(egress_client_tx);
+        self.egress_paused = Some(egress_paused.clone());
         self.egress_eof_tx = Some(egress_eof_tx);
 
         // guard egress callbacks
         let egress_bytes_sink: BytesSink = Arc::new(on_write_to_egress);
         let egress_closed_sink: ClosedSink = Arc::new(on_close_egress);
+        let egress_demand_sink: DemandSink = Arc::new(on_egress_read_demand);
         let guarded_egress_bytes =
             guarded_bytes_sink(self.callback_active.clone(), egress_bytes_sink);
         let guarded_egress_closed =
             guarded_closed_sink(self.callback_active.clone(), egress_closed_sink);
+        let guarded_egress_demand =
+            guarded_demand_sink(self.callback_active.clone(), egress_demand_sink);
 
         // Spawn bridge tasks via the stored runtime handle so that `activate` can be
         // called from an external (non-Tokio) thread — e.g. a Swift dispatch queue.
@@ -339,6 +435,8 @@ impl TransparentProxyTcpSession {
                 run_tcp_bridge(
                     ingress_internal,
                     client_rx,
+                    client_paused,
+                    on_client_read_demand,
                     eof_rx,
                     on_server_bytes,
                     on_server_closed,
@@ -354,6 +452,8 @@ impl TransparentProxyTcpSession {
                 run_tcp_bridge(
                     egress_internal,
                     egress_client_rx,
+                    egress_paused,
+                    guarded_egress_demand,
                     egress_eof_rx,
                     guarded_egress_bytes,
                     guarded_egress_closed,
@@ -380,6 +480,7 @@ impl TransparentProxyTcpSession {
         *self.callback_active.lock() = false;
         self.client_tx = None;
         self.egress_tx = None;
+        self.egress_paused = None;
         let _ = self.eof_tx.send(true);
         if let Some(tx) = self.egress_eof_tx.as_mut() {
             let _ = tx.send(true);
@@ -409,17 +510,20 @@ impl Drop for TransparentProxyTcpSession {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn new_tcp_session_flow_action<OnBytes, OnClosed, H>(
+async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
     tcp_flow_buffer_size: usize,
+    tcp_channel_capacity: usize,
     on_server_bytes: OnBytes,
+    on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
     handler: H,
 ) -> SessionFlowAction<TransparentProxyTcpSession>
 where
     OnBytes: Fn(Bytes) + Send + Sync + 'static,
+    OnDemand: Fn() + Send + Sync + 'static,
     OnClosed: Fn() + Send + Sync + 'static,
     H: TransparentProxyHandler,
 {
@@ -441,7 +545,8 @@ where
     });
     let flow_guard = flow_shutdown.guard();
 
-    let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
+    let (client_tx, client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
+    let client_paused = Arc::new(AtomicBool::new(false));
     let (eof_tx, eof_rx) = watch::channel(false);
     let (bridge_tx, bridge_rx) = oneshot::channel::<BridgeIo<TcpFlow, NwTcpStream>>();
 
@@ -450,6 +555,8 @@ where
         guarded_bytes_sink(callback_active.clone(), Arc::new(on_server_bytes));
     let on_server_closed_guarded =
         guarded_closed_sink(callback_active.clone(), Arc::new(on_server_closed));
+    let on_client_read_demand_guarded =
+        guarded_demand_sink(callback_active.clone(), Arc::new(on_client_read_demand));
 
     // Capture the current runtime handle so `activate` can spawn bridge tasks from
     // any thread (including an external Swift thread) via `Handle::spawn`.
@@ -468,10 +575,13 @@ where
     let pending = TcpSessionPendingData {
         bridge_tx,
         client_rx,
+        client_paused: client_paused.clone(),
+        on_client_read_demand: on_client_read_demand_guarded,
         eof_rx,
         on_server_bytes: on_server_bytes_guarded,
         on_server_closed: on_server_closed_guarded,
         tcp_flow_buffer_size,
+        tcp_channel_capacity,
         meta,
         flow_guard,
         rt_handle,
@@ -480,9 +590,11 @@ where
 
     SessionFlowAction::Intercept(TransparentProxyTcpSession {
         client_tx: Some(client_tx),
+        client_paused,
         eof_tx,
         saw_client_bytes: false,
         egress_tx: None,
+        egress_paused: None,
         egress_eof_tx: None,
         callback_active,
         flow_stop_tx: Some(flow_stop_tx),
@@ -500,11 +612,13 @@ struct UdpSessionPendingData {
     /// Delivers the completed `BridgeIo` to the waiting service task.
     bridge_tx: oneshot::Sender<BridgeIo<UdpFlow, NwUdpSocket>>,
     /// Ingress datagrams (client→Rust); handed to `UdpFlow` at activate.
-    client_rx: mpsc::UnboundedReceiver<Bytes>,
+    client_rx: mpsc::Receiver<Bytes>,
     /// Rust→Swift: datagram back to the intercepted client flow.
     on_server_datagram: BytesSink,
     /// Demand sink captured into `UdpFlow` at activate.
     client_read_demand_sink: DemandSink,
+    /// Capacity used for the egress mpsc channel created at activate.
+    udp_channel_capacity: usize,
     /// Per-flow metadata.
     meta: TransparentProxyFlowMeta,
     /// Handler-supplied egress options.
@@ -512,11 +626,11 @@ struct UdpSessionPendingData {
 }
 
 pub struct TransparentProxyUdpSession {
-    client_tx: Option<mpsc::UnboundedSender<Bytes>>,
+    client_tx: Option<mpsc::Sender<Bytes>>,
     on_client_read_demand: DemandSink,
 
     /// Egress datagrams (NWConnection→Rust, populated by activate).
-    egress_tx: Option<mpsc::UnboundedSender<Bytes>>,
+    egress_tx: Option<mpsc::Sender<Bytes>>,
 
     flow_stop_tx: Option<oneshot::Sender<()>>,
     pending: Option<UdpSessionPendingData>,
@@ -529,7 +643,14 @@ impl TransparentProxyUdpSession {
             return;
         }
         if let Some(tx) = self.client_tx.as_mut() {
-            let _ = tx.send(Bytes::copy_from_slice(bytes));
+            // Bounded channel + lossy semantics: when the service can't keep up
+            // we drop the datagram rather than block the FFI thread or grow the
+            // queue without bound. UDP is lossy by design, so this matches what
+            // the wire protocol already tolerates.
+            match tx.try_send(Bytes::copy_from_slice(bytes)) {
+                Ok(()) | Err(TrySendError::Full(_)) => {}
+                Err(TrySendError::Closed(_)) => return,
+            }
             (self.on_client_read_demand)();
         }
     }
@@ -547,12 +668,14 @@ impl TransparentProxyUdpSession {
     }
 
     /// Called by Swift when a datagram arrives from the egress `NWConnection`.
+    ///
+    /// Same drop-on-full semantics as [`Self::on_client_datagram`].
     pub fn on_egress_datagram(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
         if let Some(tx) = self.egress_tx.as_mut() {
-            let _ = tx.send(Bytes::copy_from_slice(bytes));
+            let _ = tx.try_send(Bytes::copy_from_slice(bytes));
         }
     }
 
@@ -582,6 +705,7 @@ impl TransparentProxyUdpSession {
             client_rx,
             on_server_datagram,
             client_read_demand_sink,
+            udp_channel_capacity,
             meta,
             egress_connect_options: _,
         } = pending;
@@ -600,7 +724,7 @@ impl TransparentProxyUdpSession {
         }
 
         // egress socket (service ↔ NWConnection)
-        let (egress_client_tx, egress_client_rx) = mpsc::unbounded_channel::<Bytes>();
+        let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(udp_channel_capacity);
         let egress_sink: BytesSink = Arc::new(on_send_to_egress);
         let egress_socket = NwUdpSocket::new(egress_client_rx, egress_sink);
         self.egress_tx = Some(egress_client_tx);
@@ -617,10 +741,12 @@ impl Drop for TransparentProxyUdpSession {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
+    udp_channel_capacity: usize,
     on_server_datagram: OnDatagram,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -649,7 +775,7 @@ where
     });
     let flow_guard = flow_shutdown.guard();
 
-    let (client_tx, client_rx) = mpsc::unbounded_channel::<Bytes>();
+    let (client_tx, client_rx) = mpsc::channel::<Bytes>(udp_channel_capacity);
     let (bridge_tx, bridge_rx) = oneshot::channel::<BridgeIo<UdpFlow, NwUdpSocket>>();
 
     let callback_active_demand = Arc::new(parking_lot::Mutex::new(true));
@@ -674,6 +800,7 @@ where
         client_rx,
         on_server_datagram: datagram_sink,
         client_read_demand_sink: client_read_demand_sink.clone(),
+        udp_channel_capacity,
         meta,
         egress_connect_options,
     };
@@ -781,7 +908,9 @@ fn guarded_demand_sink(
 
 async fn run_tcp_bridge(
     internal: tokio::io::DuplexStream,
-    mut client_rx: mpsc::UnboundedReceiver<Bytes>,
+    mut client_rx: mpsc::Receiver<Bytes>,
+    paused: Arc<AtomicBool>,
+    on_read_demand: DemandSink,
     mut eof_rx: watch::Receiver<bool>,
     on_server_bytes: BytesSink,
     on_server_closed: ClosedSink,
@@ -798,21 +927,35 @@ async fn run_tcp_bridge(
         tokio::select! {
             maybe = client_rx.recv(), if !write_done => {
                 if let Some(bytes) = maybe {
-                     if let Err(err) = write_half.write_all(&bytes).await {
-                         if is_connection_error(&err) {
-                             tracing::trace!("tcp bridge write_all conn error: {err}");
-                         } else {
-                             tracing::debug!("tcp bridge write_all failed: {err}");
-                         }
-                         // The service dropped its read side (e.g. it already wrote its
-                         // response and returned).  Stop writing, but keep reading so
-                         // any buffered response bytes still reach the client.
-                         write_done = true;
-                     }
-                 } else {
-                     let _ = write_half.shutdown().await;
-                     write_done = true;
-                 }
+                    // We just freed a slot — if Swift was paused waiting for capacity,
+                    // wake it once. Edge-triggered: only the swap from `true` actually
+                    // fires the callback, so we never spam Swift with redundant demand
+                    // signals while the channel is draining.
+                    if paused.swap(false, Ordering::AcqRel) {
+                        on_read_demand();
+                    }
+                    if let Err(err) = write_half.write_all(&bytes).await {
+                        if is_connection_error(&err) {
+                            tracing::trace!("tcp bridge write_all conn error: {err}");
+                        } else {
+                            tracing::debug!("tcp bridge write_all failed: {err}");
+                        }
+                        // The service dropped its read side (e.g. it already wrote its
+                        // response and returned).  Stop writing, but keep reading so
+                        // any buffered response bytes still reach the client.
+                        //
+                        // Close the receiver: any subsequent `try_send` from the FFI
+                        // side returns `TrySendError::Closed` so Swift stops queueing
+                        // bytes that no one will ever read. Without this the FFI tx
+                        // accumulates Bytes until the task aborts, which under
+                        // sustained load lets a single broken flow keep buffering.
+                        write_done = true;
+                        client_rx.close();
+                    }
+                } else {
+                    let _ = write_half.shutdown().await;
+                    write_done = true;
+                }
             }
             _ = eof_rx.changed(), if !write_done => {
                 if *eof_rx.borrow() {
