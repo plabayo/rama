@@ -162,26 +162,26 @@ mod ffi;
 // crate that isn't in the dep graph on non-Apple hosts.
 #[cfg(target_vendor = "apple")]
 mod block_compat {
-    pub use block2::{RcBlock, StackBlock};
+    pub(crate) use block2::{RcBlock, StackBlock};
 }
 
 #[cfg(all(rama_docsrs, doc, not(target_vendor = "apple")))]
 mod block_compat {
     use std::{ffi::c_void, marker::PhantomData, ptr};
 
-    pub struct RcBlock<F>(PhantomData<F>);
+    pub(crate) struct RcBlock<F>(PhantomData<F>);
     impl<F> RcBlock<F> {
-        pub fn new(_f: F) -> Self {
+        pub(crate) fn new(_f: F) -> Self {
             Self(PhantomData)
         }
-        pub fn as_ptr(_: &Self) -> *const c_void {
+        pub(crate) fn as_ptr(_: &Self) -> *const c_void {
             ptr::null()
         }
     }
 
-    pub struct StackBlock<F>(PhantomData<F>);
+    pub(crate) struct StackBlock<F>(PhantomData<F>);
     impl<F> StackBlock<F> {
-        pub fn new(_f: F) -> Self {
+        pub(crate) fn new(_f: F) -> Self {
             Self(PhantomData)
         }
     }
