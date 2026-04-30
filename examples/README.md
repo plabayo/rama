@@ -135,6 +135,13 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
   shows how to support, optionally, HaProxy (v1/v2) in a rama web service,
   supporting load balancers that support the proagation of client IP address.
 
+### FastCGI
+
+- [`fastcgi_reverse_proxy.rs`](./fastcgi_reverse_proxy.rs) -
+  An HTTP reverse proxy that translates incoming HTTP requests into FastCGI requests
+  and forwards them to a FastCGI backend application server (embedded in the same binary
+  for demonstration). Shows `FastCgiServer` on the backend and `FastCgiClient` on the proxy side.
+
 ## TLS and Security
 
 - [`https_web_service_with_hsts.rs`](./https_web_service_with_hsts.rs) - HTTP Strict Transport Security (HSTS) example

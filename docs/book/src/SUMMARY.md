@@ -30,6 +30,7 @@
 
 - [dns](./dns.md)
 - [🍎 Apple XPC](./xpc.md)
+- [FastCGI](./protocols/fastcgi.md)
 
 # Intro to Proxies
 
