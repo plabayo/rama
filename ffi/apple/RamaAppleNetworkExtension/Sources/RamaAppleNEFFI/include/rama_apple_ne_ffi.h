@@ -212,7 +212,12 @@ typedef struct {
 ///     `on_*_read_demand` callback fires.
 ///   * On `Closed`, terminate the read pump immediately — no demand
 ///     callback will ever follow.
-typedef enum {
+///
+/// The underlying type is fixed at `uint8_t` to match the Rust side's
+/// `#[repr(u8)]` exactly. Without the explicit `: uint8_t` the C standard
+/// leaves the enum width implementation-defined (typically `int`), which
+/// would mismatch the 1-byte Rust return on some ABIs / bindgen configs.
+typedef enum : uint8_t {
     /// Bytes were queued; Swift may continue reading from the kernel.
     RAMA_TCP_DELIVER_ACCEPTED = 0,
     /// Per-flow channel is full; pause until on_*_read_demand fires.

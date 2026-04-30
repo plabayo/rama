@@ -106,6 +106,13 @@ pub enum TcpDeliverStatus {
     Closed = 2,
 }
 
+// Pin the ABI shape: the C header declares `RamaTcpDeliverStatus` as
+// `enum : uint8_t`, and the Swift bridge imports it as a 1-byte rawValue.
+// If anyone ever drops the `#[repr(u8)]` (or changes the discriminant size)
+// without updating the C/Swift side in lockstep, this assertion fails at
+// compile time instead of corrupting return values at runtime.
+const _: () = assert!(std::mem::size_of::<TcpDeliverStatus>() == 1);
+
 pub struct TransparentProxyEngine<H> {
     rt: tokio::runtime::Runtime,
     handler: H,
