@@ -119,6 +119,17 @@ where
             runtime_factory,
         } = self;
 
+        // Reject explicit `Some(0)` rather than silently falling back to the
+        // default. `tokio::sync::mpsc::channel(0)` panics, and a misconfigured
+        // capacity is more useful as a build-time error than as a footgun.
+        // `None` continues to mean "use the default".
+        if matches!(tcp_channel_capacity, Some(0)) {
+            return Err("tcp_channel_capacity must be > 0".into());
+        }
+        if matches!(udp_channel_capacity, Some(0)) {
+            return Err("udp_channel_capacity must be > 0".into());
+        }
+
         let rt = runtime_factory
             .create_async_runtime(opaque_config.as_deref())
             .context("TransparentProxyEngineBuilder: create async runtime")?;
@@ -145,10 +156,8 @@ where
             tcp_flow_buffer_size: tcp_flow_buffer_size
                 .unwrap_or(super::DEFAULT_TCP_FLOW_BUFFER_SIZE),
             tcp_channel_capacity: tcp_channel_capacity
-                .filter(|c| *c > 0)
                 .unwrap_or(super::DEFAULT_TCP_CHANNEL_CAPACITY),
             udp_channel_capacity: udp_channel_capacity
-                .filter(|c| *c > 0)
                 .unwrap_or(super::DEFAULT_UDP_CHANNEL_CAPACITY),
             shutdown: Some(shutdown),
             stop_trigger: Some(stop_tx),

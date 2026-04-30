@@ -78,6 +78,34 @@ pub enum SessionFlowAction<S> {
     Passthrough,
 }
 
+/// Outcome of a Swift → Rust byte-delivery FFI call
+/// ([`TransparentProxyTcpSession::on_client_bytes`] /
+/// [`TransparentProxyTcpSession::on_egress_bytes`]).
+///
+/// We deliberately use a tri-state rather than a `bool` so Swift can tell
+/// transient backpressure (`Paused` — wait for the matching demand callback
+/// and then resume) apart from terminal "session is gone" (`Closed` — stop
+/// the read pump immediately, no demand callback will ever fire). Collapsing
+/// these into a single "false" left Swift's pumps sitting paused during
+/// teardown, waiting on a demand callback that could only arrive via the
+/// outer `on_server_closed` cleanup path.
+///
+/// `repr(u8)` is C-ABI-compatible: the FFI thunks return this directly, the
+/// matching C header / Swift wrappers see plain `uint8_t` / `UInt8`.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TcpDeliverStatus {
+    /// The chunk was queued. Swift may keep reading from the kernel.
+    Accepted = 0,
+    /// The chunk was rejected because the per-flow channel is full. Swift
+    /// must pause reads until the matching `on_*_read_demand` callback fires.
+    Paused = 1,
+    /// The chunk was rejected because the per-flow channel is closed (session
+    /// teardown or write-side failure on the bridge). Swift must terminate
+    /// the read pump — no further demand callback will fire.
+    Closed = 2,
+}
+
 pub struct TransparentProxyEngine<H> {
     rt: tokio::runtime::Runtime,
     handler: H,
@@ -274,33 +302,26 @@ pub struct TransparentProxyTcpSession {
 impl TransparentProxyTcpSession {
     /// Called by Swift when client bytes arrive on the intercepted flow.
     ///
-    /// Returns `true` when the bytes were accepted (Swift may continue reading
-    /// from the kernel) and `false` when the per-flow ingress channel was full
-    /// or has been closed (Swift must stop reading and wait for the
-    /// `on_client_read_demand` callback before resuming).
-    ///
-    /// Never blocks the calling thread: this is invoked synchronously from a
-    /// Swift dispatch queue, so we use `try_send` and surface fullness as a
-    /// pause signal instead of awaiting capacity.
-    #[must_use = "the caller must honor the returned backpressure signal"]
-    pub fn on_client_bytes(&mut self, bytes: &[u8]) -> bool {
+    /// See [`TcpDeliverStatus`] for the return contract. Never blocks the
+    /// calling thread: this is invoked synchronously from a Swift dispatch
+    /// queue, so we use `try_send` and surface fullness as a pause signal
+    /// instead of awaiting capacity.
+    #[must_use = "the caller must honor the returned backpressure / closed signal"]
+    pub fn on_client_bytes(&mut self, bytes: &[u8]) -> TcpDeliverStatus {
         if bytes.is_empty() {
-            return true;
+            return TcpDeliverStatus::Accepted;
         }
         self.saw_client_bytes = true;
         let Some(tx) = self.client_tx.as_mut() else {
-            // Session is being torn down; tell Swift to pause. The follow-up
-            // `on_server_closed` callback (or a future cancel) will tear down
-            // the flow on the Swift side.
-            return false;
+            return TcpDeliverStatus::Closed;
         };
         match tx.try_send(Bytes::copy_from_slice(bytes)) {
-            Ok(()) => true,
+            Ok(()) => TcpDeliverStatus::Accepted,
             Err(TrySendError::Full(_)) => {
                 self.client_paused.store(true, Ordering::Release);
-                false
+                TcpDeliverStatus::Paused
             }
-            Err(TrySendError::Closed(_)) => false,
+            Err(TrySendError::Closed(_)) => TcpDeliverStatus::Closed,
         }
     }
 
@@ -315,24 +336,24 @@ impl TransparentProxyTcpSession {
 
     /// Called by Swift when bytes arrive from the egress `NWConnection`.
     ///
-    /// See [`Self::on_client_bytes`] for the bool-return contract.
-    #[must_use = "the caller must honor the returned backpressure signal"]
-    pub fn on_egress_bytes(&mut self, bytes: &[u8]) -> bool {
+    /// See [`TcpDeliverStatus`] for the return contract.
+    #[must_use = "the caller must honor the returned backpressure / closed signal"]
+    pub fn on_egress_bytes(&mut self, bytes: &[u8]) -> TcpDeliverStatus {
         if bytes.is_empty() {
-            return true;
+            return TcpDeliverStatus::Accepted;
         }
         let Some(tx) = self.egress_tx.as_mut() else {
-            return false;
+            return TcpDeliverStatus::Closed;
         };
         match tx.try_send(Bytes::copy_from_slice(bytes)) {
-            Ok(()) => true,
+            Ok(()) => TcpDeliverStatus::Accepted,
             Err(TrySendError::Full(_)) => {
                 if let Some(paused) = self.egress_paused.as_ref() {
                     paused.store(true, Ordering::Release);
                 }
-                false
+                TcpDeliverStatus::Paused
             }
-            Err(TrySendError::Closed(_)) => false,
+            Err(TrySendError::Closed(_)) => TcpDeliverStatus::Closed,
         }
     }
 

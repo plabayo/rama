@@ -239,17 +239,23 @@ private final class TcpClientReadPump {
                     self.terminate(with: nil)
                     return
                 }
-                let accepted = session.onClientBytes(data)
-                if !accepted {
-                    // Rust signaled the ingress channel is full or closed —
-                    // hold off reading until `resume()` is called from the
-                    // demand callback. Without this, every `flow.readData`
-                    // we issue would hand bytes to a Rust side that has
-                    // nowhere to put them, defeating the bound.
+                switch session.onClientBytes(data) {
+                case .accepted:
+                    self.requestReadLocked()
+                case .paused:
+                    // Rust signaled the ingress channel is full — hold off
+                    // reading until `resume()` is called from the demand
+                    // callback. Without this, every `flow.readData` we issue
+                    // would hand bytes to a Rust side that has nowhere to
+                    // put them, defeating the bound.
                     self.paused = true
-                    return
+                case .closed:
+                    // Rust signaled the session is gone (teardown or
+                    // bridge-side write failure). No demand callback will
+                    // ever follow, so terminate the pump now instead of
+                    // waiting for an outer cleanup path.
+                    self.terminate(with: nil)
                 }
-                self.requestReadLocked()
             }
         }
     }
@@ -699,12 +705,26 @@ private final class NwTcpConnectionReadPump {
             self.queue.async {
                 self.receiving = false
                 guard !self.closed else { return }
+
                 if let data, !data.isEmpty {
-                    if let session = self.session {
-                        let accepted = session.onEgressBytes(data)
-                        if !accepted {
-                            self.paused = true
-                        }
+                    guard let session = self.session else {
+                        // Session was torn down while a receive was in
+                        // flight — drop the bytes and stop. Re-issuing
+                        // another `connection.receive` here would keep the
+                        // NWConnection's read side draining bytes that have
+                        // nowhere to go.
+                        self.closed = true
+                        return
+                    }
+                    switch session.onEgressBytes(data) {
+                    case .accepted:
+                        break
+                    case .paused:
+                        self.paused = true
+                    case .closed:
+                        // No demand will follow; tear the pump down now.
+                        self.closed = true
+                        return
                     }
                 }
                 if isComplete || error != nil {

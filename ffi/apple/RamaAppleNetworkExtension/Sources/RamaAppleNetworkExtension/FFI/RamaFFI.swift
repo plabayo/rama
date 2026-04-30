@@ -38,6 +38,24 @@ enum RamaTransparentProxyTcpSessionDecision {
     case blocked
 }
 
+/// Outcome of a Swift → Rust TCP byte-delivery call.
+///
+/// Mirrors the C-side `RamaTcpDeliverStatus` enum exactly. Swift code must
+/// distinguish `.paused` from `.closed`: `.paused` means wait for the
+/// matching `onClientReadDemand` / `onEgressReadDemand` callback before
+/// resuming; `.closed` is terminal and the read pump must stop immediately.
+enum RamaTcpDeliverStatusBridge: UInt8 {
+    case accepted = 0
+    case paused = 1
+    case closed = 2
+}
+
+private func tcpDeliverStatus(_ raw: RamaTcpDeliverStatus) -> RamaTcpDeliverStatusBridge {
+    // The C enum is `repr(u8)` with the same discriminants; treat any
+    // unknown value as `.closed` rather than silently dropping the signal.
+    RamaTcpDeliverStatusBridge(rawValue: UInt8(raw.rawValue)) ?? .closed
+}
+
 enum RamaTransparentProxyUdpSessionDecision {
     case intercept(RamaUdpSessionHandle)
     case passthrough
@@ -529,25 +547,25 @@ final class RamaTcpSessionHandle {
 
     /// Deliver bytes from the intercepted flow to the Rust session.
     ///
-    /// Returns `true` when the caller may keep reading from the kernel and
-    /// `false` when Rust signaled backpressure (per-flow ingress channel was
-    /// full or closed). On `false` the caller MUST stop calling
-    /// `flow.readData` until the matching `onClientReadDemand` callback
-    /// fires; ignoring this lets bytes accumulate in Apple's per-flow NE
-    /// kernel buffer and eventually aborts the shared director.
+    /// Returns the FFI delivery status. Callers MUST honor the status:
+    ///   * `.accepted` — keep reading from the kernel.
+    ///   * `.paused` — pause `flow.readData` until `onClientReadDemand` fires.
+    ///   * `.closed` — terminate the read pump; no demand will follow.
     @discardableResult
-    func onClientBytes(_ data: Data) -> Bool {
-        guard !data.isEmpty else { return true }
+    func onClientBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        guard !data.isEmpty else { return .accepted }
 
         lock.lock()
         defer { lock.unlock() }
-        guard !cancelled, let s = sessionPtr else { return false }
+        guard !cancelled, let s = sessionPtr else { return .closed }
 
-        return data.withUnsafeBytes { raw -> Bool in
+        return data.withUnsafeBytes { raw -> RamaTcpDeliverStatusBridge in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return false }
+            guard let base else { return .closed }
             let view = RamaBytesView(ptr: base, len: Int(data.count))
-            return rama_transparent_proxy_tcp_session_on_client_bytes(s, view)
+            return tcpDeliverStatus(
+                rama_transparent_proxy_tcp_session_on_client_bytes(s, view)
+            )
         }
     }
 
@@ -617,22 +635,22 @@ final class RamaTcpSessionHandle {
 
     /// Deliver bytes from the egress `NWConnection` to the Rust session.
     ///
-    /// Returns `true` when the caller may keep calling
-    /// `connection.receive(...)` and `false` when Rust signaled backpressure.
-    /// On `false`, pause receives until `onEgressReadDemand` fires.
+    /// Same status contract as [`onClientBytes`] — see there.
     @discardableResult
-    func onEgressBytes(_ data: Data) -> Bool {
-        guard !data.isEmpty else { return true }
+    func onEgressBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        guard !data.isEmpty else { return .accepted }
 
         lock.lock()
         defer { lock.unlock() }
-        guard !cancelled, let s = sessionPtr else { return false }
+        guard !cancelled, let s = sessionPtr else { return .closed }
 
-        return data.withUnsafeBytes { raw -> Bool in
+        return data.withUnsafeBytes { raw -> RamaTcpDeliverStatusBridge in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return false }
+            guard let base else { return .closed }
             let view = RamaBytesView(ptr: base, len: data.count)
-            return rama_transparent_proxy_tcp_session_on_egress_bytes(s, view)
+            return tcpDeliverStatus(
+                rama_transparent_proxy_tcp_session_on_egress_bytes(s, view)
+            )
         }
     }
 

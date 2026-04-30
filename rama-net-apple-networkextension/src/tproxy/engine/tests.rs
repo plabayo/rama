@@ -475,11 +475,12 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
 }
 
 #[test]
-fn tcp_on_client_bytes_returns_false_when_ingress_channel_full() {
+fn tcp_on_client_bytes_signals_paused_when_ingress_channel_full() {
     // Without `activate`, the bridge tasks never start, so the channel never
-    // drains: any send beyond `tcp_channel_capacity` must be rejected. This
-    // proves `on_client_bytes` is non-blocking and surfaces fullness as a
-    // pause signal — the load-bearing property the Swift FFI relies on.
+    // drains: any send beyond `tcp_channel_capacity` must come back as
+    // `Paused`. This proves `on_client_bytes` is non-blocking and surfaces
+    // fullness as a pause signal — the load-bearing property the Swift FFI
+    // relies on.
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
@@ -502,17 +503,17 @@ fn tcp_on_client_bytes_returns_false_when_ingress_channel_full() {
 
     let chunk = vec![0u8; 16];
     let mut accepted = 0usize;
-    let mut rejected = 0usize;
+    let mut paused = 0usize;
     for _ in 0..10 {
-        if session.on_client_bytes(&chunk) {
-            accepted += 1;
-        } else {
-            rejected += 1;
+        match session.on_client_bytes(&chunk) {
+            TcpDeliverStatus::Accepted => accepted += 1,
+            TcpDeliverStatus::Paused => paused += 1,
+            TcpDeliverStatus::Closed => panic!("unexpected Closed before teardown"),
         }
     }
 
     assert_eq!(accepted, 2, "channel capacity is 2");
-    assert_eq!(rejected, 8);
+    assert_eq!(paused, 8);
 
     engine.stop(0);
 }
@@ -570,14 +571,14 @@ fn tcp_demand_callback_fires_after_ingress_channel_drains() {
     // Pump until we hit backpressure. With a slow service and capacity=2 we
     // expect this within a handful of iterations.
     let chunk = vec![0u8; 4096];
-    let mut got_rejected = false;
+    let mut got_paused = false;
     for _ in 0..1000 {
-        if !session.on_client_bytes(&chunk) {
-            got_rejected = true;
+        if matches!(session.on_client_bytes(&chunk), TcpDeliverStatus::Paused) {
+            got_paused = true;
             break;
         }
     }
-    assert!(got_rejected, "expected the bounded channel to fill up");
+    assert!(got_paused, "expected the bounded channel to fill up");
 
     // Give the bridge time to drain at least one chunk and fire demand.
     let _ = notify_rx.recv_timeout(Duration::from_secs(2));
@@ -593,8 +594,9 @@ fn tcp_demand_callback_fires_after_ingress_channel_drains() {
 fn tcp_bridge_write_failure_closes_ingress_channel() {
     // When the service finishes (and drops its half of the duplex) the
     // bridge's `write_all` fails and we close the receiver. From that point
-    // on `on_client_bytes` reports `false` (closed) — Swift treats this as
-    // "stop reading" and waits for the eventual `on_server_closed`.
+    // on `on_client_bytes` MUST report `Closed` (not `Paused`) — Swift uses
+    // that to terminate the read pump immediately rather than waiting on a
+    // demand callback that will never come.
     let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
 
     let handler = TestHandler {
@@ -624,22 +626,89 @@ fn tcp_bridge_write_failure_closes_ingress_channel() {
 
     // The service has nothing to do and exits, dropping ingress; the bridge's
     // first `write_all` will fail and close the receiver. Pump bytes until
-    // we observe the closed signal.
+    // we observe the Closed status.
     let chunk = vec![0u8; 1024];
-    let mut saw_false = false;
+    let mut saw_closed = false;
     for _ in 0..200 {
-        if !session.on_client_bytes(&chunk) {
-            saw_false = true;
+        if matches!(session.on_client_bytes(&chunk), TcpDeliverStatus::Closed) {
+            saw_closed = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(2));
     }
     assert!(
-        saw_false,
-        "on_client_bytes must surface the channel-closed signal after a write failure"
+        saw_closed,
+        "on_client_bytes must report Closed after a bridge write failure"
     );
 
     let _ = closed_rx.recv_timeout(Duration::from_secs(1));
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_on_bytes_signals_closed_after_session_cancel() {
+    // After `cancel()`, the FFI byte-delivery calls MUST surface
+    // `Closed` (not `Paused`) so the Swift pumps terminate immediately.
+    // Regression: the egress read pump previously dropped the chunk on
+    // a nil-session and rescheduled another `connection.receive`, leaving
+    // NWConnection traffic alive after the session was gone.
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|_: BridgeIo<TcpFlow, NwTcpStream>| async move { Ok(()) }).boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
+        |_| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate(|_| {}, || {}, || {});
+    session.cancel();
+
+    let chunk = vec![0u8; 16];
+    assert_eq!(
+        session.on_client_bytes(&chunk),
+        TcpDeliverStatus::Closed,
+        "on_client_bytes must report Closed after cancel"
+    );
+    assert_eq!(
+        session.on_egress_bytes(&chunk),
+        TcpDeliverStatus::Closed,
+        "on_egress_bytes must report Closed after cancel — \
+         this is the contract the Swift egress read pump relies on to \
+         terminate instead of looping on connection.receive forever"
+    );
+
+    engine.stop(0);
+}
+
+#[test]
+fn builder_rejects_zero_channel_capacity() {
+    // `tokio::sync::mpsc::channel(0)` panics; an explicit `Some(0)` is
+    // treated as a misconfiguration rather than silently substituting the
+    // default. `None` continues to mean "use default".
+    let make = |tcp: Option<usize>, udp: Option<usize>| {
+        let mut builder =
+            TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+                .with_runtime_factory(TestRuntimeFactory);
+        builder = builder.maybe_with_tcp_channel_capacity(tcp);
+        builder = builder.maybe_with_udp_channel_capacity(udp);
+        builder.build()
+    };
+
+    assert!(make(Some(0), None).is_err(), "Some(0) tcp must error");
+    assert!(make(None, Some(0)).is_err(), "Some(0) udp must error");
+    let engine = make(None, None).expect("None defaults must build");
     engine.stop(0);
 }
 
