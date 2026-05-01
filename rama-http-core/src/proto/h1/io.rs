@@ -187,7 +187,7 @@ where
                     h1_max_headers: parse_ctx.h1_max_headers,
                     h09_responses: parse_ctx.h09_responses,
                     on_informational: parse_ctx.on_informational,
-                    extensions: parse_ctx.extensions,
+                    prepared_extensions: parse_ctx.prepared_extensions,
                 },
             )? {
                 debug!("parsed {} headers", msg.head.headers.len());
@@ -701,7 +701,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
-                extensions: &mut Some(Extensions::default()),
+                prepared_extensions: &mut Some(Extensions::default()),
             };
             assert!(
                 buffered

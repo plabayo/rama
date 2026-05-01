@@ -37,35 +37,71 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use rama_utils::collections::AppendOnlyVec;
+use rama_utils::macros::impl_deref;
 
 pub use rama_macros::Extension;
 
 #[derive(Clone, Default)]
 /// A type map of protocol extensions.
 ///
-/// [`Extension`]s are internally stored in a type erased [`Arc`]. Since values are
-/// stored in an [`Arc`] there are extra methods exposed that build on top of this
-/// and leverage characteristics of an [`Arc`] to expose things like cheap cloning of the Arc.
+/// [`Extension`]s are internally stored in a type erased [`Arc`]. Since values
+/// are stored in an [`Arc`] there are extra methods exposed that build on top
+/// of this and leverage characteristics of an [`Arc`] to expose things like
+/// cheap cloning of the Arc.
+///
+/// [`Extensions`] may have an optional [`parent`][Self::parent]: the
+/// [`Extensions`] this one was forked from. Lookups walk the parent chain when
+/// the local [`Extension`]s don't have the requested type. The parent relationship is
+/// best described as "I'm layered on top of that, but I'm not exactly the same":
+/// - Retry attempts fork from the original request (dont leak failed extensions)
+/// - Responses fork the request (response != request)
+/// - H2 streams fork from underlying H2 connection (nested connection with isolated properties)
+///
+/// Connection's who logically map one-to-one we don't fork and we just pass the [`Extensions`]
+/// up, examples are:
+/// - TLS layered on top of TCP
+/// - HTTP layered on top of TLS
+/// - ...
 pub struct Extensions {
     extensions: Arc<AppendOnlyVec<TypeErasedExtension, 12, 3>>,
+    parent: Option<Box<Self>>,
 }
 
 impl Extensions {
-    /// Create an empty [`Extensions`] store.
+    /// Create an empty [`Extensions`] store with no parent.
     #[inline(always)]
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Create a fresh child [`Extensions`] whose parent is this [`Extensions`] store.
+    ///
+    /// The child has its own empty top-level storage. Lookups that miss
+    /// locally walk into the parent (and recursively up the chain). Inserts
+    /// land on this child only, parents are never mutated through the child.
+    #[must_use]
+    pub fn fork(&self) -> Self {
+        Self {
+            extensions: Arc::new(AppendOnlyVec::new()),
+            parent: Some(Box::new(self.clone())),
+        }
+    }
+
+    /// The parent [`Extensions`] this blob was forked from, if any.
+    #[inline(always)]
+    #[must_use]
+    pub fn parent(&self) -> Option<&Self> {
+        self.parent.as_deref()
+    }
+
     /// Insert a type `T` into this [`Extensions`] store.
     ///
-    /// This method returns a refence to the just insert value
+    /// This method returns a reference to the just inserted value.
     ///
     /// If the value you are inserting is an `Arc<T>`, prefer using
-    /// [`Self::insert_arc()`] to prevent the double indirection of storing
-    /// an `Arc<Arc<T>>`. This happens because internally we use a type erased
-    /// Arc to store the actual value.
+    /// [`Self::insert_arc`] to prevent the double indirection of storing
+    /// an `Arc<Arc<T>>`.
     pub fn insert<T: Extension>(&self, val: T) -> &T {
         let extension = TypeErasedExtension::new(val);
         let idx = self.extensions.push(extension);
@@ -104,8 +140,22 @@ impl Extensions {
     }
 
     /// Returns true if the [`Extensions`] store contains the given type.
+    ///
+    /// This function is recursive and will traverse multiple nested [`Extensions`]
+    /// stores to find the correct item. See [`Extensions::get_ref()`] for how this works.
+    ///
+    /// If you don't want any of this special logic and you just want to check this
+    /// [`Extensions`] store, use [`Extensions::raw_contains()`] instead.
     #[must_use]
     pub fn contains<T: Extension>(&self) -> bool {
+        self.get_ref::<T>().is_some()
+    }
+
+    /// Returns true if the [`Extensions`] store contains the given type
+    ///
+    /// This only checks this [`Extensions`] store
+    #[must_use]
+    pub fn raw_contains<T: Extension>(&self) -> bool {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -114,13 +164,60 @@ impl Extensions {
     }
 
     #[must_use]
-    /// Get a reference to the most recently insert item of type `T`, or insert in case no item was found
+    /// Get a reference to `T`. Walks the parent chain and the connection
+    /// wrappers ([`Egress`] / [`Ingress`]) if not found locally.
     ///
-    /// If an owned `Arc<T>` is needed prefer using [`Self::get_arc()`]
+    /// Search rule (single pass, newest insertion wins):
     ///
-    /// [`Self::get_ref`] will return the last added item `T`, in most cases this is exactly what you want, but
-    /// if you need the oldest item `T` use [`Self::first_ref`]
+    /// 1. Iterate local entries newest -> oldest. For each entry:
+    ///    - if its type matches `T`, return it,
+    ///    - if it is an [`Egress<Extensions>`] or [`Ingress<Extensions>`]
+    ///      wrapper, recurse into the wrapped blob with the same rule
+    ///      (its own local first, then its wrappers, then its parent)
+    ///      and return any match found,
+    ///    - otherwise skip.
+    /// 2. If still not found, recurse into the parent (same rule applied).
+    ///
+    /// Wrappers are spliced into the local scan in insertion order, so a
+    /// connection-pointer detour inserted on this blob is treated as part of
+    /// "local" for ordering purposes: a directly-inserted `T` and a wrapper
+    /// containing `T` both compete by insertion time, newest wins. Parent is
+    /// only consulted after the entire local scan (including wrapper
+    /// recursion) finishes empty. The wrappers themselves can still be
+    /// retrieved directly (or via [`Self::egress`] / [`Self::ingress`]).
+    ///
+    /// For a raw flat lookup, use [`Self::raw_get_ref`].
+    ///
+    /// Returns the most recently inserted match, for the oldest, see [`Self::raw_first_ref`].
     pub fn get_ref<T: Extension>(&self) -> Option<&T> {
+        let target = TypeId::of::<T>();
+        let egress_id = TypeId::of::<Egress<Self>>();
+        let ingress_id = TypeId::of::<Ingress<Self>>();
+        for ext in self.extensions.iter().rev() {
+            if ext.type_id == target {
+                if let Some(v) = ext.downcast_ref::<T>() {
+                    return Some(v);
+                }
+            } else if ext.type_id == egress_id
+                && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
+                && let Some(v) = eg.0.get_ref::<T>()
+            {
+                return Some(v);
+            } else if ext.type_id == ingress_id
+                && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
+                && let Some(v) = ig.0.get_ref::<T>()
+            {
+                return Some(v);
+            }
+        }
+        self.parent().and_then(|p| p.get_ref::<T>())
+    }
+
+    /// Raw flat [`Self::get_ref`]: returns the most recently inserted `T`, for the oldest, see [`Self::raw_first_ref`].
+    ///
+    /// This only checks this [`Extensions`] store
+    #[must_use]
+    pub fn raw_get_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -130,13 +227,41 @@ impl Extensions {
     }
 
     #[must_use]
-    /// Get an owned `Arc<T>` of the most recently insert item of type `T`, or insert in case no item was found
+    /// Get an owned `Arc<T>`. Walks the parent chain and the structural
+    /// connection wrappers if not found locally.
     ///
-    /// If a reference is needed prefer using [`Self::get_ref()`]
+    /// See [`Self::get_ref`] for the search order.
     ///
-    /// [`Self::get_arc`] will return the last added item `T`, in most cases this is exactly what you want, but
-    /// if you need the oldest item `T` use [`Self::first_arc`]
+    /// For a raw flat lookup (top-level only), use [`Self::raw_get_arc`].
     pub fn get_arc<T: Extension>(&self) -> Option<Arc<T>> {
+        let target = TypeId::of::<T>();
+        let egress_id = TypeId::of::<Egress<Self>>();
+        let ingress_id = TypeId::of::<Ingress<Self>>();
+        for ext in self.extensions.iter().rev() {
+            if ext.type_id == target {
+                if let Some(v) = ext.cloned_downcast::<T>() {
+                    return Some(v);
+                }
+            } else if ext.type_id == egress_id
+                && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
+                && let Some(v) = eg.0.get_arc::<T>()
+            {
+                return Some(v);
+            } else if ext.type_id == ingress_id
+                && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
+                && let Some(v) = ig.0.get_arc::<T>()
+            {
+                return Some(v);
+            }
+        }
+        self.parent().and_then(|p| p.get_arc::<T>())
+    }
+
+    /// Raw flat [`Self::get_arc`]: returns the most recently inserted `T`
+    ///
+    /// This only checks this [`Extensions`] store
+    #[must_use]
+    pub fn raw_get_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -145,9 +270,15 @@ impl Extensions {
             .and_then(|ext| ext.cloned_downcast())
     }
 
-    /// Get a reference to the most recently insert item of type `T`, or insert in case no item was found
+    /// Recursive find-or-create: return `&T` if one exists anywhere in this
+    /// this [`Extensions`] store (using [`Self::get_ref`] dispatch), otherwise
+    /// insert the value produced by `create_fn` at the top level and return
+    /// a reference to it.
     ///
-    /// If an owned `Arc<T>` is needed or inserting prefer using [`Self::get_arc_or_insert()`]
+    /// Useful when a type conceptually belongs to the scope (e.g. `ConnectionHealth`
+    /// on a connection chain) and you want to reuse an existing instance rather
+    /// than create a duplicate at every layer. For strict "ensure local exists",
+    /// use [`Self::raw_get_ref_or_insert`].
     pub fn get_ref_or_insert<T, F>(&self, create_fn: F) -> &T
     where
         T: Extension,
@@ -156,9 +287,7 @@ impl Extensions {
         self.get_ref().unwrap_or_else(|| self.insert(create_fn()))
     }
 
-    /// Get an owned `Arc<T>` of the most recently insert item of type `T`, or insert in case no item was found
-    ///
-    /// If a reference is needed or the type being inserted in not an `Arc<T>` prefer using [`Self::get_ref_or_insert()`]
+    /// Recursive find-or-create returning an [`Arc<T>`]: see [`Self::get_ref_or_insert`].
     pub fn get_arc_or_insert<T, F>(&self, create_fn: F) -> Arc<T>
     where
         T: Extension,
@@ -168,14 +297,43 @@ impl Extensions {
             .unwrap_or_else(|| self.insert_arc(create_fn()))
     }
 
-    /// Get a shared reference to the oldest inserted item of type `T`
+    /// Raw flat find-or-create: return `&T` if one exists at the top level of
+    /// this [`Extensions`] store, otherwise insert the value produced by
+    /// `create_fn` at the top level and return a reference to it.
     ///
-    /// If an owned `Arc<T>` is needed prefer using [`Self::get_arc()`]
+    /// Does not follow the parent chain. Useful when you want strict "ensure T
+    /// exists on THIS blob" (e.g. materializing a direction wrapper
+    /// like [`Ingress<Connection<Extensions>>`] at the outer blob).
+    pub fn raw_get_ref_or_insert<T, F>(&self, create_fn: F) -> &T
+    where
+        T: Extension,
+        F: FnOnce() -> T,
+    {
+        self.raw_get_ref()
+            .unwrap_or_else(|| self.insert(create_fn()))
+    }
+
+    /// Raw flat find-or-create returning an [`Arc<T>`]: see [`Self::raw_get_ref_or_insert`].
+    pub fn raw_get_arc_or_insert<T, F>(&self, create_fn: F) -> Arc<T>
+    where
+        T: Extension,
+        F: FnOnce() -> Arc<T>,
+    {
+        self.raw_get_arc()
+            .unwrap_or_else(|| self.insert_arc(create_fn()))
+    }
+
+    /// Raw flat reference to the oldest inserted `T` at the top level of this
+    /// [`Extensions`] store, does not walk structural wrappers.
     ///
-    /// [`Self::first_ref`] will return the first added item `T`, in most cases this is not what you want,
-    /// instead use [`Self::get_ref`] to get the most recently inserted item `T`
+    /// In most cases you want [`Self::get_ref`] (newest, scope-aware). Use this
+    /// only when you specifically need insertion order access inside this [`Extensions`]
+    /// store.
+    ///
+    /// Currently we dont provide a recursive variant of this method since we don't have
+    /// a use case for it, and it's not exactly clear what would be considered "first".
     #[must_use]
-    pub fn first_ref<T: Extension>(&self) -> Option<&T> {
+    pub fn raw_first_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -183,14 +341,10 @@ impl Extensions {
             .and_then(|ext| ext.downcast_ref())
     }
 
+    /// Raw flat [`Arc<T>`] to the oldest inserted `T` at the top level, see
+    /// [`Self::raw_first_ref`] for caveats.
     #[must_use]
-    /// Get an owned `Arc<T>` of the oldest inserted item of type `T`
-    ///
-    /// If a reference is needed prefer using [`Self::first_ref()`]
-    ///
-    /// [`Self::first_arc`] will return the first added item `T`, in most cases this is not what you want,
-    /// instead use [`Self::get_arc`] to get the most recently inserted item `T`
-    pub fn first_arc<T: Extension>(&self) -> Option<Arc<T>> {
+    pub fn raw_first_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -198,47 +352,177 @@ impl Extensions {
             .and_then(|ext| ext.cloned_downcast())
     }
 
-    /// Iterate over all the inserted items of type `T` as shared references.
+    /// Raw flat iteration over all inserted items of type `T` at the top level
+    /// of this [`Extensions`] store, newest to oldest.
     ///
-    /// Items are ordered from oldest to newest.
-    pub fn iter_ref<T: Extension>(&self) -> impl Iterator<Item = &T> {
+    /// The order matches [`Self::raw_get_ref`] (newest-first), so
+    /// `raw_iter_ref::<T>().next() == raw_get_ref::<T>()`.
+    pub fn raw_iter_ref<T: Extension>(&self) -> impl Iterator<Item = &T> {
         let type_id = TypeId::of::<T>();
 
         self.extensions
             .iter()
+            .rev()
             .filter(move |item| item.type_id == type_id)
             .filter_map(TypeErasedExtension::downcast_ref::<T>)
     }
 
-    /// Iterate over all the inserted items of type `T` as cloned [`Arc`] values.
+    /// Raw flat iteration over all inserted items of type `T` at the top level
+    /// as cloned [`Arc`] values, newest to oldest.
     ///
-    /// Items are ordered from oldest to newest.
-    pub fn iter_arc<T: Extension>(&self) -> impl Iterator<Item = Arc<T>> {
+    /// The order matches [`Self::raw_get_arc`] (newest-first), so
+    /// `raw_iter_arc::<T>().next() == raw_get_arc::<T>()`.
+    pub fn raw_iter_arc<T: Extension>(&self) -> impl Iterator<Item = Arc<T>> {
         let type_id = TypeId::of::<T>();
 
         self.extensions
             .iter()
+            .rev()
             .filter(move |item| item.type_id == type_id)
             .filter_map(TypeErasedExtension::cloned_downcast::<T>)
     }
 
-    /// Iter over all the [`TypeErasedExtension`]
+    /// Raw flat iteration over all [`TypeErasedExtension`] entries at the top
+    /// level of this [`Extensions`] store.
     ///
-    /// This can be used to efficiently combine different types of [`Extension`]s in
-    /// only a single iteration. [`TypeErasedExtension`] exposes methods to easily
-    /// convert it back to type `T` if it matches the erasaed type stored internally.
-    pub fn iter_all(&self) -> impl Iterator<Item = &TypeErasedExtension> {
+    /// Use to efficiently combine different types of [`Extension`]s in a single
+    /// iteration. [`TypeErasedExtension`] exposes methods to convert back to
+    /// type `T` when it matches the erased type.
+    pub fn raw_iter_all(&self) -> impl Iterator<Item = &TypeErasedExtension> {
         self.extensions.iter()
+    }
+
+    /// Iterate over all inserted items of type `T`, walking the parent chain
+    /// and the structural [`Egress`] / [`Ingress`] connection wrappers.
+    ///
+    /// Yield order matches [`Self::get_ref`] preference (so
+    /// `iter_ref::<T>().next() == get_ref::<T>()`):
+    ///
+    /// At each level, iterate the local entries newest -> oldest. For each
+    /// entry: yield it if its type matches `T`, if it is an
+    /// [`Egress<Extensions>`] or [`Ingress<Extensions>`] wrapper, recurse into
+    /// the wrapped blob (same rule applied) and yield its results inline. Then
+    /// recurse into the parent.
+    ///
+    /// For a flat top-level-only iteration use [`Self::raw_iter_ref`].
+    ///
+    /// The iterator type is left opaque (`impl Iterator`) so the internal
+    /// representation can change without breaking callers.
+    pub fn iter_ref<T: Extension>(&self) -> impl Iterator<Item = &T> + '_ {
+        self.iter_ref_inner::<T>()
+    }
+
+    /// Iteration yielding cloned [`Arc<T>`] values, see [`Self::iter_ref`].
+    pub fn iter_arc<T: Extension>(&self) -> impl Iterator<Item = Arc<T>> + '_ {
+        self.iter_arc_inner::<T>()
+    }
+
+    // TODO replace this later with a custom Iterator to avoid boxing
+    fn iter_ref_inner<T: Extension>(&self) -> Box<dyn Iterator<Item = &T> + '_> {
+        let target = TypeId::of::<T>();
+        let egress_id = TypeId::of::<Egress<Self>>();
+        let ingress_id = TypeId::of::<Ingress<Self>>();
+        let local = self.extensions.iter().rev().flat_map(
+            move |ext| -> Box<dyn Iterator<Item = &T> + '_> {
+                if ext.type_id == target {
+                    match ext.downcast_ref::<T>() {
+                        Some(v) => Box::new(std::iter::once(v)),
+                        None => Box::new(std::iter::empty()),
+                    }
+                } else if ext.type_id == egress_id {
+                    match ext.downcast_ref::<Egress<Self>>() {
+                        Some(e) => e.0.iter_ref_inner::<T>(),
+                        None => Box::new(std::iter::empty()),
+                    }
+                } else if ext.type_id == ingress_id {
+                    match ext.downcast_ref::<Ingress<Self>>() {
+                        Some(i) => i.0.iter_ref_inner::<T>(),
+                        None => Box::new(std::iter::empty()),
+                    }
+                } else {
+                    Box::new(std::iter::empty())
+                }
+            },
+        );
+        let parent: Box<dyn Iterator<Item = &T>> = match self.parent() {
+            Some(p) => p.iter_ref_inner::<T>(),
+            None => Box::new(std::iter::empty()),
+        };
+        Box::new(local.chain(parent))
+    }
+
+    // TODO replace this later with a custom Iterator to avoid boxing
+    fn iter_arc_inner<T: Extension>(&self) -> Box<dyn Iterator<Item = Arc<T>> + '_> {
+        let target = TypeId::of::<T>();
+        let egress_id = TypeId::of::<Egress<Self>>();
+        let ingress_id = TypeId::of::<Ingress<Self>>();
+        let local = self.extensions.iter().rev().flat_map(
+            move |ext| -> Box<dyn Iterator<Item = Arc<T>> + '_> {
+                if ext.type_id == target {
+                    match ext.cloned_downcast::<T>() {
+                        Some(v) => Box::new(std::iter::once(v)),
+                        None => Box::new(std::iter::empty()),
+                    }
+                } else if ext.type_id == egress_id {
+                    match ext.downcast_ref::<Egress<Self>>() {
+                        Some(e) => e.0.iter_arc_inner::<T>(),
+                        None => Box::new(std::iter::empty()),
+                    }
+                } else if ext.type_id == ingress_id {
+                    match ext.downcast_ref::<Ingress<Self>>() {
+                        Some(i) => i.0.iter_arc_inner::<T>(),
+                        None => Box::new(std::iter::empty()),
+                    }
+                } else {
+                    Box::new(std::iter::empty())
+                }
+            },
+        );
+        let parent: Box<dyn Iterator<Item = Arc<T>>> = match self.parent() {
+            Some(p) => p.iter_arc_inner::<T>(),
+            None => Box::new(std::iter::empty()),
+        };
+        Box::new(local.chain(parent))
+    }
+
+    /// Get a reference to the [`Ingress<Extensions>`] wrapper if one exists
+    /// on this blob or anywhere reachable through the parent chain.
+    ///
+    /// Returns `None` when no ingress wrapper has been set up. For correctly
+    /// constructed server-side requests this is always `Some`, server
+    /// stacks insert the wrapper at the boundary where the connection becomes
+    /// visible to a request, so a `None` here is almost always a framework
+    /// setup bug rather than a normal state.
+    ///
+    /// This is just a shortcut for `extensions.get_ref::<Ingress<Extensions>>()`
+    #[must_use]
+    pub fn ingress(&self) -> Option<&Ingress<Self>> {
+        self.get_ref::<Ingress<Self>>()
+    }
+
+    /// Get a reference to the [`Egress<Extensions>`] wrapper if one exists
+    /// on this blob or anywhere reachable through the parent chain.
+    /// See [`Self::ingress`] for semantics.
+    ///
+    /// This is just a shortcut for `extensions.get_ref::<Egress<Extensions>>()`
+    #[must_use]
+    pub fn egress(&self) -> Option<&Egress<Self>> {
+        self.get_ref::<Egress<Self>>()
     }
 }
 
 impl fmt::Debug for Extensions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut d = f.debug_list();
-        for ext in self.extensions.iter() {
-            d.entry(&ext.value);
+        let mut s = f.debug_struct("Extensions");
+        if let Some(parent) = self.parent() {
+            s.field("parent", parent);
         }
-        d.finish()
+        s.field(
+            "entries",
+            &self.extensions.iter().map(|e| &e.value).collect::<Vec<_>>(),
+        );
+
+        s.finish()
     }
 }
 
@@ -301,27 +585,17 @@ impl TypeErasedExtension {
     }
 }
 
-// TODO remove this once we start using input<>
-
 #[derive(Debug, Clone, Extension)]
-/// Wrapper type that can be inserted by leaf-like services
-/// when returning an output, to have the input extensions be accessible and preserved.
-pub struct InputExtensions(pub Extensions);
-
-#[derive(Debug, Clone, Extension)]
+/// Ingress connection wrapper use by servers
 pub struct Ingress<T>(pub T);
 
+impl_deref!(Ingress);
+
 #[derive(Debug, Clone, Extension)]
+/// Egress connection wrapper use by client
 pub struct Egress<T>(pub T);
 
-#[derive(Debug, Clone, Extension)]
-pub struct Connection<T>(pub T);
-
-#[derive(Debug, Clone, Extension)]
-pub struct Stream<T>(pub T);
-
-#[derive(Debug, Clone, Extension)]
-pub struct Input<T>(pub T);
+impl_deref!(Egress);
 
 // We use this syntax: [`TlsExtension`] — TLS and secure transport
 // Instead of [`TlsExtension`]: TLS and secure transport
@@ -585,13 +859,13 @@ mod tests {
     #[test]
     fn first_ref_none_when_absent() {
         let ext = Extensions::new();
-        assert_eq!(ext.first_ref::<TraceNote>(), None);
+        assert_eq!(ext.raw_first_ref::<TraceNote>(), None);
     }
 
     #[test]
     fn first_arc_none_when_absent() {
         let ext = Extensions::new();
-        assert!(ext.first_arc::<TraceNote>().is_none());
+        assert!(ext.raw_first_arc::<TraceNote>().is_none());
     }
 
     #[test]
@@ -601,7 +875,7 @@ mod tests {
         ext.insert(TraceNote("second".to_owned()));
 
         assert_eq!(
-            ext.first_ref::<TraceNote>(),
+            ext.raw_first_ref::<TraceNote>(),
             Some(&TraceNote("first".to_owned()))
         );
     }
@@ -656,7 +930,7 @@ mod tests {
         ext.insert_arc(Arc::new(TraceNote(String::from("second"))));
 
         assert_eq!(
-            ext.first_arc::<TraceNote>()
+            ext.raw_first_arc::<TraceNote>()
                 .as_deref()
                 .map(|it| it.0.as_str()),
             Some("first")
@@ -675,14 +949,14 @@ mod tests {
         ext.insert(RetryBudget(5));
 
         let calls = AtomicUsize::new(0);
-        let existing = ext.get_ref_or_insert(|| {
+        let existing = ext.raw_get_ref_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
             RetryBudget(6)
         });
         assert_eq!(existing.0, 5u32);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-        let missing = ext.get_ref_or_insert(|| {
+        let missing = ext.raw_get_ref_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
             ConnectionTimeoutMs(7)
         });
@@ -696,14 +970,14 @@ mod tests {
         ext.insert_arc(Arc::new(TraceNote(String::from("stored"))));
 
         let calls = AtomicUsize::new(0);
-        let existing = ext.get_arc_or_insert(|| {
+        let existing = ext.raw_get_arc_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
             Arc::new(TraceNote(String::from("new")))
         });
         assert_eq!(existing.0.as_str(), "stored");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-        let missing = ext.get_arc_or_insert(|| {
+        let missing = ext.raw_get_arc_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
             Arc::new(RetryBudget(11))
         });
@@ -718,7 +992,10 @@ mod tests {
         ext.insert(FeatureToggle(true));
         ext.insert(HealthSignal(2));
 
-        let type_ids: Vec<TypeId> = ext.iter_all().map(TypeErasedExtension::type_id).collect();
+        let type_ids: Vec<TypeId> = ext
+            .raw_iter_all()
+            .map(TypeErasedExtension::type_id)
+            .collect();
         assert_eq!(
             type_ids,
             vec![
@@ -734,36 +1011,36 @@ mod tests {
         let ext = Extensions::new();
         ext.insert(HealthSignal(1));
 
-        assert_eq!(ext.iter_ref::<TraceNote>().count(), 0);
-        assert_eq!(ext.iter_arc::<TraceNote>().count(), 0);
+        assert_eq!(ext.raw_iter_ref::<TraceNote>().count(), 0);
+        assert_eq!(ext.raw_iter_arc::<TraceNote>().count(), 0);
     }
 
     #[test]
-    fn iter_ref_returns_items_for_present_type_in_oldest_to_newest_order() {
+    fn iter_ref_returns_items_for_present_type_in_newest_to_oldest_order() {
         let ext = Extensions::new();
         ext.insert(TraceNote(String::from("first")));
         ext.insert(HealthSignal(9));
         ext.insert(TraceNote(String::from("second")));
 
         let output: Vec<&str> = ext
-            .iter_ref::<TraceNote>()
+            .raw_iter_ref::<TraceNote>()
             .map(|it| it.0.as_str())
             .collect();
-        assert_eq!(output, vec!["first", "second"]);
+        assert_eq!(output, vec!["second", "first"]);
     }
 
     #[test]
-    fn iter_arc_returns_items_for_present_type_in_oldest_to_newest_order() {
+    fn iter_arc_returns_items_for_present_type_in_newest_to_oldest_order() {
         let ext = Extensions::new();
         ext.insert(TraceNote(String::from("first")));
         ext.insert(HealthSignal(9));
         ext.insert(TraceNote(String::from("second")));
 
         let output: Vec<String> = ext
-            .iter_arc::<TraceNote>()
+            .raw_iter_arc::<TraceNote>()
             .map(|arc| arc.0.clone())
             .collect();
-        assert_eq!(output, vec!["first".to_owned(), "second".to_owned()]);
+        assert_eq!(output, vec!["second".to_owned(), "first".to_owned()]);
     }
 
     #[test]
@@ -889,6 +1166,186 @@ mod tests {
         assert_eq!(
             arced.extensions().get_ref::<RetryBudget>(),
             Some(&RetryBudget(7))
+        );
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct ConnSocketInfo(&'static str);
+
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct RequestId(u64);
+
+    #[test]
+    fn get_finds_local() {
+        let req = Extensions::new();
+        req.insert(RequestId(42));
+        assert_eq!(req.get_ref::<RequestId>(), Some(&RequestId(42)));
+    }
+
+    #[test]
+    fn get_walks_parent_chain() {
+        let req = Extensions::new();
+        req.insert(RequestId(7));
+
+        let resp = req.fork();
+        assert_eq!(resp.get_ref::<RequestId>(), Some(&RequestId(7)));
+    }
+
+    #[test]
+    fn local_shadows_parent() {
+        let req = Extensions::new();
+        req.insert(RequestId(7));
+
+        let attempt = req.fork();
+        attempt.insert(RequestId(99));
+
+        assert_eq!(attempt.get_ref::<RequestId>(), Some(&RequestId(99)));
+    }
+
+    #[test]
+    fn fork_isolates_writes() {
+        let req = Extensions::new();
+        req.insert(RequestId(1));
+
+        let attempt = req.fork();
+        attempt.insert(RequestId(2));
+
+        assert_eq!(req.get_ref::<RequestId>(), Some(&RequestId(1)));
+    }
+
+    #[test]
+    fn ingress_view_walks_parent() {
+        let conn_ext = Extensions::new();
+        conn_ext.insert(ConnSocketInfo("client-in"));
+
+        let req = Extensions::new();
+        req.insert(Ingress(conn_ext));
+
+        assert_eq!(
+            req.ingress().and_then(|i| i.get_ref::<ConnSocketInfo>()),
+            Some(&ConnSocketInfo("client-in"))
+        );
+    }
+
+    #[test]
+    fn egress_view_walks_parent() {
+        let conn_ext = Extensions::new();
+        conn_ext.insert(ConnSocketInfo("egress-side"));
+
+        let req = Extensions::new();
+        req.insert(Egress(conn_ext));
+
+        assert_eq!(
+            req.egress().and_then(|e| e.get_ref::<ConnSocketInfo>()),
+            Some(&ConnSocketInfo("egress-side"))
+        );
+    }
+
+    #[test]
+    fn ingress_egress_disambiguate_in_mitm() {
+        let in_conn = Extensions::new();
+        in_conn.insert(ConnSocketInfo("in"));
+        let out_conn = Extensions::new();
+        out_conn.insert(ConnSocketInfo("out"));
+
+        let req = Extensions::new();
+        req.insert(Ingress(in_conn));
+        req.insert(Egress(out_conn));
+
+        assert_eq!(
+            req.ingress().and_then(|i| i.get_ref::<ConnSocketInfo>()),
+            Some(&ConnSocketInfo("in"))
+        );
+        assert_eq!(
+            req.egress().and_then(|e| e.get_ref::<ConnSocketInfo>()),
+            Some(&ConnSocketInfo("out"))
+        );
+    }
+
+    #[test]
+    fn egress_view_walks_through_parent_to_find_wrapper() {
+        let conn_ext = Extensions::new();
+        conn_ext.insert(ConnSocketInfo("inside-parent"));
+        let req = Extensions::new();
+        req.insert(Egress(conn_ext));
+
+        let resp = req.fork();
+        assert_eq!(
+            resp.egress().and_then(|e| e.get_ref::<ConnSocketInfo>()),
+            Some(&ConnSocketInfo("inside-parent"))
+        );
+    }
+
+    #[test]
+    fn ingress_egress_return_none_when_absent() {
+        let req = Extensions::new();
+        assert!(req.ingress().is_none());
+        assert!(req.egress().is_none());
+    }
+
+    #[test]
+    fn iter_ref_yields_local_then_parent_newest_to_oldest() {
+        let parent = Extensions::new();
+        parent.insert(RequestId(1));
+        parent.insert(RequestId(2));
+
+        let child = parent.fork();
+        child.insert(RequestId(3));
+        child.insert(RequestId(4));
+
+        let ids: Vec<_> = child.iter_ref::<RequestId>().map(|r| r.0).collect();
+        assert_eq!(ids, vec![4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn iter_ref_walks_egress_and_ingress_wrappers_inline() {
+        let conn_in = Extensions::new();
+        conn_in.insert(RequestId(10));
+        conn_in.insert(RequestId(11));
+        let conn_out = Extensions::new();
+        conn_out.insert(RequestId(20));
+
+        let req = Extensions::new();
+        req.insert(RequestId(1));
+        req.insert(Ingress(conn_in));
+        req.insert(Egress(conn_out));
+
+        let ids: Vec<_> = req.iter_ref::<RequestId>().map(|r| r.0).collect();
+        assert_eq!(ids, vec![20, 11, 10, 1]);
+    }
+
+    #[test]
+    fn local_direct_after_wrapper_shadows_wrapper() {
+        let conn = Extensions::new();
+        conn.insert(RequestId(99));
+        let req = Extensions::new();
+        req.insert(Ingress(conn));
+        req.insert(RequestId(1));
+
+        assert_eq!(req.get_ref::<RequestId>(), Some(&RequestId(1)));
+    }
+
+    #[test]
+    fn wrapper_after_local_direct_shadows_direct() {
+        let conn = Extensions::new();
+        conn.insert(RequestId(99));
+        let req = Extensions::new();
+        req.insert(RequestId(1));
+        req.insert(Ingress(conn));
+
+        assert_eq!(req.get_ref::<RequestId>(), Some(&RequestId(99)));
+    }
+
+    #[test]
+    fn iter_ref_first_matches_get_ref() {
+        let parent = Extensions::new();
+        parent.insert(RequestId(1));
+        let child = parent.fork();
+        child.insert(RequestId(2));
+
+        assert_eq!(
+            child.iter_ref::<RequestId>().next(),
+            child.get_ref::<RequestId>()
         );
     }
 }

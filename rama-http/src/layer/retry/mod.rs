@@ -3,6 +3,7 @@
 use crate::{Request, StreamingBody, body::util::BodyExt};
 use rama_core::Service;
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsRef;
 use rama_utils::macros::define_inner_service_accessors;
 
 mod layer;
@@ -102,7 +103,11 @@ where
 
         let mut cloned = self.policy.clone_input(&request);
 
+        let parent_ext = request.extensions().clone();
         loop {
+            // Fork extensions so we dont leak extensions from failed attempts
+            *request.extensions_mut() = parent_ext.fork();
+
             let resp = self.inner.serve(request).await;
             match cloned.take() {
                 Some(cloned_req) => {

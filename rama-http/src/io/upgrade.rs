@@ -107,10 +107,18 @@ pub struct Parts<T> {
 /// - `http::Response<B>`
 /// - `&rama_http::Request<B>`
 /// - `&rama_http::Response<B>`
+///
+/// When the upgrade completes, the returned [`Upgraded`]s [`Extensions`] are reparented to the
+/// message that triggered it: `upgraded.parent = msg.fork()`. That gives the
+/// upgraded a fresh top-level storage of its own while keeping everything
+/// the message could see: both HTTP-level state on the message itself and
+/// connection-level state reachable through the message's `Ingress` / `Egress`
+/// wrappers
 pub fn handle_upgrade<T: ExtensionsRef>(
     msg: T,
 ) -> impl Future<Output = Result<Upgraded, BoxError>> + 'static {
-    let on_upgrade = match msg.extensions().get_ref::<OnUpgrade>().cloned() {
+    let msg_ext = msg.extensions().clone();
+    let on_upgrade = match msg_ext.get_ref::<OnUpgrade>().cloned() {
         Some(on_upgrade) => {
             trace!("upgrading this: {:?}", on_upgrade);
             if on_upgrade.has_handled_upgrade() {
@@ -125,11 +133,13 @@ pub fn handle_upgrade<T: ExtensionsRef>(
         None => Err(OpaqueError::from_static_str("no pending update found").into_box_error()),
     };
 
-    async {
-        match on_upgrade {
-            Ok(on_upgrade) => on_upgrade.await,
-            Err(err) => Err(err),
-        }
+    async move {
+        let mut upgraded = match on_upgrade {
+            Ok(on_upgrade) => on_upgrade.await?,
+            Err(err) => return Err(err),
+        };
+        *upgraded.extensions_mut() = msg_ext.fork();
+        Ok(upgraded)
     }
 }
 
@@ -155,6 +165,12 @@ pub fn pending() -> (Pending, OnUpgrade) {
 
 impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
+    ///
+    /// The [`Upgraded`] starts with the io [`Extensions`]s. When
+    /// driven through [`handle_upgrade`] the parent is set to the message
+    /// that triggered the upgrade (which already encodes the underlying
+    /// connection through its `Ingress` / `Egress` wrapper), so the upgraded
+    /// blob inherits everything reachable from that message.
     pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
         T: Io + Unpin + ExtensionsRef,
@@ -163,6 +179,10 @@ impl Upgraded {
             extensions: io.extensions().clone(),
             io: Rewind::new_buffered(Box::new(io), read_buf),
         }
+    }
+
+    pub fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 
     /// Tries to downcast the internal trait object to the type passed.

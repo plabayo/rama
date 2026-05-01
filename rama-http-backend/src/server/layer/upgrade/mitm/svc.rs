@@ -3,7 +3,6 @@ use std::convert::Infallible;
 use rama_core::{
     Service, bytes,
     error::BoxError,
-    extensions::ExtensionsRef as _,
     io::BridgeIo,
     matcher::service::{ServiceMatch, ServiceMatcher},
     rt::Executor,
@@ -74,7 +73,6 @@ where
             tracing::debug!("HttpUpgradeMitmRelay: upgrade MITM relay req match made...");
 
             let on_upgrade_ingress = rama_http::io::upgrade::handle_upgrade(&req);
-            let req_extensions = req.extensions().clone();
 
             let relay_upgrade_span = tracing::trace_root_span!(
                 "upgrade::mitm_relay::serve",
@@ -112,8 +110,6 @@ where
                 );
 
                 let on_upgrade_egress = rama_http::io::upgrade::handle_upgrade(&res);
-                let res_extensions = res.extensions().clone();
-
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
                 self.exec.spawn_task(async move {
@@ -129,8 +125,6 @@ where
                         }
                     };
 
-                    ingress_stream.extensions().extend(&req_extensions);
-                    egress_stream.extensions().extend(&res_extensions);
 
                     tracing::trace!(
                         "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"
