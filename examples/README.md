@@ -58,6 +58,11 @@ Rama supports also client-side SSE. See the tests of these examples
 at [../tests/integration/examples](../tests/integration/examples) on how the client
 side looks like.
 
+### RSS and Atom Feeds
+
+- [`http_rss_blog.rs`](./http_rss_blog.rs) - RSS 2.0 and Atom 1.0 blog feed server, showing the type-state builder API and `content:encoded` extension
+- [`http_rss_podcast.rs`](./http_rss_podcast.rs) - Podcast feed server with iTunes and Podcasting 2.0 extensions, both one-shot and streaming variants
+
 ### Anti-Bot examples
 
 - [`http_anti_bot_infinite_resource.rs`](./http_anti_bot_infinite_resource.rs) - example demonstrating how to serve an infinite resource

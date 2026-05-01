@@ -197,6 +197,34 @@ impl ContentType {
         Self(mime::APPLICATION_JAVASCRIPT_UTF_8)
     }
 
+    /// A constructor to easily create a `Content-Type: application/rss+xml` header.
+    #[inline]
+    #[must_use]
+    pub fn rss() -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "static value which is expected to work, and validated with a unit-test"
+        )]
+        Self(
+            Mime::from_str("application/rss+xml")
+                .expect("application/rss+xml to be a valid mime"),
+        )
+    }
+
+    /// A constructor to easily create a `Content-Type: application/atom+xml` header.
+    #[inline]
+    #[must_use]
+    pub fn atom() -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "static value which is expected to work, and validated with a unit-test"
+        )]
+        Self(
+            Mime::from_str("application/atom+xml")
+                .expect("application/atom+xml to be a valid mime"),
+        )
+    }
+
     /// A constructor to easily create a `Content-Type: application/jose+json` header.
     #[inline]
     #[must_use]
@@ -292,6 +320,16 @@ mod tests {
     #[test]
     fn ndjson_is_valid() {
         let _ = ContentType::ndjson();
+    }
+
+    #[test]
+    fn rss_is_valid() {
+        let _ = ContentType::rss();
+    }
+
+    #[test]
+    fn atom_is_valid() {
+        let _ = ContentType::atom();
     }
 
     #[test]
