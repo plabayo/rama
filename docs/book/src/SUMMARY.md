@@ -61,6 +61,7 @@
 - [Server-Sent Events (SSE)](./http/sse.md)
 - [WebSockets (WS)](./http/ws.md)
 - [HTTP Archive format (HAR)](./http/har.md)
+- [Binary Bodies and Multipart Uploads](./http/multipart.md)
 
 # Deploy
 
