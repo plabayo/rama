@@ -1,4 +1,4 @@
-use std::{convert::Infallible, path::Path, sync::Arc};
+use std::{convert::Infallible, error::Error, fmt, path::Path, sync::Arc};
 
 use http::Method;
 use matchit::Router as MatchitRouter;
@@ -633,12 +633,23 @@ impl Default for Router {
     }
 }
 
-#[derive(Debug, Clone, derive_more::Display, derive_more::Error)]
+#[derive(Debug, Clone)]
 pub enum RouterError {
     Internal,
-    #[display("MethodNotAllowed({_0:?})")]
-    MethodNotAllowed(#[error(ignore)] NonEmptySmallVec<7, Method>),
+    MethodNotAllowed(NonEmptySmallVec<7, Method>),
     NotFound,
+}
+
+impl fmt::Display for RouterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl Error for RouterError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(ResponseError::new(self))
+    }
 }
 
 impl IntoResponse for RouterError {
@@ -663,7 +674,7 @@ struct SubService<O, E> {
 impl<State, L, O, E> Service<Request> for Router<State, L, O, E>
 where
     O: Send + 'static,
-    E: Send + From<ResponseError> + 'static,
+    E: Send + From<RouterError> + 'static,
     L: Send + Sync + 'static,
     State: Send + Sync + Clone + 'static,
 {
@@ -750,7 +761,7 @@ where
                                 tracing::warn!(
                                     "failed to strip full prefix '{full_prefix}' (static: '{prefix}') from Uri (bug??); err = {err}",
                                 );
-                                return Err(ResponseError::new(RouterError::Internal).into());
+                                return Err(RouterError::Internal.into());
                             }
                         };
 
@@ -785,7 +796,7 @@ where
                             tracing::warn!(
                                 "failed to strip literal prefix '{prefix}' from Uri (bug??); err = {err}",
                             );
-                            return Err(ResponseError::new(RouterError::Internal).into());
+                            return Err(RouterError::Internal.into());
                         }
                     }
 
@@ -804,14 +815,14 @@ where
         if let Some(matcher) = allowed_methods
             && let Some(methods) = NonEmptySmallVec::collect(matcher.iter())
         {
-            return Err(ResponseError::new(RouterError::MethodNotAllowed(methods)).into());
+            return Err(RouterError::MethodNotAllowed(methods).into());
         }
 
         if let Some(not_found) = &self.not_found {
             let req = Request::from_parts(parts, body);
             not_found.serve(req).await
         } else {
-            Err(ResponseError::new(RouterError::NotFound).into())
+            Err(RouterError::NotFound.into())
         }
     }
 }

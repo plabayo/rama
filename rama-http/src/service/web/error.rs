@@ -1,15 +1,14 @@
-use std::error::Error;
+use std::{error::Error, fmt};
 
-use derive_more::Display;
 use rama_http_types::Response;
 
 use crate::service::web::response::IntoResponse;
 
-pub trait IntoResponseError: Error + Send + Sync + 'static {
+pub trait AsResponseError: Error + Send + Sync + 'static {
     fn as_response(&self) -> Response;
 }
 
-impl<T> IntoResponseError for T
+impl<T> AsResponseError for T
 where
     T: IntoResponse + Clone + Error + Send + Sync + 'static,
 {
@@ -18,21 +17,33 @@ where
     }
 }
 
-#[derive(Debug, Display)]
-pub struct ResponseError(Box<dyn IntoResponseError>);
+#[derive(Debug)]
+pub struct ResponseError(fn(&(dyn Error + 'static)) -> Option<Response>);
 
-impl Error for ResponseError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&*self.0)
+impl fmt::Display for ResponseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ResponseError")
     }
 }
 
+impl Error for ResponseError {}
+
 impl ResponseError {
-    pub fn new(err: impl IntoResponseError) -> Self {
-        Self(Box::new(err))
+    fn converter<T: AsResponseError>(err: &(dyn Error + 'static)) -> Option<Response> {
+        err.downcast_ref::<T>().map(|v| v.as_response())
     }
 
-    pub fn as_response(&self) -> Response {
-        self.0.as_response()
+    pub const fn new<T: AsResponseError>(_err: &T) -> &'static Self {
+        &Self(Self::converter::<T>)
+    }
+
+    pub fn try_as_response(mut err: &(dyn Error + 'static)) -> Option<Response> {
+        while let Some(src) = err.source() {
+            if let Some(src) = src.downcast_ref::<Self>() {
+                return src.0(err);
+            }
+            err = src;
+        }
+        None
     }
 }

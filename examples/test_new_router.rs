@@ -72,8 +72,8 @@ impl From<MissingHost> for MyCustomErr {
     }
 }
 
-impl From<ResponseError> for MyCustomErr {
-    fn from(value: ResponseError) -> Self {
+impl From<RouterError> for MyCustomErr {
+    fn from(value: RouterError) -> Self {
         Self
     }
 }
@@ -118,10 +118,7 @@ async fn main() {
     if let Err(err) = res {
         dbg!(downcast_ref::<ResponseError>(&*err));
         dbg!(downcast_ref::<RouterError>(&*err));
-
-        if let Some(err) = downcast_ref::<ResponseError>(&*err) {
-            let resp = err.as_response();
-        }
+        dbg!(ResponseError::try_as_response(&*err));
     }
 
     let mut router1 = Router::new().with_endpoint_layer(());
