@@ -924,7 +924,7 @@ pub use map_output::{MapOutput, MapOutputLayer};
 
 mod map_err;
 #[doc(inline)]
-pub use map_err::{MapErr, MapErrLayer};
+pub use map_err::{IntoErr, IntoErrLayer, MapErr, MapErrLayer};
 
 pub mod consume_err;
 #[doc(inline)]

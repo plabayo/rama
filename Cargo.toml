@@ -437,6 +437,7 @@ spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 turmoil = { workspace = true }
+derive_more = { workspace = true, features = ["display", "error"] }
 
 [lints]
 workspace = true

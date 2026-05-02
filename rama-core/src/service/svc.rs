@@ -306,6 +306,34 @@ where
     }
 }
 
+/// A static [`Service`] that always returns pre-defined output.
+#[derive(Debug, Clone)]
+pub struct StaticOutput<O>(O);
+
+impl<O> StaticOutput<O>
+where
+    O: Clone + Send + Sync + 'static,
+{
+    /// Create a new [`StaticOutput`] with the given value.
+    #[inline(always)]
+    pub fn new(value: O) -> Self {
+        Self(value)
+    }
+}
+
+impl<I, O> Service<I> for StaticOutput<O>
+where
+    I: Send + 'static,
+    O: Clone + Send + Sync + 'static,
+{
+    type Output = O;
+    type Error = Infallible;
+
+    async fn serve(&self, _: I) -> Result<Self::Output, Self::Error> {
+        Ok(self.0.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
