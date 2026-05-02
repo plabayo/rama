@@ -731,6 +731,104 @@ where
         self
     }
 
+    /// Set a [`multipart::Form`](super::multipart::Form) as the body of this
+    /// [`Request`].
+    ///
+    /// Sets the `Content-Type` header to
+    /// `multipart/form-data; boundary={boundary}` and, when every part has a
+    /// known size, the `Content-Length` header. An existing `Content-Type`
+    /// header is overwritten.
+    #[cfg(feature = "multipart")]
+    #[must_use]
+    pub fn multipart(mut self, form: super::multipart::Form) -> Self {
+        let content_type = form.content_type();
+        let content_length = form.content_length();
+        let body = form.into_body();
+        self.state = match self.state {
+            RequestBuilderState::PreBody(mut builder) => {
+                let builder = if let Some(headers) = builder.headers_mut() {
+                    headers.insert(crate::header::CONTENT_TYPE, content_type);
+                    if let Some(len) = content_length {
+                        headers
+                            .insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
+                    }
+                    builder
+                } else {
+                    let builder = builder.header(crate::header::CONTENT_TYPE, content_type);
+                    match content_length {
+                        Some(len) => builder
+                            .header(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len)),
+                        None => builder,
+                    }
+                };
+                match builder.body(body) {
+                    Ok(req) => RequestBuilderState::PostBody(req),
+                    Err(err) => RequestBuilderState::Error(BoxError::from(err)),
+                }
+            }
+            RequestBuilderState::PostBody(mut req) => {
+                req.headers_mut()
+                    .insert(crate::header::CONTENT_TYPE, content_type);
+                if let Some(len) = content_length {
+                    req.headers_mut()
+                        .insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
+                } else {
+                    req.headers_mut().remove(crate::header::CONTENT_LENGTH);
+                }
+                *req.body_mut() = body;
+                RequestBuilderState::PostBody(req)
+            }
+            RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
+        };
+        self
+    }
+
+    /// Set the given bytes as an `application/octet-stream` [`Body`] in the [`Request`].
+    ///
+    /// Sets `Content-Type: application/octet-stream` if no `Content-Type`
+    /// header is already set on the request.
+    ///
+    /// [`Body`]: crate::Body
+    #[must_use]
+    pub fn octet_stream<T: Into<rama_core::bytes::Bytes>>(mut self, bytes: T) -> Self {
+        let bytes = bytes.into();
+        self.state = match self.state {
+            RequestBuilderState::PreBody(mut builder) => {
+                let builder = match builder.headers_mut() {
+                    Some(headers) => {
+                        if !headers.contains_key(crate::header::CONTENT_TYPE) {
+                            headers.insert(
+                                crate::header::CONTENT_TYPE,
+                                crate::HeaderValue::from_static("application/octet-stream"),
+                            );
+                        }
+                        builder
+                    }
+                    None => builder.header(
+                        crate::header::CONTENT_TYPE,
+                        crate::HeaderValue::from_static("application/octet-stream"),
+                    ),
+                };
+                match builder.body(bytes.into()) {
+                    Ok(req) => RequestBuilderState::PostBody(req),
+                    Err(err) => RequestBuilderState::Error(BoxError::from(err)),
+                }
+            }
+            RequestBuilderState::PostBody(mut req) => {
+                if !req.headers().contains_key(crate::header::CONTENT_TYPE) {
+                    req.headers_mut().insert(
+                        crate::header::CONTENT_TYPE,
+                        crate::HeaderValue::from_static("application/octet-stream"),
+                    );
+                }
+                *req.body_mut() = bytes.into();
+                RequestBuilderState::PostBody(req)
+            }
+            RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
+        };
+        self
+    }
+
     /// Set the http [`Version`] of this [`Request`].
     ///
     /// [`Version`]: crate::Version

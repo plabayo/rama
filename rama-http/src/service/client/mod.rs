@@ -3,3 +3,6 @@
 pub mod ext;
 #[doc(inline)]
 pub use ext::{HttpClientExt, IntoUrl, RequestBuilder};
+
+#[cfg(feature = "multipart")]
+pub mod multipart;
