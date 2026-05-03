@@ -751,6 +751,11 @@ where
                     if let Some(len) = content_length {
                         headers
                             .insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
+                    } else {
+                        // Streaming multipart — clear any pre-set
+                        // Content-Length so we don't ship a stale fixed
+                        // length alongside a chunked body.
+                        headers.remove(crate::header::CONTENT_LENGTH);
                     }
                     builder
                 } else {

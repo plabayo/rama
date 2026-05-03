@@ -393,7 +393,9 @@ fn render_framing(boundary: &str, name: &str, part: &Part, with_leading_crlf: bo
     buf.put_slice(CRLF);
     if let Some(mime) = &part.mime {
         buf.put_slice(b"Content-Type: ");
-        buf.put_slice(mime.essence_str().as_bytes());
+        // `as_ref` returns the full mime string including parameters
+        // (e.g. `text/plain; charset=utf-8`); essence_str would drop them.
+        buf.put_slice(mime.as_ref().as_bytes());
         buf.put_slice(CRLF);
     }
     for (name, value) in &part.headers {
@@ -425,9 +427,10 @@ fn part_headers_len(boundary: &str, name: &str, part: &Part) -> usize {
         len += b"; filename=\"".len() + quoted_len(file_name) + b"\"".len();
     }
     len += CRLF.len();
-    // "Content-Type: {mime}\r\n"
+    // "Content-Type: {mime}\r\n" — full mime string including any parameters
+    // (e.g. `text/plain; charset=utf-8`).
     if let Some(mime) = &part.mime {
-        len += b"Content-Type: ".len() + mime.essence_str().len() + CRLF.len();
+        len += b"Content-Type: ".len() + mime.as_ref().len() + CRLF.len();
     }
     // Custom headers (excluding the two we always derive ourselves).
     for (h_name, h_value) in &part.headers {
@@ -485,6 +488,13 @@ fn write_quoted(buf: &mut BytesMut, s: &str) {
 /// - `;filename=name` overrides the `filename` parameter
 ///
 /// Example: `avatar=@./photo.png;type=image/png;filename=me.png`
+///
+/// # Limitations
+///
+/// Modifier splitting is naive: the first `;` after the value terminates the
+/// value. A literal `;` cannot appear inside a `name=value` text payload via
+/// this syntax. For text values containing `;`, build the [`Part`] directly
+/// with [`Part::text`] and add it via [`Form::part`].
 #[derive(Debug, Clone)]
 pub struct FieldSpec<'a> {
     /// Field name (the part to the left of `=`).
@@ -730,6 +740,25 @@ mod test {
         let (_, _, bytes) = collect(form).await;
         let s = std::str::from_utf8(&bytes).unwrap();
         assert!(s.contains("name=\"we\\\"ird\""));
+    }
+
+    #[tokio::test]
+    async fn test_form_preserves_mime_parameters() {
+        // Regression: prior implementation used `mime.essence_str()` which
+        // dropped the charset parameter. Senders must emit the full mime
+        // including any params like `charset=utf-8`.
+        let part = Part::bytes(b"hi".as_slice())
+            .with_mime_str("text/plain; charset=utf-8")
+            .unwrap();
+        let form = Form::new().part("note", part);
+        let len = form.content_length().expect("length known");
+        let (_, _, bytes) = collect(form).await;
+        assert_eq!(len as usize, bytes.len());
+        let s = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            s.contains("Content-Type: text/plain; charset=utf-8"),
+            "rendered body: {s}"
+        );
     }
 
     #[test]

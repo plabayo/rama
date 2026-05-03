@@ -110,6 +110,11 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
                     request
                         .headers_mut()
                         .insert(CONTENT_LENGTH, HeaderValue::from(len));
+                } else {
+                    // Streaming form — drop any user-supplied
+                    // Content-Length so the chunked body isn't shipped with
+                    // a stale fixed length.
+                    request.headers_mut().remove(CONTENT_LENGTH);
                 }
                 *request.body_mut() = body;
             }

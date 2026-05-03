@@ -459,6 +459,130 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_multipart_quoted_boundary_in_content_type() {
+        // RFC 2046 §5.1.1 allows the boundary to be quoted in the
+        // Content-Type header, especially when it contains characters that
+        // require it. multer's parser strips the quotes; our wrapper must
+        // handle it transparently.
+        let service =
+            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+                let f = mp.next_field().await.unwrap().unwrap();
+                assert_eq!(f.text().await.unwrap(), "v");
+                StatusCode::OK
+            });
+
+        let body = body_with(&[("k", None, None, b"v")]);
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(
+                rama_http_types::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary=\"{BOUNDARY}\""),
+            )
+            .body(body.into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_with_preamble_and_epilogue() {
+        // RFC 2046 §5.1.1 says implementations MUST ignore anything before
+        // the first boundary (preamble) and after the close boundary
+        // (epilogue).
+        let mut body = Vec::new();
+        body.extend_from_slice(b"This is a preamble that must be ignored.\r\n");
+        body.extend_from_slice(&body_with(&[("k", None, None, b"v")]));
+        body.extend_from_slice(b"trailing epilogue ignored\r\n");
+
+        let service =
+            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+                let f = mp.next_field().await.unwrap().unwrap();
+                assert_eq!(f.name(), Some("k"));
+                assert_eq!(f.text().await.unwrap(), "v");
+                StatusCode::OK
+            });
+
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, ct())
+            .body(body.into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_with_transport_padding() {
+        // RFC 2046 §5.1.1 receivers must accept linear-whitespace transport
+        // padding between the boundary delimiter and the trailing CRLF.
+        // Hand-craft a body with `--boundary  \r\n` (extra spaces).
+        let mut body = Vec::new();
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(BOUNDARY.as_bytes());
+        body.extend_from_slice(b"   \r\n"); // padding
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"k\"\r\n\r\n");
+        body.extend_from_slice(b"v\r\n");
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(BOUNDARY.as_bytes());
+        body.extend_from_slice(b"--\t \r\n"); // padding before final CRLF
+
+        let service =
+            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+                let f = mp.next_field().await.unwrap().unwrap();
+                assert_eq!(f.text().await.unwrap(), "v");
+                StatusCode::OK
+            });
+
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, ct())
+            .body(body.into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_filename_with_rfc5987_ext_value() {
+        // RFC 7578 §5.1.3 says receivers should accept the variety of
+        // filename encodings observed in the wild, including the
+        // RFC 5987/8187 `filename*=UTF-8''…` ext-value form. Our wrapper
+        // surfaces whatever multer parses; we just verify the pipeline
+        // doesn't reject the request.
+        let mut body = Vec::new();
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(BOUNDARY.as_bytes());
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename*=UTF-8''r%C3%A9sum%C3%A9.txt\r\n",
+        );
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(b"hello\r\n");
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(BOUNDARY.as_bytes());
+        body.extend_from_slice(b"--\r\n");
+
+        let service =
+            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+                let f = mp.next_field().await.unwrap().unwrap();
+                assert_eq!(f.name(), Some("file"));
+                // multer surfaces the parsed filename; we don't assert on
+                // the exact decoded value (parsers vary), just that the
+                // request succeeds and the body content is intact.
+                assert_eq!(f.text().await.unwrap(), "hello");
+                StatusCode::OK
+            });
+
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, ct())
+            .body(body.into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn test_multipart_invalid_boundary() {
         let service = WebService::default().with_post("/", async |_: Multipart| StatusCode::OK);
 
