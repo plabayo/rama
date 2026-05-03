@@ -1,6 +1,7 @@
 use super::*;
 use crate::h2::codec::UserError;
 use crate::h2::proto;
+use rama_core::extensions::{Egress, Extensions, Ingress};
 use rama_core::telemetry::tracing::{self, warn};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
@@ -263,7 +264,24 @@ impl Recv {
         }
 
         if !pseudo.is_informational() {
-            let extensions = stream.extensions.clone();
+            let extensions = if counts.peer().is_server() {
+                // Server receiving a request
+                let ext = Extensions::new();
+                ext.insert(Ingress(stream.extensions.clone()));
+                ext
+            } else {
+                // Client receiving a response
+                stream
+                    .req_extensions
+                    .as_ref()
+                    .map(|req_ext| req_ext.fork())
+                    .unwrap_or_else(|| {
+                        tracing::warn!(
+                            "req_extensions should always be set in recv_headers but it was missing; falling back to default; report bug in rama"
+                        );
+                        Extensions::new()
+                    })
+            };
             let message = counts.peer().convert_poll_message(
                 pseudo,
                 fields,
@@ -287,9 +305,17 @@ impl Recv {
                 self.pending_accept.push(stream);
             }
         } else {
-            // This is an informational response (1xx status code)
-            // Convert to response and store it for polling
-            let extensions = stream.extensions.clone();
+            // Client receiving an informational response
+            let extensions =  stream
+                .req_extensions
+                .as_ref()
+                .map(|req_ext| req_ext.fork())
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        "req_extensions should always be set in recv_headers but it was missing; falling back to default; report bug in rama"
+                    );
+                    Extensions::new()
+                });
             let message = counts.peer().convert_poll_message(
                 pseudo,
                 fields,
@@ -865,14 +891,18 @@ impl Recv {
         let promised_id = frame.promised_id();
         let header_size = frame.calculate_header_list_size();
         let (pseudo, fields, field_order) = frame.into_parts();
-        // TODO we can probably mem::take them here, but will need to be tested for side-effects
+
+        let push_ext = Extensions::new();
+        push_ext.insert(Egress(stream.extensions.clone()));
+        stream.req_extensions = Some(push_ext.clone());
+
         let req = crate::h2::server::Peer::convert_poll_message(
             pseudo,
             fields,
             field_order,
             header_size,
             promised_id,
-            stream.extensions.clone(),
+            push_ext,
         )?;
 
         if let Err(e) = frame::PushPromise::validate_request(&req) {

@@ -3,8 +3,7 @@ use rama::{Service, error::BoxError, extensions::ExtensionsRef, telemetry::traci
 use rama::{
     error::ErrorContext as _,
     net::{
-        client::EstablishedClientConnection,
-        stream::{ClientSocketInfo, SocketInfo},
+        client::EstablishedClientConnection, stream::SocketInfo,
         transport::TryRefIntoTransportContext,
     },
 };
@@ -35,7 +34,7 @@ where
             .map_err(BoxError::from)?;
 
         let addr = conn.local_addr()?;
-        let info = ClientSocketInfo(SocketInfo::new(
+        let info = SocketInfo::new(
             conn.local_addr()
                 .inspect_err(|err| {
                     tracing::debug!(
@@ -45,7 +44,7 @@ where
                 .ok()
                 .map(Into::into),
             addr.into(),
-        ));
+        );
 
         let conn = TcpStream::new(conn);
         conn.extensions().insert(info);

@@ -20,6 +20,7 @@ use crate::{
 pub use ::rama_http_backend::client::*;
 use rama_core::{
     error::{ErrorContext, ErrorExt as _, extra::OpaqueError},
+    extensions::Egress,
     layer::MapErr,
 };
 
@@ -210,7 +211,8 @@ where
             conn: http_connection,
         } = self.connector.serve(req).await.into_opaque_error()?;
 
-        req.extensions().extend(http_connection.extensions());
+        req.extensions()
+            .insert(Egress(http_connection.extensions().clone()));
 
         let http_connection = self.jit_layers.layer(http_connection);
 

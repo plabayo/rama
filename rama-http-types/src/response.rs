@@ -10,6 +10,7 @@ use crate::status::StatusCode;
 use crate::version::Version;
 use crate::{Body, Result};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_utils::macros::generate_set_and_with;
 
 #[derive(Clone, Debug, Extension)]
 struct HyperExtensions(HttpExtensions);
@@ -538,6 +539,13 @@ impl<T> Response<T> {
         Response {
             body: f(self.body),
             head: self.head,
+        }
+    }
+
+    generate_set_and_with! {
+        pub fn extensions(mut self, extensions: Extensions) -> Self {
+            self.head.extensions = extensions;
+            self
         }
     }
 }

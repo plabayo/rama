@@ -25,7 +25,7 @@
 
 use rama::{
     Layer, Service,
-    extensions::{ExtensionsRef, InputExtensions},
+    extensions::ExtensionsRef,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -41,7 +41,7 @@ use rama::{
     layer::ConsumeErrLayer,
     net::{
         proxy::IoForwardService,
-        stream::ClientSocketInfo,
+        stream::SocketInfo,
         tls::server::{SelfSignedData, TlsPeekRouter},
         user::credentials::basic,
     },
@@ -161,10 +161,12 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
     match client.serve(req).await {
         Ok(resp) => {
+            // We can also just directly fetch SocketInfo and it will traverse into egress/ingress chains,
+            // however to be clear and to avoid confusion in a MITM setup we access the egress one directly.
             if let Some(client_socket_info) = resp
                 .extensions()
-                .get_ref()
-                .and_then(|InputExtensions(ext)| ext.get_ref::<ClientSocketInfo>())
+                .egress()
+                .and_then(|e| e.get_ref::<SocketInfo>())
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),

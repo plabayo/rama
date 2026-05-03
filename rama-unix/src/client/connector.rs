@@ -8,7 +8,7 @@ use rama_core::{
 };
 use rama_net::client::EstablishedClientConnection;
 
-use crate::{ClientUnixSocketInfo, TokioUnixStream, UnixSocketInfo, UnixStream};
+use crate::{TokioUnixStream, UnixSocketInfo, UnixStream};
 use std::{convert::Infallible, path::PathBuf, sync::Arc};
 
 /// A connector which can be used to establish a Unix connection to a server.
@@ -82,7 +82,7 @@ where
             .await
             .into_box_error()?;
 
-        let info = ClientUnixSocketInfo(UnixSocketInfo::new(
+        let info = UnixSocketInfo::new(
             conn.stream
                 .local_addr()
                 .inspect_err(|err| {
@@ -94,7 +94,7 @@ where
             conn.stream
                 .peer_addr()
                 .context("failed to retrieve peer address of established connection")?,
-        ));
+        );
         conn.extensions().insert(info);
 
         Ok(EstablishedClientConnection { input, conn })

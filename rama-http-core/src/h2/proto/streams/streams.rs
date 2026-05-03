@@ -7,7 +7,7 @@ use crate::h2::{client, proto, server};
 
 use parking_lot::Mutex;
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::extensions::{Egress, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
 use rama_http::proto::h1::Http1HeaderMap;
@@ -352,7 +352,7 @@ where
 
         // Convert the message
         let is_content_length_head = *request.method() == Method::HEAD;
-        let (headers, extensions) = client::Peer::convert_send_message(
+        let (headers, req_ext) = client::Peer::convert_send_message(
             stream_id,
             request,
             protocol,
@@ -365,11 +365,15 @@ where
             stream_id,
             me.actions.send.init_window_sz(),
             me.actions.recv.init_window_sz(),
-            extensions,
+            &me.extensions,
         ).map_err(|err| {
             tracing::warn!("failed to create stream for id {stream_id:?} in send_request: {err}; library GO AWAY");
             Error::library_go_away(err)
         })?;
+
+        // Update the request so it points at this stream as its egress connection
+        req_ext.insert(Egress(stream.extensions.clone()));
+        stream.req_extensions = Some(req_ext);
 
         if is_content_length_head {
             stream.content_length = ContentLength::Head;
@@ -586,7 +590,7 @@ impl Inner {
                             stream_id,
                             self.actions.send.init_window_sz(),
                             self.actions.recv.init_window_sz(),
-                            self.extensions.clone(),
+                            &self.extensions,
                         )
                         .map_err(|err| {
                             tracing::warn!("failed to create recv stream for id {stream_id:?}: {err}; library GO AWAY");
@@ -940,7 +944,7 @@ impl Inner {
                     promised_id,
                     self.actions.send.init_window_sz(),
                     self.actions.recv.init_window_sz(),
-                    self.extensions.clone(),
+                    &self.extensions,
                 ).map_err(|err| {
                     tracing::warn!("failed to create pushed stream for promised id {promised_id:?}: {err}; library GO AWAY");
                     Error::library_go_away(err)
@@ -1077,7 +1081,7 @@ impl Inner {
                     self.actions.recv.maybe_reset_next_stream_id(id);
                 }
 
-                match Stream::try_new(id, 0, 0, self.extensions.clone()) {
+                match Stream::try_new(id, 0, 0, &self.extensions) {
                     Ok(stream) => e.insert(stream),
                     Err(reason) => {
                         tracing::debug!(
@@ -1383,7 +1387,7 @@ impl<B> StreamRef<B> {
                     promised_id,
                     actions.send.init_window_sz(),
                     actions.recv.init_window_sz(),
-                    me.extensions.clone(),
+                    &me.extensions,
                 ).map_err(|err| {
                     tracing::warn!("failed to create stream for promised id {promised_id:?} in send_push_promise: {err}; library GO AWAY");
                     Error::library_go_away(err)

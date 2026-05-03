@@ -22,7 +22,7 @@
 
 use rama::{
     Layer as _, Service,
-    extensions::ExtensionsRef,
+    extensions::{Egress, ExtensionsRef},
     http::{
         Body, BodyExtractExt, Request, client::HttpConnectorLayer, server::HttpServer,
         service::web::Router,
@@ -109,7 +109,8 @@ async fn main() {
         .await
         .expect("establish a proxied connection ready to make http requests");
 
-    req.extensions().extend(http_service.extensions());
+    req.extensions()
+        .insert(Egress(http_service.extensions().clone()));
 
     tracing::info!(
         url.full = %uri,
