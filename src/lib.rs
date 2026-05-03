@@ -31,7 +31,7 @@
 //!
 //! **Networking (transports and primitives)**:
 //!
-//! - [`tcp`] · [`udp`] · [`unix`] — listeners, connectors, sockets
+//! - [`tcp`] · [`udp`] · `unix` — listeners, connectors, sockets
 //! - [`net`] — shared addresses / sockets / fingerprints (Apple-only items live in
 //!   [`net::apple`])
 //! - [`dns`] — DNS resolvers and types (native resolvers or opt-in HickoryDNS)
