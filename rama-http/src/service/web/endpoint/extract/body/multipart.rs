@@ -579,11 +579,14 @@ mod test {
 
     #[tokio::test]
     async fn test_multipart_filename_with_rfc5987_ext_value() {
-        // RFC 7578 §5.1.3 says receivers should accept the variety of
-        // filename encodings observed in the wild, including the
-        // RFC 5987/8187 `filename*=UTF-8''…` ext-value form. Our wrapper
-        // surfaces whatever multer parses; we just verify the pipeline
-        // doesn't reject the request.
+        // RFC 7578 §4.2 explicitly forbids senders from using the RFC 5987
+        // `filename*` ext-value in multipart/form-data; §5.1.3 likewise
+        // doesn't list it among the encodings receivers should accept.
+        // multer correspondingly does not decode `filename*` and returns
+        // `None` for `file_name()` when only that form is present. Our
+        // wrapper accepts the request (we don't 415/400 on it), the field
+        // body is intact, and we surface multer's choice unchanged. Pin
+        // this so any future change in multer or our pipeline is caught.
         let mut body = Vec::new();
         body.extend_from_slice(b"--");
         body.extend_from_slice(BOUNDARY.as_bytes());
@@ -601,9 +604,78 @@ mod test {
             WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
                 let f = mp.next_field().await.unwrap().unwrap();
                 assert_eq!(f.name(), Some("file"));
-                // multer surfaces the parsed filename; we don't assert on
-                // the exact decoded value (parsers vary), just that the
-                // request succeeds and the body content is intact.
+                // multer 3.1 does not decode `filename*` — pin that.
+                assert_eq!(f.file_name(), None);
+                assert_eq!(f.text().await.unwrap(), "hello");
+                StatusCode::OK
+            });
+
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, ct())
+            .body(body.into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_filename_utf8_passthrough() {
+        // RFC 7578 §5.1.1 says senders SHOULD use UTF-8 for non-ASCII
+        // names; §5.1.3 says receivers should accept unencoded UTF-8.
+        // multer passes raw bytes through verbatim. Pin the exact
+        // decoded value.
+        let mut body = Vec::new();
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(BOUNDARY.as_bytes());
+        body.extend_from_slice(b"\r\n");
+        // "résumé.txt" as raw UTF-8 in the quoted-string form.
+        body.extend_from_slice(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"résumé.txt\"\r\n".as_bytes(),
+        );
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(b"hello\r\n");
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(BOUNDARY.as_bytes());
+        body.extend_from_slice(b"--\r\n");
+
+        let service =
+            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+                let f = mp.next_field().await.unwrap().unwrap();
+                assert_eq!(f.name(), Some("file"));
+                assert_eq!(f.file_name(), Some("résumé.txt"));
+                assert_eq!(f.text().await.unwrap(), "hello");
+                StatusCode::OK
+            });
+
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, ct())
+            .body(body.into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_filename_with_escaped_quote() {
+        // Quote-escaped filenames in quoted-string form (`\"`).
+        let mut body = Vec::new();
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(BOUNDARY.as_bytes());
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(
+            br#"Content-Disposition: form-data; name="file"; filename="we\"ird.txt""#,
+        );
+        body.extend_from_slice(b"\r\n\r\nhello\r\n");
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(BOUNDARY.as_bytes());
+        body.extend_from_slice(b"--\r\n");
+
+        let service =
+            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+                let f = mp.next_field().await.unwrap().unwrap();
+                assert_eq!(f.file_name(), Some("we\"ird.txt"));
                 assert_eq!(f.text().await.unwrap(), "hello");
                 StatusCode::OK
             });
