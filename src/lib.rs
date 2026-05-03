@@ -297,10 +297,6 @@ pub use ::rama_udp as udp;
 pub mod telemetry;
 
 #[cfg(any(feature = "rustls", feature = "boring", feature = "acme"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(feature = "rustls", feature = "boring", feature = "acme")))
-)]
 pub mod tls;
 
 #[cfg(feature = "dns")]
@@ -327,24 +323,16 @@ pub mod net {
             any(feature = "net-apple-networkextension", feature = "net-apple-xpc")
         )
     ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(
-            target_vendor = "apple",
-            any(feature = "net-apple-networkextension", feature = "net-apple-xpc")
-        )))
-    )]
+    #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
     pub mod apple {
         //! Apple (vendor) specific network modules
 
         #[cfg(feature = "net-apple-networkextension")]
         #[cfg_attr(docsrs, doc(cfg(feature = "net-apple-networkextension")))]
-        #[doc(inline)]
         pub use ::rama_net_apple_networkextension as networkextension;
 
         #[cfg(feature = "net-apple-xpc")]
         #[cfg_attr(docsrs, doc(cfg(feature = "net-apple-xpc")))]
-        #[doc(inline)]
         pub use ::rama_net_apple_xpc as xpc;
     }
 }
@@ -354,10 +342,6 @@ pub mod net {
 pub mod http;
 
 #[cfg(any(feature = "proxy", feature = "haproxy", feature = "socks5"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(feature = "proxy", feature = "haproxy", feature = "socks5")))
-)]
 pub mod proxy {
     //! rama proxy support
 
