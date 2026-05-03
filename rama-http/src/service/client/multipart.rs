@@ -138,13 +138,15 @@ impl Form {
     /// Total content length of the encoded form, if every part has a known
     /// size. Returns `None` otherwise (use chunked transfer encoding in that
     /// case).
+    ///
+    /// Computed analytically — no headers are rendered into a buffer.
     #[must_use]
     pub fn content_length(&self) -> Option<u64> {
         let mut total: u64 = 0;
         for np in &self.parts {
             let part_size = np.part.content_size?;
-            let header = render_part_headers(&self.boundary, &np.name, &np.part);
-            total = total.checked_add(header.len() as u64)?;
+            let header_len = part_headers_len(&self.boundary, &np.name, &np.part) as u64;
+            total = total.checked_add(header_len)?;
             total = total.checked_add(part_size)?;
             total = total.checked_add(CRLF.len() as u64)?;
         }
@@ -154,41 +156,51 @@ impl Form {
     }
 
     /// Convert this form into a stream of body chunks.
+    ///
+    /// Per-part overhead: one heap-allocated framing chunk (boundary
+    /// delimiter + headers, prefixed with CRLF on all but the first part)
+    /// and the part body. Bytes-bodied parts are emitted in a single chunk;
+    /// streamed bodies pass through their underlying chunks unchanged.
     pub fn into_stream(
         self,
     ) -> impl rama_core::futures::Stream<Item = Result<Bytes, BoxError>> + Send {
         let boundary = self.boundary;
+        let n_parts = self.parts.len();
+
+        // Build the closing trailer up front: the leading CRLF replaces the
+        // last part's body-trailing CRLF (the CRLF before each boundary
+        // delimiter is part of the delimiter per RFC 2046 §5.1.1).
         let trailer = {
-            let mut buf = BytesMut::with_capacity(boundary.len() + 4);
+            let cap = if n_parts == 0 { 0 } else { CRLF.len() }
+                + b"--".len()
+                + boundary.len()
+                + b"--\r\n".len();
+            let mut buf = BytesMut::with_capacity(cap);
+            if n_parts > 0 {
+                buf.put_slice(CRLF);
+            }
             buf.put_slice(b"--");
             buf.put_slice(boundary.as_bytes());
             buf.put_slice(b"--\r\n");
             buf.freeze()
         };
 
-        let chunks: Vec<ChunkStream> = self
-            .parts
-            .into_iter()
-            .flat_map(|np| {
-                let header = render_part_headers(&boundary, &np.name, &np.part);
-                let header_stream: ChunkStream =
-                    Box::pin(stream::iter([Ok::<Bytes, BoxError>(header)]));
-                let body_stream: ChunkStream = match np.part.body {
-                    PartBody::Bytes(b) => Box::pin(stream::iter([Ok::<Bytes, BoxError>(b)])),
-                    PartBody::Stream(s) => s,
-                };
-                let crlf_stream: ChunkStream = Box::pin(stream::iter([Ok::<Bytes, BoxError>(
-                    Bytes::from_static(CRLF),
-                )]));
-                [header_stream, body_stream, crlf_stream]
-            })
-            .collect();
+        // 2 streams per part (framing + body) + 1 for the trailer.
+        let mut chunks: Vec<ChunkStream> = Vec::with_capacity(n_parts * 2 + 1);
+        for (i, np) in self.parts.into_iter().enumerate() {
+            // Framing: for parts after the first we prepend CRLF (the
+            // delimiter's leading CRLF, which doubles as the prior body's
+            // trailer per RFC 2046).
+            let framing = render_framing(&boundary, &np.name, &np.part, i > 0);
+            chunks.push(Box::pin(stream::iter([Ok::<Bytes, BoxError>(framing)])));
+            chunks.push(match np.part.body {
+                PartBody::Bytes(b) => Box::pin(stream::iter([Ok::<Bytes, BoxError>(b)])),
+                PartBody::Stream(s) => s,
+            });
+        }
+        chunks.push(Box::pin(stream::iter([Ok::<Bytes, BoxError>(trailer)])));
 
-        let trailer_stream: ChunkStream = Box::pin(stream::iter([Ok::<Bytes, BoxError>(trailer)]));
-        let mut all: Vec<ChunkStream> = chunks;
-        all.push(trailer_stream);
-
-        stream::iter(all).flatten()
+        stream::iter(chunks).flatten()
     }
 
     /// Consume the form and produce a [`Body`](crate::Body) ready to be set on
@@ -355,8 +367,18 @@ impl Part {
     }
 }
 
-fn render_part_headers(boundary: &str, name: &str, part: &Part) -> Bytes {
-    let mut buf = BytesMut::with_capacity(128);
+/// Render the boundary delimiter plus part headers as a single chunk.
+///
+/// `with_leading_crlf` adds the delimiter's CRLF prefix used between parts;
+/// the very first part of a form has no preceding CRLF (its preamble is
+/// empty), per RFC 2046 §5.1.1.
+fn render_framing(boundary: &str, name: &str, part: &Part, with_leading_crlf: bool) -> Bytes {
+    let cap =
+        if with_leading_crlf { CRLF.len() } else { 0 } + part_headers_len(boundary, name, part);
+    let mut buf = BytesMut::with_capacity(cap);
+    if with_leading_crlf {
+        buf.put_slice(CRLF);
+    }
     buf.put_slice(b"--");
     buf.put_slice(boundary.as_bytes());
     buf.put_slice(CRLF);
@@ -385,6 +407,49 @@ fn render_part_headers(boundary: &str, name: &str, part: &Part) -> Bytes {
     }
     buf.put_slice(CRLF);
     buf.freeze()
+}
+
+/// Compute the byte length of the headers `render_part_headers` would emit,
+/// without doing any allocation. Must stay in lock-step with the rendering
+/// logic.
+fn part_headers_len(boundary: &str, name: &str, part: &Part) -> usize {
+    // "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\""
+    let mut len = b"--".len()
+        + boundary.len()
+        + CRLF.len()
+        + b"Content-Disposition: form-data; name=\"".len()
+        + quoted_len(name)
+        + b"\"".len();
+    // "; filename=\"{file_name}\""
+    if let Some(file_name) = part.file_name.as_deref() {
+        len += b"; filename=\"".len() + quoted_len(file_name) + b"\"".len();
+    }
+    len += CRLF.len();
+    // "Content-Type: {mime}\r\n"
+    if let Some(mime) = &part.mime {
+        len += b"Content-Type: ".len() + mime.essence_str().len() + CRLF.len();
+    }
+    // Custom headers (excluding the two we always derive ourselves).
+    for (h_name, h_value) in &part.headers {
+        if h_name == header::CONTENT_DISPOSITION || h_name == header::CONTENT_TYPE {
+            continue;
+        }
+        len += h_name.as_str().len() + b": ".len() + h_value.as_bytes().len() + CRLF.len();
+    }
+    // Blank line separating headers from body.
+    len += CRLF.len();
+    len
+}
+
+/// Counts the bytes `write_quoted` would emit.
+fn quoted_len(s: &str) -> usize {
+    s.bytes()
+        .map(|b| match b {
+            b'"' | b'\\' => 2,
+            // CR/LF replaced by a single space.
+            _ => 1,
+        })
+        .sum()
 }
 
 fn write_quoted(buf: &mut BytesMut, s: &str) {

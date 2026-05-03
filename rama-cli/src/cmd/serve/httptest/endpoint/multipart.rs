@@ -64,12 +64,13 @@ pub(in crate::cmd::serve::httptest) fn post_service()
 }
 
 async fn post_handler(mut multipart: Multipart) -> ResponseResult<Json<MultipartReport>> {
+    let to_response = |e: &MultipartError| (e.status(), e.body_text()).into_response();
     let mut parts = Vec::new();
-    while let Some(field) = multipart.next_field().await.map_err(map_err)? {
+    while let Some(field) = multipart.next_field().await.map_err(|e| to_response(&e))? {
         let name = field.name().map(str::to_owned);
         let filename = field.file_name().map(str::to_owned);
         let content_type = field.content_type().map(|m| m.essence_str().to_owned());
-        let bytes = field.bytes().await.map_err(map_err)?;
+        let bytes = field.bytes().await.map_err(|e| to_response(&e))?;
         let size = bytes.len() as u64;
         let text = if bytes.len() <= TEXT_ECHO_LIMIT {
             std::str::from_utf8(&bytes).ok().map(str::to_owned)
@@ -85,8 +86,4 @@ async fn post_handler(mut multipart: Multipart) -> ResponseResult<Json<Multipart
         });
     }
     Ok(Json(MultipartReport { parts }))
-}
-
-fn map_err(err: MultipartError) -> rama::http::Response {
-    (err.status(), err.body_text()).into_response()
 }

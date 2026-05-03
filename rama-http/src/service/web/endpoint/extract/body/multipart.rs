@@ -98,6 +98,13 @@ impl MultipartConfig {
         }
     }
 
+    /// Build a fresh `multer::Constraints` from this config.
+    ///
+    /// Allocates a `String` per named field limit (multer requires
+    /// `Into<String>`); bounded by the small number of distinct field names
+    /// users typically configure. The extractor only calls this when a
+    /// `MultipartConfig` is actually present as a request extension —
+    /// otherwise the parser is built with no constraints at all.
     fn to_constraints(&self) -> multer::Constraints {
         let mut limit = multer::SizeLimit::new();
         if let Some(default) = self.default_field_limit {
@@ -134,27 +141,34 @@ impl Multipart {
     /// Build a `Multipart` from a body and boundary string with no per-field
     /// limits.
     pub fn from_body(body: crate::Body, boundary: impl Into<String>) -> Self {
-        Self::from_body_with_config(body, boundary, &MultipartConfig::default())
+        let stream = body.into_data_stream();
+        let inner = multer::Multipart::new(stream, boundary);
+        Self { inner }
     }
 
     /// Build a `Multipart` from a body and boundary string, applying the
-    /// per-field limits in `config`.
+    /// per-field limits in `config`. Pass `None` to skip building any
+    /// `multer::Constraints` and use parser defaults.
     pub fn from_body_with_config(
         body: crate::Body,
         boundary: impl Into<String>,
-        config: &MultipartConfig,
+        config: Option<&MultipartConfig>,
     ) -> Self {
         let stream = body.into_data_stream();
-        let inner = multer::Multipart::with_constraints(stream, boundary, config.to_constraints());
+        let inner = match config {
+            Some(c) => multer::Multipart::with_constraints(stream, boundary, c.to_constraints()),
+            None => multer::Multipart::new(stream, boundary),
+        };
         Self { inner }
     }
 
     /// Construct from any stream of `Result<Bytes, _>` and a boundary, with the
-    /// per-field limits in `config`.
+    /// per-field limits in `config`. Pass `None` to skip building any
+    /// `multer::Constraints` and use parser defaults.
     pub fn from_stream_with_config<S, O, E, B>(
         stream: S,
         boundary: B,
-        config: &MultipartConfig,
+        config: Option<&MultipartConfig>,
     ) -> Self
     where
         S: Stream<Item = Result<O, E>> + Send + 'static,
@@ -162,7 +176,10 @@ impl Multipart {
         E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
         B: Into<String>,
     {
-        let inner = multer::Multipart::with_constraints(stream, boundary, config.to_constraints());
+        let inner = match config {
+            Some(c) => multer::Multipart::with_constraints(stream, boundary, c.to_constraints()),
+            None => multer::Multipart::new(stream, boundary),
+        };
         Self { inner }
     }
 
@@ -345,16 +362,11 @@ impl FromRequest for Multipart {
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         let boundary = parse_boundary(req.headers()).ok_or(InvalidMultipartBoundary)?;
 
-        let config = req
-            .extensions()
-            .get_ref::<MultipartConfig>()
-            .cloned()
-            .unwrap_or_default();
-
+        let config = req.extensions().get_arc::<MultipartConfig>();
         Ok(Self::from_body_with_config(
             req.into_body(),
             boundary,
-            &config,
+            config.as_deref(),
         ))
     }
 }

@@ -14,6 +14,14 @@ use rama_utils::macros::impl_deref;
 /// `application/octet-stream`. Any other content type is rejected with
 /// `415 Unsupported Media Type`. The full body is collected into [`Bytes`].
 ///
+/// # Performance
+///
+/// `OctetStream` collects the entire body into a single contiguous buffer
+/// before the handler runs — convenient for small uploads, but unsuitable for
+/// large or streaming payloads. For those, use the [`Body`](super::Body)
+/// extractor and consume frame-by-frame; cap the request body size with the
+/// existing body-limit machinery to bound memory use.
+///
 /// For producing octet-stream responses, see
 /// [`response::OctetStream`](crate::service::web::endpoint::response::OctetStream).
 #[derive(Debug, Clone)]
