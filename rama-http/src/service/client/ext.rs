@@ -607,6 +607,12 @@ where
 
     /// Set the [`Request`]'s [`Body`].
     ///
+    /// Re-syncs `Content-Length` with the new body: when the body has a
+    /// known exact size, `Content-Length` is set to that value, replacing
+    /// any prior value. When the size is unknown, any pre-set
+    /// `Content-Length` is removed so the request doesn't ship with stale
+    /// framing.
+    ///
     /// [`Body`]: crate::Body
     #[must_use]
     pub fn body<T>(mut self, body: T) -> Self
@@ -614,15 +620,19 @@ where
         T: TryInto<crate::Body, Error: Into<BoxError>>,
     {
         self.state = match self.state {
-            RequestBuilderState::PreBody(builder) => match body.try_into() {
-                Ok(body) => match builder.body(body) {
-                    Ok(req) => RequestBuilderState::PostBody(req),
-                    Err(err) => RequestBuilderState::Error(BoxError::from(err)),
-                },
+            RequestBuilderState::PreBody(mut builder) => match body.try_into() {
+                Ok(body) => {
+                    sync_content_length_pre_body(&mut builder, &body);
+                    match builder.body(body) {
+                        Ok(req) => RequestBuilderState::PostBody(req),
+                        Err(err) => RequestBuilderState::Error(BoxError::from(err)),
+                    }
+                }
                 Err(err) => RequestBuilderState::Error(err.into()),
             },
             RequestBuilderState::PostBody(mut req) => match body.try_into() {
                 Ok(body) => {
+                    sync_content_length_post_body(&mut req, &body);
                     *req.body_mut() = body;
                     RequestBuilderState::PostBody(req)
                 }
@@ -635,12 +645,17 @@ where
 
     /// Set the given value as a URL-Encoded Form [`Body`] in the [`Request`].
     ///
+    /// Sets `Content-Type: application/x-www-form-urlencoded` if no
+    /// `Content-Type` header is already set. Sets `Content-Length` to the
+    /// encoded body's size, replacing any prior value.
+    ///
     /// [`Body`]: crate::Body
     #[must_use]
     pub fn form<T: serde::Serialize + ?Sized>(mut self, form: &T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => match serde_html_form::to_string(form) {
                 Ok(body) => {
+                    let len = body.len() as u64;
                     let builder = match builder.headers_mut() {
                         Some(headers) => {
                             if !headers.contains_key(crate::header::CONTENT_TYPE) {
@@ -651,12 +666,20 @@ where
                                     ),
                                 );
                             }
+                            headers.insert(
+                                crate::header::CONTENT_LENGTH,
+                                crate::HeaderValue::from(len),
+                            );
                             builder
                         }
-                        None => builder.header(
-                            crate::header::CONTENT_TYPE,
-                            crate::HeaderValue::from_static("application/x-www-form-urlencoded"),
-                        ),
+                        None => builder
+                            .header(
+                                crate::header::CONTENT_TYPE,
+                                crate::HeaderValue::from_static(
+                                    "application/x-www-form-urlencoded",
+                                ),
+                            )
+                            .header(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len)),
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
@@ -667,12 +690,15 @@ where
             },
             RequestBuilderState::PostBody(mut req) => match serde_html_form::to_string(form) {
                 Ok(body) => {
+                    let len = body.len() as u64;
                     if !req.headers().contains_key(crate::header::CONTENT_TYPE) {
                         req.headers_mut().insert(
                             crate::header::CONTENT_TYPE,
                             crate::HeaderValue::from_static("application/x-www-form-urlencoded"),
                         );
                     }
+                    req.headers_mut()
+                        .insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
@@ -685,12 +711,17 @@ where
 
     /// Set the given value as a JSON [`Body`] in the [`Request`].
     ///
+    /// Sets `Content-Type: application/json` if no `Content-Type` header is
+    /// already set. Sets `Content-Length` to the encoded body's size,
+    /// replacing any prior value.
+    ///
     /// [`Body`]: crate::Body
     #[must_use]
     pub fn json<T: serde::Serialize + ?Sized>(mut self, json: &T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => match serde_json::to_vec(json) {
                 Ok(body) => {
+                    let len = body.len() as u64;
                     let builder = match builder.headers_mut() {
                         Some(headers) => {
                             if !headers.contains_key(crate::header::CONTENT_TYPE) {
@@ -699,12 +730,18 @@ where
                                     crate::HeaderValue::from_static("application/json"),
                                 );
                             }
+                            headers.insert(
+                                crate::header::CONTENT_LENGTH,
+                                crate::HeaderValue::from(len),
+                            );
                             builder
                         }
-                        None => builder.header(
-                            crate::header::CONTENT_TYPE,
-                            crate::HeaderValue::from_static("application/json"),
-                        ),
+                        None => builder
+                            .header(
+                                crate::header::CONTENT_TYPE,
+                                crate::HeaderValue::from_static("application/json"),
+                            )
+                            .header(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len)),
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
@@ -715,12 +752,15 @@ where
             },
             RequestBuilderState::PostBody(mut req) => match serde_json::to_vec(json) {
                 Ok(body) => {
+                    let len = body.len() as u64;
                     if !req.headers().contains_key(crate::header::CONTENT_TYPE) {
                         req.headers_mut().insert(
                             crate::header::CONTENT_TYPE,
                             crate::HeaderValue::from_static("application/json"),
                         );
                     }
+                    req.headers_mut()
+                        .insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
@@ -791,12 +831,14 @@ where
     /// Set the given bytes as an `application/octet-stream` [`Body`] in the [`Request`].
     ///
     /// Sets `Content-Type: application/octet-stream` if no `Content-Type`
-    /// header is already set on the request.
+    /// header is already set on the request. Sets `Content-Length` to the
+    /// payload's size, replacing any prior value.
     ///
     /// [`Body`]: crate::Body
     #[must_use]
     pub fn octet_stream<T: Into<rama_core::bytes::Bytes>>(mut self, bytes: T) -> Self {
         let bytes = bytes.into();
+        let len = bytes.len() as u64;
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => {
                 let builder = match builder.headers_mut() {
@@ -807,12 +849,16 @@ where
                                 crate::HeaderValue::from_static("application/octet-stream"),
                             );
                         }
+                        headers
+                            .insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
                         builder
                     }
-                    None => builder.header(
-                        crate::header::CONTENT_TYPE,
-                        crate::HeaderValue::from_static("application/octet-stream"),
-                    ),
+                    None => builder
+                        .header(
+                            crate::header::CONTENT_TYPE,
+                            crate::HeaderValue::from_static("application/octet-stream"),
+                        )
+                        .header(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len)),
                 };
                 match builder.body(bytes.into()) {
                     Ok(req) => RequestBuilderState::PostBody(req),
@@ -826,6 +872,8 @@ where
                         crate::HeaderValue::from_static("application/octet-stream"),
                     );
                 }
+                req.headers_mut()
+                    .insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
                 *req.body_mut() = bytes.into();
                 RequestBuilderState::PostBody(req)
             }
@@ -885,6 +933,40 @@ where
         match self.http_client_service.serve(request).await {
             Ok(response) => Ok(response),
             Err(err) => Err(err.into().context(uri)),
+        }
+    }
+}
+
+/// Synchronise `Content-Length` with the new body on a pre-body request
+/// builder.
+///
+/// If the body has a known exact size, set `Content-Length` to that value
+/// (replacing any prior). If the size is unknown, remove any pre-set
+/// `Content-Length` so the request doesn't ship with stale framing.
+fn sync_content_length_pre_body(builder: &mut crate::request::Builder, body: &crate::Body) {
+    use rama_http_types::StreamingBody as _;
+    let Some(headers) = builder.headers_mut() else {
+        return;
+    };
+    let exact = body.size_hint().exact();
+    sync_content_length_in_map(headers, exact);
+}
+
+/// Synchronise `Content-Length` with the new body on a request that has
+/// already entered the post-body state.
+fn sync_content_length_post_body<B>(req: &mut crate::Request<B>, body: &crate::Body) {
+    use rama_http_types::StreamingBody as _;
+    let exact = body.size_hint().exact();
+    sync_content_length_in_map(req.headers_mut(), exact);
+}
+
+fn sync_content_length_in_map(headers: &mut crate::HeaderMap, exact: Option<u64>) {
+    match exact {
+        Some(len) => {
+            headers.insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
+        }
+        None => {
+            headers.remove(crate::header::CONTENT_LENGTH);
         }
     }
 }
@@ -966,5 +1048,116 @@ mod test {
     async fn test_client_happy_path() {
         let response = client().get("http://127.0.0.1:8080").send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Capture the request the builder would send and return it as the
+    /// response body so tests can inspect the outgoing headers.
+    async fn echo_headers_client_fn(request: Request<crate::Body>) -> Result<Response, Infallible> {
+        let mut headers_lines = Vec::new();
+        for (name, value) in request.headers() {
+            headers_lines.push(format!(
+                "{}: {}",
+                name.as_str(),
+                value.to_str().unwrap_or("<bin>")
+            ));
+        }
+        let body = headers_lines.join("\n");
+        Ok(crate::Response::new(crate::Body::from(body)))
+    }
+
+    fn echo_client() -> HttpClient {
+        let builder = (
+            MapResultLayer::new(map_internal_client_error),
+            TraceLayer::new_for_http(),
+        );
+        (builder,)
+            .into_layer(service_fn(echo_headers_client_fn))
+            .boxed()
+    }
+
+    async fn dump_headers(resp: Response) -> String {
+        use crate::body::util::BodyExt as _;
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_form_helper_sets_content_length_and_overwrites_stale() {
+        let resp = echo_client()
+            .post("http://x/")
+            .header(crate::header::CONTENT_LENGTH, "9999") // stale, should be overwritten
+            .form(&[("k", "vvv")])
+            .send()
+            .await
+            .unwrap();
+        let dump = dump_headers(resp).await;
+        // serde_html_form encodes `[("k", "vvv")]` as `k=vvv` (5 bytes).
+        assert!(
+            dump.contains("content-length: 5"),
+            "expected content-length: 5 in:\n{dump}"
+        );
+        assert!(
+            dump.contains("content-type: application/x-www-form-urlencoded"),
+            "missing CT in:\n{dump}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_json_helper_sets_content_length_and_overwrites_stale() {
+        let resp = echo_client()
+            .post("http://x/")
+            .header(crate::header::CONTENT_LENGTH, "9999")
+            .json(&serde_json::json!({"a": 1}))
+            .send()
+            .await
+            .unwrap();
+        let dump = dump_headers(resp).await;
+        // `{"a":1}` is 7 bytes.
+        assert!(
+            dump.contains("content-length: 7"),
+            "expected content-length: 7 in:\n{dump}"
+        );
+        assert!(dump.contains("content-type: application/json"));
+    }
+
+    #[tokio::test]
+    async fn test_octet_stream_helper_sets_content_length_and_overwrites_stale() {
+        let resp = echo_client()
+            .post("http://x/")
+            .header(crate::header::CONTENT_LENGTH, "9999")
+            .octet_stream(b"abcd".as_slice())
+            .send()
+            .await
+            .unwrap();
+        let dump = dump_headers(resp).await;
+        assert!(
+            dump.contains("content-length: 4"),
+            "expected content-length: 4 in:\n{dump}"
+        );
+        assert!(dump.contains("content-type: application/octet-stream"));
+    }
+
+    #[tokio::test]
+    async fn test_body_helper_clears_content_length_for_streaming_body() {
+        // A streaming body with no exact size_hint must not ship with the
+        // stale Content-Length the user pre-set.
+        use rama_core::futures::stream;
+        let stream = stream::iter([Ok::<_, BoxError>(rama_core::bytes::Bytes::from_static(
+            b"chunk",
+        ))]);
+        let body = crate::Body::from_stream(stream);
+
+        let resp = echo_client()
+            .post("http://x/")
+            .header(crate::header::CONTENT_LENGTH, "9999")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        let dump = dump_headers(resp).await;
+        assert!(
+            !dump.to_ascii_lowercase().contains("content-length:"),
+            "stale content-length leaked into:\n{dump}"
+        );
     }
 }

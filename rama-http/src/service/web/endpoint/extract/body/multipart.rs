@@ -32,9 +32,14 @@ use std::task::{Context, Poll};
 ///
 /// Insert a `MultipartConfig` as a request extension via a layer to apply
 /// project-wide limits, or pass it to
-/// [`Multipart::from_body_with_config`] for direct programmatic use. Combine
-/// configurations with [`merge_floor`](Self::merge_floor) — when more than one
-/// source contributes a limit for the same field, the lowest value wins.
+/// [`Multipart::from_body_with_config`] for direct programmatic use.
+///
+/// **Combining sources is opt-in.** When multiple `MultipartConfig`
+/// extensions are inserted on the same request, the extractor reads the
+/// most-recently-inserted one — earlier values are *not* auto-merged.
+/// To compose limits across layers (and have the lowest value per field
+/// win), call [`merge_floor`](Self::merge_floor) explicitly in the
+/// inserting middleware before storing the resulting config.
 ///
 /// The total payload size is governed by the standard body limit and is not
 /// configured here.
@@ -343,14 +348,23 @@ impl crate::service::web::endpoint::IntoResponse for MultipartError {
 define_http_rejection! {
     #[status = BAD_REQUEST]
     #[body = "Multipart request is missing or has an invalid `Content-Type` boundary"]
-    /// Rejection used when the `Content-Type` is not `multipart/form-data` or
-    /// no boundary parameter is present.
+    /// Rejection used when no boundary parameter is present in the
+    /// `Content-Type` header (or when the header itself is missing).
     pub struct InvalidMultipartBoundary;
+}
+
+define_http_rejection! {
+    #[status = UNSUPPORTED_MEDIA_TYPE]
+    #[body = "Multipart requests must have `Content-Type: multipart/form-data`"]
+    /// Rejection used when the `Content-Type` is not `multipart/form-data`
+    /// (e.g. `multipart/mixed` or another media type entirely).
+    pub struct InvalidMultipartContentType;
 }
 
 composite_http_rejection! {
     /// Rejection type for the [`Multipart`] extractor.
     pub enum MultipartRejection {
+        InvalidMultipartContentType,
         InvalidMultipartBoundary,
         MultipartError,
     }
@@ -360,8 +374,25 @@ impl FromRequest for Multipart {
     type Rejection = MultipartRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        let boundary = parse_boundary(req.headers()).ok_or(InvalidMultipartBoundary)?;
+        let content_type = req
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .ok_or(InvalidMultipartContentType)?;
 
+        // RFC 7578 §4.1 requires the media type to be `multipart/form-data`.
+        // `multer::parse_boundary` only checks for a `boundary=` parameter
+        // and would otherwise accept `multipart/mixed`, `application/foo`,
+        // etc. Reject anything else with 415.
+        if !is_multipart_form_data(content_type) {
+            return Err(InvalidMultipartContentType.into());
+        }
+        let boundary =
+            multer::parse_boundary(content_type).map_err(|_| InvalidMultipartBoundary)?;
+
+        // Look up the optional `MultipartConfig` extension via `get_arc` to
+        // avoid cloning the inner field-limits map on every request. When no
+        // config is set we skip building `multer::Constraints` entirely.
         let config = req.extensions().get_arc::<MultipartConfig>();
         Ok(Self::from_body_with_config(
             req.into_body(),
@@ -371,9 +402,13 @@ impl FromRequest for Multipart {
     }
 }
 
-fn parse_boundary(headers: &HeaderMap) -> Option<String> {
-    let content_type = headers.get(header::CONTENT_TYPE)?.to_str().ok()?;
-    multer::parse_boundary(content_type).ok()
+fn is_multipart_form_data(content_type: &str) -> bool {
+    content_type
+        .parse::<crate::mime::Mime>()
+        .ok()
+        .is_some_and(|m| {
+            m.type_() == crate::mime::MULTIPART && m.subtype() == crate::mime::FORM_DATA
+        })
 }
 
 #[cfg(test)]
@@ -593,6 +628,37 @@ mod test {
             .unwrap();
         let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_rejects_non_form_data_subtype() {
+        // Regression: previously the extractor would accept any media type
+        // that carried a `boundary=` parameter (e.g. multipart/mixed).
+        // RFC 7578 §4.1 mandates multipart/form-data specifically.
+        let service = WebService::default().with_post("/", async |_: Multipart| StatusCode::OK);
+
+        let body = body_with(&[("k", None, None, b"v")]);
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(
+                rama_http_types::header::CONTENT_TYPE,
+                format!("multipart/mixed; boundary={BOUNDARY}"),
+            )
+            .body(body.into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_rejects_missing_content_type() {
+        let service = WebService::default().with_post("/", async |_: Multipart| StatusCode::OK);
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .body("ignored".into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
     #[tokio::test]

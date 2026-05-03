@@ -4,7 +4,7 @@ use rama::{
         Request, Response,
         service::web::{
             IntoEndpointService,
-            extract::multipart::{Multipart, MultipartConfig, MultipartError},
+            extract::multipart::{Multipart, MultipartConfig},
             response::{Html, IntoResponse, Json, Result as ResponseResult},
         },
     },
@@ -64,13 +64,14 @@ pub(in crate::cmd::serve::httptest) fn post_service()
 }
 
 async fn post_handler(mut multipart: Multipart) -> ResponseResult<Json<MultipartReport>> {
-    let to_response = |e: &MultipartError| (e.status(), e.body_text()).into_response();
     let mut parts = Vec::new();
-    while let Some(field) = multipart.next_field().await.map_err(|e| to_response(&e))? {
+    while let Some(field) = multipart.next_field().await? {
         let name = field.name().map(str::to_owned);
         let filename = field.file_name().map(str::to_owned);
-        let content_type = field.content_type().map(|m| m.essence_str().to_owned());
-        let bytes = field.bytes().await.map_err(|e| to_response(&e))?;
+        // Preserve any parameters (e.g. `text/plain; charset=utf-8`) — the
+        // earlier `essence_str` call dropped them.
+        let content_type = field.content_type().map(|m| m.as_ref().to_owned());
+        let bytes = field.bytes().await?;
         let size = bytes.len() as u64;
         let text = if bytes.len() <= TEXT_ECHO_LIMIT {
             std::str::from_utf8(&bytes).ok().map(str::to_owned)

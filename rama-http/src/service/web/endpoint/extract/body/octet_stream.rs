@@ -80,14 +80,37 @@ impl FromRequest for OctetStream {
 impl OptionalFromRequest for OctetStream {
     type Rejection = OctetStreamRejection;
 
+    /// Mirrors the non-optional [`FromRequest`] acceptance policy: any
+    /// indication of a body (`Content-Type`, `Content-Length > 0`, or
+    /// `Transfer-Encoding`) delegates to `FromRequest`. Only when the
+    /// request clearly carries no body do we return `None`.
+    ///
+    /// This avoids the pitfall of silently dropping a body the
+    /// non-optional extractor would happily parse — important now that the
+    /// non-optional path treats a missing `Content-Type` as
+    /// `application/octet-stream` per RFC 9110 §8.3.
     async fn from_request(req: Request) -> Result<Option<Self>, Self::Rejection> {
-        if req.headers().get(header::CONTENT_TYPE).is_some() {
+        if request_has_body(req.headers()) {
             let v = <Self as FromRequest>::from_request(req).await?;
             Ok(Some(v))
         } else {
             Ok(None)
         }
     }
+}
+
+fn request_has_body(headers: &HeaderMap) -> bool {
+    if headers.get(header::CONTENT_TYPE).is_some() {
+        return true;
+    }
+    if headers.get(header::TRANSFER_ENCODING).is_some() {
+        return true;
+    }
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .is_some_and(|n| n > 0)
 }
 
 enum ContentTypeMatch {
@@ -186,6 +209,27 @@ mod test {
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
             .body("raw".into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_octet_stream_optional_no_content_type_with_body() {
+        // Regression: `Option<OctetStream>` previously returned `None` when
+        // no Content-Type was set, even though the non-optional extractor
+        // would happily parse the same request. Now the optional variant
+        // mirrors the acceptance policy and treats a body indicated by
+        // Content-Length as present.
+        let service = WebService::default().with_post("/", async |body: Option<OctetStream>| {
+            let OctetStream(b) = body.expect("body present");
+            assert_eq!(b.as_ref(), b"data");
+        });
+
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_LENGTH, "4")
+            .body("data".into())
             .unwrap();
         let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

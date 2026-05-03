@@ -301,6 +301,18 @@ impl Part {
     /// component, the MIME type is inferred from the extension (falling back
     /// to `application/octet-stream`), and the content size is read from
     /// filesystem metadata.
+    ///
+    /// Filenames are converted to UTF-8 using lossy replacement of any
+    /// non-UTF-8 bytes (relevant on Unix where filenames are arbitrary
+    /// byte sequences). If you need to preserve non-UTF-8 names verbatim,
+    /// build the [`Part`] yourself with [`Part::file`] and override the
+    /// name via [`Part::with_file_name`] from a known UTF-8 source.
+    ///
+    /// The reported `content_size` is taken from filesystem metadata at
+    /// the moment of the call. Concurrent writers that change the file
+    /// size between this call and the body being sent can desynchronise
+    /// the advertised `Content-Length` from the actually-streamed bytes;
+    /// avoid passing a path to a file that may be modified mid-flight.
     pub async fn file<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
         let path = path.as_ref();
         let file_name: Option<Cow<'static, str>> = path

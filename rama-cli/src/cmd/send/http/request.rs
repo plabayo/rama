@@ -98,6 +98,21 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         match input {
             DataInput::Body { body, content_type } => {
                 request.headers_mut().typed_insert(content_type);
+                // Re-sync Content-Length with the body we're about to ship.
+                // For raw `--data` payloads built from in-memory bytes the
+                // size is exact; for stdin/file streaming it isn't, in
+                // which case we drop any pre-set CL header.
+                use rama::http::StreamingBody as _;
+                match body.size_hint().exact() {
+                    Some(len) => {
+                        request
+                            .headers_mut()
+                            .insert(CONTENT_LENGTH, HeaderValue::from(len));
+                    }
+                    None => {
+                        request.headers_mut().remove(CONTENT_LENGTH);
+                    }
+                }
                 *request.body_mut() = body;
             }
             DataInput::Multipart {
