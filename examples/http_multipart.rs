@@ -114,7 +114,9 @@ async fn handle_upload(mut multipart: Multipart) -> Result<Response, MultipartEr
     while let Some(field) = multipart.next_field().await? {
         let name = field.name().unwrap_or("<unnamed>").to_owned();
         let file_name = field.file_name().map(str::to_owned);
-        let content_type = field.content_type().map(|m| m.essence_str().to_owned());
+        // `as_ref` keeps any parameters (e.g. `text/plain; charset=utf-8`);
+        // `essence_str` would drop them.
+        let content_type = field.content_type().map(|m| m.as_ref().to_owned());
 
         let bytes = field.bytes().await?;
 
