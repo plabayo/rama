@@ -241,7 +241,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             }
 
             let engine = unsafe { &*engine };
-            let reply = engine.handle_app_message($crate::__RamaBytes::copy_from_slice(
+            let reply = engine.handle_app_message($crate::__private::Bytes::copy_from_slice(
                 unsafe { message.into_slice() },
             ));
 
@@ -252,7 +252,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             {
                 Ok(bytes) => bytes,
                 Err(err) => {
-                    $crate::__tracing::debug!(%err, "failed to encode transparent proxy app message reply");
+                    $crate::__private::tracing::debug!(%err, "failed to encode transparent proxy app message reply");
                     $crate::ffi::BytesOwned {
                         ptr: ::std::ptr::null_mut(),
                         len: 0,
@@ -571,7 +571,7 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             unsafe {
                 (*session).activate(
-                    move |bytes: $crate::__RamaBytes| -> RamaTcpDeliverStatus {
+                    move |bytes: $crate::__private::Bytes| -> RamaTcpDeliverStatus {
                         let Some(callback) = on_write_to_egress else {
                             // No Swift writer registered: behave as accepted
                             // so the bridge keeps pulling bytes; they go
@@ -708,7 +708,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             let on_send_to_egress = callbacks.on_send_to_egress;
 
             unsafe {
-                (*session).activate(move |bytes: $crate::__RamaBytes| {
+                (*session).activate(move |bytes: $crate::__private::Bytes| {
                     let Some(callback) = on_send_to_egress else {
                         return;
                     };

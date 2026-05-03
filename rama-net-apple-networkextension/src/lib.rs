@@ -316,6 +316,7 @@ pub use self::{
 pub use crate::__transparent_proxy_ffi as transparent_proxy_ffi;
 
 #[doc(hidden)]
-pub use rama_core::bytes::Bytes as __RamaBytes;
-#[doc(hidden)]
-pub use rama_core::telemetry::tracing as __tracing;
+pub mod __private {
+    pub use rama_core::bytes::Bytes;
+    pub use rama_core::telemetry::tracing;
+}
