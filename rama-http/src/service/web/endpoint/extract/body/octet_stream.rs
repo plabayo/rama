@@ -9,8 +9,10 @@ use rama_utils::macros::impl_deref;
 
 /// Wrapper used to extract `application/octet-stream` payloads from request bodies.
 ///
-/// The request `Content-Type` must be `application/octet-stream`. The full body is
-/// collected into [`Bytes`].
+/// The request `Content-Type` must be `application/octet-stream`, or absent —
+/// per RFC 9110 §8.3 a receiver MAY treat a missing `Content-Type` as
+/// `application/octet-stream`. Any other content type is rejected with
+/// `415 Unsupported Media Type`. The full body is collected into [`Bytes`].
 ///
 /// For producing octet-stream responses, see
 /// [`response::OctetStream`](crate::service::web::endpoint::response::OctetStream).
@@ -33,10 +35,10 @@ impl From<OctetStream> for Bytes {
 
 define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
-    #[body = "OctetStream requests must have `Content-Type: application/octet-stream`"]
+    #[body = "OctetStream requests must have `Content-Type: application/octet-stream` (or no Content-Type)"]
     /// Rejection type for [`OctetStream`]
-    /// used if the `Content-Type` header is missing
-    /// or its value is not `application/octet-stream`.
+    /// used if the `Content-Type` header is present and its value is not
+    /// `application/octet-stream`.
     pub struct InvalidOctetStreamContentType;
 }
 
@@ -55,8 +57,9 @@ impl FromRequest for OctetStream {
     type Rejection = OctetStreamRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        if !octet_stream_content_type(req.headers()) {
-            return Err(InvalidOctetStreamContentType.into());
+        match content_type_match(req.headers()) {
+            ContentTypeMatch::Match | ContentTypeMatch::Absent => {}
+            ContentTypeMatch::Mismatch => return Err(InvalidOctetStreamContentType.into()),
         }
 
         match req.into_body().collect().await {
@@ -79,14 +82,29 @@ impl OptionalFromRequest for OctetStream {
     }
 }
 
-fn octet_stream_content_type(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|content_type| content_type.to_str().ok())
-        .and_then(|content_type| content_type.parse::<crate::mime::Mime>().ok())
-        .is_some_and(|mime| {
-            mime.type_() == crate::mime::APPLICATION && mime.subtype() == crate::mime::OCTET_STREAM
-        })
+enum ContentTypeMatch {
+    Match,
+    Absent,
+    Mismatch,
+}
+
+fn content_type_match(headers: &HeaderMap) -> ContentTypeMatch {
+    let Some(value) = headers.get(header::CONTENT_TYPE) else {
+        return ContentTypeMatch::Absent;
+    };
+    let parsed = value
+        .to_str()
+        .ok()
+        .and_then(|s| s.parse::<crate::mime::Mime>().ok());
+    match parsed {
+        Some(mime)
+            if mime.type_() == crate::mime::APPLICATION
+                && mime.subtype() == crate::mime::OCTET_STREAM =>
+        {
+            ContentTypeMatch::Match
+        }
+        _ => ContentTypeMatch::Mismatch,
+    }
 }
 
 #[cfg(test)]
@@ -143,6 +161,23 @@ mod test {
                 "application/octet-stream",
             )
             .body("data".into())
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_octet_stream_accepts_absent_content_type() {
+        // Per RFC 9110 §8.3 a receiver MAY treat a missing Content-Type as
+        // application/octet-stream. We do.
+        let service =
+            WebService::default().with_post("/", async |OctetStream(body): OctetStream| {
+                assert_eq!(body.as_ref(), b"raw");
+            });
+
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .body("raw".into())
             .unwrap();
         let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

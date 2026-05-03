@@ -1,7 +1,19 @@
 //! Server-side `multipart/form-data` extractor.
 //!
-//! Built on top of the [`multer`] crate. Use [`Multipart`] as a handler argument
-//! to iterate over form fields. See the `http_multipart` example for usage.
+//! Built on top of the [`multer`] crate. Use [`Multipart`] as a handler
+//! argument to iterate over form fields. See the `http_multipart` example
+//! for usage.
+//!
+//! Spec references (vendored under `rama-http/specifications/`):
+//! - RFC 7578 — `multipart/form-data`
+//! - RFC 2046 — MIME Part Two: Media Types (boundary framing)
+//! - RFC 6266 / RFC 8187 — `Content-Disposition` / charset-encoded params
+//!
+//! Parsing leans accept-friendly: the underlying `multer` parser accepts
+//! the various non-ASCII filename forms surveyed by RFC 7578 §5.1.3
+//! (raw UTF-8, RFC 2047 encoded-words, RFC 2231 / RFC 8187 ext-value),
+//! tolerates transport padding around boundaries (RFC 2046 §5.1.1), and
+//! ignores preamble and epilogue bytes.
 
 use crate::Request;
 use crate::service::web::extract::FromRequest;
@@ -196,6 +208,10 @@ impl Field<'_> {
     }
 
     /// Parsed `Content-Type` of the field, if any.
+    ///
+    /// Returns `None` when the part has no `Content-Type` header. Per
+    /// RFC 7578 §4.4 the default in that case is `text/plain`; users that
+    /// want to honor that default should substitute it themselves.
     #[must_use]
     pub fn content_type(&self) -> Option<&crate::mime::Mime> {
         self.inner.content_type()

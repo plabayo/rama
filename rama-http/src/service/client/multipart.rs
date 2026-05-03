@@ -7,6 +7,15 @@
 //! Each [`Part`] carries an optional content size. When every part of a form
 //! has a known size, the form has a known content length; otherwise the body
 //! is sent with chunked transfer encoding.
+//!
+//! Output is RFC 7578 (`multipart/form-data`) on top of RFC 2046 framing.
+//! Boundaries use only characters from RFC 2046 §5.1.1's `bcharsnospace` set
+//! (random hex with `-` separators, ≤ 70 bytes). Each part is emitted with a
+//! `Content-Disposition: form-data` header carrying `name` and, where
+//! applicable, `filename` per RFC 7578 §4.2; non-ASCII bytes in those values
+//! are passed through as raw UTF-8. The legacy `filename*` ext-value form is
+//! deliberately not produced (RFC 7578 §4.2 forbids it for senders); the
+//! `Content-Transfer-Encoding` header is likewise omitted (§4.7).
 
 use rama_core::bytes::{BufMut, Bytes, BytesMut};
 use rama_core::error::BoxError;
@@ -321,6 +330,12 @@ impl Part {
 
     /// Replace the part's headers (other than `Content-Disposition` and
     /// `Content-Type`, which are derived from the part's metadata).
+    ///
+    /// RFC 7578 §4.8 states that headers other than `Content-Disposition`,
+    /// `Content-Type`, and (legacy) `Content-Transfer-Encoding` "MUST NOT be
+    /// included and MUST be ignored" by receivers. Custom headers are
+    /// allowed here for compatibility with non-standard receivers, but
+    /// strictly conforming peers will silently drop them.
     pub fn with_headers(mut self, headers: HeaderMap) -> Self {
         self.headers = headers;
         self
