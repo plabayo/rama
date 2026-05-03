@@ -99,16 +99,6 @@
 //!
 //! ---
 //!
-//! ## Experimental status
-//!
-//! rama is considered experimental software for the foreseeable future. At the same time
-//! it is already used in production by the maintainers and by other organisations.
-//!
-//! Real world use helps shape the design and priorities. If you run rama in production,
-//! feedback via GitHub issues, email or Discord is very welcome.
-//!
-//! ---
-//!
 //! ## For organisations
 //!
 //! If your organisation relies on rama or plans to, the maintainers offer:
