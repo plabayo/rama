@@ -145,17 +145,17 @@ impl Extensions {
     /// stores to find the correct item. See [`Extensions::get_ref()`] for how this works.
     ///
     /// If you don't want any of this special logic and you just want to check this
-    /// [`Extensions`] store, use [`Extensions::raw_contains()`] instead.
+    /// [`Extensions`] store, use [`Extensions::self_contains()`] instead.
     #[must_use]
     pub fn contains<T: Extension>(&self) -> bool {
         self.get_ref::<T>().is_some()
     }
 
-    /// Returns true if the [`Extensions`] store contains the given type
+    /// Returns true if this [`Extensions`] store contains the given type
     ///
     /// This only checks this [`Extensions`] store
     #[must_use]
-    pub fn raw_contains<T: Extension>(&self) -> bool {
+    pub fn self_contains<T: Extension>(&self) -> bool {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -186,9 +186,9 @@ impl Extensions {
     /// recursion) finishes empty. The wrappers themselves can still be
     /// retrieved directly (or via [`Self::egress`] / [`Self::ingress`]).
     ///
-    /// For a raw flat lookup, use [`Self::raw_get_ref`].
+    /// For a raw flat lookup, use [`Self::self_get_ref`].
     ///
-    /// Returns the most recently inserted match, for the oldest, see [`Self::raw_first_ref`].
+    /// Returns the most recently inserted match, for the oldest, see [`Self::self_first_ref`].
     pub fn get_ref<T: Extension>(&self) -> Option<&T> {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
@@ -213,11 +213,11 @@ impl Extensions {
         self.parent().and_then(|p| p.get_ref::<T>())
     }
 
-    /// Raw flat [`Self::get_ref`]: returns the most recently inserted `T`, for the oldest, see [`Self::raw_first_ref`].
+    /// Raw flat [`Self::get_ref`]: returns the most recently inserted `T`, for the oldest, see [`Self::self_first_ref`].
     ///
     /// This only checks this [`Extensions`] store
     #[must_use]
-    pub fn raw_get_ref<T: Extension>(&self) -> Option<&T> {
+    pub fn self_get_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -232,7 +232,7 @@ impl Extensions {
     ///
     /// See [`Self::get_ref`] for the search order.
     ///
-    /// For a raw flat lookup (top-level only), use [`Self::raw_get_arc`].
+    /// For a raw flat lookup (top-level only), use [`Self::self_get_arc`].
     pub fn get_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
@@ -261,7 +261,7 @@ impl Extensions {
     ///
     /// This only checks this [`Extensions`] store
     #[must_use]
-    pub fn raw_get_arc<T: Extension>(&self) -> Option<Arc<T>> {
+    pub fn self_get_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -278,7 +278,7 @@ impl Extensions {
     /// Useful when a type conceptually belongs to the scope (e.g. `ConnectionHealth`
     /// on a connection chain) and you want to reuse an existing instance rather
     /// than create a duplicate at every layer. For strict "ensure local exists",
-    /// use [`Self::raw_get_ref_or_insert`].
+    /// use [`Self::self_get_ref_or_insert`].
     pub fn get_ref_or_insert<T, F>(&self, create_fn: F) -> &T
     where
         T: Extension,
@@ -304,22 +304,22 @@ impl Extensions {
     /// Does not follow the parent chain. Useful when you want strict "ensure T
     /// exists on THIS blob" (e.g. materializing a direction wrapper
     /// like [`Ingress<Connection<Extensions>>`] at the outer blob).
-    pub fn raw_get_ref_or_insert<T, F>(&self, create_fn: F) -> &T
+    pub fn self_get_ref_or_insert<T, F>(&self, create_fn: F) -> &T
     where
         T: Extension,
         F: FnOnce() -> T,
     {
-        self.raw_get_ref()
+        self.self_get_ref()
             .unwrap_or_else(|| self.insert(create_fn()))
     }
 
-    /// Raw flat find-or-create returning an [`Arc<T>`]: see [`Self::raw_get_ref_or_insert`].
-    pub fn raw_get_arc_or_insert<T, F>(&self, create_fn: F) -> Arc<T>
+    /// Raw flat find-or-create returning an [`Arc<T>`]: see [`Self::self_get_ref_or_insert`].
+    pub fn self_get_arc_or_insert<T, F>(&self, create_fn: F) -> Arc<T>
     where
         T: Extension,
         F: FnOnce() -> Arc<T>,
     {
-        self.raw_get_arc()
+        self.self_get_arc()
             .unwrap_or_else(|| self.insert_arc(create_fn()))
     }
 
@@ -333,7 +333,7 @@ impl Extensions {
     /// Currently we dont provide a recursive variant of this method since we don't have
     /// a use case for it, and it's not exactly clear what would be considered "first".
     #[must_use]
-    pub fn raw_first_ref<T: Extension>(&self) -> Option<&T> {
+    pub fn self_first_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -342,9 +342,9 @@ impl Extensions {
     }
 
     /// Raw flat [`Arc<T>`] to the oldest inserted `T` at the top level, see
-    /// [`Self::raw_first_ref`] for caveats.
+    /// [`Self::self_first_ref`] for caveats.
     #[must_use]
-    pub fn raw_first_arc<T: Extension>(&self) -> Option<Arc<T>> {
+    pub fn self_first_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let type_id = TypeId::of::<T>();
         self.extensions
             .iter()
@@ -355,9 +355,9 @@ impl Extensions {
     /// Raw flat iteration over all inserted items of type `T` at the top level
     /// of this [`Extensions`] store, newest to oldest.
     ///
-    /// The order matches [`Self::raw_get_ref`] (newest-first), so
-    /// `raw_iter_ref::<T>().next() == raw_get_ref::<T>()`.
-    pub fn raw_iter_ref<T: Extension>(&self) -> impl Iterator<Item = &T> {
+    /// The order matches [`Self::self_get_ref`] (newest-first), so
+    /// `self_iter_ref::<T>().next() == self_get_ref::<T>()`.
+    pub fn self_iter_ref<T: Extension>(&self) -> impl Iterator<Item = &T> {
         let type_id = TypeId::of::<T>();
 
         self.extensions
@@ -370,9 +370,9 @@ impl Extensions {
     /// Raw flat iteration over all inserted items of type `T` at the top level
     /// as cloned [`Arc`] values, newest to oldest.
     ///
-    /// The order matches [`Self::raw_get_arc`] (newest-first), so
-    /// `raw_iter_arc::<T>().next() == raw_get_arc::<T>()`.
-    pub fn raw_iter_arc<T: Extension>(&self) -> impl Iterator<Item = Arc<T>> {
+    /// The order matches [`Self::self_get_arc`] (newest-first), so
+    /// `self_iter_arc::<T>().next() == self_get_arc::<T>()`.
+    pub fn self_iter_arc<T: Extension>(&self) -> impl Iterator<Item = Arc<T>> {
         let type_id = TypeId::of::<T>();
 
         self.extensions
@@ -388,7 +388,7 @@ impl Extensions {
     /// Use to efficiently combine different types of [`Extension`]s in a single
     /// iteration. [`TypeErasedExtension`] exposes methods to convert back to
     /// type `T` when it matches the erased type.
-    pub fn raw_iter_all(&self) -> impl Iterator<Item = &TypeErasedExtension> {
+    pub fn self_iter_all(&self) -> impl Iterator<Item = &TypeErasedExtension> {
         self.extensions.iter()
     }
 
@@ -404,7 +404,7 @@ impl Extensions {
     /// the wrapped blob (same rule applied) and yield its results inline. Then
     /// recurse into the parent.
     ///
-    /// For a flat top-level-only iteration use [`Self::raw_iter_ref`].
+    /// For a flat top-level-only iteration use [`Self::self_iter_ref`].
     ///
     /// The iterator type is left opaque (`impl Iterator`) so the internal
     /// representation can change without breaking callers.
@@ -859,13 +859,13 @@ mod tests {
     #[test]
     fn first_ref_none_when_absent() {
         let ext = Extensions::new();
-        assert_eq!(ext.raw_first_ref::<TraceNote>(), None);
+        assert_eq!(ext.self_first_ref::<TraceNote>(), None);
     }
 
     #[test]
     fn first_arc_none_when_absent() {
         let ext = Extensions::new();
-        assert!(ext.raw_first_arc::<TraceNote>().is_none());
+        assert!(ext.self_first_arc::<TraceNote>().is_none());
     }
 
     #[test]
@@ -875,7 +875,7 @@ mod tests {
         ext.insert(TraceNote("second".to_owned()));
 
         assert_eq!(
-            ext.raw_first_ref::<TraceNote>(),
+            ext.self_first_ref::<TraceNote>(),
             Some(&TraceNote("first".to_owned()))
         );
     }
@@ -930,7 +930,7 @@ mod tests {
         ext.insert_arc(Arc::new(TraceNote(String::from("second"))));
 
         assert_eq!(
-            ext.raw_first_arc::<TraceNote>()
+            ext.self_first_arc::<TraceNote>()
                 .as_deref()
                 .map(|it| it.0.as_str()),
             Some("first")
@@ -949,14 +949,14 @@ mod tests {
         ext.insert(RetryBudget(5));
 
         let calls = AtomicUsize::new(0);
-        let existing = ext.raw_get_ref_or_insert(|| {
+        let existing = ext.self_get_ref_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
             RetryBudget(6)
         });
         assert_eq!(existing.0, 5u32);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-        let missing = ext.raw_get_ref_or_insert(|| {
+        let missing = ext.self_get_ref_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
             ConnectionTimeoutMs(7)
         });
@@ -970,14 +970,14 @@ mod tests {
         ext.insert_arc(Arc::new(TraceNote(String::from("stored"))));
 
         let calls = AtomicUsize::new(0);
-        let existing = ext.raw_get_arc_or_insert(|| {
+        let existing = ext.self_get_arc_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
             Arc::new(TraceNote(String::from("new")))
         });
         assert_eq!(existing.0.as_str(), "stored");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-        let missing = ext.raw_get_arc_or_insert(|| {
+        let missing = ext.self_get_arc_or_insert(|| {
             calls.fetch_add(1, Ordering::SeqCst);
             Arc::new(RetryBudget(11))
         });
@@ -993,7 +993,7 @@ mod tests {
         ext.insert(HealthSignal(2));
 
         let type_ids: Vec<TypeId> = ext
-            .raw_iter_all()
+            .self_iter_all()
             .map(TypeErasedExtension::type_id)
             .collect();
         assert_eq!(
@@ -1011,8 +1011,8 @@ mod tests {
         let ext = Extensions::new();
         ext.insert(HealthSignal(1));
 
-        assert_eq!(ext.raw_iter_ref::<TraceNote>().count(), 0);
-        assert_eq!(ext.raw_iter_arc::<TraceNote>().count(), 0);
+        assert_eq!(ext.self_iter_ref::<TraceNote>().count(), 0);
+        assert_eq!(ext.self_iter_arc::<TraceNote>().count(), 0);
     }
 
     #[test]
@@ -1023,7 +1023,7 @@ mod tests {
         ext.insert(TraceNote(String::from("second")));
 
         let output: Vec<&str> = ext
-            .raw_iter_ref::<TraceNote>()
+            .self_iter_ref::<TraceNote>()
             .map(|it| it.0.as_str())
             .collect();
         assert_eq!(output, vec!["second", "first"]);
@@ -1037,7 +1037,7 @@ mod tests {
         ext.insert(TraceNote(String::from("second")));
 
         let output: Vec<String> = ext
-            .raw_iter_arc::<TraceNote>()
+            .self_iter_arc::<TraceNote>()
             .map(|arc| arc.0.clone())
             .collect();
         assert_eq!(output, vec!["second".to_owned(), "first".to_owned()]);

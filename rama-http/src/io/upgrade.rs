@@ -53,6 +53,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::io::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
+use rama_utils::macros::generate_set_and_with;
 
 /// An upgraded HTTP connection.
 ///
@@ -134,12 +135,11 @@ pub fn handle_upgrade<T: ExtensionsRef>(
     };
 
     async move {
-        let mut upgraded = match on_upgrade {
+        let upgraded = match on_upgrade {
             Ok(on_upgrade) => on_upgrade.await?,
             Err(err) => return Err(err),
         };
-        *upgraded.extensions_mut() = msg_ext.fork();
-        Ok(upgraded)
+        Ok(upgraded.with_extensions(msg_ext.fork()))
     }
 }
 
@@ -181,8 +181,11 @@ impl Upgraded {
         }
     }
 
-    pub fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+    generate_set_and_with! {
+        pub fn extensions(mut self, extensions: Extensions) -> Self {
+            self.extensions = extensions;
+            self
+        }
     }
 
     /// Tries to downcast the internal trait object to the type passed.

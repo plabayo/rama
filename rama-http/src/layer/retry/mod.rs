@@ -106,7 +106,7 @@ where
         let parent_ext = request.extensions().clone();
         loop {
             // Fork extensions so we dont leak extensions from failed attempts
-            *request.extensions_mut() = parent_ext.fork();
+            request.set_extensions_mut(parent_ext.fork());
 
             let resp = self.inner.serve(request).await;
             match cloned.take() {

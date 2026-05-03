@@ -56,7 +56,7 @@ impl MessageHead<StatusCode> {
         *res.status_mut() = self.subject;
         *res.headers_mut() = self.headers;
         *res.version_mut() = self.version;
-        *res.extensions_mut() = self.extensions;
+        res.set_extensions(self.extensions);
         res
     }
 }
