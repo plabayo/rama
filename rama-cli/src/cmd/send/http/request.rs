@@ -98,10 +98,13 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         match input {
             DataInput::Body { body, content_type } => {
                 request.headers_mut().typed_insert(content_type);
-                // Re-sync Content-Length with the body we're about to ship.
-                // For raw `--data` payloads built from in-memory bytes the
-                // size is exact; for stdin/file streaming it isn't, in
-                // which case we drop any pre-set CL header.
+                // Re-sync Content-Length with the body we're about to
+                // ship. Pure in-memory `--data` items take the fast path
+                // in `build_data_input` and arrive here as a sized
+                // `Body::from(Vec<u8>)` whose `size_hint` is exact;
+                // stdin/file-backed mixes arrive as a `Body::from_stream`
+                // with unknown length, in which case we drop any pre-set
+                // CL header so we don't ship stale framing.
                 use rama::http::StreamingBody as _;
                 match body.size_hint().exact() {
                     Some(len) => {
@@ -191,6 +194,28 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
         return Ok(None);
     }
 
+    // Fast path: when every `--data` item is a literal (no `@file` or
+    // `@-` references), concatenate into a single `Bytes` and ship as a
+    // sized body. This lets the request advertise an exact
+    // `Content-Length` and avoids chunked transfer for the common case.
+    if data.iter().all(|d| !d.starts_with('@')) {
+        let mut buf = Vec::new();
+        for (index, item) in data.iter().enumerate() {
+            if index > 0
+                && let Some(separator) = separator
+            {
+                buf.extend_from_slice(separator.as_bytes());
+            }
+            buf.extend_from_slice(item.as_bytes());
+        }
+        return Ok(Some(DataInput::Body {
+            body: Body::from(buf),
+            content_type: ct,
+        }));
+    }
+
+    // Slow path: at least one `@file` / `@-` source is present; we don't
+    // know the total size up-front, so stream the data.
     let mut stream = stream::empty().boxed();
 
     for (index, data) in data.iter().enumerate() {

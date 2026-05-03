@@ -137,6 +137,38 @@ async fn test_http_multipart_form() {
     assert!(lines.contains(&needle), "needle={needle} lines: {lines:?}");
 }
 
+#[ignore]
+#[tokio::test]
+async fn test_http_data_inmemory_emits_content_length() {
+    // Regression: literal `--data` items should ship with a precise
+    // Content-Length, not chunked, so middleware/peers see exact framing.
+    utils::init_tracing();
+
+    let _guard = utils::RamaService::serve_echo(63105, utils::EchoMode::Http);
+
+    let lines = utils::RamaService::http(vec![
+        "http://127.0.0.1:63105",
+        "-d",
+        "name=John",
+        "-d",
+        "age=32",
+    ])
+    .unwrap();
+
+    assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
+    assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
+    // Default content type for `-d` is form-urlencoded.
+    assert!(
+        lines.contains(r##""content-type","application/x-www-form-urlencoded""##),
+        "lines: {lines:?}",
+    );
+    // "name=John&age=32" is 16 bytes.
+    assert!(
+        lines.contains(r##""content-length","16""##),
+        "lines: {lines:?}",
+    );
+}
+
 fn hex_of(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for b in s.as_bytes() {
