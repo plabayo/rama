@@ -1,6 +1,6 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
 use crate::address::SocketAddress;
-use crate::conn::{ConnectionHealth, ConnectionHealthStatus};
+use crate::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::extra::OpaqueError;
@@ -360,8 +360,10 @@ where
             let pooled_conn = storage.remove(idx)?;
 
             // This will make sure we skip and drop broken connections
-            if let Some(health) = pooled_conn.extensions().get_ref::<ConnectionHealth>()
-                && health.status() == ConnectionHealthStatus::Broken
+            if let Some(watcher) = pooled_conn
+                .extensions()
+                .get_ref::<ConnectionHealthWatcher>()
+                && watcher.health() == ConnectionHealth::Broken
             {
                 continue;
             }
@@ -510,8 +512,8 @@ impl<C: ExtensionsRef, ID> Drop for LeasedConnection<C, ID> {
                 unsafe { ManuallyDrop::drop(&mut self.pooled_conn) };
                 return;
             }
-            if let Some(health) = self.extensions().get_ref::<ConnectionHealth>()
-                && health.status() == ConnectionHealthStatus::Broken
+            if let Some(watcher) = self.extensions().get_ref::<ConnectionHealthWatcher>()
+                && watcher.health() == ConnectionHealth::Broken
             {
                 trace!("LRU connection pool: dropping pooled connection that was marked as failed");
 
@@ -1054,7 +1056,7 @@ mod tests {
         async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
             let conn = InnerService::default();
 
-            conn.extensions().insert(ConnectionHealth::default());
+            conn.extensions().insert(ConnectionHealthWatcher::default());
 
             self.created_connection.fetch_add(1, Ordering::Relaxed);
             Ok(EstablishedClientConnection { input, conn })
@@ -1081,9 +1083,9 @@ mod tests {
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
             if should_error {
                 self.extensions
-                    .get_ref::<ConnectionHealth>()
+                    .get_ref::<ConnectionHealthWatcher>()
                     .unwrap()
-                    .set_status(ConnectionHealthStatus::Broken);
+                    .mark_broken();
                 self.should_error.store(true, Ordering::Relaxed);
             }
 
@@ -1234,9 +1236,9 @@ mod tests {
         // Normally the connection would edit this in extensions but since we dont have ownership here
         // we just clone the extensions and edit it like this
         conn_extensions
-            .get_ref::<ConnectionHealth>()
+            .get_ref::<ConnectionHealthWatcher>()
             .unwrap()
-            .set_status(ConnectionHealthStatus::Broken);
+            .mark_broken();
 
         // We should get a new working connection here since health check has detect that the stored one was broken
         let conn = svc
