@@ -33,7 +33,7 @@
 //!
 //! - [`tcp`] · [`udp`] · `unix` — listeners, connectors, sockets
 //! - [`net`] — shared addresses / sockets / fingerprints (Apple-only items live in
-//!   [`net::apple`])
+//!   `net::apple`)
 //! - [`dns`] — DNS resolvers and types (native resolvers or opt-in HickoryDNS)
 //! - [`tls`] — TLS via [rustls](`tls::rustls`) / [boring](`tls::boring`) and
 //!   [`tls::acme`](`tls::acme`)
