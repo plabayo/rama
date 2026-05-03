@@ -9,7 +9,7 @@ use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddressResolver};
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorTarget, EstablishedClientConnection},
-    stream::{ClientSocketInfo, Socket, SocketInfo},
+    stream::{Socket, SocketInfo},
     transport::{TransportProtocol, TryRefIntoTransportContext},
 };
 
@@ -118,7 +118,7 @@ where
             .await
             .context("tcp connector: conncept to proxy")?;
 
-            let socket_info= ClientSocketInfo(SocketInfo::new(
+            let socket_info = SocketInfo::new(
                 conn.local_addr()
                     .inspect_err(|err| {
                         tracing::debug!(
@@ -127,7 +127,7 @@ where
                     })
                     .ok(),
                 addr.into(),
-            ));
+            );
             conn.extensions().insert(socket_info);
 
             return Ok(EstablishedClientConnection { input, conn });
@@ -146,7 +146,7 @@ where
             .await
             .context("tcp connector: conncept to connector target (overwrite?)")?;
 
-            let socket_info= ClientSocketInfo(SocketInfo::new(
+            let socket_info = SocketInfo::new(
                 conn.local_addr()
                     .inspect_err(|err| {
                         tracing::debug!(
@@ -155,7 +155,7 @@ where
                     })
                     .ok(),
                 addr.into(),
-            ));
+            );
             conn.extensions().insert(socket_info);
 
             return Ok(EstablishedClientConnection { input, conn });
@@ -189,7 +189,7 @@ where
         .await
         .context("tcp connector: connect to server")?;
 
-        let socket_info = ClientSocketInfo(SocketInfo::new(
+        let socket_info = SocketInfo::new(
             conn.local_addr()
                 .inspect_err(|err| {
                     tracing::debug!(
@@ -198,7 +198,7 @@ where
                 })
                 .ok(),
             addr.into(),
-        ));
+        );
         conn.extensions().insert(socket_info);
 
         Ok(EstablishedClientConnection { input, conn })

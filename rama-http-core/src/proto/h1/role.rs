@@ -8,7 +8,8 @@ use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http::HeaderName;
 use rama_http::proto::h1::ext::ReasonPhrase;
-use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
+use rama_http::proto::{HeaderByteLength, RequestHeaders};
+
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
@@ -282,9 +283,9 @@ impl Http1Transaction for Server {
             return Err(Parse::transfer_encoding_invalid());
         }
 
-        let extensions = ctx.extensions.take().unwrap_or_else(|| {
+        let extensions = ctx.prepared_extensions.take().unwrap_or_else(|| {
             warn!(
-                "extensions should always be set in ParseContext: was None: use default instead..."
+                "prepared_extensions should always be set in ParseContext: was None: use default instead..."
             );
             Default::default()
         });
@@ -942,20 +943,13 @@ impl Http1Transaction for Client {
                 headers.append(name, value);
             }
 
-            // TODO we can do this without cloning in a lot of cases, but we need
-            // to be careful with things like http 100
-            let extensions = ctx
-                .extensions
-                .as_ref()
-                .cloned()
-                .unwrap_or_else(|| {
-                    warn!("extensions should always be set in ParseContext but it was missing; falling back to default; report bug in rama");
-                    Default::default()
-                });
-
-            // TODO remove but maybe needed for backwards comp for now...
-            let req_ext = RequestExtensions::from(extensions.clone());
-            extensions.insert(req_ext);
+            // Extensions are ready for use and dont need to do any special wrapping here
+            let extensions = ctx.prepared_extensions.take().unwrap_or_else(|| {
+                warn!(
+                    "prepared_extensions should always be set in ParseContext but it was missing; falling back to default; report bug in rama"
+                );
+                Default::default()
+            });
 
             let headers = headers.consume(&extensions);
 
@@ -1483,7 +1477,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
-                extensions: &mut Some(Extensions::default()),
+                prepared_extensions: &mut Some(Extensions::default()),
             },
         )
         .unwrap()
@@ -1506,7 +1500,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1525,7 +1519,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         Server::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1541,7 +1535,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: true,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw, H09_RESPONSE);
@@ -1559,7 +1553,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         Client::parse(&mut raw, ctx).unwrap_err();
         assert_eq!(raw, H09_RESPONSE);
@@ -1581,7 +1575,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1600,7 +1594,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         Client::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1620,7 +1614,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Server::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1641,7 +1635,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         Server::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1656,7 +1650,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
         let mut orig_headers = parsed_message
@@ -1682,7 +1676,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
-                    extensions: &mut Some(Extensions::default()),
+                    prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
             .expect("parse ok")
@@ -1699,7 +1693,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
-                    extensions: &mut Some(Extensions::default()),
+                    prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
             .expect_err(comment)
@@ -1912,8 +1906,9 @@ mod tests {
     #[test]
     fn test_decoder_response_request_extensions() {
         let request_exts = Extensions::new();
-
         request_exts.insert(UpstreamRequestId(42));
+
+        let prepared = request_exts.fork();
 
         let mut bytes = BytesMut::from(
             "\
@@ -1929,7 +1924,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
-                extensions: &mut Some(request_exts),
+                prepared_extensions: &mut Some(prepared),
             },
         )
         .expect("parse ok")
@@ -1939,8 +1934,6 @@ mod tests {
             42u64,
             msg.head
                 .extensions
-                .get_ref::<RequestExtensions>()
-                .unwrap()
                 .get_ref::<UpstreamRequestId>()
                 .map(|request_id| request_id.0)
                 .unwrap()
@@ -1967,7 +1960,7 @@ mod tests {
                         h1_max_headers: None,
                         h09_responses: false,
                         on_informational: &mut None,
-                        extensions: &mut Some(Extensions::default()),
+                        prepared_extensions: &mut Some(Extensions::default()),
                     }
                 )
                 .expect("parse ok")
@@ -1985,7 +1978,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
-                    extensions: &mut Some(Extensions::default()),
+                    prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
             .expect("parse ok")
@@ -2002,7 +1995,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
-                    extensions: &mut Some(Extensions::default()),
+                    prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
             .expect_err("parse should err")
@@ -2596,7 +2589,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
-                extensions: &mut Some(Extensions::default()),
+                prepared_extensions: &mut Some(Extensions::default()),
             },
         )
         .expect("parse ok")
@@ -2635,7 +2628,7 @@ mod tests {
                         h1_max_headers: max_headers,
                         h09_responses: false,
                         on_informational: &mut None,
-                        extensions: &mut Some(Extensions::default()),
+                        prepared_extensions: &mut Some(Extensions::default()),
                     },
                 );
                 if should_success {
@@ -2655,7 +2648,7 @@ mod tests {
                         h1_max_headers: max_headers,
                         h09_responses: false,
                         on_informational: &mut None,
-                        extensions: &mut Some(Extensions::default()),
+                        prepared_extensions: &mut Some(Extensions::default()),
                     },
                 );
                 if should_success {

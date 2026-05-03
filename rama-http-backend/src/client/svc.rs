@@ -1,7 +1,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
-    extensions::{Extensions, ExtensionsRef, InputExtensions},
+    extensions::{Extensions, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_http::{StreamingBody, header::SEC_WEBSOCKET_KEY};
@@ -68,8 +68,6 @@ where
         // directly instead of here...
         let req = sanitize_client_req_header(req)?;
 
-        let req_extensions = req.extensions().clone();
-
         let resp = match &self.sender {
             SendRequest::Http1(sender) => {
                 let mut sender = sender.lock().await;
@@ -112,8 +110,6 @@ where
                 }
             }
         };
-
-        resp.extensions().insert(InputExtensions(req_extensions));
 
         Ok(resp.map(rama_http_types::Body::new))
     }

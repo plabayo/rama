@@ -33,7 +33,7 @@
 //!
 //! - [`tcp`] · [`udp`] · `unix` — listeners, connectors, sockets
 //! - [`net`] — shared addresses / sockets / fingerprints (Apple-only items live in
-//!   [`net::apple`])
+//!   `net::apple`)
 //! - [`dns`] — DNS resolvers and types (native resolvers or opt-in HickoryDNS)
 //! - [`tls`] — TLS via [rustls](`tls::rustls`) / [boring](`tls::boring`) and
 //!   [`tls::acme`](`tls::acme`)
@@ -96,16 +96,6 @@
 //!
 //! You can also use the `rama` binary if you want to use some of the rama features from the command line
 //! without writing your own Rust code. See <https://ramaproxy.org/book/deploy/rama-cli.html>.
-//!
-//! ---
-//!
-//! ## Experimental status
-//!
-//! rama is considered experimental software for the foreseeable future. At the same time
-//! it is already used in production by the maintainers and by other organisations.
-//!
-//! Real world use helps shape the design and priorities. If you run rama in production,
-//! feedback via GitHub issues, email or Discord is very welcome.
 //!
 //! ---
 //!

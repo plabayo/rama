@@ -121,7 +121,6 @@ where
                         async move {
                             match rama_http::io::upgrade::handle_upgrade(&req).await {
                                 Ok(upgraded) => {
-                                    upgraded.extensions().extend(req.extensions());
                                     let _ = handler.serve(upgraded).await;
                                 }
                                 Err(e) => {

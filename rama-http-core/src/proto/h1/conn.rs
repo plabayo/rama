@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extensions, ExtensionsRef, Ingress};
+use rama_core::telemetry::tracing;
 use rama_core::telemetry::tracing::{debug, error, trace};
 use rama_http::io::upgrade;
 use rama_http_types::body::Frame;
@@ -199,16 +200,25 @@ where
             }
         }
 
-        let extensions = if T::is_client() {
-            if self.state.encoded_request_extensions.is_none() {
-                panic!(
-                    "encoded_request_extensions should never be none when receiving response headers"
-                )
-            }
-            &mut self.state.encoded_request_extensions
+        let prepared = if T::is_client() {
+            // Client receiving a response
+            // Client receiving a response
+            self.state.encoded_request_extensions
+                    .as_ref()
+                    .map(|req_ext| req_ext.fork())
+                    .unwrap_or_else(|| {
+                        tracing::warn!(
+                            "encoded_request_extensions should always be set in poll_read_head but it was missing; falling back to default; report bug in rama"
+                        );
+                        Extensions::new()
+                    })
         } else {
-            &mut Some(self.io.extensions().clone())
+            // Server receiving a request
+            let ext = Extensions::new();
+            ext.insert(Ingress(self.io.extensions().clone()));
+            ext
         };
+        let mut prepared_extensions = Some(prepared);
 
         let msg = match self.io.parse::<T>(
             cx,
@@ -218,7 +228,7 @@ where
                 h1_max_headers: self.state.h1_max_headers,
                 h09_responses: self.state.h09_responses,
                 on_informational: &mut self.state.on_informational,
-                extensions,
+                prepared_extensions: &mut prepared_extensions,
             },
         ) {
             Poll::Ready(Ok(msg)) => msg,

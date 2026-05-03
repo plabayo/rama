@@ -2,7 +2,7 @@ use super::utils::{self, ClientService};
 use rama::{
     Layer, Service,
     error::BoxError,
-    extensions::{ExtensionsRef, InputExtensions},
+    extensions::ExtensionsRef,
     http::{
         Response, StreamingBody,
         client::EasyHttpWebClient,
@@ -70,8 +70,7 @@ async fn test_tls_boring_dynamic_certs() {
 
         let certificates = response
             .extensions()
-            .get_ref()
-            .and_then(|InputExtensions(ext)| ext.get_ref::<NegotiatedTlsParameters>())
+            .get_ref::<NegotiatedTlsParameters>()
             .unwrap()
             .peer_certificate_chain
             .clone()

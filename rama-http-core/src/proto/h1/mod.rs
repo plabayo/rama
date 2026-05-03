@@ -70,8 +70,10 @@ pub(crate) struct ParseContext<'a> {
     h1_max_headers: Option<usize>,
     h09_responses: bool,
     on_informational: &'a mut Option<OnInformational>,
-    /// This can be consumed but we pass this as mut ref to prevent cloning in parse loops
-    extensions: &'a mut Option<Extensions>,
+    /// This can be consumed but we pass this as mut ref to prevent cloning in parse loops.
+    /// These extensions have been prepared with the correct scope and they should be consumed
+    /// and used as it without any extra wrapping
+    prepared_extensions: &'a mut Option<Extensions>,
 }
 
 struct EncodeHead<'a, S> {
