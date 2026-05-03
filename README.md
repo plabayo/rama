@@ -75,7 +75,6 @@ Read further below or skip to one of the following chapters instead:
 
 - [Who is rama for](#who-is-rama-for)
 - [For organisations](#for-organisations)
-- [Experimental](#--experimental)
 - [Proxies and other use cases](#-proxies-and-other-use-cases)
 - [rama binary](#rama-binary)
 - [rama ecosystem](#--rama-ecosystem)
@@ -142,24 +141,6 @@ For up to date information about available
 service contracts and commercial offerings, please visit:
 
 👉 <https://ramaproxy.com>
-
-## 🧪 | Experimental
-
-🦙 rama (ラマ) is to be considered experimental software for the foreseeable future.
-In the meanwhile it is already used in production by ourselves and others alike.
-This gives us real world feedback to improve the framework. If you run Rama in production,
-your feedback is very valuable. As such,
-if you use rama do let us know feedback over
-[Discord][discord-url], [email](mailto:hello@plabayo.tech)
-or a [GitHub issue](https://github.com/plabayo/rama/issues).
-
-> [!TIP]
-> Contact us at [hello@plabayo.tech](mailto:hello@plabayo.tech) to arrange a service contract.
-> Among other benefits, this allows you to request migration of rama versions within
-> your own codebase and stay up to date without hassle, even when major releases introduce
-> breaking changes. While these changes are typically minimal and mechanical,
-> this service can be especially helpful for organisations that do not have
-> the developer resources to handle them directly.
 
 # Proxies and other use cases
 
