@@ -1,94 +1,107 @@
 # Binary Bodies and Multipart Uploads
 
-This page covers two related ways to send and receive non-textual HTTP bodies in
-Rama: the `application/octet-stream` content type for opaque binary payloads,
-and the `multipart/form-data` content type for compound payloads such as file
-uploads.
+Two related kinds of HTTP bodies sit outside the comfortable text-and-JSON
+mainstream: opaque binary blobs sent as `application/octet-stream`, and
+compound payloads such as file uploads sent as `multipart/form-data`. Rama
+supports both, on the client side and the server side.
 
 ## Octet-Stream
 
-`application/octet-stream` is the default content type for arbitrary binary
-data. User agents typically treat it as if `Content-Disposition: attachment`
-had been set and offer a "Save As" prompt; servers use it for downloads of
-unknown or unstructured binary content.
+`application/octet-stream` is the catch-all media type for "raw bytes you
+should not assume anything about". User agents typically treat it as a
+download — offering a "Save As" prompt — and servers reach for it when
+serving binary content of unknown structure or when accepting an arbitrary
+upload.
 
-### Server side
+It is what you want when:
 
-Two complementary types live in `rama_http::service::web`:
+- you need to upload or download a binary file as a single payload
+- the bytes carry a format the server understands but the wire shouldn't
+- you want a permissive default that doesn't reject when no `Content-Type`
+  is set (per RFC 9110 §8.3, a missing content type may be treated as
+  `application/octet-stream`)
 
-- `extract::OctetStream` — request extractor. Validates the
-  `Content-Type` header is `application/octet-stream`, collects the body
-  into `Bytes`, and rejects with `415 Unsupported Media Type` on mismatch.
-- `response::OctetStream` — response builder. Wraps a stream of `Bytes`,
-  sets `Content-Type: application/octet-stream`, and supports an optional
-  filename via `Content-Disposition: attachment` and an optional content
-  size for `Content-Length` or `Content-Range`. It can also produce a
-  `206 Partial Content` response with `try_into_range_response` and
-  serve files directly with `try_from_path`.
-
-`Option<OctetStream>` is supported on the request side for endpoints that
-treat a missing body as valid input.
-
-### Client side
-
-`RequestBuilder::octet_stream(bytes)` sets the request body and the
-`Content-Type` header. The header is left untouched if you set it earlier in
-the chain.
-
-### Example
-
+Rama supports octet-stream bodies on both sides: as a request extractor and
+client builder helper for sending raw bytes, and as a response builder that
+can attach a filename, advertise an exact content size, and serve range
+requests for partial downloads. See
 [`http_octet_stream.rs`](https://github.com/plabayo/rama/blob/main/examples/http_octet_stream.rs)
-demonstrates serving a binary response with and without an attachment
-filename.
+for a runnable example, and the rustdoc under
+[`rama::http::service::web`](https://ramaproxy.org/docs/rama/http/service/web/index.html)
+for the full surface.
 
 ## Multipart
 
-`multipart/form-data` carries compound bodies — typically a mix of text fields
-and file uploads — separated by a boundary string declared in the
-`Content-Type` header. It is the format browsers send when a form contains a
-`<input type="file">` element.
+`multipart/form-data` is the format browsers send when an HTML form
+includes a file input. A request body is divided into parts, each part
+carrying its own headers and payload, separated by a boundary string
+declared in the request's `Content-Type`.
 
-Rama provides full client and server support, gated behind the `multipart`
-feature on the umbrella `rama` crate. The feature is included in `http-full`,
-so projects that already enable `http-full` get multipart support
-automatically.
+Compared to a JSON or form-urlencoded body, multipart is the right choice
+when:
 
-### Server side
+- a single request carries a mix of text fields and one or more files
+- one or more parts are large or binary and benefit from being streamed
+  rather than buffered
+- you're integrating with browsers, curl, httpie, or any tool that already
+  speaks the convention
 
-The `extract::Multipart` extractor parses an incoming `multipart/form-data`
-body. It enforces field exclusivity at compile time: each `Field` borrows
-from `&mut Multipart`, so only one field is live at a time. Iterate fields
-with `next_field`, then read each field's body via `bytes`, `text`,
-`chunk`, or by treating the field as a `Stream` of byte chunks.
+### Rama support
 
-Per-field byte limits can be applied through `MultipartConfig`, attached as
-a request extension by a layer or composed in handler code. When more than
-one source contributes a limit for the same field, the lowest value wins.
-The total payload size is independently bounded by the standard `BodyLimit`
-mechanism.
+Rama treats multipart as a first-class HTTP feature. With the `multipart`
+cargo feature enabled (it's part of `http-full`), you can:
 
-Failure modes are reported via `MultipartError` (per-field parse and size
-errors, mapped to `400` or `413`) and `MultipartRejection::InvalidBoundary`
-(missing or malformed `Content-Type` boundary, `400`).
+- accept multipart uploads on the server, iterating fields one at a time
+  and reading each as bytes, text, or a stream of chunks
+- bound memory use by capping the body globally (the standard mechanism)
+  and per field individually, so a single oversized field can't exhaust
+  the request budget
+- build multipart bodies on the client from text, raw bytes, files, or
+  arbitrary streams, with predictable `Content-Length` whenever every
+  part has a known size
 
-### Client side
+Because multipart, like the rest of Rama's HTTP layer, is built from the
+same request and response types used by client, server, and middleware,
+it composes naturally with tracing, compression, retries, and any custom
+layer you stack on top.
 
-`rama_http::service::client::multipart` exposes a `Form` builder. Add named
-parts with `text`, `bytes`, `file`, or `part`. Each `Part` can carry an
-optional filename, MIME type, content size, and custom headers.
+### Examples
 
-When every part has a known size — text, bytes, files (via filesystem
-metadata), or a stream that has been told its size — the form has a
-predictable `Content-Length`. Mixing in any unsized streaming part downgrades
-the form to chunked transfer encoding.
+- [`http_multipart.rs`](https://github.com/plabayo/rama/blob/main/examples/http_multipart.rs)
+  — a server that accepts an HTML upload form and reports back what it
+  received
+- the [paired integration test](https://github.com/plabayo/rama/blob/main/tests/integration/examples/example_tests/http_multipart.rs)
+  drives the same endpoint with the rama client builder, end-to-end
+- the public `http-test.ramaproxy.org` service exposes a `/multipart`
+  endpoint backed by the same code, useful as a quick sanity-check target
+  for any HTTP client
 
-`RequestBuilder::multipart(form)` sets the body, the
-`Content-Type: multipart/form-data; boundary=…` header, and the
-`Content-Length` header when available.
+The full API lives under
+[`rama::http::service::web::extract::multipart`](https://ramaproxy.org/docs/rama/http/service/web/extract/multipart/index.html)
+on the server side and
+[`rama::http::service::client::multipart`](https://ramaproxy.org/docs/rama/http/service/client/multipart/index.html)
+on the client side.
 
-### Example
+### Spec compliance
 
-[`http_multipart.rs`](https://github.com/plabayo/rama/blob/main/examples/http_multipart.rs)
-demonstrates a server that accepts an HTML upload form and prints the parts
-it received. Its [integration test](https://github.com/plabayo/rama/blob/main/tests/integration/examples/example_tests/http_multipart.rs)
-uses the rama client `Form` to drive the same endpoint end-to-end.
+Rama's multipart support targets RFC 7578 (`multipart/form-data`) on top
+of RFC 2046 framing, with the related Content-Disposition rules from
+RFC 6266 and ext-value encoding from RFC 8187. The relevant RFCs are
+vendored under
+[`rama-http/specifications`](https://github.com/plabayo/rama/tree/main/rama-http/specifications).
+
+The receiving side leans accept-friendly: it handles the various
+non-ASCII filename forms surveyed in RFC 7578 §5.1.3, tolerates the
+linear-whitespace transport padding RFC 2046 §5.1.1 allows around boundary
+delimiters, and ignores preamble and epilogue bytes. The sending side
+sticks to the strict subset RFC 7578 mandates for senders — no
+`filename*` ext-value, no `Content-Transfer-Encoding`, and a fresh random
+boundary per form within the byte budget RFC 2046 prescribes.
+
+### CLI support
+
+The `rama` CLI accepts multipart uploads via the curl-compatible `-F` /
+`--form-data` flag on `rama send`. Multiple `-F` flags compose into
+multiple parts, with the same micro-syntax curl users expect (`name=value`,
+`name=@file`, `name=<file`, optional `;type=…` and `;filename=…`
+modifiers). See `rama send --help` for the full surface.
