@@ -97,7 +97,10 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
             "/response-stream-compression",
             endpoint::response_stream_compression::service(),
         )
-        .with_get("/sse", endpoint::sse::service());
+        .with_get("/sse", endpoint::sse::service())
+        .with_get("/multipart", endpoint::multipart::get_form)
+        .with_post("/multipart", endpoint::multipart::post_service())
+        .with_post("/octet-stream", endpoint::octet_stream::service());
 
     let http_service = Arc::new(middlewares.into_layer(router));
 

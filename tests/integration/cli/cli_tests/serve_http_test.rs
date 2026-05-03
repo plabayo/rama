@@ -6,11 +6,12 @@ use rama::{
     futures::StreamExt as _,
     http::{
         Body, BodyExtractExt, Method, Request, Response, StatusCode, Version,
+        body::util::BodyExt,
         client::EasyHttpWebClient,
         header::{ACCEPT_ENCODING, CONTENT_ENCODING},
         headers::{ContentLength, HeaderMapExt, encoding::AcceptEncoding},
         layer::decompression::DecompressionLayer,
-        service::client::HttpClientExt,
+        service::client::{HttpClientExt, multipart},
     },
     net::tls::client::ServerVerifyMode,
     rt::Executor,
@@ -58,6 +59,8 @@ async fn run_http_tests(base_uri: &'static str) {
         run_http_test_endpoint_response_stream_compression(client.clone(), base_uri, http_version)
             .await;
         run_http_test_endpoint_sse(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_octet_stream(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_multipart(client.clone(), base_uri, http_version).await;
     }
 }
 
@@ -263,4 +266,83 @@ async fn run_http_test_endpoint_sse(
     }
 
     assert!(stream.next().await.is_none());
+}
+
+async fn run_http_test_endpoint_octet_stream(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &'static str,
+    http_version: Version,
+) {
+    let payload: Vec<u8> = (0u8..=200).collect();
+    let resp = client
+        .post(format!("{base_uri}/octet-stream"))
+        .version(http_version)
+        .octet_stream(payload.clone())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(StatusCode::OK, resp.status());
+    assert_eq!(
+        Some("application/octet-stream"),
+        resp.headers()
+            .get(rama::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+    );
+    let echoed = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(payload.as_slice(), echoed.as_ref());
+}
+
+async fn run_http_test_endpoint_multipart(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &'static str,
+    http_version: Version,
+) {
+    let form = multipart::Form::new().text("username", "glen").part(
+        "attachment",
+        multipart::Part::bytes(b"hello rama".as_slice())
+            .with_file_name("note.txt")
+            .with_mime_str("text/plain")
+            .unwrap(),
+    );
+
+    let resp = client
+        .post(format!("{base_uri}/multipart"))
+        .version(http_version)
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(StatusCode::OK, resp.status());
+
+    let body: serde_json::Value = resp.try_into_json().await.unwrap();
+    let parts = body.get("parts").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(parts.len(), 2);
+
+    let username = &parts[0];
+    assert_eq!(username["name"].as_str(), Some("username"));
+    assert!(username["filename"].is_null());
+    assert_eq!(username["size"].as_u64(), Some(4));
+    assert_eq!(username["text"].as_str(), Some("glen"));
+
+    let attachment = &parts[1];
+    assert_eq!(attachment["name"].as_str(), Some("attachment"));
+    assert_eq!(attachment["filename"].as_str(), Some("note.txt"));
+    assert_eq!(attachment["content_type"].as_str(), Some("text/plain"));
+    assert_eq!(attachment["size"].as_u64(), Some(10));
+    assert_eq!(attachment["text"].as_str(), Some("hello rama"));
+
+    // Per-field cap (256 KiB) — sending a single field larger than that
+    // should produce 413 Payload Too Large.
+    let big = vec![b'x'; 300 * 1024];
+    let oversized = multipart::Form::new().part("blob", multipart::Part::bytes(big));
+    let resp = client
+        .post(format!("{base_uri}/multipart"))
+        .version(http_version)
+        .multipart(oversized)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::PAYLOAD_TOO_LARGE, resp.status());
 }
