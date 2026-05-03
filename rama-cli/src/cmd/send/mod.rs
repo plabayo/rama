@@ -87,6 +87,30 @@ pub struct SendCommand {
     /// (HTTP) Shorthand to specify the content-type as -H "Content-Type: application/octet-stream".
     binary: bool,
 
+    #[arg(long, short = 'F')]
+    /// (HTTP) Send a `multipart/form-data` part.
+    ///
+    /// Each `-F` flag adds one part. Spec syntax (compatible with curl `-F`
+    /// and httpie):
+    ///
+    ///   name=value                              text part
+    ///   name=@path                              file upload (mime guessed)
+    ///   name=@-                                 file upload from stdin
+    ///   name=<path                              file content as text part
+    ///   name=<-                                 text part from stdin
+    ///
+    /// Optional modifiers, separated by `;`:
+    ///
+    ///   ;type=mime/sub      override the part's Content-Type
+    ///   ;filename=name      override the filename
+    ///
+    /// Example:
+    ///
+    ///   --form-data 'avatar=@./photo.png;type=image/png;filename=me.png'
+    ///
+    /// Mutually exclusive with --data, --json, --binary.
+    form_data: Option<Vec<String>>,
+
     #[arg(long, short = 'x')]
     /// upstream proxy to use (can also be specified using PROXY env variable)
     proxy: Option<ProxyAddress>,

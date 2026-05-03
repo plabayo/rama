@@ -110,6 +110,19 @@ impl Form {
         Ok(self.part(name, part))
     }
 
+    /// Add a part described by a compact `name=value` field-spec string.
+    ///
+    /// See [`FieldSpec`] for the supported syntax (the same convention used
+    /// by curl `-F`, httpie, and similar tools). Performs the I/O implied by
+    /// `=@` (file), `=<` (file-as-text), and `=@-` / `=<-` (stdin) sources;
+    /// the `=value` form is purely textual.
+    pub async fn with_field_spec(self, spec: &str) -> Result<Self, FieldSpecError> {
+        let parsed = FieldSpec::parse(spec)?;
+        let name = parsed.name.to_owned();
+        let part = parsed.into_part().await?;
+        Ok(self.part(name, part))
+    }
+
     /// Add a custom [`Part`] to the form.
     pub fn part<N>(mut self, name: N, part: Part) -> Self
     where
@@ -390,6 +403,178 @@ fn write_quoted(buf: &mut BytesMut, s: &str) {
     }
 }
 
+/// A parsed `name=…` field spec for use with [`Form::with_field_spec`].
+///
+/// The same compact convention used by `curl -F` and friends:
+///
+/// | Spec | Meaning |
+/// |---|---|
+/// | `name=value` | text field |
+/// | `name=@path` | file upload (mime guessed from extension) |
+/// | `name=@-` | file upload from stdin |
+/// | `name=<path` | file content as a text field (not an upload) |
+/// | `name=<-` | text field content from stdin |
+///
+/// Modifiers may follow the source, separated by `;`:
+/// - `;type=mime/sub` overrides the part's `Content-Type`
+/// - `;filename=name` overrides the `filename` parameter
+///
+/// Example: `avatar=@./photo.png;type=image/png;filename=me.png`
+#[derive(Debug, Clone)]
+pub struct FieldSpec<'a> {
+    /// Field name (the part to the left of `=`).
+    pub name: &'a str,
+    /// Where the value comes from.
+    pub source: FieldSpecSource<'a>,
+    /// Optional `;type=…` override.
+    pub content_type: Option<&'a str>,
+    /// Optional `;filename=…` override.
+    pub filename: Option<&'a str>,
+}
+
+/// Source of a [`FieldSpec`] value.
+#[derive(Debug, Clone)]
+pub enum FieldSpecSource<'a> {
+    /// `name=value` — literal text.
+    Text(&'a str),
+    /// `name=@path` — upload the file's bytes; `path = "-"` reads stdin.
+    File(&'a str),
+    /// `name=<path` — read file content into a text field; `path = "-"` reads stdin.
+    FileText(&'a str),
+}
+
+/// Error type returned by [`FieldSpec::parse`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldSpecError {
+    /// The spec is missing a `=` separator between name and value.
+    MissingSeparator,
+    /// The field name (left of `=`) is empty.
+    EmptyName,
+    /// A `;…` modifier was malformed.
+    InvalidModifier(String),
+}
+
+impl std::fmt::Display for FieldSpecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingSeparator => write!(f, "field spec is missing `=` separator"),
+            Self::EmptyName => write!(f, "field spec has empty name"),
+            Self::InvalidModifier(m) => write!(f, "invalid field spec modifier: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for FieldSpecError {}
+
+impl<'a> FieldSpec<'a> {
+    /// Parse a field spec string. Pure: does no I/O.
+    pub fn parse(spec: &'a str) -> Result<Self, FieldSpecError> {
+        let (name, rest) = spec
+            .split_once('=')
+            .ok_or(FieldSpecError::MissingSeparator)?;
+        if name.is_empty() {
+            return Err(FieldSpecError::EmptyName);
+        }
+
+        // Modifiers (;type=, ;filename=) are split off the right of the
+        // value. Multiple modifiers may follow.
+        let mut content_type: Option<&str> = None;
+        let mut filename: Option<&str> = None;
+        let value_part: &str;
+
+        if let Some((value, modifiers)) = split_modifiers(rest) {
+            value_part = value;
+            for modifier in modifiers.split(';') {
+                let modifier = modifier.trim();
+                if modifier.is_empty() {
+                    continue;
+                }
+                let (key, val) = modifier
+                    .split_once('=')
+                    .ok_or_else(|| FieldSpecError::InvalidModifier(modifier.to_owned()))?;
+                match key.trim() {
+                    "type" => content_type = Some(val),
+                    "filename" => filename = Some(val),
+                    other => {
+                        return Err(FieldSpecError::InvalidModifier(other.to_owned()));
+                    }
+                }
+            }
+        } else {
+            value_part = rest;
+        }
+
+        let source = if let Some(path) = value_part.strip_prefix('@') {
+            FieldSpecSource::File(path)
+        } else if let Some(path) = value_part.strip_prefix('<') {
+            FieldSpecSource::FileText(path)
+        } else {
+            FieldSpecSource::Text(value_part)
+        };
+
+        Ok(Self {
+            name,
+            source,
+            content_type,
+            filename,
+        })
+    }
+
+    /// Resolve this spec into a [`Part`], performing any necessary I/O.
+    pub async fn into_part(self) -> Result<Part, FieldSpecError> {
+        let mut part = match self.source {
+            FieldSpecSource::Text(s) => Part::text(s.to_owned()),
+            FieldSpecSource::File("-") => Part::stream(read_stdin_stream()),
+            FieldSpecSource::File(path) => Part::file(path)
+                .await
+                .map_err(|e| FieldSpecError::InvalidModifier(format!("file open: {e}")))?,
+            FieldSpecSource::FileText("-") => {
+                let s = read_stdin_to_string()
+                    .await
+                    .map_err(|e| FieldSpecError::InvalidModifier(format!("stdin read: {e}")))?;
+                Part::text(s)
+            }
+            FieldSpecSource::FileText(path) => {
+                let s = tokio::fs::read_to_string(path)
+                    .await
+                    .map_err(|e| FieldSpecError::InvalidModifier(format!("file read: {e}")))?;
+                Part::text(s)
+            }
+        };
+        if let Some(ct) = self.content_type {
+            part = part
+                .with_mime_str(ct)
+                .map_err(|_| FieldSpecError::InvalidModifier(format!("type={ct}")))?;
+        }
+        if let Some(fname) = self.filename {
+            part = part.with_file_name(fname.to_owned());
+        }
+        Ok(part)
+    }
+}
+
+/// Find the first un-quoted `;` that starts a modifier section, splitting
+/// the value from the modifier list. Returns `None` if there are no
+/// modifiers.
+fn split_modifiers(input: &str) -> Option<(&str, &str)> {
+    // Naive split on the first `;` is fine here — values in field specs
+    // do not have a quoted form, by convention.
+    input.split_once(';')
+}
+
+async fn read_stdin_to_string() -> std::io::Result<String> {
+    use tokio::io::AsyncReadExt as _;
+    let mut buf = String::new();
+    tokio::io::stdin().read_to_string(&mut buf).await?;
+    Ok(buf)
+}
+
+fn read_stdin_stream() -> impl rama_core::futures::Stream<Item = Result<Bytes, BoxError>> + Send {
+    rama_core::stream::io::ReaderStream::new(tokio::io::stdin())
+        .map_ok(Bytes::from)
+        .map_err(BoxError::from)
+}
+
 fn gen_boundary() -> String {
     let mut rng = rand::rng();
     format!(
@@ -480,5 +665,89 @@ mod test {
         let (_, _, bytes) = collect(form).await;
         let s = std::str::from_utf8(&bytes).unwrap();
         assert!(s.contains("name=\"we\\\"ird\""));
+    }
+
+    #[test]
+    fn test_field_spec_text() {
+        let s = FieldSpec::parse("name=glen").unwrap();
+        assert_eq!(s.name, "name");
+        assert!(matches!(s.source, FieldSpecSource::Text("glen")));
+        assert!(s.content_type.is_none());
+        assert!(s.filename.is_none());
+    }
+
+    #[test]
+    fn test_field_spec_file_with_modifiers() {
+        let s = FieldSpec::parse("avatar=@./photo.png;type=image/png;filename=me.png").unwrap();
+        assert_eq!(s.name, "avatar");
+        assert!(matches!(s.source, FieldSpecSource::File("./photo.png")));
+        assert_eq!(s.content_type, Some("image/png"));
+        assert_eq!(s.filename, Some("me.png"));
+    }
+
+    #[test]
+    fn test_field_spec_file_text() {
+        let s = FieldSpec::parse("greeting=<hello.txt").unwrap();
+        assert_eq!(s.name, "greeting");
+        assert!(matches!(s.source, FieldSpecSource::FileText("hello.txt")));
+    }
+
+    #[test]
+    fn test_field_spec_stdin() {
+        let s = FieldSpec::parse("blob=@-").unwrap();
+        assert!(matches!(s.source, FieldSpecSource::File("-")));
+    }
+
+    #[test]
+    fn test_field_spec_errors() {
+        assert!(matches!(
+            FieldSpec::parse("noequal"),
+            Err(FieldSpecError::MissingSeparator)
+        ));
+        assert!(matches!(
+            FieldSpec::parse("=value"),
+            Err(FieldSpecError::EmptyName)
+        ));
+        assert!(matches!(
+            FieldSpec::parse("name=v;invalid"),
+            Err(FieldSpecError::InvalidModifier(_))
+        ));
+        assert!(matches!(
+            FieldSpec::parse("name=v;weird=val"),
+            Err(FieldSpecError::InvalidModifier(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_form_with_field_spec_text() {
+        let form = Form::new()
+            .with_field_spec("name=glen")
+            .await
+            .unwrap()
+            .with_field_spec("lang=rust")
+            .await
+            .unwrap();
+        let (_, _, bytes) = collect(form).await;
+        let s = std::str::from_utf8(&bytes).unwrap();
+        assert!(s.contains("name=\"name\""));
+        assert!(s.contains("\r\nglen\r\n"));
+        assert!(s.contains("name=\"lang\""));
+        assert!(s.contains("\r\nrust\r\n"));
+    }
+
+    #[tokio::test]
+    async fn test_form_with_field_spec_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hello.txt");
+        tokio::fs::write(&path, b"hi from disk").await.unwrap();
+        let spec = format!("note=@{};type=text/plain", path.display());
+
+        let form = Form::new().with_field_spec(&spec).await.unwrap();
+        let (_, _, bytes) = collect(form).await;
+        let s = std::str::from_utf8(&bytes).unwrap();
+        assert!(s.contains("name=\"note\""));
+        assert!(s.contains("filename=\"hello.txt\""));
+        assert!(s.contains("Content-Type: text/plain"));
+        assert!(s.contains("hi from disk"));
     }
 }

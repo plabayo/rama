@@ -4,10 +4,12 @@ use rama::{
     extensions::ExtensionsRef,
     futures::{StreamExt, stream},
     http::{
-        Body, Method, Request, Uri, Version,
+        Body, HeaderValue, Method, Request, Uri, Version,
         conn::TargetHttpVersion,
+        header::{CONTENT_LENGTH, CONTENT_TYPE},
         headers::{ContentType, HeaderMapExt},
         proto::h1::headers::original::OriginalHttp1Headers,
+        service::client::multipart,
     },
     net::mode::{ConnectIpMode, DnsResolveIpMode},
     stream::io::ReaderStream,
@@ -92,15 +94,67 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         (false, false) => (), // allow both ipv4 and ipv6, nothing to do this is the default
     }
 
-    if let Some((body, ct)) = input {
-        request.headers_mut().typed_insert(ct);
-        *request.body_mut() = body;
+    if let Some(input) = input {
+        match input {
+            DataInput::Body { body, content_type } => {
+                request.headers_mut().typed_insert(content_type);
+                *request.body_mut() = body;
+            }
+            DataInput::Multipart {
+                body,
+                content_type,
+                content_length,
+            } => {
+                request.headers_mut().insert(CONTENT_TYPE, content_type);
+                if let Some(len) = content_length {
+                    request
+                        .headers_mut()
+                        .insert(CONTENT_LENGTH, HeaderValue::from(len));
+                }
+                *request.body_mut() = body;
+            }
+        }
     }
 
     Ok(request)
 }
 
-async fn build_data_input(cfg: &SendCommand) -> Result<Option<(Body, ContentType)>, BoxError> {
+enum DataInput {
+    Body {
+        body: Body,
+        content_type: ContentType,
+    },
+    Multipart {
+        body: Body,
+        content_type: HeaderValue,
+        content_length: Option<u64>,
+    },
+}
+
+async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxError> {
+    if let Some(specs) = cfg.form_data.as_deref().filter(|v| !v.is_empty()) {
+        if cfg.data.is_some() || cfg.json || cfg.binary {
+            return Err(OpaqueError::from_static_str(
+                "--form-data is mutually exclusive with --data, --json, --binary",
+            )
+            .into_box_error());
+        }
+        let mut form = multipart::Form::new();
+        for spec in specs {
+            form = form
+                .with_field_spec(spec)
+                .await
+                .context("parse --form-data")?;
+        }
+        let content_type = form.content_type();
+        let content_length = form.content_length();
+        return Ok(Some(DataInput::Multipart {
+            body: form.into_body(),
+            content_type,
+            content_length,
+        }));
+    }
+
     let (ct, separator) = match (cfg.binary, cfg.json) {
         (true, false) => (ContentType::octet_stream(), None),
         (false, true) => (ContentType::json(), Some(NATIVE_NEWLINE)),
@@ -158,7 +212,10 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<(Body, ContentType
 
     let body = Body::from_stream(stream);
 
-    Ok(Some((body, ct)))
+    Ok(Some(DataInput::Body {
+        body,
+        content_type: ct,
+    }))
 }
 
 /// Expand a URL string to a full URL,
