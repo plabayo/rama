@@ -15,6 +15,65 @@
 //!
 //! ---
 //!
+//! ## At a glance
+//!
+//! New here? Start with the [book](https://ramaproxy.org/book) for narrative explanations
+//! and the [examples](https://github.com/plabayo/rama/tree/main/examples) to see real code.
+//! Use this section to jump straight into the API.
+//!
+//! **Core abstractions** (always available, re-exported from
+//! [`rama-core`](https://docs.rs/rama-core)):
+//!
+//! - [`Service`] — central trait: takes a request, produces a response or error
+//! - [`Layer`] — wraps a [`Service`] to add behavior (timeouts, retries, telemetry, …)
+//! - support: [`error`], [`graceful`], [`rt`], [`combinators`], [`extensions`], [`matcher`],
+//!   [`stream`], [`io`], [`bytes`], [`futures`]
+//!
+//! **Networking (transports and primitives)**:
+//!
+//! - [`tcp`] · [`udp`] · [`unix`] — listeners, connectors, sockets
+//! - [`net`] — shared addresses / sockets / fingerprints (Apple-only items live in
+//!   [`net::apple`])
+//! - [`dns`] — DNS resolvers and types (native resolvers or opt-in HickoryDNS)
+//! - [`tls`] — TLS via [rustls](`tls::rustls`) / [boring](`tls::boring`) and
+//!   [`tls::acme`](`tls::acme`)
+//!
+//! **Application protocols**:
+//!
+//! - [`http`] — HTTP/1 + HTTP/2: [`http::server`], [`http::client`],
+//!   [`http::layer`], [`http::service`], [`http::tls`], [`http::ws`], [`http::grpc`],
+//!   [`http::proxy`]
+//! - [`proxy`] — proxy primitives, [`proxy::socks5`], [`proxy::haproxy`]
+//!
+//! **Cross-cutting**:
+//!
+//! - [`telemetry`] — tracing and OpenTelemetry
+//! - [`ua`] — User-Agent emulation and fingerprinting
+//! - [`utils`] (incl. [`utils::tower`] for tower compat), [`crypto`], [`cli`]
+//!
+//! **Common entry points** for first-time readers:
+//!
+//! - HTTP client: [`http::client::EasyHttpWebClient`] +
+//!   [`http::service::client::HttpClientExt`]
+//! - HTTP server / web service: [`http::server`] and [`http::service::web`]
+//! - SOCKS5 server: [`proxy::socks5`]
+//! - Reverse / forward proxy: [`http::proxy`] (HTTP CONNECT) +
+//!   [`proxy::socks5`] / [`proxy::haproxy`]
+//! - L4 transparent proxy
+//!   - On Linux: rama services on top of `IP_TRANSPARENT` / `TPROXY`. See the
+//!     [`linux_tproxy_tcp`](https://github.com/plabayo/rama/blob/main/examples/linux_tproxy_tcp.rs)
+//!     example (with companion setup / cleanup scripts in the same directory).
+//!   - On macOS / iOS: platform-specific submodules of [`net`] bridge Apple
+//!     [NetworkExtension](https://developer.apple.com/documentation/networkextension)
+//!     flows into rama services and host ↔ extension IPC over
+//!     [Apple XPC](https://developer.apple.com/documentation/xpc). Available behind
+//!     the `net-apple-networkextension` and `net-apple-xpc` features (browse them
+//!     under [`net`] in the docs built on an Apple vendor target. See the
+//!     [`tproxy` example](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy)
+//!     for an end-to-end setup including the system-extension scaffolding.
+//!
+//! ---
+//!
 //! ## Who is rama for
 //!
 //! - **Developers and teams** who want fine grained control over transport, TLS and HTTP
@@ -297,10 +356,6 @@ pub use ::rama_udp as udp;
 pub mod telemetry;
 
 #[cfg(any(feature = "rustls", feature = "boring", feature = "acme"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(feature = "rustls", feature = "boring", feature = "acme")))
-)]
 pub mod tls;
 
 #[cfg(feature = "dns")]
@@ -314,12 +369,6 @@ pub mod net {
     #[doc(inline)]
     pub use ::rama_net::*;
 
-    // Visible under `--cfg docsrs` on any host so the published docs site (built on
-    // Linux) cross-links to the Apple crate docs that are produced by a parallel
-    // macOS doc job and merged into the same target/doc tree. We deliberately do not
-    // use `#[doc(inline)]` here: on Linux the underlying Apple crates compile to
-    // empty libraries, so inlining would produce empty pages — instead we let
-    // rustdoc emit a re-export thunk that points at the (merged) full crate docs.
     #[cfg(any(
         all(doc, docsrs),
         all(
@@ -327,13 +376,7 @@ pub mod net {
             any(feature = "net-apple-networkextension", feature = "net-apple-xpc")
         )
     ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(
-            target_vendor = "apple",
-            any(feature = "net-apple-networkextension", feature = "net-apple-xpc")
-        )))
-    )]
+    #[cfg_attr(docsrs, doc(cfg(target_vendor = "apple")))]
     pub mod apple {
         //! Apple (vendor) specific network modules
 
@@ -354,10 +397,6 @@ pub mod net {
 pub mod http;
 
 #[cfg(any(feature = "proxy", feature = "haproxy", feature = "socks5"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(feature = "proxy", feature = "haproxy", feature = "socks5")))
-)]
 pub mod proxy {
     //! rama proxy support
 

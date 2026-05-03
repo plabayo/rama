@@ -17,6 +17,13 @@ resolver = "3"
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
 
 [package.metadata.cargo-machete]
 ignored = ["rustversion"]
@@ -111,7 +118,7 @@ futures = "0.3"
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
-hickory-resolver = { version = "0.26.0", default-features = false, features = ["tokio", "system-config", "serde"] }
+hickory-resolver = { version = "0.26.1", default-features = false, features = ["tokio", "system-config", "serde"] }
 honggfuzz = "0.5"
 http = "1"
 http-body = "1"

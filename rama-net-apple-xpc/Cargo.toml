@@ -16,6 +16,11 @@ allowed = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+default-target = "x86_64-apple-darwin"
+targets = [
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+]
 
 [features]
 default = []
