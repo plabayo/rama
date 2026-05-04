@@ -321,7 +321,9 @@ use unix_example::run;
 
 #[cfg(not(target_family = "unix"))]
 fn run() {
-    tracing::info!("tcp_listener_fd_passing example is Unix-only (requires SCM_RIGHTS)");
+    rama::telemetry::tracing::info!(
+        "tcp_listener_fd_passing example is Unix-only (requires SCM_RIGHTS)"
+    );
 }
 
 fn main() {
