@@ -19,9 +19,12 @@
 //! cargo run --example xpc_ca_exchange --features=net-apple-xpc
 //! ```
 
-#![expect(
-    clippy::expect_used,
-    reason = "example: panic-on-error is the standard pattern for demos"
+#![cfg_attr(
+    target_vendor = "apple",
+    expect(
+        clippy::expect_used,
+        reason = "example: panic-on-error is the standard pattern for demos"
+    )
 )]
 
 #[cfg(not(target_vendor = "apple"))]

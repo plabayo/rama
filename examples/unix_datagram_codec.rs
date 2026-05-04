@@ -28,10 +28,13 @@
 //! done!
 //! ```
 
-#![expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "example: panic-on-error is the standard pattern for demos"
+#![cfg_attr(
+    target_family = "unix",
+    expect(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "example: panic-on-error is the standard pattern for demos"
+    )
 )]
 
 #[cfg(target_family = "unix")]
