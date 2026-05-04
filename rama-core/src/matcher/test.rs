@@ -1,3 +1,8 @@
+#![expect(
+    clippy::allow_attributes,
+    reason = "this test file has rustc-version-dependent `#[allow(unused_allocation)]`: <=1.93 fires the lint, newer rustc loosens it, so `#[expect]` would warn unfulfilled on newer toolchains"
+)]
+
 use super::*;
 
 #[test]
@@ -275,6 +280,10 @@ fn test_iter_enum_or() {
 }
 
 #[test]
+#[allow(
+    unused_allocation,
+    reason = "Box is intentional here to exercise boxed Matcher impls; rustc <= 1.93 flags it, newer versions don't"
+)]
 fn test_box() {
     assert!(Box::new(ConstMatcher(0)).matches(None, &0));
     assert!(!Box::new(ConstMatcher(1)).matches(None, &0));

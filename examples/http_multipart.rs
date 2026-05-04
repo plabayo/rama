@@ -35,6 +35,11 @@
 //!
 //! and use the upload form.
 
+#![expect(
+    clippy::expect_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
+
 use rama::{
     Layer,
     http::{

@@ -89,6 +89,10 @@ impl Form {
 
     /// The `Content-Type` header value (`multipart/form-data; boundary=…`).
     #[must_use]
+    #[expect(
+        clippy::unreachable,
+        reason = "boundary is constructed from validated bytes; HeaderValue::try_from is infallible by construction here, the Err arm exists only to satisfy unwrap_used/expect_used"
+    )]
     pub fn content_type(&self) -> HeaderValue {
         let value = format!("multipart/form-data; boundary={}", self.boundary);
         // Boundaries are randomly generated `[0-9a-f-]` (all valid

@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cmp_owned,
+    clippy::allow_attributes,
+    reason = "the entire point of these tests is to exercise `PartialEq<&str>`/`PartialEq<String>`/etc. on ArcStr — `clippy::cmp_owned` fires on rustc <= 1.93 but not newer versions, so `#[expect]` would warn unfulfilled"
+)]
+
 use ahash::{HashMap, HashMapExt as _};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 
