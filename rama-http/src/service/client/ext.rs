@@ -5,6 +5,7 @@ use rama_core::{
     extensions::{Extension, Extensions, ExtensionsRef},
 };
 use rama_http_headers::authorization::Credentials;
+use rama_http_types::StreamingBody;
 
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,
@@ -786,40 +787,21 @@ where
         let body = form.into_body();
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => {
-                let builder = if let Some(headers) = builder.headers_mut() {
+                if let Some(headers) = builder.headers_mut() {
                     headers.insert(crate::header::CONTENT_TYPE, content_type);
-                    if let Some(len) = content_length {
-                        headers
-                            .insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
-                    } else {
-                        // Streaming multipart — clear any pre-set
-                        // Content-Length so we don't ship a stale fixed
-                        // length alongside a chunked body.
-                        headers.remove(crate::header::CONTENT_LENGTH);
-                    }
-                    builder
-                } else {
-                    let builder = builder.header(crate::header::CONTENT_TYPE, content_type);
-                    match content_length {
-                        Some(len) => builder
-                            .header(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len)),
-                        None => builder,
-                    }
-                };
+                    sync_content_length_in_map(headers, content_length);
+                }
+                // If `headers_mut` is None the builder is in an error
+                // state; `builder.body(...)` will surface that error.
                 match builder.body(body) {
                     Ok(req) => RequestBuilderState::PostBody(req),
                     Err(err) => RequestBuilderState::Error(BoxError::from(err)),
                 }
             }
             RequestBuilderState::PostBody(mut req) => {
-                req.headers_mut()
-                    .insert(crate::header::CONTENT_TYPE, content_type);
-                if let Some(len) = content_length {
-                    req.headers_mut()
-                        .insert(crate::header::CONTENT_LENGTH, crate::HeaderValue::from(len));
-                } else {
-                    req.headers_mut().remove(crate::header::CONTENT_LENGTH);
-                }
+                let headers = req.headers_mut();
+                headers.insert(crate::header::CONTENT_TYPE, content_type);
+                sync_content_length_in_map(headers, content_length);
                 *req.body_mut() = body;
                 RequestBuilderState::PostBody(req)
             }
@@ -944,7 +926,6 @@ where
 /// (replacing any prior). If the size is unknown, remove any pre-set
 /// `Content-Length` so the request doesn't ship with stale framing.
 fn sync_content_length_pre_body(builder: &mut crate::request::Builder, body: &crate::Body) {
-    use rama_http_types::StreamingBody as _;
     let Some(headers) = builder.headers_mut() else {
         return;
     };
@@ -955,7 +936,6 @@ fn sync_content_length_pre_body(builder: &mut crate::request::Builder, body: &cr
 /// Synchronise `Content-Length` with the new body on a request that has
 /// already entered the post-body state.
 fn sync_content_length_post_body<B>(req: &mut crate::Request<B>, body: &crate::Body) {
-    use rama_http_types::StreamingBody as _;
     let exact = body.size_hint().exact();
     sync_content_length_in_map(req.headers_mut(), exact);
 }

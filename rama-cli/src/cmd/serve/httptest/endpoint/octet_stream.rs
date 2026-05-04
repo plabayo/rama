@@ -9,6 +9,7 @@ use rama::{
     layer::ConsumeErrLayer,
     service::service_fn,
     stream::io::ReaderStream,
+    utils::octets::mib,
 };
 use std::convert::Infallible;
 
@@ -16,7 +17,7 @@ pub(in crate::cmd::serve::httptest) fn service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
     (
         ConsumeErrLayer::trace_as_debug(),
-        BodyLimitLayer::new(8 * 1024 * 1024),
+        BodyLimitLayer::new(mib(8) as usize),
         MapResponseBodyLayer::new_boxed_streaming_body(),
     )
         .into_layer(service_fn(async |req: Request| {

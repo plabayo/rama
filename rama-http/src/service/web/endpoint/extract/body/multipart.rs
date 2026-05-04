@@ -23,6 +23,7 @@ use rama_core::bytes::Bytes;
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::futures::{Stream, TryStream};
 use rama_http_types::{HeaderMap, StatusCode, header};
+use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -58,19 +59,13 @@ impl MultipartConfig {
         Self::default()
     }
 
-    /// Set the default per-field byte limit applied when no field-specific
-    /// limit overrides it.
-    #[must_use]
-    pub fn with_default_field_limit(mut self, limit: u64) -> Self {
-        self.default_field_limit = Some(limit);
-        self
-    }
-
-    /// Set the default per-field byte limit applied when no field-specific
-    /// limit overrides it.
-    pub fn set_default_field_limit(&mut self, limit: u64) -> &mut Self {
-        self.default_field_limit = Some(limit);
-        self
+    generate_set_and_with! {
+        /// Default per-field byte limit applied when no field-specific
+        /// limit overrides it.
+        pub fn default_field_limit(mut self, limit: Option<u64>) -> Self {
+            self.default_field_limit = limit;
+            self
+        }
     }
 
     /// Set a byte limit for a specific field by name.

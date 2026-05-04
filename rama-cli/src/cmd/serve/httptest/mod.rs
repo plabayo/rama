@@ -25,7 +25,7 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing,
     tls::boring::server::TlsAcceptorLayer,
-    utils::backoff::ExponentialBackoff,
+    utils::{backoff::ExponentialBackoff, octets::mib},
 };
 
 use clap::Args;
@@ -169,7 +169,7 @@ where
             Either::B(UnlimitedPolicy::new())
         }),
         // Limit the body size to 1MB for both request and response
-        BodyLimitLayer::symmetric(1024 * 1024),
+        BodyLimitLayer::symmetric(mib(1) as usize),
         tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
     );
 

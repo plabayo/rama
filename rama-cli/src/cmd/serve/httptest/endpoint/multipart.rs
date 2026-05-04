@@ -9,6 +9,7 @@ use rama::{
         },
     },
     layer::add_extension::AddInputExtensionLayer,
+    utils::octets::kib,
 };
 use serde::Serialize;
 use std::convert::Infallible;
@@ -47,12 +48,12 @@ pub(in crate::cmd::serve::httptest) struct MultipartReport {
     parts: Vec<PartSummary>,
 }
 
-const TEXT_ECHO_LIMIT: usize = 4 * 1024;
+const TEXT_ECHO_LIMIT: u64 = kib(4);
 
 /// Per-field cap of 256 KiB. The global body limit on this server is 1 MiB
 /// (set by `BodyLimitLayer::symmetric` in `httptest/mod.rs`); a per-field cap
 /// stops a single field from exhausting the entire request budget.
-const PER_FIELD_LIMIT: u64 = 256 * 1024;
+const PER_FIELD_LIMIT: u64 = kib(256);
 
 /// Build the `POST /multipart` service with the per-field cap installed as a
 /// `MultipartConfig` request extension. Anything exceeding the cap returns
@@ -73,7 +74,7 @@ async fn post_handler(mut multipart: Multipart) -> ResponseResult<Json<Multipart
         let content_type = field.content_type().map(|m| m.as_ref().to_owned());
         let bytes = field.bytes().await?;
         let size = bytes.len() as u64;
-        let text = if bytes.len() <= TEXT_ECHO_LIMIT {
+        let text = if size <= TEXT_ECHO_LIMIT {
             std::str::from_utf8(&bytes).ok().map(str::to_owned)
         } else {
             None

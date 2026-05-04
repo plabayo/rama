@@ -4,7 +4,7 @@ use rama::{
     extensions::ExtensionsRef,
     futures::{StreamExt, stream},
     http::{
-        Body, HeaderValue, Method, Request, Uri, Version,
+        Body, HeaderValue, Method, Request, StreamingBody, Uri, Version,
         conn::TargetHttpVersion,
         header::{CONTENT_LENGTH, CONTENT_TYPE},
         headers::{ContentType, HeaderMapExt},
@@ -105,16 +105,12 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
                 // stdin/file-backed mixes arrive as a `Body::from_stream`
                 // with unknown length, in which case we drop any pre-set
                 // CL header so we don't ship stale framing.
-                use rama::http::StreamingBody as _;
-                match body.size_hint().exact() {
-                    Some(len) => {
-                        request
-                            .headers_mut()
-                            .insert(CONTENT_LENGTH, HeaderValue::from(len));
-                    }
-                    None => {
-                        request.headers_mut().remove(CONTENT_LENGTH);
-                    }
+                if let Some(len) = body.size_hint().exact() {
+                    request
+                        .headers_mut()
+                        .insert(CONTENT_LENGTH, HeaderValue::from(len));
+                } else {
+                    request.headers_mut().remove(CONTENT_LENGTH);
                 }
                 *request.body_mut() = body;
             }

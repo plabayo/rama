@@ -18,15 +18,32 @@
 //! `Content-Transfer-Encoding` header is likewise omitted (§4.7).
 
 use rama_core::bytes::{BufMut, Bytes, BytesMut};
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::futures::{StreamExt, TryStreamExt, stream};
+use rama_core::stream::io::ReaderStream;
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderMap, HeaderValue, header, mime};
+use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::macros::generate_set_and_with;
+use rama_utils::str::smol_str::{SmolStr, format_smolstr};
 use rand::RngExt as _;
 use std::borrow::Cow;
 use std::path::Path;
 use std::pin::Pin;
+use tokio::io::AsyncReadExt as _;
+
+/// Most multipart forms have a small number of parts; the inline buffer
+/// avoids a heap allocation in the common case (e.g. a text field plus a
+/// single file upload).
+const PARTS_INLINE_CAP: usize = 4;
 
 const CRLF: &[u8] = b"\r\n";
+const DASH_DASH: &[u8] = b"--";
+const FIELD_DISPOSITION_PREFIX: &[u8] = b"Content-Disposition: form-data; name=\"";
+const FILENAME_PREFIX: &[u8] = b"; filename=\"";
+const CONTENT_TYPE_PREFIX: &[u8] = b"Content-Type: ";
+const QUOTE: &[u8] = b"\"";
+const HEADER_KV_SEP: &[u8] = b": ";
 
 type ChunkStream = Pin<Box<dyn rama_core::futures::Stream<Item = Result<Bytes, BoxError>> + Send>>;
 
@@ -39,8 +56,8 @@ type ChunkStream = Pin<Box<dyn rama_core::futures::Stream<Item = Result<Bytes, B
 #[derive(Debug)]
 #[must_use]
 pub struct Form {
-    boundary: String,
-    parts: Vec<NamedPart>,
+    boundary: SmolStr,
+    parts: SmallVec<[NamedPart; PARTS_INLINE_CAP]>,
 }
 
 #[derive(Debug)]
@@ -60,7 +77,7 @@ impl Form {
     pub fn new() -> Self {
         Self {
             boundary: gen_boundary(),
-            parts: Vec::new(),
+            parts: SmallVec::new(),
         }
     }
 
@@ -74,10 +91,16 @@ impl Form {
     #[must_use]
     pub fn content_type(&self) -> HeaderValue {
         let value = format!("multipart/form-data; boundary={}", self.boundary);
-        // Boundaries are randomly generated hex chars, so the resulting
-        // value is always a valid ASCII header value.
-        HeaderValue::try_from(value)
-            .unwrap_or_else(|_| HeaderValue::from_static("multipart/form-data"))
+        // Boundaries are randomly generated `[0-9a-f-]` (all valid
+        // header-value bytes), so this conversion is infallible by
+        // construction. The branch only exists to satisfy the
+        // `unwrap_used`/`expect_used` lints; fall through to an
+        // unreachable rather than a silent header without the boundary
+        // parameter (which would be a protocol bug).
+        match HeaderValue::try_from(value) {
+            Ok(v) => v,
+            Err(_) => unreachable!("multipart boundary always converts to a HeaderValue"),
+        }
     }
 
     /// Add a text part to the form.
@@ -150,7 +173,8 @@ impl Form {
             total = total.checked_add(part_size)?;
             total = total.checked_add(CRLF.len() as u64)?;
         }
-        let trailer_len = (b"--".len() + self.boundary.len() + b"--\r\n".len()) as u64;
+        let trailer_len =
+            (DASH_DASH.len() + self.boundary.len() + DASH_DASH.len() + CRLF.len()) as u64;
         total = total.checked_add(trailer_len)?;
         Some(total)
     }
@@ -172,16 +196,18 @@ impl Form {
         // delimiter is part of the delimiter per RFC 2046 §5.1.1).
         let trailer = {
             let cap = if n_parts == 0 { 0 } else { CRLF.len() }
-                + b"--".len()
+                + DASH_DASH.len()
                 + boundary.len()
-                + b"--\r\n".len();
+                + DASH_DASH.len()
+                + CRLF.len();
             let mut buf = BytesMut::with_capacity(cap);
             if n_parts > 0 {
                 buf.put_slice(CRLF);
             }
-            buf.put_slice(b"--");
+            buf.put_slice(DASH_DASH);
             buf.put_slice(boundary.as_bytes());
-            buf.put_slice(b"--\r\n");
+            buf.put_slice(DASH_DASH);
+            buf.put_slice(CRLF);
             buf.freeze()
         };
 
@@ -217,7 +243,7 @@ impl Form {
 /// Built via [`text`](Self::text), [`bytes`](Self::bytes),
 /// [`stream`](Self::stream), or [`file`](Self::file). Customise with
 /// [`with_file_name`](Self::with_file_name),
-/// [`with_mime_str`](Self::with_mime_str),
+/// [`try_with_mime_str`](Self::try_with_mime_str),
 /// [`with_content_size`](Self::with_content_size), or
 /// [`with_headers`](Self::with_headers).
 #[must_use]
@@ -327,8 +353,15 @@ impl Part {
         let file = tokio::fs::File::open(path).await?;
         let metadata = file.metadata().await?;
         let len = metadata.len();
-        let stream = rama_core::stream::io::ReaderStream::new(file);
 
+        tracing::debug!(
+            path = %path.display(),
+            size = len,
+            mime = %mime,
+            "multipart::Part::file: opened file for streaming",
+        );
+
+        let stream = ReaderStream::new(file);
         let mapped = stream.map_ok(Bytes::from).map_err(BoxError::from);
 
         Ok(Self {
@@ -340,42 +373,61 @@ impl Part {
         })
     }
 
-    /// Override or set the filename used in the part's `Content-Disposition`.
-    pub fn with_file_name<V: Into<Cow<'static, str>>>(mut self, name: V) -> Self {
-        self.file_name = Some(name.into());
-        self
+    generate_set_and_with! {
+        /// Filename used in the part's `Content-Disposition` header.
+        ///
+        /// Accepts anything that converts into [`Cow<'static, str>`] —
+        /// `&'static str` literals, owned `String`, or an explicit
+        /// `Cow::Owned`/`Cow::Borrowed`.
+        pub fn file_name(mut self, file_name: impl Into<Cow<'static, str>>) -> Self {
+            self.file_name = Some(file_name.into());
+            self
+        }
     }
 
-    /// Set the part's `Content-Type` from a string like `"image/png"`.
-    pub fn with_mime_str(mut self, mime_str: &str) -> Result<Self, mime::FromStrError> {
-        self.mime = Some(mime_str.parse()?);
-        Ok(self)
+    generate_set_and_with! {
+        /// The part's `Content-Type`, as a parsed [`Mime`](mime::Mime).
+        ///
+        /// `with_*`/`set_*` set, `without_*`/`unset_*` clear any
+        /// previously-set value.
+        pub fn mime(mut self, mime: Option<mime::Mime>) -> Self {
+            self.mime = mime;
+            self
+        }
     }
 
-    /// Set the part's `Content-Type` from a [`Mime`](mime::Mime) value.
-    pub fn with_mime(mut self, mime: mime::Mime) -> Self {
-        self.mime = Some(mime);
-        self
+    generate_set_and_with! {
+        /// The part's `Content-Type` parsed from a string such as
+        /// `"image/png"`. Generates `try_with_mime_str` /
+        /// `try_set_mime_str` companions returning `Result`.
+        pub fn mime_str(mut self, mime_str: &str) -> Result<Self, mime::FromStrError> {
+            self.mime = Some(mime_str.parse()?);
+            Ok(self)
+        }
     }
 
-    /// Set the part's known content size in bytes. For streaming parts this
-    /// allows the surrounding [`Form`] to advertise a `Content-Length`.
-    pub fn with_content_size(mut self, size: u64) -> Self {
-        self.content_size = Some(size);
-        self
+    generate_set_and_with! {
+        /// Known content size in bytes. For streaming parts this allows the
+        /// surrounding [`Form`] to advertise a `Content-Length`.
+        pub fn content_size(mut self, size: Option<u64>) -> Self {
+            self.content_size = size;
+            self
+        }
     }
 
-    /// Replace the part's headers (other than `Content-Disposition` and
-    /// `Content-Type`, which are derived from the part's metadata).
-    ///
-    /// RFC 7578 §4.8 states that headers other than `Content-Disposition`,
-    /// `Content-Type`, and (legacy) `Content-Transfer-Encoding` "MUST NOT be
-    /// included and MUST be ignored" by receivers. Custom headers are
-    /// allowed here for compatibility with non-standard receivers, but
-    /// strictly conforming peers will silently drop them.
-    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
-        self.headers = headers;
-        self
+    generate_set_and_with! {
+        /// Replace the part's headers (other than `Content-Disposition` and
+        /// `Content-Type`, which are derived from the part's metadata).
+        ///
+        /// RFC 7578 §4.8 states that headers other than `Content-Disposition`,
+        /// `Content-Type`, and (legacy) `Content-Transfer-Encoding` "MUST NOT be
+        /// included and MUST be ignored" by receivers. Custom headers are
+        /// allowed here for compatibility with non-standard receivers, but
+        /// strictly conforming peers will silently drop them.
+        pub fn headers(mut self, headers: HeaderMap) -> Self {
+            self.headers = headers;
+            self
+        }
     }
 }
 
@@ -391,20 +443,20 @@ fn render_framing(boundary: &str, name: &str, part: &Part, with_leading_crlf: bo
     if with_leading_crlf {
         buf.put_slice(CRLF);
     }
-    buf.put_slice(b"--");
+    buf.put_slice(DASH_DASH);
     buf.put_slice(boundary.as_bytes());
     buf.put_slice(CRLF);
-    buf.put_slice(b"Content-Disposition: form-data; name=\"");
+    buf.put_slice(FIELD_DISPOSITION_PREFIX);
     write_quoted(&mut buf, name);
-    buf.put_slice(b"\"");
+    buf.put_slice(QUOTE);
     if let Some(file_name) = part.file_name.as_deref() {
-        buf.put_slice(b"; filename=\"");
+        buf.put_slice(FILENAME_PREFIX);
         write_quoted(&mut buf, file_name);
-        buf.put_slice(b"\"");
+        buf.put_slice(QUOTE);
     }
     buf.put_slice(CRLF);
     if let Some(mime) = &part.mime {
-        buf.put_slice(b"Content-Type: ");
+        buf.put_slice(CONTENT_TYPE_PREFIX);
         // `as_ref` returns the full mime string including parameters
         // (e.g. `text/plain; charset=utf-8`); essence_str would drop them.
         buf.put_slice(mime.as_ref().as_bytes());
@@ -415,7 +467,7 @@ fn render_framing(boundary: &str, name: &str, part: &Part, with_leading_crlf: bo
             continue;
         }
         buf.put_slice(name.as_str().as_bytes());
-        buf.put_slice(b": ");
+        buf.put_slice(HEADER_KV_SEP);
         buf.put_slice(value.as_bytes());
         buf.put_slice(CRLF);
     }
@@ -428,28 +480,28 @@ fn render_framing(boundary: &str, name: &str, part: &Part, with_leading_crlf: bo
 /// logic.
 fn part_headers_len(boundary: &str, name: &str, part: &Part) -> usize {
     // "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\""
-    let mut len = b"--".len()
+    let mut len = DASH_DASH.len()
         + boundary.len()
         + CRLF.len()
-        + b"Content-Disposition: form-data; name=\"".len()
+        + FIELD_DISPOSITION_PREFIX.len()
         + quoted_len(name)
-        + b"\"".len();
+        + QUOTE.len();
     // "; filename=\"{file_name}\""
     if let Some(file_name) = part.file_name.as_deref() {
-        len += b"; filename=\"".len() + quoted_len(file_name) + b"\"".len();
+        len += FILENAME_PREFIX.len() + quoted_len(file_name) + QUOTE.len();
     }
     len += CRLF.len();
     // "Content-Type: {mime}\r\n" — full mime string including any parameters
     // (e.g. `text/plain; charset=utf-8`).
     if let Some(mime) = &part.mime {
-        len += b"Content-Type: ".len() + mime.as_ref().len() + CRLF.len();
+        len += CONTENT_TYPE_PREFIX.len() + mime.as_ref().len() + CRLF.len();
     }
     // Custom headers (excluding the two we always derive ourselves).
     for (h_name, h_value) in &part.headers {
         if h_name == header::CONTENT_DISPOSITION || h_name == header::CONTENT_TYPE {
             continue;
         }
-        len += h_name.as_str().len() + b": ".len() + h_value.as_bytes().len() + CRLF.len();
+        len += h_name.as_str().len() + HEADER_KV_SEP.len() + h_value.as_bytes().len() + CRLF.len();
     }
     // Blank line separating headers from body.
     len += CRLF.len();
@@ -531,14 +583,15 @@ pub enum FieldSpecSource<'a> {
 }
 
 /// Error type returned by [`FieldSpec::parse`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum FieldSpecError {
     /// The spec is missing a `=` separator between name and value.
     MissingSeparator,
     /// The field name (left of `=`) is empty.
     EmptyName,
-    /// A `;…` modifier was malformed.
-    InvalidModifier(String),
+    /// A `;…` modifier was malformed, or an I/O step (file open, stdin
+    /// read) failed during [`FieldSpec::into_part`].
+    InvalidModifier(BoxError),
 }
 
 impl std::fmt::Display for FieldSpecError {
@@ -546,12 +599,32 @@ impl std::fmt::Display for FieldSpecError {
         match self {
             Self::MissingSeparator => write!(f, "field spec is missing `=` separator"),
             Self::EmptyName => write!(f, "field spec has empty name"),
-            Self::InvalidModifier(m) => write!(f, "invalid field spec modifier: {m}"),
+            Self::InvalidModifier(err) => write!(f, "invalid field spec: {err}"),
         }
     }
 }
 
-impl std::error::Error for FieldSpecError {}
+impl std::error::Error for FieldSpecError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidModifier(err) => Some(&**err),
+            _ => None,
+        }
+    }
+}
+
+/// Small adapter to box a dynamic-string error message without going
+/// through `String` and the heavier error machinery.
+#[derive(Debug)]
+struct InlineErr(SmolStr);
+
+impl std::fmt::Display for InlineErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InlineErr {}
 
 impl<'a> FieldSpec<'a> {
     /// Parse a field spec string. Pure: does no I/O.
@@ -576,14 +649,18 @@ impl<'a> FieldSpec<'a> {
                 if modifier.is_empty() {
                     continue;
                 }
-                let (key, val) = modifier
-                    .split_once('=')
-                    .ok_or_else(|| FieldSpecError::InvalidModifier(modifier.to_owned()))?;
+                let (key, val) = modifier.split_once('=').ok_or_else(|| {
+                    FieldSpecError::InvalidModifier(
+                        InlineErr(format_smolstr!("missing `=` in modifier `{modifier}`")).into(),
+                    )
+                })?;
                 match key.trim() {
                     "type" => content_type = Some(val),
                     "filename" => filename = Some(val),
                     other => {
-                        return Err(FieldSpecError::InvalidModifier(other.to_owned()));
+                        return Err(FieldSpecError::InvalidModifier(
+                            InlineErr(format_smolstr!("unknown modifier key `{other}`")).into(),
+                        ));
                     }
                 }
             }
@@ -614,27 +691,30 @@ impl<'a> FieldSpec<'a> {
             FieldSpecSource::File("-") => Part::stream(read_stdin_stream()),
             FieldSpecSource::File(path) => Part::file(path)
                 .await
-                .map_err(|e| FieldSpecError::InvalidModifier(format!("file open: {e}")))?,
+                .with_context(|| format_smolstr!("multipart field spec: open file `{path}`"))
+                .map_err(|e| FieldSpecError::InvalidModifier(e.into_box_error()))?,
             FieldSpecSource::FileText("-") => {
                 let s = read_stdin_to_string()
                     .await
-                    .map_err(|e| FieldSpecError::InvalidModifier(format!("stdin read: {e}")))?;
+                    .context("multipart field spec: read stdin as text")
+                    .map_err(|e| FieldSpecError::InvalidModifier(e.into_box_error()))?;
                 Part::text(s)
             }
             FieldSpecSource::FileText(path) => {
                 let s = tokio::fs::read_to_string(path)
                     .await
-                    .map_err(|e| FieldSpecError::InvalidModifier(format!("file read: {e}")))?;
+                    .with_context(|| format_smolstr!("multipart field spec: read file `{path}`"))
+                    .map_err(|e| FieldSpecError::InvalidModifier(e.into_box_error()))?;
                 Part::text(s)
             }
         };
         if let Some(ct) = self.content_type {
-            part = part
-                .with_mime_str(ct)
-                .map_err(|_| FieldSpecError::InvalidModifier(format!("type={ct}")))?;
+            part.try_set_mime_str(ct)
+                .with_context(|| format_smolstr!("invalid `;type=` mime in field spec: {ct}"))
+                .map_err(|e| FieldSpecError::InvalidModifier(e.into_box_error()))?;
         }
         if let Some(fname) = self.filename {
-            part = part.with_file_name(fname.to_owned());
+            part.set_file_name(fname.to_owned());
         }
         Ok(part)
     }
@@ -649,22 +729,24 @@ fn split_modifiers(input: &str) -> Option<(&str, &str)> {
     input.split_once(';')
 }
 
-async fn read_stdin_to_string() -> std::io::Result<String> {
-    use tokio::io::AsyncReadExt as _;
+async fn read_stdin_to_string() -> Result<String, BoxError> {
     let mut buf = String::new();
-    tokio::io::stdin().read_to_string(&mut buf).await?;
+    tokio::io::stdin()
+        .read_to_string(&mut buf)
+        .await
+        .context("read multipart field value from stdin")?;
     Ok(buf)
 }
 
 fn read_stdin_stream() -> impl rama_core::futures::Stream<Item = Result<Bytes, BoxError>> + Send {
-    rama_core::stream::io::ReaderStream::new(tokio::io::stdin())
+    ReaderStream::new(tokio::io::stdin())
         .map_ok(Bytes::from)
         .map_err(BoxError::from)
 }
 
-fn gen_boundary() -> String {
+fn gen_boundary() -> SmolStr {
     let mut rng = rand::rng();
-    format!(
+    format_smolstr!(
         "{:016x}-{:016x}-{:016x}-{:016x}",
         rng.random::<u64>(),
         rng.random::<u64>(),
@@ -760,7 +842,7 @@ mod test {
         // dropped the charset parameter. Senders must emit the full mime
         // including any params like `charset=utf-8`.
         let part = Part::bytes(b"hi".as_slice())
-            .with_mime_str("text/plain; charset=utf-8")
+            .try_with_mime_str("text/plain; charset=utf-8")
             .unwrap();
         let form = Form::new().part("note", part);
         let len = form.content_length().expect("length known");

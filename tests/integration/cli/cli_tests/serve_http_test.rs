@@ -302,7 +302,7 @@ async fn run_http_test_endpoint_multipart(
         "attachment",
         multipart::Part::bytes(b"hello rama".as_slice())
             .with_file_name("note.txt")
-            .with_mime_str("text/plain")
+            .try_with_mime_str("text/plain")
             .unwrap(),
     );
 
