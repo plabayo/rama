@@ -103,6 +103,10 @@ async fn main() {
         },
     };
 
+    #[expect(
+        clippy::large_futures,
+        reason = "CLI dispatch: top-level match over command futures, boxing would add no benefit here"
+    )]
     #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
     if let Err(err) = match cli.cmds {
         CliCommands::Resolve(cfg) => cmd::resolve::run(cfg).await,

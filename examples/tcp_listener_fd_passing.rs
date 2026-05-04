@@ -22,9 +22,12 @@
 //!
 //! This only works on Unix systems (Linux, macOS, BSDs).
 
-#![expect(
-    clippy::unwrap_used,
-    reason = "example: panic-on-error is the standard pattern for demos"
+#![cfg_attr(
+    target_family = "unix",
+    expect(
+        clippy::unwrap_used,
+        reason = "example: panic-on-error is the standard pattern for demos"
+    )
 )]
 
 #[cfg(target_family = "unix")]
