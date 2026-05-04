@@ -67,6 +67,7 @@
 
 mod core;
 mod either_impls;
+mod rama_impls;
 mod response;
 
 #[doc(inline)]
