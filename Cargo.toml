@@ -49,6 +49,7 @@ members = [
     "rama-http-core/tests/h2-fuzz",
     "rama-http-core/tests/h2-support",
     "rama-http-headers",
+    "rama-http-macros",
     "rama-http-types",
     "rama-macros",
     "rama-macros/tests/macros",
@@ -177,6 +178,7 @@ rama-http = { version = "0.3.0-rc1", path = "./rama-http", default-features = fa
 rama-http-backend = { version = "0.3.0-rc1", path = "./rama-http-backend", default-features = false }
 rama-http-core = { version = "0.3.0-rc1", path = "./rama-http-core", default-features = false }
 rama-http-headers = { version = "0.3.0-rc1", path = "./rama-http-headers", default-features = false }
+rama-http-macros = { version = "0.3.0-rc1", path = "./rama-http-macros", default-features = false }
 rama-http-types = { version = "0.3.0-rc1", path = "./rama-http-types", default-features = false }
 rama-macros = { version = "0.3.0-rc1", path = "./rama-macros", default-features = false }
 rama-net = { version = "0.3.0-rc1", path = "./rama-net", default-features = false }
@@ -362,10 +364,12 @@ http-full = [
     "ua-embed-profiles",
     "compression",
     "multipart",
+    "html",
     "dep:tokio",
     "rama-grpc?/transport",
 ]
 multipart = ["http", "rama-http?/multipart"]
+html = ["http", "rama-http?/html"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 socks5 = ["dep:rama-socks5", "udp", "tcp", "rama-net/http", "rama-tcp/http"]
