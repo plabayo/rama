@@ -37,6 +37,7 @@ compression = [
     "dep:rawzip",
     "dep:flate2",
 ]
+multipart = ["dep:multer", "dep:mime_guess"]
 tls = ["rama-net/tls"]
 
 [dependencies]
@@ -55,6 +56,8 @@ httpdate = { workspace = true }
 iri-string = { workspace = true }
 jiff = { workspace = true }
 matchit = { workspace = true }
+mime_guess = { workspace = true, optional = true }
+multer = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 radix_trie = { workspace = true }

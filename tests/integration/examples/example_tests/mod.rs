@@ -53,6 +53,8 @@ mod http_mitm_proxy_rustls;
 ))]
 mod http_mitm_relay_proxy_boring;
 #[cfg(feature = "http-full")]
+mod http_multipart;
+#[cfg(feature = "http-full")]
 mod http_nd_json;
 #[cfg(feature = "http-full")]
 mod http_pooled_client;
