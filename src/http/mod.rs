@@ -8,7 +8,7 @@ pub use ::rama_http::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, HttpError,
     HttpResult, InfiniteReader, Method, Request, Response, Scheme, StatusCode, StreamingBody, Uri,
     Version, body, conn, convert, header, headers, io, matcher, mime, opentelemetry, proto,
-    request, response, service, sse, uri, utils,
+    protocols, request, response, service, sse, uri, utils,
 };
 
 #[cfg(feature = "http-full")]

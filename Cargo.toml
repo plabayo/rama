@@ -158,6 +158,7 @@ prost-build = "0.14.3"
 prost-types = "0.14.3"
 protoc-bin-vendored = "3.2.0"
 psl = "2"
+quick-xml = "0.37"
 quickcheck = "1.1"
 quickcheck_macros = "1.2"
 quote = "1.0"
@@ -441,6 +442,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 spmc = { workspace = true }
+jiff = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 turmoil = { workspace = true }
@@ -637,6 +639,14 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_nd_json"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_rss_blog"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_rss_podcast"
 required-features = ["http-full"]
 
 [[example]]

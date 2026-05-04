@@ -55,6 +55,10 @@ mod http_mitm_relay_proxy_boring;
 #[cfg(feature = "http-full")]
 mod http_nd_json;
 #[cfg(feature = "http-full")]
+mod http_rss_blog;
+#[cfg(feature = "http-full")]
+mod http_rss_podcast;
+#[cfg(feature = "http-full")]
 mod http_pooled_client;
 #[cfg(all(feature = "http-full", feature = "tower"))]
 mod http_rama_tower;

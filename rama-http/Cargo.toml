@@ -54,6 +54,7 @@ http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
 jiff = { workspace = true }
+quick-xml = { workspace = true }
 matchit = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
