@@ -1,4 +1,7 @@
-#![expect(clippy::unreachable, reason = "gRPC-Web codec arms gated on caller-validated state that the type system can't enforce")]
+#![expect(
+    clippy::unreachable,
+    reason = "gRPC-Web codec arms gated on caller-validated state that the type system can't enforce"
+)]
 
 use std::fmt;
 use std::pin::Pin;
@@ -392,7 +395,10 @@ fn internal_error(e: impl std::fmt::Display) -> Status {
 }
 
 // Key-value pairs encoded as a HTTP/1 headers block (without the terminating newline)
-#[expect(clippy::needless_pass_by_value, reason = "trailers is consumed by the iterator regardless; taking by value clarifies the move semantics")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "trailers is consumed by the iterator regardless; taking by value clarifies the move semantics"
+)]
 fn encode_trailers(trailers: HeaderMap) -> Vec<u8> {
     trailers.iter().fold(Vec::new(), |mut acc, (key, value)| {
         acc.put_slice(key.as_ref());

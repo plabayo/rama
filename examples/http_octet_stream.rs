@@ -18,7 +18,10 @@
 //! curl -O -J http://127.0.0.1:62003/download
 //! ```
 
-#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::http::layer::trace::TraceLayer;
 use rama::http::service::web::WebService;

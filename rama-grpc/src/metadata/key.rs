@@ -63,7 +63,10 @@ impl<VE: ValueEncoding> MetadataKey<VE> {
     /// characters, numerals and symbols, as per the HTTP/2.0 specification
     /// and header names internal representation within this library.
     #[must_use]
-    #[expect(clippy::panic, reason = "static-str invariant: panic at compile time when the static is not a valid metadata key (debug builds only)")]
+    #[expect(
+        clippy::panic,
+        reason = "static-str invariant: panic at compile time when the static is not a valid metadata key (debug builds only)"
+    )]
     pub fn from_static(src: &'static str) -> Self {
         let name = HeaderName::from_static(src);
 

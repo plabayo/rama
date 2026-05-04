@@ -611,7 +611,10 @@ impl Drop for TransparentProxyTcpSession {
     }
 }
 
-#[expect(clippy::too_many_arguments, reason = "internal helper threading TPROXY engine state to the per-flow handler; bundling into a struct adds noise without simplifying call sites")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading TPROXY engine state to the per-flow handler; bundling into a struct adds noise without simplifying call sites"
+)]
 async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
@@ -843,7 +846,10 @@ impl Drop for TransparentProxyUdpSession {
     }
 }
 
-#[expect(clippy::too_many_arguments, reason = "internal helper threading TPROXY engine state to the per-UDP-flow handler; bundling into a struct adds noise without simplifying call sites")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading TPROXY engine state to the per-UDP-flow handler; bundling into a struct adds noise without simplifying call sites"
+)]
 async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,

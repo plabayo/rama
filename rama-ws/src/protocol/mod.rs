@@ -1,7 +1,9 @@
 //! Generic WebSocket message stream.
 
-#![expect(clippy::unreachable, reason = "vendored from upstream `tungstenite-rs`: arms gated on caller-validated WebSocket protocol state that the type system can't enforce")]
-
+#![expect(
+    clippy::unreachable,
+    reason = "vendored from upstream `tungstenite-rs`: arms gated on caller-validated WebSocket protocol state that the type system can't enforce"
+)]
 
 use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::{Extensions, ExtensionsRef};

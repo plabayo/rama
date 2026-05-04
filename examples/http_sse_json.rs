@@ -27,7 +27,10 @@
 //! This will open a web page which should populate a table with
 //! rich data events as they are being received from (this) server.
 
-#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::{
     Layer,

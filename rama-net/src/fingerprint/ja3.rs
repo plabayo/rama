@@ -109,7 +109,10 @@ impl Ja3 {
     }
 
     /// compute the "ja3" hash from this [`Ja3`] data structure into the writer.
-    #[expect(clippy::panic, reason = "debug-only assertion: md5::Context::write_all is infallible in practice")]
+    #[expect(
+        clippy::panic,
+        reason = "debug-only assertion: md5::Context::write_all is infallible in practice"
+    )]
     fn hash_to(&self, w: &mut impl fmt::Write, lower: bool) -> fmt::Result {
         let mut ctx = md5::Context::new();
         _ = self.write_to_io(&mut ctx).inspect_err(|err| {

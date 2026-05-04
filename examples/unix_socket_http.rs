@@ -20,7 +20,10 @@
 //! You should receive `pong` back as the payload of a 200 OK response.
 //! The host here is ignored and is just to make the uri valid.
 
-#![expect(clippy::expect_used, reason = "example: panic-on-error is the standard pattern for demos")]
+#![expect(
+    clippy::expect_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
 
 #[cfg(target_family = "unix")]
 mod unix_example {

@@ -1,4 +1,7 @@
-#![expect(clippy::allow_attributes, reason = "macro-emitted `#[allow(dead_code)]` whose underlying lint fires only for some macro instantiations")]
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-emitted `#[allow(dead_code)]` whose underlying lint fires only for some macro instantiations"
+)]
 
 use rama_core::error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError};
 use rama_utils::str::smol_str::SmolStr;

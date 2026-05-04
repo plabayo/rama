@@ -22,7 +22,10 @@
 //!
 //! This only works on Unix systems (Linux, macOS, BSDs).
 
-#![expect(clippy::unwrap_used, reason = "example: panic-on-error is the standard pattern for demos")]
+#![expect(
+    clippy::unwrap_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
 
 #[cfg(target_family = "unix")]
 mod unix_example {
@@ -35,8 +38,13 @@ mod unix_example {
     };
 
     use rama::{
-        error::BoxError, graceful::Shutdown, http::Request, http::server::HttpServer,
-        http::service::web::response::Json, rt::Executor, service::service_fn,
+        error::BoxError,
+        graceful::Shutdown,
+        http::Request,
+        http::server::HttpServer,
+        http::service::web::response::Json,
+        rt::Executor,
+        service::service_fn,
         tcp::server::TcpListener,
         telemetry::tracing::{
             self,
@@ -236,7 +244,10 @@ mod unix_example {
             return Err(io::Error::other("Failed to get CMSG_FIRSTHDR"));
         }
 
-        #[expect(clippy::multiple_unsafe_ops_per_block, reason = "single CMSG header initialization sequence: level/type/len + copy_nonoverlapping is one logical write")]
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "single CMSG header initialization sequence: level/type/len + copy_nonoverlapping is one logical write"
+        )]
         unsafe {
             (*cmsg).cmsg_level = libc::SOL_SOCKET;
             (*cmsg).cmsg_type = libc::SCM_RIGHTS;
@@ -290,7 +301,10 @@ mod unix_example {
             return Err(io::Error::other("No control message received"));
         }
 
-        #[expect(clippy::multiple_unsafe_ops_per_block, reason = "single CMSG header read sequence: deref + CMSG_DATA + ptr deref is one logical read")]
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "single CMSG header read sequence: deref + CMSG_DATA + ptr deref is one logical read"
+        )]
         unsafe {
             if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
                 let fd_ptr = libc::CMSG_DATA(cmsg) as *const RawFd;

@@ -22,7 +22,10 @@ impl Domain {
     ///
     /// This function panics at **compile time** when the static string is not a valid domain.
     #[must_use]
-    #[expect(clippy::panic, reason = "static-str invariant: panic at compile time when the static is invalid")]
+    #[expect(
+        clippy::panic,
+        reason = "static-str invariant: panic at compile time when the static is invalid"
+    )]
     pub const fn from_static(s: &'static str) -> Self {
         if !is_valid_name(s.as_bytes()) {
             panic!("static str is an invalid domain");
@@ -598,7 +601,10 @@ pub(super) mod seal {
     }
 
     impl AsDomainRefPrivate for &'static str {
-        #[expect(clippy::panic, reason = "static-str invariant: matches Domain::from_static panicking style")]
+        #[expect(
+            clippy::panic,
+            reason = "static-str invariant: matches Domain::from_static panicking style"
+        )]
         fn domain_as_str(&self) -> &str {
             if !super::is_valid_name(self.as_bytes()) {
                 panic!("static str is an invalid domain");

@@ -23,7 +23,10 @@ enum AsnData {
 impl Asn {
     /// Create a valid ASN from a static number, validated at compile time.
     #[must_use]
-    #[expect(clippy::panic, reason = "static-value invariant: panic at compile time when ASN constant is out of range")]
+    #[expect(
+        clippy::panic,
+        reason = "static-value invariant: panic at compile time when ASN constant is out of range"
+    )]
     pub const fn from_static(value: u32) -> Self {
         if value == 0 {
             return Self(AsnData::Unspecified);

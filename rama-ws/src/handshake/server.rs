@@ -861,7 +861,10 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unreachable, reason = "test fixtures: the `Version` matcher exhausts the variants the test setup actually produces")]
+    #![expect(
+        clippy::unreachable,
+        reason = "test fixtures: the `Version` matcher exhausts the variants the test setup actually produces"
+    )]
 
     use headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
     use rama_http::Body;

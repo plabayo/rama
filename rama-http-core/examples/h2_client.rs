@@ -25,7 +25,10 @@
 //! You should see an HTTP Status 200 OK with a HTML payload containing the
 //! connection index and count of requests within that connection.
 
-#![expect(clippy::unwrap_used, reason = "example sync'd with upstream `hyperium/h2`: panic-on-error is the standard pattern for runnable examples")]
+#![expect(
+    clippy::unwrap_used,
+    reason = "example sync'd with upstream `hyperium/h2`: panic-on-error is the standard pattern for runnable examples"
+)]
 
 use rama_core::ServiceInput;
 use rama_core::telemetry::tracing;

@@ -13,7 +13,11 @@
 //!
 //! You should see the requests and responses printed.
 
-#![expect(clippy::unwrap_used, clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::{
     Layer, Service,
@@ -210,8 +214,13 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
                             .unwrap()
                             .abort()
                             .await;
-                        #[expect(clippy::unreachable, reason = "abort().await terminates the request before this point")]
-                        { unreachable!() }
+                        #[expect(
+                            clippy::unreachable,
+                            reason = "abort().await terminates the request before this point"
+                        )]
+                        {
+                            unreachable!()
+                        }
                     };
 
                     Ok::<_, Infallible>(res)

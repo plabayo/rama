@@ -28,7 +28,11 @@
 //! done!
 //! ```
 
-#![expect(clippy::unwrap_used, clippy::expect_used, reason = "example: panic-on-error is the standard pattern for demos")]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
 
 #[cfg(target_family = "unix")]
 mod unix_example {

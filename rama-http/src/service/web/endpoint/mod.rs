@@ -1,4 +1,7 @@
-#![expect(clippy::allow_attributes, reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions")]
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
 
 use crate::{Body, Request, Response, matcher::HttpMatcher};
 use rama_core::{Service, service::BoxService};

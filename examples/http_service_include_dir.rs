@@ -17,9 +17,10 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and the content of the `index.html` file.
 
-
-
-#![expect(clippy::expect_used, reason = "example: panic-on-error is the standard pattern for demos")]
+#![expect(
+    clippy::expect_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
 
 use rama::{
     Layer,

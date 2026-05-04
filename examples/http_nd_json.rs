@@ -19,7 +19,10 @@
 //! Your browser will show the text in raw format.
 //! Best to use this however with a client that supports ndjson (e.g. rama).
 
-#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::{
     Layer,

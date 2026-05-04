@@ -25,7 +25,10 @@
 // rama provides everything out of the box for your primitive UDP needs,
 // thanks to the underlying implementation from Tokio
 
-#![expect(clippy::unwrap_used, reason = "example: panic-on-error is the standard pattern for demos")]
+#![expect(
+    clippy::unwrap_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
 
 use rama::{
     bytes::Bytes,

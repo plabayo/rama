@@ -35,7 +35,10 @@
 //! and fill the form in the browser, you should see a response page after submitting the form,
 //! stating your name and age.
 
-#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::Layer;
 use rama::http::Response;

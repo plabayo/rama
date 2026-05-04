@@ -158,7 +158,10 @@
 // applies where it actually fires.
 #![cfg_attr(
     test,
-    expect(clippy::unreachable, reason = "test fixtures use unreachable!() in callbacks that aren't invoked")
+    expect(
+        clippy::unreachable,
+        reason = "test fixtures use unreachable!() in callbacks that aren't invoked"
+    )
 )]
 
 use proc_macro::TokenStream;

@@ -172,12 +172,12 @@ mod tests {
         };
         let timeout_body = TimeoutBody::new(timeout_sleep, mock_body);
 
-                    timeout_body
-                .boxed()
-                .frame()
-                .await
-                .expect("no frame")
-                .unwrap();
+        timeout_body
+            .boxed()
+            .frame()
+            .await
+            .expect("no frame")
+            .unwrap();
     }
 
     #[tokio::test]

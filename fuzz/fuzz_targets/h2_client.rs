@@ -1,5 +1,7 @@
-#![expect(clippy::unwrap_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
-
+#![expect(
+    clippy::unwrap_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 #![no_main]
 use h2_support::prelude::*;
 use libfuzzer_sys::{

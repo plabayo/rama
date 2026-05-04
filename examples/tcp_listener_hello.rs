@@ -16,7 +16,10 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with the source code of this example.
 
-#![expect(clippy::expect_used, reason = "example: panic-on-error is the standard pattern for demos")]
+#![expect(
+    clippy::expect_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
 
 use rama::{
     io::Io,

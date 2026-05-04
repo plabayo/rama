@@ -32,7 +32,10 @@
 //! [server] connection closed (Interrupted), shutting down
 //! ```
 
-#![expect(clippy::expect_used, clippy::print_stdout, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::expect_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
 
 #[cfg(not(target_vendor = "apple"))]
 fn main() {
@@ -128,10 +131,10 @@ async fn main() {
         // 3. Cancel to signal the server we're done.
         info!(target: "xpc_echo::client", "done, cancelling connection");
         client_conn.cancel();
-        let _ = shutdown_tx.send(());
+        _ = shutdown_tx.send(());
     });
 
-    let _ = tokio::join!(server_task, client_task);
+    _ = tokio::join!(server_task, client_task);
 
     graceful
         .shutdown_with_limit(Duration::from_secs(5))

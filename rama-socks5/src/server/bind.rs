@@ -371,7 +371,10 @@ pub(crate) use test::MockBinder;
 
 #[cfg(test)]
 mod test {
-    #![expect(clippy::unreachable, reason = "test fixtures: arms gated on the mock variants the test sets up")]
+    #![expect(
+        clippy::unreachable,
+        reason = "test fixtures: arms gated on the mock variants the test sets up"
+    )]
 
     use super::*;
     use rama_net::address::HostWithPort;

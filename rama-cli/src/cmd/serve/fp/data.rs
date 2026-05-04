@@ -1,4 +1,7 @@
-#![expect(clippy::allow_attributes, reason = "feature-gated dead_code: variants used by some build configs but not others")]
+#![expect(
+    clippy::allow_attributes,
+    reason = "feature-gated dead_code: variants used by some build configs but not others"
+)]
 
 use super::{State, StorageAuthorized};
 use rama::{
@@ -31,7 +34,10 @@ use serde::Serialize;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Default, Serialize)]
-#[allow(dead_code, reason = "deserialize-only fields kept for schema compatibility")]
+#[allow(
+    dead_code,
+    reason = "deserialize-only fields kept for schema compatibility"
+)]
 pub(super) enum FetchMode {
     Cors,
     #[default]
@@ -69,7 +75,10 @@ impl FromStr for FetchMode {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
-#[allow(dead_code, reason = "deserialize-only fields kept for schema compatibility")]
+#[allow(
+    dead_code,
+    reason = "deserialize-only fields kept for schema compatibility"
+)]
 pub(super) enum ResourceType {
     #[default]
     Document,
@@ -88,7 +97,10 @@ impl std::fmt::Display for ResourceType {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
-#[allow(dead_code, reason = "deserialize-only fields kept for schema compatibility")]
+#[allow(
+    dead_code,
+    reason = "deserialize-only fields kept for schema compatibility"
+)]
 pub(super) enum Initiator {
     #[default]
     Navigator,

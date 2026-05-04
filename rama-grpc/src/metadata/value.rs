@@ -701,7 +701,10 @@ fn test_value_eq_value() {
         Bmv::from_static("SGVsbG8hIQ")
     );
     // Invalid values are all just invalid from this point of view.
-    #[expect(clippy::multiple_unsafe_ops_per_block, reason = "test: two parallel `from_shared_unchecked` calls covered by the same SAFETY contract")]
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "test: two parallel `from_shared_unchecked` calls covered by the same SAFETY contract"
+    )]
     unsafe {
         assert_eq!(
             Bmv::from_shared_unchecked(Bytes::from_static(b"..{}")),
@@ -807,7 +810,10 @@ fn test_invalid_binary_value_hash() {
         hasher.finish()
     }
 
-    #[expect(clippy::multiple_unsafe_ops_per_block, reason = "test: parallel `from_shared_unchecked` calls covered by the same SAFETY contract")]
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "test: parallel `from_shared_unchecked` calls covered by the same SAFETY contract"
+    )]
     unsafe {
         let value1 = Bmv::from_shared_unchecked(Bytes::from_static(b"..{}"));
         let value2 = Bmv::from_shared_unchecked(Bytes::from_static(b"{}.."));

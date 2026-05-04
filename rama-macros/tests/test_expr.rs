@@ -106,7 +106,10 @@ fn test_env_literal() {
 }
 
 #[test]
-#[expect(non_camel_case_types, reason = "paste! synthesizes type names from string literals")]
+#[expect(
+    non_camel_case_types,
+    reason = "paste! synthesizes type names from string literals"
+)]
 fn test_env_present() {
     paste! {
         struct [<Lib env!("CARGO_PKG_NAME")>];
@@ -162,7 +165,10 @@ fn test_empty() {
 }
 
 #[test]
-#[expect(non_camel_case_types, reason = "paste! synthesizes type names from string literals")]
+#[expect(
+    non_camel_case_types,
+    reason = "paste! synthesizes type names from string literals"
+)]
 fn test_env_to_lower() {
     paste! {
         struct [<Lib env!("CARGO_PKG_NAME"):lower>];

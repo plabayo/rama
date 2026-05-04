@@ -1,4 +1,7 @@
-#![expect(clippy::unreachable, reason = "test policy stub: `retry` is only invoked after a request clone, which the test fixture deliberately prevents")]
+#![expect(
+    clippy::unreachable,
+    reason = "test policy stub: `retry` is only invoked after a request clone, which the test fixture deliberately prevents"
+)]
 
 use super::*;
 use crate::BodyExtractExt;

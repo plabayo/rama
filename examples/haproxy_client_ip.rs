@@ -22,7 +22,10 @@
 //! you'll see the client IP Address advertised in there, otherwise you'll see
 //! the socket peer addr.
 
-#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::{
     Layer,

@@ -53,15 +53,15 @@ async fn test_tcp_discard() {
 
     stream.write_all(b"hello").await.unwrap();
     // nothing is ever to be received!
-            tokio::time::timeout(std::time::Duration::from_millis(1), stream.read(&mut buf))
-            .await
-            .unwrap_err();
+    tokio::time::timeout(std::time::Duration::from_millis(1), stream.read(&mut buf))
+        .await
+        .unwrap_err();
 
     stream.write_all(b"world").await.unwrap();
     // nothing is ever to be received!
-            tokio::time::timeout(std::time::Duration::from_millis(1), stream.read(&mut buf))
-            .await
-            .unwrap_err();
+    tokio::time::timeout(std::time::Duration::from_millis(1), stream.read(&mut buf))
+        .await
+        .unwrap_err();
 }
 
 #[ignore]
@@ -98,15 +98,15 @@ async fn test_tls_tcp_discard() {
 
     stream.write_all(b"hello").await.unwrap();
     // nothing is ever to be received!
-            tokio::time::timeout(std::time::Duration::from_millis(1), stream.read(&mut buf))
-            .await
-            .unwrap_err();
+    tokio::time::timeout(std::time::Duration::from_millis(1), stream.read(&mut buf))
+        .await
+        .unwrap_err();
 
     stream.write_all(b"world").await.unwrap();
     // nothing is ever to be received!
-            tokio::time::timeout(std::time::Duration::from_millis(1), stream.read(&mut buf))
-            .await
-            .unwrap_err();
+    tokio::time::timeout(std::time::Duration::from_millis(1), stream.read(&mut buf))
+        .await
+        .unwrap_err();
 }
 
 #[ignore]
@@ -137,13 +137,13 @@ async fn test_udp_discard() {
 
     socket.send(b"hello").await.unwrap();
     // nothing is ever to be received!
-            tokio::time::timeout(std::time::Duration::from_millis(1), socket.recv(&mut buf))
-            .await
-            .unwrap_err();
+    tokio::time::timeout(std::time::Duration::from_millis(1), socket.recv(&mut buf))
+        .await
+        .unwrap_err();
 
     socket.send(b"world").await.unwrap();
     // nothing is ever to be received!
-            tokio::time::timeout(std::time::Duration::from_millis(1), socket.recv(&mut buf))
-            .await
-            .unwrap_err();
+    tokio::time::timeout(std::time::Duration::from_millis(1), socket.recv(&mut buf))
+        .await
+        .unwrap_err();
 }

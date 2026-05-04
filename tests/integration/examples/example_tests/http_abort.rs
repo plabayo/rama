@@ -19,9 +19,9 @@ async fn test_http_abort() {
             .status()
     );
 
-            runner
-            .get("http://127.0.0.1:62047/abort")
-            .send()
-            .await
-            .unwrap_err();
+    runner
+        .get("http://127.0.0.1:62047/abort")
+        .send()
+        .await
+        .unwrap_err();
 }

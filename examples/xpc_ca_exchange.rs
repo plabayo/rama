@@ -19,7 +19,10 @@
 //! cargo run --example xpc_ca_exchange --features=net-apple-xpc
 //! ```
 
-#![expect(clippy::expect_used, clippy::print_stdout, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::expect_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
 
 #[cfg(not(target_vendor = "apple"))]
 fn main() {
@@ -131,10 +134,10 @@ async fn main() {
         }
 
         client_conn.cancel();
-        let _ = shutdown_tx.send(());
+        _ = shutdown_tx.send(());
     });
 
-    let _ = tokio::join!(server_task, client_task);
+    _ = tokio::join!(server_task, client_task);
 
     graceful
         .shutdown_with_limit(Duration::from_secs(5))

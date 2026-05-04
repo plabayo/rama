@@ -244,7 +244,10 @@ impl UsernameLabelParser for UsernameOpaqueLabelParser {
 
 #[cfg(test)]
 mod test {
-    #![expect(clippy::unreachable, reason = "test fixture: parser methods on this stub are wired but never invoked")]
+    #![expect(
+        clippy::unreachable,
+        reason = "test fixture: parser methods on this stub are wired but never invoked"
+    )]
 
     use super::*;
 
@@ -325,8 +328,8 @@ mod test {
     fn test_parse_username_empty() {
         let ext = Extensions::default();
 
-        parse_username(&ext, (), "",).unwrap_err();
-        parse_username(&ext, (), "-",).unwrap_err();
+        parse_username(&ext, (), "").unwrap_err();
+        parse_username(&ext, (), "-").unwrap_err();
     }
 
     #[test]
@@ -439,13 +442,13 @@ mod test {
             UsernameLabelAbortParser::default(),
             UsernameOpaqueLabelParser::default(),
         );
-        parse_username(&ext, parser, "username-foo",).unwrap_err();
+        parse_username(&ext, parser, "username-foo").unwrap_err();
 
         let parser = (
             UsernameOpaqueLabelParser::default(),
             UsernameLabelAbortParser::default(),
         );
-        parse_username(&ext, parser, "username-foo",).unwrap_err();
+        parse_username(&ext, parser, "username-foo").unwrap_err();
     }
 
     #[test]
@@ -456,12 +459,12 @@ mod test {
             UsernameLabelAbortParser::default(),
             UsernameOpaqueLabelParser::default(),
         ));
-        parse_username(&ext, parser, "username-foo",).unwrap_err();
+        parse_username(&ext, parser, "username-foo").unwrap_err();
 
         let parser = (
             UsernameOpaqueLabelParser::default(),
             UsernameLabelAbortParser::default(),
         );
-        parse_username(&ext, parser, "username-foo",).unwrap_err();
+        parse_username(&ext, parser, "username-foo").unwrap_err();
     }
 }

@@ -1,8 +1,13 @@
 //! Types used by compression and decompression middleware.
 
-#![expect(clippy::allow_attributes, reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions")]
-
-#![expect(clippy::unreachable, reason = "SENTINEL_ERROR_CODE is only stored alongside an underlying body error, never observed at the unreachable branch")]
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
+#![expect(
+    clippy::unreachable,
+    reason = "SENTINEL_ERROR_CODE is only stored alongside an underlying body error, never observed at the unreachable branch"
+)]
 
 use crate::body::{Frame, SizeHint, StreamingBody};
 use pin_project_lite::pin_project;

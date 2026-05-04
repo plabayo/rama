@@ -24,7 +24,10 @@
 //! When running that same curl command, at least 1 second after your started the service,
 //! you should see a response with `HTTP/1.1 200 OK` and an empty body.
 
-#![expect(clippy::unwrap_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::unwrap_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::http::{server::HttpServer, service::web::k8s_health_builder};
 

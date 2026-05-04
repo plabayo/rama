@@ -316,8 +316,13 @@ where
                 v.encode(self.buf.get_mut());
                 tracing::trace!("encoded priority; rem = {:?}", self.buf.remaining());
                 */
-                #[expect(clippy::unimplemented, reason = "vendored from upstream `h2`: priority frame encoding intentionally unimplemented; matches upstream behavior")]
-                { unimplemented!() }
+                #[expect(
+                    clippy::unimplemented,
+                    reason = "vendored from upstream `h2`: priority frame encoding intentionally unimplemented; matches upstream behavior"
+                )]
+                {
+                    unimplemented!()
+                }
             }
             Frame::Reset(v) => {
                 v.encode(self.buf.get_mut());

@@ -107,7 +107,10 @@ impl Protocol {
     ///
     /// This function panics at **compile time** when the static string is not a valid protocol.
     #[must_use]
-    #[expect(clippy::panic, reason = "static-str invariant: panic at compile time when the static is not a valid protocol")]
+    #[expect(
+        clippy::panic,
+        reason = "static-str invariant: panic at compile time when the static is not a valid protocol"
+    )]
     pub const fn from_static(s: &'static str) -> Self {
         // NOTE: once unwrapping is possible in const we can piggy back on
         // `try_to_convert_str_to_non_custom_protocol`

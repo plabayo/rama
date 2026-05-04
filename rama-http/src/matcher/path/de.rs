@@ -1,6 +1,11 @@
-#![expect(clippy::allow_attributes, reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions")]
-
-#![expect(clippy::unreachable, reason = "path-deserializer state machine: branches gated on caller-validated PathFragment kinds that the type system can't enforce")]
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
+#![expect(
+    clippy::unreachable,
+    reason = "path-deserializer state machine: branches gated on caller-validated PathFragment kinds that the type system can't enforce"
+)]
 
 use serde::{
     Deserializer,

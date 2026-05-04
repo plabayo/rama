@@ -36,7 +36,10 @@
 //!
 //! You can now use tools like Grafana to collect metrics from the collector running at 127.0.0.1:4317 over gRPC.
 
-#![expect(clippy::unwrap_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::unwrap_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::{
     Layer,

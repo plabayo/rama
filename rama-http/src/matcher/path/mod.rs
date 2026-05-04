@@ -1,4 +1,7 @@
-#![expect(clippy::unreachable, reason = "path-fragment branches gated on a `PathFragment::Literal` filter just above each unreachable arm")]
+#![expect(
+    clippy::unreachable,
+    reason = "path-fragment branches gated on a `PathFragment::Literal` filter just above each unreachable arm"
+)]
 
 use std::sync::Arc;
 

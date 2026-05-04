@@ -226,7 +226,10 @@ mod tests {
     fn test_non_empty_string_construction_failure() {
         assert_try_into_err("");
         assert_try_into_err(String::from(""));
-        #[expect(clippy::needless_borrows_for_generic_args, reason = "exercise &String→TryInto path")]
+        #[expect(
+            clippy::needless_borrows_for_generic_args,
+            reason = "exercise &String→TryInto path"
+        )]
         assert_try_into_err(&String::from(""));
     }
 
@@ -235,7 +238,10 @@ mod tests {
     fn test_non_empty_string_construction_success() {
         assert_try_into_ok("a");
         assert_try_into_ok(String::from("b"));
-        #[expect(clippy::needless_borrows_for_generic_args, reason = "exercise &String→TryInto path")]
+        #[expect(
+            clippy::needless_borrows_for_generic_args,
+            reason = "exercise &String→TryInto path"
+        )]
         assert_try_into_ok(&String::from("c"));
     }
 

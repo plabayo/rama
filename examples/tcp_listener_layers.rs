@@ -18,10 +18,10 @@
 //! After 8 seconds the connection will be closed by the server.
 //! This is because of the `TimeoutLayer` that was added to the server.
 
-
-
-#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
-
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::{
     Layer,

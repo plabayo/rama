@@ -19,9 +19,10 @@
 //!
 //! You should receive `olleh` back, which is "hello" reversed.
 
-
-
-#![expect(clippy::expect_used, reason = "example: panic-on-error is the standard pattern for demos")]
+#![expect(
+    clippy::expect_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
 
 #[cfg(target_family = "unix")]
 mod unix_example {

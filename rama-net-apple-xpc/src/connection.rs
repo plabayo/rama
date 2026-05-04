@@ -202,7 +202,10 @@ impl XpcConnection {
         // after xpc_connection_set_event_handler so it remains valid for the connection's
         // lifetime. xpc_connection_resume activates the connection; it must be called
         // exactly once before any messages are sent or received.
-        #[expect(clippy::multiple_unsafe_ops_per_block, reason = "set-handler-then-resume is a single XPC initialization sequence; the SAFETY comment above covers both calls")]
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "set-handler-then-resume is a single XPC initialization sequence; the SAFETY comment above covers both calls"
+        )]
         unsafe {
             xpc_connection_set_event_handler(
                 raw_connection,

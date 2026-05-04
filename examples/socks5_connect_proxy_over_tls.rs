@@ -20,7 +20,10 @@
 //! This example finishes automatically as it tests itself with a rama socks5 client
 //! that goes through Tls, with the power of rama. Be empowered, be brave, go forward.
 
-#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 use rama::{
     Layer as _, Service,

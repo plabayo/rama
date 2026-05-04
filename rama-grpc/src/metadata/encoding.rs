@@ -141,7 +141,10 @@ impl self::value_encoding::Sealed for Binary {
         Self::from_bytes(value.as_ref())
     }
 
-    #[expect(clippy::panic, reason = "static-str invariant: panic at compile time when the static is not valid base64")]
+    #[expect(
+        clippy::panic,
+        reason = "static-str invariant: panic at compile time when the static is not valid base64"
+    )]
     fn from_static(value: &'static str) -> HeaderValue {
         if crate::util::base64::STANDARD.decode(value).is_err() {
             panic!("Invalid base64 passed to from_static: {value}");

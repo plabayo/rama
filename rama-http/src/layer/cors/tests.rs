@@ -1,4 +1,7 @@
-#![expect(clippy::allow_attributes, reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions")]
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
 
 use crate::layer::cors::CorsLayer;
 use crate::{Body, HeaderValue, Request, Response, header};

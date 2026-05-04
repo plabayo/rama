@@ -2,7 +2,10 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![expect(clippy::allow_attributes, reason = "CLI: a few `#[allow]` annotations stay because their underlying lints (e.g. clippy::exit) only fire on some cfgs")]
+#![expect(
+    clippy::allow_attributes,
+    reason = "CLI: a few `#[allow]` annotations stay because their underlying lints (e.g. clippy::exit) only fire on some cfgs"
+)]
 
 use clap::{Parser, Subcommand};
 
@@ -39,7 +42,10 @@ struct CliDefault {
 }
 
 #[derive(Debug, Subcommand)]
-#[expect(clippy::large_enum_variant, reason = "Subcommand variants vary in size; reordering would change CLI semantics")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Subcommand variants vary in size; reordering would change CLI semantics"
+)]
 enum CliCommands {
     Resolve(cmd::resolve::ResolveCommand),
     Send(cmd::send::SendCommand),
@@ -49,7 +55,10 @@ enum CliCommands {
 
 #[tokio::main]
 async fn main() {
-    #[expect(clippy::print_stdout, reason = "CLI: stdout is part of the user-facing output contract")]
+    #[expect(
+        clippy::print_stdout,
+        reason = "CLI: stdout is part of the user-facing output contract"
+    )]
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
@@ -63,8 +72,13 @@ async fn main() {
                     println!("Refer to the `send` command section below.");
                     println!();
                     CliDefault::parse_from(["rama", "--help"]);
-                    #[expect(clippy::unreachable, reason = "CliDefault::parse_from(...--help...) calls process::exit before returning")]
-                    { unreachable!("previous statement should exit") }
+                    #[expect(
+                        clippy::unreachable,
+                        reason = "CliDefault::parse_from(...--help...) calls process::exit before returning"
+                    )]
+                    {
+                        unreachable!("previous statement should exit")
+                    }
                 } else {
                     err.exit()
                 }

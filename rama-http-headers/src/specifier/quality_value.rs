@@ -342,7 +342,9 @@ mod tests {
     }
     #[test]
     fn test_quality_item_from_str5() {
-        "gzip; q=0.2739999".parse::<QualityValue<String>>().unwrap_err();
+        "gzip; q=0.2739999"
+            .parse::<QualityValue<String>>()
+            .unwrap_err();
     }
 
     #[test]
@@ -364,6 +366,8 @@ mod tests {
     #[test]
     fn test_fuzzing_bugs() {
         "99999;".parse::<QualityValue<String>>().unwrap_err();
-        "\x0d;;;=\u{d6aa}==".parse::<QualityValue<String>>().unwrap();
+        "\x0d;;;=\u{d6aa}=="
+            .parse::<QualityValue<String>>()
+            .unwrap();
     }
 }

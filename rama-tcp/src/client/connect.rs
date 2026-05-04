@@ -496,7 +496,10 @@ mod tests {
     impl TcpStreamConnector for PanicTcpConnector {
         type Error = Infallible;
 
-        #[expect(clippy::unreachable, reason = "test fixture: this connector is wired up but the tested code path never invokes it")]
+        #[expect(
+            clippy::unreachable,
+            reason = "test fixture: this connector is wired up but the tested code path never invokes it"
+        )]
         async fn connect(&self, _: SocketAddr) -> Result<TcpStream, Self::Error> {
             unreachable!()
         }
@@ -602,7 +605,11 @@ mod unix_windows_tests {
     impl TcpStreamConnector for DummyTcpConnector {
         type Error = Infallible;
 
-        #[expect(clippy::expect_used, clippy::unwrap_used, reason = "test-only impl: the test module covers cfg(test), but clippy's allow-*-in-tests detection doesn't propagate through this trait impl")]
+        #[expect(
+            clippy::expect_used,
+            clippy::unwrap_used,
+            reason = "test-only impl: the test module covers cfg(test), but clippy's allow-*-in-tests detection doesn't propagate through this trait impl"
+        )]
         async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
             let domain = match addr.ip() {
                 IpAddr::V4(_) => socket::core::Domain::IPV4,
@@ -621,7 +628,10 @@ mod unix_windows_tests {
         }
     }
 
-    #[expect(clippy::unwrap_used, reason = "test helper: cfg(test) module, but clippy's allow-*-in-tests detection doesn't propagate through this generic test fn")]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test helper: cfg(test) module, but clippy's allow-*-in-tests detection doesn't propagate through this generic test fn"
+    )]
     async fn test_generic_ok<Dns>(dns: Dns, extensions: Option<Extensions>)
     where
         Dns: DnsAddressResolver,

@@ -1,4 +1,8 @@
-#![expect(clippy::unwrap_used, clippy::dbg_macro, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+#![expect(
+    clippy::unwrap_used,
+    clippy::dbg_macro,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 
 pub mod pb {
     #![allow(clippy::pedantic, clippy::restriction, clippy::nursery)]
