@@ -144,6 +144,15 @@ pub(in crate::cmd::serve::httptest) fn service()
                     <li>
                         <a href="/sse">Server-Side Events</a> (SSE) version of the Response Stream test.
                     </li>
+                    <li>
+                        <a href="/multipart">Multipart Form Upload</a>:
+                        <code>GET</code> serves a small HTML upload form;
+                        <code>POST multipart/form-data</code> returns a JSON summary of each part received.
+                    </li>
+                    <li>
+                        <code>POST /octet-stream</code>:
+                        echoes the raw binary request body back as <code>application/octet-stream</code>.
+                    </li>
                 </ul>
                 </div>
                 <br>

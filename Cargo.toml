@@ -143,6 +143,7 @@ mimalloc = { version = "=0.1.48", default-features = false }
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
+multer = "3.1"
 nom = "8.0.0"
 opentelemetry = { version = "0.31", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry-semantic-conventions = { version = "0.31", features = ["semconv_experimental"] }
@@ -418,9 +419,11 @@ http-full = [
     "dep:rama-http-core",
     "ua-embed-profiles",
     "compression",
+    "multipart",
     "dep:tokio",
     "rama-grpc?/transport",
 ]
+multipart = ["http", "rama-http?/multipart"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 socks5 = ["dep:rama-socks5", "udp", "tcp", "rama-net/http", "rama-tcp/http"]
@@ -499,6 +502,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 spmc = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 turmoil = { workspace = true }
@@ -589,6 +593,10 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_form"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_multipart"
 required-features = ["http-full"]
 
 [[example]]
