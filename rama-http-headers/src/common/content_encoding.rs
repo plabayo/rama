@@ -126,7 +126,7 @@ impl ContentEncoding {
     /// assert!(content_enc.contains_directive("gzip"));
     /// assert!(!content_enc.contains_directive("br"));
     /// ```
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn contains_directive(&self, coding: impl CmpCoding) -> bool {
         self.0.iter().any(|other| coding.cmp_coding(other))
     }

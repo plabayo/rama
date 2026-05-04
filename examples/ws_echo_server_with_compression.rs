@@ -11,6 +11,8 @@
 //! The server will start and listen on `:62038`.
 //! Open it in the browser to see it in action or use `rama` cli client to test it.
 
+#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     Layer,
     http::{

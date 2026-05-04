@@ -1,5 +1,7 @@
 //! shared by all Grpc examples + tests for core logic
 
+#![expect(clippy::print_stdout, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 #![allow(clippy::disallowed_types)] // for interfacing with protobuf it is easier to allow things like std HashMap
 
 use std::time::Duration;

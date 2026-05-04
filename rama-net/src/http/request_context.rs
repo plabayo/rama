@@ -173,7 +173,6 @@ pub fn try_request_ctx_from_http_parts(
     })
 }
 
-#[allow(clippy::unnecessary_lazy_evaluations)]
 fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri) -> Protocol {
     uri.scheme().map(Protocol::from).or_else(|| {
         // Can be inserted by a server stack to notify the protocol that's being served.

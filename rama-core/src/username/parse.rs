@@ -114,7 +114,6 @@ pub struct ExclusiveUsernameParsers<P>(pub P);
 
 macro_rules! username_label_parser_tuple_impl {
     ($($T:ident),+ $(,)?) => {
-        #[allow(non_snake_case)]
         impl<$($T,)+> UsernameLabelParser for ($($T,)+)
         where
             $(
@@ -151,7 +150,6 @@ all_the_tuples_no_last_special_case!(username_label_parser_tuple_impl);
 
 macro_rules! username_label_parser_tuple_exclusive_labels_impl {
     ($($T:ident),+ $(,)?) => {
-        #[allow(non_snake_case)]
         impl<$($T,)+> UsernameLabelParser for ExclusiveUsernameParsers<($($T,)+)>
         where
             $(
@@ -246,6 +244,8 @@ impl UsernameLabelParser for UsernameOpaqueLabelParser {
 
 #[cfg(test)]
 mod test {
+    #![expect(clippy::unreachable, reason = "test fixture: parser methods on this stub are wired but never invoked")]
+
     use super::*;
 
     #[derive(Debug, Clone, Default)]
@@ -325,8 +325,8 @@ mod test {
     fn test_parse_username_empty() {
         let ext = Extensions::default();
 
-        assert!(parse_username(&ext, (), "",).is_err());
-        assert!(parse_username(&ext, (), "-",).is_err());
+        parse_username(&ext, (), "",).unwrap_err();
+        parse_username(&ext, (), "-",).unwrap_err();
     }
 
     #[test]
@@ -439,13 +439,13 @@ mod test {
             UsernameLabelAbortParser::default(),
             UsernameOpaqueLabelParser::default(),
         );
-        assert!(parse_username(&ext, parser, "username-foo",).is_err());
+        parse_username(&ext, parser, "username-foo",).unwrap_err();
 
         let parser = (
             UsernameOpaqueLabelParser::default(),
             UsernameLabelAbortParser::default(),
         );
-        assert!(parse_username(&ext, parser, "username-foo",).is_err());
+        parse_username(&ext, parser, "username-foo",).unwrap_err();
     }
 
     #[test]
@@ -456,12 +456,12 @@ mod test {
             UsernameLabelAbortParser::default(),
             UsernameOpaqueLabelParser::default(),
         ));
-        assert!(parse_username(&ext, parser, "username-foo",).is_err());
+        parse_username(&ext, parser, "username-foo",).unwrap_err();
 
         let parser = (
             UsernameOpaqueLabelParser::default(),
             UsernameLabelAbortParser::default(),
         );
-        assert!(parse_username(&ext, parser, "username-foo",).is_err());
+        parse_username(&ext, parser, "username-foo",).unwrap_err();
     }
 }

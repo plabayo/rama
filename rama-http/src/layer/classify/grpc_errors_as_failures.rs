@@ -1,3 +1,5 @@
+#![expect(clippy::allow_attributes, reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions")]
+
 use super::{ClassifiedResponse, ClassifyEos, ClassifyResponse, SharedClassifier};
 use crate::{HeaderMap, Response};
 use bitflags::bitflags;

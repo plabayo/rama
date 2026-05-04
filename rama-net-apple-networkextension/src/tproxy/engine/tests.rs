@@ -201,7 +201,7 @@ fn tcp_bridge_delivers_server_bytes() {
             meta,
             service: service_fn(|bridge: BridgeIo<TcpFlow, NwTcpStream>| async move {
                 let BridgeIo(mut ingress, _egress) = bridge;
-                let _ = ingress.write_all(b"pong").await;
+                _ = ingress.write_all(b"pong").await;
                 Ok(())
             })
             .boxed(),
@@ -216,7 +216,7 @@ fn tcp_bridge_delivers_server_bytes() {
         move |bytes| {
             let mut lock = got_clone.lock();
             lock.extend_from_slice(&bytes);
-            let _ = notify_tx.send(());
+            _ = notify_tx.send(());
             TcpDeliverStatus::Accepted
         },
         || {},
@@ -227,9 +227,9 @@ fn tcp_bridge_delivers_server_bytes() {
 
     // Phase 2: activate egress (no-op callbacks) so the service task starts.
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
-    let _ = session.on_client_bytes(b"ping");
+    _ = session.on_client_bytes(b"ping");
 
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert_eq!(got.lock().as_slice(), b"pong");
@@ -264,7 +264,7 @@ fn udp_bridge_delivers_server_datagram() {
         move |bytes| {
             let mut lock = got_clone.lock();
             lock.extend_from_slice(&bytes);
-            let _ = notify_tx.send(());
+            _ = notify_tx.send(());
         },
         || {},
         || {},
@@ -276,7 +276,7 @@ fn udp_bridge_delivers_server_datagram() {
     session.activate(|_| {});
     session.on_client_datagram(b"ping");
 
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert_eq!(got.lock().as_slice(), b"ping");
@@ -295,7 +295,7 @@ fn udp_session_requests_client_read_demand() {
             meta,
             service: service_fn(|bridge: BridgeIo<UdpFlow, NwUdpSocket>| async move {
                 let BridgeIo(mut ingress, _egress) = bridge;
-                let _ = ingress.recv().await;
+                _ = ingress.recv().await;
                 Ok(())
             })
             .boxed(),
@@ -308,7 +308,7 @@ fn udp_session_requests_client_read_demand() {
         |_| {},
         move || {
             demand_count_clone.fetch_add(1, Ordering::Relaxed);
-            let _ = notify_tx.send(());
+            _ = notify_tx.send(());
         },
         || {},
     ) else {
@@ -319,7 +319,7 @@ fn udp_session_requests_client_read_demand() {
     session.activate(|_| {});
     session.on_client_datagram(b"x");
 
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert!(demand_count.load(Ordering::Relaxed) >= 1);
@@ -345,7 +345,7 @@ fn tcp_flow_exposes_meta_extension() {
                         let BridgeIo(stream, _egress) = bridge;
                         *seen_clone.lock() =
                             stream.extensions().get_arc::<TransparentProxyFlowMeta>();
-                        let _ = notify_tx.send(());
+                        _ = notify_tx.send(());
                         Ok(())
                     }
                 })
@@ -366,7 +366,7 @@ fn tcp_flow_exposes_meta_extension() {
     };
     // Phase 2: activate so the service task runs and reads extensions.
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert_eq!(
@@ -396,7 +396,7 @@ fn udp_flow_exposes_meta_extension() {
                         let BridgeIo(flow, _egress) = bridge;
                         *seen_clone.lock() =
                             flow.extensions().get_arc::<TransparentProxyFlowMeta>();
-                        let _ = notify_tx.send(());
+                        _ = notify_tx.send(());
                         Ok(())
                     }
                 })
@@ -416,7 +416,7 @@ fn udp_flow_exposes_meta_extension() {
     };
     // Phase 2: activate so the service task runs and reads extensions.
     session.activate(|_| {});
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert_eq!(
@@ -561,7 +561,7 @@ fn tcp_demand_callback_fires_after_ingress_channel_drains() {
         |_| TcpDeliverStatus::Accepted,
         move || {
             demand_count_clone.fetch_add(1, Ordering::Relaxed);
-            let _ = notify_tx.send(());
+            _ = notify_tx.send(());
         },
         || {},
     ) else {
@@ -583,7 +583,7 @@ fn tcp_demand_callback_fires_after_ingress_channel_drains() {
     assert!(got_paused, "expected the bounded channel to fill up");
 
     // Give the bridge time to drain at least one chunk and fire demand.
-    let _ = notify_rx.recv_timeout(Duration::from_secs(2));
+    _ = notify_rx.recv_timeout(Duration::from_secs(2));
     assert!(
         demand_count.load(Ordering::Relaxed) >= 1,
         "demand callback should fire when the bridge frees a slot"
@@ -618,7 +618,7 @@ fn tcp_bridge_write_failure_closes_ingress_channel() {
         |_| TcpDeliverStatus::Accepted,
         || {},
         move || {
-            let _ = closed_tx.send(());
+            _ = closed_tx.send(());
         },
     ) else {
         panic!("expected intercept session");
@@ -643,7 +643,7 @@ fn tcp_bridge_write_failure_closes_ingress_channel() {
         "on_client_bytes must report Closed after a bridge write failure"
     );
 
-    let _ = closed_rx.recv_timeout(Duration::from_secs(1));
+    _ = closed_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 }
 
@@ -747,7 +747,7 @@ fn tcp_byte_stream_preserved_under_ingress_backpressure() {
                         loop {
                             match ingress.read(&mut buf).await {
                                 Ok(0) | Err(_) => {
-                                    let _ = eof_tx.send(());
+                                    _ = eof_tx.send(());
                                     return Ok(());
                                 }
                                 Ok(n) => {
@@ -803,7 +803,7 @@ fn tcp_byte_stream_preserved_under_ingress_backpressure() {
     }
     session.on_client_eof();
 
-    let _ = eof_rx.recv_timeout(Duration::from_secs(5));
+    _ = eof_rx.recv_timeout(Duration::from_secs(5));
     let recv = received.lock().clone();
     assert_eq!(recv.len(), expected.len(), "byte count mismatch");
     assert_eq!(recv, expected, "byte stream corrupted (gap or reorder)");
@@ -840,7 +840,7 @@ fn tcp_byte_stream_preserved_under_egress_backpressure() {
                         loop {
                             match egress.read(&mut buf).await {
                                 Ok(0) | Err(_) => {
-                                    let _ = eof_tx.send(());
+                                    _ = eof_tx.send(());
                                     return Ok(());
                                 }
                                 Ok(n) => {
@@ -889,7 +889,7 @@ fn tcp_byte_stream_preserved_under_egress_backpressure() {
     }
     session.on_egress_eof();
 
-    let _ = eof_rx.recv_timeout(Duration::from_secs(5));
+    _ = eof_rx.recv_timeout(Duration::from_secs(5));
     let recv = received.lock().clone();
     assert_eq!(recv.len(), expected.len(), "byte count mismatch");
     assert_eq!(recv, expected, "byte stream corrupted (gap or reorder)");

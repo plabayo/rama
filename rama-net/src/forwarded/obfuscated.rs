@@ -1,3 +1,5 @@
+#![expect(clippy::allow_attributes, reason = "macro-emitted `#[allow(dead_code)]` whose underlying lint fires only for some macro instantiations")]
+
 use rama_core::error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError};
 use rama_utils::str::smol_str::SmolStr;
 use std::fmt;
@@ -63,8 +65,8 @@ macro_rules! create_obf_type {
                 self.as_ref()
             }
 
-            #[allow(dead_code)]
             /// easier creation for other locs in this codebase where we are certain that data is pre-validated
+            #[allow(dead_code, reason = "macro-emitted: used only by some instantiations; kept for symmetry across all generated obf types")]
             pub(super) fn from_inner(inner: SmolStr) -> Self {
                 debug_assert!($val_fn(inner.as_bytes()));
                 Self(inner)
@@ -255,7 +257,6 @@ const OBF_CHARS: [u8; 256] = [
 ];
 
 #[cfg(test)]
-#[allow(clippy::expect_fun_call)]
 mod tests {
     use super::*;
 
@@ -309,8 +310,8 @@ mod tests {
             "😀",
             "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",
         ] {
-            assert!(ObfNode::try_from(str.to_owned()).is_err());
-            assert!(ObfNode::try_from(str.as_bytes().to_vec()).is_err());
+            ObfNode::try_from(str.to_owned()).unwrap_err();
+            ObfNode::try_from(str.as_bytes().to_vec()).unwrap_err();
         }
     }
 
@@ -369,8 +370,8 @@ mod tests {
             "😀",
             "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",
         ] {
-            assert!(ObfPort::try_from(str.to_owned()).is_err());
-            assert!(ObfPort::try_from(str.as_bytes().to_vec()).is_err());
+            ObfPort::try_from(str.to_owned()).unwrap_err();
+            ObfPort::try_from(str.as_bytes().to_vec()).unwrap_err();
         }
     }
 }

@@ -63,6 +63,7 @@ impl<VE: ValueEncoding> MetadataKey<VE> {
     /// characters, numerals and symbols, as per the HTTP/2.0 specification
     /// and header names internal representation within this library.
     #[must_use]
+    #[expect(clippy::panic, reason = "static-str invariant: panic at compile time when the static is not a valid metadata key (debug builds only)")]
     pub fn from_static(src: &'static str) -> Self {
         let name = HeaderName::from_static(src);
 
@@ -109,7 +110,7 @@ impl<VE: ValueEncoding> FromStr for MetadataKey<VE> {
     type Err = InvalidMetadataKey;
 
     fn from_str(s: &str) -> Result<Self, InvalidMetadataKey> {
-        Self::from_bytes(s.as_bytes()).map_err(|_| InvalidMetadataKey::new())
+        Self::from_bytes(s.as_bytes()).map_err(|_e| InvalidMetadataKey::new())
     }
 }
 
@@ -228,9 +229,9 @@ mod tests {
 
     #[test]
     fn test_from_bytes_binary() {
-        assert!(BinaryMetadataKey::from_bytes(b"").is_err());
-        assert!(BinaryMetadataKey::from_bytes(b"\xFF").is_err());
-        assert!(BinaryMetadataKey::from_bytes(b"abc").is_err());
+        BinaryMetadataKey::from_bytes(b"").unwrap_err();
+        BinaryMetadataKey::from_bytes(b"\xFF").unwrap_err();
+        BinaryMetadataKey::from_bytes(b"abc").unwrap_err();
         assert_eq!(
             BinaryMetadataKey::from_bytes(b"abc-bin").unwrap().as_str(),
             "abc-bin"
@@ -239,12 +240,12 @@ mod tests {
 
     #[test]
     fn test_from_bytes_ascii() {
-        assert!(AsciiMetadataKey::from_bytes(b"").is_err());
-        assert!(AsciiMetadataKey::from_bytes(b"\xFF").is_err());
+        AsciiMetadataKey::from_bytes(b"").unwrap_err();
+        AsciiMetadataKey::from_bytes(b"\xFF").unwrap_err();
         assert_eq!(
             AsciiMetadataKey::from_bytes(b"abc").unwrap().as_str(),
             "abc"
         );
-        assert!(AsciiMetadataKey::from_bytes(b"abc-bin").is_err());
+        AsciiMetadataKey::from_bytes(b"abc-bin").unwrap_err();
     }
 }

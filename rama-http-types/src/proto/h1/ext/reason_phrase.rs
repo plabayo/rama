@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic,
+    reason = "vendored from upstream `hyper`: const-fn validation panic on invalid `&'static` bytes is the upstream convention"
+)]
+
 use rama_core::bytes::Bytes;
 use rama_core::extensions::Extension;
 
@@ -136,7 +141,7 @@ const fn is_valid_byte(b: u8) -> bool {
     //
     // The 0xFF comparison is technically redundant, but it matches the text of the spec more
     // clearly and will be optimized away.
-    #[allow(unused_comparisons, clippy::absurd_extreme_comparisons)]
+    #[expect(unused_comparisons, clippy::absurd_extreme_comparisons)]
     const fn is_obs_text(b: u8) -> bool {
         0x80 <= b && b <= 0xFF
     }
@@ -187,12 +192,12 @@ mod tests {
     #[test]
     #[should_panic]
     fn newline_invalid_panic() {
-        let _ = ReasonPhrase::from_static(NEWLINE_PHRASE);
+        _ = ReasonPhrase::from_static(NEWLINE_PHRASE);
     }
 
     #[test]
     fn newline_invalid_err() {
-        assert!(ReasonPhrase::try_from(NEWLINE_PHRASE).is_err());
+        ReasonPhrase::try_from(NEWLINE_PHRASE).unwrap_err();
     }
 
     const CR_PHRASE: &[u8] = b"hyp\rer";
@@ -200,11 +205,11 @@ mod tests {
     #[test]
     #[should_panic]
     fn cr_invalid_panic() {
-        let _ = ReasonPhrase::from_static(CR_PHRASE);
+        _ = ReasonPhrase::from_static(CR_PHRASE);
     }
 
     #[test]
     fn cr_invalid_err() {
-        assert!(ReasonPhrase::try_from(CR_PHRASE).is_err());
+        ReasonPhrase::try_from(CR_PHRASE).unwrap_err();
     }
 }

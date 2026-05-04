@@ -2,6 +2,8 @@
 //! cargo bench --bench e2e_http_client_server --features http-full,rustls,aws-lc,boring,socks5
 //! ```
 
+#![expect(clippy::unwrap_used, clippy::expect_used, clippy::panic, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use std::{convert::Infallible, slice, sync::mpsc, time::Duration};
 
 use rama::{

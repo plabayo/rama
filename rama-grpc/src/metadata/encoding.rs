@@ -87,11 +87,11 @@ impl self::value_encoding::Sealed for Ascii {
     }
 
     fn from_bytes(value: &[u8]) -> Result<HeaderValue, InvalidMetadataValueBytes> {
-        HeaderValue::from_bytes(value).map_err(|_| InvalidMetadataValueBytes::new())
+        HeaderValue::from_bytes(value).map_err(|_e| InvalidMetadataValueBytes::new())
     }
 
     fn from_shared(value: Bytes) -> Result<HeaderValue, InvalidMetadataValueBytes> {
-        HeaderValue::from_maybe_shared(value).map_err(|_| InvalidMetadataValueBytes::new())
+        HeaderValue::from_maybe_shared(value).map_err(|_e| InvalidMetadataValueBytes::new())
     }
 
     fn from_static(value: &'static str) -> HeaderValue {
@@ -134,13 +134,14 @@ impl self::value_encoding::Sealed for Binary {
     fn from_bytes(value: &[u8]) -> Result<HeaderValue, InvalidMetadataValueBytes> {
         let encoded_value: String = crate::util::base64::STANDARD_NO_PAD.encode(value);
         HeaderValue::from_maybe_shared(Bytes::from(encoded_value))
-            .map_err(|_| InvalidMetadataValueBytes::new())
+            .map_err(|_e| InvalidMetadataValueBytes::new())
     }
 
     fn from_shared(value: Bytes) -> Result<HeaderValue, InvalidMetadataValueBytes> {
         Self::from_bytes(value.as_ref())
     }
 
+    #[expect(clippy::panic, reason = "static-str invariant: panic at compile time when the static is not valid base64")]
     fn from_static(value: &'static str) -> HeaderValue {
         if crate::util::base64::STANDARD.decode(value).is_err() {
             panic!("Invalid base64 passed to from_static: {value}");
@@ -156,7 +157,7 @@ impl self::value_encoding::Sealed for Binary {
         crate::util::base64::STANDARD
             .decode(value)
             .map(|bytes_vec| bytes_vec.into())
-            .map_err(|_| InvalidMetadataValueBytes::new())
+            .map_err(|_e| InvalidMetadataValueBytes::new())
     }
 
     fn equals(a: &HeaderValue, b: &[u8]) -> bool {

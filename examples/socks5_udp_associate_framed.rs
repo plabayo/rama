@@ -12,6 +12,8 @@
 //! and thus this is another self-contained example with the server
 //! and client combined.
 
+#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     bytes::Bytes,
     extensions::Extensions,

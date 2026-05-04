@@ -1337,7 +1337,7 @@ mod as_metadata_key {
             }
 
             let key = rama_http_types::header::HeaderName::from_bytes(self.as_bytes())
-                .map_err(|_| InvalidMetadataKey::new())?;
+                .map_err(|_e| InvalidMetadataKey::new())?;
             let entry = map.headers.entry(key);
             Ok(entry)
         }
@@ -1399,7 +1399,7 @@ mod as_metadata_key {
             }
 
             let key = rama_http_types::header::HeaderName::from_bytes(self.as_bytes())
-                .map_err(|_| InvalidMetadataKey::new())?;
+                .map_err(|_e| InvalidMetadataKey::new())?;
             Ok(map.headers.entry(key))
         }
 
@@ -1460,7 +1460,7 @@ mod as_metadata_key {
             }
 
             let key = rama_http_types::header::HeaderName::from_bytes(self.as_bytes())
-                .map_err(|_| InvalidMetadataKey::new())?;
+                .map_err(|_e| InvalidMetadataKey::new())?;
             Ok(map.headers.entry(key))
         }
 
@@ -1834,7 +1834,7 @@ mod tests {
         assert!(found_x_word_bin);
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     fn value_drain_is_send_sync() {
         fn is_send_sync<T: Send + Sync>() {}
 

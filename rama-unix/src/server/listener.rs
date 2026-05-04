@@ -274,7 +274,7 @@ impl UnixListener {
                             socket.extensions().insert(UnixSocketInfo::new(local_addr, peer_addr));
 
                             self.exec.spawn_task(async move {
-                                let _ = service.serve(socket).await;
+                                _ = service.serve(socket).await;
                             }.instrument(serve_span));
                         }
                         Err(err) => {

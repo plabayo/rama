@@ -19,11 +19,9 @@ async fn test_http_abort() {
             .status()
     );
 
-    assert!(
-        runner
+            runner
             .get("http://127.0.0.1:62047/abort")
             .send()
             .await
-            .is_err()
-    );
+            .unwrap_err();
 }

@@ -25,7 +25,7 @@ unsafe extern "C" {
 
 pub(crate) fn make_c_string(value: impl AsRef<str>) -> Result<CString, XpcError> {
     let value = value.as_ref();
-    CString::new(value).map_err(|_| XpcError::InvalidCString(ArcStr::from(value)))
+    CString::new(value).map_err(|_e| XpcError::InvalidCString(ArcStr::from(value)))
 }
 
 #[derive(Debug)]

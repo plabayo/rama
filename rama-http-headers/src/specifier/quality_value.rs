@@ -1,4 +1,4 @@
-#[allow(unused, deprecated)]
+#[expect(unused, deprecated)]
 use std::ascii::AsciiExt;
 use std::cmp;
 use std::default::Default;
@@ -342,12 +342,12 @@ mod tests {
     }
     #[test]
     fn test_quality_item_from_str5() {
-        assert!("gzip; q=0.2739999".parse::<QualityValue<String>>().is_err());
+        "gzip; q=0.2739999".parse::<QualityValue<String>>().unwrap_err();
     }
 
     #[test]
     fn test_quality_item_from_str6() {
-        assert!("gzip; q=2".parse::<QualityValue<String>>().is_err());
+        "gzip; q=2".parse::<QualityValue<String>>().unwrap_err();
     }
     #[test]
     fn test_quality_item_ordering() {
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_fuzzing_bugs() {
-        assert!("99999;".parse::<QualityValue<String>>().is_err());
-        assert!("\x0d;;;=\u{d6aa}==".parse::<QualityValue<String>>().is_ok())
+        "99999;".parse::<QualityValue<String>>().unwrap_err();
+        "\x0d;;;=\u{d6aa}==".parse::<QualityValue<String>>().unwrap();
     }
 }

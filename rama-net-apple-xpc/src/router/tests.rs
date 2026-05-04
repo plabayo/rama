@@ -92,7 +92,7 @@ async fn raw_route_receives_full_message() {
 async fn unknown_selector_returns_none_without_fallback() {
     let router = XpcMessageRouter::new();
     let call = make_call("unknownSelector", vec![]);
-    assert!(router.serve(call).await.is_err());
+    router.serve(call).await.unwrap_err();
 }
 
 // ── fallback ─────────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ async fn known_route_takes_priority_over_fallback() {
 async fn without_fallback_removes_it() {
     let router = XpcMessageRouter::new();
     let call = make_call("sel", vec![]);
-    assert!(router.serve(call).await.is_err());
+    router.serve(call).await.unwrap_err();
 }
 
 // ── invalid message ──────────────────────────────────────────────────────

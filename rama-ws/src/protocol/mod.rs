@@ -1,5 +1,8 @@
 //! Generic WebSocket message stream.
 
+#![expect(clippy::unreachable, reason = "vendored from upstream `tungstenite-rs`: arms gated on caller-validated WebSocket protocol state that the type system can't enforce")]
+
+
 use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
@@ -245,7 +248,7 @@ impl From<PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDefla
 
 #[cfg(feature = "compression")]
 #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
-#[allow(clippy::derivable_impls)]
+#[expect(clippy::derivable_impls)]
 impl Default for PerMessageDeflateConfig {
     fn default() -> Self {
         Self {
@@ -1032,7 +1035,7 @@ impl WebSocketContext {
                 match (payload, fin) {
                     (None, true) =>
                     {
-                        #[allow(
+                        #[expect(
                             clippy::expect_used,
                             reason = "we can only reach here if incomplete is Some"
                         )]
@@ -1121,7 +1124,7 @@ impl WebSocketContext {
     }
 
     /// Received a close frame. Tells if we need to return a close frame to the user.
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     fn do_close(&mut self, close: Option<CloseFrame>) -> Option<Option<CloseFrame>> {
         rama_core::telemetry::tracing::trace!("Received close frame: {close:?}");
         match self.state {

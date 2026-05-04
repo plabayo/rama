@@ -15,7 +15,7 @@ pub trait DynServiceMatcher<Input>: Send + Sync + 'static {
     type ModifiedInput: Send + 'static;
 
     /// Attempt to select a service for `input`.
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     fn match_service_box(
         &self,
         input: Input,

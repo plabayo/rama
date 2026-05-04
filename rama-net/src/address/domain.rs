@@ -22,6 +22,7 @@ impl Domain {
     ///
     /// This function panics at **compile time** when the static string is not a valid domain.
     #[must_use]
+    #[expect(clippy::panic, reason = "static-str invariant: panic at compile time when the static is invalid")]
     pub const fn from_static(s: &'static str) -> Self {
         if !is_valid_name(s.as_bytes()) {
             panic!("static str is an invalid domain");
@@ -246,7 +247,7 @@ impl Domain {
     }
 
     /// Gets the length of domain
-    #[allow(clippy::len_without_is_empty)]
+    #[expect(clippy::len_without_is_empty)]
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
@@ -565,7 +566,7 @@ const fn is_valid_name(name: &[u8]) -> bool {
     }
 }
 
-#[allow(private_bounds)]
+#[expect(private_bounds)]
 /// A trait which is used by the `rama-net` crate
 /// for places where we wish to have access to
 /// a reference to a Domain, directly or indirectly,
@@ -597,6 +598,7 @@ pub(super) mod seal {
     }
 
     impl AsDomainRefPrivate for &'static str {
+        #[expect(clippy::panic, reason = "static-str invariant: matches Domain::from_static panicking style")]
         fn domain_as_str(&self) -> &str {
             if !super::is_valid_name(self.as_bytes()) {
                 panic!("static str is an invalid domain");
@@ -638,7 +640,6 @@ pub(super) mod seal {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_fun_call)]
 mod tests {
     use super::*;
     use ahash::{HashMap, HashMapExt as _};

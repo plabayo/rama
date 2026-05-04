@@ -145,7 +145,7 @@ mod tests {
             .await;
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].as_deref().unwrap(), "");
-        assert!(results[1].is_err());
+        results[1].as_ref().unwrap_err();
         let results = Utf8Stream::new(stream::iter(vec![
             Ok::<_, Infallible>(vec![240, 159]),
             Ok::<_, Infallible>(vec![145, 141, 240, 159, 145]),
@@ -155,6 +155,6 @@ mod tests {
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].as_deref().unwrap(), "".to_owned());
         assert_eq!(results[1].as_deref().unwrap(), "👍".to_owned());
-        assert!(results[2].is_err());
+        results[2].as_ref().unwrap_err();
     }
 }

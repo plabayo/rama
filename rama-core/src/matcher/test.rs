@@ -196,7 +196,6 @@ fn test_match_fn() {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 enum TestMatchers {
     Const(ConstMatcher),
     Even(EvenMatcher),
@@ -276,7 +275,6 @@ fn test_iter_enum_or() {
 }
 
 #[test]
-#[allow(unused_allocation)]
 fn test_box() {
     assert!(Box::new(ConstMatcher(0)).matches(None, &0));
     assert!(!Box::new(ConstMatcher(1)).matches(None, &0));

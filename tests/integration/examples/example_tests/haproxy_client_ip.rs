@@ -1,3 +1,5 @@
+#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use std::net::IpAddr;
 
 use super::utils;

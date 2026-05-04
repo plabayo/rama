@@ -483,7 +483,7 @@ mod tests {
     macro_rules! lazy_atomic_u32 {
         ($($name:ident),+) => {
             $(
-                #[allow(non_snake_case)]
+                #[expect(non_snake_case)]
                 fn $name() -> &'static AtomicU32 {
                     static $name: OnceLock<AtomicU32> = OnceLock::new();
                     $name.get_or_init(|| AtomicU32::new(0))

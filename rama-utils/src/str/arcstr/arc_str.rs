@@ -1,10 +1,17 @@
-#![allow(
-// We follow libstd's lead and prefer to define both.
+#![expect(
+    // We follow libstd's lead and prefer to define both.
     clippy::partialeq_ne_impl,
-// This is a really annoying clippy lint, since it's required for so many cases...
+    // This is a really annoying clippy lint, since it's required for so many cases...
     clippy::cast_ptr_alignment,
-// For macros
-    clippy::redundant_slicing,
+    // Vendored from upstream `arcstr`: matches stdlib panicking conventions
+    // (capacity overflow, layout failure) and uses inner `#[allow]` attributes
+    // and `# Safety` doc sections in the upstream-idiomatic style.
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::unnecessary_safety_doc,
+    clippy::allow_attributes,
+    reason = "vendored from upstream arcstr; preserve upstream idioms"
 )]
 use core::alloc::Layout;
 use core::mem::{MaybeUninit, align_of, size_of};

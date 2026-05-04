@@ -48,8 +48,8 @@ impl core::error::Error for OpaqueError {
 }
 
 impl From<Infallible> for OpaqueError {
-    fn from(_: Infallible) -> Self {
-        unreachable!()
+    fn from(infallible: Infallible) -> Self {
+        match infallible {}
     }
 }
 

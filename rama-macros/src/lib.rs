@@ -144,6 +144,22 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn,
+    clippy::let_underscore_must_use,
+    reason = "proc-macro crate: panics are the historical compile-error mechanism for vendored macros (paste, etc.)"
+)]
+// `unreachable!()` is used in test fixtures (e.g. `|_| unreachable!()` callbacks for
+// resolve_path tests in include_dir_macro). Scope the expect to cfg(test) so it only
+// applies where it actually fires.
+#![cfg_attr(
+    test,
+    expect(clippy::unreachable, reason = "test fixtures use unreachable!() in callbacks that aren't invoked")
+)]
 
 use proc_macro::TokenStream;
 

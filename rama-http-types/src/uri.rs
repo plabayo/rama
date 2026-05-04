@@ -16,8 +16,8 @@ pub fn try_to_strip_path_prefix_from_uri(
         );
     }
 
-    // SAFETY: above 'starts_with_ignore_ascii_case'
-    // ensures that we are within the length for this slice to work
+    // Bounds: the `starts_with_ignore_ascii_case` check above guarantees
+    // `og_path.len() >= prefix.len()`, so this slice cannot panic.
     let stripped_path = std::str::from_utf8(&og_path.as_bytes()[prefix.len()..])
         .context("interpret stripped path as utf-8 slice")?
         .trim_start_matches('/');

@@ -211,7 +211,7 @@ impl FrameCodec {
             }
         };
 
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "we can only reach here in case header is Some (see payload loop)"
         )]
@@ -271,8 +271,8 @@ impl FrameCodec {
         trace!("writing frame {frame}");
 
         self.out_buffer.reserve(frame.len());
-        // Safety: writing into Vec cannot fail with error (only panics)
-        let _ = frame.format_into_buf(&mut self.out_buffer);
+        // Note: writing into Vec is infallible (only panics on alloc failure).
+        _ = frame.format_into_buf(&mut self.out_buffer);
 
         if self.out_buffer.len() > self.out_buffer_write_len {
             self.write_out_buffer(stream)
@@ -368,7 +368,7 @@ mod tests {
             0x83, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
         ]);
         let mut sock = FrameSocket::new(raw);
-        let _ = sock.read(None); // should not crash
+        _ = sock.read(None); // should not crash
     }
 
     #[test]

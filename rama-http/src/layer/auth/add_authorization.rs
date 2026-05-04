@@ -40,6 +40,8 @@
 //! # }
 //! ```
 
+#![expect(clippy::allow_attributes, reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions")]
+
 use crate::{HeaderValue, Request, Response};
 use rama_core::{Layer, Service};
 use rama_http_headers::authorization::Credentials;

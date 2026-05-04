@@ -418,7 +418,7 @@ fn metric_data_into<T: Numeric + std::fmt::Debug>(data: &SdkMetricData<T>) -> pr
     }
 }
 
-#[allow(clippy::match_same_arms)]
+#[expect(clippy::match_same_arms)]
 fn temporality_into(t: Temporality) -> i32 {
     use proto::AggregationTemporality;
     match t {

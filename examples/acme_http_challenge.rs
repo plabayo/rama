@@ -44,6 +44,8 @@
 //!
 //! TODO: once Rama has an ACME server implementation (https://github.com/plabayo/rama/issues/649) migrate
 //! this example to use that instead of Pebble so we can test everything automatically
+#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     Layer, Service,
     crypto::{

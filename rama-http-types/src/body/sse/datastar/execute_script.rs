@@ -185,7 +185,6 @@ impl<T> TryFrom<ExecuteScript> for super::DatastarEvent<T> {
 }
 
 impl EventDataWrite for ExecuteScript {
-    #[allow(clippy::write_with_newline)]
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError> {
         let mut script_lines = self.script.lines();
         let mut next_script_line = script_lines

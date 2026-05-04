@@ -86,6 +86,8 @@
 //! # }
 //! ```
 
+#![expect(clippy::allow_attributes, reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions")]
+
 use crate::{Body, HeaderValue, Request, Response, StatusCode};
 use rama_core::futures::FutureExt;
 use rama_core::telemetry::tracing;

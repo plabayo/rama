@@ -168,9 +168,9 @@ where
         // 16 was chosen arbitrarily, as that is number of pipelined requests
         // benchmarks often use. Perhaps it should be a config option instead.
         for _ in 0..16 {
-            let _ = self.poll_read(cx)?;
-            let _ = self.poll_write(cx)?;
-            let _ = self.poll_flush(cx)?;
+            _ = self.poll_read(cx)?;
+            _ = self.poll_write(cx)?;
+            _ = self.poll_flush(cx)?;
 
             // This could happen if reading paused before blocking on IO,
             // such as getting to the end of a framed message, but then

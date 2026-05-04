@@ -30,6 +30,8 @@
 //!
 //! You’ll see output for each test case and potential errors (if any).
 
+#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     error::{BoxError, ErrorContext},
     extensions::Extensions,
@@ -149,7 +151,7 @@ async fn run_test(case: u32) -> Result<(), BoxError> {
 
     for config in configs {
         info!("set config to builder: {config:?}");
-        let _ = ws_builder.set_per_message_deflate_with_config(config);
+        _ = ws_builder.set_per_message_deflate_with_config(config);
     }
 
     let mut socket = ws_builder

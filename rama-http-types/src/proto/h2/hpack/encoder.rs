@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic,
+    reason = "vendored from upstream `h2`: matches upstream invariant-violation panicking style"
+)]
+
 use super::table::{Index, Table};
 use super::{Header, huffman};
 

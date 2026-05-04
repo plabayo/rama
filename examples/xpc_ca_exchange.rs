@@ -19,6 +19,8 @@
 //! cargo run --example xpc_ca_exchange --features=net-apple-xpc
 //! ```
 
+#![expect(clippy::expect_used, clippy::print_stdout, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 #[cfg(not(target_vendor = "apple"))]
 fn main() {
     eprintln!("xpc_ca_exchange: XPC is only available on Apple platforms.");

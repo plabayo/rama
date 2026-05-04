@@ -1,3 +1,5 @@
+#![expect(clippy::allow_attributes, reason = "FromAny trait used only by some build configurations; #[expect] would warn unfulfilled when it IS used")]
+
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_utils::str::arcstr::ArcStr;
 
@@ -26,7 +28,7 @@ trait IntoAny {
     fn into_any(self) -> Any;
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "vendored from upstream tonic-types: kept for symmetry with IntoAny and future error variants")]
 trait FromAny {
     fn from_any(any: Any) -> Result<Self, DecodeError>
     where

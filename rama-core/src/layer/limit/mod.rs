@@ -155,7 +155,7 @@ mod tests {
         // check that one input succeeded and the other failed
         if let Ok(value_1) = result_1 {
             assert_eq!(value_1, "Hello");
-            assert!(result_2.is_err());
+            result_2.unwrap_err();
         } else {
             assert_eq!(result_2.unwrap(), "Hello");
         }
@@ -187,6 +187,6 @@ mod tests {
 
         let service_1 = layer.layer(service_fn(handle_input));
         let result_1 = service_1.serve("Hello").await;
-        assert!(result_1.is_err());
+        result_1.unwrap_err();
     }
 }

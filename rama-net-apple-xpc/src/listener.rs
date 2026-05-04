@@ -137,7 +137,7 @@ impl XpcListener {
             };
 
             if let Ok(peer_conn) = XpcConnection::from_owned_peer(peer) {
-                let _ = sender.send(peer_conn);
+                _ = sender.send(peer_conn);
             }
         });
 
@@ -145,6 +145,7 @@ impl XpcListener {
         // RcBlock is a heap-allocated reference-counted Block; XPC retains it internally
         // after xpc_connection_set_event_handler so it remains valid beyond this scope.
         // xpc_connection_activate must be called exactly once to begin accepting connections.
+        #[expect(clippy::multiple_unsafe_ops_per_block, reason = "set-handler-then-activate is a single XPC listener-init sequence; the SAFETY comment above covers both calls")]
         unsafe {
             xpc_connection_set_event_handler(
                 raw_connection,

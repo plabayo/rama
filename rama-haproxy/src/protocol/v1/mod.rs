@@ -192,7 +192,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(invalid_from_utf8)]
+    #[expect(invalid_from_utf8)]
     fn bytes_invalid_utf8() {
         let text = b"Hello \xF0\x90\x80World\r\n";
 

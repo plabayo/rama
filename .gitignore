@@ -25,3 +25,6 @@ Package.resolved
 *.xcodeproj
 .xcode-derived/
 .DS_Store
+
+# scratch zones
+docs/internal

@@ -49,6 +49,10 @@
 
 // rama provides everything out of the box to build a TLS termination proxy with a dynamic rustls config
 
+
+
+#![expect(clippy::unwrap_used, clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     Layer,
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},

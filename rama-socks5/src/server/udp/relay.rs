@@ -183,7 +183,7 @@ impl UdpSocketRelay {
         }
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     pub(super) async fn send_to_south(
         &mut self,
         data: Option<Bytes>,

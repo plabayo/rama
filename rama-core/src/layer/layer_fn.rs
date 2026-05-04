@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(res, Ok("HELLO".to_owned()));
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     #[test]
     fn layer_fn_has_useful_debug_impl() {
         struct WrappedService<S> {

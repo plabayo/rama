@@ -1464,7 +1464,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(codec) = self.codec.as_mut() {
             ready!(codec.flush(cx)).map_err(crate::h2::Error::from_io)?;
-            #[allow(clippy::expect_used, reason = "memory cannot move in between polls")]
+            #[expect(clippy::expect_used, reason = "memory cannot move in between polls")]
             let codec = self
                 .codec
                 .take()

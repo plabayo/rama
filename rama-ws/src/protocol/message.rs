@@ -361,7 +361,7 @@ mod tests {
         let bin = [6u8, 7, 8, 9, 10, 241];
         let msg = Message::from(&bin[..]);
         assert!(msg.is_binary());
-        assert!(msg.into_text().is_err());
+        msg.into_text().unwrap_err();
     }
 
     #[test]
@@ -369,7 +369,7 @@ mod tests {
         let bin = Bytes::from_iter([6u8, 7, 8, 9, 10, 241]);
         let msg = Message::from(bin);
         assert!(msg.is_binary());
-        assert!(msg.into_text().is_err());
+        msg.into_text().unwrap_err();
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod tests {
         let bin = vec![6u8, 7, 8, 9, 10, 241];
         let msg = Message::from(bin);
         assert!(msg.is_binary());
-        assert!(msg.into_text().is_err());
+        msg.into_text().unwrap_err();
     }
 
     #[test]

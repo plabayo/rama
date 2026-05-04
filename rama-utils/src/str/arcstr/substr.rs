@@ -1,10 +1,12 @@
-#![allow(
+#![expect(
     // We follow libstd's lead and prefer to define both.
     clippy::partialeq_ne_impl,
-    // This is a really annoying clippy lint, since it's required for so many cases...
-    clippy::cast_ptr_alignment,
-    // For macros
-    clippy::redundant_slicing,
+    // Vendored from upstream `arcstr`: matches stdlib panicking conventions
+    // and uses inner `#[allow]` attributes in the upstream-idiomatic style.
+    clippy::panic,
+    clippy::unreachable,
+    clippy::allow_attributes,
+    reason = "vendored from upstream arcstr; preserve upstream idioms"
 )]
 
 use crate::std::borrow::ToOwned as _;

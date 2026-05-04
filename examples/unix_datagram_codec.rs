@@ -28,6 +28,8 @@
 //! done!
 //! ```
 
+#![expect(clippy::unwrap_used, clippy::expect_used, reason = "example: panic-on-error is the standard pattern for demos")]
+
 #[cfg(target_family = "unix")]
 mod unix_example {
     use rama::{
@@ -88,9 +90,10 @@ mod unix_example {
         let b = pong(&mut socket_framed_b);
 
         // Run both futures simultaneously of `a` and `b` sending messages back and forth.
-        match tokio::try_join!(a, b) {
-            Err(e) => println!("an error occurred; error = {e:?}"),
-            _ => println!("done!"),
+        if let Err(e) = tokio::try_join!(a, b) {
+            tracing::error!("an error occurred; error = {e:?}");
+        } else {
+            tracing::info!("done!");
         }
 
         std::fs::remove_file(path_a).expect("delete tmp a");
@@ -106,7 +109,7 @@ mod unix_example {
         for _ in 0..4 {
             let (bytes, addr) = socket.next().map(|e| e.unwrap()).await?;
 
-            println!("[a] recv: {}", String::from_utf8_lossy(&bytes));
+            tracing::info!("[a] recv: {}", String::from_utf8_lossy(&bytes));
 
             socket.send((Bytes::from(&b"PING"[..]), addr)).await?;
         }
@@ -118,7 +121,7 @@ mod unix_example {
         let timeout = Duration::from_millis(200);
 
         while let Ok(Some(Ok((bytes, addr)))) = time::timeout(timeout, socket.next()).await {
-            println!("[b] recv: {}", String::from_utf8_lossy(&bytes));
+            tracing::info!("[b] recv: {}", String::from_utf8_lossy(&bytes));
 
             socket.send((Bytes::from(&b"PONG"[..]), addr)).await?;
         }
@@ -137,7 +140,7 @@ use unix_example::run;
 
 #[cfg(not(target_family = "unix"))]
 async fn run() {
-    println!("unix_datagram socket example is a unix-only example, bye now!");
+    eprintln!("unix_datagram socket example is a unix-only example, bye now!");
 }
 
 #[tokio::main]

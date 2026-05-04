@@ -90,7 +90,7 @@ pin_project! {
 
 // TODO: revisit later to see if we really want this
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 enum State<T> {
     Handshaking {
         ping_config: ping::Config,
@@ -222,7 +222,7 @@ impl<T> Serving<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
 {
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     fn poll_server<S>(
         &mut self,
         cx: &mut Context<'_>,
@@ -345,7 +345,6 @@ where
 }
 
 pin_project! {
-    #[allow(missing_debug_implementations)]
     pub struct H2Stream<F, B>
     where
         B: StreamingBody,

@@ -307,7 +307,6 @@ impl ChunkedState {
     }
 
     // TODO: in future see if we can avoid this many arguments
-    #[allow(clippy::too_many_arguments)]
     fn step<R: MemRead>(
         self,
         cx: &mut Context<'_>,
@@ -652,7 +651,7 @@ impl ChunkedState {
 }
 
 // TODO: disallow Transfer-Encoding, Content-Length, Trailer, etc in trailers ??
-#[allow(clippy::needless_pass_by_ref_mut)]
+#[expect(clippy::needless_pass_by_ref_mut)]
 fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Error> {
     let mut trailers = HeaderMap::new();
     let mut headers = vec![httparse::EMPTY_HEADER; count];

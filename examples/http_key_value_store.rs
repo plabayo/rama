@@ -51,6 +51,8 @@
 //! curl -v -X DELETE http://127.0.0.1:62006/admin/item/key3 -H "Authorization: Bearer secret-token"
 //! ```
 
+#![expect(clippy::unwrap_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     Layer,
     conversion::FromRef,

@@ -135,7 +135,6 @@ impl Store {
         }
     }
 
-    #[allow(clippy::blocks_in_conditions)]
     pub(crate) fn for_each<F>(&mut self, mut f: F)
     where
         F: FnMut(Ptr),
@@ -145,7 +144,6 @@ impl Store {
             Ok::<_, Infallible>(())
         }) {
             Ok(()) => (),
-            #[allow(unused)]
             Err(infallible) => match infallible {},
         }
     }
@@ -160,7 +158,7 @@ impl Store {
         while i < len {
             // Get the key by index, this makes the borrow checker happy
             let (stream_id, index) = {
-                #[allow(clippy::expect_used)]
+                #[expect(clippy::expect_used)]
                 let entry = self
                     .ids
                     .get_index(i)

@@ -34,6 +34,8 @@
 //!
 //! Consult your ip address to reach your server from another machine connected to the same network.
 
+#![expect(clippy::unwrap_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use rama::{

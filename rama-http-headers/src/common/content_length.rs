@@ -56,9 +56,9 @@ impl HeaderDecode for ContentLength {
         for value in values {
             let parsed = value
                 .to_str()
-                .map_err(|_| Error::invalid())?
+                .map_err(|_e| Error::invalid())?
                 .parse::<u64>()
-                .map_err(|_| Error::invalid())?;
+                .map_err(|_e| Error::invalid())?;
 
             if let Some(prev) = len {
                 if prev != parsed {

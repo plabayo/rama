@@ -285,11 +285,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg(target_vendor = "apple")]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
-)]
 
 #[doc(hidden)]
 pub mod ffi;

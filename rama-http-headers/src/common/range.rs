@@ -83,7 +83,7 @@ impl Range {
         &self,
         len: u64,
     ) -> impl Iterator<Item = (Bound<u64>, Bound<u64>)> + '_ {
-        #[allow(clippy::expect_used, reason = "see expect msg")]
+        #[expect(clippy::expect_used, reason = "see expect msg")]
         let s = self
             .0
             .to_str()

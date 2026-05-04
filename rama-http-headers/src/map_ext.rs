@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unreachable,
+    reason = "vendored from upstream `headers`: `State::Tmp` is a transient placeholder used inside `mem::replace`, never observed by the next iteration"
+)]
+
 use rama_http_types::{HeaderValue, header};
 
 use crate::{HeaderDecode, HeaderEncode};

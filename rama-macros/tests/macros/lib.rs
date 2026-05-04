@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic,
+    reason = "proc-macro test helper: panics propagate as compile errors"
+)]
+
 extern crate proc_macro;
 
 use proc_macro::{TokenStream, TokenTree};

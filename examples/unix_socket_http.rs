@@ -20,6 +20,8 @@
 //! You should receive `pong` back as the payload of a 200 OK response.
 //! The host here is ignored and is just to make the uri valid.
 
+#![expect(clippy::expect_used, reason = "example: panic-on-error is the standard pattern for demos")]
+
 #[cfg(target_family = "unix")]
 mod unix_example {
     use std::sync::Arc;
@@ -80,7 +82,7 @@ use unix_example::run;
 
 #[cfg(not(target_family = "unix"))]
 async fn run() {
-    println!("unix_socket example is a unix-only example, bye now!");
+    eprintln!("unix_socket example is a unix-only example, bye now!");
 }
 
 #[tokio::main]

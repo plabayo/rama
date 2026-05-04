@@ -54,7 +54,7 @@ rama_utils::macros::error::static_str_error! {
 impl FromStr for ETag {
     type Err = InvalidETag;
     fn from_str(src: &str) -> Result<Self, Self::Err> {
-        let val = src.parse().map_err(|_| InvalidETag)?;
+        let val = src.parse().map_err(|_e| InvalidETag)?;
 
         EntityTag::from_owned(val).map(ETag).ok_or(InvalidETag)
     }

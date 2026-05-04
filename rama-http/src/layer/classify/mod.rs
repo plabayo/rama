@@ -1,5 +1,7 @@
 //! Tools for classifying responses as either success or failure.
 
+#![expect(clippy::unreachable, reason = "`NeverClassifyEos<Infallible>` and SENTINEL_ERROR_CODE branches are statically uninhabitable")]
+
 use crate::{HeaderMap, Request, Response, StatusCode};
 use std::{convert::Infallible, fmt, marker::PhantomData};
 

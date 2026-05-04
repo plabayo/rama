@@ -124,7 +124,7 @@ impl FromStr for XClacksOverhead {
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         HeaderValueString::from_str(src)
             .map(XClacksOverhead)
-            .map_err(|_| InvalidXClacksOverhead)
+            .map_err(|_e| InvalidXClacksOverhead)
     }
 }
 

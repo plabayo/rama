@@ -34,7 +34,7 @@ impl fmt::Display for CloseFrame {
 }
 
 /// A struct representing a WebSocket frame header.
-#[allow(missing_copy_implementations)]
+#[expect(missing_copy_implementations)]
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FrameHeader {
     /// Indicates that the frame is the last one of a possibly fragmented message.
@@ -89,7 +89,6 @@ impl FrameHeader {
     }
 
     /// Get the size of the header formatted with given payload length.
-    #[allow(clippy::len_without_is_empty)]
     #[must_use]
     pub fn len(&self, length: u64) -> usize {
         2 + LengthFormat::for_length(length).extra_bytes() + if self.mask.is_some() { 4 } else { 0 }

@@ -134,7 +134,7 @@ impl FileRecorderTask {
                                 Ok(storage) => storage,
                             },
                         );
-                        #[allow(
+                        #[expect(
                             clippy::expect_used,
                             reason = "it was assigned in the previous assignment as Some"
                         )]
@@ -161,7 +161,7 @@ impl FileRecorderTask {
                             continue 'msg_loop;
                         }
                         buf.truncate(buf.len() - 2); // '}}'
-                        let _ = write!(buf, ",\"entries\":["); // cannot fail (unless something like OOM)
+                        _ = write!(buf, ",\"entries\":["); // cannot fail (unless something like OOM)
                         if let Err(err) = storage_ref.file.write_all(&buf).await {
                             tracing::debug!(
                                 "failed to write initial json content for HAR log: {err} (drop file)"
@@ -188,7 +188,7 @@ impl FileRecorderTask {
                                     && let Err(err) = storage_ref.file.write_u8(b',').await
                                 {
                                     tracing::debug!("failed to write entry separator: {err}");
-                                    #[allow(clippy::expect_used)]
+                                    #[expect(clippy::expect_used)]
                                     finish_file(
                                         storage
                                             .take()
@@ -199,7 +199,7 @@ impl FileRecorderTask {
                                     continue 'msg_loop;
                                 } else if let Err(err) = storage_ref.file.write_all(&buf).await {
                                     tracing::debug!("failed to write serialized entry: {err}");
-                                    #[allow(clippy::expect_used)]
+                                    #[expect(clippy::expect_used)]
                                     finish_file(
                                         storage
                                             .take()
@@ -216,7 +216,7 @@ impl FileRecorderTask {
                                 tracing::debug!(
                                     "failed entry ({entry:?}) due to json serialize error: {err}"
                                 );
-                                #[allow(clippy::expect_used)]
+                                #[expect(clippy::expect_used)]
                                 finish_file(
                                     storage
                                         .take()

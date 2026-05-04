@@ -218,7 +218,7 @@ impl TlsConnectorDataBuilder {
 
     #[must_use]
     pub fn new_http_auto() -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "wiring format for h2,http1 is known to always succeed"
         )]
@@ -229,7 +229,7 @@ impl TlsConnectorDataBuilder {
 
     #[must_use]
     pub fn new_http_1() -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "wiring format for http1 is known to always succeed"
         )]
@@ -240,7 +240,7 @@ impl TlsConnectorDataBuilder {
 
     #[must_use]
     pub fn new_http_2() -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "wiring format for h2 is known to always succeed"
         )]

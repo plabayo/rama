@@ -16,12 +16,19 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with the source code of this example.
 
+#![expect(clippy::expect_used, reason = "example: panic-on-error is the standard pattern for demos")]
+
 use rama::{
     io::Io,
     net::{address::SocketAddress, stream::Socket},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use std::convert::Infallible;
@@ -34,7 +41,16 @@ const ADDR: SocketAddress = SocketAddress::local_ipv4(62500);
 
 #[tokio::main]
 async fn main() {
-    println!("Listening on: {ADDR}");
+    tracing::subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+
+    tracing::info!("listening on: {ADDR}");
     TcpListener::bind_address(ADDR, Executor::default())
         .await
         .expect("bind TCP Listener")
@@ -43,8 +59,8 @@ async fn main() {
 }
 
 async fn handle(mut stream: impl Socket + Io + Unpin) -> Result<(), Infallible> {
-    println!(
-        "Incoming connection from: {}",
+    tracing::info!(
+        "incoming connection from: {}",
         stream
             .peer_addr()
             .map(|a| a.to_string())

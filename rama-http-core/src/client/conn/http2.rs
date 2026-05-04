@@ -614,7 +614,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // only compilation is checked
     async fn send_sync_executor_of_send_futures() {
-        #[allow(unused)]
+        #[expect(unused)]
         async fn run(io: impl AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static) {
             let (_sender, conn) = crate::client::conn::http2::handshake::<
                 _,

@@ -19,6 +19,8 @@
 //! Note that firefox does not support h2 bootstrapping of WebSockets,
 //! Chrome does support it.
 
+#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     Layer,
     http::{

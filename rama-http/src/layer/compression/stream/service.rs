@@ -1,3 +1,5 @@
+#![expect(clippy::allow_attributes, reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions")]
+
 use super::CompressionLevel;
 use super::body::StreamCompressionBody;
 use crate::HeaderValue;

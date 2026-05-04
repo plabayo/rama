@@ -32,6 +32,8 @@
 //! Note that in an actual production setting you would usually do this with a (sub)domain
 //! that you control rather than a thirdparty external web service.
 
+#![expect(clippy::unwrap_used, clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     Layer, Service,
     extensions::ExtensionsRef,

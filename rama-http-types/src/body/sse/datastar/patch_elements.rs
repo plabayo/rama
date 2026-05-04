@@ -116,7 +116,6 @@ impl<T> TryFrom<PatchElements> for super::DatastarEvent<T> {
 }
 
 impl EventDataWrite for PatchElements {
-    #[allow(clippy::write_with_newline)]
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError> {
         let mut sep = "";
 

@@ -42,6 +42,8 @@
 //! ```
 
 // rama provides everything out of the box to build a TLS termination proxy
+#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorExt, extra::OpaqueError},

@@ -188,7 +188,6 @@ crate::combinators::impl_either!(impl_username_label_writer_either);
 
 macro_rules! impl_username_label_writer_for_tuple {
     ( $($ty:ident),* $(,)? ) => {
-        #[allow(non_snake_case)]
         impl<const SEPARATOR: char, $($ty),*> UsernameLabelWriter<SEPARATOR> for ($($ty,)*)
         where
             $( $ty: UsernameLabelWriter<SEPARATOR>, )*

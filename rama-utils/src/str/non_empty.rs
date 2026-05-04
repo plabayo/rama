@@ -206,7 +206,7 @@ mod tests {
     use super::*;
 
     fn assert_try_into_err(src: impl TryInto<NonEmptyStr>) {
-        assert!(src.try_into().is_err());
+        let _ = src.try_into().unwrap_err();
     }
 
     #[cfg(not(loom))]
@@ -226,7 +226,7 @@ mod tests {
     fn test_non_empty_string_construction_failure() {
         assert_try_into_err("");
         assert_try_into_err(String::from(""));
-        #[allow(clippy::needless_borrows_for_generic_args)]
+        #[expect(clippy::needless_borrows_for_generic_args, reason = "exercise &String→TryInto path")]
         assert_try_into_err(&String::from(""));
     }
 
@@ -235,7 +235,7 @@ mod tests {
     fn test_non_empty_string_construction_success() {
         assert_try_into_ok("a");
         assert_try_into_ok(String::from("b"));
-        #[allow(clippy::needless_borrows_for_generic_args)]
+        #[expect(clippy::needless_borrows_for_generic_args, reason = "exercise &String→TryInto path")]
         assert_try_into_ok(&String::from("c"));
     }
 

@@ -30,6 +30,8 @@
 //! curl: (97) User was rejected by the SOCKS5 server (1 1).
 //! ```
 
+#![expect(clippy::expect_used, reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses")]
+
 use rama::{
     net::user::credentials::basic,
     proxy::socks5::Socks5Acceptor,
