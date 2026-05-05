@@ -13,7 +13,7 @@ use rama::{
 use rama_http::{
     matcher::HttpMatcher,
     service::web::{
-        extract::host::MissingHost, response::IntoResponse, ResponseError, RouterError,
+        extract::host::MissingHost, response::IntoResponse, ResponseError, RouterErrorInternal,
     },
 };
 
@@ -72,12 +72,6 @@ impl From<MissingHost> for MyCustomErr {
     }
 }
 
-impl From<RouterError> for MyCustomErr {
-    fn from(value: RouterError) -> Self {
-        Self
-    }
-}
-
 async fn test_func5(host: Host) -> Result<StatusCode, MyCustomErr> {
     // Err("test".into())
     Ok(StatusCode::OK)
@@ -95,6 +89,8 @@ async fn main() {
     router.set_match_route("/test5", HttpMatcher::method_get(), test_func5);
 
     router.set_match_route("/test6", HttpMatcher::method_get(), Ok("test"));
+
+    router.set_sub_router_make_fn("/nested", |router| router);
 
     // let router = (ErrorHandlerLayer::new()).layer(router);
 
@@ -116,9 +112,11 @@ async fn main() {
     dbg!(&res);
 
     if let Err(err) = res {
-        dbg!(downcast_ref::<ResponseError>(&*err));
-        dbg!(downcast_ref::<RouterError>(&*err));
-        dbg!(ResponseError::try_as_response(&*err));
+        let err: &dyn Error = &err;
+
+        dbg!(downcast_ref::<ResponseError>(&err));
+        dbg!(downcast_ref::<RouterErrorInternal>(&err));
+        dbg!(ResponseError::try_as_response(&err));
     }
 
     let mut router1 = Router::new().with_endpoint_layer(());
