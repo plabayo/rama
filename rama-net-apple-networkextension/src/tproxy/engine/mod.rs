@@ -709,27 +709,23 @@ where
     let egress_connect_options = handler.egress_tcp_connect_options(&meta);
     let flow_id = meta.flow_id;
     let flow_protocol = meta.protocol;
-    let flow_action =
-        match tokio::time::timeout(decision_deadline, handler.match_tcp_flow(exec, meta)).await {
-            Ok(action) => {
-                if let Some(hb) = heartbeat.as_ref() {
-                    record_heartbeat(hb);
-                }
-                action
-            }
-            Err(_) => {
-                emit_decision_deadline_event(
-                    flow_id,
-                    flow_protocol,
-                    decision_deadline,
-                    decision_deadline_action,
-                );
-                return match decision_deadline_action {
-                    DecisionDeadlineAction::Block => SessionFlowAction::Blocked,
-                    DecisionDeadlineAction::Passthrough => SessionFlowAction::Passthrough,
-                };
-            }
+    let Ok(flow_action) =
+        tokio::time::timeout(decision_deadline, handler.match_tcp_flow(exec, meta)).await
+    else {
+        emit_decision_deadline_event(
+            flow_id,
+            flow_protocol,
+            decision_deadline,
+            decision_deadline_action,
+        );
+        return match decision_deadline_action {
+            DecisionDeadlineAction::Block => SessionFlowAction::Blocked,
+            DecisionDeadlineAction::Passthrough => SessionFlowAction::Passthrough,
         };
+    };
+    if let Some(hb) = heartbeat.as_ref() {
+        record_heartbeat(hb);
+    }
 
     let (service, mut meta) = match flow_action {
         FlowAction::Intercept { service, meta } => (service, meta),
@@ -945,7 +941,6 @@ impl Drop for TransparentProxyUdpSession {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
@@ -968,27 +963,23 @@ where
     let egress_connect_options = handler.egress_udp_connect_options(&meta);
     let flow_id = meta.flow_id;
     let flow_protocol = meta.protocol;
-    let flow_action =
-        match tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await {
-            Ok(action) => {
-                if let Some(hb) = heartbeat.as_ref() {
-                    record_heartbeat(hb);
-                }
-                action
-            }
-            Err(_) => {
-                emit_decision_deadline_event(
-                    flow_id,
-                    flow_protocol,
-                    decision_deadline,
-                    decision_deadline_action,
-                );
-                return match decision_deadline_action {
-                    DecisionDeadlineAction::Block => SessionFlowAction::Blocked,
-                    DecisionDeadlineAction::Passthrough => SessionFlowAction::Passthrough,
-                };
-            }
+    let Ok(flow_action) =
+        tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await
+    else {
+        emit_decision_deadline_event(
+            flow_id,
+            flow_protocol,
+            decision_deadline,
+            decision_deadline_action,
+        );
+        return match decision_deadline_action {
+            DecisionDeadlineAction::Block => SessionFlowAction::Blocked,
+            DecisionDeadlineAction::Passthrough => SessionFlowAction::Passthrough,
         };
+    };
+    if let Some(hb) = heartbeat.as_ref() {
+        record_heartbeat(hb);
+    }
     let (service, mut meta) = match flow_action {
         FlowAction::Intercept { service, meta } => (service, meta),
         FlowAction::Blocked => return SessionFlowAction::Blocked,

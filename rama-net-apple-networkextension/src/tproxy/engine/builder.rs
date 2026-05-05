@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
+use parking_lot::Mutex as ParkingLotMutex;
 use rama_core::watchdog::{WatchdogConfig, register_watchdog};
 use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
@@ -257,14 +258,15 @@ where
         let shutdown = {
             let _enter = rt.enter();
             Shutdown::new(async move {
-                let stop_only = watchdog_rx.is_none();
-                if stop_only {
-                    let _ = stop_rx.await;
-                } else {
-                    let watchdog_rx = watchdog_rx.expect("checked is_some");
-                    tokio::select! {
-                        _ = stop_rx => {}
-                        _ = watchdog_rx => {}
+                match watchdog_rx {
+                    Some(watchdog_rx) => {
+                        tokio::select! {
+                            _ = stop_rx => {}
+                            _ = watchdog_rx => {}
+                        }
+                    }
+                    None => {
+                        let _ = stop_rx.await;
                     }
                 }
             })
@@ -281,16 +283,14 @@ where
         let (heartbeat, watchdog_registration) =
             if let (Some(cfg), Some(tx)) = (watchdog, watchdog_tx) {
                 let hb = Arc::new(AtomicU64::new(0));
-                let trigger = std::sync::Mutex::new(Some(tx));
+                let trigger = ParkingLotMutex::new(Some(tx));
                 let reg = register_watchdog(
                     "rama_apple_ne::tproxy".into(),
                     cfg,
                     hb.clone(),
                     Box::new(move || {
-                        if let Ok(mut guard) = trigger.lock() {
-                            if let Some(tx) = guard.take() {
-                                let _ = tx.send(());
-                            }
+                        if let Some(tx) = trigger.lock().take() {
+                            let _ = tx.send(());
                         }
                     }),
                 );

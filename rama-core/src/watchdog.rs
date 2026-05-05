@@ -62,9 +62,11 @@
 //! record_heartbeat(&hb_for_cb);
 //! ```
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use crate::telemetry::tracing;
 
@@ -92,7 +94,7 @@ impl WatchdogConfig {
     }
 }
 
-/// Capture the current instant in the wire format expected by [`Watchdog`]
+/// Capture the current instant in the wire format expected by `Watchdog`
 /// heartbeat atomics.
 #[inline]
 #[must_use]
@@ -131,10 +133,7 @@ impl std::fmt::Debug for WatchdogRegistration {
 impl Drop for WatchdogRegistration {
     fn drop(&mut self) {
         if let Some(state) = WATCHDOG_STATE.get() {
-            let mut regs = state
-                .registrations
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut regs = state.registrations.lock();
             regs.retain(|r| r.id != self.id);
         }
     }
@@ -176,11 +175,21 @@ pub fn register_watchdog(
         let s: &'static WatchdogState = Box::leak(Box::new(WatchdogState {
             registrations: Mutex::new(Vec::new()),
         }));
-        // Start the OS thread that observes all heartbeats.
-        std::thread::Builder::new()
+        // Start the OS thread that observes all heartbeats. If the thread
+        // refuses to spawn (e.g. process resource exhaustion) we still register
+        // the state so subsequent calls don't retry; the registration will
+        // simply never have its heartbeat checked. We log loudly so the
+        // operator notices.
+        if let Err(err) = std::thread::Builder::new()
             .name("rama-watchdog".into())
             .spawn(move || run_watchdog_loop(s))
-            .expect("watchdog thread should spawn");
+        {
+            tracing::error!(
+                target: "rama::watchdog",
+                error = %err,
+                "failed to spawn watchdog OS thread; watchdog will be inactive",
+            );
+        }
         s
     });
 
@@ -194,10 +203,7 @@ pub fn register_watchdog(
         fired: AtomicBool::new(false),
     });
 
-    let mut regs = state
-        .registrations
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut regs = state.registrations.lock();
     regs.push(registration);
 
     WatchdogRegistration { id }
@@ -208,10 +214,7 @@ fn run_watchdog_loop(state: &'static WatchdogState) {
         // Pick the shortest configured check interval; if no registrations
         // are present, sleep for a generous default. We never spin.
         let next_interval = {
-            let regs = state
-                .registrations
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let regs = state.registrations.lock();
             regs.iter()
                 .map(|r| r.config.check_interval)
                 .min()
@@ -220,10 +223,7 @@ fn run_watchdog_loop(state: &'static WatchdogState) {
         std::thread::sleep(next_interval);
 
         let snapshot = {
-            let regs = state
-                .registrations
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let regs = state.registrations.lock();
             regs.clone()
         };
 
@@ -278,7 +278,7 @@ mod tests {
                 stale_threshold: Duration::from_millis(200),
                 check_interval: Duration::from_millis(50),
             },
-            heartbeat.clone(),
+            heartbeat,
             Box::new(move || {
                 fc.fetch_add(1, Ordering::Relaxed);
             }),
@@ -335,7 +335,7 @@ mod tests {
                 stale_threshold: Duration::from_millis(100),
                 check_interval: Duration::from_millis(50),
             },
-            heartbeat.clone(),
+            heartbeat,
             Box::new(move || {
                 fc.fetch_add(1, Ordering::Relaxed);
             }),
@@ -372,7 +372,7 @@ mod tests {
                 stale_threshold: Duration::from_millis(200),
                 check_interval: Duration::from_millis(50),
             },
-            heartbeat.clone(),
+            heartbeat,
             Box::new(move || {
                 fired_cb.store(true, Ordering::Release);
             }),

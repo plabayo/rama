@@ -89,13 +89,6 @@ const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 /// idle timeout that closes the bridge when neither direction has made
 /// byte progress within the configured window, and emits a single
 /// structured close event when the bridge ends.
-///
-/// Choose graceful vs. non-graceful by passing the appropriate [`Executor`]:
-///
-/// - [`Executor::default()`] / [`Executor::new()`] — no graceful shutdown
-///   observation. The bridge ends only on EOF, error, or idle timeout.
-/// - [`Executor::graceful(guard)`] — when `guard.cancelled()` fires, the
-///   bridge is unwound within the shutdown grace window.
 #[derive(Debug, Clone)]
 pub struct IoForwardService {
     executor: Executor,
@@ -112,9 +105,6 @@ impl Default for IoForwardService {
 
 impl IoForwardService {
     /// Create a new [`IoForwardService`] using the given [`Executor`].
-    ///
-    /// Pass [`Executor::default()`] for a non-graceful service, or
-    /// [`Executor::graceful(guard)`] to wire in graceful shutdown observation.
     #[must_use]
     pub fn new(executor: Executor) -> Self {
         Self {
@@ -361,13 +351,17 @@ where
 }
 
 fn classify_copy_error(err: &std::io::Error, l_to_r: bool) -> BridgeCloseReason {
-    use std::io::ErrorKind::*;
+    use std::io::ErrorKind;
     // Rough split: connection / EOF errors on the read side; other kinds on the
     // write side. We can't always tell which side surfaced an error from the
     // io::Error alone, so this is best-effort.
     let read_side = matches!(
         err.kind(),
-        UnexpectedEof | ConnectionReset | ConnectionAborted | NotConnected | BrokenPipe
+        ErrorKind::UnexpectedEof
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::BrokenPipe
     );
     match (l_to_r, read_side) {
         (true, true) => BridgeCloseReason::ReadErrorLeft,
@@ -477,8 +471,7 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(500),
-            "bridge took {:?} to unwind on shutdown",
-            elapsed
+            "bridge took {elapsed:?} to unwind on shutdown"
         );
         drop(shutdown);
     }
@@ -510,8 +503,7 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(500),
-            "bridge took {:?} to unwind on shutdown",
-            elapsed
+            "bridge took {elapsed:?} to unwind on shutdown"
         );
         drop(shutdown);
     }
@@ -534,13 +526,11 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(
             elapsed >= Duration::from_millis(80),
-            "idle bridge unwound too early: {:?}",
-            elapsed
+            "idle bridge unwound too early: {elapsed:?}"
         );
         assert!(
             elapsed < Duration::from_millis(800),
-            "idle bridge unwound too late: {:?}",
-            elapsed
+            "idle bridge unwound too late: {elapsed:?}"
         );
     }
 

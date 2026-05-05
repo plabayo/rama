@@ -1036,8 +1036,7 @@ fn decision_deadline_blocks_slow_handler_by_default() {
     );
     assert!(
         elapsed < Duration::from_secs(2),
-        "decision deadline should fire before slow handler completes (elapsed: {:?})",
-        elapsed
+        "decision deadline should fire before slow handler completes (elapsed: {elapsed:?})"
     );
     engine.stop(0);
 }
@@ -1233,13 +1232,11 @@ fn tcp_bridge_idle_timeout_unwinds_session() {
     let elapsed = started.elapsed();
     assert!(
         elapsed >= Duration::from_millis(80),
-        "idle bridge unwound too early: {:?}",
-        elapsed
+        "idle bridge unwound too early: {elapsed:?}"
     );
     assert!(
         elapsed < Duration::from_secs(1),
-        "idle bridge unwound too late: {:?}",
-        elapsed
+        "idle bridge unwound too late: {elapsed:?}"
     );
 
     engine.stop(0);
@@ -1281,8 +1278,7 @@ fn tcp_bridge_observes_per_flow_shutdown_via_session_cancel() {
     let elapsed = started.elapsed();
     assert!(
         elapsed < Duration::from_millis(500),
-        "session cancel took too long: {:?}",
-        elapsed
+        "session cancel took too long: {elapsed:?}"
     );
 
     engine.stop(0);

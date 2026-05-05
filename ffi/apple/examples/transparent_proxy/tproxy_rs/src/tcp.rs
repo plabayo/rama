@@ -183,7 +183,7 @@ impl DemoTcpMitmService {
                     )),
                     HttpProxyConnectRelayServiceRequestMatcher::new(if within_connect_tunnel {
                         ConsumeErrLayer::trace_as_debug()
-                            .into_layer(IoForwardService::new(exec.clone()))
+                            .into_layer(IoForwardService::new(exec))
                             .boxed()
                     } else {
                         nested_mitm.new_bridge_service(exec, true).boxed()
