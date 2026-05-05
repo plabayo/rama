@@ -10,7 +10,7 @@ use rama_core::{
 };
 
 use super::{
-    DefaultTransparentProxyAsyncRuntimeFactory, DecisionDeadlineAction,
+    DecisionDeadlineAction, DefaultTransparentProxyAsyncRuntimeFactory,
     TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine, TransparentProxyHandlerFactory,
     TransparentProxyServiceContext,
 };
@@ -278,27 +278,26 @@ where
             .block_on(handler_factory.create_transparent_proxy_handler(ctx))
             .map_err(Into::into)?;
 
-        let (heartbeat, watchdog_registration) = if let (Some(cfg), Some(tx)) =
-            (watchdog, watchdog_tx)
-        {
-            let hb = Arc::new(AtomicU64::new(0));
-            let trigger = std::sync::Mutex::new(Some(tx));
-            let reg = register_watchdog(
-                "rama_apple_ne::tproxy".into(),
-                cfg,
-                hb.clone(),
-                Box::new(move || {
-                    if let Ok(mut guard) = trigger.lock() {
-                        if let Some(tx) = guard.take() {
-                            let _ = tx.send(());
+        let (heartbeat, watchdog_registration) =
+            if let (Some(cfg), Some(tx)) = (watchdog, watchdog_tx) {
+                let hb = Arc::new(AtomicU64::new(0));
+                let trigger = std::sync::Mutex::new(Some(tx));
+                let reg = register_watchdog(
+                    "rama_apple_ne::tproxy".into(),
+                    cfg,
+                    hb.clone(),
+                    Box::new(move || {
+                        if let Ok(mut guard) = trigger.lock() {
+                            if let Some(tx) = guard.take() {
+                                let _ = tx.send(());
+                            }
                         }
-                    }
-                }),
-            );
-            (Some(hb), Some(reg))
-        } else {
-            (None, None)
-        };
+                    }),
+                );
+                (Some(hb), Some(reg))
+            } else {
+                (None, None)
+            };
 
         Ok(TransparentProxyEngine {
             rt,

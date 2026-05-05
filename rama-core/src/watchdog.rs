@@ -131,7 +131,10 @@ impl std::fmt::Debug for WatchdogRegistration {
 impl Drop for WatchdogRegistration {
     fn drop(&mut self) {
         if let Some(state) = WATCHDOG_STATE.get() {
-            let mut regs = state.registrations.lock().unwrap_or_else(|e| e.into_inner());
+            let mut regs = state
+                .registrations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             regs.retain(|r| r.id != self.id);
         }
     }
@@ -231,8 +234,7 @@ fn run_watchdog_loop(state: &'static WatchdogState) {
                 continue;
             }
             let last_ns = reg.heartbeat.load(Ordering::Acquire);
-            let stale_ns =
-                u64::try_from(reg.config.stale_threshold.as_nanos()).unwrap_or(u64::MAX);
+            let stale_ns = u64::try_from(reg.config.stale_threshold.as_nanos()).unwrap_or(u64::MAX);
             // Wrap-safe: `now_ns >= last_ns` always within a single process
             // lifetime; saturating_sub avoids any rare overflow corner case.
             let elapsed_ns = now_ns.saturating_sub(last_ns);

@@ -518,17 +518,19 @@ mod tests {
 
     #[tokio::test]
     async fn forward_idle_timeout_fires_when_no_progress() {
-        let svc = IoForwardService::default()
-            .with_idle_timeout(Some(Duration::from_millis(100)));
+        let svc = IoForwardService::default().with_idle_timeout(Some(Duration::from_millis(100)));
 
         let (_a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);
 
         let started = Instant::now();
-        tokio::time::timeout(Duration::from_secs(2), svc.serve(BridgeIo(a_proxy, b_proxy)))
-            .await
-            .expect("idle bridge did not unwind within 2s")
-            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            svc.serve(BridgeIo(a_proxy, b_proxy)),
+        )
+        .await
+        .expect("idle bridge did not unwind within 2s")
+        .unwrap();
         let elapsed = started.elapsed();
         assert!(
             elapsed >= Duration::from_millis(80),
@@ -544,8 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn forward_idle_timeout_resets_on_progress() {
-        let svc = IoForwardService::default()
-            .with_idle_timeout(Some(Duration::from_millis(150)));
+        let svc = IoForwardService::default().with_idle_timeout(Some(Duration::from_millis(150)));
 
         let (mut a_user, a_proxy) = duplex(64);
         let (mut b_user, b_proxy) = duplex(64);

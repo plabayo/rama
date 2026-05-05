@@ -1071,7 +1071,9 @@ fn watchdog_does_not_fire_under_normal_engine_traffic() {
     let handler = TestHandler::passthrough();
     let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
         .with_runtime_factory(TestRuntimeFactory)
-        .with_watchdog(super::WatchdogConfig::from_threshold(Duration::from_secs(2)))
+        .with_watchdog(super::WatchdogConfig::from_threshold(Duration::from_secs(
+            2,
+        )))
         .build()
         .expect("build engine");
 

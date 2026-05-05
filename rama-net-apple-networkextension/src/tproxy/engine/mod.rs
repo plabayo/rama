@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+pub use rama_core::watchdog::WatchdogConfig;
 use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,
@@ -16,7 +17,6 @@ use rama_core::{
     service::Service,
     watchdog::{WatchdogRegistration, record_heartbeat},
 };
-pub use rama_core::watchdog::WatchdogConfig;
 use rama_net::{
     conn::is_connection_error,
     proxy::{BridgeCloseReason, IdleGuard, ProxyTarget},
