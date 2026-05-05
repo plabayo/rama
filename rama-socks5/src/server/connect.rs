@@ -312,7 +312,7 @@ impl<S> LazyConnector<S> {
 impl LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
     fn default_with_exec(exec: Executor) -> Self {
         Self {
-            service: IoToProxyBridgeIo::extension_proxy_target(exec, IoForwardService::new()),
+            service: IoToProxyBridgeIo::extension_proxy_target(exec, IoForwardService::default()),
         }
     }
 }

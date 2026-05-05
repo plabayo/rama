@@ -135,7 +135,7 @@ async fn main() {
                     ConsumeErrLayer::default(),
                     IoToProxyBridgeIoLayer::extension_proxy_target(exec),
                 )
-                    .into_layer(IoForwardService::new()),
+                    .into_layer(IoForwardService::default()),
             ),
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),

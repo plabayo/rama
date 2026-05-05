@@ -133,7 +133,7 @@ async fn main() {
                         ConsumeErrLayer::default(),
                         IoToProxyBridgeIoLayer::extension_proxy_target(exec),
                     )
-                        .into_layer(IoForwardService::new()),
+                        .into_layer(IoForwardService::default()),
                 ),
             )
                 .into_layer(service_fn(http_plain_proxy)),

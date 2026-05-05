@@ -297,7 +297,7 @@ where
                     port: Protocol::HTTPS_DEFAULT_PORT,
                 },
             )
-            .into_layer(IoForwardService::new())
+            .into_layer(IoForwardService::default())
             .serve(stream)
             .await
             .context("forward data")

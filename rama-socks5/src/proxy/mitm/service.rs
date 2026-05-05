@@ -28,7 +28,7 @@ impl<I> Socks5MitmRelayService<I> {
     pub fn new(dpi_svc: I) -> Self {
         Self {
             dpi_svc,
-            fallback_svc: IoForwardService::new(),
+            fallback_svc: IoForwardService::default(),
         }
     }
 

@@ -25,7 +25,7 @@ pub struct HttpProxyConnectRelayServiceRequestMatcher<S = IoForwardService> {
 impl Default for HttpProxyConnectRelayServiceRequestMatcher {
     fn default() -> Self {
         Self {
-            relay_svc: IoForwardService::new(),
+            relay_svc: IoForwardService::default(),
         }
     }
 }

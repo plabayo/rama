@@ -154,7 +154,7 @@ fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsRef>(
         ArcLayer::new(),
     ));
     let maybe_http_relay =
-        HttpPeekRouter::new(http_mitm_relay).with_fallback(IoForwardService::new());
+        HttpPeekRouter::new(http_mitm_relay).with_fallback(IoForwardService::default());
 
     let tls_mitm_relay = TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedData {
         organisation_name: Some("HTTP MITM Relay Proxy Boring Example".to_owned()),

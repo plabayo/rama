@@ -72,7 +72,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
                         ConsumeErrLayer::default(),
                         IoToProxyBridgeIoLayer::extension_proxy_target(exec),
                     )
-                        .into_layer(IoForwardService::new()),
+                        .into_layer(IoForwardService::default()),
                 ),
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 RemoveRequestHeaderLayer::hop_by_hop(),

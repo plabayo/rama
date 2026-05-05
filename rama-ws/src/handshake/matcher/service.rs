@@ -49,7 +49,7 @@ pub struct HttpWebSocketRelayHandshakeResponse(pub Arc<response::Parts>);
 impl Default for HttpWebSocketRelayServiceRequestMatcher {
     fn default() -> Self {
         Self {
-            relay_svc: IoForwardService::new(),
+            relay_svc: IoForwardService::default(),
             websocket_config: None,
             store_handshake_req_header: false,
             store_handshake_res_header: false,

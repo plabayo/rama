@@ -65,7 +65,7 @@ impl Default for TlsMitmRelayPolicyLayer {
         Self {
             cache,
             excluded_domains,
-            fallback: IoForwardService::new(),
+            fallback: IoForwardService::default(),
         }
     }
 }

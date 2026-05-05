@@ -5,7 +5,11 @@ use rama_core::extensions::Extension;
 
 mod forward;
 #[doc(inline)]
-pub use forward::IoForwardService;
+pub use forward::{BridgeCloseReason, IoForwardService};
+
+mod idle;
+#[doc(inline)]
+pub use idle::IdleGuard;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(net, proxy))]
