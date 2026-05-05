@@ -17,10 +17,7 @@ use rama_http_types::{
     conn::{H2ClientContextParams, Http1ClientContextParams},
     proto::h2::PseudoHeaderOrder,
 };
-use rama_net::{
-    client::{ConnectorService, EstablishedClientConnection},
-    conn::ConnectionHealth,
-};
+use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
@@ -69,11 +66,6 @@ where
     BodyConnection:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    // TODO this is way to tricky, this needs to be here on the io extensions
-    // Not the ones we clone, ideally the exentions should all just use the same store
-    // We can solve this by making them clonable
-    io.extensions().get_ref_or_insert(ConnectionHealth::default);
-
     let extensions = io.extensions().clone();
 
     let server_address: Cow<'_, str> = req
