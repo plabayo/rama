@@ -456,3 +456,72 @@ The failure sequence often looks like this:
 So, if the proxy "randomly" starts working again after reinstall, that does not
 guarantee the original runtime issue is fixed. It only means the registration /
 profile layer was reset successfully.
+
+## Observability with dial9 (optional)
+
+[dial9](https://github.com/dial9-rs/dial9-tokio-telemetry) is a low-overhead
+runtime telemetry crate for Tokio that records poll timing, wake events, and
+custom application events into a self-describing binary trace. It is
+particularly useful for diagnosing the long-tail / wedge bugs that hit
+transparent proxies in real-world use — the same failure modes that
+motivated the per-flow shutdown / idle-timeout / handler-deadline / watchdog
+hardening in `rama-net-apple-networkextension`.
+
+This example exposes a `dial9` cargo feature that pulls in the dial9 crates
+and defines a small set of custom events that mirror rama's structured
+flow lifecycle logs (`TproxyFlowOpened`, `TproxyFlowClosed`,
+`TproxyHandlerDeadline`). Cross-correlating dial9 traces with rama's
+`flow_id=…` close events is the recommended workflow for post-mortem
+analysis.
+
+### Why bother
+
+- Wake-up latency and Tokio scheduling delay show up as concrete numbers
+  in the trace, not as P99 aggregations.
+- The `flow_id` shared between rama's structured logs and dial9 custom
+  events lets you go from a slow flow in production logs to its full poll
+  history in `dial9-viewer`.
+- On Linux, dial9 also captures kernel scheduling delays and CPU profiling
+  samples. On macOS the kernel-side capture is more limited but the
+  runtime-level events are still the bulk of what's useful here.
+
+### Caveats
+
+- **Requires `tokio_unstable`.** Add to `.cargo/config.toml` under
+  `[build]`:
+
+  ```toml
+  rustflags = ["--cfg", "tokio_unstable"]
+  ```
+
+- **~1 MiB buffer per OS thread.** Fine for this example's bounded thread
+  counts; document if copying the integration pattern into a high-thread
+  workload.
+- **Runtime wiring is not enabled by default.** The example defines the
+  custom event types and gates the dependency, but does not swap the
+  default `tokio::runtime::Runtime` for a `TracedRuntime`. To get full
+  dial9 instrumentation, provide a custom
+  [`TransparentProxyAsyncRuntimeFactory`](https://docs.rs/rama-net-apple-networkextension/latest/rama_net_apple_networkextension/tproxy/trait.TransparentProxyAsyncRuntimeFactory.html)
+  that returns a runtime constructed via
+  `dial9_tokio_telemetry::TracedRuntime::try_new`.
+
+### Building with the feature on
+
+```sh
+RUSTFLAGS="--cfg tokio_unstable" cargo build --features dial9
+```
+
+### Viewing traces
+
+```sh
+cargo install dial9-viewer
+dial9-viewer /path/to/trace.bin
+```
+
+### See also
+
+- The book chapter
+  [dial9 runtime telemetry](https://ramaproxy.org/book/proxies/operate/transparent/dial9.html)
+  for the broader story on why dial9 fits this use case.
+- [netstack.fm episode 37](https://netstack.fm/) — interview with the
+  dial9 authors covering motivation and design.
