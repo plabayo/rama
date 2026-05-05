@@ -103,16 +103,12 @@ async fn main() {
         },
     };
 
-    #[expect(
-        clippy::large_futures,
-        reason = "CLI dispatch: top-level match over command futures, boxing would add no benefit here"
-    )]
     #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
     if let Err(err) = match cli.cmds {
-        CliCommands::Resolve(cfg) => cmd::resolve::run(cfg).await,
-        CliCommands::Send(cfg) => cmd::send::run(cfg).await,
-        CliCommands::Serve(cfg) => cmd::serve::run(cfg).await,
-        CliCommands::Probe(cfg) => cmd::probe::run(cfg).await,
+        CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,
+        CliCommands::Send(cfg) => Box::pin(cmd::send::run(cfg)).await,
+        CliCommands::Serve(cfg) => Box::pin(cmd::serve::run(cfg)).await,
+        CliCommands::Probe(cfg) => Box::pin(cmd::probe::run(cfg)).await,
     } {
         eprintln!("🚩 exit with error: {err}");
         let exit_code = err
