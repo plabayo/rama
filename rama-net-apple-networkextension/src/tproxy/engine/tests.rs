@@ -920,6 +920,182 @@ fn build_engine_with_tcp_idle_timeout(
         .expect("build engine")
 }
 
+fn build_engine_with_decision_deadline(
+    handler: TestHandler,
+    deadline: Duration,
+    action: super::DecisionDeadlineAction,
+) -> TransparentProxyEngine<TestHandler> {
+    TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_decision_deadline(deadline)
+        .with_decision_deadline_action(action)
+        .build()
+        .expect("build engine")
+}
+
+#[derive(Clone)]
+struct SlowMatchHandler {
+    delay: Duration,
+}
+
+impl TransparentProxyHandler for SlowMatchHandler {
+    fn transparent_proxy_config(&self) -> crate::tproxy::TransparentProxyConfig {
+        TransparentProxyConfig::new()
+    }
+
+    fn match_tcp_flow(
+        &self,
+        _exec: Executor,
+        meta: TransparentProxyFlowMeta,
+    ) -> impl Future<
+        Output = FlowAction<
+            impl Service<BridgeIo<TcpFlow, NwTcpStream>, Output = (), Error = Infallible>,
+        >,
+    > + Send
+    + '_ {
+        let delay = self.delay;
+        async move {
+            tokio::time::sleep(delay).await;
+            FlowAction::<TestTcpService>::Intercept {
+                meta,
+                service: service_fn(|bridge: BridgeIo<TcpFlow, NwTcpStream>| async move {
+                    let BridgeIo(stream, egress) = bridge;
+                    let _hold = (stream, egress);
+                    std::future::pending::<()>().await;
+                    Ok(())
+                })
+                .boxed(),
+            }
+        }
+    }
+
+    fn match_udp_flow(
+        &self,
+        _exec: Executor,
+        meta: TransparentProxyFlowMeta,
+    ) -> impl Future<
+        Output = FlowAction<
+            impl Service<BridgeIo<UdpFlow, NwUdpSocket>, Output = (), Error = Infallible>,
+        >,
+    > + Send
+    + '_ {
+        let delay = self.delay;
+        async move {
+            tokio::time::sleep(delay).await;
+            FlowAction::<TestUdpService>::Intercept {
+                meta,
+                service: service_fn(|bridge: BridgeIo<UdpFlow, NwUdpSocket>| async move {
+                    let BridgeIo(flow, egress) = bridge;
+                    let _hold = (flow, egress);
+                    std::future::pending::<()>().await;
+                    Ok(())
+                })
+                .boxed(),
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SlowMatchHandlerFactory(SlowMatchHandler);
+
+impl TransparentProxyHandlerFactory for SlowMatchHandlerFactory {
+    type Handler = SlowMatchHandler;
+    type Error = BoxError;
+
+    fn create_transparent_proxy_handler(
+        &self,
+        _ctx: TransparentProxyServiceContext,
+    ) -> impl Future<Output = Result<Self::Handler, Self::Error>> + Send {
+        let h = self.0.clone();
+        std::future::ready(Ok(h))
+    }
+}
+
+#[test]
+fn decision_deadline_blocks_slow_handler_by_default() {
+    let engine = TransparentProxyEngineBuilder::new(SlowMatchHandlerFactory(SlowMatchHandler {
+        delay: Duration::from_secs(5),
+    }))
+    .with_runtime_factory(TestRuntimeFactory)
+    .with_decision_deadline(Duration::from_millis(100))
+    .build()
+    .expect("build engine");
+
+    let started = Instant::now();
+    let action = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(action, SessionFlowAction::Blocked),
+        "expected Blocked on deadline"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "decision deadline should fire before slow handler completes (elapsed: {:?})",
+        elapsed
+    );
+    engine.stop(0);
+}
+
+#[test]
+fn decision_deadline_passthrough_when_action_is_passthrough() {
+    let engine = TransparentProxyEngineBuilder::new(SlowMatchHandlerFactory(SlowMatchHandler {
+        delay: Duration::from_secs(5),
+    }))
+    .with_runtime_factory(TestRuntimeFactory)
+    .with_decision_deadline(Duration::from_millis(100))
+    .with_decision_deadline_action(super::DecisionDeadlineAction::Passthrough)
+    .build()
+    .expect("build engine");
+
+    let action = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    );
+    assert!(matches!(action, SessionFlowAction::Passthrough));
+    engine.stop(0);
+}
+
+#[test]
+fn decision_deadline_does_not_fire_for_fast_handlers() {
+    // Fast intercept — well within the default 1s deadline.
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|bridge: BridgeIo<TcpFlow, NwTcpStream>| async move {
+                let BridgeIo(stream, egress) = bridge;
+                let _hold = (stream, egress);
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine_with_decision_deadline(
+        handler,
+        Duration::from_secs(2),
+        super::DecisionDeadlineAction::Block,
+    );
+
+    let action = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    );
+    assert!(matches!(action, SessionFlowAction::Intercept(_)));
+    engine.stop(0);
+}
+
 #[test]
 fn flow_meta_new_generates_unique_flow_ids_and_sets_opened_at() {
     let a = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);

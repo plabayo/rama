@@ -8,8 +8,9 @@ use rama_core::{
 };
 
 use super::{
-    DefaultTransparentProxyAsyncRuntimeFactory, TransparentProxyAsyncRuntimeFactory,
-    TransparentProxyEngine, TransparentProxyHandlerFactory, TransparentProxyServiceContext,
+    DefaultTransparentProxyAsyncRuntimeFactory, DecisionDeadlineAction,
+    TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine, TransparentProxyHandlerFactory,
+    TransparentProxyServiceContext,
 };
 
 pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRuntimeFactory> {
@@ -19,6 +20,8 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     udp_channel_capacity: Option<usize>,
     tcp_idle_timeout: Option<Duration>,
     udp_idle_timeout: Option<Duration>,
+    decision_deadline: Option<Duration>,
+    decision_deadline_action: Option<DecisionDeadlineAction>,
     opaque_config: Option<Arc<[u8]>>,
     runtime_factory: R,
 }
@@ -36,6 +39,8 @@ where
             udp_channel_capacity: None,
             tcp_idle_timeout: None,
             udp_idle_timeout: None,
+            decision_deadline: None,
+            decision_deadline_action: None,
             opaque_config: None,
             runtime_factory: DefaultTransparentProxyAsyncRuntimeFactory::default(),
         }
@@ -52,6 +57,8 @@ where
             udp_channel_capacity: self.udp_channel_capacity,
             tcp_idle_timeout: self.tcp_idle_timeout,
             udp_idle_timeout: self.udp_idle_timeout,
+            decision_deadline: self.decision_deadline,
+            decision_deadline_action: self.decision_deadline_action,
             opaque_config: self.opaque_config,
             runtime_factory,
         }
@@ -129,6 +136,36 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Maximum time the engine will wait for a flow handler to produce a
+        /// decision (Intercept / Passthrough / Blocked).
+        ///
+        /// If `match_tcp_flow` / `match_udp_flow` does not return within
+        /// the deadline, the engine takes the configured
+        /// [`DecisionDeadlineAction`] for that flow rather than holding kernel
+        /// flow ownership indefinitely.
+        ///
+        /// Default: one second. The deadline is always-on; tune it rather
+        /// than disable it.
+        pub fn decision_deadline(mut self, deadline: Duration) -> Self
+        {
+            self.decision_deadline = Some(deadline);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Action to take when a flow handler exceeds the configured
+        /// [`Self::decision_deadline`].
+        ///
+        /// Default: [`DecisionDeadlineAction::Block`].
+        pub fn decision_deadline_action(mut self, action: DecisionDeadlineAction) -> Self
+        {
+            self.decision_deadline_action = Some(action);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         #[must_use]
         #[doc(hidden)]
         /// Unstable API only meant for generated code.
@@ -155,6 +192,8 @@ where
             udp_channel_capacity,
             tcp_idle_timeout,
             udp_idle_timeout,
+            decision_deadline,
+            decision_deadline_action,
             opaque_config,
             runtime_factory,
         } = self;
@@ -205,6 +244,9 @@ where
                 .unwrap_or(super::DEFAULT_UDP_CHANNEL_CAPACITY),
             tcp_idle_timeout,
             udp_idle_timeout,
+            decision_deadline: decision_deadline.unwrap_or(super::DEFAULT_DECISION_DEADLINE),
+            decision_deadline_action: decision_deadline_action
+                .unwrap_or(DecisionDeadlineAction::Block),
             shutdown: Some(shutdown),
             stop_trigger: Some(stop_tx),
         })

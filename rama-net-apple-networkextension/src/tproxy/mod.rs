@@ -12,11 +12,11 @@ mod types;
 pub use self::{
     engine::{
         BoxedClosedSink, BoxedDemandSink, BoxedServerBytesSink, BoxedTransparentProxyEngine,
-        DefaultTransparentProxyAsyncRuntimeFactory, FlowAction, SessionFlowAction,
-        TcpDeliverStatus, TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine,
-        TransparentProxyEngineBuilder, TransparentProxyHandler, TransparentProxyHandlerFactory,
-        TransparentProxyServiceContext, TransparentProxyTcpSession, TransparentProxyUdpSession,
-        log_engine_build_error,
+        DecisionDeadlineAction, DefaultTransparentProxyAsyncRuntimeFactory, FlowAction,
+        SessionFlowAction, TcpDeliverStatus, TransparentProxyAsyncRuntimeFactory,
+        TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyHandler,
+        TransparentProxyHandlerFactory, TransparentProxyServiceContext, TransparentProxyTcpSession,
+        TransparentProxyUdpSession, log_engine_build_error,
     },
     types::{
         NwAttribution, NwEgressParameters, NwInterfaceType, NwMultipathServiceType, NwServiceClass,

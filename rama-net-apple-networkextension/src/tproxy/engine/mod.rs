@@ -56,6 +56,37 @@ pub use self::runtime::{
     DefaultTransparentProxyAsyncRuntimeFactory, TransparentProxyAsyncRuntimeFactory,
 };
 
+/// Default deadline for flow-handler decisions. Tuned via
+/// [`TransparentProxyEngineBuilder::with_decision_deadline`].
+pub(super) const DEFAULT_DECISION_DEADLINE: Duration = Duration::from_secs(1);
+
+/// Action taken when a flow handler exceeds the configured decision deadline.
+///
+/// The deadline exists to prevent a hung handler from holding kernel flow
+/// ownership indefinitely. On expiry the engine takes one of these actions
+/// instead of waiting for the handler to return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionDeadlineAction {
+    /// Reject the flow back to the kernel (treats it like
+    /// [`FlowAction::Blocked`]). This is the default — a handler that cannot
+    /// produce a decision in time is treated as untrusted rather than letting
+    /// the flow through.
+    Block,
+    /// Let the flow pass through unintercepted (treats it like
+    /// [`FlowAction::Passthrough`]). Use when failing-open is preferable to
+    /// failing-closed for your deployment.
+    Passthrough,
+}
+
+impl DecisionDeadlineAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Passthrough => "passthrough",
+        }
+    }
+}
+
 const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
 /// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress) will
 /// buffer before we tell Swift to stop reading from the kernel and wait for a
@@ -141,6 +172,8 @@ pub struct TransparentProxyEngine<H> {
     // from the builder but not yet observed.
     #[allow(dead_code)]
     udp_idle_timeout: Option<Duration>,
+    decision_deadline: Duration,
+    decision_deadline_action: DecisionDeadlineAction,
     shutdown: Option<Shutdown>,
     stop_trigger: Option<oneshot::Sender<()>>,
 }
@@ -191,6 +224,8 @@ where
         let tcp_flow_buffer_size = self.tcp_flow_buffer_size;
         let tcp_channel_capacity = self.tcp_channel_capacity;
         let tcp_idle_timeout = self.tcp_idle_timeout;
+        let decision_deadline = self.decision_deadline;
+        let decision_deadline_action = self.decision_deadline_action;
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
@@ -203,6 +238,8 @@ where
                 tcp_flow_buffer_size,
                 tcp_channel_capacity,
                 tcp_idle_timeout,
+                decision_deadline,
+                decision_deadline_action,
                 on_server_bytes,
                 on_client_read_demand,
                 on_server_closed,
@@ -232,6 +269,8 @@ where
         };
 
         let udp_channel_capacity = self.udp_channel_capacity;
+        let decision_deadline = self.decision_deadline;
+        let decision_deadline_action = self.decision_deadline_action;
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
@@ -242,6 +281,8 @@ where
                 exec,
                 meta,
                 udp_channel_capacity,
+                decision_deadline,
+                decision_deadline_action,
                 on_server_datagram,
                 on_client_read_demand,
                 on_server_closed,
@@ -643,6 +684,8 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
     tcp_idle_timeout: Option<Duration>,
+    decision_deadline: Duration,
+    decision_deadline_action: DecisionDeadlineAction,
     on_server_bytes: OnBytes,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -655,7 +698,24 @@ where
     H: TransparentProxyHandler,
 {
     let egress_connect_options = handler.egress_tcp_connect_options(&meta);
-    let flow_action = handler.match_tcp_flow(exec, meta).await;
+    let flow_id = meta.flow_id;
+    let flow_protocol = meta.protocol;
+    let flow_action =
+        match tokio::time::timeout(decision_deadline, handler.match_tcp_flow(exec, meta)).await {
+            Ok(action) => action,
+            Err(_) => {
+                emit_decision_deadline_event(
+                    flow_id,
+                    flow_protocol,
+                    decision_deadline,
+                    decision_deadline_action,
+                );
+                return match decision_deadline_action {
+                    DecisionDeadlineAction::Block => SessionFlowAction::Blocked,
+                    DecisionDeadlineAction::Passthrough => SessionFlowAction::Passthrough,
+                };
+            }
+        };
 
     let (service, mut meta) = match flow_action {
         FlowAction::Intercept { service, meta } => (service, meta),
@@ -871,11 +931,14 @@ impl Drop for TransparentProxyUdpSession {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
     udp_channel_capacity: usize,
+    decision_deadline: Duration,
+    decision_deadline_action: DecisionDeadlineAction,
     on_server_datagram: OnDatagram,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -888,12 +951,30 @@ where
     H: TransparentProxyHandler,
 {
     let egress_connect_options = handler.egress_udp_connect_options(&meta);
-    let flow_action = handler.match_udp_flow(exec, meta).await;
-    let (service, meta) = match flow_action {
+    let flow_id = meta.flow_id;
+    let flow_protocol = meta.protocol;
+    let flow_action =
+        match tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await {
+            Ok(action) => action,
+            Err(_) => {
+                emit_decision_deadline_event(
+                    flow_id,
+                    flow_protocol,
+                    decision_deadline,
+                    decision_deadline_action,
+                );
+                return match decision_deadline_action {
+                    DecisionDeadlineAction::Block => SessionFlowAction::Blocked,
+                    DecisionDeadlineAction::Passthrough => SessionFlowAction::Passthrough,
+                };
+            }
+        };
+    let (service, mut meta) = match flow_action {
         FlowAction::Intercept { service, meta } => (service, meta),
         FlowAction::Blocked => return SessionFlowAction::Blocked,
         FlowAction::Passthrough => return SessionFlowAction::Passthrough,
     };
+    meta.intercept_decision = Some(crate::tproxy::types::TransparentProxyFlowAction::Intercept);
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
     let flow_shutdown = Shutdown::new(async move {
@@ -1248,6 +1329,24 @@ async fn run_tcp_bridge(
 
     emit_tcp_bridge_close_event(direction, close_reason, &meta, bytes_in, bytes_out);
     on_server_closed();
+}
+
+fn emit_decision_deadline_event(
+    flow_id: u64,
+    protocol: crate::tproxy::TransparentProxyFlowProtocol,
+    deadline: Duration,
+    action: DecisionDeadlineAction,
+) {
+    let deadline_ms = u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX);
+    tracing::warn!(
+        target: "rama_apple_ne::tproxy",
+        flow_id,
+        protocol = protocol.as_str(),
+        deadline_ms,
+        action = action.as_str(),
+        reason = %BridgeCloseReason::HandlerDeadline,
+        "transparent proxy flow handler exceeded decision deadline",
+    );
 }
 
 fn emit_tcp_bridge_close_event(
