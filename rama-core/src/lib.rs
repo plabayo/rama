@@ -35,6 +35,7 @@ pub use ::rama_error as error;
 
 pub mod graceful;
 pub mod rt;
+pub mod watchdog;
 
 pub mod service;
 pub use service::Service;

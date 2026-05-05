@@ -14,7 +14,9 @@ use rama_core::{
     io::BridgeIo,
     rt::Executor,
     service::Service,
+    watchdog::{WatchdogRegistration, record_heartbeat},
 };
+pub use rama_core::watchdog::WatchdogConfig;
 use rama_net::{
     conn::is_connection_error,
     proxy::{BridgeCloseReason, IdleGuard, ProxyTarget},
@@ -174,6 +176,8 @@ pub struct TransparentProxyEngine<H> {
     udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
+    heartbeat: Option<Arc<AtomicU64>>,
+    _watchdog: Option<WatchdogRegistration>,
     shutdown: Option<Shutdown>,
     stop_trigger: Option<oneshot::Sender<()>>,
 }
@@ -226,6 +230,7 @@ where
         let tcp_idle_timeout = self.tcp_idle_timeout;
         let decision_deadline = self.decision_deadline;
         let decision_deadline_action = self.decision_deadline_action;
+        let heartbeat = self.heartbeat.clone();
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
@@ -240,6 +245,7 @@ where
                 tcp_idle_timeout,
                 decision_deadline,
                 decision_deadline_action,
+                heartbeat,
                 on_server_bytes,
                 on_client_read_demand,
                 on_server_closed,
@@ -271,6 +277,7 @@ where
         let udp_channel_capacity = self.udp_channel_capacity;
         let decision_deadline = self.decision_deadline;
         let decision_deadline_action = self.decision_deadline_action;
+        let heartbeat = self.heartbeat.clone();
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
@@ -283,6 +290,7 @@ where
                 udp_channel_capacity,
                 decision_deadline,
                 decision_deadline_action,
+                heartbeat,
                 on_server_datagram,
                 on_client_read_demand,
                 on_server_closed,
@@ -686,6 +694,7 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     tcp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
+    heartbeat: Option<Arc<AtomicU64>>,
     on_server_bytes: OnBytes,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -702,7 +711,12 @@ where
     let flow_protocol = meta.protocol;
     let flow_action =
         match tokio::time::timeout(decision_deadline, handler.match_tcp_flow(exec, meta)).await {
-            Ok(action) => action,
+            Ok(action) => {
+                if let Some(hb) = heartbeat.as_ref() {
+                    record_heartbeat(hb);
+                }
+                action
+            }
             Err(_) => {
                 emit_decision_deadline_event(
                     flow_id,
@@ -939,6 +953,7 @@ async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     udp_channel_capacity: usize,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
+    heartbeat: Option<Arc<AtomicU64>>,
     on_server_datagram: OnDatagram,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -955,7 +970,12 @@ where
     let flow_protocol = meta.protocol;
     let flow_action =
         match tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await {
-            Ok(action) => action,
+            Ok(action) => {
+                if let Some(hb) = heartbeat.as_ref() {
+                    record_heartbeat(hb);
+                }
+                action
+            }
             Err(_) => {
                 emit_decision_deadline_event(
                     flow_id,
