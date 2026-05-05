@@ -270,12 +270,12 @@ expect_used = "deny"
 panic = "deny"
 print_stdout = "deny"
 dbg_macro = "deny"
-# Panic-adjacent (warn for soft rollout; flip to deny once clean):
-todo = "warn"
-unimplemented = "warn"
-unreachable = "warn"
-get_unwrap = "warn"
-unchecked_time_subtraction = "warn"
+# Panic-adjacent
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+get_unwrap = "deny"
+unchecked_time_subtraction = "deny"
 # `unwrap_in_result` and `panic_in_result_fn` are intentionally NOT enabled:
 # redundant with `unwrap_used`/`panic` in production code (which we `deny`), and
 # there's no `allow-*-in-tests` flag for them — so they fire in the
