@@ -58,3 +58,8 @@ pub mod tls;
 #[cfg_attr(docsrs, doc(cfg(feature = "grpc")))]
 #[doc(inline)]
 pub use ::rama_grpc as grpc;
+
+#[cfg(feature = "html")]
+#[cfg_attr(docsrs, doc(cfg(feature = "html")))]
+#[doc(inline)]
+pub use ::rama_http::html;

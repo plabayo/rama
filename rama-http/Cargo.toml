@@ -38,6 +38,7 @@ compression = [
     "dep:flate2",
 ]
 multipart = ["dep:multer", "dep:mime_guess"]
+html = ["dep:rama-http-macros"]
 tls = ["rama-net/tls"]
 
 [dependencies]
@@ -63,6 +64,7 @@ pin-project-lite = { workspace = true }
 radix_trie = { workspace = true }
 rama-core = { workspace = true }
 rama-http-headers = { workspace = true }
+rama-http-macros = { workspace = true, optional = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
