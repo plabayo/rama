@@ -8,7 +8,7 @@ use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::fs::{self, File};
+use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -82,22 +82,46 @@ impl FileRecorderTask {
         impl Storage {
             async fn try_new(path: PathBuf) -> Result<Self, BoxError> {
                 if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)
+                    create_har_parent_dir(parent)
                         .await
                         .context("create HAR file parent dir")?;
                 }
-                let file = File::options()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&path)
-                    .await
-                    .context("create HAR file")?;
+                // HAR archives can record `Authorization`, `Cookie`, request bodies, and
+                // other secrets. On Unix we apply `0o600` at creation so the bytes never
+                // exist on disk world-/group-readable. On Windows the file inherits the
+                // parent dir's ACL — locking that down is out of scope here.
+                let mut opts = File::options();
+                opts.write(true).create(true).truncate(true);
+                #[cfg(unix)]
+                opts.mode(0o600);
+                let file = opts.open(&path).await.context("create HAR file")?;
                 Ok(Self {
                     file,
                     path,
                     has_entries: false,
                 })
+            }
+        }
+
+        /// Create the HAR file's parent directory. On Unix, freshly-created
+        /// components are mode `0o700` so an attacker who can list the parent
+        /// can't enumerate the recorded archive. Pre-existing components are
+        /// left untouched (mirrors `fs::create_dir_all` semantics).
+        async fn create_har_parent_dir(parent: &std::path::Path) -> std::io::Result<()> {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                let mut b = std::fs::DirBuilder::new();
+                b.recursive(true).mode(0o700);
+                let parent = parent.to_owned();
+                tokio::task::spawn_blocking(move || b.create(&parent))
+                    .await
+                    .map_err(std::io::Error::other)??;
+                Ok(())
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::fs::create_dir_all(parent).await
             }
         }
 

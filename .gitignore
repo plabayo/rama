@@ -26,5 +26,6 @@ Package.resolved
 .xcode-derived/
 .DS_Store
 
-# scratch zones
+# internal docs
 docs/internal
+docs/audit
