@@ -167,7 +167,7 @@ impl Recv {
     /// Transition the stream state based on receiving headers
     ///
     /// The caller ensures that the frame represents headers and not trailers.
-    #[allow(clippy::result_large_err)]
+    #[expect(clippy::result_large_err)]
     pub(super) fn recv_headers(
         &mut self,
         frame: frame::Headers,
@@ -692,7 +692,7 @@ impl Recv {
         Ok(())
     }
 
-    #[allow(clippy::unused_self)]
+    #[expect(clippy::unused_self)]
     pub(super) fn is_end_stream(&self, stream: &store::Ptr) -> bool {
         if !stream.state.is_recv_end_stream() {
             return false;
@@ -950,7 +950,7 @@ impl Recv {
     }
 
     /// Handle remote sending an explicit RST_STREAM.
-    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     pub(super) fn recv_reset(
         &mut self,
         frame: frame::Reset,
@@ -996,7 +996,7 @@ impl Recv {
     }
 
     /// Handle a connection-level error
-    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     pub(super) fn handle_error(&mut self, err: &proto::Error, stream: &mut Stream) {
         // Receive an error
         stream.state.handle_error(err);
@@ -1012,7 +1012,7 @@ impl Recv {
         self.max_stream_id = last_processed_id;
     }
 
-    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     pub(super) fn recv_eof(&mut self, stream: &mut Stream) {
         stream.state.recv_eof();
         stream.notify_send();
@@ -1328,7 +1328,7 @@ impl Recv {
         }
     }
 
-    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     fn schedule_recv<T>(
         &mut self,
         cx: &Context,

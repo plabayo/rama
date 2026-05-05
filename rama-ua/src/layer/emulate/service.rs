@@ -595,7 +595,7 @@ fn get_base_http_headers_from_req_init(
 
 const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
 
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+#[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn merge_http_headers<'a>(
     base_http_headers: &Http1HeaderMap,
     original_http_header_order: Option<OriginalHttp1Headers>,

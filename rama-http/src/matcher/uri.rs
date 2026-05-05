@@ -60,14 +60,14 @@ impl UriMatcher {
         match uri.authority() {
             Some(authority) => {
                 let mut buffer = SmallVec::<[u8; 128]>::new();
-                let _ = write!(
+                _ = write!(
                     &mut buffer,
                     "{}://{authority}{}",
                     uri.scheme_str().unwrap_or("http"),
                     uri.path()
                 );
                 while buffer.last() == Some(&b'/') {
-                    let _ = buffer.pop();
+                    _ = buffer.pop();
                 }
                 self.engine.is_match_bytes(&buffer)
             }

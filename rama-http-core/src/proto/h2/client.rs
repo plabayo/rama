@@ -624,7 +624,7 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef,
 {
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     fn poll_pipe(&mut self, f: FutCtx<B>, cx: &mut Context<'_>) {
         let ping = self.ping.clone();
 
@@ -725,7 +725,7 @@ where
     /// Signal the pipe_task to reset the stream (e.g. on client cancellation).
     pub(crate) fn cancel(self: Pin<&mut Self>) {
         if let Some(cancel_tx) = self.project().cancel_tx.take() {
-            let _ = cancel_tx.send(());
+            _ = cancel_tx.send(());
         }
     }
 }
@@ -911,7 +911,6 @@ where
                 Poll::Pending => match ready!(Pin::new(&mut self.conn_eof).poll(cx)) {
                     // As of Rust 1.82, this pattern is no longer needed, and emits a warning.
                     // But we cannot remove it as long as MSRV is less than that.
-                    #[allow(unused)]
                     Ok(never) => match never {},
                     Err(_conn_is_eof) => {
                         trace!("connection task is closed, closing dispatch task");

@@ -1,3 +1,10 @@
+#![expect(
+    clippy::panic,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::allow_attributes,
+    reason = "vendored from upstream `append-only-vec`; matches stdlib panicking conventions and preserves upstream idioms"
+)]
+
 use crate::std::alloc::handle_alloc_error;
 
 use core::{mem::ManuallyDrop, ptr};

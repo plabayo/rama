@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "build script: panicking on codegen failure aborts the build, which is the desired behavior"
+)]
+
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
 

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "build script: panicking on env/codegen failure aborts the build, which is the desired behavior"
+)]
+
 fn main() {
     use std::{env, path::PathBuf};
 
@@ -32,6 +37,11 @@ fn main() {
         .clang_arg(format!("-isysroot{sdk_path}"))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .formatter(bindgen::Formatter::Rustfmt)
+        // Disable layout tests to avoid the per-struct
+        // `#[expect(clippy::unnecessary_operation, clippy::identity_op)]` attributes
+        // bindgen emits on its layout-test consts — those expects are unfulfilled
+        // for structs whose offsets are non-zero, producing noise we can't suppress.
+        .layout_tests(false)
         // CoreFoundation.
         .allowlist_function("CFRelease")
         .allowlist_function("CFDataCreate")

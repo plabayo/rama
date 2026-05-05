@@ -334,7 +334,7 @@ fn lookup_txt_uncached_stream(
 
 fn dns_name_from_domain(domain: &str) -> Result<CString, BoxError> {
     let name = domain.trim_end_matches('.');
-    CString::new(name).map_err(|_| {
+    CString::new(name).map_err(|_e| {
         LinuxDnsResolverError::message(format!("domain contains interior NUL byte: {name}")).into()
     })
 }

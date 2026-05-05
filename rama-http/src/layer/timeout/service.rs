@@ -273,7 +273,6 @@ mod tests {
 
     #[tokio::test]
     async fn deprecated_new_method_compatibility() {
-        #[allow(deprecated)]
         let layer = TimeoutLayer::new(Duration::from_millis(10));
         let service = layer.into_layer(service_fn(slow_handler));
 

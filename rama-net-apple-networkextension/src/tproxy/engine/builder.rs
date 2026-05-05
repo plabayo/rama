@@ -142,7 +142,7 @@ where
         let shutdown = {
             let _enter = rt.enter();
             Shutdown::new(async move {
-                let _ = stop_rx.await;
+                _ = stop_rx.await;
             })
         };
         let guard = shutdown.guard();

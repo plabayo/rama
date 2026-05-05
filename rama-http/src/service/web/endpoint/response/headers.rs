@@ -1,3 +1,8 @@
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
+
 use super::{IntoResponse, IntoResponseParts, ResponseParts};
 use crate::Response;
 use crate::headers::{HeaderEncode, HeaderMapExt};

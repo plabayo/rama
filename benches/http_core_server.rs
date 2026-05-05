@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::allow_attributes,
+    reason = "bench: panic-on-error is the standard pattern for harnesses"
+)]
 #![deny(warnings)]
 
 use std::io::{Read, Write};
@@ -63,7 +69,7 @@ macro_rules! bench_server {
                 });
 
                 addr_tx.send(addr).unwrap();
-                rt.block_on(until_rx).ok();
+                _ = rt.block_on(until_rx);
             });
 
             addr_rx.recv().unwrap()

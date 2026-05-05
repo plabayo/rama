@@ -378,7 +378,6 @@ mod tests {
         #[derive(Default, Clone)]
         struct EveryOtherResponse(Arc<RwLock<u64>>);
 
-        #[allow(clippy::dbg_macro)]
         impl Predicate for EveryOtherResponse {
             fn should_compress<B>(&self, _: &mut rama_http_types::Response<B>) -> bool
             where
@@ -414,7 +413,7 @@ mod tests {
         // read the compressed body
         let body = res.into_body();
         let data = body.collect().await.unwrap().to_bytes();
-        assert!(String::from_utf8(data.to_vec()).is_err());
+        String::from_utf8(data.to_vec()).unwrap_err();
     }
 
     #[tokio::test]

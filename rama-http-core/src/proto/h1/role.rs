@@ -210,7 +210,7 @@ impl Http1Transaction for Server {
                 .inspect_err(|err| {
                     debug!("invalid http1 header: {err:?}");
                 })
-                .map_err(|_| crate::error::Parse::Internal)?;
+                .map_err(|_e| crate::error::Parse::Internal)?;
             let value = header_value!(slice.slice(header.value.0..header.value.1));
 
             match *name.header_name() {
@@ -926,7 +926,7 @@ impl Http1Transaction for Client {
                         .inspect_err(|err| {
                             debug!("invalid http1 header: {err:?}");
                         })
-                        .map_err(|_| crate::error::Parse::Internal)?;
+                        .map_err(|_e| crate::error::Parse::Internal)?;
                 let value = header_value!(slice.slice(header.value.0..header.value.1));
 
                 if header::CONNECTION == name.header_name() {
@@ -1010,7 +1010,7 @@ impl Http1Transaction for Client {
         extend(dst, msg.head.subject.0.as_str().as_bytes());
         extend(dst, b" ");
         //TODO: add API to http::Uri to encode without std::fmt
-        let _ = write!(FastWrite(dst), "{} ", msg.head.subject.1);
+        _ = write!(FastWrite(dst), "{} ", msg.head.subject.1);
 
         match msg.head.version {
             Version::HTTP_10 => extend(dst, b"HTTP/1.0"),
@@ -1053,7 +1053,7 @@ impl Client {
     /// Returns Some(length, wants_upgrade) if successful.
     ///
     /// Returns None if this message head should be skipped (like a 100 status).
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     fn decoder(
         inc: &MessageHead<StatusCode>,
         method: &mut Option<Method>,

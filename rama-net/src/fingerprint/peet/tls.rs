@@ -53,7 +53,7 @@ impl PeetPrint {
     ///
     /// [`ClientHello`]: crate::tls::client::ClientHello
     /// [`ClientConfig`]: crate::tls::client::ClientConfig
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn compute_from_client_hello(
         client_hello: impl ClientHelloProvider,
     ) -> Result<Self, PeetComputeError> {

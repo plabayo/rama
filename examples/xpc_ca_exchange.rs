@@ -19,6 +19,14 @@
 //! cargo run --example xpc_ca_exchange --features=net-apple-xpc
 //! ```
 
+#![cfg_attr(
+    target_vendor = "apple",
+    expect(
+        clippy::expect_used,
+        reason = "example: panic-on-error is the standard pattern for demos"
+    )
+)]
+
 #[cfg(not(target_vendor = "apple"))]
 fn main() {
     eprintln!("xpc_ca_exchange: XPC is only available on Apple platforms.");
@@ -129,10 +137,10 @@ async fn main() {
         }
 
         client_conn.cancel();
-        let _ = shutdown_tx.send(());
+        _ = shutdown_tx.send(());
     });
 
-    let _ = tokio::join!(server_task, client_task);
+    _ = tokio::join!(server_task, client_task);
 
     graceful
         .shutdown_with_limit(Duration::from_secs(5))

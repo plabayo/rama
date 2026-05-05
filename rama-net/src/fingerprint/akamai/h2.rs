@@ -185,9 +185,13 @@ impl AkamaiH2 {
 
 impl fmt::Display for AkamaiH2 {
     #[inline]
+    #[expect(
+        clippy::panic,
+        reason = "debug-only assertion: md5::Context::write_all is infallible in practice"
+    )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut ctx = md5::Context::new();
-        let _ = self.write_to_io(&mut ctx).inspect_err(|err| {
+        _ = self.write_to_io(&mut ctx).inspect_err(|err| {
             if cfg!(debug_assertions) {
                 panic!("md5 ingest failed: {err:?}");
             }

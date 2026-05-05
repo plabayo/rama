@@ -1,3 +1,7 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "fuzz target: panic-on-error is the standard pattern for harnesses"
+)]
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use rama::ServiceInput;

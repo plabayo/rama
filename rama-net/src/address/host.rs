@@ -348,7 +348,6 @@ fn try_to_parse_bytes_to_ip(value: &[u8]) -> Option<IpAddr> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_fun_call)]
 mod tests {
     use super::*;
 

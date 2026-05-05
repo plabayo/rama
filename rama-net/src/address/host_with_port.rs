@@ -377,7 +377,7 @@ impl<'de> serde::Deserialize<'de> for HostWithPort {
 mod tests {
     use super::*;
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, host_with_port: HostWithPort, host: &str, port: u16) {
         assert_eq!(host_with_port.host, host, "parsing: {s}");
         assert_eq!(host_with_port.port, port, "parsing: {s}");

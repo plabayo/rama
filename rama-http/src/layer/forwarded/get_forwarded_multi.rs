@@ -1,3 +1,8 @@
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
+
 use crate::Request;
 use crate::headers::forwarded::ForwardHeader;
 use rama_core::{Layer, Service, extensions::ExtensionsRef};

@@ -124,13 +124,11 @@ pub struct LeasedConnection<C: ExtensionsRef, ID> {
 
 impl<C: ExtensionsRef, ID> LeasedConnection<C, ID> {
     pub fn into_connection(mut self) -> C {
-        // SAFETY: value is only dropped in `Self::Drop`
-        // and value is only taken here if we move out of leased drop
-        //
-        // We cannot use ::into_inner as we still require
-        // a Drop impl as well, we assign pooled_conn_taken
-        // to tru so that we do not drop there again
+        // We cannot use ::into_inner as we still require a Drop impl as well, so
+        // we assign pooled_conn_taken to true to avoid double-dropping.
         self.pooled_conn_taken = true;
+        // SAFETY: value is only dropped in `Self::Drop`, and value is only taken
+        // here if we move out of leased drop.
         unsafe { ManuallyDrop::take(&mut self.pooled_conn) }.conn
     }
 }

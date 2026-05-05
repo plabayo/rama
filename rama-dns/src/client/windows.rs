@@ -353,6 +353,10 @@ fn parse_txt_records(
         // SAFETY: `record` is a live DNS_RECORD of type TXT while walking the list.
         let txt = unsafe { &record.data.txt };
         for idx in 0..txt.string_count as usize {
+            #[expect(
+                clippy::multiple_unsafe_ops_per_block,
+                reason = "pointer arithmetic and dereference are one logical array-index read"
+            )]
             let ptr = unsafe { *txt.strings.as_ptr().add(idx) };
             if ptr.is_null() {
                 continue;
@@ -391,12 +395,17 @@ fn wide_ptr_to_string(ptr: *const u16) -> String {
     let mut len = 0;
     // SAFETY: callers only pass pointers originating from the Windows DNS API
     // record list for the lifetime of the parsing call.
-    unsafe {
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "scanning a null-terminated wide string and slicing it are one logical read"
+    )]
+    let result = unsafe {
         while *ptr.add(len) != 0 {
             len += 1;
         }
         String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
-    }
+    };
+    result
 }
 
 struct QueryState<T, P> {

@@ -353,7 +353,7 @@ impl Prioritize {
             let reserved =
                 stream.send_flow.available().as_size() - stream.buffered_send_data as WindowSize;
 
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "due to how `reserved` is computed it can't be greater than what's available"
             )]

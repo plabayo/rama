@@ -58,7 +58,7 @@ where
     type Output = Response;
     type Error = Infallible;
 
-    #[allow(clippy::manual_async_fn)]
+    #[expect(clippy::manual_async_fn)]
     fn serve(
         &self,
         _req: Request<ReqBody>,

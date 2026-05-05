@@ -23,6 +23,10 @@ enum AsnData {
 impl Asn {
     /// Create a valid ASN from a static number, validated at compile time.
     #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "static-value invariant: panic at compile time when ASN constant is out of range"
+    )]
     pub const fn from_static(value: u32) -> Self {
         if value == 0 {
             return Self(AsnData::Unspecified);
@@ -79,7 +83,7 @@ impl TryFrom<&str> for Asn {
     type Error = InvalidAsn;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let value: u32 = value.parse().map_err(|_| InvalidAsn)?;
+        let value: u32 = value.parse().map_err(|_e| InvalidAsn)?;
         value.try_into()
     }
 }
@@ -105,7 +109,7 @@ impl TryFrom<&[u8]> for Asn {
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         std::str::from_utf8(value)
-            .map_err(|_| InvalidAsn)?
+            .map_err(|_e| InvalidAsn)?
             .try_into()
     }
 }
@@ -147,7 +151,7 @@ impl<'de> Deserialize<'de> for Asn {
         let value = u32::deserialize(deserializer)?;
         value
             .try_into()
-            .map_err(|_| serde::de::Error::custom("invalid asn"))
+            .map_err(|_e| serde::de::Error::custom("invalid asn"))
     }
 }
 

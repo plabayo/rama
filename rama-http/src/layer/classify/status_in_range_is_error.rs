@@ -94,7 +94,6 @@ impl fmt::Display for StatusInRangeFailureClass {
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use super::*;
     use rama_http_types::Response;
 

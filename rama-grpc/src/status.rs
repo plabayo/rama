@@ -860,7 +860,7 @@ impl Code {
     ///
     /// If not known, returns `Code::Unknown` (surprise!).
     #[must_use]
-    #[allow(clippy::match_same_arms)]
+    #[expect(clippy::match_same_arms)]
     pub const fn from_i32(i: i32) -> Self {
         match i {
             0 => Self::Ok,

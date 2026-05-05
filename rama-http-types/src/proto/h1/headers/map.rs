@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic,
+    reason = "vendored from upstream `http`: matches upstream invariant-violation panicking style"
+)]
+
 use ahash::HashMap;
 use std::borrow::Cow;
 

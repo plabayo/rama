@@ -1,3 +1,9 @@
+#![expect(
+    clippy::panic,
+    clippy::allow_attributes,
+    reason = "vendored from upstream `h2`: matches upstream invariant-violation panicking style"
+)]
+
 use super::Header;
 
 use fnv::FnvHasher;

@@ -12,6 +12,11 @@
 //! and thus this is another self-contained example with the server
 //! and client combined.
 
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     extensions::Extensions,
     net::{address::SocketAddress, user::credentials::basic},
@@ -95,7 +100,7 @@ async fn main() {
 
         // read something that will never come,
         // so we stay blocked until client drops
-        let _ = udp_server.recv(&mut buf).await;
+        _ = udp_server.recv(&mut buf).await;
     });
 
     let mut udp_socket_relay = udp_binder

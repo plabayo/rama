@@ -35,7 +35,7 @@ async fn graceful_stream_cancels_pending_stream() {
 
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let cancel = async move {
-        let _ = rx.await;
+        _ = rx.await;
     };
 
     let delayed = DelayStream::new(Duration::from_secs(10), stream::iter([1u8, 2, 3]));
@@ -44,7 +44,7 @@ async fn graceful_stream_cancels_pending_stream() {
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(s.next().now_or_never(), None);
 
-    let _ = tx.send(());
+    _ = tx.send(());
     assert_eq!(s.next().await, None);
     assert_eq!(s.next().await, None);
 }
@@ -53,12 +53,12 @@ async fn graceful_stream_cancels_pending_stream() {
 async fn graceful_stream_stops_after_cancel_even_if_stream_has_more_items() {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let cancel = async move {
-        let _ = rx.await;
+        _ = rx.await;
     };
     let mut s = std::pin::pin!(GracefulStream::new(cancel, stream::iter([1u8, 2, 3])));
 
     assert_eq!(s.next().await, Some(1));
-    let _ = tx.send(());
+    _ = tx.send(());
     assert_eq!(s.next().await, None);
     assert_eq!(s.next().await, None);
 }

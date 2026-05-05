@@ -83,8 +83,8 @@ impl Header {
         buf.put_u8(self.method.into());
     }
 
-    #[allow(unused)]
-    #[allow(clippy::unused_self)]
+    #[expect(unused)]
+    #[expect(clippy::unused_self)]
     const fn serialized_len(&self) -> usize {
         1 + 1
     }
@@ -349,8 +349,8 @@ impl UsernamePasswordResponse {
         buf.put_u8(self.status);
     }
 
-    #[allow(unused)]
-    #[allow(clippy::unused_self)]
+    #[expect(unused)]
+    #[expect(clippy::unused_self)]
     fn serialized_len(&self) -> usize {
         1 + 1
     }

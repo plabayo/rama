@@ -666,7 +666,7 @@ mod test {
             tokio::time::sleep(Duration::from_millis(10)).await;
             writer.write_all(b"f").await.unwrap();
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let _ = writer.write_all(b"f").await; // this may hit an eof
+            _ = writer.write_all(b"f").await; // this may hit an eof
         });
 
         let mut s = pin!(TimeoutIo::new(reader).with_read_timeout(Duration::from_millis(100)));

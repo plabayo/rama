@@ -240,7 +240,7 @@ impl<H> EchoServiceBuilder<H>
 where
     H: Layer<EchoService, Service: Service<Request, Output = Response, Error = BoxError>>,
 {
-    #[allow(unused_mut)]
+    #[expect(unused_mut)]
     /// build a tcp service ready to echo http traffic back
     pub fn build(
         mut self,

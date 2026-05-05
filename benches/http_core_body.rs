@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::allow_attributes,
+    reason = "bench: panic-on-error is the standard pattern for harnesses"
+)]
 #![deny(warnings)]
 
 use rama::bytes::Buf;

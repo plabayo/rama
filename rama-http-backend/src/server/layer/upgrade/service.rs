@@ -121,7 +121,7 @@ where
                         async move {
                             match rama_http::io::upgrade::handle_upgrade(&req).await {
                                 Ok(upgraded) => {
-                                    let _ = handler.serve(upgraded).await;
+                                    _ = handler.serve(upgraded).await;
                                 }
                                 Err(e) => {
                                     // TODO: do we need to allow the user to hook into this?

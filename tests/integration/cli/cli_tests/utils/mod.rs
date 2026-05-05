@@ -643,7 +643,7 @@ static INIT_TRACING_ONCE: Once = Once::new();
 /// Initialize tracing for example tests
 pub(super) fn init_tracing() {
     INIT_TRACING_ONCE.call_once(|| {
-        let _ = subscriber::registry()
+        _ = subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()

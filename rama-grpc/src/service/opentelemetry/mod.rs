@@ -576,7 +576,7 @@ fn env_endpoint(var: &'static str) -> Result<Option<Uri>, OtelExporterConfigErro
 
     let endpoint = value
         .parse::<Uri>()
-        .map_err(|_| OtelExporterConfigError::new(format!("invalid {var} value: {value}")))?;
+        .map_err(|_e| OtelExporterConfigError::new(format!("invalid {var} value: {value}")))?;
 
     Ok(Some(endpoint))
 }
@@ -594,7 +594,7 @@ fn env_timeout(var: &'static str) -> Result<Option<Duration>, OtelExporterConfig
 
     let timeout_ms = value
         .parse::<u64>()
-        .map_err(|_| OtelExporterConfigError::new(format!("invalid {var} value: {value}")))?;
+        .map_err(|_e| OtelExporterConfigError::new(format!("invalid {var} value: {value}")))?;
 
     Ok(Some(Duration::from_millis(timeout_ms)))
 }

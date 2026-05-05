@@ -768,7 +768,7 @@ mod tests {
     #[::tracing_test::traced_test]
     fn test_parse_invalid_input() {
         for test_value in ["", "\n"] {
-            let _: Vec<_> = robots_tag_parse_iter(test_value.as_bytes()).collect();
+            _ = robots_tag_parse_iter(test_value.as_bytes()).collect::<Vec<_>>();
         }
     }
 

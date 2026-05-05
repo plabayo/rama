@@ -124,7 +124,7 @@ where
             res = self.inner.serve(input) => res,
             maybe_notify = abort_rx.recv() => {
                 if let Some(notify) = maybe_notify {
-                    let _ = notify.send(());
+                    _ = notify.send(());
                 }
                 tracing::debug!("abortable svc aborted by controller");
                 Err(self.into_error.make_layer_error().into())

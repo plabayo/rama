@@ -127,34 +127,30 @@ mod tests {
     #[tokio::test]
     async fn test_empty_live_update_db() {
         let (reader, _) = proxy_db_updater::<Proxy>();
-        assert!(
-            reader
-                .get_proxy(
-                    ProxyContext {
-                        protocol: TransportProtocol::Tcp,
-                    },
-                    ProxyFilter::default(),
-                )
-                .await
-                .is_err()
-        );
+        reader
+            .get_proxy(
+                ProxyContext {
+                    protocol: TransportProtocol::Tcp,
+                },
+                ProxyFilter::default(),
+            )
+            .await
+            .unwrap_err();
     }
 
     #[tokio::test]
     async fn test_live_update_db_updated() {
         let (reader, writer) = proxy_db_updater();
 
-        assert!(
-            reader
-                .get_proxy(
-                    ProxyContext {
-                        protocol: TransportProtocol::Tcp,
-                    },
-                    ProxyFilter::default(),
-                )
-                .await
-                .is_err()
-        );
+        reader
+            .get_proxy(
+                ProxyContext {
+                    protocol: TransportProtocol::Tcp,
+                },
+                ProxyFilter::default(),
+            )
+            .await
+            .unwrap_err();
 
         writer.set(Proxy {
             id: non_empty_str!("id"),
@@ -191,17 +187,15 @@ mod tests {
                 .id
         );
 
-        assert!(
-            reader
-                .get_proxy(
-                    ProxyContext {
-                        protocol: TransportProtocol::Udp,
-                    },
-                    ProxyFilter::default(),
-                )
-                .await
-                .is_err()
-        );
+        reader
+            .get_proxy(
+                ProxyContext {
+                    protocol: TransportProtocol::Udp,
+                },
+                ProxyFilter::default(),
+            )
+            .await
+            .unwrap_err();
 
         assert_eq!(
             "id",

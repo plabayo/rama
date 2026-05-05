@@ -199,7 +199,7 @@ impl OwnedXpcObject {
             // objc2's Encode trait. The ABI is identical: XPC reads the 1-byte
             // return value and treats any non-zero as "continue".
             let mut block = StackBlock::new(move |_idx: usize, value: xpc_object_t| -> u8 {
-                let _ = sender.send(Self::retain(value, "array element"));
+                _ = sender.send(Self::retain(value, "array element"));
                 1
             });
             // SAFETY: self.raw is a valid XPC array. xpc_array_apply calls the block
@@ -215,7 +215,7 @@ impl OwnedXpcObject {
             for _ in 0..unsafe { xpc_array_get_count(self.raw) } {
                 let value = receiver
                     .recv()
-                    .map_err(|_| XpcError::UnsupportedObjectType("array"))??;
+                    .map_err(|_e| XpcError::UnsupportedObjectType("array"))??;
                 values.push(value.to_message()?);
             }
             return Ok(XpcMessage::Array(values));
@@ -229,7 +229,7 @@ impl OwnedXpcObject {
                 let key = unsafe { CStr::from_ptr(key) }
                     .to_string_lossy()
                     .into_owned();
-                let _ = sender.send((key, Self::retain(value, "dictionary value")));
+                _ = sender.send((key, Self::retain(value, "dictionary value")));
                 1
             });
             // SAFETY: self.raw is a valid XPC dictionary. xpc_dictionary_apply calls the
@@ -243,7 +243,7 @@ impl OwnedXpcObject {
             for _ in 0..unsafe { xpc_dictionary_get_count(self.raw) } {
                 let (key, value) = receiver
                     .recv()
-                    .map_err(|_| XpcError::UnsupportedObjectType("dictionary"))?;
+                    .map_err(|_e| XpcError::UnsupportedObjectType("dictionary"))?;
                 values.insert(key, value?.to_message()?);
             }
             return Ok(XpcMessage::Dictionary(values));
