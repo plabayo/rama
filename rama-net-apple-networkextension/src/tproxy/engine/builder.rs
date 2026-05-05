@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
@@ -16,6 +17,8 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     tcp_flow_buffer_size: Option<usize>,
     tcp_channel_capacity: Option<usize>,
     udp_channel_capacity: Option<usize>,
+    tcp_idle_timeout: Option<Duration>,
+    udp_idle_timeout: Option<Duration>,
     opaque_config: Option<Arc<[u8]>>,
     runtime_factory: R,
 }
@@ -31,6 +34,8 @@ where
             tcp_flow_buffer_size: None,
             tcp_channel_capacity: None,
             udp_channel_capacity: None,
+            tcp_idle_timeout: None,
+            udp_idle_timeout: None,
             opaque_config: None,
             runtime_factory: DefaultTransparentProxyAsyncRuntimeFactory::default(),
         }
@@ -45,6 +50,8 @@ where
             tcp_flow_buffer_size: self.tcp_flow_buffer_size,
             tcp_channel_capacity: self.tcp_channel_capacity,
             udp_channel_capacity: self.udp_channel_capacity,
+            tcp_idle_timeout: self.tcp_idle_timeout,
+            udp_idle_timeout: self.udp_idle_timeout,
             opaque_config: self.opaque_config,
             runtime_factory,
         }
@@ -91,6 +98,37 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Per-flow idle timeout for TCP bridges.
+        ///
+        /// When set, the per-flow TCP bridge closes with reason `idle_timeout`
+        /// when no byte progress has been observed in either direction within
+        /// the configured window. `None` (the default) disables idle detection.
+        ///
+        /// The bridge naturally terminates on EOF / errors / shutdown regardless
+        /// of this setting; the idle timeout exists as a backstop against
+        /// "stale flows" that never observe an EOF (e.g. after the host has been
+        /// asleep and the kernel-side flow ownership has gone stale).
+        pub fn tcp_idle_timeout(mut self, timeout: Option<Duration>) -> Self
+        {
+            self.tcp_idle_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Per-flow idle timeout for UDP bridges.
+        ///
+        /// When set, the per-flow UDP bridge closes with reason `idle_timeout`
+        /// when no datagram progress has been observed in either direction within
+        /// the configured window. `None` (the default) disables idle detection.
+        pub fn udp_idle_timeout(mut self, timeout: Option<Duration>) -> Self
+        {
+            self.udp_idle_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         #[must_use]
         #[doc(hidden)]
         /// Unstable API only meant for generated code.
@@ -115,6 +153,8 @@ where
             tcp_flow_buffer_size,
             tcp_channel_capacity,
             udp_channel_capacity,
+            tcp_idle_timeout,
+            udp_idle_timeout,
             opaque_config,
             runtime_factory,
         } = self;
@@ -163,6 +203,8 @@ where
                 .unwrap_or(super::DEFAULT_TCP_CHANNEL_CAPACITY),
             udp_channel_capacity: udp_channel_capacity
                 .unwrap_or(super::DEFAULT_UDP_CHANNEL_CAPACITY),
+            tcp_idle_timeout,
+            udp_idle_timeout,
             shutdown: Some(shutdown),
             stop_trigger: Some(stop_tx),
         })

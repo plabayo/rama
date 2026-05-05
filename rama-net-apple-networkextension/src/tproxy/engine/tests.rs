@@ -908,3 +908,179 @@ fn app_message_can_return_reply() {
     let reply = engine.handle_app_message(Bytes::from_static(b"ping"));
     assert_eq!(reply.as_deref(), Some(&b"pong"[..]));
 }
+
+fn build_engine_with_tcp_idle_timeout(
+    handler: TestHandler,
+    timeout: Duration,
+) -> TransparentProxyEngine<TestHandler> {
+    TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_tcp_idle_timeout(timeout)
+        .build()
+        .expect("build engine")
+}
+
+#[test]
+fn flow_meta_new_generates_unique_flow_ids_and_sets_opened_at() {
+    let a = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    let b = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    assert_ne!(a.flow_id, 0);
+    assert_ne!(b.flow_id, 0);
+    assert_ne!(a.flow_id, b.flow_id);
+    assert!(b.flow_id > a.flow_id);
+    assert!(a.opened_at <= Instant::now());
+    assert!(a.intercept_decision.is_none());
+    assert!(b.intercept_decision.is_none());
+}
+
+#[test]
+fn flow_meta_records_intercept_decision_after_handler() {
+    let seen = Arc::new(Mutex::new(None::<Arc<TransparentProxyFlowMeta>>));
+    let seen_clone = seen.clone();
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let seen_clone = seen_clone.clone();
+            let notify_tx = notify_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |bridge: BridgeIo<TcpFlow, NwTcpStream>| {
+                    let seen_clone = seen_clone.clone();
+                    let notify_tx = notify_tx.clone();
+                    async move {
+                        let BridgeIo(stream, _egress) = bridge;
+                        *seen_clone.lock() =
+                            stream.extensions().get_arc::<TransparentProxyFlowMeta>();
+                        let _ = notify_tx.send(());
+                        Ok(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    engine.stop(0);
+
+    let seen_meta = seen.lock().clone().expect("tcp flow meta");
+    assert_eq!(
+        seen_meta.intercept_decision,
+        Some(crate::tproxy::types::TransparentProxyFlowAction::Intercept),
+        "intercept_decision should be populated by the engine"
+    );
+    assert_ne!(seen_meta.flow_id, 0);
+}
+
+#[test]
+fn tcp_bridge_idle_timeout_unwinds_session() {
+    // Service holds the bridge open without doing any I/O so the bridge has
+    // no progress to observe; the idle timeout backstop should close it.
+    let (close_tx, close_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|bridge: BridgeIo<TcpFlow, NwTcpStream>| async move {
+                // Keep the bridge alive — without holding it, dropping it
+                // immediately closes the duplex halves and the bridge sees EOF.
+                let BridgeIo(stream, egress) = bridge;
+                let _hold = (stream, egress);
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine_with_tcp_idle_timeout(handler, Duration::from_millis(100));
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        move || {
+            let _ = close_tx.send(());
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+    // Wait for on_server_closed — fired when the ingress bridge exits its
+    // loop, including via the idle timeout path.
+    let started = Instant::now();
+    close_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("on_server_closed within 2s");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(80),
+        "idle bridge unwound too early: {:?}",
+        elapsed
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "idle bridge unwound too late: {:?}",
+        elapsed
+    );
+
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_bridge_observes_per_flow_shutdown_via_session_cancel() {
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|bridge: BridgeIo<TcpFlow, NwTcpStream>| async move {
+                let BridgeIo(stream, egress) = bridge;
+                let _hold = (stream, egress);
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+    // Give the bridge a moment to register, then cancel — should return
+    // promptly without blocking even though the service is still parked.
+    std::thread::sleep(Duration::from_millis(20));
+    let started = Instant::now();
+    session.cancel();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "session cancel took too long: {:?}",
+        elapsed
+    );
+
+    engine.stop(0);
+}

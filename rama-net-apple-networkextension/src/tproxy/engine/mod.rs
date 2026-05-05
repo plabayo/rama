@@ -2,8 +2,9 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use rama_core::{
@@ -14,7 +15,10 @@ use rama_core::{
     rt::Executor,
     service::Service,
 };
-use rama_net::{conn::is_connection_error, proxy::ProxyTarget};
+use rama_net::{
+    conn::is_connection_error,
+    proxy::{BridgeCloseReason, IdleGuard, ProxyTarget},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{
@@ -132,6 +136,11 @@ pub struct TransparentProxyEngine<H> {
     tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
     udp_channel_capacity: usize,
+    tcp_idle_timeout: Option<Duration>,
+    // Will be plumbed through to UDP bridges in a follow-up; currently captured
+    // from the builder but not yet observed.
+    #[allow(dead_code)]
+    udp_idle_timeout: Option<Duration>,
     shutdown: Option<Shutdown>,
     stop_trigger: Option<oneshot::Sender<()>>,
 }
@@ -181,6 +190,7 @@ where
 
         let tcp_flow_buffer_size = self.tcp_flow_buffer_size;
         let tcp_channel_capacity = self.tcp_channel_capacity;
+        let tcp_idle_timeout = self.tcp_idle_timeout;
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
@@ -192,6 +202,7 @@ where
                 meta,
                 tcp_flow_buffer_size,
                 tcp_channel_capacity,
+                tcp_idle_timeout,
                 on_server_bytes,
                 on_client_read_demand,
                 on_server_closed,
@@ -278,6 +289,8 @@ struct TcpSessionPendingData {
     tcp_flow_buffer_size: usize,
     /// Capacity of the bounded ingress and egress mpsc channels (in chunks).
     tcp_channel_capacity: usize,
+    /// Optional per-flow idle timeout. `None` disables idle detection.
+    tcp_idle_timeout: Option<Duration>,
     /// Per-flow metadata inserted into `TcpFlow` extensions at activate.
     meta: TransparentProxyFlowMeta,
     /// Flow-scoped guard; held by bridge tasks to delay shutdown until they finish.
@@ -479,6 +492,7 @@ impl TransparentProxyTcpSession {
             on_server_closed,
             tcp_flow_buffer_size,
             tcp_channel_capacity,
+            tcp_idle_timeout,
             meta,
             flow_guard,
             rt_handle,
@@ -490,7 +504,8 @@ impl TransparentProxyTcpSession {
         let ingress_stream =
             TcpFlow::new(ingress_user, Some(Executor::graceful(flow_guard.clone())));
         let remote_endpoint = meta.remote_endpoint.clone();
-        ingress_stream.extensions().insert_arc(Arc::new(meta));
+        let meta_arc = Arc::new(meta);
+        ingress_stream.extensions().insert_arc(meta_arc.clone());
         if let Some(remote) = remote_endpoint {
             ingress_stream.extensions().insert(ProxyTarget(remote));
         }
@@ -525,8 +540,8 @@ impl TransparentProxyTcpSession {
         // spawn ingress bridge (client ↔ service)
         self.ingress_bridge_task = Some({
             let guard = flow_guard.clone();
+            let meta = meta_arc.clone();
             rt_handle.spawn(async move {
-                let _guard = guard;
                 run_tcp_bridge(
                     ingress_internal,
                     client_rx,
@@ -535,6 +550,10 @@ impl TransparentProxyTcpSession {
                     on_server_bytes,
                     server_write_notify,
                     on_server_closed,
+                    guard,
+                    meta,
+                    tcp_idle_timeout,
+                    BridgeDirection::Ingress,
                 )
                 .await;
             })
@@ -542,8 +561,9 @@ impl TransparentProxyTcpSession {
 
         // spawn egress bridge (service ↔ NWConnection)
         self.egress_bridge_task = Some({
+            let guard = flow_guard;
+            let meta = meta_arc;
             rt_handle.spawn(async move {
-                let _guard = flow_guard;
                 run_tcp_bridge(
                     egress_internal,
                     egress_client_rx,
@@ -552,6 +572,10 @@ impl TransparentProxyTcpSession {
                     guarded_egress_bytes,
                     egress_write_notify,
                     guarded_egress_closed,
+                    guard,
+                    meta,
+                    tcp_idle_timeout,
+                    BridgeDirection::Egress,
                 )
                 .await;
             })
@@ -618,6 +642,7 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     meta: TransparentProxyFlowMeta,
     tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
+    tcp_idle_timeout: Option<Duration>,
     on_server_bytes: OnBytes,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -632,11 +657,12 @@ where
     let egress_connect_options = handler.egress_tcp_connect_options(&meta);
     let flow_action = handler.match_tcp_flow(exec, meta).await;
 
-    let (service, meta) = match flow_action {
+    let (service, mut meta) = match flow_action {
         FlowAction::Intercept { service, meta } => (service, meta),
         FlowAction::Blocked => return SessionFlowAction::Blocked,
         FlowAction::Passthrough => return SessionFlowAction::Passthrough,
     };
+    meta.intercept_decision = Some(crate::tproxy::types::TransparentProxyFlowAction::Intercept);
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
     let flow_shutdown = Shutdown::new(async move {
@@ -684,6 +710,7 @@ where
         on_server_closed: on_server_closed_guarded,
         tcp_flow_buffer_size,
         tcp_channel_capacity,
+        tcp_idle_timeout,
         meta,
         flow_guard,
         rt_handle,
@@ -1010,6 +1037,24 @@ fn guarded_demand_sink(
     })
 }
 
+/// Direction tag for [`run_tcp_bridge`] used in close-log emission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeDirection {
+    /// Client ↔ service ingress bridge (FFI client_rx ↔ service duplex).
+    Ingress,
+    /// Service ↔ NWConnection egress bridge.
+    Egress,
+}
+
+impl BridgeDirection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ingress => "ingress",
+            Self::Egress => "egress",
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_tcp_bridge(
     internal: tokio::io::DuplexStream,
@@ -1019,6 +1064,10 @@ async fn run_tcp_bridge(
     on_server_bytes: BytesStatusSink,
     server_write_notify: Arc<Notify>,
     on_server_closed: ClosedSink,
+    flow_guard: ShutdownGuard,
+    meta: Arc<TransparentProxyFlowMeta>,
+    idle_timeout: Option<Duration>,
+    direction: BridgeDirection,
 ) {
     let (mut read_half, mut write_half) = tokio::io::split(internal);
     let mut buf = vec![0u8; 16 * 1024];
@@ -1039,19 +1088,35 @@ async fn run_tcp_bridge(
     // pattern for the Swift → Rust direction.
     let mut pending_to_server: Option<Bytes> = None;
 
-    loop {
+    let mut bytes_in: u64 = 0; // bytes written to the duplex (FFI -> service)
+    let mut bytes_out: u64 = 0; // bytes read from the duplex (service -> FFI)
+    let progress = Arc::new(AtomicU64::new(0));
+    let mut last_progress: u64 = 0;
+    let mut idle = idle_timeout.map(IdleGuard::new);
+
+    let close_reason = loop {
         if server_closed {
-            break;
+            break BridgeCloseReason::PeerEofRight;
         }
 
         // Drain any pending replay before reading more from the duplex.
         if let Some(bytes) = pending_to_server.take() {
             match on_server_bytes(bytes.clone()) {
-                TcpDeliverStatus::Accepted => {}
+                TcpDeliverStatus::Accepted => {
+                    progress.fetch_add(1, Ordering::Relaxed);
+                }
                 TcpDeliverStatus::Paused => {
                     pending_to_server = Some(bytes);
-                    server_write_notify.notified().await;
-                    continue;
+                    // Wait for drain or shutdown — never block here forever.
+                    tokio::select! {
+                        biased;
+                        () = flow_guard.cancelled() => {
+                            break BridgeCloseReason::Shutdown;
+                        }
+                        () = server_write_notify.notified() => {
+                            continue;
+                        }
+                    }
                 }
                 TcpDeliverStatus::Closed => {
                     server_closed = true;
@@ -1061,15 +1126,35 @@ async fn run_tcp_bridge(
         }
 
         tokio::select! {
-            // No `biased;` directive — both arms must remain fair so that
-            // sustained traffic in one direction can't starve the other
-            // (think a busy h2 connection with continuous response data
-            // arriving while the client also pumps WINDOW_UPDATEs).
-            //
-            // EOF is intentionally signalled by dropping the FFI sender,
-            // not via a side-channel: `recv()` then drains any buffered
-            // chunks and only after that returns `None`, which is the
-            // canonical mpsc EOF.
+            // No `biased;` between the two data arms — both must remain fair
+            // so that sustained traffic in one direction can't starve the
+            // other (think a busy h2 connection with continuous response data
+            // arriving while the client also pumps WINDOW_UPDATEs). The
+            // shutdown and idle arms are explicitly biased above the data
+            // arms so they fire promptly when relevant.
+
+            // Per-flow shutdown — drain immediately.
+            () = flow_guard.cancelled() => {
+                break BridgeCloseReason::Shutdown;
+            }
+
+            // Idle timeout — re-arm if progress observed; otherwise close.
+            _ = async {
+                match idle.as_mut() {
+                    Some(g) => g.tick().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                let cur = progress.load(Ordering::Relaxed);
+                if cur != last_progress {
+                    last_progress = cur;
+                    if let Some(g) = idle.as_mut() {
+                        g.reset();
+                    }
+                    continue;
+                }
+                break BridgeCloseReason::IdleTimeout;
+            }
 
             maybe = client_rx.recv(), if !write_done => {
                 if let Some(bytes) = maybe {
@@ -1080,11 +1165,12 @@ async fn run_tcp_bridge(
                     if paused.swap(false, Ordering::AcqRel) {
                         on_read_demand();
                     }
+                    let n = bytes.len() as u64;
                     if let Err(err) = write_half.write_all(&bytes).await {
                         if is_connection_error(&err) {
-                            tracing::trace!("tcp bridge write_all conn error: {err}");
+                            tracing::trace!(direction = direction.as_str(), %err, "tcp bridge write_all conn error");
                         } else {
-                            tracing::debug!("tcp bridge write_all failed: {err}");
+                            tracing::debug!(direction = direction.as_str(), %err, "tcp bridge write_all failed");
                         }
                         // The service dropped its read side (e.g. it already wrote its
                         // response and returned).  Stop writing, but keep reading so
@@ -1097,6 +1183,9 @@ async fn run_tcp_bridge(
                         // sustained load lets a single broken flow keep buffering.
                         write_done = true;
                         client_rx.close();
+                    } else {
+                        bytes_in += n;
+                        progress.fetch_add(1, Ordering::Relaxed);
                     }
                 } else {
                     // FFI sender dropped (EOF or cancel). Drain done; close
@@ -1107,14 +1196,17 @@ async fn run_tcp_bridge(
             }
             read_res = read_half.read(&mut buf) => {
                 match read_res {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        break BridgeCloseReason::PeerEofLeft;
+                    }
                     Err(err) => {
-                        if is_connection_error(&err) {
-                            tracing::trace!("tcp bridge read_half conn error: {err}");
+                        let conn_err = is_connection_error(&err);
+                        if conn_err {
+                            tracing::trace!(direction = direction.as_str(), %err, "tcp bridge read_half conn error");
                         } else {
-                            tracing::debug!("tcp bridge read_half failed: {err}");
+                            tracing::debug!(direction = direction.as_str(), %err, "tcp bridge read_half failed");
                         }
-                        break;
+                        break BridgeCloseReason::ReadErrorLeft;
                     }
                     Ok(n) => {
                         // Symmetric backpressure: Swift's writer pump may be
@@ -1126,10 +1218,19 @@ async fn run_tcp_bridge(
                         // until `signal_*_drain` fires.
                         let bytes = Bytes::copy_from_slice(&buf[..n]);
                         match on_server_bytes(bytes.clone()) {
-                            TcpDeliverStatus::Accepted => {}
+                            TcpDeliverStatus::Accepted => {
+                                bytes_out += n as u64;
+                                progress.fetch_add(1, Ordering::Relaxed);
+                            }
                             TcpDeliverStatus::Paused => {
                                 pending_to_server = Some(bytes);
-                                server_write_notify.notified().await;
+                                tokio::select! {
+                                    biased;
+                                    () = flow_guard.cancelled() => {
+                                        break BridgeCloseReason::Shutdown;
+                                    }
+                                    () = server_write_notify.notified() => {}
+                                }
                             }
                             TcpDeliverStatus::Closed => {
                                 // Session torn down on the Swift side; no
@@ -1143,9 +1244,49 @@ async fn run_tcp_bridge(
                 }
             }
         }
-    }
+    };
 
+    emit_tcp_bridge_close_event(direction, close_reason, &meta, bytes_in, bytes_out);
     on_server_closed();
+}
+
+fn emit_tcp_bridge_close_event(
+    direction: BridgeDirection,
+    reason: BridgeCloseReason,
+    meta: &TransparentProxyFlowMeta,
+    bytes_in: u64,
+    bytes_out: u64,
+) {
+    let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
+    let bundle_id = meta
+        .source_app_bundle_identifier
+        .as_ref()
+        .map(ToString::to_string);
+    let signing_id = meta
+        .source_app_signing_identifier
+        .as_ref()
+        .map(ToString::to_string);
+    let local = meta.local_endpoint.as_ref().map(ToString::to_string);
+    let remote = meta.remote_endpoint.as_ref().map(ToString::to_string);
+    let decision = meta.intercept_decision.map(|d| d.as_str());
+
+    tracing::info!(
+        target: "rama_apple_ne::tproxy",
+        flow_id = meta.flow_id,
+        protocol = meta.protocol.as_str(),
+        direction = direction.as_str(),
+        reason = %reason,
+        age_ms,
+        bytes_in,
+        bytes_out,
+        pid = meta.source_app_pid,
+        bundle_id,
+        signing_id,
+        local,
+        remote,
+        decision,
+        "transparent proxy tcp flow closed",
+    );
 }
 
 #[cfg(test)]

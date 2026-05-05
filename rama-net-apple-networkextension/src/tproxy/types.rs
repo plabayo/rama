@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use rama_core::extensions::Extension;
 use rama_net::address::{Host, HostWithPort};
@@ -8,6 +9,14 @@ use rama_utils::{
 };
 
 use crate::process::AuditToken;
+
+/// Monotonic per-process counter used to generate [`TransparentProxyFlowMeta`]
+/// `flow_id` values. Starts at 1; 0 is reserved as "unset / unknown."
+static FLOW_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_flow_id() -> u64 {
+    FLOW_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
 
 /// NWParameters service class — maps to `NWParameters.serviceClass`.
 ///
@@ -178,6 +187,22 @@ impl TransparentProxyFlowProtocol {
     pub fn as_u32(self) -> u32 {
         self as u32
     }
+
+    /// Stable string label for structured logging.
+    #[inline]
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+        }
+    }
+}
+
+impl std::fmt::Display for TransparentProxyFlowProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl From<u32> for TransparentProxyFlowProtocol {
@@ -210,6 +235,23 @@ impl TransparentProxyFlowAction {
     #[inline(always)]
     pub fn as_u32(self) -> u32 {
         self as u32
+    }
+
+    /// Stable string label for structured logging.
+    #[inline]
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Intercept => "intercept",
+            Self::Passthrough => "passthrough",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+impl std::fmt::Display for TransparentProxyFlowAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -393,10 +435,25 @@ impl Default for TransparentProxyConfig {
 ///
 /// This metadata is specific to one intercepted flow and is injected into the
 /// flow input extensions for user services.
+///
+/// `flow_id` and `opened_at` are populated automatically by [`Self::new`] using
+/// a monotonic per-process counter and the current instant. `intercept_decision`
+/// is set by the engine after the flow handler returns its decision; user code
+/// observing the meta as a service input may see `None` until the engine has
+/// recorded the decision.
 #[derive(Clone, Debug, Extension)]
 pub struct TransparentProxyFlowMeta {
     /// Transport protocol for this flow.
     pub protocol: TransparentProxyFlowProtocol,
+    /// Monotonic per-process flow id. Useful for correlating engine-emitted
+    /// trace events (open / decision / close) for the same flow.
+    pub flow_id: u64,
+    /// When the meta was constructed; used as the opened-at timestamp for
+    /// computing flow age in close events.
+    pub opened_at: Instant,
+    /// Decision recorded by the engine after the flow handler returned.
+    /// `None` until the handler has been invoked.
+    pub intercept_decision: Option<TransparentProxyFlowAction>,
     /// Remote endpoint for this flow, if known.
     pub remote_endpoint: Option<HostWithPort>,
     /// Local endpoint for this flow, if known.
@@ -413,10 +470,17 @@ pub struct TransparentProxyFlowMeta {
 
 impl TransparentProxyFlowMeta {
     /// Create flow metadata from strongly typed fields.
+    ///
+    /// `flow_id` is generated from a monotonic per-process counter; `opened_at`
+    /// is set to [`Instant::now`]. `intercept_decision` starts as `None` and is
+    /// populated by the engine once a flow decision is reached.
     #[must_use]
     pub fn new(protocol: TransparentProxyFlowProtocol) -> Self {
         Self {
             protocol,
+            flow_id: next_flow_id(),
+            opened_at: Instant::now(),
+            intercept_decision: None,
             remote_endpoint: None,
             local_endpoint: None,
             source_app_signing_identifier: None,
@@ -424,6 +488,12 @@ impl TransparentProxyFlowMeta {
             source_app_audit_token: None,
             source_app_pid: None,
         }
+    }
+
+    /// Age since the meta was constructed (i.e. since the flow was first seen).
+    #[must_use]
+    pub fn age(&self) -> Duration {
+        self.opened_at.elapsed()
     }
 
     generate_set_and_with! {
@@ -470,6 +540,14 @@ impl TransparentProxyFlowMeta {
         /// Set source app pid.
         pub fn source_app_pid(mut self, value: Option<i32>) -> Self {
             self.source_app_pid = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the decision recorded by the engine after the flow handler returned.
+        pub fn intercept_decision(mut self, value: Option<TransparentProxyFlowAction>) -> Self {
+            self.intercept_decision = value;
             self
         }
     }
