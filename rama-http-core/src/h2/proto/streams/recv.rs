@@ -8,6 +8,7 @@ use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
 };
 use rama_http_types::{HeaderMap, Request, Response};
+use rama_net::conn::ConnectionHealthWatcher;
 
 use std::cmp::Ordering;
 use std::task::{Context, Poll, Waker};
@@ -981,6 +982,11 @@ impl Recv {
 
         // Notify the stream
         stream.state.recv_reset(frame, stream.is_pending_send);
+        // Mark this specific stream as broken
+        stream
+            .extensions
+            .self_get_ref_or_insert(ConnectionHealthWatcher::default)
+            .mark_broken();
 
         stream.notify_send();
         stream.notify_recv();

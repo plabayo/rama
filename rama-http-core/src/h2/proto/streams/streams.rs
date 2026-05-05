@@ -22,7 +22,7 @@ use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
-use rama_net::conn::{ConnectionHealth, ConnectionHealthStatus};
+use rama_net::conn::ConnectionHealthWatcher;
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
@@ -135,6 +135,8 @@ where
         extensions: Extensions,
     ) -> Result<Self, crate::h2::proto::Error> {
         let peer = P::r#dyn();
+
+        extensions.get_ref_or_insert(ConnectionHealthWatcher::default);
 
         Ok(Self {
             inner: Inner::try_new(peer, config, extensions)?,
@@ -742,10 +744,6 @@ impl Inner {
 
         let actions = &mut self.actions;
 
-        if let Some(health) = self.extensions.get_ref::<ConnectionHealth>() {
-            health.set_status(ConnectionHealthStatus::Broken)
-        }
-
         self.counts.transition(stream, |counts, stream| {
             actions.recv.recv_reset(frame, stream, counts)?;
             actions.send.handle_error(send_buffer, stream, counts);
@@ -809,9 +807,9 @@ impl Inner {
 
         let last_processed_id = actions.recv.last_processed_id();
 
-        if let Some(health) = self.extensions.get_ref::<ConnectionHealth>() {
-            health.set_status(ConnectionHealthStatus::Broken)
-        }
+        self.extensions
+            .get_ref_or_insert(ConnectionHealthWatcher::default)
+            .mark_broken();
 
         self.store.for_each(|stream| {
             counts.transition(stream, |counts, stream| {
@@ -837,9 +835,9 @@ impl Inner {
 
         let last_stream_id = frame.last_stream_id();
 
-        if let Some(health) = self.extensions.get_ref::<ConnectionHealth>() {
-            health.set_status(ConnectionHealthStatus::Broken)
-        }
+        self.extensions
+            .get_ref_or_insert(ConnectionHealthWatcher::default)
+            .mark_broken();
 
         actions.send.recv_go_away(last_stream_id)?;
 
@@ -972,6 +970,10 @@ impl Inner {
                 .into(),
             );
         }
+
+        self.extensions
+            .get_ref_or_insert(ConnectionHealthWatcher::default)
+            .mark_broken();
 
         tracing::trace!("Streams::recv_eof");
 

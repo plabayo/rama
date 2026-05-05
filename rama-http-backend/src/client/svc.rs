@@ -11,7 +11,7 @@ use rama_http_types::{
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
     uri::PathAndQuery,
 };
-use rama_net::{address::ProxyAddress, http::RequestContext};
+use rama_net::{address::ProxyAddress, conn::ConnectionHealthWatcher, http::RequestContext};
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -72,6 +72,7 @@ where
             SendRequest::Http1(sender) => {
                 let mut sender = sender.lock().await;
                 if let Err(err) = sender.ready().await {
+                    mark_broken_if_closed(sender.is_closed(), &self.extensions);
                     tracing::debug!(
                         sender_closed = sender.is_closed(),
                         "http1 upstream sender ready failed: {err}"
@@ -81,6 +82,7 @@ where
                 match sender.send_request(req).await {
                     Ok(resp) => resp,
                     Err(err) => {
+                        mark_broken_if_closed(sender.is_closed(), &self.extensions);
                         tracing::debug!(
                             sender_closed = sender.is_closed(),
                             "http1 upstream send_request failed: {err}"
@@ -92,6 +94,7 @@ where
             SendRequest::Http2(sender) => {
                 let mut sender = sender.clone();
                 if let Err(err) = sender.ready().await {
+                    mark_broken_if_closed(sender.is_closed(), &self.extensions);
                     tracing::debug!(
                         sender_closed = sender.is_closed(),
                         "http2 upstream sender ready failed: {err}"
@@ -101,6 +104,7 @@ where
                 match sender.send_request(req).await {
                     Ok(resp) => resp,
                     Err(err) => {
+                        mark_broken_if_closed(sender.is_closed(), &self.extensions);
                         tracing::debug!(
                             sender_closed = sender.is_closed(),
                             "http2 upstream send_request failed: {err}"
@@ -112,6 +116,14 @@ where
         };
 
         Ok(resp.map(rama_http_types::Body::new))
+    }
+}
+
+fn mark_broken_if_closed(is_closed: bool, extensions: &Extensions) {
+    if is_closed {
+        extensions
+            .get_ref_or_insert(ConnectionHealthWatcher::default)
+            .mark_broken();
     }
 }
 

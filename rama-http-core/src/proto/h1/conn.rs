@@ -15,7 +15,7 @@ use rama_http_types::body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::proto::h1::ext::informational::OnInformational;
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
-use rama_net::conn::{ConnectionHealth, ConnectionHealthStatus};
+use rama_net::conn::ConnectionHealthWatcher;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
 
@@ -48,6 +48,9 @@ where
     T: Http1Transaction,
 {
     pub(crate) fn new(io: I) -> Self {
+        io.extensions()
+            .get_ref_or_insert(ConnectionHealthWatcher::default);
+
         Self {
             io: Buffered::new(io),
             state: State {
@@ -801,9 +804,11 @@ where
     }
 
     pub(crate) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(health) = self.io.extensions().get_ref::<ConnectionHealth>() {
-            health.set_status(ConnectionHealthStatus::Broken);
-        }
+        self.io
+            .extensions()
+            .get_ref_or_insert(ConnectionHealthWatcher::default)
+            .mark_broken();
+
         match ready!(Pin::new(self.io.io_mut()).poll_shutdown(cx)) {
             Ok(()) => {
                 trace!("shut down IO complete");
