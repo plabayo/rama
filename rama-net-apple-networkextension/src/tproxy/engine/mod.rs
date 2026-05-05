@@ -1017,11 +1017,16 @@ where
     tracing::debug!(protocol = ?meta.protocol, "new udp session (pending egress connection)");
 
     // Service task waits for BridgeIo; calls closed_sink when done.
+    let meta_for_close = std::sync::Arc::new(meta.clone());
     let service_task = flow_guard.spawn_task(async move {
         let Ok(bridge) = bridge_rx.await else {
-            return; // cancelled before activate
+            // Cancelled before activate — emit a synthetic close so post-mortem
+            // logs still account for the flow.
+            emit_udp_session_close_event(BridgeCloseReason::Shutdown, &meta_for_close);
+            return;
         };
         let Ok(()) = service.serve(bridge).await;
+        emit_udp_session_close_event(BridgeCloseReason::PeerEofLeft, &meta_for_close);
         closed_sink();
     });
 
@@ -1349,6 +1354,36 @@ async fn run_tcp_bridge(
 
     emit_tcp_bridge_close_event(direction, close_reason, &meta, bytes_in, bytes_out);
     on_server_closed();
+}
+
+fn emit_udp_session_close_event(reason: BridgeCloseReason, meta: &TransparentProxyFlowMeta) {
+    let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
+    let bundle_id = meta
+        .source_app_bundle_identifier
+        .as_ref()
+        .map(ToString::to_string);
+    let signing_id = meta
+        .source_app_signing_identifier
+        .as_ref()
+        .map(ToString::to_string);
+    let local = meta.local_endpoint.as_ref().map(ToString::to_string);
+    let remote = meta.remote_endpoint.as_ref().map(ToString::to_string);
+    let decision = meta.intercept_decision.map(|d| d.as_str());
+
+    tracing::info!(
+        target: "rama_apple_ne::tproxy",
+        flow_id = meta.flow_id,
+        protocol = meta.protocol.as_str(),
+        reason = %reason,
+        age_ms,
+        pid = meta.source_app_pid,
+        bundle_id,
+        signing_id,
+        local,
+        remote,
+        decision,
+        "transparent proxy udp flow closed",
+    );
 }
 
 fn emit_decision_deadline_event(
