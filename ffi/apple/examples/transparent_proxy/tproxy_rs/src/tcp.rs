@@ -105,12 +105,12 @@ impl DemoTcpMitmService {
         let peek_duration = Duration::from_secs_f64(self.peek_duration_s.max(0.5));
 
         let http_mitm_svc = HttpMitmRelay::new(exec.clone()).with_http_middleware(
-            self.http_relay_middleware(exec, within_connect_tunnel, settings.clone()),
+            self.http_relay_middleware(exec.clone(), within_connect_tunnel, settings.clone()),
         );
 
         let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
             .with_peek_timeout(peek_duration)
-            .with_fallback(IoForwardService::default());
+            .with_fallback(IoForwardService::new(exec));
 
         let excluded_domains =
             crate::policy::DomainExclusionList::new(settings.exclude_domains.iter());
@@ -183,7 +183,7 @@ impl DemoTcpMitmService {
                     )),
                     HttpProxyConnectRelayServiceRequestMatcher::new(if within_connect_tunnel {
                         ConsumeErrLayer::trace_as_debug()
-                            .into_layer(IoForwardService::default())
+                            .into_layer(IoForwardService::new(exec.clone()))
                             .boxed()
                     } else {
                         nested_mitm.new_bridge_service(exec, true).boxed()

@@ -1766,6 +1766,7 @@ dependencies = [
  "radix_trie",
  "rama-core",
  "rama-http-headers",
+ "rama-http-macros",
  "rama-http-types",
  "rama-net",
  "rama-utils",
@@ -1837,6 +1838,16 @@ dependencies = [
  "rand",
  "serde",
  "sha1",
+]
+
+[[package]]
+name = "rama-http-macros"
+version = "0.3.0-rc1"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
