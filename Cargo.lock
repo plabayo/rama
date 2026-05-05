@@ -3263,6 +3263,7 @@ dependencies = [
  "radix_trie",
  "rama-core",
  "rama-http-headers",
+ "rama-http-macros",
  "rama-http-types",
  "rama-net",
  "rama-utils",
@@ -3345,6 +3346,16 @@ dependencies = [
  "sha1",
  "tokio",
  "tracing-test",
+]
+
+[[package]]
+name = "rama-http-macros"
+version = "0.3.0-rc1"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

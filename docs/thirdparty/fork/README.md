@@ -79,6 +79,33 @@ but still directly in function of Rama.
       - Type: MIT
       - Copy: [./licenses/tokio-boring](./licenses/tokio-boring)
 
+## Permanent Forks
+
+These are permanent forks that we have taken into the rama ecosystem so we
+can shape them to fit naturally into the rest of the codebase. They will
+not be kept in sync with upstream — they are now part of `rama`.
+
+- <https://github.com/JonahLund/vy/tree/1280174f54774c24fa478475af17fd7f5814c91a>
+  - Forked into [`rama-http-macros`](https://github.com/plabayo/rama/tree/main/rama-http-macros)
+    (the proc-macros) and into private modules under
+    [`rama-http/src/html`](https://github.com/plabayo/rama/tree/main/rama-http/src/html)
+    (the `IntoHtml` trait, escaping, scalar / numeric / tuple impls).
+  - Reasons for forking:
+    - Better integration with the rest of the rama ecosystem — in
+      particular dropping vy's bespoke `Either*` types in favour of the
+      already-existing [`rama_core::combinators::Either`] family.
+    - Adding a `custom!` macro for runtime tag names (web components).
+    - Letting the macro output (`HtmlBuf`) implement `IntoResponse`
+      directly so handler code can return HTML without any extra wrapper.
+    - Dropping `no_std` support and `itoap` / `ryu` deps in favour of the
+      standard library — this crate is `std`-only anyway via `rama-http`.
+  - License:
+    - Original: <https://github.com/JonahLund/vy/blob/1280174f54774c24fa478475af17fd7f5814c91a/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/vy](./licenses/vy)
+
+[`rama_core::combinators::Either`]: https://docs.rs/rama-core/latest/rama_core/combinators/enum.Either.html
+
 ## Relative Forks
 
 - <https://github.com/tokio-rs/axum/tree/061666a1116d853f9ca838fb2d0c668614a9f535>
