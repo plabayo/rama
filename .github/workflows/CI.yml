@@ -141,7 +141,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -163,7 +163,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -520,7 +520,7 @@ jobs:
       - precheck-docs
     timeout-minutes: 90
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
