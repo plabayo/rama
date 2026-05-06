@@ -29,16 +29,11 @@ default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:hex", "dep:md5"]
 tls = ["dep:hex", "dep:md5", "dep:sha2"]
 opentelemetry = ["rama-core/opentelemetry"]
-# Define [`dial9`] runtime-telemetry events for the [`IoForwardService`]
-# bridge lifecycle (open + close with reason + byte counts) and emit
-# them at the corresponding lifecycle hooks. Emission is a no-op when
-# no `dial9-tokio-telemetry::TracedRuntime` is wired into the runtime.
+# Optional [dial9] runtime telemetry support.
 #
-# Building with this feature requires `--cfg tokio_unstable` (set
-# workspace-wide in `.cargo/config.toml`).
+# Building with this feature requires `--cfg tokio_unstable`.
 #
 # [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-# [`IoForwardService`]: crate::proxy::IoForwardService
 dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
 
 [dependencies]

@@ -21,14 +21,9 @@ targets = ["x86_64-apple-darwin"]
 
 [features]
 default = []
-# Define [`dial9`] runtime-telemetry events for the transparent proxy
-# engine's flow lifecycle (open / close / handler-deadline) and emit
-# them at the corresponding lifecycle hooks. Emission is a no-op when
-# no `dial9-tokio-telemetry::TracedRuntime` is wired into the runtime;
-# the events become live as soon as the consumer constructs one.
+# Optional [dial9] runtime telemetry support.
 #
-# Building with this feature requires `--cfg tokio_unstable` (set
-# workspace-wide in `.cargo/config.toml`).
+# Building with this feature requires `--cfg tokio_unstable`.
 #
 # [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
 dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]

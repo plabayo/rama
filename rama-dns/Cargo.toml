@@ -30,12 +30,10 @@ ignored = ["bindgen"]
 [features]
 default = []
 hickory = ["dep:hickory-resolver"]
-# Define [`dial9`] runtime-telemetry events for DNS lookup lifecycle
-# (start + resolve outcome). See `rama-tls-rustls`'s `dial9` feature
-# for the equivalent pattern.
+# Optional [dial9] runtime telemetry support.
 #
 # [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
+dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-net/dial9"]
 
 [dependencies]
 dial9-tokio-telemetry = { workspace = true, optional = true }

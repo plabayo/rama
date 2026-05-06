@@ -700,7 +700,8 @@ where
     let egress_connect_options = handler.egress_tcp_connect_options(&meta);
     let flow_id = meta.flow_id;
     let flow_protocol = meta.protocol;
-    let flow_pid = meta.source_app_pid;
+    #[cfg(feature = "dial9")]
+    let flow_source_pid = meta.source_app_pid;
     let Ok(flow_action) =
         tokio::time::timeout(decision_deadline, handler.match_tcp_flow(exec, meta)).await
     else {
@@ -729,7 +730,7 @@ where
     meta.intercept_decision = Some(crate::tproxy::types::TransparentProxyFlowAction::Intercept);
 
     #[cfg(feature = "dial9")]
-    crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_pid);
+    crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_source_pid);
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
     let flow_shutdown = Shutdown::new(async move {
@@ -959,7 +960,8 @@ where
     let egress_connect_options = handler.egress_udp_connect_options(&meta);
     let flow_id = meta.flow_id;
     let flow_protocol = meta.protocol;
-    let flow_pid = meta.source_app_pid;
+    #[cfg(feature = "dial9")]
+    let flow_source_pid = meta.source_app_pid;
     let Ok(flow_action) =
         tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await
     else {
@@ -987,7 +989,7 @@ where
     meta.intercept_decision = Some(crate::tproxy::types::TransparentProxyFlowAction::Intercept);
 
     #[cfg(feature = "dial9")]
-    crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_pid);
+    crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_source_pid);
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
     let flow_shutdown = Shutdown::new(async move {

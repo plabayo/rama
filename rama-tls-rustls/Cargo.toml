@@ -35,16 +35,12 @@ aws-lc = [
     "rustls/prefer-post-quantum",
 ]
 ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring", "x509-parser/verify"]
-# Define [`dial9`] runtime-telemetry events for TLS handshake lifecycle
-# (started / completed / failed) and emit them at the corresponding
-# points in the rustls connector. Emission is a no-op when no
-# `dial9-tokio-telemetry::TracedRuntime` is wired into the runtime.
+# Optional [dial9] runtime telemetry support.
 #
-# Building with this feature requires `--cfg tokio_unstable` (set
-# workspace-wide in `.cargo/config.toml`).
+# Building with this feature requires `--cfg tokio_unstable`.
 #
 # [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
+dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-net/dial9"]
 
 [dependencies]
 dial9-tokio-telemetry = { workspace = true, optional = true }

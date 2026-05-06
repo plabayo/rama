@@ -1,18 +1,8 @@
-//! Pre-defined [dial9] runtime-telemetry events for the
-//! [`super::IoForwardService`] bridge lifecycle, plus tiny recording
-//! helpers that emit them when a `dial9-tokio-telemetry::TracedRuntime`
-//! is active.
-//!
-//! Two events:
-//!
-//! - [`IoForwardBridgeOpened`] — emitted right before the copy loop
-//!   starts.
-//! - [`IoForwardBridgeClosed`] — emitted on bridge unwind, mirroring
-//!   the structured `tracing` close log with a queryable reason enum
-//!   and per-direction byte counts.
+//! Pre-defined [dial9] events for proxy bridge lifecycle.
 //!
 //! [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
 
+use crate::dial9::{io_error_kind_code, io_error_raw_os_code};
 use dial9_tokio_telemetry::telemetry::{TelemetryHandle, clock_monotonic_ns, record_event};
 use dial9_trace_format::TraceEvent;
 
@@ -32,16 +22,18 @@ pub struct IoForwardBridgeOpened {
 pub struct IoForwardBridgeClosed {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
-    /// Stable string label for [`super::BridgeCloseReason`].
-    pub reason: String,
+    /// Structured close reason.
+    pub reason: super::BridgeCloseReason,
     /// Wall-clock age of the bridge at close time, in milliseconds.
     pub age_ms: u64,
     /// Bytes copied left → right (typically client → server).
     pub bytes_l_to_r: u64,
     /// Bytes copied right → left (typically server → client).
     pub bytes_r_to_l: u64,
-    /// Display string of any fatal underlying error, empty if none.
-    pub error: String,
+    /// Encoded `std::io::ErrorKind`, if a fatal I/O error closed the bridge.
+    pub error_kind: Option<u32>,
+    /// Raw OS error code, if available.
+    pub error_raw_os: Option<i64>,
 }
 
 #[inline]
@@ -72,11 +64,12 @@ pub(super) fn record_bridge_closed(
         record_event(
             IoForwardBridgeClosed {
                 timestamp_ns: clock_monotonic_ns(),
-                reason: reason.to_string(),
+                reason,
                 age_ms,
                 bytes_l_to_r,
                 bytes_r_to_l,
-                error: error.map(|e| format!("{e:#}")).unwrap_or_default(),
+                error_kind: error.map(|e| io_error_kind_code(e.kind())),
+                error_raw_os: error.and_then(io_error_raw_os_code),
             },
             &handle,
         );

@@ -476,23 +476,35 @@ where
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
     #[cfg(feature = "dial9")]
-    let dial9_server_name = connector_data
-        .server_name
-        .as_ref()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let dial9_server_name = connector_data.server_name.clone();
     #[cfg(feature = "dial9")]
-    crate::dial9::record_handshake_started(&dial9_server_name);
+    crate::dial9::record_handshake_started(dial9_server_name.clone());
     let TlsStream { inner: stream } = match tls_connect(stream, Some(connector_data)).await {
         Ok(s) => s,
         Err(err) => {
             #[cfg(feature = "dial9")]
             {
-                let dial9_err: String = match &err {
-                    TlsConnectError::Builder(e) => format!("builder: {e}"),
-                    TlsConnectError::Handshake { error, .. } => format!("handshake: {error}"),
+                let (error_kind, io_error_kind) = match &err {
+                    TlsConnectError::Builder(_) => (1, None),
+                    TlsConnectError::Handshake { error, .. } => {
+                        let io_error_kind = error
+                            .as_io_error()
+                            .map(|error| rama_net::dial9::io_error_kind_code(error.kind()));
+                        let error_kind = if io_error_kind.is_some() {
+                            2
+                        } else if error.as_ssl_error_stack().is_some() {
+                            3
+                        } else {
+                            4
+                        };
+                        (error_kind, io_error_kind)
+                    }
                 };
-                crate::dial9::record_handshake_failed(&dial9_server_name, &dial9_err);
+                crate::dial9::record_handshake_failed(
+                    dial9_server_name.clone(),
+                    error_kind,
+                    io_error_kind,
+                );
             }
             return Err(match err {
                 TlsConnectError::Builder(error) => error.context("tls connect builder error"),
@@ -569,9 +581,12 @@ where
             None => 0,
         };
         crate::dial9::record_handshake_completed(
-            &dial9_server_name,
-            &format!("{:?}", params.protocol_version),
-            stream.ssl().selected_alpn_protocol(),
+            dial9_server_name,
+            params.protocol_version,
+            stream
+                .ssl()
+                .selected_alpn_protocol()
+                .map(rama_net::tls::ApplicationProtocol::from),
             depth,
         );
     }

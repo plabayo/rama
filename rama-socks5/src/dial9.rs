@@ -1,24 +1,10 @@
-//! Pre-defined [dial9] runtime-telemetry events for SOCKS5 handshake
-//! lifecycle, plus tiny recording helpers that emit them when a
-//! `dial9-tokio-telemetry::TracedRuntime` is active.
-//!
-//! Two events are exposed:
-//!
-//! - [`Socks5HandshakeAuth`] — emitted at the moment the auth method
-//!   negotiation completes (success or fail).
-//! - [`Socks5HandshakeConnect`] — emitted when the server's reply to
-//!   `CONNECT` arrives, carrying the structured reply kind
-//!   (`Succeeded`, `HostUnreachable`, `ConnectionRefused`, …).
-//!
-//! Recording goes through `dial9_tokio_telemetry::telemetry::TelemetryHandle::current`
-//! and silently no-ops when no `TracedRuntime` is in effect — so wiring
-//! the events into the engine here is safe even when the consumer
-//! application doesn't enable dial9 telemetry.
+//! Pre-defined [dial9] events for the SOCKS5 client handshake.
 //!
 //! [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
 
 use dial9_tokio_telemetry::telemetry::{TelemetryHandle, clock_monotonic_ns, record_event};
 use dial9_trace_format::TraceEvent;
+use rama_net::address::Host;
 
 /// Auth-method negotiation outcome.
 #[derive(TraceEvent)]
@@ -38,8 +24,8 @@ pub struct Socks5HandshakeAuth {
 pub struct Socks5HandshakeConnect {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
-    /// Destination host string the client requested.
-    pub destination_host: String,
+    /// Destination host the client requested.
+    pub destination_host: Host,
     /// Destination port the client requested.
     pub destination_port: u32,
     /// Server reply kind, per RFC 1928 §6:
@@ -65,13 +51,13 @@ pub(crate) fn record_handshake_auth(auth_method: u8, success: bool) {
 }
 
 #[inline]
-pub(crate) fn record_handshake_connect(host: &str, port: u16, reply_kind: u8) {
+pub(crate) fn record_handshake_connect(host: Host, port: u16, reply_kind: u8) {
     let handle = TelemetryHandle::current();
     if handle.is_enabled() {
         record_event(
             Socks5HandshakeConnect {
                 timestamp_ns: clock_monotonic_ns(),
-                destination_host: host.to_owned(),
+                destination_host: host,
                 destination_port: port as u32,
                 reply_kind: reply_kind as u32,
             },

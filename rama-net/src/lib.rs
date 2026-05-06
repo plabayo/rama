@@ -58,6 +58,10 @@ pub mod https;
 
 pub mod socket;
 
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+pub mod dial9;
+
 #[doc(hidden)]
 pub mod __private {
     pub use ::rama_utils as utils;

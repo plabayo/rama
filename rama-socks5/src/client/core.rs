@@ -221,7 +221,7 @@ impl Client {
 
         #[cfg(feature = "dial9")]
         crate::dial9::record_handshake_connect(
-            destination.host.to_string().as_str(),
+            destination.host.clone(),
             destination.port,
             server_reply.reply.into(),
         );
