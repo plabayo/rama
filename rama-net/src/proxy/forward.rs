@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rama_core::graceful::ShutdownGuard;
@@ -240,6 +240,15 @@ where
     let (mut left_r, mut left_w) = tokio::io::split(left);
     let (mut right_r, mut right_w) = tokio::io::split(right);
 
+    // Tracks whether `copy_one_way` has already half-closed the write
+    // side it owns. The inline half-close fires immediately on EOF so
+    // the peer sees FIN promptly; we then skip the outer post-loop
+    // shutdown for that side. Calling `shutdown` twice on a TLS writer
+    // (boring/rustls) is implementation-defined and can panic — the
+    // flag stops that here.
+    let left_w_shut = Arc::new(AtomicBool::new(false));
+    let right_w_shut = Arc::new(AtomicBool::new(false));
+
     let (reason, fatal_error) = {
         let l_to_r = std::pin::pin!(copy_one_way(
             &mut left_r,
@@ -247,6 +256,8 @@ where
             bytes_l_to_r.clone(),
             progress.clone(),
             buf_size,
+            shutdown_grace,
+            right_w_shut.clone(),
         ));
         let r_to_l = std::pin::pin!(copy_one_way(
             &mut right_r,
@@ -254,6 +265,8 @@ where
             bytes_r_to_l.clone(),
             progress.clone(),
             buf_size,
+            shutdown_grace,
+            left_w_shut.clone(),
         ));
 
         run_select_loop(l_to_r, r_to_l, guard.as_ref(), idle_timeout, &progress).await
@@ -262,11 +275,26 @@ where
 
     // Close both write halves concurrently rather than sequentially — TLS
     // close_notify can take the full grace window per side, and serializing
-    // the two doubles the worst-case bridge unwind time.
-    _ = tokio::join!(
-        tokio::time::timeout(shutdown_grace, left_w.shutdown()),
-        tokio::time::timeout(shutdown_grace, right_w.shutdown()),
-    );
+    // the two doubles the worst-case bridge unwind time. Skip a side that
+    // `copy_one_way` already shut down inline so we don't double-shutdown
+    // a TLS writer.
+    let left_pending_shutdown = !left_w_shut.load(Ordering::Acquire);
+    let right_pending_shutdown = !right_w_shut.load(Ordering::Acquire);
+    match (left_pending_shutdown, right_pending_shutdown) {
+        (true, true) => {
+            _ = tokio::join!(
+                tokio::time::timeout(shutdown_grace, left_w.shutdown()),
+                tokio::time::timeout(shutdown_grace, right_w.shutdown()),
+            );
+        }
+        (true, false) => {
+            _ = tokio::time::timeout(shutdown_grace, left_w.shutdown()).await;
+        }
+        (false, true) => {
+            _ = tokio::time::timeout(shutdown_grace, right_w.shutdown()).await;
+        }
+        (false, false) => {}
+    }
 
     BridgeOutcome {
         reason,
@@ -292,10 +320,17 @@ where
     let mut last_progress: u64 = 0;
     let mut l_to_r_done = false;
     let mut r_to_l_done = false;
+    // The reason of whichever arm finished first — that's the one
+    // that initiated the close. The second arm is just draining what
+    // the peer had already buffered before its half-close. Without
+    // this, a flow whose left side EOFed first followed by the right
+    // side draining its buffer would be reported as `PeerEofRight`
+    // (last to finish), which is misleading on the analysis side.
+    let mut first_eof: Option<BridgeCloseReason> = None;
 
     loop {
         if l_to_r_done && r_to_l_done {
-            return (BridgeCloseReason::PeerEofLeft, None);
+            return (first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft), None);
         }
 
         let cancelled = async {
@@ -327,10 +362,16 @@ where
             res = l_to_r.as_mut(), if !l_to_r_done => match res {
                 Ok(()) => {
                     l_to_r_done = true;
+                    if first_eof.is_none() {
+                        first_eof = Some(BridgeCloseReason::PeerEofLeft);
+                    }
                     if !r_to_l_done {
                         continue;
                     }
-                    return (BridgeCloseReason::PeerEofLeft, None);
+                    return (
+                        first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft),
+                        None,
+                    );
                 }
                 Err(e) => {
                     let reason = classify_copy_error(&e, CopyDirection::LeftToRight);
@@ -340,10 +381,16 @@ where
             res = r_to_l.as_mut(), if !r_to_l_done => match res {
                 Ok(()) => {
                     r_to_l_done = true;
+                    if first_eof.is_none() {
+                        first_eof = Some(BridgeCloseReason::PeerEofRight);
+                    }
                     if !l_to_r_done {
                         continue;
                     }
-                    return (BridgeCloseReason::PeerEofRight, None);
+                    return (
+                        first_eof.unwrap_or(BridgeCloseReason::PeerEofRight),
+                        None,
+                    );
                 }
                 Err(e) => {
                     let reason = classify_copy_error(&e, CopyDirection::RightToLeft);
@@ -360,6 +407,8 @@ async fn copy_one_way<R, W>(
     bytes: Arc<AtomicU64>,
     progress: Arc<AtomicU64>,
     buf_size: usize,
+    shutdown_grace: Duration,
+    write_side_shut: Arc<AtomicBool>,
 ) -> Result<(), std::io::Error>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -369,10 +418,16 @@ where
     loop {
         let n = reader.read(&mut buf).await?;
         if n == 0 {
-            // Half-close the write side so the peer sees EOF.
-            // Bounded externally by the surrounding `tokio::select!` /
-            // shutdown grace; here we just attempt cleanly.
-            _ = writer.shutdown().await;
+            // Half-close the write side so the peer sees EOF promptly.
+            // Bounded by `shutdown_grace`: `AsyncWrite::shutdown` on a
+            // TLS writer can wait indefinitely for the peer's
+            // close_notify response, which would otherwise wedge this
+            // future and prevent `run_select_loop` from completing.
+            // The flag tells the outer `run_bridge` post-loop shutdown
+            // to skip this side so we don't double-shutdown the TLS
+            // writer (implementation-defined).
+            _ = tokio::time::timeout(shutdown_grace, writer.shutdown()).await;
+            write_side_shut.store(true, Ordering::Release);
             return Ok(());
         }
         writer.write_all(&buf[..n]).await?;

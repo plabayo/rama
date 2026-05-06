@@ -19,7 +19,6 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     tcp_channel_capacity: Option<usize>,
     udp_channel_capacity: Option<usize>,
     tcp_idle_timeout: Option<Duration>,
-    udp_idle_timeout: Option<Duration>,
     decision_deadline: Option<Duration>,
     decision_deadline_action: Option<DecisionDeadlineAction>,
     opaque_config: Option<Arc<[u8]>>,
@@ -38,7 +37,6 @@ where
             tcp_channel_capacity: None,
             udp_channel_capacity: None,
             tcp_idle_timeout: None,
-            udp_idle_timeout: None,
             decision_deadline: None,
             decision_deadline_action: None,
             opaque_config: None,
@@ -56,7 +54,6 @@ where
             tcp_channel_capacity: self.tcp_channel_capacity,
             udp_channel_capacity: self.udp_channel_capacity,
             tcp_idle_timeout: self.tcp_idle_timeout,
-            udp_idle_timeout: self.udp_idle_timeout,
             decision_deadline: self.decision_deadline,
             decision_deadline_action: self.decision_deadline_action,
             opaque_config: self.opaque_config,
@@ -123,19 +120,6 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Per-flow idle timeout for UDP bridges.
-        ///
-        /// When set, the per-flow UDP bridge closes with reason `idle_timeout`
-        /// when no datagram progress has been observed in either direction within
-        /// the configured window. `None` (the default) disables idle detection.
-        pub fn udp_idle_timeout(mut self, timeout: Option<Duration>) -> Self
-        {
-            self.udp_idle_timeout = timeout;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
         /// Maximum time the engine will wait for a flow handler to produce a
         /// decision (Intercept / Passthrough / Blocked).
         ///
@@ -191,7 +175,6 @@ where
             tcp_channel_capacity,
             udp_channel_capacity,
             tcp_idle_timeout,
-            udp_idle_timeout,
             decision_deadline,
             decision_deadline_action,
             opaque_config,
@@ -250,7 +233,6 @@ where
             udp_channel_capacity: udp_channel_capacity
                 .unwrap_or(super::DEFAULT_UDP_CHANNEL_CAPACITY),
             tcp_idle_timeout,
-            udp_idle_timeout,
             decision_deadline: decision_deadline.unwrap_or(super::DEFAULT_DECISION_DEADLINE),
             decision_deadline_action: decision_deadline_action
                 .unwrap_or(DecisionDeadlineAction::Block),

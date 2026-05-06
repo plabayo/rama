@@ -31,11 +31,15 @@ impl Executor {
     {
         match &self.guard {
             Some(guard) => {
-                // Replicate `ShutdownGuard::spawn_task` inline so the
+                // Replicate `tokio_graceful::ShutdownGuard::spawn_task`
+                // inline (see `tokio-graceful/src/guard.rs`) so the
                 // underlying `tokio::spawn` can be routed through dial9
                 // when the feature is on. The cloned guard pins shutdown
                 // until the future ends, matching tokio-graceful's
-                // semantics exactly.
+                // semantics exactly. If a future tokio-graceful release
+                // adds tracking inside `spawn_task`/`spawn_task_fn`, we
+                // would silently diverge — keep this in sync if you
+                // bump tokio-graceful past 0.2.x.
                 let guard = guard.clone();
                 spawn(async move {
                     let output = future.await;

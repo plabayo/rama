@@ -97,12 +97,20 @@ impl TransparentProxyAsyncRuntime {
         }
     }
 
-    /// Spawn a future on this runtime from a thread that already has a
-    /// runtime context (i.e. inside an async block running on this
-    /// runtime, or after [`enter`](Self::enter)).
+    /// Spawn a future on this runtime.
     ///
     /// On the dial9 path this routes through
-    /// `dial9_tokio_telemetry::spawn` so the future is wake-tracked.
+    /// `dial9_tokio_telemetry::spawn` so the future is wake-tracked
+    /// when called from a dial9 worker thread; on a non-worker the
+    /// wake-tracking is inert and the call falls through to plain
+    /// `tokio::spawn`.
+    ///
+    /// Callable from any thread (including non-tokio threads): the
+    /// runtime context is entered explicitly here so the underlying
+    /// `tokio::spawn` (used by `dial9_tokio_telemetry::spawn`) finds
+    /// a current runtime regardless of the calling thread. The
+    /// non-dial9 branch is symmetrically explicit by spawning through
+    /// `Handle::spawn`, which doesn't need an ambient runtime.
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
@@ -110,6 +118,8 @@ impl TransparentProxyAsyncRuntime {
     {
         #[cfg(feature = "dial9")]
         {
+            let handle = self.handle();
+            let _enter = handle.enter();
             ::dial9_tokio_telemetry::spawn(future)
         }
         #[cfg(not(feature = "dial9"))]

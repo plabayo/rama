@@ -63,9 +63,34 @@ impl<Issuer> TlsMitmRelay<Issuer> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the [`keylog_intent`].
+        /// Set the [`KeyLogIntent`].
         ///
-        /// By default [`KeyLogIntent::Environment`] is used.
+        /// # Security
+        ///
+        /// Default is [`KeyLogIntent::Environment`], which honors
+        /// `SSLKEYLOGFILE`. **In a MITM relay this exports session
+        /// keys for *both* the ingress (relay-mirrored) and egress
+        /// (upstream) connections**, enabling offline decryption of
+        /// every flow that traverses the relay. Anyone who can read
+        /// the keylog file can recover every byte of every relayed
+        /// session, including credentials carried inside the proxied
+        /// TLS streams.
+        ///
+        /// Treat the keylog path as security-sensitive material on a
+        /// production relay:
+        ///
+        /// - Don't enable it in production unless you have a specific
+        ///   debugging reason and have audited who can read the file.
+        /// - Prefer [`KeyLogIntent::Disabled`] for production deployments
+        ///   that don't need on-the-fly decryption.
+        /// - When you do enable it, write to a directory readable only
+        ///   by the relay process and rotate / delete the file when
+        ///   debugging is complete.
+        ///
+        /// By default [`KeyLogIntent::Environment`] is used so that
+        /// developers can flip it on with the standard `SSLKEYLOGFILE`
+        /// env var; consider this a debug aid, not a production-safe
+        /// default.
         pub fn keylog_intent(mut self, intent: KeyLogIntent) -> Self {
             self.keylog_intent = intent;
             self

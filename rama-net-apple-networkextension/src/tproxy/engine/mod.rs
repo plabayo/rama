@@ -169,10 +169,6 @@ pub struct TransparentProxyEngine<H> {
     tcp_channel_capacity: usize,
     udp_channel_capacity: usize,
     tcp_idle_timeout: Option<Duration>,
-    // Will be plumbed through to UDP bridges in a follow-up; currently captured
-    // from the builder but not yet observed.
-    #[expect(dead_code)]
-    udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
     shutdown: Option<Shutdown>,
@@ -198,8 +194,27 @@ where
 
         let exec = Executor::graceful(guard);
         let handler = self.handler.clone();
-
-        block_on_async_task(&self.rt, handler.handle_app_message(exec, message))
+        // Reuse `decision_deadline` as the worst-case time we let a
+        // user-supplied app-message handler run. Apple's NETransparentProxy
+        // dispatches `handleAppMessage` synchronously on its provider
+        // queue; a hung handler would otherwise wedge the entire
+        // provider's message dispatch indefinitely.
+        let deadline = self.decision_deadline;
+        let message_len = message.len();
+        block_on_async_task(&self.rt, async move {
+            if let Ok(reply) =
+                tokio::time::timeout(deadline, handler.handle_app_message(exec, message)).await
+            {
+                reply
+            } else {
+                tracing::warn!(
+                    message_len,
+                    deadline_ms = u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX),
+                    "transparent proxy app message handler exceeded deadline; dropping message",
+                );
+                None
+            }
+        })
     }
 
     pub fn new_tcp_session<OnBytes, OnDemand, OnClosed>(
@@ -642,12 +657,12 @@ impl TransparentProxyTcpSession {
         // bridge tasks dispatch to the user-supplied closures only after
         // re-checking `callback_active` under this synchronous Mutex (see
         // `guarded_bytes_sink`/`guarded_closed_sink` at the bottom of this
-        // file). Flipping the flag here, *before* aborting the tasks and
-        // dropping the channels, ensures that any callback already past the
-        // check has its dispatch dropped instead of reaching the Swift
-        // `context` after `cancel` has returned. Keep this Mutex sync — an
-        // async lock would let callbacks slip through the gap between the
-        // check and the actual call.
+        // file). Flipping the flag here, *before* dropping the channels
+        // and signalling shutdown, ensures that any callback already
+        // past the check has its dispatch dropped instead of reaching
+        // the Swift `context` after `cancel` has returned. Keep this
+        // Mutex sync — an async lock would let callbacks slip through
+        // the gap between the check and the actual call.
         *self.callback_active.lock() = false;
         // Drop the senders so the bridge's `recv()` returns `None` after
         // draining anything still buffered. This is the natural EOF
@@ -668,14 +683,25 @@ impl TransparentProxyTcpSession {
         }
         // Drop pending — this drops bridge_tx, making bridge_rx.await return Err.
         self.pending = None;
-        for task in [
-            self.ingress_bridge_task.take(),
-            self.egress_bridge_task.take(),
-            self.service_task.take(),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        // Bridge tasks: do NOT abort. The two signals above (dropped
+        // senders + flow_stop_tx → flow_guard.cancelled) are how the
+        // bridges normally exit, and they reach the post-loop
+        // `on_server_closed` / dial9 close-event emission. Aborting
+        // here would interrupt those mid-flight; they aren't useful to
+        // Swift (the `callback_active` flag suppresses dispatch
+        // anyway), but they ARE useful to dial9 so the trace doesn't
+        // miss the close record. We let the JoinHandle drop without
+        // explicit abort: detached, but bounded by the bridge's
+        // `flow_guard.cancelled()` arm which is already firing.
+        _ = self.ingress_bridge_task.take();
+        _ = self.egress_bridge_task.take();
+        // Service task: keep the abort as a fallback. Once the bridge
+        // halves close, `service.serve(bridge).await` should return on
+        // its own; if the user-supplied service is wedged on something
+        // unrelated to the bridge IO (a hung lock, a never-completing
+        // future), the abort is the only way to get the JoinHandle
+        // out.
+        if let Some(task) = self.service_task.take() {
             task.abort();
         }
     }
@@ -836,10 +862,20 @@ struct UdpSessionPendingData {
     client_read_demand_sink: DemandSink,
     /// Capacity used for the egress mpsc channel created at activate.
     udp_channel_capacity: usize,
-    /// Per-flow metadata.
-    meta: TransparentProxyFlowMeta,
+    /// Per-flow metadata. Shared as `Arc` because the service task
+    /// also needs it (close-event emission); a single refcount-bumped
+    /// clone is cheaper than copying the whole struct.
+    meta: Arc<TransparentProxyFlowMeta>,
     /// Handler-supplied egress options.
     egress_connect_options: Option<NwUdpConnectOptions>,
+    /// Per-flow shutdown guard. Held in pending so activate() and any
+    /// future per-flow tasks can clone it just like the TCP path does;
+    /// keeps the two session shapes symmetric.
+    #[expect(
+        dead_code,
+        reason = "reserved for symmetry with the TCP pending; activate() does not yet need it but future per-flow UDP tasks (e.g. an idle/inactivity watchdog) will clone from here"
+    )]
+    flow_guard: ShutdownGuard,
 }
 
 pub struct TransparentProxyUdpSession {
@@ -864,11 +900,18 @@ impl TransparentProxyUdpSession {
             // we drop the datagram rather than block the FFI thread or grow the
             // queue without bound. UDP is lossy by design, so this matches what
             // the wire protocol already tolerates.
+            //
+            // Only fire `on_client_read_demand` when the datagram was actually
+            // accepted. Firing it on the `Full` arm tells Swift "send more"
+            // right after we just dropped a datagram — defeats the demand
+            // contract and amplifies the loss. On overflow we let the next
+            // demand cycle re-prime naturally once the bridge drains.
             match tx.try_send(Bytes::copy_from_slice(bytes)) {
-                Ok(()) | Err(TrySendError::Full(_)) => {}
-                Err(TrySendError::Closed(_)) => return,
+                Ok(()) => {
+                    (self.on_client_read_demand)();
+                }
+                Err(TrySendError::Full(_) | TrySendError::Closed(_)) => {}
             }
-            (self.on_client_read_demand)();
         }
     }
 
@@ -925,6 +968,9 @@ impl TransparentProxyUdpSession {
             udp_channel_capacity,
             meta,
             egress_connect_options: _,
+            // Reserved for future per-flow tasks that need cooperative
+            // shutdown — see TCP path which clones into bridge tasks.
+            flow_guard: _,
         } = pending;
 
         // ingress flow (client ↔ service)
@@ -935,7 +981,7 @@ impl TransparentProxyUdpSession {
         );
         let remote_endpoint = meta.remote_endpoint.clone();
         let protocol = meta.protocol;
-        ingress_flow.extensions().insert_arc(Arc::new(meta));
+        ingress_flow.extensions().insert_arc(meta);
         if let Some(remote) = remote_endpoint {
             ingress_flow.extensions().insert(ProxyTarget(remote));
         }
@@ -1034,12 +1080,19 @@ where
 
     tracing::debug!(protocol = ?meta.protocol, "new udp session (pending egress connection)");
 
+    // Build the meta as an Arc once and share it: the service task
+    // needs it for the close-event emission paths, and `activate`
+    // consumes it for the ingress flow's extension. Cloning the Arc
+    // is one refcount bump; cloning the owned value would copy the
+    // whole struct.
+    let meta_arc = std::sync::Arc::new(meta);
+
     // Service task waits for BridgeIo; calls closed_sink when done.
     //
     // Spawn through the rama `Executor` so dial9 wake-event tracking
     // is applied when the feature is on (see TCP path for context).
-    let meta_for_close = std::sync::Arc::new(meta.clone());
-    let service_task = Executor::graceful(flow_guard).spawn_task(async move {
+    let meta_for_close = meta_arc.clone();
+    let service_task = Executor::graceful(flow_guard.clone()).spawn_task(async move {
         let Ok(bridge) = bridge_rx.await else {
             // Cancelled before activate — emit a synthetic close so post-mortem
             // logs still account for the flow.
@@ -1067,8 +1120,9 @@ where
         on_server_datagram: datagram_sink,
         client_read_demand_sink: client_read_demand_sink.clone(),
         udp_channel_capacity,
-        meta,
+        meta: meta_arc,
         egress_connect_options,
+        flow_guard,
     };
 
     SessionFlowAction::Intercept(TransparentProxyUdpSession {
@@ -1391,8 +1445,23 @@ async fn run_tcp_bridge(
     };
 
     emit_tcp_bridge_close_event(direction, close_reason, &meta, bytes_in, bytes_out);
+    // Emit the dial9 close event only from the Ingress direction so the
+    // flow appears once in the trace. The structured `tracing` event
+    // above is per-direction (each bridge logs its own bytes_in/bytes_out
+    // for observability); dial9 collapses the two views into a single
+    // record where:
+    //   - `bytes_in`  = client → server  (Ingress.bytes_in,
+    //                   i.e. bytes the bridge wrote into the duplex
+    //                   from the client/FFI side)
+    //   - `bytes_out` = server → client  (Ingress.bytes_out,
+    //                   i.e. bytes the rama service produced for the
+    //                   client side, observed at this bridge's read
+    //                   half via `on_server_bytes`)
+    // For a faithful relay these match the egress view modulo MITM
+    // transformations; the ingress numbers reflect what the client
+    // actually sent / received, which is what most analyses want.
     #[cfg(feature = "dial9")]
-    {
+    if matches!(direction, BridgeDirection::Ingress) {
         let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
         crate::tproxy::dial9::record_flow_closed(meta.flow_id, age_ms, bytes_in, bytes_out);
     }
