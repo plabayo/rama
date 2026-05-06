@@ -115,17 +115,21 @@ qq: fmt-check check clippy doc extra-checks
 qa: qq test test-doc deny
 
 # QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
-# and tests the rama crates that opt into dial9 with `--cfg tokio_unstable`
-# enabled (required by `dial9-tokio-telemetry`).
+# and tests the rama crates that opt into dial9. The recording side
+# (`dial9-tokio-telemetry`) is not pulled into rama directly — it lives
+# in the FFI tproxy example, where `tokio_unstable` is set in
+# `.cargo/config.toml`. This recipe therefore does not itself need
+# `--cfg tokio_unstable`; it just exercises the dial9 event-type
+# building blocks.
 #
 # Kept separate from the main `qa` recipe so the standard QA path stays
-# fast and free of unstable tokio API churn — but is part of `qa-full` so
-# anyone running the full suite covers it. CI runs it as its own job.
+# focused — but is part of `qa-full` so anyone running the full suite
+# covers it. CI runs it as its own job.
 qa-dial9:
     @cargo install cargo-nextest --locked
-    RUSTFLAGS="--cfg tokio_unstable -D warnings" cargo check -p rama-core -p rama-net-apple-networkextension -p rama --features dial9 --all-targets
-    RUSTFLAGS="--cfg tokio_unstable -D warnings" cargo clippy -p rama-core -p rama-net-apple-networkextension -p rama --features dial9 --all-targets
-    RUSTFLAGS="--cfg tokio_unstable -D warnings" cargo nextest run -p rama-core -p rama-net-apple-networkextension --features dial9
+    cargo check -p rama-net-apple-networkextension -p rama --features dial9 --all-targets
+    cargo clippy -p rama-net-apple-networkextension -p rama --features dial9 --all-targets
+    cargo nextest run -p rama-net-apple-networkextension --features dial9
 
 qa-crate CRATE:
     just fmt-check-crate {{CRATE}}

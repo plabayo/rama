@@ -52,7 +52,6 @@
   - [⛶ Transparent Proxies](./proxies/operate/transparent.md)
     - [🍎 Operating Transparent Proxies on macOS](./proxies/operate/transparent/macos.md)
     - [🪟 Operating Transparent Proxies on Windows](./proxies/operate/transparent/windows.md)
-    - [🐕 dial9 runtime telemetry](./proxies/operate/transparent/dial9.md)
   - [Proxies and VPNs](./proxies/operate/proxies_and_vpns.md)
 
 # Intro to HTTP
@@ -73,6 +72,7 @@
 # Appendices
 
 - [📣 Ecosystem](./ecosystem.md)
+- [🐕 dial9](./dial9.md)
 - [🎧 Netstack.FM](./netstackfm.md)
 - [❓ FAQ](./faq.md)
 - [💖 Sponsor](./sponsor.md)
