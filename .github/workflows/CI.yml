@@ -29,7 +29,7 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
@@ -69,7 +69,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
@@ -111,7 +111,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
@@ -214,7 +214,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -339,7 +339,7 @@ jobs:
       - precheck-docs
     runs-on: ${{ matrix.os }}
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -398,8 +398,6 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
-    env:
-      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -412,6 +410,12 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
           key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}
+      - name: Baseline tests without tokio_unstable
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          cargo nextest run --workspace
+          cargo test --doc --workspace
       - name: install protoc
         run: |
           sudo apt-get update
@@ -425,7 +429,13 @@ jobs:
         # Extra: Cargo Hack
       - name: install cargo-hack
         uses: taiki-e/install-action@cargo-hack
-      - name: cargo hack check
+      - name: cargo hack check without dial9
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo hack check --each-feature --exclude-features dial9 --exclude-all-features --no-dev-deps --workspace
+      - name: cargo hack check with dial9
+        env:
+          RUSTFLAGS: -D warnings --cfg tokio_unstable
         run: cargo hack check --each-feature --no-dev-deps --workspace
         # Extra: Cargo Deny
       - name: cargo deny
@@ -451,7 +461,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
@@ -483,7 +493,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
