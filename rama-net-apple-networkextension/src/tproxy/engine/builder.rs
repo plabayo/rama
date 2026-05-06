@@ -229,7 +229,14 @@ where
             executor: Executor::graceful(guard),
             opaque_config,
         };
+        // Drive the inner tokio runtime directly (rather than the
+        // wrapper's `block_on`) so the handler factory future does not
+        // need to satisfy the `'static` bound that dial9's
+        // spawn-then-await indirection requires. dial9 wake-tracking on
+        // the one-shot handler-construction future is uninteresting
+        // anyway.
         let handler = rt
+            .tokio_runtime()
             .block_on(handler_factory.create_transparent_proxy_handler(ctx))
             .map_err(Into::into)?;
 

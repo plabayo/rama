@@ -3397,6 +3397,7 @@ dependencies = [
  "ahash",
  "asynk-strim",
  "bytes",
+ "dial9-tokio-telemetry",
  "futures",
  "opentelemetry",
  "opentelemetry-semantic-conventions",

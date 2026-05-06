@@ -108,11 +108,12 @@ impl TransparentProxyAsyncRuntimeFactory for TestRuntimeFactory {
     fn create_async_runtime(
         self,
         _cfg: Option<&[u8]>,
-    ) -> Result<tokio::runtime::Runtime, Self::Error> {
-        Ok(tokio::runtime::Builder::new_multi_thread()
+    ) -> Result<TransparentProxyAsyncRuntime, Self::Error> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_time()
-            .build()?)
+            .build()?;
+        Ok(TransparentProxyAsyncRuntime::from_tokio(rt))
     }
 }
 

@@ -30,8 +30,20 @@ impl Executor {
         F: Future<Output: Send + 'static> + Send + 'static,
     {
         match &self.guard {
-            Some(guard) => guard.spawn_task(future),
-            None => tokio::spawn(future),
+            Some(guard) => {
+                // Replicate `ShutdownGuard::spawn_task` inline so the
+                // underlying `tokio::spawn` can be routed through dial9
+                // when the feature is on. The cloned guard pins shutdown
+                // until the future ends, matching tokio-graceful's
+                // semantics exactly.
+                let guard = guard.clone();
+                spawn(async move {
+                    let output = future.await;
+                    drop(guard);
+                    output
+                })
+            }
+            None => spawn(future),
         }
     }
 
@@ -49,18 +61,23 @@ impl Executor {
         F: Future<Output: Send + 'static> + Send + 'static,
     {
         match &self.guard {
-            Some(guard) => guard.spawn_task_fn(async |guard| {
-                tokio::select! {
-                    _ = guard.cancelled() => {
-                        tracing::trace!("cancellable task is cancelled due to guard");
-                        None
-                    }
-                    output = future => {
-                        Some(output)
-                    }
-                }
-            }),
-            None => tokio::spawn(future.map(Some)),
+            Some(guard) => {
+                let guard = guard.clone();
+                spawn(async move {
+                    let output = tokio::select! {
+                        _ = guard.cancelled() => {
+                            tracing::trace!("cancellable task is cancelled due to guard");
+                            None
+                        }
+                        output = future => {
+                            Some(output)
+                        }
+                    };
+                    drop(guard);
+                    output
+                })
+            }
+            None => spawn(future.map(Some)),
         }
     }
 
@@ -71,8 +88,12 @@ impl Executor {
         F: Future<Output: Send + 'static> + Send + 'static,
     {
         match self.guard {
-            Some(guard) => guard.into_spawn_task(future),
-            None => tokio::spawn(future),
+            Some(guard) => spawn(async move {
+                let output = future.await;
+                drop(guard);
+                output
+            }),
+            None => spawn(future),
         }
     }
 
@@ -87,5 +108,27 @@ impl Executor {
     #[must_use]
     pub fn into_guard(self) -> Option<ShutdownGuard> {
         self.guard
+    }
+}
+
+/// Spawn a future on the current tokio runtime.
+///
+/// When the `dial9` feature is enabled this routes through
+/// `dial9_tokio_telemetry::spawn`, which wraps the future with
+/// wake-event tracking on a traced runtime and falls through to
+/// plain `tokio::spawn` otherwise. With the feature disabled this
+/// is a direct call to `tokio::spawn`.
+#[inline]
+fn spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: Future<Output: Send + 'static> + Send + 'static,
+{
+    #[cfg(feature = "dial9")]
+    {
+        ::dial9_tokio_telemetry::spawn(future)
+    }
+    #[cfg(not(feature = "dial9"))]
+    {
+        tokio::spawn(future)
     }
 }

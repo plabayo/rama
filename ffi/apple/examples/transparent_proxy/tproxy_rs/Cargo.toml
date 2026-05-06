@@ -13,6 +13,7 @@ crate-type = ["staticlib"]
 ahash = "0.8"
 arc-swap = "1"
 base64 = "0.22"
+dial9-tokio-telemetry = "0.3"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 moka = { version = "0.12", features = ["sync"] }
 rama = { path = "../../../../../", features = ["dial9", "net-apple-networkextension", "net-apple-xpc", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }

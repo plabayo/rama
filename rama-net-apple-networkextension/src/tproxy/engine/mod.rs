@@ -53,7 +53,8 @@ pub use self::builder::TransparentProxyEngineBuilder;
 
 mod runtime;
 pub use self::runtime::{
-    DefaultTransparentProxyAsyncRuntimeFactory, TransparentProxyAsyncRuntimeFactory,
+    DefaultTransparentProxyAsyncRuntimeFactory, TransparentProxyAsyncRuntime,
+    TransparentProxyAsyncRuntimeFactory,
 };
 
 /// Default deadline for flow-handler decisions. Tuned via
@@ -162,7 +163,7 @@ pub enum TcpDeliverStatus {
 const _: () = assert!(std::mem::size_of::<TcpDeliverStatus>() == 1);
 
 pub struct TransparentProxyEngine<H> {
-    rt: tokio::runtime::Runtime,
+    rt: TransparentProxyAsyncRuntime,
     handler: H,
     tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
@@ -577,6 +578,16 @@ impl TransparentProxyTcpSession {
         // called from an external (non-Tokio) thread — e.g. a Swift dispatch queue.
         // We clone the flow_guard into each task to keep the shutdown barrier alive
         // until the task completes, matching the semantics of `spawn_task`.
+        //
+        // Note: we deliberately do NOT route this spawn through dial9's
+        // per-future wake-tracking. `dial9_tokio_telemetry::spawn` reads
+        // `TelemetryHandle::current()` from a thread-local, which is only
+        // populated on dial9 worker threads. `activate` runs on a Swift
+        // dispatch queue, so even with the `dial9` feature on the wrapper
+        // would silently fall through to plain `tokio::spawn`. Runtime-level
+        // events (poll start/end, wake, scheduling delay) are still emitted
+        // on every poll because dial9 hooks the worker thread, so the loss
+        // is the per-future wake graph for these two bridge tasks only.
 
         // spawn ingress bridge (client ↔ service)
         self.ingress_bridge_task = Some({
@@ -764,7 +775,13 @@ where
     tracing::debug!(protocol = ?meta.protocol, "new tcp session (pending egress connection)");
 
     // Service task waits for BridgeIo, then serves it.
-    let service_task = flow_guard.spawn_task(async move {
+    //
+    // Spawn through the rama `Executor` (graceful-aware) instead of
+    // `flow_guard.spawn_task` directly, so that with the `dial9`
+    // feature on the inner `tokio::spawn` is replaced by
+    // `dial9_tokio_telemetry::spawn` — giving per-future wake-event
+    // tracking on this long-lived per-flow service task.
+    let service_task = Executor::graceful(flow_guard.clone()).spawn_task(async move {
         let Ok(bridge) = bridge_rx.await else {
             return; // cancelled before activate
         };
@@ -1018,8 +1035,11 @@ where
     tracing::debug!(protocol = ?meta.protocol, "new udp session (pending egress connection)");
 
     // Service task waits for BridgeIo; calls closed_sink when done.
+    //
+    // Spawn through the rama `Executor` so dial9 wake-event tracking
+    // is applied when the feature is on (see TCP path for context).
     let meta_for_close = std::sync::Arc::new(meta.clone());
-    let service_task = flow_guard.spawn_task(async move {
+    let service_task = Executor::graceful(flow_guard).spawn_task(async move {
         let Ok(bridge) = bridge_rx.await else {
             // Cancelled before activate — emit a synthetic close so post-mortem
             // logs still account for the flow.
@@ -1063,10 +1083,17 @@ where
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-fn block_on_async_task<F>(rt: &tokio::runtime::Runtime, future: F) -> F::Output
+fn block_on_async_task<F>(rt: &TransparentProxyAsyncRuntime, future: F) -> F::Output
 where
     F: Future<Output: Send> + Send,
 {
+    // We deliberately drive the inner `tokio::runtime::Runtime` here
+    // rather than the wrapper's `block_on`, because non-`'static`
+    // futures cannot be routed through dial9's spawn-then-await
+    // instrumentation. dial9 wake-tracking on these short-lived
+    // FFI-entry futures is sacrificed; runtime-level events still
+    // fire because the worker thread is dial9-instrumented.
+    let inner = rt.tokio_runtime();
     match tokio::runtime::Handle::try_current() {
         Ok(handle)
             if matches!(
@@ -1074,7 +1101,7 @@ where
                 tokio::runtime::RuntimeFlavor::MultiThread
             ) =>
         {
-            tokio::task::block_in_place(|| rt.block_on(future))
+            tokio::task::block_in_place(|| inner.block_on(future))
         }
         Ok(handle)
             if matches!(
@@ -1083,14 +1110,14 @@ where
             ) =>
         {
             std::thread::scope(|scope| {
-                let join = scope.spawn(|| rt.block_on(future));
+                let join = scope.spawn(|| inner.block_on(future));
                 match join.join() {
                     Ok(output) => output,
                     Err(panic) => std::panic::resume_unwind(panic),
                 }
             })
         }
-        _ => rt.block_on(future),
+        _ => inner.block_on(future),
     }
 }
 

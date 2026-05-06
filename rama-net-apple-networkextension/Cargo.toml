@@ -26,7 +26,11 @@ default = []
 # Building with this feature requires `--cfg tokio_unstable`.
 #
 # [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
+dial9 = [
+    "dep:dial9-tokio-telemetry",
+    "dep:dial9-trace-format",
+    "rama-core/dial9",
+]
 
 [dependencies]
 dial9-tokio-telemetry = { workspace = true, optional = true }
