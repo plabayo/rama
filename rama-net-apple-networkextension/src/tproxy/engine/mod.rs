@@ -7,7 +7,6 @@ use std::{
     time::Duration,
 };
 
-pub use rama_core::watchdog::WatchdogConfig;
 use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,
@@ -15,7 +14,6 @@ use rama_core::{
     io::BridgeIo,
     rt::Executor,
     service::Service,
-    watchdog::{WatchdogRegistration, record_heartbeat},
 };
 use rama_net::{
     conn::is_connection_error,
@@ -80,12 +78,12 @@ pub enum DecisionDeadlineAction {
     Passthrough,
 }
 
-impl DecisionDeadlineAction {
-    fn as_str(self) -> &'static str {
-        match self {
+impl std::fmt::Display for DecisionDeadlineAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::Block => "block",
             Self::Passthrough => "passthrough",
-        }
+        })
     }
 }
 
@@ -176,8 +174,6 @@ pub struct TransparentProxyEngine<H> {
     udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
-    heartbeat: Option<Arc<AtomicU64>>,
-    _watchdog: Option<WatchdogRegistration>,
     shutdown: Option<Shutdown>,
     stop_trigger: Option<oneshot::Sender<()>>,
 }
@@ -230,7 +226,6 @@ where
         let tcp_idle_timeout = self.tcp_idle_timeout;
         let decision_deadline = self.decision_deadline;
         let decision_deadline_action = self.decision_deadline_action;
-        let heartbeat = self.heartbeat.clone();
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
@@ -245,7 +240,6 @@ where
                 tcp_idle_timeout,
                 decision_deadline,
                 decision_deadline_action,
-                heartbeat,
                 on_server_bytes,
                 on_client_read_demand,
                 on_server_closed,
@@ -277,7 +271,6 @@ where
         let udp_channel_capacity = self.udp_channel_capacity;
         let decision_deadline = self.decision_deadline;
         let decision_deadline_action = self.decision_deadline_action;
-        let heartbeat = self.heartbeat.clone();
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
@@ -290,7 +283,6 @@ where
                 udp_channel_capacity,
                 decision_deadline,
                 decision_deadline_action,
-                heartbeat,
                 on_server_datagram,
                 on_client_read_demand,
                 on_server_closed,
@@ -694,7 +686,6 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     tcp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
-    heartbeat: Option<Arc<AtomicU64>>,
     on_server_bytes: OnBytes,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -723,9 +714,6 @@ where
             DecisionDeadlineAction::Passthrough => SessionFlowAction::Passthrough,
         };
     };
-    if let Some(hb) = heartbeat.as_ref() {
-        record_heartbeat(hb);
-    }
 
     let (service, mut meta) = match flow_action {
         FlowAction::Intercept { service, meta } => (service, meta),
@@ -948,7 +936,6 @@ async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     udp_channel_capacity: usize,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
-    heartbeat: Option<Arc<AtomicU64>>,
     on_server_datagram: OnDatagram,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -977,9 +964,6 @@ where
             DecisionDeadlineAction::Passthrough => SessionFlowAction::Passthrough,
         };
     };
-    if let Some(hb) = heartbeat.as_ref() {
-        record_heartbeat(hb);
-    }
     let (service, mut meta) = match flow_action {
         FlowAction::Intercept { service, meta } => (service, meta),
         FlowAction::Blocked => return SessionFlowAction::Blocked,
@@ -1143,12 +1127,12 @@ enum BridgeDirection {
     Egress,
 }
 
-impl BridgeDirection {
-    fn as_str(self) -> &'static str {
-        match self {
+impl std::fmt::Display for BridgeDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::Ingress => "ingress",
             Self::Egress => "egress",
-        }
+        })
     }
 }
 
@@ -1265,9 +1249,9 @@ async fn run_tcp_bridge(
                     let n = bytes.len() as u64;
                     if let Err(err) = write_half.write_all(&bytes).await {
                         if is_connection_error(&err) {
-                            tracing::trace!(direction = direction.as_str(), %err, "tcp bridge write_all conn error");
+                            tracing::trace!(direction = %direction, %err, "tcp bridge write_all conn error");
                         } else {
-                            tracing::debug!(direction = direction.as_str(), %err, "tcp bridge write_all failed");
+                            tracing::debug!(direction = %direction, %err, "tcp bridge write_all failed");
                         }
                         // The service dropped its read side (e.g. it already wrote its
                         // response and returned).  Stop writing, but keep reading so
@@ -1299,9 +1283,9 @@ async fn run_tcp_bridge(
                     Err(err) => {
                         let conn_err = is_connection_error(&err);
                         if conn_err {
-                            tracing::trace!(direction = direction.as_str(), %err, "tcp bridge read_half conn error");
+                            tracing::trace!(direction = %direction, %err, "tcp bridge read_half conn error");
                         } else {
-                            tracing::debug!(direction = direction.as_str(), %err, "tcp bridge read_half failed");
+                            tracing::debug!(direction = %direction, %err, "tcp bridge read_half failed");
                         }
                         break BridgeCloseReason::ReadErrorLeft;
                     }
@@ -1359,12 +1343,12 @@ fn emit_udp_session_close_event(reason: BridgeCloseReason, meta: &TransparentPro
         .map(ToString::to_string);
     let local = meta.local_endpoint.as_ref().map(ToString::to_string);
     let remote = meta.remote_endpoint.as_ref().map(ToString::to_string);
-    let decision = meta.intercept_decision.map(|d| d.as_str());
+    let decision = meta.intercept_decision.map(|d| d.to_string());
 
     tracing::info!(
         target: "rama_apple_ne::tproxy",
         flow_id = meta.flow_id,
-        protocol = meta.protocol.as_str(),
+        protocol = %meta.protocol,
         reason = %reason,
         age_ms,
         pid = meta.source_app_pid,
@@ -1387,9 +1371,9 @@ fn emit_decision_deadline_event(
     tracing::warn!(
         target: "rama_apple_ne::tproxy",
         flow_id,
-        protocol = protocol.as_str(),
+        protocol = %protocol,
         deadline_ms,
-        action = action.as_str(),
+        action = %action,
         reason = %BridgeCloseReason::HandlerDeadline,
         "transparent proxy flow handler exceeded decision deadline",
     );
@@ -1413,13 +1397,13 @@ fn emit_tcp_bridge_close_event(
         .map(ToString::to_string);
     let local = meta.local_endpoint.as_ref().map(ToString::to_string);
     let remote = meta.remote_endpoint.as_ref().map(ToString::to_string);
-    let decision = meta.intercept_decision.map(|d| d.as_str());
+    let decision = meta.intercept_decision.map(|d| d.to_string());
 
     tracing::info!(
         target: "rama_apple_ne::tproxy",
         flow_id = meta.flow_id,
-        protocol = meta.protocol.as_str(),
-        direction = direction.as_str(),
+        protocol = %meta.protocol,
+        direction = %direction,
         reason = %reason,
         age_ms,
         bytes_in,

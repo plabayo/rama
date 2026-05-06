@@ -12,10 +12,20 @@ use crate::process::AuditToken;
 
 /// Monotonic per-process counter used to generate [`TransparentProxyFlowMeta`]
 /// `flow_id` values. Starts at 1; 0 is reserved as "unset / unknown."
+///
+/// In the (theoretical) event of overflow we wrap and skip 0 so the "unset"
+/// reservation still holds — at ~2^64 flows we'd have bigger problems, but
+/// the wrap path is defined rather than relying on Rust's overflow semantics.
 static FLOW_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_flow_id() -> u64 {
-    FLOW_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+    loop {
+        let id = FLOW_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if id != 0 {
+            return id;
+        }
+        // Wrapped through u64::MAX back to 0 — skip the reserved value.
+    }
 }
 
 /// NWParameters service class — maps to `NWParameters.serviceClass`.
@@ -187,21 +197,14 @@ impl TransparentProxyFlowProtocol {
     pub fn as_u32(self) -> u32 {
         self as u32
     }
-
-    /// Stable string label for structured logging.
-    #[inline]
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Tcp => "tcp",
-            Self::Udp => "udp",
-        }
-    }
 }
 
 impl std::fmt::Display for TransparentProxyFlowProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+        })
     }
 }
 
@@ -236,22 +239,15 @@ impl TransparentProxyFlowAction {
     pub fn as_u32(self) -> u32 {
         self as u32
     }
-
-    /// Stable string label for structured logging.
-    #[inline]
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Intercept => "intercept",
-            Self::Passthrough => "passthrough",
-            Self::Blocked => "blocked",
-        }
-    }
 }
 
 impl std::fmt::Display for TransparentProxyFlowAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(match self {
+            Self::Intercept => "intercept",
+            Self::Passthrough => "passthrough",
+            Self::Blocked => "blocked",
+        })
     }
 }
 

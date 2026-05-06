@@ -1063,33 +1063,6 @@ fn decision_deadline_passthrough_when_action_is_passthrough() {
 }
 
 #[test]
-fn watchdog_does_not_fire_under_normal_engine_traffic() {
-    // Build an engine with a watchdog configured, drive a few decisions
-    // through it, and confirm no extraneous shutdown was triggered. The
-    // engine should still be usable and stop cleanly.
-    let handler = TestHandler::passthrough();
-    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
-        .with_runtime_factory(TestRuntimeFactory)
-        .with_watchdog(super::WatchdogConfig::from_threshold(Duration::from_secs(
-            2,
-        )))
-        .build()
-        .expect("build engine");
-
-    // A few decisions in quick succession — heartbeat ticks each time.
-    for _ in 0..5 {
-        let _ = engine.new_tcp_session(
-            TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
-            |_| TcpDeliverStatus::Accepted,
-            || {},
-            || {},
-        );
-    }
-
-    engine.stop(0);
-}
-
-#[test]
 fn decision_deadline_does_not_fire_for_fast_handlers() {
     // Fast intercept — well within the default 1s deadline.
     let handler = TestHandler {

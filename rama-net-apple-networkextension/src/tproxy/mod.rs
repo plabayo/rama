@@ -42,7 +42,7 @@ pub use self::{
         SessionFlowAction, TcpDeliverStatus, TransparentProxyAsyncRuntimeFactory,
         TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyHandler,
         TransparentProxyHandlerFactory, TransparentProxyServiceContext, TransparentProxyTcpSession,
-        TransparentProxyUdpSession, WatchdogConfig, log_engine_build_error,
+        TransparentProxyUdpSession, log_engine_build_error,
     },
     types::{
         NwAttribution, NwEgressParameters, NwInterfaceType, NwMultipathServiceType, NwServiceClass,

@@ -10,6 +10,7 @@ use rama_core::{
     error::{BoxError, ErrorExt},
     io::{BridgeIo, Io},
 };
+use rama_utils::macros::generate_set_and_with;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::IdleGuard;
@@ -47,15 +48,11 @@ pub enum BridgeCloseReason {
     /// deadline. The flow was rejected (or passed through, depending on
     /// configuration) without bridging.
     HandlerDeadline,
-    /// The runtime watchdog detected a wedge and aborted the bridge.
-    WatchdogAbort,
 }
 
-impl BridgeCloseReason {
-    /// Stable string label for structured logging.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
+impl std::fmt::Display for BridgeCloseReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::Shutdown => "shutdown",
             Self::IdleTimeout => "idle_timeout",
             Self::PeerEofLeft => "peer_eof_left",
@@ -66,15 +63,16 @@ impl BridgeCloseReason {
             Self::WriteErrorRight => "write_error_right",
             Self::PeekTimeout => "peek_timeout",
             Self::HandlerDeadline => "handler_deadline",
-            Self::WatchdogAbort => "watchdog_abort",
-        }
+        })
     }
 }
 
-impl std::fmt::Display for BridgeCloseReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
+/// Direction tag used internally by [`run_bridge`] to disambiguate
+/// per-direction errors when classifying I/O failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyDirection {
+    LeftToRight,
+    RightToLeft,
 }
 
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
@@ -115,36 +113,39 @@ impl IoForwardService {
         }
     }
 
-    /// Set the per-direction idle timeout. The bridge closes with reason
-    /// [`BridgeCloseReason::IdleTimeout`] when no byte progress has been
-    /// observed in either direction within `timeout`.
-    ///
-    /// `None` (the default) disables idle detection.
-    #[must_use]
-    pub fn with_idle_timeout(mut self, timeout: Option<Duration>) -> Self {
-        self.idle_timeout = timeout;
-        self
+    generate_set_and_with! {
+        /// Per-direction idle timeout. When set, the bridge closes with reason
+        /// [`BridgeCloseReason::IdleTimeout`] if no byte progress is observed
+        /// in either direction within `timeout`.
+        ///
+        /// `None` (the default) disables idle detection.
+        pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.idle_timeout = timeout;
+            self
+        }
     }
 
-    /// Set the per-half cap on graceful shutdown. When the bridge unwinds it
-    /// calls `shutdown()` on each write half bounded by this duration; if the
-    /// inner type blocks (e.g. a TLS layer waiting for `close_notify`), the
-    /// shutdown is abandoned and the half is dropped.
-    ///
-    /// Default: 50ms.
-    #[must_use]
-    pub fn with_shutdown_grace(mut self, grace: Duration) -> Self {
-        self.shutdown_grace = grace;
-        self
+    generate_set_and_with! {
+        /// Per-half cap on graceful shutdown. When the bridge unwinds it calls
+        /// `shutdown()` on each write half bounded by this duration; if the
+        /// inner type blocks (e.g. a TLS layer waiting for `close_notify`),
+        /// the shutdown is abandoned and the half is dropped.
+        ///
+        /// Default: 50ms.
+        pub fn shutdown_grace(mut self, grace: Duration) -> Self {
+            self.shutdown_grace = grace;
+            self
+        }
     }
 
-    /// Set the per-direction copy buffer size.
-    ///
-    /// Default: 8 KiB.
-    #[must_use]
-    pub fn with_buf_size(mut self, size: usize) -> Self {
-        self.buf_size = size.max(1);
-        self
+    generate_set_and_with! {
+        /// Per-direction copy buffer size (in bytes).
+        ///
+        /// Default: 8 KiB.
+        pub fn buf_size(mut self, size: usize) -> Self {
+            self.buf_size = size.max(1);
+            self
+        }
     }
 
     /// The shutdown guard wired through the [`Executor`], if any.
@@ -220,99 +221,32 @@ where
     let (mut right_r, mut right_w) = tokio::io::split(right);
 
     let (reason, fatal_error) = {
-        let l_to_r = copy_one_way(
+        let l_to_r = std::pin::pin!(copy_one_way(
             &mut left_r,
             &mut right_w,
             bytes_l_to_r.clone(),
             progress.clone(),
             buf_size,
-        );
-        let r_to_l = copy_one_way(
+        ));
+        let r_to_l = std::pin::pin!(copy_one_way(
             &mut right_r,
             &mut left_w,
             bytes_r_to_l.clone(),
             progress.clone(),
             buf_size,
-        );
+        ));
 
-        tokio::pin!(l_to_r);
-        tokio::pin!(r_to_l);
-
-        let mut idle = idle_timeout.map(IdleGuard::new);
-        let mut last_progress: u64 = 0;
-        let mut l_to_r_done = false;
-        let mut r_to_l_done = false;
-
-        loop {
-            if l_to_r_done && r_to_l_done {
-                break (BridgeCloseReason::PeerEofLeft, None);
-            }
-
-            let cancelled = async {
-                match guard.as_ref() {
-                    Some(g) => g.cancelled().await,
-                    None => std::future::pending().await,
-                }
-            };
-
-            tokio::select! {
-                biased;
-                () = cancelled => break (BridgeCloseReason::Shutdown, None),
-                _ = async {
-                    match idle.as_mut() {
-                        Some(g) => g.tick().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    let cur = progress.load(Ordering::Relaxed);
-                    if cur != last_progress {
-                        last_progress = cur;
-                        if let Some(g) = idle.as_mut() {
-                            g.reset();
-                        }
-                        continue;
-                    }
-                    break (BridgeCloseReason::IdleTimeout, None);
-                }
-                res = &mut l_to_r, if !l_to_r_done => {
-                    match res {
-                        Ok(()) => {
-                            l_to_r_done = true;
-                            if !r_to_l_done {
-                                continue;
-                            }
-                            break (BridgeCloseReason::PeerEofLeft, None);
-                        }
-                        Err(e) => {
-                            let reason = classify_copy_error(&e, /* l_to_r */ true);
-                            break (reason, Some(e));
-                        }
-                    }
-                }
-                res = &mut r_to_l, if !r_to_l_done => {
-                    match res {
-                        Ok(()) => {
-                            r_to_l_done = true;
-                            if !l_to_r_done {
-                                continue;
-                            }
-                            break (BridgeCloseReason::PeerEofRight, None);
-                        }
-                        Err(e) => {
-                            let reason = classify_copy_error(&e, /* l_to_r */ false);
-                            break (reason, Some(e));
-                        }
-                    }
-                }
-            }
-        }
+        run_select_loop(l_to_r, r_to_l, guard.as_ref(), idle_timeout, &progress).await
         // l_to_r and r_to_l drop here, releasing borrows on the halves.
     };
 
-    // Bounded shutdown of each write half. We never block on TLS close_notify
-    // longer than `shutdown_grace`; on timeout the half is simply dropped.
-    let _ = tokio::time::timeout(shutdown_grace, left_w.shutdown()).await;
-    let _ = tokio::time::timeout(shutdown_grace, right_w.shutdown()).await;
+    // Close both write halves concurrently rather than sequentially — TLS
+    // close_notify can take the full grace window per side, and serializing
+    // the two doubles the worst-case bridge unwind time.
+    let _ = tokio::join!(
+        tokio::time::timeout(shutdown_grace, left_w.shutdown()),
+        tokio::time::timeout(shutdown_grace, right_w.shutdown()),
+    );
 
     BridgeOutcome {
         reason,
@@ -320,6 +254,83 @@ where
         bytes_r_to_l: bytes_r_to_l.load(Ordering::Relaxed),
         age: opened_at.elapsed(),
         fatal_error,
+    }
+}
+
+async fn run_select_loop<F1, F2>(
+    mut l_to_r: std::pin::Pin<&mut F1>,
+    mut r_to_l: std::pin::Pin<&mut F2>,
+    guard: Option<&ShutdownGuard>,
+    idle_timeout: Option<Duration>,
+    progress: &AtomicU64,
+) -> (BridgeCloseReason, Option<std::io::Error>)
+where
+    F1: Future<Output = Result<(), std::io::Error>>,
+    F2: Future<Output = Result<(), std::io::Error>>,
+{
+    let mut idle = idle_timeout.map(IdleGuard::new);
+    let mut last_progress: u64 = 0;
+    let mut l_to_r_done = false;
+    let mut r_to_l_done = false;
+
+    loop {
+        if l_to_r_done && r_to_l_done {
+            return (BridgeCloseReason::PeerEofLeft, None);
+        }
+
+        let cancelled = async {
+            match guard {
+                Some(g) => g.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
+
+        tokio::select! {
+            biased;
+            () = cancelled => return (BridgeCloseReason::Shutdown, None),
+            _ = async {
+                match idle.as_mut() {
+                    Some(g) => g.tick().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let cur = progress.load(Ordering::Relaxed);
+                if cur != last_progress {
+                    last_progress = cur;
+                    if let Some(g) = idle.as_mut() {
+                        g.reset();
+                    }
+                    continue;
+                }
+                return (BridgeCloseReason::IdleTimeout, None);
+            }
+            res = l_to_r.as_mut(), if !l_to_r_done => match res {
+                Ok(()) => {
+                    l_to_r_done = true;
+                    if !r_to_l_done {
+                        continue;
+                    }
+                    return (BridgeCloseReason::PeerEofLeft, None);
+                }
+                Err(e) => {
+                    let reason = classify_copy_error(&e, CopyDirection::LeftToRight);
+                    return (reason, Some(e));
+                }
+            },
+            res = r_to_l.as_mut(), if !r_to_l_done => match res {
+                Ok(()) => {
+                    r_to_l_done = true;
+                    if !l_to_r_done {
+                        continue;
+                    }
+                    return (BridgeCloseReason::PeerEofRight, None);
+                }
+                Err(e) => {
+                    let reason = classify_copy_error(&e, CopyDirection::RightToLeft);
+                    return (reason, Some(e));
+                }
+            },
+        }
     }
 }
 
@@ -350,7 +361,7 @@ where
     }
 }
 
-fn classify_copy_error(err: &std::io::Error, l_to_r: bool) -> BridgeCloseReason {
+fn classify_copy_error(err: &std::io::Error, direction: CopyDirection) -> BridgeCloseReason {
     use std::io::ErrorKind;
     // Rough split: connection / EOF errors on the read side; other kinds on the
     // write side. We can't always tell which side surfaced an error from the
@@ -363,11 +374,11 @@ fn classify_copy_error(err: &std::io::Error, l_to_r: bool) -> BridgeCloseReason 
             | ErrorKind::NotConnected
             | ErrorKind::BrokenPipe
     );
-    match (l_to_r, read_side) {
-        (true, true) => BridgeCloseReason::ReadErrorLeft,
-        (true, false) => BridgeCloseReason::WriteErrorRight,
-        (false, true) => BridgeCloseReason::ReadErrorRight,
-        (false, false) => BridgeCloseReason::WriteErrorLeft,
+    match (direction, read_side) {
+        (CopyDirection::LeftToRight, true) => BridgeCloseReason::ReadErrorLeft,
+        (CopyDirection::LeftToRight, false) => BridgeCloseReason::WriteErrorRight,
+        (CopyDirection::RightToLeft, true) => BridgeCloseReason::ReadErrorRight,
+        (CopyDirection::RightToLeft, false) => BridgeCloseReason::WriteErrorLeft,
     }
 }
 
@@ -402,7 +413,7 @@ mod tests {
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
-    async fn run_default<S, T>(left: S, right: T) -> ()
+    async fn run_default<S, T>(left: S, right: T)
     where
         S: Io + Unpin,
         T: Io + Unpin,
@@ -471,7 +482,7 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(500),
-            "bridge took {elapsed:?} to unwind on shutdown"
+            "bridge took {elapsed:?} to unwind on shutdown",
         );
         drop(shutdown);
     }
@@ -503,40 +514,37 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(500),
-            "bridge took {elapsed:?} to unwind on shutdown"
+            "bridge took {elapsed:?} to unwind on shutdown",
         );
         drop(shutdown);
     }
 
     #[tokio::test]
     async fn forward_idle_timeout_fires_when_no_progress() {
-        let svc = IoForwardService::default().with_idle_timeout(Some(Duration::from_millis(100)));
+        let svc = IoForwardService::default().with_idle_timeout(Duration::from_millis(100));
 
         let (_a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);
 
         let started = Instant::now();
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            svc.serve(BridgeIo(a_proxy, b_proxy)),
-        )
-        .await
-        .expect("idle bridge did not unwind within 2s")
-        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), svc.serve(BridgeIo(a_proxy, b_proxy)))
+            .await
+            .expect("idle bridge did not unwind within 2s")
+            .unwrap();
         let elapsed = started.elapsed();
         assert!(
             elapsed >= Duration::from_millis(80),
-            "idle bridge unwound too early: {elapsed:?}"
+            "idle bridge unwound too early: {elapsed:?}",
         );
         assert!(
             elapsed < Duration::from_millis(800),
-            "idle bridge unwound too late: {elapsed:?}"
+            "idle bridge unwound too late: {elapsed:?}",
         );
     }
 
     #[tokio::test]
     async fn forward_idle_timeout_resets_on_progress() {
-        let svc = IoForwardService::default().with_idle_timeout(Some(Duration::from_millis(150)));
+        let svc = IoForwardService::default().with_idle_timeout(Duration::from_millis(150));
 
         let (mut a_user, a_proxy) = duplex(64);
         let (mut b_user, b_proxy) = duplex(64);
@@ -564,9 +572,6 @@ mod tests {
 
     #[tokio::test]
     async fn forward_byte_counters_visible_via_close_log() {
-        // Indirectly verified via the close path. Direct counter visibility
-        // would require exposing them through a handle; for now we trust the
-        // log emission path (covered separately) and end-to-end traffic.
         let (mut a_user, a_proxy) = duplex(64);
         let (mut b_user, b_proxy) = duplex(64);
 

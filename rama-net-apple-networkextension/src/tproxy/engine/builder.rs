@@ -1,9 +1,6 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use parking_lot::Mutex as ParkingLotMutex;
-use rama_core::watchdog::{WatchdogConfig, register_watchdog};
 use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     graceful::Shutdown,
@@ -25,7 +22,6 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     udp_idle_timeout: Option<Duration>,
     decision_deadline: Option<Duration>,
     decision_deadline_action: Option<DecisionDeadlineAction>,
-    watchdog: Option<WatchdogConfig>,
     opaque_config: Option<Arc<[u8]>>,
     runtime_factory: R,
 }
@@ -45,7 +41,6 @@ where
             udp_idle_timeout: None,
             decision_deadline: None,
             decision_deadline_action: None,
-            watchdog: None,
             opaque_config: None,
             runtime_factory: DefaultTransparentProxyAsyncRuntimeFactory::default(),
         }
@@ -64,7 +59,6 @@ where
             udp_idle_timeout: self.udp_idle_timeout,
             decision_deadline: self.decision_deadline,
             decision_deadline_action: self.decision_deadline_action,
-            watchdog: self.watchdog,
             opaque_config: self.opaque_config,
             runtime_factory,
         }
@@ -172,27 +166,6 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Enable a process-wide watchdog that monitors flow-handler
-        /// liveness and triggers graceful shutdown of this engine when
-        /// decisions stop completing within `stale_threshold`.
-        ///
-        /// The watchdog runs on a dedicated OS thread (shared across all
-        /// rama watchdog registrations in the process), so it can observe
-        /// the engine even if the tokio executor is starved. See
-        /// [`rama_core::watchdog`] for details.
-        ///
-        /// Disabled by default. Useful as a recovery backstop when running
-        /// in environments where consumer code can occasionally introduce
-        /// blocking work; do not enable as a substitute for fixing
-        /// underlying wedges.
-        pub fn watchdog(mut self, config: WatchdogConfig) -> Self
-        {
-            self.watchdog = Some(config);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
         #[must_use]
         #[doc(hidden)]
         /// Unstable API only meant for generated code.
@@ -221,7 +194,6 @@ where
             udp_idle_timeout,
             decision_deadline,
             decision_deadline_action,
-            watchdog,
             opaque_config,
             runtime_factory,
         } = self;
@@ -246,29 +218,10 @@ where
             .context("TransparentProxyEngineBuilder: create async runtime")?;
 
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        // Watchdog signal channel — only used when watchdog is enabled. We
-        // wrap it in Option so the Shutdown signal future doesn't fire on
-        // sender drop when no watchdog is configured.
-        let (watchdog_tx, watchdog_rx) = if watchdog.is_some() {
-            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
-        };
         let shutdown = {
             let _enter = rt.enter();
             Shutdown::new(async move {
-                match watchdog_rx {
-                    Some(watchdog_rx) => {
-                        tokio::select! {
-                            _ = stop_rx => {}
-                            _ = watchdog_rx => {}
-                        }
-                    }
-                    None => {
-                        let _ = stop_rx.await;
-                    }
-                }
+                let _ = stop_rx.await;
             })
         };
         let guard = shutdown.guard();
@@ -279,25 +232,6 @@ where
         let handler = rt
             .block_on(handler_factory.create_transparent_proxy_handler(ctx))
             .map_err(Into::into)?;
-
-        let (heartbeat, watchdog_registration) =
-            if let (Some(cfg), Some(tx)) = (watchdog, watchdog_tx) {
-                let hb = Arc::new(AtomicU64::new(0));
-                let trigger = ParkingLotMutex::new(Some(tx));
-                let reg = register_watchdog(
-                    "rama_apple_ne::tproxy".into(),
-                    cfg,
-                    hb.clone(),
-                    Box::new(move || {
-                        if let Some(tx) = trigger.lock().take() {
-                            let _ = tx.send(());
-                        }
-                    }),
-                );
-                (Some(hb), Some(reg))
-            } else {
-                (None, None)
-            };
 
         Ok(TransparentProxyEngine {
             rt,
@@ -313,8 +247,6 @@ where
             decision_deadline: decision_deadline.unwrap_or(super::DEFAULT_DECISION_DEADLINE),
             decision_deadline_action: decision_deadline_action
                 .unwrap_or(DecisionDeadlineAction::Block),
-            heartbeat,
-            _watchdog: watchdog_registration,
             shutdown: Some(shutdown),
             stop_trigger: Some(stop_tx),
         })

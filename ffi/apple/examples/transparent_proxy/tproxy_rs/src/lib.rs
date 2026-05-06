@@ -305,13 +305,5 @@ apple_ne::transparent_proxy_ffi! {
         .with_tcp_idle_timeout(std::time::Duration::from_secs(15 * 60))
         // Cap how long a flow handler can hold kernel flow ownership; if
         // exceeded, block the flow rather than wait indefinitely.
-        .with_decision_deadline(std::time::Duration::from_secs(1))
-        // Belt-and-suspenders: a process-wide watchdog that triggers the
-        // engine's graceful shutdown if no flow handler decision has
-        // completed within 30s. The watchdog runs on a dedicated OS thread
-        // (separate from the tokio executor) so it can fire even if the
-        // runtime is starved.
-        .with_watchdog(rama::watchdog::WatchdogConfig::from_threshold(
-            std::time::Duration::from_secs(30),
-        )),
+        .with_decision_deadline(std::time::Duration::from_secs(1)),
 }
