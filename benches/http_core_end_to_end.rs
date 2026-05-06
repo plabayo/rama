@@ -427,7 +427,7 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
     let body = opts.response_body;
     let opts = opts.clone();
     rt.spawn(async move {
-        let _ = &opts;
+        _ = &opts;
         while let Ok((sock, _)) = listener.accept().await {
             let sock = ServiceInput::new(sock);
             if opts.http2 {

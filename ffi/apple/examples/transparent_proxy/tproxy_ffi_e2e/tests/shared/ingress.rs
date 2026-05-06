@@ -32,7 +32,7 @@ unsafe extern "C" fn on_tcp_server_bytes(
     } else {
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
-    let _ = ctx.sender.send(payload);
+    _ = ctx.sender.send(payload);
     // The e2e harness uses an unbounded mpsc + tight-loop writer, so there's
     // no Swift-side backpressure to surface here.
     bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED
@@ -76,7 +76,7 @@ unsafe extern "C" fn on_tcp_write_to_egress(
     } else {
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
-    let _ = ctx.sender.send(payload);
+    _ = ctx.sender.send(payload);
     bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED
 }
 
@@ -101,7 +101,7 @@ impl IngressGuard {
         self.shutdown.notify_waiters();
         let accept_task = self.accept_task.take().expect("accept task");
         accept_task.abort();
-        let _ = accept_task.await;
+        _ = accept_task.await;
 
         let mut tasks = self.connection_tasks.lock().await;
         for mut task in tasks.drain(..) {
@@ -287,7 +287,7 @@ async fn serve_one_ingress_connection(
                 break;
             }
         }
-        let _ = client_write.shutdown().await;
+        _ = client_write.shutdown().await;
     });
 
     // Egress writer: service-bound bytes → upstream socket.
@@ -308,7 +308,7 @@ async fn serve_one_ingress_connection(
                 _ = egress_closed_for_writer.notified() => break,
             }
         }
-        let _ = egress_write.shutdown().await;
+        _ = egress_write.shutdown().await;
     });
 
     // Egress reader: upstream socket → on_egress_bytes / on_egress_eof.
@@ -465,7 +465,7 @@ async fn serve_one_ingress_connection(
     server_writer.abort();
     egress_writer.abort();
     egress_reader.abort();
-    let _ = server_writer.await;
-    let _ = egress_writer.await;
-    let _ = egress_reader.await;
+    _ = server_writer.await;
+    _ = egress_writer.await;
+    _ = egress_reader.await;
 }

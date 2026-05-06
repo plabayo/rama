@@ -102,7 +102,7 @@ impl HealthReporter {
     /// Clear the status of the given service.
     pub async fn clear_service_status(&mut self, service_name: &str) {
         let mut writer = self.statuses.write().await;
-        let _ = writer.remove(service_name);
+        _ = writer.remove(service_name);
     }
 }
 

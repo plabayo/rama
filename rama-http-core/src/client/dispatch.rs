@@ -460,12 +460,11 @@ mod tests {
 
     #[cfg(not(miri))]
     #[tokio::test]
-    #[expect(clippy::let_underscore_future)]
     async fn sender_checks_for_want_on_send() {
         let (mut tx, mut rx) = channel::<Custom, ()>();
 
         // one is allowed to buffer, second is rejected
-        let _ = tx.try_send(Custom(1)).expect("1 buffered");
+        _ = tx.try_send(Custom(1)).expect("1 buffered");
         tx.try_send(Custom(2)).expect_err("2 not ready");
 
         assert!(PollOnce(&mut rx).await.is_some(), "rx once");
@@ -476,21 +475,20 @@ mod tests {
 
         assert!(PollOnce(&mut rx).await.is_none(), "rx empty");
 
-        let _ = tx.try_send(Custom(2)).expect("2 ready");
+        _ = tx.try_send(Custom(2)).expect("2 ready");
     }
 
     #[test]
-    #[expect(clippy::let_underscore_future)]
     fn unbounded_sender_doesnt_bound_on_want() {
         let (tx, rx) = channel::<Custom, ()>();
         let mut tx = tx.unbound();
 
-        let _ = tx.try_send(Custom(1)).unwrap();
-        let _ = tx.try_send(Custom(2)).unwrap();
-        let _ = tx.try_send(Custom(3)).unwrap();
+        _ = tx.try_send(Custom(1)).unwrap();
+        _ = tx.try_send(Custom(2)).unwrap();
+        _ = tx.try_send(Custom(3)).unwrap();
 
         drop(rx);
 
-        let _ = tx.try_send(Custom(4)).unwrap_err();
+        _ = tx.try_send(Custom(4)).unwrap_err();
     }
 }

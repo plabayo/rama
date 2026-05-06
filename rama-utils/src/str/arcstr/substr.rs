@@ -62,7 +62,7 @@ pub struct Substr(ArcStr, Idx, Idx);
 #[allow(clippy::let_unit_value)]
 const fn to_idx_const(i: usize) -> Idx {
     const DUMMY: [(); 1] = [()];
-    let _ = DUMMY[i >> 32];
+    _ = DUMMY[i >> 32];
     i as Idx
 }
 #[inline]
@@ -170,7 +170,7 @@ impl Substr {
             Bound::Excluded(&n) => n,
             Bound::Unbounded => a.len(),
         };
-        let _ = &a.as_str()[begin..end];
+        _ = &a.as_str()[begin..end];
 
         Self(ArcStr::clone(a), to_idx(begin), to_idx(end))
     }
@@ -215,7 +215,7 @@ impl Substr {
         };
         let new_begin = self.1 + begin;
         let new_end = self.1 + end;
-        // let _ = &self.0.as_str()[new_begin..new_end];
+        // _ = &self.0.as_str()[new_begin..new_end];
         if begin > end
             || end > my_end
             || !self.0.is_char_boundary(new_begin)

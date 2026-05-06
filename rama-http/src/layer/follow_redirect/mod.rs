@@ -94,7 +94,7 @@
 //! ).into_layer(http_client);
 //!
 //! // ...
-//! let _ = client.serve(Request::default()).await?;
+//! _ = client.serve(Request::default()).await?;
 //! # Ok(())
 //! # }
 //! ```

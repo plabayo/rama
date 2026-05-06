@@ -170,7 +170,7 @@ pub struct TransparentProxyEngine<H> {
     tcp_idle_timeout: Option<Duration>,
     // Will be plumbed through to UDP bridges in a follow-up; currently captured
     // from the builder but not yet observed.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
@@ -1172,6 +1172,7 @@ impl std::fmt::Display for BridgeDirection {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 async fn run_tcp_bridge(
     internal: tokio::io::DuplexStream,
     mut client_rx: mpsc::Receiver<Bytes>,

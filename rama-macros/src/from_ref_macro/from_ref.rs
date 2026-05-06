@@ -87,7 +87,7 @@ impl Parse for FieldAttrs {
                 return Err(lh.error());
             }
 
-            let _ = input.parse::<Token![,]>();
+            _ = input.parse::<Token![,]>();
         }
 
         Ok(Self { skip })

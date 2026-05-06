@@ -477,7 +477,7 @@ unsafe fn free_utf8(ptr: *const c_char, len: usize) {
 
     let raw_slice = ptr::slice_from_raw_parts_mut(ptr as *mut u8, len);
     // SAFETY: caller guarantees this points to memory allocated via `alloc_utf8`.
-    let _ = unsafe { Box::from_raw(raw_slice) };
+    _ = unsafe { Box::from_raw(raw_slice) };
 }
 
 /// # Safety

@@ -263,7 +263,7 @@ where
     // Close both write halves concurrently rather than sequentially — TLS
     // close_notify can take the full grace window per side, and serializing
     // the two doubles the worst-case bridge unwind time.
-    let _ = tokio::join!(
+    _ = tokio::join!(
         tokio::time::timeout(shutdown_grace, left_w.shutdown()),
         tokio::time::timeout(shutdown_grace, right_w.shutdown()),
     );
@@ -372,7 +372,7 @@ where
             // Half-close the write side so the peer sees EOF.
             // Bounded externally by the surrounding `tokio::select!` /
             // shutdown grace; here we just attempt cleanly.
-            let _ = writer.shutdown().await;
+            _ = writer.shutdown().await;
             return Ok(());
         }
         writer.write_all(&buf[..n]).await?;
@@ -473,7 +473,7 @@ mod tests {
     async fn shutdown_pair() -> (Shutdown, tokio::sync::oneshot::Sender<()>) {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown = Shutdown::new(async move {
-            let _ = rx.await;
+            _ = rx.await;
         });
         (shutdown, tx)
     }

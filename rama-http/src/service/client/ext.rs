@@ -516,7 +516,7 @@ where
                             return self;
                         }
                     };
-                    let _ = headers.insert(key, value);
+                    _ = headers.insert(key, value);
                 }
 
                 self.state = RequestBuilderState::PreBody(builder);
@@ -537,7 +537,7 @@ where
                         return self;
                     }
                 };
-                let _ = request.headers_mut().insert(key, value);
+                _ = request.headers_mut().insert(key, value);
                 self.state = RequestBuilderState::PostBody(request);
                 self
             }

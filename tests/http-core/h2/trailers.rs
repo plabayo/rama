@@ -103,7 +103,7 @@ async fn send_trailers_immediately() {
     let (_, mut body) = response.into_parts();
 
     // There is a data chunk
-    let _ = h2.run(body.next()).await.unwrap().unwrap();
+    _ = h2.run(body.next()).await.unwrap().unwrap();
 
     let chunk = h2.run(body.next()).await;
     assert!(chunk.is_none());

@@ -397,7 +397,7 @@ async fn send_data_receive_window_update() {
     };
 
     let mock = async move {
-        let _ = mock.assert_client_handshake().await;
+        _ = mock.assert_client_handshake().await;
 
         let frame = mock.next().await.unwrap();
         let request = assert_headers!(frame.unwrap());
@@ -441,7 +441,7 @@ async fn stream_count_over_max_stream_limit_does_not_starve_capacity() {
     let (tx, rx) = oneshot::channel();
 
     let srv = async move {
-        let _ = srv
+        _ = srv
             .assert_client_handshake_with_settings(
                 frames::settings()
                     // super tiny server
@@ -510,7 +510,7 @@ async fn stream_count_over_max_stream_limit_does_not_starve_capacity() {
         let response = conn.drive(req2).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let _ = rx.await;
+        _ = rx.await;
     };
 
     let task = join(srv, client);

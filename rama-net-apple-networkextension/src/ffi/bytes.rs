@@ -34,7 +34,7 @@ impl BytesOwned {
         let vec_len = len.min(cap);
         let vec_cap = cap;
         // SAFETY: caller contract guarantees pointer/capacity originate from a `Vec<u8>`.
-        let _ = unsafe { Vec::from_raw_parts(ptr, vec_len, vec_cap) };
+        _ = unsafe { Vec::from_raw_parts(ptr, vec_len, vec_cap) };
     }
 }
 

@@ -58,7 +58,7 @@ mod tests {
 
         assert!(file.contents_utf8().unwrap().contains("<b>HTML!</b>"));
 
-        let _ = file.metadata().unwrap();
+        _ = file.metadata().unwrap();
     }
 
     #[test]
@@ -69,10 +69,10 @@ mod tests {
         let file = entry.as_file().unwrap();
         assert!(file.contents_utf8().unwrap().contains("fn get_entry"));
 
-        let _ = file.metadata().unwrap();
+        _ = file.metadata().unwrap();
 
         let entry = ASSETS.get_entry("macros").unwrap();
-        let _ = entry.as_dir().unwrap();
+        _ = entry.as_dir().unwrap();
     }
 
     #[test]
@@ -84,6 +84,6 @@ mod tests {
 
         assert!(file.contents_utf8().unwrap().contains("<b>HTML!</b>"));
 
-        let _ = file.metadata().unwrap();
+        _ = file.metadata().unwrap();
     }
 }

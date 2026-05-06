@@ -243,7 +243,7 @@ mod test {
 
     async fn echo(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
         let mut v = Vec::default();
-        let _ = stream.read_to_end(&mut v).await?;
+        _ = stream.read_to_end(&mut v).await?;
         Ok(v)
     }
 

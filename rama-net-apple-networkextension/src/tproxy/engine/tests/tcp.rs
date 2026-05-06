@@ -29,7 +29,7 @@ fn tcp_bridge_delivers_server_bytes() {
             service: service_fn(
                 |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
                     let BridgeIo(mut ingress, _egress) = bridge;
-                    let _ = ingress.write_all(b"pong").await;
+                    _ = ingress.write_all(b"pong").await;
                     Ok(())
                 },
             )
@@ -45,7 +45,7 @@ fn tcp_bridge_delivers_server_bytes() {
         move |bytes| {
             let mut lock = got_clone.lock();
             lock.extend_from_slice(&bytes);
-            let _ = notify_tx.send(());
+            _ = notify_tx.send(());
             TcpDeliverStatus::Accepted
         },
         || {},
@@ -55,9 +55,9 @@ fn tcp_bridge_delivers_server_bytes() {
     };
 
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
-    let _ = session.on_client_bytes(b"ping");
+    _ = session.on_client_bytes(b"ping");
 
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert_eq!(got.lock().as_slice(), b"pong");
@@ -193,7 +193,7 @@ fn tcp_demand_callback_fires_after_ingress_channel_drains() {
         |_| TcpDeliverStatus::Accepted,
         move || {
             demand_count_clone.fetch_add(1, Ordering::Relaxed);
-            let _ = notify_tx.send(());
+            _ = notify_tx.send(());
         },
         || {},
     ) else {
@@ -212,7 +212,7 @@ fn tcp_demand_callback_fires_after_ingress_channel_drains() {
     }
     assert!(got_paused, "expected the bounded channel to fill up");
 
-    let _ = notify_rx.recv_timeout(Duration::from_secs(2));
+    _ = notify_rx.recv_timeout(Duration::from_secs(2));
     assert!(
         demand_count.load(Ordering::Relaxed) >= 1,
         "demand callback should fire when the bridge frees a slot"
@@ -244,7 +244,7 @@ fn tcp_bridge_write_failure_closes_ingress_channel() {
         |_| TcpDeliverStatus::Accepted,
         || {},
         move || {
-            let _ = closed_tx.send(());
+            _ = closed_tx.send(());
         },
     ) else {
         panic!("expected intercept session");
@@ -266,7 +266,7 @@ fn tcp_bridge_write_failure_closes_ingress_channel() {
         "on_client_bytes must report Closed after a bridge write failure"
     );
 
-    let _ = closed_rx.recv_timeout(Duration::from_secs(1));
+    _ = closed_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 }
 
@@ -344,7 +344,7 @@ fn tcp_bridge_idle_timeout_unwinds_session() {
         |_| TcpDeliverStatus::Accepted,
         || {},
         move || {
-            let _ = close_tx.send(());
+            _ = close_tx.send(());
         },
     ) else {
         panic!("expected intercept session");

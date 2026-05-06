@@ -33,7 +33,7 @@ fn tcp_flow_exposes_meta_extension() {
                             let BridgeIo(stream, _egress) = bridge;
                             *seen_clone.lock() =
                                 stream.extensions().get_arc::<TransparentProxyFlowMeta>();
-                            let _ = notify_tx.send(());
+                            _ = notify_tx.send(());
                             Ok(())
                         }
                     },
@@ -54,7 +54,7 @@ fn tcp_flow_exposes_meta_extension() {
         panic!("expected intercept session");
     };
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert_eq!(
@@ -85,7 +85,7 @@ fn udp_flow_exposes_meta_extension() {
                             let BridgeIo(flow, _egress) = bridge;
                             *seen_clone.lock() =
                                 flow.extensions().get_arc::<TransparentProxyFlowMeta>();
-                            let _ = notify_tx.send(());
+                            _ = notify_tx.send(());
                             Ok(())
                         }
                     },
@@ -105,7 +105,7 @@ fn udp_flow_exposes_meta_extension() {
         panic!("expected intercept session");
     };
     session.activate(|_| {});
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert_eq!(
@@ -148,7 +148,7 @@ fn flow_meta_records_intercept_decision_after_handler() {
                             let BridgeIo(stream, _egress) = bridge;
                             *seen_clone.lock() =
                                 stream.extensions().get_arc::<TransparentProxyFlowMeta>();
-                            let _ = notify_tx.send(());
+                            _ = notify_tx.send(());
                             Ok(())
                         }
                     },
@@ -169,7 +169,7 @@ fn flow_meta_records_intercept_decision_after_handler() {
         panic!("expected intercept session");
     };
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     let seen_meta = seen.lock().clone().expect("tcp flow meta");

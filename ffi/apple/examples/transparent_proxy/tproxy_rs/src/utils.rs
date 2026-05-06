@@ -24,7 +24,7 @@ static STORAGE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 pub(super) fn set_storage_dir(path: Option<PathBuf>) {
     if let Some(path) = path {
-        let _ = STORAGE_DIR.set(path);
+        _ = STORAGE_DIR.set(path);
     }
 }
 

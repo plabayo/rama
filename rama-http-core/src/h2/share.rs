@@ -538,7 +538,7 @@ impl PingPong {
         // Passing a `Ping` here is just to be forwards-compatible with
         // eventually allowing choosing a ping payload. For now, we can
         // just ignore it.
-        let _ = ping;
+        _ = ping;
 
         self.inner.send_ping().map_err(|err| match err {
             Some(err) => err.into(),

@@ -150,7 +150,6 @@
     clippy::panic,
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn,
-    clippy::let_underscore_must_use,
     reason = "proc-macro crate: panics are the historical compile-error mechanism for vendored macros (paste, etc.)"
 )]
 // `unreachable!()` is used in test fixtures (e.g. `|_| unreachable!()` callbacks for

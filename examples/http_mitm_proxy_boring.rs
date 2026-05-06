@@ -429,7 +429,7 @@ where
             tracing::debug!(
                 "remove sec-websocket-extensions header if it exts: no ext was requested by ingress client"
             );
-            let _ = response_parts
+            _ = response_parts
                 .headers
                 .remove(SecWebSocketExtensions::name());
         }

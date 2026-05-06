@@ -597,7 +597,7 @@ pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxE
 
     let user_agent = user_agent_info.user_agent.clone();
 
-    let _ = get_and_store_http_info(
+    _ = get_and_store_http_info(
         &state,
         parts.headers,
         &parts.extensions,

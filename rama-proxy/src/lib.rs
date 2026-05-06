@@ -201,12 +201,12 @@
 //!             if let Some(countries) =
 //!                 filter.country.as_ref().filter(|t| !t.is_empty())
 //!             {
-//!                 let _ = write!(output, "country-{}", countries[0]);
+//!                 _ = write!(output, "country-{}", countries[0]);
 //!             }
 //!             if let Some(states) =
 //!                 filter.state.as_ref().filter(|t| !t.is_empty())
 //!             {
-//!                 let _ = write!(output, "state-{}", states[0]);
+//!                 _ = write!(output, "state-{}", states[0]);
 //!             }
 //!
 //!             (!output.is_empty()).then(|| format!("{username}-{output}"))

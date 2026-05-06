@@ -44,7 +44,7 @@ fn udp_bridge_delivers_server_datagram() {
         move |bytes| {
             let mut lock = got_clone.lock();
             lock.extend_from_slice(&bytes);
-            let _ = notify_tx.send(());
+            _ = notify_tx.send(());
         },
         || {},
         || {},
@@ -55,7 +55,7 @@ fn udp_bridge_delivers_server_datagram() {
     session.activate(|_| {});
     session.on_client_datagram(b"ping");
 
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert_eq!(got.lock().as_slice(), b"ping");
@@ -75,7 +75,7 @@ fn udp_session_requests_client_read_demand() {
             service: service_fn(
                 |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
                     let BridgeIo(mut ingress, _egress) = bridge;
-                    let _ = ingress.recv().await;
+                    _ = ingress.recv().await;
                     Ok(())
                 },
             )
@@ -89,7 +89,7 @@ fn udp_session_requests_client_read_demand() {
         |_| {},
         move || {
             demand_count_clone.fetch_add(1, Ordering::Relaxed);
-            let _ = notify_tx.send(());
+            _ = notify_tx.send(());
         },
         || {},
     ) else {
@@ -99,7 +99,7 @@ fn udp_session_requests_client_read_demand() {
     session.activate(|_| {});
     session.on_client_datagram(b"x");
 
-    let _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 
     assert!(demand_count.load(Ordering::Relaxed) >= 1);

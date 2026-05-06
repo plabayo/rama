@@ -384,7 +384,7 @@ macro_rules! test {
             assert_eq!(s(&buf[..n]), expected);
 
             inc.write_all($server_reply.as_ref()).expect("write_all");
-            let _ = tx.send(Ok::<_, Error>(()));
+            _ = tx.send(Ok::<_, Error>(()));
         }).expect("thread spawn");
 
         let rx = rx.expect("thread panicked");
@@ -1735,7 +1735,7 @@ mod conn {
 
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
                 .unwrap();
-            let _ = tx1.send(());
+            _ = tx1.send(());
         });
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
@@ -1778,7 +1778,7 @@ mod conn {
             sock.read_exact(&mut buf).expect("read 1");
             assert_eq!(s(&buf), expected);
 
-            let _ = tx.send(());
+            _ = tx.send(());
 
             assert_eq!(sock.read(&mut buf).expect("read 2"), 0);
         });
@@ -1799,7 +1799,7 @@ mod conn {
             support::runtime().block_on(rx).unwrap();
 
             // Aborts the body in an abnormal fashion.
-            let _ = sender.try_send(Err(Box::new(std::io::Error::other("body write aborted"))));
+            _ = sender.try_send(Err(Box::new(std::io::Error::other("body write aborted"))));
         });
 
         let req = Request::builder()
@@ -1836,7 +1836,7 @@ mod conn {
 
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .unwrap();
-            let _ = tx1.send(());
+            _ = tx1.send(());
         });
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
@@ -1881,7 +1881,7 @@ mod conn {
 
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .unwrap();
-            let _ = tx1.send(());
+            _ = tx1.send(());
         });
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
@@ -1919,11 +1919,11 @@ mod conn {
             sock.set_write_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
             let mut buf = [0; 4096];
-            let _ = sock.read(&mut buf).expect("read 1");
+            _ = sock.read(&mut buf).expect("read 1");
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .unwrap();
 
-            let _ = tx1.send(Ok::<_, ()>(()));
+            _ = tx1.send(Ok::<_, ()>(()));
         });
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
@@ -1972,7 +1972,7 @@ mod conn {
             sock.set_write_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
             let mut buf = [0; 4096];
-            let _ = sock.read(&mut buf).expect("read 1");
+            _ = sock.read(&mut buf).expect("read 1");
             sock.write_all(
                 b"\
                 HTTP/1.1 101 Switching Protocols\r\n\
@@ -1982,7 +1982,7 @@ mod conn {
             ",
             )
             .unwrap();
-            let _ = tx1.send(());
+            _ = tx1.send(());
 
             let n = sock.read(&mut buf).expect("read 2");
             assert_eq!(&buf[..n], b"foo=bar");
@@ -2054,7 +2054,7 @@ mod conn {
             sock.set_write_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
             let mut buf = [0; 4096];
-            let _ = sock.read(&mut buf).expect("read 1");
+            _ = sock.read(&mut buf).expect("read 1");
             sock.write_all(
                 b"\
                 HTTP/1.1 200 OK\r\n\
@@ -2063,7 +2063,7 @@ mod conn {
             ",
             )
             .unwrap();
-            let _ = tx1.send(Ok::<_, ()>(()));
+            _ = tx1.send(Ok::<_, ()>(()));
 
             let n = sock.read(&mut buf).expect("read 2");
             assert_eq!(&buf[..n], b"foo=bar", "sock read 2 bytes");
@@ -2138,7 +2138,7 @@ mod conn {
             sock.set_write_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
             let mut buf = [0; 4096];
-            let _ = sock.read(&mut buf).expect("read 1");
+            _ = sock.read(&mut buf).expect("read 1");
             sock.write_all(
                 b"\
                     HTTP/1.1 100 Continue\r\n\
@@ -2176,7 +2176,7 @@ mod conn {
             .unwrap();
 
         tokio::spawn(async move {
-            let _ = conn.await;
+            _ = conn.await;
         });
 
         let req = Request::builder()
@@ -2198,7 +2198,7 @@ mod conn {
             sock.set_write_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
             let mut buf = [0; 4096];
-            let _ = sock.read(&mut buf).expect("read 1");
+            _ = sock.read(&mut buf).expect("read 1");
             sock.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").unwrap();
             sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
                 .unwrap();
@@ -2210,7 +2210,7 @@ mod conn {
         let (mut client, conn) = conn::http1::handshake(tcp).await.unwrap();
 
         tokio::spawn(async move {
-            let _ = conn.await;
+            _ = conn.await;
         });
 
         let req = Request::builder()
@@ -2237,7 +2237,7 @@ mod conn {
 
         tokio::spawn(async move {
             let _io = io_cli;
-            let _ = done_rx.await;
+            _ = done_rx.await;
         });
 
         // make polling fair by putting both in spawns
@@ -2278,7 +2278,7 @@ mod conn {
             assert!(client.is_ready());
 
             // simulate the server dropping the conn
-            let _ = done_tx.send(());
+            _ = done_tx.send(());
             // let the server task die
             tokio::task::yield_now().await;
 
@@ -2390,7 +2390,7 @@ mod conn {
             .expect("client poll ready after");
 
         // Trigger the server shutdown...
-        let _ = shdn_tx.send(true);
+        _ = shdn_tx.send(true);
 
         // Allow time for graceful shutdown roundtrips...
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2428,7 +2428,7 @@ mod conn {
             tokio::task::spawn(async move {
                 let stream = ServiceInput::new(stream);
                 let conn = http2::Builder::new(Executor::new()).serve_connection(stream, service);
-                let _ = conn.await;
+                _ = conn.await;
                 tx.send(()).unwrap();
             });
         });
@@ -2466,7 +2466,7 @@ mod conn {
             assert_eq!(resp.status(), 200);
             let upgrade = rama::http::io::upgrade::handle_upgrade(resp).await.unwrap();
             tokio::task::spawn(async move {
-                let _ = rx.await;
+                _ = rx.await;
                 drop(upgrade);
             });
         }
@@ -2594,7 +2594,7 @@ mod conn {
                     sock,
                     RamaHttpService::new(service_fn(async |req: Request| {
                         tokio::spawn(async move {
-                            let _ = concat(req).await.expect("server req body aggregate");
+                            _ = concat(req).await.expect("server req body aggregate");
                         });
                         Ok::<_, Infallible>(rama::http::Response::new(rama::http::Body::empty()))
                     })),
@@ -2706,7 +2706,7 @@ mod conn {
 
             let bytes = body.data().await.unwrap().unwrap();
             assert_eq!(&bytes[..], b"Baguette!");
-            let _ = body.flow_control().release_capacity(bytes.len());
+            _ = body.flow_control().release_capacity(bytes.len());
 
             assert!(body.data().await.is_none());
         });
@@ -2918,14 +2918,14 @@ mod conn {
                 .unwrap();
             let (req, _respond) = h2.accept().await.unwrap().unwrap();
             tokio::spawn(async move {
-                let _ = poll_fn(|cx| h2.poll_closed(cx)).await;
+                _ = poll_fn(|cx| h2.poll_closed(cx)).await;
             });
 
             let mut body = req.into_body();
             let got_rst = tokio::time::timeout(Duration::from_secs(2), body.data())
                 .await
                 .is_ok_and(|frame| matches!(frame, Some(Err(_)) | None));
-            let _ = rst_tx.send(got_rst);
+            _ = rst_tx.send(got_rst);
         });
 
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
@@ -2933,7 +2933,7 @@ mod conn {
             .await
             .expect("http handshake");
         tokio::spawn(async move {
-            let _ = conn.await;
+            _ = conn.await;
         });
 
         let req = Request::post("http://localhost/")

@@ -38,7 +38,7 @@ fn tcp_byte_stream_preserved_under_ingress_backpressure() {
                             loop {
                                 match ingress.read(&mut buf).await {
                                     Ok(0) | Err(_) => {
-                                        let _ = eof_tx.send(());
+                                        _ = eof_tx.send(());
                                         return Ok(());
                                     }
                                     Ok(n) => {
@@ -88,7 +88,7 @@ fn tcp_byte_stream_preserved_under_ingress_backpressure() {
     }
     session.on_client_eof();
 
-    let _ = eof_rx.recv_timeout(Duration::from_secs(5));
+    _ = eof_rx.recv_timeout(Duration::from_secs(5));
     let recv = received.lock().clone();
     assert_eq!(recv.len(), expected.len(), "byte count mismatch");
     assert_eq!(recv, expected, "byte stream corrupted (gap or reorder)");
@@ -120,7 +120,7 @@ fn tcp_byte_stream_preserved_under_egress_backpressure() {
                             loop {
                                 match egress.read(&mut buf).await {
                                     Ok(0) | Err(_) => {
-                                        let _ = eof_tx.send(());
+                                        _ = eof_tx.send(());
                                         return Ok(());
                                     }
                                     Ok(n) => {
@@ -170,7 +170,7 @@ fn tcp_byte_stream_preserved_under_egress_backpressure() {
     }
     session.on_egress_eof();
 
-    let _ = eof_rx.recv_timeout(Duration::from_secs(5));
+    _ = eof_rx.recv_timeout(Duration::from_secs(5));
     let recv = received.lock().clone();
     assert_eq!(recv.len(), expected.len(), "byte count mismatch");
     assert_eq!(recv, expected, "byte stream corrupted (gap or reorder)");

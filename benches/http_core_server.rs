@@ -163,7 +163,7 @@ fn raw_tcp_throughput_small_payload(b: divan::Bencher) {
 
         let mut buf = [0u8; 8192];
         while rx.try_recv().is_err() {
-            let _ = sock.read(&mut buf).unwrap();
+            _ = sock.read(&mut buf).unwrap();
             sock.write_all(
                 b"\
                 HTTP/1.1 200 OK\r\n\

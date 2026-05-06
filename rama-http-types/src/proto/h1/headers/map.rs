@@ -488,12 +488,12 @@ mod tests {
         map.insert(header::CONTENT_TYPE, "json".parse().unwrap());
 
         let mut iter = map.into_iter().peekable();
-        let _ = iter.peek();
+        _ = iter.peek();
         assert_eq!(
             iter.next(),
             Some((Some(header::CONTENT_LENGTH), "123".parse().unwrap()))
         );
-        let _ = iter.peek();
+        _ = iter.peek();
         assert_eq!(
             iter.next(),
             Some((Some(header::CONTENT_TYPE), "json".parse().unwrap()))
