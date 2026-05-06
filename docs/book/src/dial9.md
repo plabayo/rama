@@ -52,14 +52,7 @@ sub-crate, that crate **emits** the events at the matching lifecycle
 hooks — recording is automatic when a `TracedRuntime` is wired into
 the application's runtime, and a no-op otherwise.
 
-| crate | events |
-| --- | --- |
-| `rama-net` | `IoForwardBridgeOpened`, `IoForwardBridgeClosed` |
-| `rama-net-apple-networkextension` | `TproxyFlowOpened`, `TproxyFlowClosed`, `TproxyHandlerDeadline` |
-| `rama-dns` | `DnsLookupStarted`, `DnsLookupResolved` |
-| `rama-tls-rustls` | `TlsHandshakeStarted`, `TlsHandshakeCompleted`, `TlsHandshakeFailed` |
-| `rama-tls-boring` | `TlsHandshakeStarted`, `TlsHandshakeCompleted`, `TlsHandshakeFailed` |
-| `rama-socks5` | `Socks5HandshakeAuth`, `Socks5HandshakeConnect` |
+Browse through the source code where you can find it being wired in.
 
 The `rama` mono-crate exposes a bundled `dial9` feature that activates
 all of the above on the sub-crates that are themselves enabled.

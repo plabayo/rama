@@ -395,15 +395,6 @@ opentelemetry = [
 # hooks; emission is a no-op when the consumer's runtime is not a
 # `dial9-tokio-telemetry::TracedRuntime`.
 #
-# Currently wired in:
-# - `rama-net` — `IoForwardBridgeOpened` / `IoForwardBridgeClosed`
-# - `rama-net-apple-networkextension` — flow open / close /
-#   handler-deadline (transparent proxy engine)
-# - `rama-dns` — `DnsLookupStarted` / `DnsLookupResolved`
-# - `rama-tls-rustls`, `rama-tls-boring` — TLS handshake
-#   started / completed / failed
-# - `rama-socks5` — SOCKS5 handshake auth + connect
-#
 # Enabling this feature requires building with `--cfg tokio_unstable`
 # (workspace-wide via `.cargo/config.toml`, or per-build via
 # `RUSTFLAGS`). Users who DO NOT enable `dial9` do not need
