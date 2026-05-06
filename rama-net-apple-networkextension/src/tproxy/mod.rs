@@ -31,6 +31,10 @@
 //!
 //! [`HostWithPort`]: rama_net::address::HostWithPort
 
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+pub mod dial9;
+
 mod engine;
 
 mod types;

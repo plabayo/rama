@@ -33,11 +33,24 @@ opentelemetry = [
     "dep:opentelemetry_sdk",
     "dep:tracing-opentelemetry",
 ]
+# Optional integration with [dial9] runtime telemetry. When enabled, this
+# crate re-exports the dial9 trace-format building blocks (`TraceEvent`
+# derive, `TraceField`, etc.) under [`telemetry::dial9`] so other rama
+# crates and consumer code can define dial9 events without depending on
+# dial9 directly.
+#
+# Enabling this feature does NOT require `tokio_unstable` — only consumers
+# that actually wire `dial9-tokio-telemetry::TracedRuntime` into their
+# runtime do.
+#
+# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+dial9 = ["dep:dial9-trace-format"]
 
 [dependencies]
 ahash = { workspace = true }
 asynk-strim = { workspace = true }
 bytes = { workspace = true }
+dial9-trace-format = { workspace = true, optional = true }
 futures = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }

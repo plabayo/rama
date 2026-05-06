@@ -21,8 +21,28 @@ targets = ["x86_64-apple-darwin"]
 
 [features]
 default = []
+# Define [`dial9`] runtime-telemetry events for the transparent proxy
+# engine's flow lifecycle (open / close / handler-deadline). When enabled,
+# the engine also records the events into the dial9 trace as long as a
+# `dial9-tokio-telemetry::TracedRuntime` is wired into the runtime
+# factory; without one the recording calls are no-ops.
+#
+# Trickles down to `rama-core/dial9` for the re-exported trace-format
+# building blocks. The direct `dial9-trace-format` dep is still required
+# because the upstream `#[derive(TraceEvent)]` macro emits absolute
+# `::dial9_trace_format::...` paths in the consumer crate, which the
+# resolver only honors when the crate is a direct dependency (a
+# `pub use rama_core::telemetry::dial9 as dial9_trace_format` re-alias at
+# the consumer's crate root does not satisfy it — empirically verified).
+# Until `dial9-trace-format-derive` grows a `crate = "..."` attribute,
+# this stays.
+#
+# [`dial9`]: rama_core::telemetry::dial9
+dial9 = ["rama-core/dial9", "dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
 
 [dependencies]
+dial9-tokio-telemetry = { workspace = true, optional = true }
+dial9-trace-format = { workspace = true, optional = true }
 libc = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }

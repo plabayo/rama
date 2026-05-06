@@ -114,6 +114,19 @@ qq: fmt-check check clippy doc extra-checks
 
 qa: qq test test-doc deny
 
+# QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
+# and tests the rama crates that opt into dial9 with `--cfg tokio_unstable`
+# enabled (required by `dial9-tokio-telemetry`).
+#
+# Kept separate from the main `qa` recipe so the standard QA path stays
+# fast and free of unstable tokio API churn — but is part of `qa-full` so
+# anyone running the full suite covers it. CI runs it as its own job.
+qa-dial9:
+    @cargo install cargo-nextest --locked
+    RUSTFLAGS="--cfg tokio_unstable -D warnings" cargo check -p rama-core -p rama-net-apple-networkextension -p rama --features dial9 --all-targets
+    RUSTFLAGS="--cfg tokio_unstable -D warnings" cargo clippy -p rama-core -p rama-net-apple-networkextension -p rama --features dial9 --all-targets
+    RUSTFLAGS="--cfg tokio_unstable -D warnings" cargo nextest run -p rama-core -p rama-net-apple-networkextension --features dial9
+
 qa-crate CRATE:
     just fmt-check-crate {{CRATE}}
     just check-crate {{CRATE}}
@@ -136,7 +149,7 @@ qa-xpc-apple:
 test-e2e-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/test-e2e
 
-qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
+qa-full: qa qa-dial9 hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:
     ./scripts/bench/e2e_http_client_server.py {{ARGS}}

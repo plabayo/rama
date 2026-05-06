@@ -110,6 +110,8 @@ compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.1"
+dial9-tokio-telemetry = "0.3"
+dial9-trace-format = "0.3"
 divan = "0.1"
 escargot = "0.5"
 flate2 = "1.1"
@@ -386,6 +388,21 @@ opentelemetry = [
     "rama-net?/opentelemetry",
     "grpc",
     "rama-grpc?/opentelemetry",
+]
+# Optional [`dial9`] runtime-telemetry support across the rama crate
+# family. Enables building blocks (`TraceEvent` derive, etc.) on
+# `rama-core` and pre-defined event types on the sub-crates that ship
+# them — currently `rama-net-apple-networkextension`.
+#
+# Enabling this feature does NOT itself require `tokio_unstable`. Any
+# consumer that wires `dial9-tokio-telemetry::TracedRuntime` into their
+# tokio runtime to actually record events will also need to build with
+# `--cfg tokio_unstable`.
+#
+# [`dial9`]: rama_core::telemetry::dial9
+dial9 = [
+    "rama-core/dial9",
+    "rama-net-apple-networkextension?/dial9",
 ]
 
 [dependencies]

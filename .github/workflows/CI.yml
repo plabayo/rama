@@ -178,6 +178,26 @@ jobs:
       - name: Run Apple XPC QA checks
         run: just qa-xpc-apple
 
+  test-rama-dial9:
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-dial9
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Install just
+        run: cargo install just
+      - name: Run dial9 QA checks
+        run: just qa-dial9
+
   test-rust-linux-musl:
     strategy:
       matrix:
