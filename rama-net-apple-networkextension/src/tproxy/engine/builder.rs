@@ -19,6 +19,7 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     tcp_channel_capacity: Option<usize>,
     udp_channel_capacity: Option<usize>,
     tcp_idle_timeout: Option<Duration>,
+    tcp_paused_drain_max_wait: Option<Duration>,
     udp_max_flow_lifetime: Option<Duration>,
     decision_deadline: Option<Duration>,
     decision_deadline_action: Option<DecisionDeadlineAction>,
@@ -38,6 +39,7 @@ where
             tcp_channel_capacity: None,
             udp_channel_capacity: None,
             tcp_idle_timeout: None,
+            tcp_paused_drain_max_wait: None,
             udp_max_flow_lifetime: None,
             decision_deadline: None,
             decision_deadline_action: None,
@@ -56,6 +58,7 @@ where
             tcp_channel_capacity: self.tcp_channel_capacity,
             udp_channel_capacity: self.udp_channel_capacity,
             tcp_idle_timeout: self.tcp_idle_timeout,
+            tcp_paused_drain_max_wait: self.tcp_paused_drain_max_wait,
             udp_max_flow_lifetime: self.udp_max_flow_lifetime,
             decision_deadline: self.decision_deadline,
             decision_deadline_action: self.decision_deadline_action,
@@ -118,6 +121,28 @@ where
         pub fn tcp_idle_timeout(mut self, timeout: Option<Duration>) -> Self
         {
             self.tcp_idle_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum time a per-flow TCP bridge will park on a `Paused`
+        /// ack waiting for the peer's drain signal before closing the
+        /// flow with `BridgeCloseReason::PausedTimeout`.
+        ///
+        /// Backstops a stuck downstream writer (a Swift `flow.write`
+        /// completion handler that never invokes `signalServerDrain`,
+        /// a logic bug that clears `pausedSignaled` without firing
+        /// `onDrained`, etc.) so the bridge can't wedge waiting for
+        /// a notification that never arrives.
+        ///
+        /// `None` (the default) uses the engine's built-in 60-second
+        /// constant. Configure shorter values in tests; configure
+        /// longer values if your downstream pump is genuinely
+        /// expected to stay paused for minutes.
+        pub fn tcp_paused_drain_max_wait(mut self, wait: Option<Duration>) -> Self
+        {
+            self.tcp_paused_drain_max_wait = wait;
             self
         }
     }
@@ -207,6 +232,7 @@ where
             tcp_channel_capacity,
             udp_channel_capacity,
             tcp_idle_timeout,
+            tcp_paused_drain_max_wait,
             udp_max_flow_lifetime,
             decision_deadline,
             decision_deadline_action,
@@ -273,6 +299,7 @@ where
             udp_channel_capacity: udp_channel_capacity
                 .unwrap_or(super::DEFAULT_UDP_CHANNEL_CAPACITY),
             tcp_idle_timeout,
+            tcp_paused_drain_max_wait,
             udp_max_flow_lifetime,
             decision_deadline: decision_deadline.unwrap_or(super::DEFAULT_DECISION_DEADLINE),
             decision_deadline_action: decision_deadline_action

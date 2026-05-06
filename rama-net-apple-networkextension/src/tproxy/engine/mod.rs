@@ -178,6 +178,7 @@ pub struct TransparentProxyEngine<H> {
     tcp_channel_capacity: usize,
     udp_channel_capacity: usize,
     tcp_idle_timeout: Option<Duration>,
+    tcp_paused_drain_max_wait: Option<Duration>,
     udp_max_flow_lifetime: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
@@ -250,6 +251,7 @@ where
         let tcp_flow_buffer_size = self.tcp_flow_buffer_size;
         let tcp_channel_capacity = self.tcp_channel_capacity;
         let tcp_idle_timeout = self.tcp_idle_timeout;
+        let tcp_paused_drain_max_wait = self.tcp_paused_drain_max_wait;
         let decision_deadline = self.decision_deadline;
         let decision_deadline_action = self.decision_deadline_action;
         let exec = Executor::graceful(guard.clone());
@@ -264,6 +266,7 @@ where
                 tcp_flow_buffer_size,
                 tcp_channel_capacity,
                 tcp_idle_timeout,
+                tcp_paused_drain_max_wait,
                 decision_deadline,
                 decision_deadline_action,
                 on_server_bytes,
@@ -360,6 +363,9 @@ struct TcpSessionPendingData {
     tcp_channel_capacity: usize,
     /// Optional per-flow idle timeout. `None` disables idle detection.
     tcp_idle_timeout: Option<Duration>,
+    /// Optional override for [`PAUSED_DRAIN_MAX_WAIT`] applied to both
+    /// per-flow bridges. `None` means "use the engine default".
+    tcp_paused_drain_max_wait: Option<Duration>,
     /// Per-flow metadata inserted into `TcpFlow` extensions at activate.
     meta: TransparentProxyFlowMeta,
     /// Flow-scoped guard; held by bridge tasks to delay shutdown until they finish.
@@ -562,6 +568,7 @@ impl TransparentProxyTcpSession {
             tcp_flow_buffer_size,
             tcp_channel_capacity,
             tcp_idle_timeout,
+            tcp_paused_drain_max_wait,
             meta,
             flow_guard,
             rt_handle,
@@ -616,6 +623,7 @@ impl TransparentProxyTcpSession {
         // on every poll because dial9 hooks the worker thread, so the loss
         // is the per-future wake graph for these two bridge tasks only.
 
+        let paused_drain_wait = tcp_paused_drain_max_wait.unwrap_or(PAUSED_DRAIN_MAX_WAIT);
         // spawn ingress bridge (client ↔ service)
         self.ingress_bridge_task = Some({
             let guard = flow_guard.clone();
@@ -632,6 +640,7 @@ impl TransparentProxyTcpSession {
                     guard,
                     meta,
                     tcp_idle_timeout,
+                    paused_drain_wait,
                     BridgeDirection::Ingress,
                 )
                 .await;
@@ -654,6 +663,7 @@ impl TransparentProxyTcpSession {
                     guard,
                     meta,
                     tcp_idle_timeout,
+                    paused_drain_wait,
                     BridgeDirection::Egress,
                 )
                 .await;
@@ -736,6 +746,7 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
     tcp_idle_timeout: Option<Duration>,
+    tcp_paused_drain_max_wait: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
     on_server_bytes: OnBytes,
@@ -842,6 +853,7 @@ where
         tcp_flow_buffer_size,
         tcp_channel_capacity,
         tcp_idle_timeout,
+        tcp_paused_drain_max_wait,
         meta,
         flow_guard,
         rt_handle,
@@ -1418,6 +1430,7 @@ async fn run_tcp_bridge(
     flow_guard: ShutdownGuard,
     meta: Arc<TransparentProxyFlowMeta>,
     idle_timeout: Option<Duration>,
+    paused_drain_max_wait: Duration,
     direction: BridgeDirection,
 ) {
     let (mut read_half, mut write_half) = tokio::io::split(internal);
@@ -1468,7 +1481,7 @@ async fn run_tcp_bridge(
                 TcpDeliverStatus::Paused => {
                     pending_to_server = Some(bytes);
                     // Wait for drain or shutdown — never block here forever.
-                    // The `PAUSED_DRAIN_MAX_WAIT` arm catches a stuck
+                    // The `paused_drain_max_wait` arm catches a stuck
                     // peer-side drain signal (lost / never invoked) so
                     // the bridge can't wedge waiting for a notification
                     // that never arrives.
@@ -1480,12 +1493,12 @@ async fn run_tcp_bridge(
                         () = server_write_notify.notified() => {
                             continue;
                         }
-                        () = tokio::time::sleep(PAUSED_DRAIN_MAX_WAIT) => {
+                        () = tokio::time::sleep(paused_drain_max_wait) => {
                             tracing::warn!(
                                 target: "rama_apple_ne::tproxy",
                                 flow_id = meta.flow_id,
                                 direction = %direction,
-                                wait_ms = PAUSED_DRAIN_MAX_WAIT.as_millis() as u64,
+                                wait_ms = u64::try_from(paused_drain_max_wait.as_millis()).unwrap_or(u64::MAX),
                                 "transparent proxy bridge: paused-wait timeout (replay) — peer drain signal lost?",
                             );
                             break BridgeCloseReason::PausedTimeout;
@@ -1598,7 +1611,7 @@ async fn run_tcp_bridge(
                             }
                             TcpDeliverStatus::Paused => {
                                 pending_to_server = Some(bytes);
-                                // See `PAUSED_DRAIN_MAX_WAIT` doc; mirrors
+                                // See `paused_drain_max_wait` doc; mirrors
                                 // the bound on the replay-side wait above.
                                 tokio::select! {
                                     biased;
@@ -1606,12 +1619,12 @@ async fn run_tcp_bridge(
                                         break BridgeCloseReason::Shutdown;
                                     }
                                     () = server_write_notify.notified() => {}
-                                    () = tokio::time::sleep(PAUSED_DRAIN_MAX_WAIT) => {
+                                    () = tokio::time::sleep(paused_drain_max_wait) => {
                                         tracing::warn!(
                                             target: "rama_apple_ne::tproxy",
                                             flow_id = meta.flow_id,
                                             direction = %direction,
-                                            wait_ms = PAUSED_DRAIN_MAX_WAIT.as_millis() as u64,
+                                            wait_ms = u64::try_from(paused_drain_max_wait.as_millis()).unwrap_or(u64::MAX),
                                             "transparent proxy bridge: paused-wait timeout — peer drain signal lost?",
                                         );
                                         break BridgeCloseReason::PausedTimeout;

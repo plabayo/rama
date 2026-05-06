@@ -32,6 +32,29 @@ fn builder_rejects_zero_channel_capacity() {
 }
 
 #[test]
+fn builder_rejects_zero_tcp_flow_buffer_size() {
+    // `tokio::io::duplex(0)` deadlocks the per-flow service on its first
+    // `write_all` (the writer immediately backs off waiting for the
+    // non-existent reader). Just like the channel-capacity zero-rejection
+    // above, `Some(0)` must error rather than silently footgun.
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+            .with_runtime_factory(TestRuntimeFactory)
+            .with_tcp_flow_buffer_size(0);
+    assert!(
+        builder.build().is_err(),
+        "Some(0) tcp_flow_buffer_size must error"
+    );
+
+    // `None` (the default) must continue to build cleanly.
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+        .with_runtime_factory(TestRuntimeFactory)
+        .build()
+        .expect("None defaults must build");
+    engine.stop(0);
+}
+
+#[test]
 fn app_message_can_return_reply() {
     let engine = build_engine(TestHandler {
         app_message_handler: Arc::new(|message| (message == b"ping").then(|| b"pong".to_vec())),
