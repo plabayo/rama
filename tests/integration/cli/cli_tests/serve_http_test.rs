@@ -335,14 +335,35 @@ async fn run_http_test_endpoint_multipart(
 
     // Per-field cap (256 KiB) — sending a single field larger than that
     // should produce 413 Payload Too Large.
+    //
+    // The server detects the overflow mid-stream, returns 413, and
+    // closes the connection. Whether the client observes the 413 or a
+    // transport error (BrokenPipe / ConnectionReset / connection
+    // aborted) depends on whether it finishes writing the body before
+    // the server's close reaches it — a fundamental HTTP race for
+    // early-error responses. Either outcome proves the cap was
+    // enforced; we accept both to keep the test stable across CI
+    // load.
     let big = vec![b'x'; 300 * 1024];
     let oversized = multipart::Form::new().part("blob", multipart::Part::bytes(big));
-    let resp = client
+    match client
         .post(format!("{base_uri}/multipart"))
         .version(http_version)
         .multipart(oversized)
         .send()
         .await
-        .unwrap();
-    assert_eq!(StatusCode::PAYLOAD_TOO_LARGE, resp.status());
+    {
+        Ok(resp) => assert_eq!(StatusCode::PAYLOAD_TOO_LARGE, resp.status()),
+        Err(err) => {
+            let msg = format!("{err:#}");
+            let lower = msg.to_ascii_lowercase();
+            assert!(
+                lower.contains("broken pipe")
+                    || lower.contains("connection reset")
+                    || lower.contains("connection aborted")
+                    || lower.contains("connection closed"),
+                "expected 413 response or transport-close error, got: {msg}",
+            );
+        }
+    }
 }
