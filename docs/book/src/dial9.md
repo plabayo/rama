@@ -47,22 +47,34 @@ trace to disk while your program runs.
 
 rama integrates dial9 as an opt-in feature so the pre-defined event
 sets shipped by sub-crates are available without forcing the
-dependency on everyone.
+dependency on everyone. When the `dial9` feature is enabled on a
+sub-crate, that crate **emits** the events at the matching lifecycle
+hooks — recording is automatic when a `TracedRuntime` is wired into
+the application's runtime, and a no-op otherwise.
 
-- **`rama-net-apple-networkextension`** — `dial9` feature. Ships
-  pre-defined events (`TproxyFlowOpened`, `TproxyFlowClosed`,
-  `TproxyHandlerDeadline`) for the transparent proxy engine's flow
-  lifecycle.
-- **`rama`** — bundled `dial9` feature that activates the sub-crate
-  features above. More rama crates may grow their own pre-defined
-  event sets over time; `rama-net`, `rama-http`, `rama-tcp`, and the
-  TLS crates are good candidates.
+| crate | events |
+| --- | --- |
+| `rama-net` | `IoForwardBridgeOpened`, `IoForwardBridgeClosed` |
+| `rama-net-apple-networkextension` | `TproxyFlowOpened`, `TproxyFlowClosed`, `TproxyHandlerDeadline` |
+| `rama-dns` | `DnsLookupStarted`, `DnsLookupResolved` |
+| `rama-tls-rustls` | `TlsHandshakeStarted`, `TlsHandshakeCompleted`, `TlsHandshakeFailed` |
+| `rama-tls-boring` | `TlsHandshakeStarted`, `TlsHandshakeCompleted`, `TlsHandshakeFailed` |
+| `rama-socks5` | `Socks5HandshakeAuth`, `Socks5HandshakeConnect` |
 
-The expectation is that whatever rama crate you pull in, if it has
-something interesting to tell you about a flow / connection /
-handshake, you can opt into the matching event types by enabling the
-feature — without writing them yourself. Library code that needs to
-define its own events can depend on `dial9-trace-format` directly.
+The `rama` mono-crate exposes a bundled `dial9` feature that activates
+all of the above on the sub-crates that are themselves enabled.
+
+### tokio_unstable
+
+Enabling the `dial9` feature on any rama crate requires building with
+`--cfg tokio_unstable` (this is the standard requirement for
+`dial9-tokio-telemetry`). The rama workspace itself sets this in
+`.cargo/config.toml`. **Users who do not enable `dial9` do not need
+`tokio_unstable`** — the dial9 deps are optional and pulled in only
+when the feature is on.
+
+Library code that wants to define its own events alongside rama's
+pre-defined sets can depend on `dial9-trace-format` directly.
 
 ## Why dial9 fits long-lived L4 proxies particularly well
 

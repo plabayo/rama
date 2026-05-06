@@ -359,7 +359,19 @@ impl<S, K> TlsConnector<S, K> {
 
         let connector = RustlsConnector::from(connector_data.client_config);
 
-        let stream = connector.connect(server_name, stream).await?;
+        #[cfg(feature = "dial9")]
+        let server_name_str = format!("{server_name:?}");
+        #[cfg(feature = "dial9")]
+        crate::dial9::record_handshake_started(&server_name_str);
+
+        let stream = match connector.connect(server_name, stream).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                #[cfg(feature = "dial9")]
+                crate::dial9::record_handshake_failed(&server_name_str, &err);
+                return Err(err.into());
+            }
+        };
 
         let (_, conn_data_ref) = stream.get_ref();
 
@@ -379,6 +391,22 @@ impl<S, K> TlsConnector<S, K> {
                 .map(ApplicationProtocol::from),
             peer_certificate_chain: server_certificate_chain,
         };
+
+        #[cfg(feature = "dial9")]
+        {
+            use rama_net::tls::DataEncoding;
+            let depth = match params.peer_certificate_chain.as_ref() {
+                Some(DataEncoding::Der(_) | DataEncoding::Pem(_)) => 1,
+                Some(DataEncoding::DerStack(stack)) => stack.len(),
+                None => 0,
+            };
+            crate::dial9::record_handshake_completed(
+                &server_name_str,
+                &format!("{:?}", params.protocol_version),
+                conn_data_ref.alpn_protocol(),
+                depth,
+            );
+        }
 
         Ok((stream, params))
     }

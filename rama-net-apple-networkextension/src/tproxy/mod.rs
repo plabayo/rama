@@ -25,9 +25,8 @@
 //!   the resolved address depending on context.
 //!
 //! The [decision deadline](TransparentProxyEngineBuilder::with_decision_deadline)
-//! and the [watchdog](TransparentProxyEngineBuilder::with_watchdog) are
-//! recovery backstops; this guidance is what avoids the wedge in the
-//! first place.
+//! is a recovery backstop; this guidance is what avoids the wedge in
+//! the first place.
 //!
 //! [`HostWithPort`]: rama_net::address::HostWithPort
 

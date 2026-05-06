@@ -700,6 +700,7 @@ where
     let egress_connect_options = handler.egress_tcp_connect_options(&meta);
     let flow_id = meta.flow_id;
     let flow_protocol = meta.protocol;
+    let flow_pid = meta.source_app_pid;
     let Ok(flow_action) =
         tokio::time::timeout(decision_deadline, handler.match_tcp_flow(exec, meta)).await
     else {
@@ -708,6 +709,11 @@ where
             flow_protocol,
             decision_deadline,
             decision_deadline_action,
+        );
+        #[cfg(feature = "dial9")]
+        crate::tproxy::dial9::record_handler_deadline(
+            flow_id,
+            u64::try_from(decision_deadline.as_millis()).unwrap_or(u64::MAX),
         );
         return match decision_deadline_action {
             DecisionDeadlineAction::Block => SessionFlowAction::Blocked,
@@ -721,6 +727,9 @@ where
         FlowAction::Passthrough => return SessionFlowAction::Passthrough,
     };
     meta.intercept_decision = Some(crate::tproxy::types::TransparentProxyFlowAction::Intercept);
+
+    #[cfg(feature = "dial9")]
+    crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_pid);
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
     let flow_shutdown = Shutdown::new(async move {
@@ -950,6 +959,7 @@ where
     let egress_connect_options = handler.egress_udp_connect_options(&meta);
     let flow_id = meta.flow_id;
     let flow_protocol = meta.protocol;
+    let flow_pid = meta.source_app_pid;
     let Ok(flow_action) =
         tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await
     else {
@@ -958,6 +968,11 @@ where
             flow_protocol,
             decision_deadline,
             decision_deadline_action,
+        );
+        #[cfg(feature = "dial9")]
+        crate::tproxy::dial9::record_handler_deadline(
+            flow_id,
+            u64::try_from(decision_deadline.as_millis()).unwrap_or(u64::MAX),
         );
         return match decision_deadline_action {
             DecisionDeadlineAction::Block => SessionFlowAction::Blocked,
@@ -970,6 +985,9 @@ where
         FlowAction::Passthrough => return SessionFlowAction::Passthrough,
     };
     meta.intercept_decision = Some(crate::tproxy::types::TransparentProxyFlowAction::Intercept);
+
+    #[cfg(feature = "dial9")]
+    crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_pid);
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
     let flow_shutdown = Shutdown::new(async move {
@@ -998,10 +1016,20 @@ where
             // Cancelled before activate — emit a synthetic close so post-mortem
             // logs still account for the flow.
             emit_udp_session_close_event(BridgeCloseReason::Shutdown, &meta_for_close);
+            #[cfg(feature = "dial9")]
+            {
+                let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
+                crate::tproxy::dial9::record_flow_closed(meta_for_close.flow_id, age_ms, 0, 0);
+            }
             return;
         };
         let Ok(()) = service.serve(bridge).await;
         emit_udp_session_close_event(BridgeCloseReason::PeerEofLeft, &meta_for_close);
+        #[cfg(feature = "dial9")]
+        {
+            let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
+            crate::tproxy::dial9::record_flow_closed(meta_for_close.flow_id, age_ms, 0, 0);
+        }
         closed_sink();
     });
 
@@ -1328,6 +1356,11 @@ async fn run_tcp_bridge(
     };
 
     emit_tcp_bridge_close_event(direction, close_reason, &meta, bytes_in, bytes_out);
+    #[cfg(feature = "dial9")]
+    {
+        let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
+        crate::tproxy::dial9::record_flow_closed(meta.flow_id, age_ms, bytes_in, bytes_out);
+    }
     on_server_closed();
 }
 

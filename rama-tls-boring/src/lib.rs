@@ -27,6 +27,10 @@
 /// More info: <https://ramaproxy.org/book/intro/patterns.html#working-around-the-orphan-rule-in-specific-cases>
 pub struct RamaTlsBoringCrateMarker;
 
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+pub mod dial9;
+
 pub mod client;
 pub mod proxy;
 pub mod server;

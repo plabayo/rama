@@ -48,6 +48,10 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+pub mod dial9;
+
 pub mod proto;
 
 pub mod client;

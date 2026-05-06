@@ -475,10 +475,26 @@ where
     T: Io + Unpin + ExtensionsRef,
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
-    let TlsStream { inner: stream } =
-        tls_connect(stream, Some(connector_data))
-            .await
-            .map_err(|err| match err {
+    #[cfg(feature = "dial9")]
+    let dial9_server_name = connector_data
+        .server_name
+        .as_ref()
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    #[cfg(feature = "dial9")]
+    crate::dial9::record_handshake_started(&dial9_server_name);
+    let TlsStream { inner: stream } = match tls_connect(stream, Some(connector_data)).await {
+        Ok(s) => s,
+        Err(err) => {
+            #[cfg(feature = "dial9")]
+            {
+                let dial9_err: String = match &err {
+                    TlsConnectError::Builder(e) => format!("builder: {e}"),
+                    TlsConnectError::Handshake { error, .. } => format!("handshake: {error}"),
+                };
+                crate::dial9::record_handshake_failed(&dial9_server_name, &dial9_err);
+            }
+            return Err(match err {
                 TlsConnectError::Builder(error) => error.context("tls connect builder error"),
                 TlsConnectError::Handshake { error, server_name } => {
                     let maybe_ssl_code = error.code();
@@ -501,7 +517,9 @@ where
                         .context_debug_field("code", maybe_ssl_code)
                     }
                 }
-            })?;
+            });
+        }
+    };
 
     let params = match stream.ssl().session() {
         Some(ssl_session) => {
@@ -541,6 +559,22 @@ where
             .into_box_error());
         }
     };
+
+    #[cfg(feature = "dial9")]
+    {
+        use rama_net::tls::DataEncoding;
+        let depth = match params.peer_certificate_chain.as_ref() {
+            Some(DataEncoding::Der(_) | DataEncoding::Pem(_)) => 1,
+            Some(DataEncoding::DerStack(stack)) => stack.len(),
+            None => 0,
+        };
+        crate::dial9::record_handshake_completed(
+            &dial9_server_name,
+            &format!("{:?}", params.protocol_version),
+            stream.ssl().selected_alpn_protocol(),
+            depth,
+        );
+    }
 
     Ok((stream, params))
 }

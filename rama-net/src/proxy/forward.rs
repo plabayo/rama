@@ -166,6 +166,14 @@ where
         &self,
         BridgeIo(left, right): BridgeIo<S, T>,
     ) -> Result<Self::Output, Self::Error> {
+        #[cfg(feature = "dial9")]
+        super::dial9::record_bridge_opened(
+            self.idle_timeout
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or(0),
+            self.executor.guard().is_some(),
+        );
+
         let outcome = run_bridge(
             left,
             right,
@@ -177,6 +185,18 @@ where
         .await;
 
         emit_close_event(&outcome);
+
+        #[cfg(feature = "dial9")]
+        {
+            let age_ms = u64::try_from(outcome.age.as_millis()).unwrap_or(u64::MAX);
+            super::dial9::record_bridge_closed(
+                outcome.reason,
+                age_ms,
+                outcome.bytes_l_to_r,
+                outcome.bytes_r_to_l,
+                outcome.fatal_error.as_ref(),
+            );
+        }
 
         match outcome.fatal_error {
             None => Ok(()),

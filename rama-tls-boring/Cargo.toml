@@ -29,10 +29,18 @@ default = []
 http = ["dep:rama-http-types"]
 compression = ["dep:flate2", "dep:brotli", "dep:zstd"]
 ua = ["dep:rama-ua"]
+# Define [`dial9`] runtime-telemetry events for TLS handshake lifecycle
+# (started / completed / failed) on the BoringSSL connector. See
+# `rama-tls-rustls`'s `dial9` feature for the equivalent.
+#
+# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
 
 [dependencies]
 ahash = { workspace = true }
 brotli = { workspace = true, optional = true }
+dial9-tokio-telemetry = { workspace = true, optional = true }
+dial9-trace-format = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
 itertools = { workspace = true }
