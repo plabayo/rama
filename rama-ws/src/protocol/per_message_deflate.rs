@@ -275,6 +275,10 @@ where
     let cap = output.capacity();
     let len = output.len();
 
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "single uninitialized-tail write sequence: ptr.add → from_raw_parts_mut → set_len; splitting them harms readability without changing the safety contract"
+    )]
     unsafe {
         let ptr = output.as_mut_ptr().add(len);
         let out = slice::from_raw_parts_mut(ptr, cap - len);

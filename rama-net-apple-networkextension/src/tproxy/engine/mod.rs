@@ -623,7 +623,7 @@ impl TransparentProxyTcpSession {
         });
 
         // deliver BridgeIo to the waiting service task
-        let _ = bridge_tx.send(BridgeIo(ingress_stream, egress_stream));
+        _ = bridge_tx.send(BridgeIo(ingress_stream, egress_stream));
     }
 
     pub fn cancel(&mut self) {
@@ -653,7 +653,7 @@ impl TransparentProxyTcpSession {
         }
         self.egress_write_notify = None;
         if let Some(tx) = self.flow_stop_tx.take() {
-            let _ = tx.send(());
+            _ = tx.send(());
         }
         // Drop pending — this drops bridge_tx, making bridge_rx.await return Err.
         self.pending = None;
@@ -676,7 +676,10 @@ impl Drop for TransparentProxyTcpSession {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading TPROXY engine state to the per-flow handler; bundling into a struct adds noise without simplifying call sites"
+)]
 async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
@@ -856,7 +859,7 @@ impl TransparentProxyUdpSession {
         self.client_tx = None;
         self.egress_tx = None;
         if let Some(tx) = self.flow_stop_tx.take() {
-            let _ = tx.send(());
+            _ = tx.send(());
         }
         self.pending = None;
         if let Some(task) = self.service_task.take() {
@@ -872,7 +875,7 @@ impl TransparentProxyUdpSession {
             return;
         }
         if let Some(tx) = self.egress_tx.as_mut() {
-            let _ = tx.try_send(Bytes::copy_from_slice(bytes));
+            _ = tx.try_send(Bytes::copy_from_slice(bytes));
         }
     }
 
@@ -928,7 +931,7 @@ impl TransparentProxyUdpSession {
 
         tracing::debug!(protocol = ?protocol, "udp session activated");
 
-        let _ = bridge_tx.send(BridgeIo(ingress_flow, egress_socket));
+        _ = bridge_tx.send(BridgeIo(ingress_flow, egress_socket));
     }
 }
 
@@ -938,7 +941,10 @@ impl Drop for TransparentProxyUdpSession {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading TPROXY engine state to the per-UDP-flow handler; bundling into a struct adds noise without simplifying call sites"
+)]
 async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
@@ -1102,7 +1108,7 @@ impl<H> TransparentProxyEngine<H> {
 
         tracing::info!(reason, "transparent proxy engine stopping");
         if let Some(stop_trigger) = self.stop_trigger.take() {
-            let _ = stop_trigger.send(());
+            _ = stop_trigger.send(());
         }
 
         let time = block_on_async_task(&self.rt, shutdown.shutdown());
@@ -1166,7 +1172,6 @@ impl std::fmt::Display for BridgeDirection {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_tcp_bridge(
     internal: tokio::io::DuplexStream,
     mut client_rx: mpsc::Receiver<Bytes>,
@@ -1301,7 +1306,7 @@ async fn run_tcp_bridge(
                 } else {
                     // FFI sender dropped (EOF or cancel). Drain done; close
                     // the write side so the service sees end-of-stream.
-                    let _ = write_half.shutdown().await;
+                    _ = write_half.shutdown().await;
                     write_done = true;
                 }
             }

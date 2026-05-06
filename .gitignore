@@ -25,3 +25,7 @@ Package.resolved
 *.xcodeproj
 .xcode-derived/
 .DS_Store
+
+# internal docs
+docs/internal
+docs/audit

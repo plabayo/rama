@@ -334,14 +334,14 @@ impl Pending {
     /// fulfill the pending upgrade with the given [`Upgraded`] stream.
     pub fn fulfill(self, upgraded: Upgraded) {
         trace!("pending upgrade fulfill");
-        let _ = self.tx.send(Ok(upgraded));
+        _ = self.tx.send(Ok(upgraded));
     }
 
     /// Don't fulfill the pending Upgrade, but instead signal that
     /// upgrades are handled manually.
     pub fn manual(self) {
         trace!("pending upgrade handled manually");
-        let _ = self.tx.send(Err(OpaqueError::from_static_str(
+        _ = self.tx.send(Err(OpaqueError::from_static_str(
             "OnUpgrade: manual upgrade failed",
         )
         .into_box_error()));

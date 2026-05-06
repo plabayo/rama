@@ -81,7 +81,7 @@ where
         if let Some(timeout) = maybe_timeout {
             tokio::time::timeout(timeout, self.inner.serve(req))
                 .await
-                .map_err(|_| TimeoutExpired(()))?
+                .map_err(|_e| TimeoutExpired(()))?
         } else {
             self.inner.serve(req).await
         }
@@ -102,7 +102,7 @@ fn try_parse_grpc_timeout(
 
     let (timeout_value, timeout_unit) = val
         .to_str()
-        .map_err(|_| val)
+        .map_err(|_e| val)
         .and_then(|s| if s.is_empty() { Err(val) } else { Ok(s) })?
         // `HeaderValue::to_str` only returns `Ok` if the header contains ASCII so this
         // `split_at` will never panic from trying to split in the middle of a character.
@@ -117,7 +117,7 @@ fn try_parse_grpc_timeout(
         return Err(val);
     }
 
-    let timeout_value: u64 = timeout_value.parse().map_err(|_| val)?;
+    let timeout_value: u64 = timeout_value.parse().map_err(|_e| val)?;
 
     let duration = match timeout_unit {
         // Hours
@@ -223,7 +223,7 @@ mod tests {
         let header_value = header_value.0;
 
         // this just shouldn't panic
-        let _ = setup_map_try_parse(Some(&header_value));
+        _ = setup_map_try_parse(Some(&header_value));
 
         true
     }

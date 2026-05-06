@@ -106,7 +106,7 @@ impl Extensions {
         let extension = TypeErasedExtension::new(val);
         let idx = self.extensions.push(extension);
 
-        #[allow(
+        #[expect(
             clippy::unwrap_used,
             reason = "`downcast_ref` can only be none if TypeId doesn't match, but we just inserted this type"
         )]
@@ -123,7 +123,7 @@ impl Extensions {
         let extension = TypeErasedExtension::new_arc(val);
         let idx = self.extensions.push(extension);
 
-        #[allow(
+        #[expect(
             clippy::unwrap_used,
             reason = "`cloned_downcast` can only be none if TypeId doesn't match, but we just inserted this type"
         )]

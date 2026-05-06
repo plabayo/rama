@@ -70,7 +70,7 @@ fn test_underscore() {
 #[test]
 fn test_lifetime() {
     paste! {
-        #[allow(dead_code)]
+        #[expect(dead_code, reason = "synthesized test struct with intentionally unused fields")]
         struct S<[<'d e>]> {
             q: &[<'d e>] str,
         }
@@ -89,7 +89,7 @@ fn test_keyword() {
 #[test]
 fn test_literal_str() {
     paste! {
-        #[allow(non_camel_case_types)]
+        #[expect(non_camel_case_types, reason = "paste! synthesizes type names from string literals")]
         struct [<Foo "Bar-Baz">];
 
         let _ = FooBar_Baz;
@@ -106,7 +106,10 @@ fn test_env_literal() {
 }
 
 #[test]
-#[allow(non_camel_case_types)]
+#[expect(
+    non_camel_case_types,
+    reason = "paste! synthesizes type names from string literals"
+)]
 fn test_env_present() {
     paste! {
         struct [<Lib env!("CARGO_PKG_NAME")>];
@@ -162,7 +165,10 @@ fn test_empty() {
 }
 
 #[test]
-#[allow(non_camel_case_types)]
+#[expect(
+    non_camel_case_types,
+    reason = "paste! synthesizes type names from string literals"
+)]
 fn test_env_to_lower() {
     paste! {
         struct [<Lib env!("CARGO_PKG_NAME"):lower>];
@@ -192,7 +198,7 @@ fn test_env_to_snake() {
 #[test]
 fn test_env_to_camel() {
     paste! {
-        #[allow(non_upper_case_globals)]
+        #[expect(non_upper_case_globals, reason = "paste! synthesizes const names from string literals")]
         const [<LIB env!("CARGO_PKG_NAME"):camel>]: &str = "libpaste";
 
         let _ = LIBRamaMacros;

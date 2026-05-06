@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "build script: panicking on env/codegen failure aborts the build, which is the desired behavior"
+)]
+
 use std::{env, path::PathBuf};
 
 fn main() {

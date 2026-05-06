@@ -87,12 +87,12 @@ impl CurlCommandWriter for Command {
 
 impl CurlCommandWriter for String {
     fn write_uri(&mut self, uri: Uri) -> &mut Self {
-        let _ = write!(self, " '{uri}'");
+        _ = write!(self, " '{uri}'");
         self
     }
 
     fn write_single(&mut self, one: impl fmt::Display) -> &mut Self {
-        let _ = write!(self, " \\{}  {one}", rama_utils::str::NATIVE_NEWLINE);
+        _ = write!(self, " \\{}  {one}", rama_utils::str::NATIVE_NEWLINE);
         self
     }
 
@@ -103,7 +103,7 @@ impl CurlCommandWriter for String {
         quote_value: bool,
     ) -> &mut Self {
         let quote = if quote_value { "'" } else { "" };
-        let _ = write!(
+        _ = write!(
             self,
             " \\{}  {one} {quote}{two}{quote}",
             rama_utils::str::NATIVE_NEWLINE
@@ -112,7 +112,7 @@ impl CurlCommandWriter for String {
     }
 
     fn write_header(&mut self, key: Http1HeaderName, value: Cow<'_, str>) -> &mut Self {
-        let _ = write!(
+        _ = write!(
             self,
             " \\{}  -H '{key}: {value}'",
             rama_utils::str::NATIVE_NEWLINE

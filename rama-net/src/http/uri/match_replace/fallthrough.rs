@@ -48,7 +48,6 @@ impl<R: UriMatchReplace> UriMatchReplace for UriMatchReplaceFallthrough<Vec<R>> 
 
 macro_rules! impl_uri_match_replace_on_fallthrough_tuple {
     ( $($ty:ident),* $(,)? ) => {
-        #[allow(non_snake_case)]
         impl<$($ty),+> UriMatchReplace for UriMatchReplaceFallthrough<($($ty),+,)>
         where
             $(

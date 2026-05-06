@@ -55,6 +55,10 @@ pub fn try_new_key_log_file_handle(path: &str) -> Result<KeyLogFileHandle, BoxEr
 // copied from
 // <https://github.com/rust-lang/cargo/blob/fede83ccf973457de319ba6fa0e36ead454d2e20/src/cargo/util/paths.rs#L61>
 #[must_use]
+#[expect(
+    clippy::unreachable,
+    reason = "vendored from cargo: Component::Prefix is consumed by the peek+next above, so it cannot reappear in the iteration loop"
+)]
 pub fn normalize_path(path: &Path) -> PathBuf {
     let mut components = path.components().peekable();
     let mut ret = if let Some(c @ Component::Prefix(..)) = components.peek().cloned() {

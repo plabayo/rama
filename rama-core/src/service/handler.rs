@@ -154,7 +154,7 @@ mod tests {
         for service in services {
             let req = "hello".to_owned();
             let res: Result<(), Infallible> = service.serve(req).await;
-            assert!(res.is_ok());
+            res.unwrap();
         }
     }
 

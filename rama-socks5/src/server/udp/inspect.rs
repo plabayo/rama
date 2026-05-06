@@ -10,7 +10,7 @@ use rama_udp::UdpSocket;
 
 use ::rama_dns::client::resolver::BoxDnsAddressResolver;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) trait UdpPacketProxy: Send + Sync + 'static {
     fn proxy_udp_packets(
         &self,

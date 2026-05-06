@@ -108,7 +108,7 @@ fn newtype_variant_round_trip() {
 fn map_key_must_be_string() {
     let mut m: BTreeMap<i64, String> = BTreeMap::new();
     m.insert(1, "one".to_owned());
-    assert!(to_xpc_message(&m).is_err());
+    to_xpc_message(&m).unwrap_err();
 }
 
 #[test]

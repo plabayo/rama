@@ -829,7 +829,7 @@ where
             self.state.reading = Reading::Body(decoder.clone());
         }
 
-        let _ = self.poll_read_body(cx);
+        _ = self.poll_read_body(cx);
 
         // If still in Reading::Body, just give up
         match self.state.reading {

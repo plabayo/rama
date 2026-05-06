@@ -259,45 +259,103 @@ unused_imports = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
 
 [workspace.lints.clippy]
+# Baseline: enable the full `clippy::all` group at warn, then layer on extras below.
+# `type_complexity` is opted out — async/Service-stack types tend to be deep, and
+# rewriting them as type aliases for the lint's sake makes APIs harder to read.
 all = { level = "warn", priority = -1 }
-todo = "warn"
+type_complexity = "allow"
+
+# Don't Panic — strictness matches the per-file `deny` we used to have in lib.rs/main.rs.
+# `unwrap_used`/`expect_used`/`panic` are allowed in tests via clippy.toml.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stdout = "deny"
+dbg_macro = "deny"
+# Panic-adjacent
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+get_unwrap = "deny"
+unchecked_time_subtraction = "deny"
+# `unwrap_in_result` and `panic_in_result_fn` are intentionally NOT enabled:
+# redundant with `unwrap_used`/`panic` in production code (which we `deny`), and
+# there's no `allow-*-in-tests` flag for them — so they fire in the
+# `#[test] fn(...) -> Result<…>` pattern that uses `?`, even though the
+# underlying `unwrap`/`panic` is allowed in tests.
+
+# Don't Fail Silently — surface dropped futures and swallowed errors.
+let_underscore_future = "warn"
+let_underscore_must_use = "warn"
+unused_result_ok = "warn"
+map_err_ignore = "warn"
+assertions_on_result_states = "warn"
+
+# Don't Do Bad Async Stuff — common deadlock / concurrency footguns.
+if_let_mutex = "warn"
+await_holding_lock = "warn"
+await_holding_refcell_ref = "warn"
+large_futures = "warn"
+
+# Memory safety / unsafe hygiene.
+mem_forget = "warn"
+unnecessary_safety_doc = "warn"
+unnecessary_safety_comment = "warn"
+multiple_unsafe_ops_per_block = "warn"
+
+# Numeric correctness — float comparisons and risky casts.
+float_cmp = "warn"
+float_cmp_const = "warn"
+lossy_float_literal = "warn"
+imprecise_flops = "warn"
+suboptimal_flops = "warn"
+invalid_upcast_comparisons = "warn"
+
+# Easy-to-avoid footguns and questionable patterns.
+rc_mutex = "warn"
+debug_assert_with_mut_call = "warn"
+iter_not_returning_iterator = "warn"
+expl_impl_clone_on_copy = "warn"
+infallible_try_from = "warn"
+
+# Suppression hygiene — force `#[expect(..)]` over silent `#[allow(..)]`,
+# so a lint that no longer applies surfaces (instead of being silently masked).
+allow_attributes = "warn"
+
+# Style / readability — pattern-match exhaustiveness, idiomatic borrowing,
+# `Self` usage, format-string hygiene, etc.
 empty_enums = "warn"
 enum_glob_use = "warn"
 equatable_if_let = "warn"
-mem_forget = "warn"
-unused_self = "warn"
 filter_map_next = "warn"
 needless_continue = "warn"
 needless_borrow = "warn"
 match_wildcard_for_single_variants = "warn"
-if_let_mutex = "warn"
+match_same_arms = "warn"
 implicit_clone = "warn"
-await_holding_lock = "warn"
-imprecise_flops = "warn"
-suboptimal_flops = "warn"
-lossy_float_literal = "warn"
 rest_pat_in_fully_bound_structs = "warn"
 fn_params_excessive_bools = "warn"
-exit = "warn"
+manual_let_else = "warn"
+single_match_else = "warn"
+unnested_or_patterns = "warn"
+ref_option = "warn"
+option_option = "warn"
+str_to_string = "warn"
+uninlined_format_args = "warn"
+return_self_not_must_use = "warn"
+use_self = "warn"
+
+# API hygiene — push back against patterns that bloat APIs / cause perf regressions.
+unused_self = "warn"
+needless_pass_by_ref_mut = "warn"
+needless_pass_by_value = "warn"
+trivially_copy_pass_by_ref = "warn"
+redundant_clone = "warn"
 inefficient_to_string = "warn"
 linkedlist = "warn"
 macro_use_imports = "warn"
-manual_let_else = "warn"
-match_same_arms = "warn"
-needless_pass_by_ref_mut = "warn"
-needless_pass_by_value = "warn"
-option_option = "warn"
-redundant_clone = "warn"
-ref_option = "warn"
 verbose_file_reads = "warn"
-unnested_or_patterns = "warn"
-str_to_string = "warn"
-type_complexity = "allow"
-return_self_not_must_use = "warn"
-single_match_else = "warn"
-trivially_copy_pass_by_ref = "warn"
-use_self = "warn"
-uninlined_format_args = "warn"
+exit = "warn"
 fallible_impl_from = "warn"
 
 [workspace.lints.rustdoc]

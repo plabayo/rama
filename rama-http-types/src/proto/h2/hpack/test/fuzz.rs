@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unreachable,
+    reason = "vendored fuzz harness: panic-on-bad-state is the standard quickcheck pattern"
+)]
+
 use crate::proto::h2::hpack::{Decoder, Encoder, Header};
 
 use crate::{HeaderName, HeaderValue};

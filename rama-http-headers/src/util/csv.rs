@@ -27,7 +27,7 @@ pub(crate) fn split_csv_str<T: std::str::FromStr>(
     let mut in_quotes = false;
     string
         .split(move |c| {
-            #[allow(clippy::collapsible_else_if)]
+            #[expect(clippy::collapsible_else_if)]
             if in_quotes {
                 if c == '"' {
                     in_quotes = false;
@@ -46,7 +46,7 @@ pub(crate) fn split_csv_str<T: std::str::FromStr>(
         })
         .filter_map(|x| match x.trim() {
             "" => None,
-            y => Some(y.parse().map_err(|_| Error::invalid())),
+            y => Some(y.parse().map_err(|_e| Error::invalid())),
         })
 }
 

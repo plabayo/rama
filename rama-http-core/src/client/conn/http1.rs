@@ -95,7 +95,7 @@ where
         std::future::poll_fn(move |cx| -> Poll<crate::Result<Parts<T>>> {
             if let Some(conn) = this.as_mut() {
                 ready!(conn.poll_without_shutdown(cx))?;
-                #[allow(clippy::expect_used, reason = "memory cannot move in between polls")]
+                #[expect(clippy::expect_used, reason = "memory cannot move in between polls")]
                 let conn = this.take().expect("inner h1 connection for without shutdown was Some above");
                 Poll::Ready(Ok(conn.into_parts()))
             } else {
@@ -562,7 +562,7 @@ mod upgrades {
     //
     // This type is unnameable outside the crate.
     #[must_use = "futures do nothing unless polled"]
-    #[allow(missing_debug_implementations)]
+    #[expect(missing_debug_implementations)]
     pub struct UpgradeableConnection<T, B>
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -583,7 +583,7 @@ mod upgrades {
                 match ready!(Pin::new(&mut inner.inner).poll(cx)) {
                     Ok(proto::Dispatched::Shutdown) => Ok(()),
                     Ok(proto::Dispatched::Upgrade(pending)) => {
-                        #[allow(
+                        #[expect(
                             clippy::expect_used,
                             reason = "memory cannot move in between polls"
                         )]

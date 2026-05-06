@@ -269,7 +269,7 @@ where
 
 fn dns_name_from_domain(domain: &str) -> Result<CString, BoxError> {
     let name = domain.trim_end_matches('.');
-    CString::new(name).map_err(|_| {
+    CString::new(name).map_err(|_e| {
         AppleDnsResolverError::message(format!("domain contains interior NUL byte: {name}")).into()
     })
 }
@@ -302,7 +302,9 @@ const fn is_empty_result_error(code: ffi::DNSServiceErrorType) -> bool {
     )
 }
 
-/// SAFETY: `ptr` must either be null or point to a valid NUL-terminated C string
+/// # Safety
+///
+/// `ptr` must either be null or point to a valid NUL-terminated C string
 /// for the duration of this call.
 unsafe fn c_char_ptr_to_str_lossy<'a>(ptr: *const c_char) -> std::borrow::Cow<'a, str> {
     if ptr.is_null() {
@@ -313,7 +315,8 @@ unsafe fn c_char_ptr_to_str_lossy<'a>(ptr: *const c_char) -> std::borrow::Cow<'a
     unsafe { CStr::from_ptr(ptr) }.to_string_lossy()
 }
 
-/// SAFETY:
+/// # Safety
+///
 /// - `context` must be either null or a pointer to a live `QueryState<T, P>`.
 /// - `fullname` must be either null or a valid NUL-terminated C string.
 /// - `rdata` must point to `rdlen` bytes whenever it is non-null.

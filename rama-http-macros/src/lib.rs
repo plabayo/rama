@@ -9,6 +9,13 @@
 //! `rama_core::combinators::Either` instead of vendoring its own
 //! `Either` type).
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "proc-macro crate (vendored from `vy-macros`): panics are the historical compile-error mechanism"
+)]
+
 mod ast;
 mod fmt;
 #[macro_use]

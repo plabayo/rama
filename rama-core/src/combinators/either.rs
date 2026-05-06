@@ -1,3 +1,8 @@
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-emitted `#[allow(clippy::multiple_unsafe_ops_per_block)]`: rustc <= 1.93 fires the lint, newer versions don't, so `#[expect]` would warn unfulfilled"
+)]
+
 use std::fmt;
 use std::io::IoSlice;
 use std::pin::Pin;
@@ -61,6 +66,7 @@ macro_rules! __define_either {
         impl<$($param),+> $id<$($param),+> {
             /// Convert `Pin<&mut Either<A, B>>` to `Either<Pin<&mut A>, Pin<&mut B>>`,
             /// pinned projections of the inner variants.
+            #[allow(clippy::multiple_unsafe_ops_per_block, reason = "macro-generated pin projection: get_unchecked_mut + N×Pin::new_unchecked is one logical projection sequence; SAFETY comment below covers the entire block")]
             fn as_pin_mut(self: Pin<&mut Self>) -> $id<$(Pin<&mut $param>),+> {
                 // SAFETY: `get_unchecked_mut` is fine because we don't move anything.
                 // We can use `new_unchecked` because the `inner` parts are guaranteed

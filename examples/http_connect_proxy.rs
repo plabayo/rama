@@ -56,6 +56,12 @@
 //! curl -v -x http://127.0.0.1:62001 --proxy-user 'john:secret' http://www.example.com/
 //! ```
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer, Service,
     extensions::{Extension, Extensions, ExtensionsRef},

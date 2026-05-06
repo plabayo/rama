@@ -89,7 +89,7 @@ impl<T, U> Sender<T, U> {
         self.giver.give() || !self.buffered_once.swap(true, atomic::Ordering::AcqRel)
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn try_send(&mut self, val: T) -> Result<RetryPromise<T, U>, T> {
         if !self.can_send() {
             return Err(val);
@@ -129,7 +129,7 @@ impl<T, U> UnboundedSender<T, U> {
         self.giver.is_canceled()
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn try_send(&mut self, val: T) -> Result<RetryPromise<T, U>, T> {
         let (tx, rx) = oneshot::channel();
         self.inner
@@ -410,7 +410,7 @@ mod tests {
     use super::{Callback, Receiver, channel};
 
     #[derive(Debug)]
-    struct Custom(#[allow(dead_code)] i32);
+    struct Custom(#[expect(dead_code)] i32);
 
     impl<T, U> Future for Receiver<T, U> {
         type Output = Option<(T, Callback<T, U>)>;
@@ -460,7 +460,7 @@ mod tests {
 
     #[cfg(not(miri))]
     #[tokio::test]
-    #[allow(clippy::let_underscore_future)]
+    #[expect(clippy::let_underscore_future)]
     async fn sender_checks_for_want_on_send() {
         let (mut tx, mut rx) = channel::<Custom, ()>();
 
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::let_underscore_future)]
+    #[expect(clippy::let_underscore_future)]
     fn unbounded_sender_doesnt_bound_on_want() {
         let (tx, rx) = channel::<Custom, ()>();
         let mut tx = tx.unbound();

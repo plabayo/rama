@@ -185,7 +185,7 @@ impl XpcConnection {
         let block = RcBlock::new(move |event: xpc_object_t| {
             if raw_is_error(event) {
                 tracing::debug!("xpc peer got error event");
-                let _ = sender.send(XpcEvent::Error(XpcConnectionError::Invalidated(None)));
+                _ = sender.send(XpcEvent::Error(XpcConnectionError::Invalidated(None)));
                 return;
             }
 
@@ -194,7 +194,7 @@ impl XpcConnection {
             };
 
             let event = map_event(raw_connection, retained);
-            let _ = sender.send(event);
+            _ = sender.send(event);
         });
 
         // SAFETY: raw_connection is a valid, non-null xpc_connection_t from OwnedXpcObject.
@@ -202,6 +202,10 @@ impl XpcConnection {
         // after xpc_connection_set_event_handler so it remains valid for the connection's
         // lifetime. xpc_connection_resume activates the connection; it must be called
         // exactly once before any messages are sent or received.
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "set-handler-then-resume is a single XPC initialization sequence; the SAFETY comment above covers both calls"
+        )]
         unsafe {
             xpc_connection_set_event_handler(
                 raw_connection,
@@ -279,7 +283,7 @@ impl XpcConnection {
                 };
 
                 if let Some(reply_sender) = reply_sender.lock().take() {
-                    let _ = reply_sender.send(result);
+                    _ = reply_sender.send(result);
                 }
             });
 
@@ -299,7 +303,7 @@ impl XpcConnection {
 
         let reply = reply_receiver
             .await
-            .map_err(|_| XpcError::ReplyCanceled)??;
+            .map_err(|_e| XpcError::ReplyCanceled)??;
         tracing::trace!(reply = ?reply, "xpc received reply");
         Ok(reply)
     }

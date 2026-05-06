@@ -51,6 +51,12 @@
 //!     --protocols echo-upper wss://echo.ramaproxy.org
 //! ```
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},

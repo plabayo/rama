@@ -147,6 +147,6 @@ mod tests {
 
     #[test]
     fn test_no_date() {
-        assert!("this-is-no-date".parse::<HttpDate>().is_err());
+        "this-is-no-date".parse::<HttpDate>().unwrap_err();
     }
 }

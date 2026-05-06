@@ -8,6 +8,11 @@
 //! available and `rama-http` already provides richer ways of plugging in
 //! arbitrary values.
 
+#![expect(
+    clippy::allow_attributes,
+    reason = "vendored from `vy-core`: macro-internal `#[allow(non_snake_case)]` attrs whose underlying lint fires only for some tuple-arity expansions"
+)]
+
 use std::{
     borrow::Cow,
     fmt::{self, Write as _},
@@ -423,7 +428,7 @@ macro_rules! via_display {
                 fn into_html(self) -> impl IntoHtml { self }
                 #[inline]
                 fn escape_and_write(self, buf: &mut String) {
-                    let _ = write!(buf, "{self}");
+                    _ = write!(buf, "{self}");
                 }
             }
         )*

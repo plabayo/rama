@@ -383,7 +383,7 @@ impl FromRequest for Multipart {
             return Err(InvalidMultipartContentType.into());
         }
         let boundary =
-            multer::parse_boundary(content_type).map_err(|_| InvalidMultipartBoundary)?;
+            multer::parse_boundary(content_type).map_err(|_e| InvalidMultipartBoundary)?;
 
         // Look up the optional `MultipartConfig` extension via `get_arc` to
         // avoid cloning the inner field-limits map on every request. When no

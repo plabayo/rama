@@ -10,6 +10,10 @@ pub struct DeviceName(SmolStr);
 impl DeviceName {
     /// Create a new [`DeviceName`].
     #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "static-str invariant: panic at compile time when the static is not a valid device name"
+    )]
     pub const fn new(name: &'static str) -> Self {
         if !is_valid(name.as_bytes()) {
             panic!("static str is not a valid (interface) device name");

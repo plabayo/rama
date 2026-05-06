@@ -322,7 +322,7 @@ impl TcpListener {
                             socket.extensions().insert(SocketInfo::new(local_addr, peer_addr.into()));
 
                             self.exec.spawn_task(async move {
-                                let _ = service.serve(socket).await;
+                                _ = service.serve(socket).await;
                             }.instrument(span));
                         }
                         Err(err) => {

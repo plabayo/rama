@@ -74,6 +74,10 @@ impl AuditToken {
 
         let mut token = MaybeUninit::<Self>::uninit();
         // SAFETY: `bytes` length is exactly the size of `Self`, and destination is valid.
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "copy-then-assume-init is a single initialization sequence; the SAFETY comment above covers both ops"
+        )]
         unsafe {
             ptr::copy_nonoverlapping(
                 bytes.as_ptr(),

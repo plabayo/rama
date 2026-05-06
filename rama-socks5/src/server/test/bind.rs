@@ -23,7 +23,7 @@ async fn test_socks5_acceptor_no_auth_client_bind_failure_method_not_supported()
 
     let server = Socks5Acceptor::new(Executor::default());
     let result = server.accept(stream).await;
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[tokio::test]
@@ -43,7 +43,7 @@ async fn test_socks5_acceptor_auth_flow_declined_bind_failure_method_not_support
 
     let server = Socks5Acceptor::new(Executor::default());
     let result = server.accept(stream).await;
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[tokio::test]
@@ -68,7 +68,7 @@ async fn test_socks5_acceptor_auth_flow_used_bind_failure_method_not_supported()
     let server = Socks5Acceptor::new(Executor::default())
         .with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[tokio::test]
@@ -93,7 +93,7 @@ async fn test_socks5_acceptor_auth_flow_username_only_bind_failure_method_not_su
     let server = Socks5Acceptor::new(Executor::default())
         .with_authorizer(user::Basic::new_insecure(non_empty_str!("john")).into_authorizer());
     let result = server.accept(stream).await;
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[tokio::test]
@@ -114,7 +114,7 @@ async fn test_socks5_acceptor_no_auth_client_bind_mock_failure() {
     let server = Socks5Acceptor::new(Executor::default())
         .with_binder(MockBinder::new_err(ReplyKind::ConnectionRefused));
     let result = server.accept(stream).await;
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[tokio::test]
@@ -138,7 +138,7 @@ async fn test_socks5_acceptor_no_auth_client_bind_mock_failure_on_second_reply()
         ReplyKind::TtlExpired,
     ));
     let result = server.accept(stream).await;
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[tokio::test]
@@ -163,7 +163,7 @@ async fn test_socks5_acceptor_no_auth_client_bind_mock_success_no_data() {
         HostWithPort::default_ipv4(0),
     ));
     let result = server.accept(stream).await;
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[tokio::test]
@@ -199,7 +199,7 @@ async fn test_socks5_acceptor_no_auth_client_default_bind_mock_success_with_data
             ),
     );
     let result = server.accept(stream).await;
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[tokio::test]
@@ -241,7 +241,7 @@ async fn test_socks5_acceptor_with_auth_flow_client_bind_mock_success_with_data(
                 ),
         );
     let result = server.accept(stream).await;
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[tokio::test]
@@ -283,5 +283,5 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_bind_mock_succ
                 ),
         );
     let result = server.accept(stream).await;
-    assert!(result.is_ok());
+    result.unwrap();
 }
