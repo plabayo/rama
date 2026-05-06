@@ -25,17 +25,19 @@ fn tcp_flow_exposes_meta_extension() {
             let notify_tx = notify_tx.clone();
             FlowAction::Intercept {
                 meta,
-                service: service_fn(move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
-                    let seen_clone = seen_clone.clone();
-                    let notify_tx = notify_tx.clone();
-                    async move {
-                        let BridgeIo(stream, _egress) = bridge;
-                        *seen_clone.lock() =
-                            stream.extensions().get_arc::<TransparentProxyFlowMeta>();
-                        let _ = notify_tx.send(());
-                        Ok(())
-                    }
-                })
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                        let seen_clone = seen_clone.clone();
+                        let notify_tx = notify_tx.clone();
+                        async move {
+                            let BridgeIo(stream, _egress) = bridge;
+                            *seen_clone.lock() =
+                                stream.extensions().get_arc::<TransparentProxyFlowMeta>();
+                            let _ = notify_tx.send(());
+                            Ok(())
+                        }
+                    },
+                )
                 .boxed(),
             }
         }),
@@ -75,17 +77,19 @@ fn udp_flow_exposes_meta_extension() {
             let notify_tx = notify_tx.clone();
             FlowAction::Intercept {
                 meta,
-                service: service_fn(move |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| {
-                    let seen_clone = seen_clone.clone();
-                    let notify_tx = notify_tx.clone();
-                    async move {
-                        let BridgeIo(flow, _egress) = bridge;
-                        *seen_clone.lock() =
-                            flow.extensions().get_arc::<TransparentProxyFlowMeta>();
-                        let _ = notify_tx.send(());
-                        Ok(())
-                    }
-                })
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| {
+                        let seen_clone = seen_clone.clone();
+                        let notify_tx = notify_tx.clone();
+                        async move {
+                            let BridgeIo(flow, _egress) = bridge;
+                            *seen_clone.lock() =
+                                flow.extensions().get_arc::<TransparentProxyFlowMeta>();
+                            let _ = notify_tx.send(());
+                            Ok(())
+                        }
+                    },
+                )
                 .boxed(),
             }
         }),
@@ -136,17 +140,19 @@ fn flow_meta_records_intercept_decision_after_handler() {
             let notify_tx = notify_tx.clone();
             FlowAction::Intercept {
                 meta,
-                service: service_fn(move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
-                    let seen_clone = seen_clone.clone();
-                    let notify_tx = notify_tx.clone();
-                    async move {
-                        let BridgeIo(stream, _egress) = bridge;
-                        *seen_clone.lock() =
-                            stream.extensions().get_arc::<TransparentProxyFlowMeta>();
-                        let _ = notify_tx.send(());
-                        Ok(())
-                    }
-                })
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                        let seen_clone = seen_clone.clone();
+                        let notify_tx = notify_tx.clone();
+                        async move {
+                            let BridgeIo(stream, _egress) = bridge;
+                            *seen_clone.lock() =
+                                stream.extensions().get_arc::<TransparentProxyFlowMeta>();
+                            let _ = notify_tx.send(());
+                            Ok(())
+                        }
+                    },
+                )
                 .boxed(),
             }
         }),

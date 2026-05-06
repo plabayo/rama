@@ -86,11 +86,7 @@ impl TransparentProxyHandler for SlowMatchHandler {
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<
-            impl Service<
-                BridgeIo<crate::TcpFlow, crate::NwTcpStream>,
-                Output = (),
-                Error = Infallible,
-            >,
+            impl Service<BridgeIo<crate::TcpFlow, crate::NwTcpStream>, Output = (), Error = Infallible>,
         >,
     > + Send
     + '_ {
@@ -118,11 +114,7 @@ impl TransparentProxyHandler for SlowMatchHandler {
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<
-            impl Service<
-                BridgeIo<crate::UdpFlow, crate::NwUdpSocket>,
-                Output = (),
-                Error = Infallible,
-            >,
+            impl Service<BridgeIo<crate::UdpFlow, crate::NwUdpSocket>, Output = (), Error = Infallible>,
         >,
     > + Send
     + '_ {

@@ -28,25 +28,27 @@ fn tcp_byte_stream_preserved_under_ingress_backpressure() {
             let eof_tx = eof_tx_handler.lock().take().expect("single intercept");
             FlowAction::Intercept {
                 meta,
-                service: service_fn(move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
-                    let received = received.clone();
-                    let eof_tx = eof_tx.clone();
-                    async move {
-                        let BridgeIo(mut ingress, _egress) = bridge;
-                        let mut buf = vec![0u8; 4096];
-                        loop {
-                            match ingress.read(&mut buf).await {
-                                Ok(0) | Err(_) => {
-                                    let _ = eof_tx.send(());
-                                    return Ok(());
-                                }
-                                Ok(n) => {
-                                    received.lock().extend_from_slice(&buf[..n]);
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                        let received = received.clone();
+                        let eof_tx = eof_tx.clone();
+                        async move {
+                            let BridgeIo(mut ingress, _egress) = bridge;
+                            let mut buf = vec![0u8; 4096];
+                            loop {
+                                match ingress.read(&mut buf).await {
+                                    Ok(0) | Err(_) => {
+                                        let _ = eof_tx.send(());
+                                        return Ok(());
+                                    }
+                                    Ok(n) => {
+                                        received.lock().extend_from_slice(&buf[..n]);
+                                    }
                                 }
                             }
                         }
-                    }
-                })
+                    },
+                )
                 .boxed(),
             }
         }),
@@ -108,25 +110,27 @@ fn tcp_byte_stream_preserved_under_egress_backpressure() {
             let eof_tx = eof_tx_handler.lock().take().expect("single intercept");
             FlowAction::Intercept {
                 meta,
-                service: service_fn(move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
-                    let received = received.clone();
-                    let eof_tx = eof_tx.clone();
-                    async move {
-                        let BridgeIo(_ingress, mut egress) = bridge;
-                        let mut buf = vec![0u8; 4096];
-                        loop {
-                            match egress.read(&mut buf).await {
-                                Ok(0) | Err(_) => {
-                                    let _ = eof_tx.send(());
-                                    return Ok(());
-                                }
-                                Ok(n) => {
-                                    received.lock().extend_from_slice(&buf[..n]);
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                        let received = received.clone();
+                        let eof_tx = eof_tx.clone();
+                        async move {
+                            let BridgeIo(_ingress, mut egress) = bridge;
+                            let mut buf = vec![0u8; 4096];
+                            loop {
+                                match egress.read(&mut buf).await {
+                                    Ok(0) | Err(_) => {
+                                        let _ = eof_tx.send(());
+                                        return Ok(());
+                                    }
+                                    Ok(n) => {
+                                        received.lock().extend_from_slice(&buf[..n]);
+                                    }
                                 }
                             }
                         }
-                    }
-                })
+                    },
+                )
                 .boxed(),
             }
         }),
