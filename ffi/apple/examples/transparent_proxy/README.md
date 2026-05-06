@@ -281,6 +281,54 @@ log show --last 5m --style compact --info --debug \
 > the process name `org.ramaproxy.example.tproxy.dev.provider`. For the distribution
 > extension replace `dev` with `provider` in the predicate above.
 
+## Sanitizer-driven race / UAF testing
+
+The FFI surface between Rust and Swift has multiple cross-thread
+callback paths. Their racy bugs (use-after-free, data-race) are
+impossible to catch deterministically — the test passes on a clean
+run, fails on a poisoned one, with a window of microseconds.
+AddressSanitizer + ThreadSanitizer turn that into "ALWAYS catches a
+real bug if it's there".
+
+The `cases::stress::*` e2e tests deliberately hammer the FFI lifecycle
+(open + roundtrip + close, sequential and concurrent) so a sanitizer
+has enough race windows to land on real memory.
+
+```sh
+# Requires nightly: `rustup toolchain install nightly`.
+# Builds tproxy_rs + tproxy_ffi_e2e with -Z sanitizer=address and runs
+# only the stress cases (the suite that's worth the slow sanitizer
+# overhead).
+cd ffi/apple/examples/transparent_proxy
+just test-e2e-asan
+```
+
+ASan output surfaces as a multi-line stack trace prefixed with
+`==NNN==ERROR: AddressSanitizer:`. A clean run finishes silently. If
+you're investigating a flake, run with `--test-threads=1` (the recipe
+already does) and capture the full output:
+
+```sh
+RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
+    cargo +nightly build --target aarch64-apple-darwin --manifest-path tproxy_rs/Cargo.toml
+RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
+    RAMA_TPROXY_EXAMPLE_LIB_DIR="tproxy_rs/target/aarch64-apple-darwin/debug" \
+    cargo +nightly test --manifest-path tproxy_ffi_e2e/Cargo.toml \
+    --target aarch64-apple-darwin --test e2e -- --test-threads=1 \
+    cases::stress 2>&1 | tee /tmp/asan.log
+```
+
+Notes:
+- `aarch64-apple-darwin` for Apple Silicon; swap to `x86_64-apple-darwin`
+  on Intel.
+- The sanitizer slows execution ~5×; the stress tests' time budgets are
+  already generous enough to absorb that on a workstation. CI matrices
+  that turn this on should expect ~1-2 minutes per stress test instead
+  of the ~5 seconds without sanitizer.
+- `-Z sanitizer=thread` (TSan) is the alternative; it's noisier than
+  ASan because tokio's internals trigger many "data race" warnings
+  that aren't real bugs. ASan catches the UAF cases we care about.
+
 ## Troubleshooting
 
 The most confusing startup failure is:

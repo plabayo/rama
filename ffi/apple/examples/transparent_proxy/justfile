@@ -120,3 +120,26 @@ qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 qa: qa-rust build-tproxy-dev
 
 test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e
+
+# Run the FFI e2e suite under AddressSanitizer to surface UAF / data races.
+#
+# Requires nightly Rust (`rustup toolchain install nightly`). The static lib
+# (`tproxy_rs`) and the test crate (`tproxy_ffi_e2e`) must both be built with
+# the sanitizer flag — otherwise instrumentation is incomplete and races slip
+# past. See the `cases::stress::*` tests for the high-churn scenarios that
+# give the sanitizer enough race windows to land on a real bug.
+[working-directory: './tproxy_rs']
+build-tproxy-rs-asan:
+    RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
+        cargo +nightly build --target aarch64-apple-darwin
+
+[working-directory: './tproxy_ffi_e2e']
+run-tproxy-ffi-e2e-asan:
+    RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
+        RAMA_TPROXY_EXAMPLE_LIB_DIR="../tproxy_rs/target/aarch64-apple-darwin/debug" \
+        cargo +nightly test --target aarch64-apple-darwin \
+        --test e2e -- --test-threads=1 --nocapture cases::stress
+
+# Convenience target: build the staticlib with ASan and run the e2e stress
+# cases under it. Slower than `test-e2e` and requires nightly.
+test-e2e-asan: build-tproxy-rs-asan run-tproxy-ffi-e2e-asan
