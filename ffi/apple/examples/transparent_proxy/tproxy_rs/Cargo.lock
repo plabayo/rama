@@ -2015,6 +2015,7 @@ dependencies = [
  "ahash",
  "asynk-strim",
  "bytes",
+ "dial9-trace-format",
  "futures",
  "parking_lot",
  "pin-project-lite",
@@ -2287,6 +2288,8 @@ name = "rama-net-apple-networkextension"
 version = "0.3.0-rc1"
 dependencies = [
  "bindgen",
+ "dial9-tokio-telemetry",
+ "dial9-trace-format",
  "libc",
  "parking_lot",
  "pin-project-lite",
@@ -2459,8 +2462,6 @@ dependencies = [
  "ahash",
  "arc-swap",
  "base64",
- "dial9-tokio-telemetry",
- "dial9-trace-format",
  "moka",
  "rama",
  "serde",

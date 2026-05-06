@@ -15,23 +15,11 @@ arc-swap = "1"
 base64 = "0.22"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 moka = { version = "0.12", features = ["sync"] }
-rama = { path = "../../../../../", features = ["net-apple-networkextension", "net-apple-xpc", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
+rama = { path = "../../../../../", features = ["dial9", "net-apple-networkextension", "net-apple-xpc", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.52", features = ["net", "time"] }
 tracing-oslog = "0.3"
-
-# Optional Tokio runtime telemetry via dial9 (https://github.com/dial9-rs).
-# Requires building with `--cfg tokio_unstable` (set in .cargo/config.toml when
-# this feature is enabled) and is intended for diagnostic builds, not the
-# default build of this example. See docs/dial9.md for the full integration
-# pattern.
-dial9-tokio-telemetry = { version = "0.3", optional = true }
-dial9-trace-format = { version = "0.3", optional = true }
-
-[features]
-default = []
-dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
 
 [lints.rust]
 unused_imports = "warn"

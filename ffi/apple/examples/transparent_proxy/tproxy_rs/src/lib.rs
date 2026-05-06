@@ -27,8 +27,6 @@ mod concurrency;
 mod config;
 mod demo_trace_traffic;
 mod demo_xpc_server;
-#[cfg(feature = "dial9")]
-mod dial9;
 mod http;
 mod policy;
 mod state;

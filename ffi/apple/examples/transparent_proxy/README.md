@@ -457,59 +457,37 @@ So, if the proxy "randomly" starts working again after reinstall, that does not
 guarantee the original runtime issue is fixed. It only means the registration /
 profile layer was reset successfully.
 
-## Observability with dial9 (optional)
+## Observability with dial9
 
-[dial9](https://github.com/dial9-rs/dial9-tokio-telemetry) is a low-overhead
-runtime telemetry crate for Tokio that records poll timing, wake events, and
-custom application events into a self-describing binary trace. It is
-particularly useful for diagnosing the long-tail / wedge bugs that hit
-transparent proxies in real-world use — the same failure modes that
-motivated the per-flow shutdown / idle-timeout / handler-deadline / watchdog
-hardening in `rama-net-apple-networkextension`.
+This example always builds with [dial9](https://github.com/dial9-rs/dial9-tokio-telemetry)
+runtime-telemetry support: dial9 records poll timing, wake events,
+scheduling delays, and custom application events into a self-describing
+binary trace.
 
-This example exposes a `dial9` cargo feature that pulls in the dial9 crates
-and defines a small set of custom events that mirror rama's structured
-flow lifecycle logs (`TproxyFlowOpened`, `TproxyFlowClosed`,
-`TproxyHandlerDeadline`). Cross-correlating dial9 traces with rama's
-`flow_id=…` close events is the recommended workflow for post-mortem
-analysis.
+It pulls the pre-defined `TproxyFlowOpened` / `TproxyFlowClosed` /
+`TproxyHandlerDeadline` events from
+`rama_net_apple_networkextension::tproxy::dial9` (rama's `dial9`
+feature) so they line up with rama's structured `flow_id=…` close logs.
+Cross-correlating dial9 traces with the `tracing` log stream is the
+recommended workflow for post-mortem analysis on real flows.
 
-### Why bother
+### Build setup
 
-- Wake-up latency and Tokio scheduling delay show up as concrete numbers
-  in the trace, not as P99 aggregations.
-- The `flow_id` shared between rama's structured logs and dial9 custom
-  events lets you go from a slow flow in production logs to its full poll
-  history in `dial9-viewer`.
-- On Linux, dial9 also captures kernel scheduling delays and CPU profiling
-  samples. On macOS the kernel-side capture is more limited but the
-  runtime-level events are still the bulk of what's useful here.
-
-### Caveats
-
-- **Requires `tokio_unstable`.** Add to `.cargo/config.toml` under
-  `[build]`:
-
-  ```toml
-  rustflags = ["--cfg", "tokio_unstable"]
-  ```
-
-- **~1 MiB buffer per OS thread.** Fine for this example's bounded thread
-  counts; document if copying the integration pattern into a high-thread
-  workload.
-- **Runtime wiring is not enabled by default.** The example defines the
-  custom event types and gates the dependency, but does not swap the
-  default `tokio::runtime::Runtime` for a `TracedRuntime`. To get full
-  dial9 instrumentation, provide a custom
-  [`TransparentProxyAsyncRuntimeFactory`](https://docs.rs/rama-net-apple-networkextension/latest/rama_net_apple_networkextension/tproxy/trait.TransparentProxyAsyncRuntimeFactory.html)
-  that returns a runtime constructed via
-  `dial9_tokio_telemetry::TracedRuntime::try_new`.
-
-### Building with the feature on
+`tokio_unstable` is set in [`tproxy_rs/.cargo/config.toml`](./tproxy_rs/.cargo/config.toml)
+so plain `cargo build` from inside this example just works:
 
 ```sh
-RUSTFLAGS="--cfg tokio_unstable" cargo build --features dial9
+cargo build
 ```
+
+No feature flag needs toggling.
+
+### Runtime wiring
+
+dial9 only emits when a `dial9_tokio_telemetry::TracedRuntime` is wired
+in. The example provides one via a custom
+[`TransparentProxyAsyncRuntimeFactory`](https://docs.rs/rama-net-apple-networkextension/latest/rama_net_apple_networkextension/tproxy/trait.TransparentProxyAsyncRuntimeFactory.html);
+without it, recording the events is a no-op.
 
 ### Viewing traces
 
@@ -518,10 +496,20 @@ cargo install dial9-viewer
 dial9-viewer /path/to/trace.bin
 ```
 
+### Caveats
+
+- ~1 MiB buffer per OS thread — fine for this example's bounded thread
+  counts; document if copying the integration pattern into a high-thread
+  workload.
+- On Linux, dial9 additionally captures kernel scheduling delays and CPU
+  profiling samples. On macOS those are more limited; the runtime-level
+  + custom events are the bulk of what's useful.
+
 ### See also
 
-- The book chapter
-  [dial9 runtime telemetry](https://ramaproxy.org/book/proxies/operate/transparent/dial9.html)
-  for the broader story on why dial9 fits this use case.
-- [netstack.fm episode 37](https://netstack.fm/) — interview with the
-  dial9 authors covering motivation and design.
+- The book chapter on
+  [dial9 runtime telemetry](https://ramaproxy.org/book/dial9.html)
+  for the broader story on what dial9 is and how rama exposes it across
+  the crate family.
+- [netstack.fm episode 37](https://netstack.fm/#episode-37) — interview
+  with the dial9 authors covering motivation and design.

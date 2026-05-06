@@ -10,7 +10,7 @@
 //!
 //! [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
 
-use rama_core::telemetry::dial9::TraceEvent;
+use rama_core::telemetry::dial9::trace_format::TraceEvent;
 
 /// Emitted right after the engine has assigned a `flow_id` to a new
 /// transparent-proxy flow and decided how to handle it.
