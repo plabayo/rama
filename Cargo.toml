@@ -251,6 +251,7 @@ webpki-roots = "1.0"
 wildcard = "0.3"
 windows-sys = "0.61"
 x509-parser = { version = "0.18", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 zstd = "0.13"
 
 [workspace.lints.rust]

@@ -19,6 +19,7 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     tcp_channel_capacity: Option<usize>,
     udp_channel_capacity: Option<usize>,
     tcp_idle_timeout: Option<Duration>,
+    udp_max_flow_lifetime: Option<Duration>,
     decision_deadline: Option<Duration>,
     decision_deadline_action: Option<DecisionDeadlineAction>,
     opaque_config: Option<Arc<[u8]>>,
@@ -37,6 +38,7 @@ where
             tcp_channel_capacity: None,
             udp_channel_capacity: None,
             tcp_idle_timeout: None,
+            udp_max_flow_lifetime: None,
             decision_deadline: None,
             decision_deadline_action: None,
             opaque_config: None,
@@ -54,6 +56,7 @@ where
             tcp_channel_capacity: self.tcp_channel_capacity,
             udp_channel_capacity: self.udp_channel_capacity,
             tcp_idle_timeout: self.tcp_idle_timeout,
+            udp_max_flow_lifetime: self.udp_max_flow_lifetime,
             decision_deadline: self.decision_deadline,
             decision_deadline_action: self.decision_deadline_action,
             opaque_config: self.opaque_config,
@@ -120,6 +123,35 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Maximum lifetime of a single per-flow UDP service task.
+        ///
+        /// When set, the engine wraps `service.serve(bridge).await` with a
+        /// `tokio::time::timeout` of this duration; on expiry the service
+        /// task is dropped and the flow's close path runs (close events
+        /// fire, callbacks become inactive). `None` (the default) lets a
+        /// UDP flow run indefinitely until the service-side bridge closes.
+        ///
+        /// **Semantics: this is a max-lifetime cap, not idle detection.**
+        /// True per-direction idle tracking would require plumbing
+        /// progress counters through `UdpFlow` / `NwUdpSocket`; this
+        /// simpler bound exists primarily to backstop misbehaving flows
+        /// that never see an explicit close (Swift-side bug, app death
+        /// without flow close, kernel slot leaked, etc.) so they
+        /// eventually free their per-flow state instead of leaking.
+        ///
+        /// Recommended for production deployments: pick a duration
+        /// noticeably longer than your longest legitimate UDP flow (DNS
+        /// resolves are sub-second; QUIC/long-poll sessions can be tens
+        /// of minutes). Pick `None` if you have an external mechanism
+        /// for reaping stuck flows.
+        pub fn udp_max_flow_lifetime(mut self, lifetime: Option<Duration>) -> Self
+        {
+            self.udp_max_flow_lifetime = lifetime;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Maximum time the engine will wait for a flow handler to produce a
         /// decision (Intercept / Passthrough / Blocked).
         ///
@@ -175,6 +207,7 @@ where
             tcp_channel_capacity,
             udp_channel_capacity,
             tcp_idle_timeout,
+            udp_max_flow_lifetime,
             decision_deadline,
             decision_deadline_action,
             opaque_config,
@@ -182,9 +215,16 @@ where
         } = self;
 
         // Reject explicit `Some(0)` rather than silently falling back to the
-        // default. `tokio::sync::mpsc::channel(0)` panics, and a misconfigured
-        // capacity is more useful as a build-time error than as a footgun.
-        // `None` continues to mean "use the default".
+        // default. `tokio::sync::mpsc::channel(0)` panics, `tokio::io::duplex(0)`
+        // deadlocks the per-flow service on its first `write_all` (the writer
+        // immediately backs off waiting for the non-existent reader), and
+        // a misconfigured capacity is more useful as a build-time error than
+        // as a footgun. `None` continues to mean "use the default".
+        if matches!(tcp_flow_buffer_size, Some(0)) {
+            return Err(
+                OpaqueError::from_static_str("tcp_flow_buffer_size must be > 0").into_box_error(),
+            );
+        }
         if matches!(tcp_channel_capacity, Some(0)) {
             return Err(
                 OpaqueError::from_static_str("tcp_channel_capacity must be > 0").into_box_error(),
@@ -233,6 +273,7 @@ where
             udp_channel_capacity: udp_channel_capacity
                 .unwrap_or(super::DEFAULT_UDP_CHANNEL_CAPACITY),
             tcp_idle_timeout,
+            udp_max_flow_lifetime,
             decision_deadline: decision_deadline.unwrap_or(super::DEFAULT_DECISION_DEADLINE),
             decision_deadline_action: decision_deadline_action
                 .unwrap_or(DecisionDeadlineAction::Block),

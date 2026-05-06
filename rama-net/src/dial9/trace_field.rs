@@ -70,6 +70,7 @@ impl TraceField for BridgeCloseReason {
             Self::WriteErrorRight => 8,
             Self::PeekTimeout => 9,
             Self::HandlerDeadline => 10,
+            Self::PausedTimeout => 11,
         };
         enc.write_u8(code)
     }
@@ -86,6 +87,7 @@ impl TraceField for BridgeCloseReason {
             FieldValueRef::Varint(8) => Some(Self::WriteErrorRight),
             FieldValueRef::Varint(9) => Some(Self::PeekTimeout),
             FieldValueRef::Varint(10) => Some(Self::HandlerDeadline),
+            FieldValueRef::Varint(11) => Some(Self::PausedTimeout),
             _ => None,
         }
     }

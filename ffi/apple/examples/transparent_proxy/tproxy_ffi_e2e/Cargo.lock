@@ -1964,6 +1964,7 @@ dependencies = [
  "rama-utils",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

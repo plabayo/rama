@@ -8,11 +8,51 @@
 extern "C" {
 #endif
 
+/* ============================================================================
+ * Threading & concurrency contract
+ *
+ * The Rust side enforces these invariants; violating them is UB.
+ *
+ * - Engine handle (RamaTransparentProxyEngine *): methods may be called
+ *   from any thread, concurrently. The engine is internally Send + Sync
+ *   and all public methods take &self.
+ *
+ * - Session handles (RamaTransparentProxyTcpSession *,
+ *   RamaTransparentProxyUdpSession *): methods take &mut Self under the
+ *   hood. NEVER make two concurrent FFI calls on the same session
+ *   pointer. The Swift side (RamaTcpSessionHandle / RamaUdpSessionHandle)
+ *   serialises per-session calls via an NSLock; any other consumer must
+ *   do the same. Two concurrent calls = data race, even if the
+ *   underlying interior data is thread-safe (Rust's aliasing model
+ *   treats it as UB regardless of physical races).
+ *
+ * - Cancellation: rama_transparent_proxy_tcp_session_cancel (TCP) and
+ *   rama_transparent_proxy_udp_session_on_client_close (UDP) flip the
+ *   engine's `callback_active` guard, drop senders, signal cooperative
+ *   shutdown, and return promptly. Background bridge tasks may still
+ *   be running for a few polls after the call returns; the
+ *   `callback_active` guard ensures they cannot dispatch into Swift
+ *   `context` after cancel returns. It is therefore safe to release
+ *   the Swift callback boxes immediately after _session_free (which
+ *   calls cancel internally).
+ *
+ * - _session_free / _engine_stop: consume the pointer. Do not use it
+ *   afterwards. Re-freeing or re-stopping is undefined behavior; the
+ *   Swift wrappers null their stored pointer immediately on these
+ *   calls to make double-free a debug-detectable no-op.
+ * ==========================================================================*/
+
 /// Opaque transparent proxy engine handle managed by Rust.
 typedef struct RamaTransparentProxyEngine RamaTransparentProxyEngine;
 /// Opaque TCP flow/session handle managed by Rust.
+///
+/// Concurrency: see the contract block at the top of this header. The
+/// session is single-owner; no two concurrent FFI calls on the same
+/// pointer.
 typedef struct RamaTransparentProxyTcpSession RamaTransparentProxyTcpSession;
 /// Opaque UDP flow/session handle managed by Rust.
+///
+/// Concurrency: see the contract block at the top of this header.
 typedef struct RamaTransparentProxyUdpSession RamaTransparentProxyUdpSession;
 
 /// Borrowed byte view.

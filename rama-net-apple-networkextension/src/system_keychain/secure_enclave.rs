@@ -200,9 +200,17 @@ pub fn is_available() -> bool {
 ///
 /// Construction does not validate the blob — bad blobs surface as
 /// [`SecureEnclaveError::BadInput`] from [`Self::encrypt`] / [`Self::decrypt`].
+///
+/// The opaque `dataRepresentation` blob is wrapped in
+/// [`zeroize::Zeroizing`] so it's wiped from heap on drop. The blob is
+/// SE-encrypted and would not directly expose the private key on its
+/// own (the SE silicon retains the actual key material), but defence
+/// in depth — a long-lived plaintext copy of an SE-encrypted blob in
+/// process heap is unnecessary exposure when a panic / core-dump /
+/// memory-disclosure bug would surface it.
 #[derive(Debug, Clone)]
 pub struct SecureEnclaveKey {
-    blob: Vec<u8>,
+    blob: zeroize::Zeroizing<Vec<u8>>,
 }
 
 impl SecureEnclaveKey {
@@ -220,7 +228,7 @@ impl SecureEnclaveKey {
             return Err(SecureEnclaveError::from_code(code));
         }
         Ok(Self {
-            blob: take_bytes(out),
+            blob: zeroize::Zeroizing::new(take_bytes(out)),
         })
     }
 
@@ -228,8 +236,14 @@ impl SecureEnclaveKey {
     ///
     /// The blob is the bytes returned by [`Self::data_representation`] (or by
     /// CryptoKit's `dataRepresentation`). No validation happens here.
-    pub fn from_data_representation(blob: Vec<u8>) -> Self {
-        Self { blob }
+    ///
+    /// Accepts anything that derefs to a byte slice — both `Vec<u8>`
+    /// and `zeroize::Zeroizing<Vec<u8>>` work, so callers reading
+    /// from [`super::load_secret`] can pass the wrapped form directly.
+    pub fn from_data_representation(blob: impl AsRef<[u8]>) -> Self {
+        Self {
+            blob: zeroize::Zeroizing::new(blob.as_ref().to_vec()),
+        }
     }
 
     /// Borrow the opaque `dataRepresentation` so the caller can persist it.

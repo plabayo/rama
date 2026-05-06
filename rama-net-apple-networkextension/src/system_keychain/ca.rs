@@ -102,6 +102,21 @@ pub fn install_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
 ///
 /// Idempotent: returns `Ok(())` when no matching cert is present. Does not
 /// touch trust settings.
+///
+/// # Implementation note
+///
+/// Apple's docs are explicit that mutating the keychain (e.g.
+/// `SecKeychainItemDelete`) **invalidates** an in-progress
+/// `SecKeychainSearchRef`: subsequent `SecKeychainSearchCopyNext` calls
+/// may skip items, revisit deleted items, or return inconsistent
+/// results. We therefore split the work in two phases:
+///
+/// 1. **Gather**: drive `SecKeychainSearchCopyNext` to completion,
+///    keeping every item whose DER matches `cert_der`. The search is
+///    closed (its `SearchGuard` drops) before any mutation.
+/// 2. **Delete**: iterate the gathered items and call
+///    `SecKeychainItemDelete` on each. The keychain is no longer being
+///    enumerated by an open search at this point, so deletes are safe.
 pub fn uninstall_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
     // We don't need a SecCertificateRef from the input here — we just need the
     // raw DER for byte-equality matching against the keychain's cert items.
@@ -110,71 +125,84 @@ pub fn uninstall_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
     }
 
     let keychain = open_system_keychain()?;
-    let mut search: sys::SecKeychainSearchRef = std::ptr::null_mut();
-    // SAFETY: `keychain.0` is a valid SecKeychainRef; NULL attrList = no filter.
-    let create_status = unsafe {
-        sys::SecKeychainSearchCreateFromAttributes(
-            keychain.0.cast(),
-            SEC_CERTIFICATE_ITEM_CLASS,
-            std::ptr::null(),
-            &mut search,
-        )
-    };
-    if create_status != 0 {
-        return Err(SystemKeychainError::new(
-            create_status,
-            "SecKeychainSearchCreateFromAttributes failed",
-        ));
-    }
-    let _search_guard = SearchGuard(search);
 
-    loop {
-        let mut item: sys::SecKeychainItemRef = std::ptr::null_mut();
-        // SAFETY: `search` is valid for the lifetime of `_search_guard`.
-        let next_status = unsafe { sys::SecKeychainSearchCopyNext(search, &mut item) };
-        if next_status == ERR_SEC_ITEM_NOT_FOUND {
-            break;
-        }
-        if next_status != 0 {
+    // ── Phase 1: gather matching items, then drop the search handle ─────
+    let matched: Vec<ItemGuard> = {
+        let mut search: sys::SecKeychainSearchRef = std::ptr::null_mut();
+        // SAFETY: `keychain.0` is a valid SecKeychainRef; NULL attrList = no filter.
+        let create_status = unsafe {
+            sys::SecKeychainSearchCreateFromAttributes(
+                keychain.0.cast(),
+                SEC_CERTIFICATE_ITEM_CLASS,
+                std::ptr::null(),
+                &mut search,
+            )
+        };
+        if create_status != 0 {
             return Err(SystemKeychainError::new(
-                next_status,
-                "SecKeychainSearchCopyNext failed",
+                create_status,
+                "SecKeychainSearchCreateFromAttributes failed",
             ));
         }
-        let item_guard = ItemGuard(item);
+        let _search_guard = SearchGuard(search);
 
-        // `SecKeychainItemRef` and `SecCertificateRef` are toll-free-bridged
-        // when the keychain item's class is certificate.
-        // SAFETY: `item` came from a search scoped to the cert item class.
-        let cf_data = unsafe { sys::SecCertificateCopyData(item.cast()) };
-        if cf_data.is_null() {
-            continue;
-        }
-        let _data_guard = CFDataGuard(cf_data);
+        let mut matched = Vec::new();
+        loop {
+            let mut item: sys::SecKeychainItemRef = std::ptr::null_mut();
+            // SAFETY: `search` is valid for the lifetime of `_search_guard`.
+            let next_status = unsafe { sys::SecKeychainSearchCopyNext(search, &mut item) };
+            if next_status == ERR_SEC_ITEM_NOT_FOUND {
+                break;
+            }
+            if next_status != 0 {
+                return Err(SystemKeychainError::new(
+                    next_status,
+                    "SecKeychainSearchCopyNext failed",
+                ));
+            }
+            let item_guard = ItemGuard(item);
 
-        // SAFETY: cf_data is a valid non-null CFDataRef.
-        let len = unsafe { sys::CFDataGetLength(cf_data) } as usize;
-        // SAFETY: cf_data is a valid non-null CFDataRef.
-        let bytes_ptr = unsafe { sys::CFDataGetBytePtr(cf_data) };
-        if bytes_ptr.is_null() || len != cert_der.len() {
-            continue;
-        }
-        // SAFETY: bytes_ptr is valid for `len` bytes inside the CFData.
-        let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr.cast::<u8>(), len) };
-        if bytes != cert_der {
-            continue;
-        }
+            // `SecKeychainItemRef` and `SecCertificateRef` are toll-free-bridged
+            // when the keychain item's class is certificate.
+            // SAFETY: `item` came from a search scoped to the cert item class.
+            let cf_data = unsafe { sys::SecCertificateCopyData(item.cast()) };
+            if cf_data.is_null() {
+                continue;
+            }
+            let _data_guard = CFDataGuard(cf_data);
 
-        // SAFETY: `item` is a valid SecKeychainItemRef.
-        let del_status = unsafe { sys::SecKeychainItemDelete(item) };
+            // SAFETY: cf_data is a valid non-null CFDataRef.
+            let len = unsafe { sys::CFDataGetLength(cf_data) } as usize;
+            // SAFETY: cf_data is a valid non-null CFDataRef.
+            let bytes_ptr = unsafe { sys::CFDataGetBytePtr(cf_data) };
+            if bytes_ptr.is_null() || len != cert_der.len() {
+                continue;
+            }
+            // SAFETY: bytes_ptr is valid for `len` bytes inside the CFData.
+            let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr.cast::<u8>(), len) };
+            if bytes != cert_der {
+                continue;
+            }
+
+            matched.push(item_guard);
+        }
+        matched
+        // _search_guard drops here, closing the search handle. No
+        // mutation has happened yet so the search was driven to a
+        // consistent end (ERR_SEC_ITEM_NOT_FOUND).
+    };
+
+    // ── Phase 2: delete each matched item; the search is closed ──────────
+    for item in &matched {
+        // SAFETY: `item.0` is a valid SecKeychainItemRef held by `ItemGuard`.
+        let del_status = unsafe { sys::SecKeychainItemDelete(item.0) };
         if del_status != 0 && del_status != ERR_SEC_ITEM_NOT_FOUND {
             return Err(SystemKeychainError::new(
                 del_status,
                 "SecKeychainItemDelete failed for cert item",
             ));
         }
-        // Continue scanning in case duplicates exist.
-        drop(item_guard);
     }
+    drop(matched);
     Ok(())
 }

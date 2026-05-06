@@ -724,6 +724,15 @@ private final class UdpClientWritePump {
 private func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     let tcpOpts = NWProtocolTCP.Options()
     if let opts, opts.has_connect_timeout_ms {
+        // Apple's `connectionTimeout` is documented in seconds (Int).
+        // Our FFI carries the value in milliseconds. We floor on the
+        // ms→s conversion: callers asking for `connect_timeout_ms = 999`
+        // get 1 second (clamped via `max(1, …)`); `connect_timeout_ms =
+        // 1500` also gets 1. Sub-second resolution is not expressible
+        // through this Apple API. Document at the FFI builder if
+        // sub-second resolution becomes important — the right fix is
+        // to expose seconds at the FFI surface so the lossy conversion
+        // is visible to callers.
         tcpOpts.connectionTimeout = max(1, Int(opts.connect_timeout_ms / 1000))
     }
     let params = NWParameters(tls: nil, tcp: tcpOpts)
@@ -754,9 +763,27 @@ private func makeUdpNwParameters(_ opts: RamaUdpEgressConnectOptions?) -> NWPara
 private func applyFlowMetadata(_ flow: NEAppProxyFlow, _ params: NWParameters) {
     if #available(macOS 15.0, *) {
         flow.setMetadata(on: params)
-    } else {
-        _ = flow.perform(NSSelectorFromString("setMetadata:"), with: params)
+        return
     }
+    // macOS 12.0–14.x fallback: invoke the selector dynamically. The
+    // underlying `setMetadata:` is available since macOS 10.15.4, but
+    // the typed Swift overlay only exposes it under #available(macOS
+    // 15.0). If a future macOS removes the selector entirely, this
+    // call silently no-ops and downstream NEAppProxyProviders that
+    // intercept our egress will see this extension instead of the
+    // original source app — observable as silently broken egress
+    // attribution. Log when responds-to is false so a regression on
+    // older OS surfaces in extension logs rather than failing
+    // silently in production.
+    let selector = NSSelectorFromString("setMetadata:")
+    if !flow.responds(to: selector) {
+        RamaTransparentProxyEngineHandle.log(
+            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
+            message: "applyFlowMetadata: NEAppProxyFlow does not respond to setMetadata: on this macOS version; egress NWParameters will not carry source-app metadata"
+        )
+        return
+    }
+    _ = flow.perform(selector, with: params)
 }
 
 private func applyNwEgressParameters(_ p: RamaNwEgressParameters, to params: NWParameters) {
@@ -1800,6 +1827,30 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return NWHostEndpoint(hostname: network, port: "0")
     }
 
+    /// Pull `engineConfigJson` from `startOptions` (preferred — the
+    /// container app passes it in the start API call) or from
+    /// `providerConfiguration` (fallback, for cases where the
+    /// container app stored it on the protocol configuration).
+    ///
+    /// # Security note
+    ///
+    /// `providerConfiguration` is **logged automatically** by the
+    /// system: it shows up in Apple diagnostic output (`log show`
+    /// streams, sysdiagnose archives, crash reports) with no way for
+    /// the extension to suppress this. **Never put secrets, private
+    /// keys, or credentials in `engineConfigJson`** — only
+    /// non-sensitive runtime settings (timeouts, domain exclusions,
+    /// feature flags, telemetry knobs, public-info config). For
+    /// sensitive material, use the system keychain (see
+    /// `system_keychain` in the rama Rust crate) or transport it
+    /// over a secure XPC connection from the container app at
+    /// runtime.
+    ///
+    /// The `startOptions` path is less leaky than
+    /// `providerConfiguration` (it's not part of the persisted
+    /// configuration), but Apple makes no guarantees that start
+    /// options aren't logged either — the rule of thumb is the same:
+    /// no secrets here.
     private static func engineConfigJson(
         protocolConfiguration: NETunnelProviderProtocol?,
         startOptions: [String: Any]?
@@ -1937,9 +1988,28 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return (host, port)
         }
 
+        // Typed cast failed — fall back to parsing the endpoint's
+        // string description. That format is unstable across macOS
+        // releases (Apple has changed it before); log here so a
+        // future breakage shows up as a flood of "fallback used"
+        // debug events rather than silently degrading every flow to
+        // "no remote endpoint" → passthrough.
         let raw = String(describing: endpoint)
         guard !raw.isEmpty else { return nil }
-        return parseEndpointString(raw)
+        let parsed = parseEndpointString(raw)
+        let typeName = String(reflecting: type(of: endpoint))
+        if parsed != nil {
+            RamaTransparentProxyEngineHandle.log(
+                level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
+                message: "endpointHostPort: typed NWHostEndpoint cast failed; string-fallback succeeded for \(typeName): raw=\(raw)"
+            )
+        } else {
+            RamaTransparentProxyEngineHandle.log(
+                level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
+                message: "endpointHostPort: typed NWHostEndpoint cast AND string-fallback failed for \(typeName): raw=\(raw)"
+            )
+        }
+        return parsed
     }
 
     private static func parseEndpointString(_ raw: String) -> (host: String, port: UInt16)? {

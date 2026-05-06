@@ -48,6 +48,12 @@ pub enum BridgeCloseReason {
     /// deadline. The flow was rejected (or passed through, depending on
     /// configuration) without bridging.
     HandlerDeadline,
+    /// A backpressure-paused write side was never re-armed by its peer
+    /// drain signal within the configured maximum-pause window. Surfaces
+    /// stuck downstream writers (e.g. a Swift `flow.write` completion
+    /// handler that never invokes `signalServerDrain`) instead of
+    /// wedging the bridge indefinitely.
+    PausedTimeout,
 }
 
 impl std::fmt::Display for BridgeCloseReason {
@@ -63,6 +69,7 @@ impl std::fmt::Display for BridgeCloseReason {
             Self::WriteErrorRight => "write_error_right",
             Self::PeekTimeout => "peek_timeout",
             Self::HandlerDeadline => "handler_deadline",
+            Self::PausedTimeout => "paused_timeout",
         })
     }
 }

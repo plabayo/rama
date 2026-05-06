@@ -24,7 +24,12 @@ fn next_flow_id() -> u64 {
         if id != 0 {
             return id;
         }
-        // Wrapped through u64::MAX back to 0 — skip the reserved value.
+        // Wrapped through u64::MAX back to 0 — skip the reserved
+        // value. At a billion flows/second this branch is reachable
+        // after ~292 years of continuous churn; it exists so the
+        // wrap is *defined* rather than relying on Rust's overflow
+        // semantics, not because it's a realistic operational
+        // concern.
     }
 }
 
@@ -41,46 +46,75 @@ fn next_flow_id() -> u64 {
 /// | InteractiveVoice| `.interactiveVoice`    | VoIP calls                             |
 /// | ResponsiveData  | `.responsiveData`      | Interactive network traffic            |
 /// | Signaling       | `.signaling`           | Control / signalling traffic           |
+// All four `Nw*` enums below are `#[repr(u8)]` with **explicit
+// discriminants**. The discriminants are the FFI wire format: they
+// appear in `RamaNwEgressParameters` (C struct) as the `service_class`
+// / `multipath_service_type` / `required_interface_type` /
+// `attribution` fields, in the Rust → C mapping at
+// `ffi/tproxy.rs::{service_class_to_u8, multipath_to_u8,
+// interface_type_to_u8, attribution_to_u8}`, and in the Swift bridge
+// at `RamaTransparentProxyProvider.swift::{nwServiceClass,
+// nwMultipathServiceType, nwInterfaceType}`.
+//
+// **Editing checklist** when adding or reordering a variant:
+//   1. Bump the new variant's discriminant past the last one — never
+//      reuse or shuffle existing values.
+//   2. Update `ffi/tproxy.rs::*_to_u8` to match (compile fails today
+//      because the matches are exhaustive — a missing arm errors out).
+//   3. Update the Swift `Nw*` switch in
+//      `RamaTransparentProxyProvider.swift` so it round-trips the new
+//      code.
+//   4. Update the C header doc comment on `RamaNwEgressParameters`.
+//
+// The `repr(u8)` + explicit discriminants make (1) compile-checked
+// (`enum NwX { A = 0, B = 0 }` errors), and the Rust-side `*_to_u8`
+// matches keep (2) compile-checked. Swift / C still need manual care,
+// hence the checklist.
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
 pub enum NwServiceClass {
     /// Do not override; use the system default (`bestEffort`).
     #[default]
-    Default,
-    Background,
-    InteractiveVideo,
-    InteractiveVoice,
-    ResponsiveData,
+    Default = 0,
+    Background = 1,
+    InteractiveVideo = 2,
+    InteractiveVoice = 3,
+    ResponsiveData = 4,
     /// Maps to `NWParameters.ServiceClass.signaling` (formerly `responsiveAV`).
-    Signaling,
+    Signaling = 5,
 }
 
 /// NWParameters multipath service type — maps to `NWParameters.multipathServiceType`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
 pub enum NwMultipathServiceType {
     #[default]
-    Disabled,
-    Handover,
-    Interactive,
-    Aggregate,
+    Disabled = 0,
+    Handover = 1,
+    Interactive = 2,
+    Aggregate = 3,
 }
 
 /// NWParameters interface type — maps to `NWParameters.requiredInterfaceType`
 /// and `NWParameters.prohibitedInterfaceTypes`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum NwInterfaceType {
-    Cellular,
-    Loopback,
-    Other,
-    Wifi,
-    Wired,
+    Cellular = 0,
+    Loopback = 1,
+    Other = 2,
+    Wifi = 3,
+    Wired = 4,
 }
 
 /// NWParameters attribution — maps to `NWParameters.attribution`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
 pub enum NwAttribution {
     #[default]
-    Developer,
-    User,
+    Developer = 0,
+    User = 1,
 }
 
 /// Non-protocol `NWParameters` settings that apply equally to TCP and UDP egress connections.
@@ -208,17 +242,43 @@ impl std::fmt::Display for TransparentProxyFlowProtocol {
     }
 }
 
-impl From<u32> for TransparentProxyFlowProtocol {
-    fn from(value: u32) -> Self {
+impl TransparentProxyFlowProtocol {
+    /// Strict conversion: returns the unrecognised value as `Err`,
+    /// letting the caller decide how to handle it (e.g. passthrough,
+    /// blocked, surface to telemetry).
+    ///
+    /// Implemented as an inherent method (rather than a `TryFrom`
+    /// impl) because Rust's blanket `impl<T, U> TryFrom<U> for T
+    /// where U: Into<T>` already covers `TryFrom<u32>` via our
+    /// [`From<u32>`] impl below — that auto-impl is infallible
+    /// (uses the lenient default-on-invalid behavior). New code that
+    /// wants strict checking should call this method explicitly.
+    pub fn from_raw_strict(value: u32) -> Result<Self, u32> {
         if (Self::Tcp as u32..=Self::Udp as u32).contains(&value) {
-            // SAFETY: repr(u32) and valid range
-            unsafe { ::std::mem::transmute::<u32, Self>(value) }
+            // SAFETY: repr(u32) with explicit discriminants 1..=2 and we
+            // just verified `value` falls in that range.
+            Ok(unsafe { ::std::mem::transmute::<u32, Self>(value) })
         } else {
+            Err(value)
+        }
+    }
+}
+
+impl From<u32> for TransparentProxyFlowProtocol {
+    /// Defensive lenient conversion: unknown protocol codes log a
+    /// `debug` and default to TCP. Used at the FFI boundary where a
+    /// future Swift/C ABI mismatch would surface as an unknown code
+    /// and we'd rather default-and-log than abort. New code paths
+    /// should prefer [`Self::from_raw_strict`] so the unknown case is
+    /// a real error the caller can route (e.g. passthrough).
+    fn from(value: u32) -> Self {
+        Self::from_raw_strict(value).unwrap_or_else(|invalid| {
             tracing::debug!(
-                "invalid raw u32 value transmuted as TransparentProxyFlowProtocol: {value} (defaulting it to TCP)"
+                invalid_raw_protocol = invalid,
+                "invalid raw u32 value transmuted as TransparentProxyFlowProtocol; defaulting to TCP"
             );
             Self::Tcp
-        }
+        })
     }
 }
 
@@ -251,17 +311,32 @@ impl std::fmt::Display for TransparentProxyFlowAction {
     }
 }
 
-impl From<u32> for TransparentProxyFlowAction {
-    fn from(value: u32) -> Self {
+impl TransparentProxyFlowAction {
+    /// Strict conversion mirroring [`TransparentProxyFlowProtocol::from_raw_strict`].
+    pub fn from_raw_strict(value: u32) -> Result<Self, u32> {
         if (Self::Intercept as u32..=Self::Blocked as u32).contains(&value) {
-            // SAFETY: repr(u32) and valid range
-            unsafe { ::std::mem::transmute::<u32, Self>(value) }
+            // SAFETY: repr(u32) with explicit discriminants 1..=3 and we
+            // just verified `value` falls in that range.
+            Ok(unsafe { ::std::mem::transmute::<u32, Self>(value) })
         } else {
+            Err(value)
+        }
+    }
+}
+
+impl From<u32> for TransparentProxyFlowAction {
+    /// Defensive lenient conversion: unknown action codes log a
+    /// `debug` and default to `Passthrough` (fail-open). See
+    /// [`TransparentProxyFlowProtocol::from`] for the same pattern's
+    /// rationale; prefer [`Self::from_raw_strict`] in new code.
+    fn from(value: u32) -> Self {
+        Self::from_raw_strict(value).unwrap_or_else(|invalid| {
             tracing::debug!(
-                "invalid raw u32 value transmuted as TransparentProxyFlowAction: {value} (defaulting it to Passthrough)"
+                invalid_raw_action = invalid,
+                "invalid raw u32 value transmuted as TransparentProxyFlowAction; defaulting to Passthrough"
             );
             Self::Passthrough
-        }
+        })
     }
 }
 

@@ -101,6 +101,22 @@ impl AuditToken {
     }
 }
 
+// `audit_token_to_pid` takes a 32-byte aggregate by value. The System V
+// AMD64 / AArch64 ABI passes structs >16B by reference (on the stack),
+// and Rust's `extern "C"` aggregate-passing matches the C ABI today, so
+// this direct-link path works on x86_64 and aarch64 macOS.
+//
+// **ABI-drift hazard**: if Apple ever changes how `audit_token_t` is
+// laid out — or `bsm`'s calling convention drifts — this silently
+// returns a wrong PID. The C wrapper at
+// `ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI/include/rama_apple_ne_ffi.c`
+// (`rama_apple_audit_token_to_pid`) does the same work via a
+// `memcpy`-into-local-`audit_token_t` shim built with Apple's actual
+// `<bsm/libbsm.h>` header, and is therefore immune to Rust↔C aggregate
+// ABI drift. Swift consumers of this crate go through the wrapper by
+// definition (it's the only entry point exposed to Swift). Rust
+// callers should consider routing through that wrapper too if you
+// observe pid() returning unexpected values on a future macOS update.
 #[link(name = "bsm")]
 unsafe extern "C" {
     fn audit_token_to_pid(token: AuditToken) -> libc::pid_t;
@@ -189,6 +205,16 @@ fn sysctl_read(mib: &mut [c_int], out: *mut c_void, out_len: &mut usize) -> io::
 /// PROCARGS2 buffer may be malformed, truncated, or already stale by the time
 /// the caller observes it (the parser is defensive against all of those).
 /// Treat the result as a best-effort, racy snapshot — not a security boundary.
+///
+/// # Cost
+///
+/// Each call queries `KERN_ARGMAX` (typically 1 MiB on macOS) and then
+/// allocates a `Vec<u8>` of that size to fetch the per-PID PROCARGS2
+/// buffer. That's fine for low-frequency lookups (e.g. one per flow at
+/// admission time), but **do not** call this on a per-packet hot path
+/// — at line-rate flow churn the 1 MiB allocation per call dominates.
+/// Cache the result per-PID at the caller if you need it more than
+/// once for the same process.
 pub unsafe fn pid_arguments(pid: i32) -> io::Result<Vec<String>> {
     if pid <= 0 {
         return Ok(Vec::new());

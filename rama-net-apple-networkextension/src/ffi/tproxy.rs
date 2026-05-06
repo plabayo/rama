@@ -122,6 +122,17 @@ impl TransparentProxyFlowMeta {
     }
 }
 
+/// FFI representation of a single network rule for the transparent
+/// proxy configuration.
+///
+/// **Adding a field that owns FFI memory?** You must mirror the new
+/// allocation in [`TransparentProxyConfig::from_rust_type`] (alloc
+/// path) AND update the per-rule loop in
+/// [`TransparentProxyConfig::free`] to release it. The struct is
+/// `repr(C)` POD with no `Drop` impl — the slice's `Box::from_raw`
+/// in `free` does NOT run a per-element Drop, so any heap memory
+/// owned by a field of this struct must be freed explicitly. The two
+/// existing `*_utf8` pairs are the template.
 #[repr(C)]
 pub struct TransparentProxyNetworkRule {
     pub remote_network_utf8: *const c_char,

@@ -27,6 +27,20 @@ impl BytesOwned {
         // release builds (matches what the original `Vec` would have upheld),
         // and shout in dev if the caller violated the contract — that means a
         // bug somewhere upstream in the FFI ownership chain.
+        if len > cap {
+            // Defense in depth: dev panics on the assert; release clamps
+            // to keep the dealloc sound, but we'd rather hear about the
+            // ownership-chain bug than have it stay hidden until a
+            // memory bug surfaces in production. Surface as `error!`
+            // (not `warn!`) so it reliably appears in extension logs
+            // even at default filter levels.
+            tracing::error!(
+                target: "rama_apple_ne::ffi",
+                len,
+                cap,
+                "BytesOwned::free: len > cap (clamping for release-build safety) — caller violated Vec invariant somewhere upstream"
+            );
+        }
         debug_assert!(
             len <= cap,
             "BytesOwned::free: len ({len}) > cap ({cap}) — caller violated Vec invariant"
@@ -50,6 +64,11 @@ impl TryFrom<Vec<u8>> for BytesOwned {
             });
         }
 
+        // `Vec::into_raw_parts` was stabilised in Rust 1.93. The
+        // workspace `rust-version` matches; if the MSRV is ever
+        // lowered, replace with the manual idiom:
+        //   let mut bytes = std::mem::ManuallyDrop::new(bytes);
+        //   let (ptr, vec_len, vec_cap) = (bytes.as_mut_ptr(), bytes.len(), bytes.capacity());
         let (ptr, vec_len, vec_cap) = bytes.into_raw_parts();
         Ok(Self {
             ptr,
