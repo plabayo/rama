@@ -169,14 +169,23 @@ impl<C, S> Connector<C, S> {
     }
 }
 
-impl Default for DefaultConnector {
-    fn default() -> Self {
+impl DefaultConnector {
+    /// Create a [`DefaultConnector`] whose forward bridge observes graceful
+    /// shutdown via the given [`Executor`].
+    #[must_use]
+    pub fn default_with_exec(exec: Executor) -> Self {
         Self {
             connector: TcpConnector::default(),
-            service: IoForwardService::default(),
+            service: IoForwardService::new(exec),
             hide_local_address: false,
             connect_timeout: Some(Duration::from_secs(60)),
         }
+    }
+}
+
+impl Default for DefaultConnector {
+    fn default() -> Self {
+        Self::default_with_exec(Executor::default())
     }
 }
 
@@ -310,9 +319,15 @@ impl<S> LazyConnector<S> {
 }
 
 impl LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
-    fn default_with_exec(exec: Executor) -> Self {
+    /// Create a [`LazyConnector`] whose forward bridge observes graceful
+    /// shutdown via the given [`Executor`].
+    #[must_use]
+    pub fn default_with_exec(exec: Executor) -> Self {
         Self {
-            service: IoToProxyBridgeIo::extension_proxy_target(exec, IoForwardService::default()),
+            service: IoToProxyBridgeIo::extension_proxy_target(
+                exec.clone(),
+                IoForwardService::new(exec),
+            ),
         }
     }
 }

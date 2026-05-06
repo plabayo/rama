@@ -131,9 +131,9 @@ async fn main() {
                     DefaultHttpProxyConnectReplyService::new(),
                     (
                         ConsumeErrLayer::default(),
-                        IoToProxyBridgeIoLayer::extension_proxy_target(exec),
+                        IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone()),
                     )
-                        .into_layer(IoForwardService::default()),
+                        .into_layer(IoForwardService::new(exec)),
                 ),
             )
                 .into_layer(service_fn(http_plain_proxy)),

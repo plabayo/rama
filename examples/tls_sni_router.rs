@@ -163,7 +163,7 @@ where
         );
 
         IoToProxyBridgeIoLayer::new(self.exec.clone(), fwd_interface)
-            .into_layer(IoForwardService::default())
+            .into_layer(IoForwardService::new(self.exec.clone()))
             .serve(stream)
             .await
     }

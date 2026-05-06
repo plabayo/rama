@@ -3,6 +3,7 @@ use std::{convert::Infallible, sync::Arc};
 use rama_core::{
     extensions::{Extension, ExtensionsRef},
     matcher::service::{ServiceMatch, ServiceMatcher},
+    rt::Executor,
     telemetry::tracing,
 };
 use rama_http::{Request, Response, StatusCode, Version, request, response};
@@ -50,6 +51,23 @@ impl Default for HttpWebSocketRelayServiceRequestMatcher {
     fn default() -> Self {
         Self {
             relay_svc: IoForwardService::default(),
+            websocket_config: None,
+            store_handshake_req_header: false,
+            store_handshake_res_header: false,
+        }
+    }
+}
+
+impl HttpWebSocketRelayServiceRequestMatcher {
+    /// Create a [`HttpWebSocketRelayServiceRequestMatcher`] whose default
+    /// fallback relay observes graceful shutdown via the given [`Executor`].
+    ///
+    /// Prefer this over [`Self::default`] when you have an executor available
+    /// — it lets the relay bridge unwind cleanly on shutdown.
+    #[must_use]
+    pub fn default_with_exec(exec: Executor) -> Self {
+        Self {
+            relay_svc: IoForwardService::new(exec),
             websocket_config: None,
             store_handshake_req_header: false,
             store_handshake_res_header: false,

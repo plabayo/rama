@@ -337,7 +337,7 @@ pub(crate) async fn spawn_combined_proxy() -> u16 {
             DefaultHttpProxyConnectReplyService::new(),
             ConsumeErrLayer::trace_as_debug().into_layer(
                 IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
-                    .into_layer(IoForwardService::default()),
+                    .into_layer(IoForwardService::new(exec.clone())),
             ),
         )
         .into_layer(service_fn(http_plain_proxy)),

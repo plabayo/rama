@@ -110,12 +110,12 @@ impl DemoTcpMitmService {
 
         let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
             .with_peek_timeout(peek_duration)
-            .with_fallback(IoForwardService::new(exec));
+            .with_fallback(IoForwardService::new(exec.clone()));
 
         let excluded_domains =
             crate::policy::DomainExclusionList::new(settings.exclude_domains.iter());
         let tls_mitm_relay_policy =
-            TlsMitmRelayPolicyLayer::new().with_excluded_domains(excluded_domains);
+            TlsMitmRelayPolicyLayer::new(exec.clone()).with_excluded_domains(excluded_domains);
 
         let app_mitm_layer = PeekTlsClientHelloService::new(
             (tls_mitm_relay_policy, settings.tls_mitm_relay.clone())
@@ -128,7 +128,7 @@ impl DemoTcpMitmService {
             return Either::A(ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_layer));
         }
 
-        let socks5_mitm_relay = Socks5MitmRelayService::new(app_mitm_layer.clone());
+        let socks5_mitm_relay = Socks5MitmRelayService::new(exec, app_mitm_layer.clone());
         let mitm_svc = Socks5PeekRouter::new(socks5_mitm_relay)
             .with_peek_timeout(peek_duration)
             .with_fallback(app_mitm_layer);

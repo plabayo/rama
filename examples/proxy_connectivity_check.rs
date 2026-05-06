@@ -164,7 +164,7 @@ async fn main() {
                     ConsumeErrLayer::default(),
                     IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone()),
                 )
-                    .into_layer(IoForwardService::default()),
+                    .into_layer(IoForwardService::new(exec.clone())),
             ),
         )
             .into_layer(proxy_service.clone()),
@@ -173,7 +173,7 @@ async fn main() {
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
         .with_fallback(
             IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
-                .into_layer(IoForwardService::default()),
+                .into_layer(IoForwardService::new(exec.clone())),
         );
     let socks5_acceptor = Socks5Acceptor::new(exec.clone())
         .with_authorizer(basic!("john", "secret").into_authorizer())

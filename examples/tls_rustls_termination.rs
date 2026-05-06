@@ -101,7 +101,7 @@ async fn main() {
                     .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
             ),
         )
-            .into_layer(IoForwardService::default());
+            .into_layer(IoForwardService::new(Executor::graceful(guard.clone())));
 
         TcpListener::bind_address("127.0.0.1:63800", Executor::graceful(guard.clone()))
             .await
