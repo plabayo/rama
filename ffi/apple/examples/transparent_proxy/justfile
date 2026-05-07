@@ -143,3 +143,13 @@ run-tproxy-ffi-e2e-asan:
 # Convenience target: build the staticlib with ASan and run the e2e stress
 # cases under it. Slower than `test-e2e` and requires nightly.
 test-e2e-asan: build-tproxy-rs-asan run-tproxy-ffi-e2e-asan
+
+# Generate live traffic against public HTTP/HTTPS endpoints to stress
+# the running sysext. Mixes small/large GET, large POST, parallel
+# connections, plain HTTP, and HTTP/1.1 ↔ HTTP/2. The sysext must be
+# installed and active. Tune via STRESS_DURATION /
+# STRESS_CONCURRENCY etc; with `MONITOR_PID=$(pgrep -f
+# org.ramaproxy.example.tproxy.dev.provider)` it also samples the
+# extension's RSS / VM regions / leaks every 5s.
+stress-traffic *ARGS:
+    bash ./scripts/stress_traffic.sh {{ARGS}}

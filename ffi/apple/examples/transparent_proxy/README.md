@@ -331,6 +331,105 @@ org.ramaproxy.example.tproxy.dev.provider.systemextension/Contents/Info.plist \
   `sysextd` re-reads `Info.plist`. Required when changing
   `NEMachServiceName`, entitlements, or other install-time keys.
 
+## Stress + resource-usage testing
+
+### One-click traffic stress
+
+Run live traffic against public HTTP/HTTPS endpoints while the
+sysext is active. Small/large GETs, large POST bodies, plain HTTP,
+parallel connections, HTTP/1.1 ↔ HTTP/2 mix, quick connection churn:
+
+```sh
+just stress-traffic
+```
+
+Tunables (env vars):
+
+```sh
+STRESS_DURATION=120 STRESS_CONCURRENCY=32 just stress-traffic
+STRESS_LARGE_BYTES=$((64 * 1024 * 1024)) just stress-traffic   # 64 MiB GET
+```
+
+To couple the run with periodic resource sampling of the extension
+process, hand the script the sysext PID via `MONITOR_PID`:
+
+```sh
+STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
+  just stress-traffic
+```
+
+The script writes per-worker logs to a tmp directory and prints a
+summary on exit (counts + the first few errors per worker). Pair
+with [Bundle everything for offline triage](#bundle-everything-for-offline-triage)
+below to capture dial9 + system logs from the same window.
+
+### Apple-native resource and leak inspection
+
+The sysext runs as root, so most of the inspection commands need
+`sudo`. Resolve the PID once and reuse:
+
+```sh
+PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider)
+echo "$PID"
+```
+
+| Tool | Command | Use for |
+|---|---|---|
+| `ps` | `ps -o pid,rss,vsz,%cpu,state -p $PID` | Snapshot RSS / VM size / CPU. |
+| `top` | `top -pid $PID -stats pid,rsize,vsize,csw,faults` | Live RSS, context switches, page-faults. |
+| `vmmap` | `sudo vmmap --summary $PID` | VM region totals (look for unbounded MALLOC_TINY / MALLOC_LARGE growth). |
+| `heap` | `sudo heap $PID` | Heap snapshot — counts and total bytes per allocation class. Diff two snapshots after stress to find unbounded growth. |
+| `leaks` | `sudo leaks $PID` | Walks the heap, reports cycles. The textbook signal for retain-cycle leaks (Swift dispatcher, ObjC cycle through `NWConnection.stateUpdateHandler`). |
+| `sample` | `sudo sample $PID 10 -file /tmp/sample.txt` | 10-second sampling stack profile — find tight loops or wedged threads. |
+| `lsof` | `sudo lsof -p $PID \| grep -E "TCP\|UDP"` | Open kernel socket count — should not climb monotonically across long runs. |
+
+A typical leak-hunt loop while stress is running:
+
+```sh
+PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider)
+sudo heap $PID > /tmp/heap.before.txt
+STRESS_DURATION=180 just stress-traffic
+sudo heap $PID > /tmp/heap.after.txt
+diff /tmp/heap.before.txt /tmp/heap.after.txt | head -60
+sudo leaks $PID
+```
+
+For richer analysis use **Instruments.app**:
+
+- `Leaks` template — graphs retain cycles. Open Instruments, choose
+  the `Leaks` template, attach to the sysext PID, run `just
+  stress-traffic` in another terminal. Cycle-detected allocations
+  appear in the Leaks track with their full retain graph.
+- `Allocations` template — show allocation counts over time per
+  type. Useful for finding "this kind of object grows linearly with
+  flow count and never deallocates".
+- `Time Profiler` template — sample-based CPU profile while stress
+  runs. Catches busy-waits / runaway loops.
+
+Instruments needs the `com.apple.security.get-task-allow`
+entitlement on the target binary or admin attach permission. The
+demo's Apple-Development-signed dev sysext has it during developer
+mode; the Distribution build does not (the entitlement is stripped
+at notarisation).
+
+### Cross-checking with the structured event stream
+
+Per-flow byte counts and close reasons land in the unified system
+log (`subsystem == "org.ramaproxy.example.tproxy"`). For a single
+flow id, ingress and egress events are emitted separately —
+`bytes_received` / `bytes_sent` on each event are RELATIVE to the
+side the bridge is on (use the `direction` field to interpret).
+
+```sh
+log show --last 5m --predicate 'subsystem == "org.ramaproxy.example.tproxy"' \
+  --info --debug | grep -E 'flow_id|tproxy.+flow closed'
+```
+
+If the dial9 runtime is wired (it is in this demo), each intercept
+also produces a `TproxyFlowOpened` / `TproxyFlowClosed` pair in the
+trace. `dial9-viewer` plots the per-flow lifecycle alongside Tokio
+runtime events.
+
 ## Observability with dial9
 
 This example always builds with [dial9](https://github.com/dial9-rs/dial9-tokio-telemetry)
