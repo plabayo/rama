@@ -551,7 +551,10 @@ mod tests {
         TransparentProxyRuleProtocol,
     };
 
-    use super::{TransparentFlowEndpoint, TransparentProxyConfig, TransparentProxyFlowMeta};
+    use super::{
+        NwEgressParameters, TransparentFlowEndpoint, TransparentProxyConfig,
+        TransparentProxyFlowMeta,
+    };
 
     /// Alloc → free round-trip for the FFI config struct. Designed so
     /// that under LeakSanitizer (`just test-e2e-asan`) any heap field
@@ -584,6 +587,20 @@ mod tests {
         // SAFETY: `ffi` was just created by `from_rust_type` and not
         // freed yet.
         unsafe { ffi.free() };
+    }
+
+    /// Locks in `preserve_original_meta_data: true` as the FFI default
+    /// for [`NwEgressParameters`]. Stacked-NE-provider deployments
+    /// rely on this so a downstream `NEAppProxyProvider` sees the
+    /// original app's `NEFlowMetaData` rather than the rama-extension
+    /// process; flipping the default would silently break attribution
+    /// in those topologies.
+    #[test]
+    fn ffi_egress_params_preserve_meta_default_round_trip() {
+        let rust = tproxy::NwEgressParameters::default();
+        assert!(rust.preserve_original_meta_data);
+        let ffi = NwEgressParameters::from_rust_type(&rust);
+        assert!(ffi.preserve_original_meta_data);
     }
 
     #[test]
