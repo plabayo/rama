@@ -11,9 +11,9 @@ use rama_net::address::Host;
 pub struct Socks5HandshakeAuth {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
-    /// Negotiated auth method code, per RFC 1928 §3 (e.g. `0x00` =
-    /// no auth, `0x02` = username/password). `0xff` = no acceptable
-    /// methods (handshake failed).
+    /// Negotiated auth method code, per RFC 1928 §3. See
+    /// [`crate::proto::SocksMethod`] for the canonical name → byte
+    /// mapping.
     pub auth_method: u32,
     /// Whether the handshake completed successfully (auth accepted).
     pub success: bool,
@@ -28,10 +28,9 @@ pub struct Socks5HandshakeConnect {
     pub destination_host: Host,
     /// Destination port the client requested.
     pub destination_port: u32,
-    /// Server reply kind, per RFC 1928 §6:
-    /// 0=Succeeded, 1=GeneralFailure, 2=ConnectionNotAllowed,
-    /// 3=NetworkUnreachable, 4=HostUnreachable, 5=ConnectionRefused,
-    /// 6=TtlExpired, 7=CommandNotSupported, 8=AddressTypeNotSupported.
+    /// Server reply kind, per RFC 1928 §6. See
+    /// [`crate::proto::ReplyKind`] for the canonical name → byte
+    /// mapping.
     pub reply_kind: u32,
 }
 

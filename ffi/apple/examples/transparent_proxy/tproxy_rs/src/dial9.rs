@@ -55,6 +55,9 @@ pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFacto
         .max_file_size(MAX_FILE_BYTES)
         .max_total_size(MAX_TOTAL_BYTES)
         .rotation_period(ROTATION_PERIOD)
+        // Name the runtime so a multi-extension dial9 trace can be
+        // disambiguated; cost is a small string in the trace header.
+        .with_runtime(|b| b.with_runtime_name("rama-tproxy-example"))
         .build_or_disabled();
 
     tracing::info!(

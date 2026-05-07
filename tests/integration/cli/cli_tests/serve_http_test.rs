@@ -17,6 +17,7 @@ use rama::{
     rt::Executor,
     service::BoxService,
     tls::boring::client::TlsConnectorDataBuilder,
+    utils::str::any_submatch_ignore_ascii_case,
 };
 
 use super::utils;
@@ -356,12 +357,16 @@ async fn run_http_test_endpoint_multipart(
         Ok(resp) => assert_eq!(StatusCode::PAYLOAD_TOO_LARGE, resp.status()),
         Err(err) => {
             let msg = format!("{err:#}");
-            let lower = msg.to_ascii_lowercase();
             assert!(
-                lower.contains("broken pipe")
-                    || lower.contains("connection reset")
-                    || lower.contains("connection aborted")
-                    || lower.contains("connection closed"),
+                any_submatch_ignore_ascii_case(
+                    &msg,
+                    [
+                        "broken pipe",
+                        "connection reset",
+                        "connection aborted",
+                        "connection closed",
+                    ],
+                ),
                 "expected 413 response or transport-close error, got: {msg}",
             );
         }

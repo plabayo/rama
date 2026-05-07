@@ -124,14 +124,14 @@ const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 1024;
 /// bound is just a memory cap.
 const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 1024;
 
-/// Maximum time the TCP bridge will park on a `Paused` ack waiting for
-/// the peer's drain signal. Exists so a stuck downstream writer (a
-/// Swift `flow.write` completion handler that never invokes
-/// `signalServerDrain`, a logic bug clearing `pausedSignaled` without
-/// firing `onDrained`, etc.) can't wedge the bridge indefinitely. The
-/// flow closes with [`BridgeCloseReason::PausedTimeout`] when this
-/// fires; tracing logs surface the stuck side.
-const PAUSED_DRAIN_MAX_WAIT: Duration = Duration::from_secs(60);
+/// Default for [`TransparentProxyEngineBuilder::with_tcp_paused_drain_max_wait`].
+/// Backstops a stuck downstream writer (a Swift `flow.write`
+/// completion handler that never invokes `signalServerDrain`, a logic
+/// bug clearing `pausedSignaled` without firing `onDrained`) so the
+/// bridge can't wedge waiting for a notification that never arrives.
+/// The flow closes with [`BridgeCloseReason::PausedTimeout`] on
+/// expiry.
+pub const DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT: Duration = Duration::from_mins(1);
 
 type BytesSink = Arc<dyn Fn(Bytes) + Send + Sync + 'static>;
 /// Variant of [`BytesSink`] used for the response / upstream-write directions
@@ -381,7 +381,7 @@ struct TcpSessionPendingData {
     tcp_channel_capacity: usize,
     /// Optional per-flow idle timeout. `None` disables idle detection.
     tcp_idle_timeout: Option<Duration>,
-    /// Optional override for [`PAUSED_DRAIN_MAX_WAIT`] applied to both
+    /// Optional override for [`DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT`] applied to both
     /// per-flow bridges. `None` means "use the engine default".
     tcp_paused_drain_max_wait: Option<Duration>,
     /// Per-flow metadata inserted into `TcpFlow` extensions at activate.
@@ -641,7 +641,8 @@ impl TransparentProxyTcpSession {
         // on every poll because dial9 hooks the worker thread, so the loss
         // is the per-future wake graph for these two bridge tasks only.
 
-        let paused_drain_wait = tcp_paused_drain_max_wait.unwrap_or(PAUSED_DRAIN_MAX_WAIT);
+        let paused_drain_wait =
+            tcp_paused_drain_max_wait.unwrap_or(DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT);
         // spawn ingress bridge (client ↔ service)
         self.ingress_bridge_task = Some({
             let guard = flow_guard.clone();
@@ -1206,9 +1207,8 @@ where
         //     flows that never see an explicit close (Swift bug, app
         //     death, kernel slot leaked, etc.) eventually free their
         //     per-flow state. See builder doc for semantics.
-        let serve_fut = service.serve(bridge);
+        let mut serve_fut = std::pin::pin!(service.serve(bridge));
         let close_reason = if let Some(lifetime) = udp_max_flow_lifetime {
-            tokio::pin!(serve_fut);
             tokio::select! {
                 () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
                 res = tokio::time::timeout(lifetime, &mut serve_fut) => {
@@ -1226,7 +1226,6 @@ where
                 }
             }
         } else {
-            tokio::pin!(serve_fut);
             tokio::select! {
                 () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
                 res = &mut serve_fut => {
@@ -1710,14 +1709,6 @@ async fn run_tcp_bridge(
 
 fn emit_udp_session_close_event(reason: BridgeCloseReason, meta: &TransparentProxyFlowMeta) {
     let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
-    let bundle_id = meta
-        .source_app_bundle_identifier
-        .as_ref()
-        .map(ToString::to_string);
-    let signing_id = meta
-        .source_app_signing_identifier
-        .as_ref()
-        .map(ToString::to_string);
     let local = meta.local_endpoint.as_ref().map(ToString::to_string);
     let remote = meta.remote_endpoint.as_ref().map(ToString::to_string);
     let decision = meta.intercept_decision.map(|d| d.to_string());
@@ -1729,8 +1720,8 @@ fn emit_udp_session_close_event(reason: BridgeCloseReason, meta: &TransparentPro
         reason = %reason,
         age_ms,
         pid = meta.source_app_pid,
-        bundle_id,
-        signing_id,
+        bundle_id = meta.source_app_bundle_identifier.as_deref(),
+        signing_id = meta.source_app_signing_identifier.as_deref(),
         local,
         remote,
         decision,
@@ -1764,14 +1755,6 @@ fn emit_tcp_bridge_close_event(
     bytes_out: u64,
 ) {
     let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
-    let bundle_id = meta
-        .source_app_bundle_identifier
-        .as_ref()
-        .map(ToString::to_string);
-    let signing_id = meta
-        .source_app_signing_identifier
-        .as_ref()
-        .map(ToString::to_string);
     let local = meta.local_endpoint.as_ref().map(ToString::to_string);
     let remote = meta.remote_endpoint.as_ref().map(ToString::to_string);
     let decision = meta.intercept_decision.map(|d| d.to_string());
@@ -1786,8 +1769,8 @@ fn emit_tcp_bridge_close_event(
         bytes_in,
         bytes_out,
         pid = meta.source_app_pid,
-        bundle_id,
-        signing_id,
+        bundle_id = meta.source_app_bundle_identifier.as_deref(),
+        signing_id = meta.source_app_signing_identifier.as_deref(),
         local,
         remote,
         decision,

@@ -5,24 +5,27 @@
 //! - [App proxy provider — Implement a VPN client for a flow-oriented, custom VPN protocol](https://developer.apple.com/documentation/NetworkExtension/app-proxy-provider)
 //! - [NETransparentProxyProvider](https://developer.apple.com/documentation/NetworkExtension/NETransparentProxyProvider)
 //!
-//! ## DNS resolution from inside flow handlers
+//! ## Re-entrant traffic deadlocks in flow handlers
 //!
-//! Synchronous DNS resolution from inside [`TransparentProxyHandler::match_tcp_flow`]
-//! or [`TransparentProxyHandler::match_udp_flow`] can deadlock on macOS when
-//! the provider intercepts UDP traffic. The system DNS daemon
-//! (`mDNSResponder`) sends UDP queries, which the provider observes; if the
-//! handler then itself blocks on DNS to make a decision, a circular wait
-//! can form between the provider awaiting a decision and `mDNSResponder`
-//! awaiting a flow decision from the provider for its own outbound query.
+//! Anything a [`TransparentProxyHandler::match_tcp_flow`] /
+//! [`TransparentProxyHandler::match_udp_flow`] handler does
+//! synchronously that itself produces network traffic the provider
+//! intercepts can wedge: the new traffic shows up as a flow whose
+//! decision the engine is waiting for, which can't make progress
+//! because the original call hasn't returned. DNS lookups (UDP/53,
+//! TCP/53, mDNSResponder, DoH) are the most common offenders, but the
+//! pattern applies to any out-of-band traffic the handler initiates
+//! (control-plane HTTP fetch, telemetry post, NTP, etc.) when it goes
+//! through the same network stack.
 //!
-//! Resolve hostnames out-of-band rather than on the flow-handler hot path:
+//! Mitigations:
 //!
-//! - cache name → IP mappings at startup,
-//! - resolve on a separate worker / control plane that runs alongside
-//!   the engine, or
-//! - rely on [`TransparentProxyFlowMeta::remote_endpoint`], which is
-//!   provided by the system as a [`HostWithPort`] and may already carry
-//!   the resolved address depending on context.
+//! - keep the handler async-correct and don't issue traffic from it
+//!   on the hot path,
+//! - resolve / fetch on a separate worker outside the engine,
+//! - cache decisions / lookups at startup,
+//! - rely on [`TransparentProxyFlowMeta::remote_endpoint`], which the
+//!   system already provides as a [`HostWithPort`].
 //!
 //! The [decision deadline](TransparentProxyEngineBuilder::with_decision_deadline)
 //! is a recovery backstop; this guidance is what avoids the wedge in
@@ -41,12 +44,13 @@ mod types;
 pub use self::{
     engine::{
         BoxedClosedSink, BoxedDemandSink, BoxedServerBytesSink, BoxedTransparentProxyEngine,
-        DEFAULT_DECISION_DEADLINE, DEFAULT_TCP_IDLE_TIMEOUT, DEFAULT_UDP_MAX_FLOW_LIFETIME,
-        DecisionDeadlineAction, DefaultTransparentProxyAsyncRuntimeFactory, FlowAction,
-        SessionFlowAction, TcpDeliverStatus, TransparentProxyAsyncRuntime,
-        TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine, TransparentProxyEngineBuilder,
-        TransparentProxyHandler, TransparentProxyHandlerFactory, TransparentProxyServiceContext,
-        TransparentProxyTcpSession, TransparentProxyUdpSession, log_engine_build_error,
+        DEFAULT_DECISION_DEADLINE, DEFAULT_TCP_IDLE_TIMEOUT, DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+        DEFAULT_UDP_MAX_FLOW_LIFETIME, DecisionDeadlineAction,
+        DefaultTransparentProxyAsyncRuntimeFactory, FlowAction, SessionFlowAction,
+        TcpDeliverStatus, TransparentProxyAsyncRuntime, TransparentProxyAsyncRuntimeFactory,
+        TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyHandler,
+        TransparentProxyHandlerFactory, TransparentProxyServiceContext, TransparentProxyTcpSession,
+        TransparentProxyUdpSession, log_engine_build_error,
     },
     types::{
         NwAttribution, NwEgressParameters, NwInterfaceType, NwMultipathServiceType, NwServiceClass,

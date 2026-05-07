@@ -67,7 +67,8 @@ pub struct TlsHandshakeFailed {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
     pub server_name: Host,
-    /// Encoded `std::io::ErrorKind`.
+    /// Encoded `std::io::ErrorKind` per
+    /// [`rama_net::dial9::io_error_kind_code`].
     pub error_kind: u32,
     /// Raw OS error code, if available.
     pub error_raw_os: Option<i64>,

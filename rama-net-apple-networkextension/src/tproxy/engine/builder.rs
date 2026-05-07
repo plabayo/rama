@@ -40,9 +40,9 @@ where
             tcp_channel_capacity: None,
             udp_channel_capacity: None,
             // Backstop defaults; opt out via the macro-generated
-            // `without_tcp_idle_timeout()` / `without_udp_max_flow_lifetime()`.
+            // `without_*()` methods.
             tcp_idle_timeout: Some(super::DEFAULT_TCP_IDLE_TIMEOUT),
-            tcp_paused_drain_max_wait: None,
+            tcp_paused_drain_max_wait: Some(super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT),
             udp_max_flow_lifetime: Some(super::DEFAULT_UDP_MAX_FLOW_LIFETIME),
             decision_deadline: None,
             decision_deadline_action: None,
@@ -79,7 +79,7 @@ where
     RF: TransparentProxyAsyncRuntimeFactory,
 {
     rama_utils::macros::generate_set_and_with! {
-        /// Define what size to use for the TCP flow buffer (`None` will use default)
+        /// Per-direction TCP duplex buffer size. `None` uses the default.
         pub fn tcp_flow_buffer_size(mut self, size: Option<usize>) -> Self
         {
             self.tcp_flow_buffer_size = size;
@@ -88,12 +88,9 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Capacity (in chunks) of each per-flow TCP ingress / egress mpsc channel
-        /// between the Swift FFI boundary and the Rust bridge tasks.
-        ///
-        /// Bounds the worst-case memory pinned by a slow service before Swift is
-        /// told to stop reading from the kernel and wait for the matching
-        /// `on_*_read_demand` callback. `None` uses the default.
+        /// Capacity (in chunks) of each per-flow TCP ingress / egress mpsc
+        /// channel. Bounds memory pinned by a slow service before Swift
+        /// pauses kernel reads. `None` uses the default.
         pub fn tcp_channel_capacity(mut self, capacity: Option<usize>) -> Self
         {
             self.tcp_channel_capacity = capacity;
@@ -102,9 +99,8 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Capacity (in datagrams) of each per-flow UDP ingress / egress mpsc
-        /// channel. UDP datagrams are dropped when the channel is full
-        /// (matching wire-level UDP semantics). `None` uses the default.
+        /// Capacity (in datagrams) of each per-flow UDP channel. Datagrams
+        /// are dropped on overflow (UDP semantics). `None` uses the default.
         pub fn udp_channel_capacity(mut self, capacity: Option<usize>) -> Self
         {
             self.udp_channel_capacity = capacity;
@@ -113,29 +109,15 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Per-flow idle timeout for TCP bridges.
-        ///
-        /// When set, the per-flow TCP bridge closes with reason `idle_timeout`
-        /// when no byte progress has been observed in either direction within
-        /// the configured window. `None` (the default) disables idle detection.
-        ///
-        /// The bridge naturally terminates on EOF / errors / shutdown regardless
-        /// of this setting; the idle timeout exists as a backstop against
-        /// "stale flows" that never observe an EOF (e.g. after the host has been
-        /// asleep and the kernel-side flow ownership has gone stale).
-        ///
-        /// Defaults to [`DEFAULT_TCP_IDLE_TIMEOUT`] (15 minutes) — a
-        /// generous backstop, not a primary aging mechanism. Opt out
-        /// with [`without_tcp_idle_timeout`] only if your deployment
-        /// has another mechanism for reaping wedged bridges; with
-        /// neither this nor an eventual `engine.stop()` a bridge that
-        /// wedges outside its `select!` arms can sit forever, since
-        /// `cancel()` deliberately does NOT abort bridge tasks (they
-        /// exit naturally via `flow_guard.cancelled()` so the
-        /// post-loop close-event emission runs).
+        /// Per-flow TCP idle backstop. Defaults to
+        /// [`DEFAULT_TCP_IDLE_TIMEOUT`] (15 minutes); opt out with
+        /// `without_tcp_idle_timeout` only if you have another
+        /// mechanism for reaping wedged bridges. `cancel()` does NOT
+        /// abort bridge tasks (they exit cooperatively for clean
+        /// close-event emission), so a bridge wedged outside its
+        /// `select!` arms relies on this or `engine.stop()` to drain.
         ///
         /// [`DEFAULT_TCP_IDLE_TIMEOUT`]: super::DEFAULT_TCP_IDLE_TIMEOUT
-        /// [`without_tcp_idle_timeout`]: Self::without_tcp_idle_timeout
         pub fn tcp_idle_timeout(mut self, timeout: Option<Duration>) -> Self
         {
             self.tcp_idle_timeout = timeout;
@@ -144,20 +126,14 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Maximum time a per-flow TCP bridge will park on a `Paused`
-        /// ack waiting for the peer's drain signal before closing the
-        /// flow with `BridgeCloseReason::PausedTimeout`.
+        /// Cap on how long a TCP bridge parks waiting for the peer's
+        /// drain signal after a `Paused` ack. Backstops a stuck
+        /// downstream writer; flow closes with
+        /// [`BridgeCloseReason::PausedTimeout`] on expiry. Defaults to
+        /// [`DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT`] (60 seconds).
         ///
-        /// Backstops a stuck downstream writer (a Swift `flow.write`
-        /// completion handler that never invokes `signalServerDrain`,
-        /// a logic bug that clears `pausedSignaled` without firing
-        /// `onDrained`, etc.) so the bridge can't wedge waiting for
-        /// a notification that never arrives.
-        ///
-        /// `None` (the default) uses the engine's built-in 60-second
-        /// constant. Configure shorter values in tests; configure
-        /// longer values if your downstream pump is genuinely
-        /// expected to stay paused for minutes.
+        /// [`BridgeCloseReason::PausedTimeout`]: rama_net::proxy::BridgeCloseReason::PausedTimeout
+        /// [`DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT`]: super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT
         pub fn tcp_paused_drain_max_wait(mut self, wait: Option<Duration>) -> Self
         {
             self.tcp_paused_drain_max_wait = wait;
@@ -166,28 +142,13 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Maximum lifetime of a single per-flow UDP service task.
-        ///
-        /// When set, the engine wraps `service.serve(bridge).await` with a
-        /// `tokio::time::timeout` of this duration; on expiry the service
-        /// task is dropped and the flow's close path runs.
-        ///
-        /// Defaults to [`DEFAULT_UDP_MAX_FLOW_LIFETIME`] (15 minutes).
-        /// Opt out with [`without_udp_max_flow_lifetime`] if you have
-        /// an external mechanism for reaping stuck flows.
-        ///
-        /// **Semantics: max-lifetime cap, not idle detection.** Picks a
-        /// hard upper bound on per-flow service-task longevity so a
-        /// flow that never sees an explicit close (Swift-side bug,
-        /// app death without flow close, kernel slot leaked, etc.)
-        /// eventually frees its per-flow state.
-        ///
-        /// Production: pick a duration noticeably longer than your
-        /// longest legitimate UDP flow (DNS sub-second; QUIC/long-poll
-        /// tens of minutes).
+        /// Max-lifetime cap on a per-flow UDP service task (NOT idle
+        /// detection). Defaults to [`DEFAULT_UDP_MAX_FLOW_LIFETIME`]
+        /// (15 minutes); opt out with `without_udp_max_flow_lifetime`.
+        /// Pick longer than your longest legitimate UDP flow (DNS
+        /// sub-second; QUIC / long-poll tens of minutes).
         ///
         /// [`DEFAULT_UDP_MAX_FLOW_LIFETIME`]: super::DEFAULT_UDP_MAX_FLOW_LIFETIME
-        /// [`without_udp_max_flow_lifetime`]: Self::without_udp_max_flow_lifetime
         pub fn udp_max_flow_lifetime(mut self, lifetime: Option<Duration>) -> Self
         {
             self.udp_max_flow_lifetime = lifetime;
@@ -196,16 +157,11 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Maximum time the engine will wait for a flow handler to produce a
-        /// decision (Intercept / Passthrough / Blocked).
-        ///
-        /// If `match_tcp_flow` / `match_udp_flow` does not return within
-        /// the deadline, the engine takes the configured
-        /// [`DecisionDeadlineAction`] for that flow rather than holding kernel
-        /// flow ownership indefinitely.
-        ///
-        /// Defaults to [`DEFAULT_DECISION_DEADLINE`] (3 seconds). The
-        /// deadline is always-on; tune it rather than disable it.
+        /// Max time a flow handler may take to return an Intercept /
+        /// Passthrough / Blocked decision before the configured
+        /// [`DecisionDeadlineAction`] kicks in. Defaults to
+        /// [`DEFAULT_DECISION_DEADLINE`] (3 seconds). Always-on; tune
+        /// rather than disable.
         ///
         /// [`DEFAULT_DECISION_DEADLINE`]: super::DEFAULT_DECISION_DEADLINE
         pub fn decision_deadline(mut self, deadline: Duration) -> Self
@@ -216,10 +172,8 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Action to take when a flow handler exceeds the configured
-        /// [`Self::decision_deadline`].
-        ///
-        /// Default: [`DecisionDeadlineAction::Block`].
+        /// Action when a handler exceeds [`Self::decision_deadline`].
+        /// Default [`DecisionDeadlineAction::Block`].
         pub fn decision_deadline_action(mut self, action: DecisionDeadlineAction) -> Self
         {
             self.decision_deadline_action = Some(action);
@@ -228,30 +182,14 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Maximum time a `handle_app_message` invocation may run
-        /// before being abandoned and replied with `None`.
+        /// Max time `handle_app_message` may run before being
+        /// abandoned (provider gets a `None` reply). Apple dispatches
+        /// `handleAppMessage` synchronously on the provider queue, so
+        /// a hung handler would otherwise wedge the queue.
         ///
-        /// `handle_app_message` is dispatched synchronously on Apple's
-        /// `NETransparentProxyProvider` provider queue; a hung handler
-        /// would otherwise wedge the entire provider's
-        /// `handleAppMessage` flow indefinitely. This deadline is the
-        /// backstop against that.
-        ///
-        /// `None` (the default) reuses [`Self::decision_deadline`] —
-        /// which preserves the historical behavior. Set this
-        /// explicitly when:
-        ///
-        /// * `decision_deadline` is tuned tight (sub-second) for
-        ///   snappy per-flow decisions, but app messages may
-        ///   legitimately need a longer budget (an "install root CA"
-        ///   XPC bridge, a bulk-config refresh).
-        /// * Or the inverse: app messages are always quick, but
-        ///   `decision_deadline` is generous because flow handlers
-        ///   need to do real work — you want a tighter cap on
-        ///   misbehaving app-message handlers.
-        ///
-        /// Independent of `decision_deadline`; set both if you need
-        /// different budgets.
+        /// `None` (the default) inherits [`Self::decision_deadline`].
+        /// Set explicitly when app messages need a different budget
+        /// from per-flow decisions.
         pub fn app_message_deadline(mut self, deadline: Duration) -> Self
         {
             self.app_message_deadline = Some(deadline);

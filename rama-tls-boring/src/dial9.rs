@@ -85,16 +85,34 @@ pub struct TlsHandshakeCompleted {
     pub peer_cert_chain_depth: u32,
 }
 
+/// Error category for [`TlsHandshakeFailed::error_kind`]. Encoded as
+/// `u32` because dial9 trace fields are primitives; the named variants
+/// here are the only valid values.
+pub mod tls_handshake_error_kind {
+    /// `TlsConnectError::Builder(_)` — builder failed before the
+    /// handshake started.
+    pub const BUILDER: u32 = 1;
+    /// Handshake failed with an underlying `std::io::Error`. Inspect
+    /// `io_error_kind` for the encoded `ErrorKind`.
+    pub const HANDSHAKE_IO: u32 = 2;
+    /// Handshake failed with an OpenSSL/BoringSSL error stack. Inspect
+    /// the structured error from the call site for diagnostics.
+    pub const HANDSHAKE_SSL_STACK: u32 = 3;
+    /// Handshake failed without an `io::Error` or SSL stack — fallback
+    /// catch-all. Should be rare.
+    pub const HANDSHAKE_OTHER: u32 = 4;
+}
+
 /// TLS handshake failed.
 #[derive(TraceEvent)]
 pub struct TlsHandshakeFailed {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
     pub server_name: MaybeServerName,
-    /// `1` for builder errors, `2` for handshake errors with an I/O cause,
-    /// `3` for handshake errors with an SSL stack, `4` otherwise.
+    /// One of [`tls_handshake_error_kind`].
     pub error_kind: u32,
-    /// Encoded `std::io::ErrorKind`, if the handshake surfaced one.
+    /// Encoded `std::io::ErrorKind`, set when `error_kind ==
+    /// [`tls_handshake_error_kind::HANDSHAKE_IO`].
     pub io_error_kind: Option<u32>,
 }
 

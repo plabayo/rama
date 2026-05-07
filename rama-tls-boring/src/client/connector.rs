@@ -484,18 +484,19 @@ where
         Err(err) => {
             #[cfg(feature = "dial9")]
             {
+                use crate::dial9::tls_handshake_error_kind as kind;
                 let (error_kind, io_error_kind) = match &err {
-                    TlsConnectError::Builder(_) => (1, None),
+                    TlsConnectError::Builder(_) => (kind::BUILDER, None),
                     TlsConnectError::Handshake { error, .. } => {
                         let io_error_kind = error
                             .as_io_error()
                             .map(|error| rama_net::dial9::io_error_kind_code(error.kind()));
                         let error_kind = if io_error_kind.is_some() {
-                            2
+                            kind::HANDSHAKE_IO
                         } else if error.as_ssl_error_stack().is_some() {
-                            3
+                            kind::HANDSHAKE_SSL_STACK
                         } else {
-                            4
+                            kind::HANDSHAKE_OTHER
                         };
                         (error_kind, io_error_kind)
                     }
@@ -575,6 +576,10 @@ where
     #[cfg(feature = "dial9")]
     {
         use rama_net::tls::DataEncoding;
+        // Approximate cert-chain depth: opaque single Der/Pem counts as
+        // 1 (we don't parse PEM here), an explicit DerStack contributes
+        // its real length, no chain stored yields 0. Used for telemetry
+        // bucketing only — exact length lives in the structured chain.
         let depth = match params.peer_certificate_chain.as_ref() {
             Some(DataEncoding::Der(_) | DataEncoding::Pem(_)) => 1,
             Some(DataEncoding::DerStack(stack)) => stack.len(),

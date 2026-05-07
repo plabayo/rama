@@ -30,7 +30,9 @@ pub struct IoForwardBridgeClosed {
     pub bytes_l_to_r: u64,
     /// Bytes copied right → left (typically server → client).
     pub bytes_r_to_l: u64,
-    /// Encoded `std::io::ErrorKind`, if a fatal I/O error closed the bridge.
+    /// Encoded `std::io::ErrorKind` per
+    /// [`crate::dial9::io_error_kind_code`], if a fatal I/O error
+    /// closed the bridge.
     pub error_kind: Option<u32>,
     /// Raw OS error code, if available.
     pub error_raw_os: Option<i64>,

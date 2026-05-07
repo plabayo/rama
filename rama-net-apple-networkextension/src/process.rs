@@ -58,6 +58,13 @@ pub struct AuditToken {
     val: [u32; 8],
 }
 
+// Apple's `audit_token_t` is 32 bytes on every shipping macOS. If the
+// SDK ever changes the layout, this assert breaks the build before
+// our struct silently returns a wrong PID. Any change here also needs
+// matching updates to the C wrapper at
+// `rama_apple_ne_ffi.c::rama_apple_audit_token_to_pid`.
+const _: () = assert!(size_of::<AuditToken>() == 32);
+
 impl AuditToken {
     pub const BYTE_LEN: usize = size_of::<Self>();
 
@@ -101,22 +108,12 @@ impl AuditToken {
     }
 }
 
-// `audit_token_to_pid` takes a 32-byte aggregate by value. The System V
-// AMD64 / AArch64 ABI passes structs >16B by reference (on the stack),
-// and Rust's `extern "C"` aggregate-passing matches the C ABI today, so
-// this direct-link path works on x86_64 and aarch64 macOS.
-//
-// **ABI-drift hazard**: if Apple ever changes how `audit_token_t` is
-// laid out — or `bsm`'s calling convention drifts — this silently
-// returns a wrong PID. The C wrapper at
-// `ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNEFFI/include/rama_apple_ne_ffi.c`
-// (`rama_apple_audit_token_to_pid`) does the same work via a
-// `memcpy`-into-local-`audit_token_t` shim built with Apple's actual
-// `<bsm/libbsm.h>` header, and is therefore immune to Rust↔C aggregate
-// ABI drift. Swift consumers of this crate go through the wrapper by
-// definition (it's the only entry point exposed to Swift). Rust
-// callers should consider routing through that wrapper too if you
-// observe pid() returning unexpected values on a future macOS update.
+// Direct-link path that works on x86_64 and aarch64 macOS today (Rust's
+// `extern "C"` aggregate-passing matches the C ABI). The size_of
+// assert above catches layout drift; `bsm` calling-convention drift is
+// not observable statically, so on unexpected pid() values, route
+// through the `rama_apple_audit_token_to_pid` C shim in
+// `rama_apple_ne_ffi.c` (built with Apple's `<bsm/libbsm.h>` directly).
 #[link(name = "bsm")]
 unsafe extern "C" {
     fn audit_token_to_pid(token: AuditToken) -> libc::pid_t;
