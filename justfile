@@ -155,6 +155,33 @@ qa-xpc-apple:
 test-e2e-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/test-e2e
 
+# Swift FFI integration tests for the RamaAppleNetworkExtension Swift
+# wrappers. Links against the same `tproxy_rs` staticlib the cargo e2e
+# harness uses, so an FFI surface mismatch fails one or the other.
+#
+# ASan is intentionally not wired into a `swift test --sanitize=address`
+# variant: Rust's nightly bundles its own LLVM ASan runtime that
+# version-skews against Xcode's bundled runtime, and both sides try to
+# link their own. The cargo `test-e2e-asan` suite covers Rust-side
+# UAF/leaks through the same FFI surface, so the gap is just Swift-
+# wrapper bugs (which Swift ARC catches) and lock-ordering issues
+# (which XCTest deadlock timeouts catch).
+test-swift-ffi: _build-tproxy-rs-host-debug
+    swift test \
+        -Xlinker -L$(pwd)/ffi/apple/examples/transparent_proxy/tproxy_rs/target/debug \
+        -Xlinker -lrama_tproxy_example \
+        -Xlinker -lz \
+        -Xlinker -framework -Xlinker NetworkExtension \
+        -Xlinker -framework -Xlinker SystemConfiguration
+
+# Internal: build the tproxy_rs staticlib at the host triple's debug
+# path so `swift test` finds it without an env var. Same artifact the
+# cargo e2e harness's `build-tproxy-rs-debug` produces.
+[private]
+[working-directory: './ffi/apple/examples/transparent_proxy/tproxy_rs']
+_build-tproxy-rs-host-debug:
+    cargo build
+
 qa-full: qa qa-dial9 hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:
