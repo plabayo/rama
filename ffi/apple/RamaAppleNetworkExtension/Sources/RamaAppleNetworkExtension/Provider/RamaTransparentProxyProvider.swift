@@ -614,13 +614,33 @@ private final class UdpClientWritePump {
     private let logger: (FlowLogMessage) -> Void
     private let onTerminalError: (Error) -> Void
     private let queue: DispatchQueue
-    private var pending: [Data] = []
+    /// Each pending entry pairs a reply datagram with the
+    /// `sentBy` endpoint to use for `flow.writeDatagrams`. Capturing
+    /// the endpoint AT ENQUEUE TIME (instead of reading the latest
+    /// `sentByEndpoint` at flush time) means a queued reply uses the
+    /// peer that was current when the reply arrived, not whatever
+    /// peer the app last spoke to. Matters when the queue + a peer
+    /// change race or when readDatagrams returns a multi-endpoint
+    /// batch.
+    private var pending: [(Data, NWEndpoint?)] = []
     private var writing = false
     private var closed = false
     private var opened = false
     /// Most-recently-seen source endpoint from `readDatagrams`.
     /// Used as the `sentBy` endpoint when writing datagrams back.
+    ///
+    /// **Single-peer assumption.** This implementation maintains one
+    /// egress `NWConnection` per intercepted flow, established to the
+    /// peer in `NEAppProxyUDPFlow.metaData.remoteEndpoint`. Apps that
+    /// `sendto()` multiple peers from the same UDP socket are not
+    /// faithfully proxied — outbound traffic is forwarded to the
+    /// initial peer regardless of the destination the app intended,
+    /// and replies are tagged with the most-recently-observed peer
+    /// rather than per-peer correlated. We log a one-time warn when
+    /// a multi-peer signal is detected (a `setSentByEndpoint` call
+    /// with an endpoint different from the current one).
     private var sentByEndpoint: NWEndpoint?
+    private var multiPeerLogged = false
 
     init(
         flow: NEAppProxyUDPFlow,
@@ -653,9 +673,19 @@ private final class UdpClientWritePump {
 
     func setSentByEndpoint(_ endpoint: NWEndpoint?) {
         queue.async {
-            if endpoint != nil {
-                self.sentByEndpoint = endpoint
+            guard let endpoint else {
+                self.flushLocked()
+                return
             }
+            if let prev = self.sentByEndpoint, prev != endpoint, !self.multiPeerLogged {
+                self.multiPeerLogged = true
+                RamaTransparentProxyEngineHandle.log(
+                    level: UInt32(RAMA_LOG_LEVEL_WARN.rawValue),
+                    message:
+                        "udp flow observed multiple peer endpoints (\(prev) → \(endpoint)); replies will be best-effort routed to the most-recent peer per datagram (single-peer assumption violated)"
+                )
+            }
+            self.sentByEndpoint = endpoint
             self.flushLocked()
         }
     }
@@ -676,7 +706,11 @@ private final class UdpClientWritePump {
                 )
                 return
             }
-            self.pending.append(data)
+            // Capture the endpoint at enqueue time so a queued reply
+            // does not pick up a later peer change at flush time.
+            // Pre-first-read replies have nil here and resolve at
+            // flush time once `sentByEndpoint` is known.
+            self.pending.append((data, self.sentByEndpoint))
             self.flushLocked()
         }
     }
@@ -693,12 +727,15 @@ private final class UdpClientWritePump {
             return
         }
 
-        guard let endpoint = sentByEndpoint else {
+        // Resolve the endpoint: prefer the one captured at enqueue
+        // time; fall back to the latest known peer for entries that
+        // arrived before any `setSentByEndpoint` call.
+        guard let endpoint = pending[0].1 ?? sentByEndpoint else {
             return
         }
 
         writing = true
-        let chunk = pending.removeFirst()
+        let chunk = pending.removeFirst().0
         self.flow.writeDatagrams([chunk], sentBy: [endpoint]) { error in
             self.queue.async {
                 self.writing = false
@@ -1647,7 +1684,21 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             return
                         }
 
+                        // Per-batch endpoint extraction. A multi-
+                        // endpoint batch (rare; sendto() to multiple
+                        // peers on an unconnected UDP socket) gets
+                        // collapsed because the egress side has one
+                        // NWConnection per flow; within-batch peer
+                        // variation is logged so operators see the
+                        // single-peer assumption being violated.
                         let endpoint = endpoints?.first
+                        if let endpoints, endpoints.count > 1,
+                            !endpoints.dropFirst().allSatisfy({ $0 == endpoints[0] })
+                        {
+                            self?.logDebug(
+                                "udp flow.readDatagrams returned mixed peer endpoints in one batch (\(endpoints.count) entries); single-peer assumption violated"
+                            )
+                        }
                         writer?.setSentByEndpoint(endpoint)
 
                         guard let session = ctx.session else {
