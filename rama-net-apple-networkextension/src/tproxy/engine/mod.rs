@@ -1255,7 +1255,7 @@ where
             tokio::select! {
                 () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
                 res = &mut serve_fut => {
-                    let _ = res;
+                    _ = res;
                     BridgeCloseReason::PeerEofLeft
                 }
             }

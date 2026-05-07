@@ -44,30 +44,6 @@
 //!
 //! [TN3137]: https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains
 //!
-//! # Example
-//!
-//! ```no_run
-//! use rama_net_apple_networkextension::system_keychain::{
-//!     self, secure_enclave::{SecureEnclaveAccessibility, SecureEnclaveKey},
-//! };
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Mint and persist once.
-//! let key = SecureEnclaveKey::create(SecureEnclaveAccessibility::Always)?;
-//! system_keychain::store_secret("rama", "se-key-v1", key.data_representation())?;
-//!
-//! // Reload on next boot.
-//! let blob = system_keychain::load_secret("rama", "se-key-v1")?
-//!     .expect("key was stored at install time");
-//! let key = SecureEnclaveKey::from_data_representation(blob);
-//!
-//! let envelope = key.encrypt(b"my secret")?;
-//! let plaintext = key.decrypt(&envelope)?;
-//! assert_eq!(plaintext, b"my secret");
-//! # Ok(())
-//! # }
-//! ```
-//!
 //! # Linking
 //!
 //! The Rust crate alone cannot resolve the bridge symbols; it relies on the
