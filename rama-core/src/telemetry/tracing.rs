@@ -41,7 +41,10 @@ pub mod appender {
     ///
     /// ## Example
     ///
-    /// ```no_run
+    /// ```ignore
+    /// // Add `tracing-subscriber` to your crate's deps to wire the
+    /// // `(writer, _guard)` pair into a registry; rama-core does not
+    /// // pull `tracing-subscriber` itself.
     /// use rama_core::telemetry::tracing::appender::{
     ///     Rotation, rolling_dedicated_thread,
     /// };
