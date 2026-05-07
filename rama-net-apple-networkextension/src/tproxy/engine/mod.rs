@@ -182,6 +182,9 @@ pub struct TransparentProxyEngine<H> {
     udp_max_flow_lifetime: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
+    /// `None` ⇒ fall back to `decision_deadline`; see the builder
+    /// doc on [`TransparentProxyEngineBuilder::app_message_deadline`].
+    app_message_deadline: Option<Duration>,
     shutdown: Option<Shutdown>,
     stop_trigger: Option<oneshot::Sender<()>>,
 }
@@ -205,12 +208,15 @@ where
 
         let exec = Executor::graceful(guard);
         let handler = self.handler.clone();
-        // Reuse `decision_deadline` as the worst-case time we let a
-        // user-supplied app-message handler run. Apple's NETransparentProxy
-        // dispatches `handleAppMessage` synchronously on its provider
-        // queue; a hung handler would otherwise wedge the entire
-        // provider's message dispatch indefinitely.
-        let deadline = self.decision_deadline;
+        // Worst-case time we let a user-supplied app-message handler
+        // run. Apple's `NETransparentProxyProvider` dispatches
+        // `handleAppMessage` synchronously on its provider queue; a
+        // hung handler would otherwise wedge the entire provider's
+        // message dispatch indefinitely. `app_message_deadline` is
+        // independent of `decision_deadline` so callers can tune
+        // them separately; `None` falls back to `decision_deadline`
+        // for backward-compat.
+        let deadline = self.app_message_deadline.unwrap_or(self.decision_deadline);
         let message_len = message.len();
         block_on_async_task(&self.rt, async move {
             if let Ok(reply) =
@@ -675,34 +681,52 @@ impl TransparentProxyTcpSession {
     }
 
     pub fn cancel(&mut self) {
+        // 1. Flip the active-flag first.
+        //
         // Soundness note for the Swift `context` lifetime contract:
-        // bridge tasks dispatch to the user-supplied closures only after
-        // re-checking `callback_active` under this synchronous Mutex (see
-        // `guarded_bytes_sink`/`guarded_closed_sink` at the bottom of this
-        // file). Flipping the flag here, *before* dropping the channels
-        // and signalling shutdown, ensures that any callback already
-        // past the check has its dispatch dropped instead of reaching
-        // the Swift `context` after `cancel` has returned. Keep this
-        // Mutex sync — an async lock would let callbacks slip through
-        // the gap between the check and the actual call.
+        // bridge tasks dispatch to the user-supplied closures only
+        // after re-checking `callback_active` under this synchronous
+        // Mutex (see `guarded_bytes_sink`/`guarded_closed_sink` at
+        // the bottom of this file). Flipping the flag here, *before*
+        // any of the wake-ups below, ensures that any callback
+        // already past the check has its dispatch dropped instead of
+        // reaching the Swift `context` after `cancel` has returned.
+        // Keep this Mutex sync — an async lock would let callbacks
+        // slip through the gap between the check and the actual call.
         *self.callback_active.lock() = false;
-        // Drop the senders so the bridge's `recv()` returns `None` after
-        // draining anything still buffered. This is the natural EOF
-        // signal — no separate watch channel needed.
-        self.client_tx = None;
-        self.egress_tx = None;
-        self.egress_paused = None;
-        // Wake any bridge that's parked in `notify.notified().await` so it
-        // can observe the cancellation and exit promptly. Notify is
-        // sticky — these are no-ops if nobody's waiting.
+
+        // 2. Cancel the per-flow shutdown so `flow_guard.cancelled()`
+        //    fires.
+        //
+        // Important: do this BEFORE the `notify_one()` wake-ups below.
+        // The `select!` arms in `run_tcp_bridge`'s Paused-wait branches
+        // are `biased` to check `flow_guard.cancelled()` first, so any
+        // bridge woken by the notify will exit on the cancelled arm
+        // instead of looping back into the data path. Reversing the
+        // order works in practice (the bridge re-checks via the
+        // biased select on its next iteration), but is fragile if a
+        // future change moves the active-flag check out of the
+        // pending-replay path. Keep cancellation strictly before
+        // wake-ups for clarity.
+        if let Some(tx) = self.flow_stop_tx.take() {
+            _ = tx.send(());
+        }
+
+        // 3. Wake any bridge parked in `notify.notified().await` so it
+        //    can observe the cancellation and exit promptly. Notify is
+        //    sticky — these are no-ops if nobody's waiting.
         self.server_write_notify.notify_one();
         if let Some(notify) = &self.egress_write_notify {
             notify.notify_one();
         }
         self.egress_write_notify = None;
-        if let Some(tx) = self.flow_stop_tx.take() {
-            _ = tx.send(());
-        }
+
+        // 4. Drop the senders so the bridge's `recv()` returns `None`
+        //    after draining anything still buffered. This is the
+        //    natural EOF signal — no separate watch channel needed.
+        self.client_tx = None;
+        self.egress_tx = None;
+        self.egress_paused = None;
         // Drop pending — this drops bridge_tx, making bridge_rx.await return Err.
         self.pending = None;
         // Bridge tasks: do NOT abort. The two signals above (dropped
@@ -940,16 +964,25 @@ impl TransparentProxyUdpSession {
             // queue without bound. UDP is lossy by design, so this matches what
             // the wire protocol already tolerates.
             //
-            // Only fire `on_client_read_demand` when the datagram was actually
-            // accepted. Firing it on the `Full` arm tells Swift "send more"
-            // right after we just dropped a datagram — defeats the demand
-            // contract and amplifies the loss. On overflow we let the next
-            // demand cycle re-prime naturally once the bridge drains.
+            // Demand wiring: `on_client_read_demand` is the engine→Swift
+            // signal that re-arms the kernel `flow.readDatagrams` cycle.
+            // Swift's `requestRead` checks an internal `demandPending` flag
+            // at the end of each in-flight read; if no demand call has come
+            // in by then, Swift stops pumping. We therefore MUST fire
+            // demand even on the `Full` arm — otherwise a saturating burst
+            // that drops one datagram leaves Swift's `demandPending = false`
+            // and Swift never re-issues `readDatagrams`, stalling the flow
+            // permanently. Swift is already idempotent against
+            // simultaneous demand calls (its `readPending` flag), so the
+            // redundancy is harmless.
+            //
+            // Only the `Closed` arm skips the demand: the session is gone,
+            // no point asking Swift to read more.
             match tx.try_send(Bytes::copy_from_slice(bytes)) {
-                Ok(()) => {
+                Ok(()) | Err(TrySendError::Full(_)) => {
                     (self.on_client_read_demand)();
                 }
-                Err(TrySendError::Full(_) | TrySendError::Closed(_)) => {}
+                Err(TrySendError::Closed(_)) => {}
             }
         }
     }
@@ -961,8 +994,12 @@ impl TransparentProxyUdpSession {
         // reaching the Swift `context` after the FFI session is
         // freed and the Swift callback boxes are released.
         *self.callback_active.lock() = false;
-        // Signal cooperative shutdown so the service task observes
-        // `flow_guard.cancelled()` and exits naturally.
+        // Signal cooperative shutdown so the service task's
+        // `flow_guard.cancelled()` arm fires; the task then runs its
+        // close epilogue (`emit_udp_session_close_event`, dial9
+        // `record_flow_closed`, `closed_sink()`) before returning.
+        // Dropping `flow_stop_tx` triggers `flow_shutdown`'s inner
+        // future to complete via the `flow_stop_rx` arm.
         if let Some(tx) = self.flow_stop_tx.take() {
             _ = tx.send(());
         }
@@ -972,12 +1009,19 @@ impl TransparentProxyUdpSession {
         // Drop pending — drops bridge_tx so a service still parked on
         // `bridge_rx.await` returns Err and the synthetic close fires.
         self.pending = None;
-        // Service task: keep the abort as a fallback for handlers
-        // wedged on something other than bridge IO. The cooperative
-        // shutdown above is the primary mechanism.
-        if let Some(task) = self.service_task.take() {
-            task.abort();
-        }
+        // Detach the service task without aborting. Aborting here
+        // would skip the close epilogue: the future would be dropped
+        // mid-`select!` and never reach
+        // `emit_udp_session_close_event` / `record_flow_closed` /
+        // `closed_sink`. The `flow_guard.cancelled()` arm in the
+        // service task is the cooperative mechanism that lets the
+        // task exit promptly while still emitting the close events.
+        // The runtime keeps polling the detached task until its
+        // select returns (bounded by `udp_max_flow_lifetime` if
+        // configured); a service that genuinely wedges on something
+        // other than bridge IO is bounded by `engine.stop()`'s
+        // shutdown path.
+        _ = self.service_task.take();
     }
 
     /// Called by Swift when a datagram arrives from the egress `NWConnection`.
@@ -1159,6 +1203,7 @@ where
     // Spawn through the rama `Executor` so dial9 wake-event tracking
     // is applied when the feature is on (see TCP path for context).
     let meta_for_close = meta_arc.clone();
+    let flow_guard_for_task = flow_guard.clone();
     let service_task = Executor::graceful(flow_guard.clone()).spawn_task(async move {
         let Ok(bridge) = bridge_rx.await else {
             // Cancelled before activate — emit a synthetic close so post-mortem
@@ -1171,30 +1216,49 @@ where
             }
             return;
         };
-        // See TCP path: drop the irrefutable-let-on-Result<_,Infallible>
-        // pattern in favour of `_ =` for toolchain-bump safety. When
-        // `udp_max_flow_lifetime` is configured, wrap the service call
-        // with a hard cap so flows that never see an explicit close
-        // (Swift bug, app death, kernel slot leaked, etc.) eventually
-        // free their per-flow state. See builder doc for semantics.
+        // Drive `service.serve(bridge)` to completion, but observe two
+        // additional terminators:
+        //
+        //   * `flow_guard.cancelled()` — fires when Swift calls
+        //     `on_client_close` (which sends through `flow_stop_tx`) or
+        //     when the engine itself is shutting down. Without this
+        //     arm `on_client_close` would have to `task.abort()` the
+        //     service task to reclaim it, which would skip the
+        //     `closed_sink` / dial9 / structured-tracing close
+        //     epilogue below — every clean Swift teardown would
+        //     silently drop the close record.
+        //   * `udp_max_flow_lifetime` — when configured, a hard cap so
+        //     flows that never see an explicit close (Swift bug, app
+        //     death, kernel slot leaked, etc.) eventually free their
+        //     per-flow state. See builder doc for semantics.
+        let serve_fut = service.serve(bridge);
         let close_reason = if let Some(lifetime) = udp_max_flow_lifetime {
-            if tokio::time::timeout(lifetime, service.serve(bridge))
-                .await
-                .is_ok()
-            {
-                BridgeCloseReason::PeerEofLeft
-            } else {
-                tracing::warn!(
-                    target: "rama_apple_ne::tproxy",
-                    flow_id = meta_for_close.flow_id,
-                    lifetime_ms = u64::try_from(lifetime.as_millis()).unwrap_or(u64::MAX),
-                    "transparent proxy udp flow exceeded max lifetime; closing",
-                );
-                BridgeCloseReason::IdleTimeout
+            tokio::pin!(serve_fut);
+            tokio::select! {
+                () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
+                res = tokio::time::timeout(lifetime, &mut serve_fut) => {
+                    if res.is_ok() {
+                        BridgeCloseReason::PeerEofLeft
+                    } else {
+                        tracing::warn!(
+                            target: "rama_apple_ne::tproxy",
+                            flow_id = meta_for_close.flow_id,
+                            lifetime_ms = u64::try_from(lifetime.as_millis()).unwrap_or(u64::MAX),
+                            "transparent proxy udp flow exceeded max lifetime; closing",
+                        );
+                        BridgeCloseReason::IdleTimeout
+                    }
+                }
             }
         } else {
-            _ = service.serve(bridge).await;
-            BridgeCloseReason::PeerEofLeft
+            tokio::pin!(serve_fut);
+            tokio::select! {
+                () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
+                res = &mut serve_fut => {
+                    let _ = res;
+                    BridgeCloseReason::PeerEofLeft
+                }
+            }
         };
         emit_udp_session_close_event(close_reason, &meta_for_close);
         #[cfg(feature = "dial9")]

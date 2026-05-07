@@ -273,7 +273,17 @@ impl SecureEnclaveKey {
     }
 
     /// Inverse of [`Self::encrypt`].
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, SecureEnclaveError> {
+    ///
+    /// The plaintext is wrapped in [`zeroize::Zeroizing`]: it's the
+    /// material the SE was protecting, and a long-lived plaintext copy
+    /// in process heap defeats the point of the SE round-trip when a
+    /// panic, core dump, or memory disclosure bug would surface it.
+    /// [`Self::encrypt`] returns a plain `Vec<u8>` because ciphertext
+    /// is not sensitive — symmetry isn't useful there.
+    pub fn decrypt(
+        &self,
+        ciphertext: &[u8],
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, SecureEnclaveError> {
         let mut out = RamaSeBytes::EMPTY;
         // SAFETY: blob/ciphertext pointers are valid for their stated lengths,
         // and `out` points to writable storage.
@@ -289,7 +299,7 @@ impl SecureEnclaveKey {
         if code != RAMA_SE_OK {
             return Err(SecureEnclaveError::from_code(code));
         }
-        Ok(take_bytes(out))
+        Ok(zeroize::Zeroizing::new(take_bytes(out)))
     }
 }
 

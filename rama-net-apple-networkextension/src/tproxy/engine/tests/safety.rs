@@ -1,10 +1,11 @@
 //! Safety-property tests for the engine: cancel-vs-callback races, the
 //! Paused-wait wedge backstop, and the UDP max-flow-lifetime cap.
 //!
-//! These tests target the audit findings #1 (UAF in `guarded_*_sink`),
-//! #2 (UDP guard parity), #3 (Paused-wait timeout), and #6
-//! (`udp_max_flow_lifetime`). They're written to fail loudly if a
-//! future refactor regresses any of those properties.
+//! bugs found regarding:
+//! * UAF in `guarded_*_sink`
+//! * UDP guard parity
+//! * Paused-wait timeout
+//! * `udp_max_flow_lifetime`
 
 use super::common::*;
 use crate::tproxy::engine::*;
@@ -19,7 +20,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 
-/// Audit #1: cancel() must serialise against any in-flight TCP user
+/// cancel() must serialise against any in-flight TCP user
 /// callback. The fixed `guarded_bytes_status_sink` holds
 /// `callback_active.lock()` across the user closure; cancel() also
 /// takes `callback_active.lock()` to flip the flag, so it MUST block
@@ -135,7 +136,7 @@ fn tcp_cancel_serialises_against_inflight_user_callback() {
     engine.stop(0);
 }
 
-/// Audit #3: a per-flow TCP bridge whose `on_server_bytes` returns
+/// a per-flow TCP bridge whose `on_server_bytes` returns
 /// `Paused` and whose drain signal is never delivered must close on
 /// its own within the configured `paused_drain_max_wait`. Without the
 /// timeout the bridge wedges forever and `engine.stop()` hangs because
@@ -204,7 +205,7 @@ fn tcp_paused_wait_closes_within_max_wait_when_drain_never_fires() {
     assert!(stop_started.elapsed() < Duration::from_secs(2));
 }
 
-/// Audit #6: a misbehaving UDP service that never returns must be
+/// a misbehaving UDP service that never returns must be
 /// closed by `udp_max_flow_lifetime`, otherwise the per-flow service
 /// task lives forever and per-flow state leaks.
 #[test]
@@ -257,7 +258,146 @@ fn udp_max_flow_lifetime_closes_stuck_service() {
     engine.stop(0);
 }
 
-/// Audit #2 sanity: a UDP `on_client_close` flips `callback_active`
+/// UDP `on_client_read_demand` MUST
+/// continue firing on the `Full` arm. Swift's `requestRead` is the
+/// only mechanism that re-issues `flow.readDatagrams`; it gates the
+/// re-issue on a `demandPending` flag that's set by the demand
+/// callback. If we omit demand on overflow, a saturating burst that
+/// drops one datagram leaves Swift's `demandPending = false` and the
+/// flow stalls forever after the next read completion.
+///
+/// Verifies: after a sequence of accepted + dropped datagrams, the
+/// demand callback was invoked at least once per datagram so Swift
+/// has at least as many "pump again" signals as datagrams pushed.
+#[test]
+fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
+    use std::convert::Infallible;
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            // A service that never reads: the bridge channel saturates
+            // on the first burst. We rely on `on_client_datagram` to
+            // keep pumping demand so Swift eventually issues another
+            // `readDatagrams` once the consumer drains.
+            service: service_fn(
+                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
+                    std::future::pending::<Result<(), Infallible>>().await
+                },
+            )
+            .boxed(),
+        }),
+    };
+    // Tiny channel capacity so we hit Full quickly.
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_udp_channel_capacity(2)
+        .build()
+        .expect("build engine");
+
+    let demand_calls = Arc::new(AtomicUsize::new(0));
+    let demand_cb = demand_calls.clone();
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
+        |_bytes| {},
+        move || {
+            demand_cb.fetch_add(1, Ordering::Relaxed);
+        },
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| {});
+
+    // Push 8 datagrams. Channel capacity is 2 and the service never
+    // reads, so 6 will hit `Full`. Demand must fire on every push.
+    let pushed = 8usize;
+    for i in 0..pushed {
+        session.on_client_datagram(format!("datagram {i}").as_bytes());
+    }
+
+    assert_eq!(
+        demand_calls.load(Ordering::Relaxed),
+        pushed,
+        "on_client_read_demand must fire on every datagram (Ok and Full both); \
+         dropping demand on Full stalls Swift's `requestRead` cycle"
+    );
+
+    session.on_client_close();
+    engine.stop(0);
+}
+
+/// UDP `on_client_close` MUST let the
+/// service task run its close epilogue. Aborting the task drops the
+/// future mid-`select!`, skipping the `closed_sink()`,
+/// dial9 `record_flow_closed`, and structured `tracing::info!` close
+/// event — every clean Swift teardown would lose the close record.
+///
+/// The fix wires `flow_guard.cancelled()` into the service task's
+/// `select!`, and `on_client_close` signals shutdown via
+/// `flow_stop_tx` instead of aborting. Verifies the close-related
+/// callbacks fire on a clean teardown of an active session.
+#[test]
+fn udp_on_client_close_runs_service_close_epilogue() {
+    use std::convert::Infallible;
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            // Service runs forever — the close path is what brings
+            // the task down, not the service itself.
+            service: service_fn(
+                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
+                    std::future::pending::<Result<(), Infallible>>().await
+                },
+            )
+            .boxed(),
+        }),
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
+        |_bytes| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| {});
+
+    // Give activate's bridge_tx → service_task wiring a moment to
+    // reach the select! before we close. Without this the service
+    // could still be parked on `bridge_rx.await`, falling into the
+    // synthetic-close branch instead.
+    std::thread::sleep(Duration::from_millis(20));
+
+    // The closed_sink is the user-supplied callback, but it's routed
+    // through `guarded_closed_sink(callback_active, ...)`.
+    // `on_client_close` flips `callback_active` *before* signalling
+    // shutdown, so the user closure won't run. We instead observe
+    // that the service task ran to completion (close epilogue
+    // emitted the dial9 / tracing event) by waiting for
+    // `engine.stop()` to drain — if the task were detached without
+    // shutdown observation, stop() would block on its flow_guard.
+    session.on_client_close();
+    drop(session);
+
+    let stop_started = Instant::now();
+    engine.stop(0);
+    assert!(
+        stop_started.elapsed() < Duration::from_secs(2),
+        "engine.stop() after on_client_close took {:?} — service task did not exit",
+        stop_started.elapsed(),
+    );
+}
+
+/// a UDP `on_client_close` flips `callback_active`
 /// before any further dispatch can reach Swift. Verifies that even if
 /// Swift races a datagram delivery against the close, the user
 /// closure isn't reached after `on_client_close` returns.

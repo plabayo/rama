@@ -306,6 +306,13 @@ apple_ne::transparent_proxy_ffi! {
         // Backstop against post-wake stale flows: close any TCP bridge that
         // sees no byte progress in either direction within this window.
         .with_tcp_idle_timeout(std::time::Duration::from_secs(15 * 60))
+        // UDP equivalent of the TCP idle backstop: cap the lifetime
+        // of any single per-flow service task so misbehaving flows
+        // (Swift bug, app death without explicit close, kernel slot
+        // leaked, etc.) eventually free their per-flow state. Note
+        // this is a max-lifetime cap, not true idle detection — see
+        // builder doc.
+        .with_udp_max_flow_lifetime(std::time::Duration::from_secs(15 * 60))
         // Cap how long a flow handler can hold kernel flow ownership; if
         // exceeded, block the flow rather than wait indefinitely.
         .with_decision_deadline(std::time::Duration::from_secs(1)),

@@ -23,6 +23,7 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     udp_max_flow_lifetime: Option<Duration>,
     decision_deadline: Option<Duration>,
     decision_deadline_action: Option<DecisionDeadlineAction>,
+    app_message_deadline: Option<Duration>,
     opaque_config: Option<Arc<[u8]>>,
     runtime_factory: R,
 }
@@ -43,6 +44,7 @@ where
             udp_max_flow_lifetime: None,
             decision_deadline: None,
             decision_deadline_action: None,
+            app_message_deadline: None,
             opaque_config: None,
             runtime_factory: DefaultTransparentProxyAsyncRuntimeFactory::default(),
         }
@@ -62,6 +64,7 @@ where
             udp_max_flow_lifetime: self.udp_max_flow_lifetime,
             decision_deadline: self.decision_deadline,
             decision_deadline_action: self.decision_deadline_action,
+            app_message_deadline: self.app_message_deadline,
             opaque_config: self.opaque_config,
             runtime_factory,
         }
@@ -118,6 +121,28 @@ where
         /// of this setting; the idle timeout exists as a backstop against
         /// "stale flows" that never observe an EOF (e.g. after the host has been
         /// asleep and the kernel-side flow ownership has gone stale).
+        ///
+        /// # Safety-net implication of `None`
+        ///
+        /// `cancel()` deliberately does NOT abort the bridge tasks —
+        /// they exit naturally via `flow_guard.cancelled()` so the
+        /// post-loop close-event emission (dial9 + structured
+        /// tracing) runs. If a bridge is wedged on something other
+        /// than its `select!` arms (an unbreakable sync call inside
+        /// the user's service, a poll loop with no await), the only
+        /// remaining guards against an indefinite linger are:
+        ///
+        /// 1. `engine.stop()` — its `shutdown.shutdown()` await
+        ///    finally drains the per-flow guard.
+        /// 2. `tcp_idle_timeout` — fires after the configured idle
+        ///    window even in the absence of `engine.stop()`.
+        ///
+        /// With `tcp_idle_timeout = None` *and* no eventual
+        /// `engine.stop()` call, a wedged bridge can sit forever.
+        /// Production deployments should set a generous idle window
+        /// (the demo crate uses 15 minutes) even if the deployment
+        /// expects long-lived flows; the timeout is a backstop, not
+        /// a primary aging mechanism.
         pub fn tcp_idle_timeout(mut self, timeout: Option<Duration>) -> Self
         {
             self.tcp_idle_timeout = timeout;
@@ -207,6 +232,38 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Maximum time a `handle_app_message` invocation may run
+        /// before being abandoned and replied with `None`.
+        ///
+        /// `handle_app_message` is dispatched synchronously on Apple's
+        /// `NETransparentProxyProvider` provider queue; a hung handler
+        /// would otherwise wedge the entire provider's
+        /// `handleAppMessage` flow indefinitely. This deadline is the
+        /// backstop against that.
+        ///
+        /// `None` (the default) reuses [`Self::decision_deadline`] —
+        /// which preserves the historical behavior. Set this
+        /// explicitly when:
+        ///
+        /// * `decision_deadline` is tuned tight (sub-second) for
+        ///   snappy per-flow decisions, but app messages may
+        ///   legitimately need a longer budget (an "install root CA"
+        ///   XPC bridge, a bulk-config refresh).
+        /// * Or the inverse: app messages are always quick, but
+        ///   `decision_deadline` is generous because flow handlers
+        ///   need to do real work — you want a tighter cap on
+        ///   misbehaving app-message handlers.
+        ///
+        /// Independent of `decision_deadline`; set both if you need
+        /// different budgets.
+        pub fn app_message_deadline(mut self, deadline: Duration) -> Self
+        {
+            self.app_message_deadline = Some(deadline);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         #[must_use]
         #[doc(hidden)]
         /// Unstable API only meant for generated code.
@@ -236,6 +293,7 @@ where
             udp_max_flow_lifetime,
             decision_deadline,
             decision_deadline_action,
+            app_message_deadline,
             opaque_config,
             runtime_factory,
         } = self;
@@ -304,6 +362,11 @@ where
             decision_deadline: decision_deadline.unwrap_or(super::DEFAULT_DECISION_DEADLINE),
             decision_deadline_action: decision_deadline_action
                 .unwrap_or(DecisionDeadlineAction::Block),
+            // `None` here resolves to `decision_deadline` at use-site
+            // (see `handle_app_message`); we don't bake the resolution
+            // in here so future `set_decision_deadline`-style
+            // mutators (none today) would naturally reflect.
+            app_message_deadline,
             shutdown: Some(shutdown),
             stop_trigger: Some(stop_tx),
         })
