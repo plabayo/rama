@@ -1,8 +1,3 @@
-//! Byte-stream-preservation tests under per-direction backpressure: pin
-//! the load-bearing FFI invariant that `Paused` does not take ownership
-//! and a caller that retains + replays sees the full byte stream
-//! delivered in order, on both ingress and egress.
-
 use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};

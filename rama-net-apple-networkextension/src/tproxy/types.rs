@@ -246,13 +246,6 @@ impl TransparentProxyFlowProtocol {
     /// Strict conversion: returns the unrecognised value as `Err`,
     /// letting the caller decide how to handle it (e.g. passthrough,
     /// blocked, surface to telemetry).
-    ///
-    /// Implemented as an inherent method (rather than a `TryFrom`
-    /// impl) because Rust's blanket `impl<T, U> TryFrom<U> for T
-    /// where U: Into<T>` already covers `TryFrom<u32>` via our
-    /// [`From<u32>`] impl below — that auto-impl is infallible
-    /// (uses the lenient default-on-invalid behavior). New code that
-    /// wants strict checking should call this method explicitly.
     pub fn from_raw_strict(value: u32) -> Result<Self, u32> {
         if (Self::Tcp as u32..=Self::Udp as u32).contains(&value) {
             // SAFETY: repr(u32) with explicit discriminants 1..=2 and we
@@ -261,24 +254,6 @@ impl TransparentProxyFlowProtocol {
         } else {
             Err(value)
         }
-    }
-}
-
-impl From<u32> for TransparentProxyFlowProtocol {
-    /// Defensive lenient conversion: unknown protocol codes log a
-    /// `debug` and default to TCP. Used at the FFI boundary where a
-    /// future Swift/C ABI mismatch would surface as an unknown code
-    /// and we'd rather default-and-log than abort. New code paths
-    /// should prefer [`Self::from_raw_strict`] so the unknown case is
-    /// a real error the caller can route (e.g. passthrough).
-    fn from(value: u32) -> Self {
-        Self::from_raw_strict(value).unwrap_or_else(|invalid| {
-            tracing::debug!(
-                invalid_raw_protocol = invalid,
-                "invalid raw u32 value transmuted as TransparentProxyFlowProtocol; defaulting to TCP"
-            );
-            Self::Tcp
-        })
     }
 }
 
@@ -326,9 +301,9 @@ impl TransparentProxyFlowAction {
 
 impl From<u32> for TransparentProxyFlowAction {
     /// Defensive lenient conversion: unknown action codes log a
-    /// `debug` and default to `Passthrough` (fail-open). See
-    /// [`TransparentProxyFlowProtocol::from`] for the same pattern's
-    /// rationale; prefer [`Self::from_raw_strict`] in new code.
+    /// `debug` and default to `Passthrough` (fail-open). Prefer
+    /// [`Self::from_raw_strict`] in new code so the unknown case is a
+    /// real error the caller can route.
     fn from(value: u32) -> Self {
         Self::from_raw_strict(value).unwrap_or_else(|invalid| {
             tracing::debug!(

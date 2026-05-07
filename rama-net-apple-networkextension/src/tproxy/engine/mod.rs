@@ -1002,7 +1002,17 @@ impl TransparentProxyUdpSession {
 
     /// Called by Swift when a datagram arrives from the egress `NWConnection`.
     ///
-    /// Same drop-on-full semantics as [`Self::on_client_datagram`].
+    /// Drop-on-full, intentionally. Unlike the ingress
+    /// ([`Self::on_client_datagram`]) path, there is no demand
+    /// callback to re-arm a paused Swift-side reader: the egress
+    /// `NWConnection.receive` is recursion-driven by
+    /// `NwUdpConnectionReadPump`, and the Rust→Swift channel back to
+    /// the bridge is bounded. When the service can't keep up we drop
+    /// the newest datagram rather than block the FFI thread or grow
+    /// the queue. UDP is lossy by design — the kernel would have
+    /// dropped these too in line-rate conditions; we do it inside
+    /// the proxy a few microseconds later. Pinned by
+    /// `tests::udp::udp_egress_drops_datagrams_when_service_does_not_drain`.
     pub fn on_egress_datagram(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;

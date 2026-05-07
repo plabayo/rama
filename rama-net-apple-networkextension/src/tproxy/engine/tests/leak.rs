@@ -1,8 +1,3 @@
-//! Bounded-time create/drop/stop tests for many sessions. A wedge in
-//! `cancel()`, a bridge task that fails to exit, or an engine
-//! shutdown that doesn't drain all per-flow guards surfaces as a
-//! test that times out instead of one that finishes.
-
 use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};

@@ -280,7 +280,23 @@ macro_rules! __transparent_proxy_ffi_emit {
                     $crate::tproxy::TransparentProxyFlowProtocol::Tcp,
                 )
             } else {
-                unsafe { (*meta).as_owned_rust_type() }
+                match unsafe { (*meta).as_owned_rust_type() } {
+                    Ok(meta) => meta,
+                    Err(invalid) => {
+                        // Unknown / future ABI protocol code on a TCP
+                        // thunk. Fail-safe to passthrough rather than
+                        // fabricate a TCP flow with possibly wrong
+                        // semantics.
+                        $crate::__private::tracing::warn!(
+                            invalid_protocol = invalid,
+                            "rama_transparent_proxy_engine_new_tcp_session: unknown protocol code; passing flow through"
+                        );
+                        return RamaTransparentProxyTcpSessionResult {
+                            action: RamaTransparentProxyFlowAction::Passthrough,
+                            session: ::std::ptr::null_mut(),
+                        };
+                    }
+                }
             };
 
             let context = callbacks.context as usize;
@@ -420,7 +436,19 @@ macro_rules! __transparent_proxy_ffi_emit {
                     $crate::tproxy::TransparentProxyFlowProtocol::Udp,
                 )
             } else {
-                unsafe { (*meta).as_owned_rust_type() }
+                match unsafe { (*meta).as_owned_rust_type() } {
+                    Ok(meta) => meta,
+                    Err(invalid) => {
+                        $crate::__private::tracing::warn!(
+                            invalid_protocol = invalid,
+                            "rama_transparent_proxy_engine_new_udp_session: unknown protocol code; passing flow through"
+                        );
+                        return RamaTransparentProxyUdpSessionResult {
+                            action: RamaTransparentProxyFlowAction::Passthrough,
+                            session: ::std::ptr::null_mut(),
+                        };
+                    }
+                }
             };
 
             let context = callbacks.context as usize;

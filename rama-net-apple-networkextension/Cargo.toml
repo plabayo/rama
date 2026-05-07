@@ -49,6 +49,7 @@ zeroize = { workspace = true }
 
 [build-dependencies]
 bindgen = { workspace = true }
+cc = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

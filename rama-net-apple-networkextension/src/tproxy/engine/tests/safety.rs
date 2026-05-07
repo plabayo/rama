@@ -1,6 +1,3 @@
-//! Engine safety properties: cancel-vs-callback serialisation, the
-//! TCP paused-wait timeout, and the UDP max-flow-lifetime cap.
-
 use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};

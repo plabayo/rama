@@ -2292,6 +2292,7 @@ name = "rama-net-apple-networkextension"
 version = "0.3.0-rc1"
 dependencies = [
  "bindgen",
+ "cc",
  "dial9-tokio-telemetry",
  "dial9-trace-format",
  "libc",

@@ -1974,8 +1974,40 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 }
                 return resolved >= 0 ? resolved : nil
             }
-        // Apple documents signingIdentifier as "almost always equivalent to bundle identifier".
-        return (signingIdentifier, signingIdentifier, auditToken, pid)
+        return (signingIdentifier, deriveBundleId(fromSigningId: signingIdentifier), auditToken, pid)
+    }
+
+    /// Best-effort derivation of the bundle identifier from
+    /// `NEFlowMetaData.sourceAppSigningIdentifier`. Apple does not
+    /// expose a separate `sourceAppBundleIdentifier` on
+    /// `NEFlowMetaData`; the signing identifier is either the bundle
+    /// id directly (system / unsigned processes such as
+    /// `org.mozilla.firefox`) or the bundle id prefixed with the
+    /// 10-character Apple Developer team ID and a dot
+    /// (e.g. `7VPF8GD6J4.com.example.app`).
+    ///
+    /// Returns the substring after the team-id prefix when one is
+    /// detected, otherwise the signing identifier as-is. Per-app
+    /// policy code that expects raw bundle ids (e.g.
+    /// `com.fortinet.forticlient.ztagent`) needs this stripping;
+    /// without it, team-signed apps silently fail to match because
+    /// their signing id carries the prefix.
+    static func deriveBundleId(fromSigningId signingId: String?) -> String? {
+        guard let signingId, !signingId.isEmpty else { return nil }
+        let teamIdLength = 10
+        let scalars = signingId.unicodeScalars
+        guard scalars.count > teamIdLength + 1 else { return signingId }
+        let prefixEnd = scalars.index(scalars.startIndex, offsetBy: teamIdLength)
+        // Team ID is exactly 10 ASCII alphanumeric chars, uppercase
+        // letters or digits. Anything else means the signing id is
+        // already a bare bundle id (e.g. `org.mozilla.firefox`).
+        let isTeamPrefix = scalars[..<prefixEnd].allSatisfy { scalar in
+            (scalar.value >= 0x41 && scalar.value <= 0x5A)  // A-Z
+                || (scalar.value >= 0x30 && scalar.value <= 0x39)  // 0-9
+        }
+        guard isTeamPrefix, scalars[prefixEnd] == "." else { return signingId }
+        let bundleStart = scalars.index(after: prefixEnd)
+        return String(String.UnicodeScalarView(scalars[bundleStart...]))
     }
 
     private static func udpLocalEndpoint(flow: NEAppProxyUDPFlow) -> Any? {

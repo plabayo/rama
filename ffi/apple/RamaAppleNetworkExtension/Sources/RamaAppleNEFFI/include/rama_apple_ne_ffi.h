@@ -9,46 +9,20 @@ extern "C" {
 #endif
 
 /* ============================================================================
- * Threading & concurrency contract
+ * Threading & concurrency contract (violating any of this is UB).
  *
- * The Rust side enforces these invariants; violating them is UB.
- *
- * - Engine handle (RamaTransparentProxyEngine *): methods may be called
- *   from any thread, concurrently. The engine is internally Send + Sync
- *   and all public methods take &self.
- *   Covered by: cases::stress::ffi_stress_tcp_concurrent_churn (4×4
- *   concurrent flows on a shared engine).
- *
- * - Session handles (RamaTransparentProxyTcpSession *,
- *   RamaTransparentProxyUdpSession *): methods take &mut Self under
- *   the hood. NEVER make two concurrent FFI calls on the same session
- *   pointer. The Swift side (RamaTcpSessionHandle / RamaUdpSessionHandle)
- *   serialises per-session calls via an NSLock; any other consumer
- *   must do the same. Two concurrent calls = UB regardless of whether
- *   the interior data is thread-safe.
- *   Enforced statically (Rust's aliasing model + Swift NSLock); no
- *   negative-test possible without invoking UB. cases::stress::*
- *   under `just test-e2e-asan` pins the Swift-side serialisation.
- *
- * - Cancellation: rama_transparent_proxy_tcp_session_cancel (TCP) and
- *   rama_transparent_proxy_udp_session_on_client_close (UDP) flip the
- *   engine's `callback_active` guard, drop senders, signal cooperative
- *   shutdown, and return promptly. Background bridge tasks may still
- *   run for a few polls; the `callback_active` guard prevents them
- *   dispatching into Swift `context` after cancel returns, so the
- *   Swift callback boxes can be released immediately after
- *   _session_free (which calls cancel internally).
- *   Covered by: cases::stress::ffi_stress_inflight_flows_at_test_end
- *   (sessions + engine torn down with flows in flight); the
- *   serialisation property itself is pinned at the Rust unit-test
- *   level by tproxy::engine::tests::safety::
- *   tcp_cancel_serialises_against_inflight_user_callback.
- *
- * - _session_free / _engine_stop: consume the pointer. Do not use it
- *   afterwards. The Swift wrappers null their stored pointer
- *   immediately so double-free becomes a debug-detectable no-op.
- *   Covered by: cases::stress::ffi_stress_tcp_sequential_churn (8
- *   open/free cycles); every lifecycle test implicitly stresses it.
+ * - Engine handle: methods are Send + Sync and may be called
+ *   concurrently from any thread.
+ * - Session handles: single-owner. Never make two concurrent FFI
+ *   calls on the same pointer; the Swift wrappers serialise via
+ *   NSLock and any other consumer must do the same.
+ * - Cancellation (`_tcp_session_cancel`, `_udp_session_on_client_close`):
+ *   flips the engine's `callback_active` guard, drops senders, signals
+ *   shutdown, and returns. In-flight bridge dispatches that already
+ *   passed the guard run to completion before `_session_free` releases
+ *   the Swift callback box.
+ * - `_session_free` / `_engine_stop`: consume the pointer. The Swift
+ *   wrappers null their stored pointer so double-free is a no-op.
  * ==========================================================================*/
 
 /// Opaque transparent proxy engine handle managed by Rust.

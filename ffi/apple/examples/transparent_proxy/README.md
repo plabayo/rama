@@ -271,19 +271,13 @@ for the structured-tracing predicates and the offline bundle script.
 
 ## Sanitizer-driven race / UAF testing
 
-The FFI surface has cross-thread callback paths whose races are
-microsecond-wide. The `cases::stress::*` e2e tests churn the
-lifecycle so AddressSanitizer can land on real memory:
-
 ```sh
 # Requires nightly: `rustup toolchain install nightly`.
-cd ffi/apple/examples/transparent_proxy
 just test-e2e-asan
 ```
 
-A clean run finishes silently. ASan failures surface as
-`==NNN==ERROR: AddressSanitizer:`. Sanitizer overhead is ~5×; swap
-`aarch64-apple-darwin` for `x86_64-apple-darwin` on Intel.
+Runs the `cases::stress::*` churn cases under AddressSanitizer; a
+clean run finishes silently.
 
 ## Troubleshooting
 

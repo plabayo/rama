@@ -76,7 +76,14 @@ impl TransparentProxyFlowMeta {
     ///
     /// All pointer + length fields in `self` must be valid for reads during
     /// this call.
-    pub unsafe fn as_owned_rust_type(&self) -> tproxy::TransparentProxyFlowMeta {
+    ///
+    /// Returns `Err(invalid_protocol_code)` when `self.protocol` is not
+    /// a known [`TransparentProxyFlowProtocol`] discriminant. The FFI
+    /// thunks treat that as a fail-safe `Passthrough` rather than
+    /// silently coercing the unknown code into a TCP flow.
+    pub unsafe fn as_owned_rust_type(&self) -> Result<tproxy::TransparentProxyFlowMeta, u32> {
+        let protocol = TransparentProxyFlowProtocol::from_raw_strict(self.protocol)?;
+
         // SAFETY: pointer + length validity is guaranteed by caller contract.
         let source_app_audit_token = unsafe {
             opt_audit_token(
@@ -90,7 +97,7 @@ impl TransparentProxyFlowMeta {
             source_app_audit_token.as_ref().map(AuditToken::pid)
         };
 
-        tproxy::TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::from(self.protocol))
+        Ok(tproxy::TransparentProxyFlowMeta::new(protocol)
             .maybe_with_remote_endpoint(
                 // SAFETY: pointer + length validity is guaranteed by caller contract.
                 unsafe { self.remote_endpoint.as_optional_host_with_port() },
@@ -118,7 +125,7 @@ impl TransparentProxyFlowMeta {
                 },
             )
             .maybe_with_source_app_audit_token(source_app_audit_token)
-            .maybe_with_source_app_pid(source_app_pid)
+            .maybe_with_source_app_pid(source_app_pid))
     }
 }
 
@@ -629,8 +636,40 @@ mod tests {
 
         // SAFETY: every pointer field is null with matching len 0 above, so
         // the read-validity contract is trivially satisfied.
-        let owned = unsafe { meta.as_owned_rust_type() };
+        let owned = unsafe { meta.as_owned_rust_type() }.expect("known protocol decodes");
         assert_eq!(owned.source_app_pid, Some(4242));
         assert!(owned.source_app_audit_token.is_none());
+    }
+
+    /// Unknown protocol values must surface as `Err(raw)` so the FFI
+    /// thunks can fail-safe to passthrough rather than silently
+    /// fabricating a TCP flow. Pinning the contract: if a future ABI
+    /// renumbers the protocol enum, this test catches the regression.
+    #[test]
+    fn flow_meta_rejects_unknown_protocol() {
+        let meta = TransparentProxyFlowMeta {
+            protocol: 0xDEAD_BEEF,
+            remote_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            local_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            source_app_signing_identifier_utf8: ptr::null(),
+            source_app_signing_identifier_utf8_len: 0,
+            source_app_bundle_identifier_utf8: ptr::null(),
+            source_app_bundle_identifier_utf8_len: 0,
+            source_app_audit_token_bytes: ptr::null(),
+            source_app_audit_token_bytes_len: 0,
+            source_app_pid: 0,
+            source_app_pid_is_set: false,
+        };
+        // SAFETY: same as above.
+        let result = unsafe { meta.as_owned_rust_type() };
+        assert_eq!(result.unwrap_err(), 0xDEAD_BEEF);
     }
 }

@@ -4,18 +4,10 @@
 pub use tracing::*;
 
 /// Re-export of [`tracing_appender`] plus rama utilities that go with it.
-///
-/// Open out as a module rather than a `pub use … as` so we can hang
-/// rama-specific helpers (e.g. [`appender::rolling_dedicated_thread`])
-/// next to the upstream API without forcing callers to import a second
-/// crate.
 pub mod appender {
     #[doc(inline)]
     pub use ::tracing_appender::*;
 
-    // Hoist the most commonly used names from nested submodules to
-    // the top of the `appender` namespace so callers don't have to
-    // remember which sub-path each one lives under.
     #[doc(inline)]
     pub use ::tracing_appender::{
         non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard},
@@ -24,20 +16,11 @@ pub mod appender {
 
     use std::path::Path;
 
-    /// Build a rolling-file appender that writes on a dedicated OS thread.
-    ///
-    /// Wraps a [`RollingFileAppender`] in [`NonBlocking`] so that all
-    /// file I/O — including the rotation work that runs when a new file
-    /// is rolled over — happens on the appender's worker thread, not on
-    /// whichever runtime/application thread emitted the event. This is
-    /// the recommended setup for production logging: log volume is
-    /// often bursty, and a synchronous rotation on a hot path can stall
-    /// it for the duration of the rename + create.
-    ///
-    /// The returned [`WorkerGuard`] **must be kept alive** for the
-    /// lifetime of the program. Dropping it stops the worker thread and
-    /// prevents further writes from being flushed. Drop it intentionally
-    /// just before the program exits to flush pending records.
+    /// Build a [`RollingFileAppender`] wrapped in [`NonBlocking`] so
+    /// file I/O (including rotation) runs on the appender's worker
+    /// thread instead of the caller's. The returned [`WorkerGuard`]
+    /// must be kept alive for the program's lifetime; drop it just
+    /// before exit to flush pending records.
     pub fn rolling_dedicated_thread(
         rotation: Rotation,
         directory: impl AsRef<Path>,
@@ -47,14 +30,9 @@ pub mod appender {
         rolling_dedicated_thread_with_builder(NonBlockingBuilder::default(), appender)
     }
 
-    /// Variant of [`rolling_dedicated_thread`] that lets the caller
-    /// drive the [`NonBlockingBuilder`] (custom buffer limit, lossy
-    /// vs. blocking back-pressure, thread name, …).
-    ///
-    /// The default `NonBlockingBuilder` is lossy under saturation.
-    /// Switch to `lossy(false)` if losing log lines is unacceptable for
-    /// your use case — be aware that this exerts back-pressure on the
-    /// thread that emits the event.
+    /// [`rolling_dedicated_thread`] variant accepting a pre-configured
+    /// [`NonBlockingBuilder`] (custom buffer limit, lossy vs.
+    /// blocking back-pressure, thread name, …).
     pub fn rolling_dedicated_thread_with_builder(
         builder: NonBlockingBuilder,
         appender: RollingFileAppender,

@@ -25,23 +25,10 @@ dial9 is for you.
 The output is a binary trace file. Browse it with the dashboard, dig
 through it with the CLI, or hand it to an LLM agent to summarise.
 
-## A small example
-
-```rust,ignore
-use dial9_trace_format::TraceEvent;
-
-#[derive(TraceEvent)]
-struct RequestCompleted {
-    #[traceevent(timestamp)]
-    ts_ns: u64,
-    request_id: u64,
-    elapsed_ms: u64,
-}
-```
-
-Build the program with `--cfg tokio_unstable` (dial9 hooks into
-Tokio's unstable runtime APIs), and `dial9-tokio-telemetry` writes the
-trace to disk while your program runs.
+Build with `--cfg tokio_unstable` (dial9 hooks Tokio's unstable
+runtime APIs); `dial9-tokio-telemetry` writes the trace to disk while
+your program runs. Define your own events by deriving `TraceEvent`
+from `dial9-trace-format`.
 
 ## How rama exposes dial9
 

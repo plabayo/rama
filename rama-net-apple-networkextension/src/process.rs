@@ -101,22 +101,31 @@ impl AuditToken {
         unsafe { &*(self as *const Self).cast::<[u8; Self::BYTE_LEN]>() }
     }
 
+    /// Resolve the audit token to a process id via libbsm.
+    ///
+    /// We don't extract `val[N]` directly: Apple treats
+    /// `audit_token_t`'s internal layout as opaque and only commits
+    /// to the `audit_token_to_*` macros/functions in `<bsm/libbsm.h>`.
+    /// Calling those macros requires C — they read fields whose
+    /// indices Apple may renumber. We therefore compile a tiny C shim
+    /// (`__rama_audit_token_to_pid`, see `build.rs`) that takes
+    /// `(const uint8_t*, size_t)` and uses `audit_token_to_pid()`
+    /// internally; that keeps the libbsm header as the single source
+    /// of truth for the layout, and the Rust→C call passes only
+    /// pointer + length so there is no aggregate-passing ABI
+    /// dependency either. Returns `-1` on a malformed input length.
     #[must_use]
     pub fn pid(&self) -> i32 {
-        // SAFETY: Apple documents `audit_token_to_pid` for valid `audit_token_t` values.
-        unsafe { audit_token_to_pid(*self) }
+        let bytes = self.as_bytes();
+        // SAFETY: `bytes` points to `Self::BYTE_LEN` valid bytes; the
+        // shim re-validates the length internally and only reads
+        // through that span.
+        unsafe { __rama_audit_token_to_pid(bytes.as_ptr(), bytes.len()) }
     }
 }
 
-// Direct-link path that works on x86_64 and aarch64 macOS today (Rust's
-// `extern "C"` aggregate-passing matches the C ABI). The size_of
-// assert above catches layout drift; `bsm` calling-convention drift is
-// not observable statically, so on unexpected pid() values, route
-// through the `rama_apple_audit_token_to_pid` C shim in
-// `rama_apple_ne_ffi.c` (built with Apple's `<bsm/libbsm.h>` directly).
-#[link(name = "bsm")]
 unsafe extern "C" {
-    fn audit_token_to_pid(token: AuditToken) -> libc::pid_t;
+    fn __rama_audit_token_to_pid(bytes: *const u8, len: usize) -> i32;
 }
 
 #[link(name = "proc")]
