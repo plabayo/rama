@@ -64,11 +64,6 @@ impl TryFrom<Vec<u8>> for BytesOwned {
             });
         }
 
-        // `Vec::into_raw_parts` was stabilised in Rust 1.93. The
-        // workspace `rust-version` matches; if the MSRV is ever
-        // lowered, replace with the manual idiom:
-        //   let mut bytes = std::mem::ManuallyDrop::new(bytes);
-        //   let (ptr, vec_len, vec_cap) = (bytes.as_mut_ptr(), bytes.len(), bytes.capacity());
         let (ptr, vec_len, vec_cap) = bytes.into_raw_parts();
         Ok(Self {
             ptr,

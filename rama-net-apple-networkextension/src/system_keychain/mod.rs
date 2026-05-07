@@ -33,12 +33,60 @@ use crate::ffi::{core_foundation::cf_release, sys};
 
 const SYSTEM_KEYCHAIN_PATH: &[u8] = b"/Library/Keychains/System.keychain\0";
 
-// OSStatus constant for "item not found" (-25300).
+// Subset of `<Security/SecBase.h>` OSStatus codes that surface from
+// the System.keychain operations this module performs. Named for
+// log-readability and to drive `osstatus_hint` so operators get a
+// remediation pointer rather than just a number.
+//
+// The full list lives in Apple's SecBase.h; we name only the codes
+// our specific call sites realistically produce.
+
+/// `errSecItemNotFound` (-25300). Find returned no match.
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 /// `errSecDuplicateItem` (-25299). Surfaces when two writers race a
 /// find→add cycle: both observe NOT_FOUND, both call
 /// `SecKeychainAddGenericPassword`, the loser sees this code.
 const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
+/// `errSecAuthFailed` (-25293). The Security framework rejected the
+/// caller's authorization — typically a wrong administrator password
+/// in the prompt, or expired auth context for a privileged operation.
+const ERR_SEC_AUTH_FAILED: i32 = -25293;
+/// `errSecInteractionNotAllowed` (-25308). Operation needed a UI
+/// prompt but the calling context disallowed it. Highly relevant
+/// inside a system extension: sysexts run headless and cannot show
+/// the System Keychain admin password dialog. Surfacing this with a
+/// hint helps operators distinguish "code bug" from "missing
+/// sudo-equivalent context".
+const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+/// `errSecMissingEntitlement` (-34018). The calling binary doesn't
+/// carry the entitlement Security needs for the operation. For
+/// sysexts: usually means the keychain access-group / data-protection
+/// entitlement was not signed in correctly.
+const ERR_SEC_MISSING_ENTITLEMENT: i32 = -34018;
+
+/// Map the operationally-relevant OSStatus codes to a short
+/// remediation hint included in the error's `Display` output. Returns
+/// `None` for unknown codes — the bare numeric is left alone.
+fn osstatus_hint(code: i32) -> Option<&'static str> {
+    match code {
+        ERR_SEC_ITEM_NOT_FOUND => {
+            Some("errSecItemNotFound: requested keychain item does not exist")
+        }
+        ERR_SEC_DUPLICATE_ITEM => {
+            Some("errSecDuplicateItem: another writer added the same item concurrently")
+        }
+        ERR_SEC_AUTH_FAILED => Some(
+            "errSecAuthFailed: authorization rejected (wrong admin password / expired auth context)",
+        ),
+        ERR_SEC_INTERACTION_NOT_ALLOWED => Some(
+            "errSecInteractionNotAllowed: Security needed a UI prompt; this context (e.g. system extension) cannot show one",
+        ),
+        ERR_SEC_MISSING_ENTITLEMENT => Some(
+            "errSecMissingEntitlement: signing identity lacks the keychain access-group / data-protection entitlement",
+        ),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SystemKeychainError {
@@ -59,7 +107,10 @@ impl SystemKeychainError {
 
 impl fmt::Display for SystemKeychainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} (OSStatus {})", self.message, self.code)
+        match osstatus_hint(self.code) {
+            Some(hint) => write!(f, "{} (OSStatus {} — {})", self.message, self.code, hint),
+            None => write!(f, "{} (OSStatus {})", self.message, self.code),
+        }
     }
 }
 

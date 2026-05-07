@@ -133,6 +133,12 @@ impl TransparentProxyFlowMeta {
 /// in `free` does NOT run a per-element Drop, so any heap memory
 /// owned by a field of this struct must be freed explicitly. The two
 /// existing `*_utf8` pairs are the template.
+///
+/// Enforcement: `tests::ffi_config_round_trip_freed_under_lsan` does
+/// the alloc → free round-trip with every field populated. Run under
+/// AddressSanitizer (`just test-e2e-asan`, scheduled in CI on macOS)
+/// for LeakSanitizer to catch any heap field that `free` didn't
+/// release.
 #[repr(C)]
 pub struct TransparentProxyNetworkRule {
     pub remote_network_utf8: *const c_char,
@@ -540,9 +546,45 @@ unsafe fn opt_audit_token(ptr: *const u8, len: usize) -> Option<AuditToken> {
 mod tests {
     use std::ptr;
 
-    use crate::tproxy::TransparentProxyFlowProtocol;
+    use crate::tproxy::{
+        self, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
+        TransparentProxyRuleProtocol,
+    };
 
-    use super::{TransparentFlowEndpoint, TransparentProxyFlowMeta};
+    use super::{TransparentFlowEndpoint, TransparentProxyConfig, TransparentProxyFlowMeta};
+
+    /// Alloc → free round-trip for the FFI config struct. Designed so
+    /// that under LeakSanitizer (`just test-e2e-asan`) any heap field
+    /// added to `TransparentProxyNetworkRule` that `free` doesn't
+    /// release surfaces as a leak. Plain `cargo test` only verifies
+    /// that the round-trip doesn't double-free or panic.
+    #[test]
+    fn ffi_config_round_trip_freed_under_lsan() {
+        let config = tproxy::TransparentProxyConfig::default()
+            .with_tunnel_remote_address(rama_utils::str::arcstr::ArcStr::from("198.51.100.1:443"))
+            .with_rules(vec![
+                TransparentProxyNetworkRule::any()
+                    .with_remote_network(
+                        "example.com"
+                            .parse::<rama_net::address::Host>()
+                            .expect("valid host"),
+                    )
+                    .with_remote_network_prefix(24)
+                    .with_local_network(
+                        "10.0.0.0"
+                            .parse::<rama_net::address::Host>()
+                            .expect("valid host"),
+                    )
+                    .with_local_network_prefix(8)
+                    .with_protocol(TransparentProxyRuleProtocol::Tcp),
+                TransparentProxyNetworkRule::any(),
+            ]);
+
+        let ffi = TransparentProxyConfig::from_rust_type(&config);
+        // SAFETY: `ffi` was just created by `from_rust_type` and not
+        // freed yet.
+        unsafe { ffi.free() };
+    }
 
     #[test]
     fn flow_meta_uses_explicit_pid_when_present() {

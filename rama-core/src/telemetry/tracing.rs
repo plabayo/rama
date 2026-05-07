@@ -38,28 +38,6 @@ pub mod appender {
     /// lifetime of the program. Dropping it stops the worker thread and
     /// prevents further writes from being flushed. Drop it intentionally
     /// just before the program exits to flush pending records.
-    ///
-    /// ## Example
-    ///
-    /// ```ignore
-    /// // Add `tracing-subscriber` to your crate's deps to wire the
-    /// // `(writer, _guard)` pair into a registry; rama-core does not
-    /// // pull `tracing-subscriber` itself.
-    /// use rama_core::telemetry::tracing::appender::{
-    ///     Rotation, rolling_dedicated_thread,
-    /// };
-    /// use tracing_subscriber::{prelude::*, fmt};
-    ///
-    /// let (writer, _guard) = rolling_dedicated_thread(
-    ///     Rotation::DAILY,
-    ///     "/var/log/myapp",
-    ///     "myapp.log",
-    /// );
-    /// tracing_subscriber::registry()
-    ///     .with(fmt::layer().with_writer(writer))
-    ///     .init();
-    /// // keep `_guard` alive until program shutdown
-    /// ```
     pub fn rolling_dedicated_thread(
         rotation: Rotation,
         directory: impl AsRef<Path>,

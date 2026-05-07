@@ -255,31 +255,19 @@ So this example deliberately demonstrates both:
 
 ## Logs
 
-Check that the system extension is currently registered:
+Check the extension is registered, then stream / replay logs from the
+extension process and the NE daemons:
 
 ```sh
 systemextensionsctl list
-```
-
-When approval is pending, macOS prints the exact Settings location for Network Extension system extensions.
-
-Stream live logs from the extension process and NE daemons:
-
-```sh
 log stream --info --debug \
   --predicate 'process == "org.ramaproxy.example.tproxy.dev.provider" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd" OR process == "launchd"'
+# replay last 5m: replace `log stream` with `log show --last 5m --style compact`
 ```
 
-For historical logs (e.g. after the fact), replace `log stream` with `log show`:
-
-```sh
-log show --last 5m --style compact --info --debug \
-  --predicate 'process == "org.ramaproxy.example.tproxy.dev.provider" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd" OR process == "launchd"'
-```
-
-> **Note:** The Rust extension writes tracing logs to stderr, which launchd captures under
-> the process name `org.ramaproxy.example.tproxy.dev.provider`. For the distribution
-> extension replace `dev` with `provider` in the predicate above.
+Rust `tracing` events also surface on the `org.ramaproxy.example.tproxy`
+subsystem — see [Observability with dial9](#observability-with-dial9)
+for the structured-tracing predicates and the offline bundle script.
 
 ## Sanitizer-driven race / UAF testing
 
@@ -299,237 +287,96 @@ A clean run finishes silently. ASan failures surface as
 
 ## Troubleshooting
 
-The most confusing startup failure is:
+`NEVPNConnectionErrorDomainPlugin code=6` is usually a follow-up to either
+stale registration or a previous provider crash, not the root cause. A
+"works after reinstall" outcome only proves the registration/profile
+layer was reset — it does *not* prove the original runtime bug is fixed.
 
-```text
-NEVPNConnectionErrorDomainPlugin code=6
-The VPN app used by the VPN configuration is not installed
-```
+### Decision tree
 
-In this demo, code `6` is often not the first failure. It is frequently the
-follow-up symptom after either:
+1. `systemextensionsctl list | grep 'org\.ramaproxy\.example\.tproxy'`
+   — if nothing is registered or the state is not `[activated enabled]`,
+   run `just install-tproxy-dev` and approve in System Settings.
+2. Replay logs (`log show --last 5m ...`, see commands below) and
+   inspect for these patterns:
+   - `code=7`, `Plugin failed`, `Plugin was disabled`: provider crashed
+     — check `/Library/Logs/DiagnosticReports/` for a fresh `.ips`.
+   - `failed activation: error = 1: Operation not permitted` on the XPC
+     service: launchd rejected the Mach service registration. Run
+     `just install-tproxy-dev-reset-profile` to force `sysextd` to
+     regenerate the launchd job from `Info.plist`'s `NEMachServiceName`,
+     then verify `MachServices` is present (commands below).
+   - `Found 0 extension(s) with identifier ...`: registration missing,
+     reinstall.
+3. Only when registration is fine *and* the saved
+   `NETransparentProxyManager` profile is stale (or you changed
+   entitlements / Info.plist keys read at install time): run
+   `just install-tproxy-dev-reset-profile`.
 
-- the installed app/system extension registration went stale
-- the provider crashed and macOS disabled the plugin for the next launch
-
-Use the checks below to separate those cases.
-
-### 1. Reinstall the app without recreating the saved profile
-
-This is the fastest recovery path when app-extension registration is stale:
-
-```sh
-cd ffi/apple/examples/transparent_proxy
-just install-tproxy-dev
-```
-
-That target:
-
-- rebuilds the Rust staticlib
-- rebuilds the container app and system extension
-- replaces `/Applications/RamaTransparentProxyExampleContainer.app`
-- refreshes LaunchServices registration for the container app
-- launches the installed app so it can request system extension activation without recreating the saved proxy manager
-
-If the next launch connects, the problem was registration state.
-
-### 2. Reinstall the app and explicitly recreate the saved profile
-
-Only do this when the saved `NETransparentProxyManager` profile itself is stale,
-or when you have changed `NEMachServiceName`, entitlements, or any Info.plist
-key that `sysextd` reads only at install time:
+### Useful commands
 
 ```sh
-cd ffi/apple/examples/transparent_proxy
-just install-tproxy-dev-reset-profile
-```
-
-That uses the same reinstall flow, but launches once with
-`--reset-profile-on-launch`, which removes and recreates the saved proxy
-manager. Because macOS treats that as a new network configuration, it may ask
-for profile approval again. It also forces `sysextd` to deactivate and
-reactivate the extension, causing it to re-read `Info.plist` and regenerate the
-launchd job (including `NEMachServiceName` and `MachServices` entries).
-
-### 3. Check whether macOS currently sees the system extension
-
-```sh
-systemextensionsctl list | grep 'org\.ramaproxy\.example\.tproxy'
-```
-
-Expected output should include something like:
-
-```text
-[activated enabled] org.ramaproxy.example.tproxy.dev.provider (0.1/20260426200600)
-```
-
-If nothing is returned, or the state is not `[activated enabled]`, macOS does not
-currently have the system extension active. Run the reinstall command above and
-approve the system extension in System Settings if prompted.
-
-### 4. Inspect container and sysext logs around the failure
-
-```sh
+# Logs for the extension + NE daemons
 log show --last 5m --style compact --info --debug \
   --predicate 'process == "org.ramaproxy.example.tproxy.dev.provider" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd"'
-```
 
-Useful interpretations:
+# Recent provider crash reports (system-level, NOT ~/Library/...)
+ls -lt /Library/Logs/DiagnosticReports/ \
+  | grep 'org\.ramaproxy\.example\.tproxy\.dev\.provider' | head -5
 
-- `NEVPNConnectionErrorDomainPlugin code=6`
-  Usually means "system extension unavailable now", not necessarily the original cause.
-- `NEVPNConnectionErrorDomainPlugin code=7`
-  The provider failed after launch; inspect extension logs and crash reports.
-- `last stop reason Plugin failed`
-  Provider runtime failure.
-- `last stop reason Plugin was disabled`
-  Provider crashed earlier and macOS disabled it for the next start.
-- `Found 0 extension(s) with identifier org.ramaproxy.example.tproxy.dev.provider`
-  Registration is missing; reinstall the app.
-
-### 5. Check for XPC Mach service registration failure
-
-If the sysext starts but immediately crashes or the XPC channel between container
-and extension does not work, look for this pattern in the logs:
-
-```text
-launchd: failed activation: name = <TPROXY_XPC_SERVICE_NAME>
-requestor = org.ramaproxy.example.tproxy.dev.provider
-error = 1: Operation not permitted
-```
-
-This means launchd is rejecting the extension's attempt to register its named
-Mach service. The correct fix is `NEMachServiceName` in the extension's
-`Info.plist` (already present in this example), combined with a full
-force-reinstall so that `sysextd` regenerates the launchd job with a
-`MachServices` entry for that name.
-
-After reinstalling with `reset-profile`, verify the launchd job has the entry:
-
-```sh
+# launchd job's MachServices block — should list <TEAM>.<group>.xpc => 0
 sudo launchctl print system/org.ramaproxy.example.tproxy.dev.provider \
   | grep -A 5 -i machservices
-```
 
-Expected:
-
-```text
-MachServices = {
-    ADPG6C355H.org.ramaproxy.example.tproxy.dev.group.xpc => 0
-}
-```
-
-If the `MachServices` block is absent, `sysextd` did not pick up `NEMachServiceName`.
-Try a reboot followed by another `reset-profile` install.
-
-### 6. Check for provider crash reports
-
-Sysext crash reports are written to the system-level diagnostic directory
-(not the user-level `~/Library/...`):
-
-```sh
-ls -lt /Library/Logs/DiagnosticReports/ \
-  | grep 'org\.ramaproxy\.example\.tproxy\.dev\.provider' \
-  | head -5
-```
-
-If you see a fresh `.ips` file near the failure time, the provider crashed and the
-later code `6` error is only fallout.
-
-Also inspect what entitlements and `Info.plist` values ended up in the
-installed binary to rule out signing or plist issues:
-
-```sh
-# Entitlements baked into the running binary
+# Installed-binary entitlements + Info.plist (rules out signing / plist drift)
 codesign -d --entitlements - \
   /Library/SystemExtensions/*/org.ramaproxy.example.tproxy.dev.provider \
   2>&1 | grep -A2 -E 'mach-register|NEMach|networkextension'
-
-# Info.plist of the installed extension
 plutil -p /Library/SystemExtensions/*/\
 org.ramaproxy.example.tproxy.dev.provider.systemextension/Contents/Info.plist \
   | grep -E 'NEMach|TProxy|XpcService|BundleVersion'
 ```
 
-### 7. Quick decision tree
+### Reinstall recipes
 
-1. Start fails with code `6`.
-2. Run `systemextensionsctl list | grep 'org\.ramaproxy\.example\.tproxy'`.
-3. If nothing is registered or state is not `[activated enabled]`: run `just install-tproxy-dev`.
-4. If the system extension is registered: inspect logs with `log show --last 5m ...`.
-5. If logs show `failed activation: error = 1: Operation not permitted` for the XPC service name: run `just install-tproxy-dev-reset-profile`, then verify `MachServices` via `sudo launchctl print ...`.
-6. If logs show code `7`, `Plugin failed`, or `Plugin was disabled`: inspect the extension crash report in `/Library/Logs/DiagnosticReports/`.
-7. Only if registration is fine but the manager/profile is stale: run `just install-tproxy-dev-reset-profile`.
-
-### 8. Common pattern in this demo
-
-The failure sequence often looks like this:
-
-1. Provider launches and starts handling flows.
-2. Provider crashes because of a real runtime bug.
-3. The next start reports code `6` or "plugin disabled".
-
-So, if the proxy "randomly" starts working again after reinstall, that does not
-guarantee the original runtime issue is fixed. It only means the registration /
-profile layer was reset successfully.
+- `just install-tproxy-dev` — rebuilds + reinstalls everything, leaves
+  the saved `NETransparentProxyManager` profile in place. Fixes stale
+  registration.
+- `just install-tproxy-dev-reset-profile` — same, plus launches with
+  `--reset-profile-on-launch` so the saved profile is recreated and
+  `sysextd` re-reads `Info.plist`. Required when changing
+  `NEMachServiceName`, entitlements, or other install-time keys.
 
 ## Observability with dial9
 
 This example always builds with [dial9](https://github.com/dial9-rs/dial9-tokio-telemetry)
-runtime telemetry on. The wiring lives in
-[`tproxy_rs/src/dial9.rs`](./tproxy_rs/src/dial9.rs); tune the trace
-directory, rotation, and disk-usage caps there if the defaults don't
-fit. Misconfiguration falls back to a plain runtime via dial9's
-[`build_or_disabled`](https://docs.rs/dial9-tokio-telemetry/latest/dial9_tokio_telemetry/struct.Dial9ConfigBuilder.html#method.build_or_disabled)
-rather than failing the engine build — a bad trace config must never
-take down prod.
-
-Traces land in `<storage_dir>/dial9-traces/` — the directory the FFI
-init hands to the extension. When no storage directory is wired through
-(e.g. the e2e test harness), the runtime stays plain so the test
-process doesn't write a stray trace into `/tmp`. On a real run the
-extension logs an `INFO` line on the `org.ramaproxy.example.tproxy`
-subsystem identifying the path it picked.
+runtime telemetry on. Wiring + tuning knobs live in
+[`tproxy_rs/src/dial9.rs`](./tproxy_rs/src/dial9.rs); a misconfigured
+build falls back to a plain runtime rather than failing the engine
+build. Traces land at `<storage_dir>/dial9-traces/` — for this demo
+that resolves to `/var/root/Library/Application Support/rama/tproxy/dial9-traces/`.
+The test harness wires no storage directory through, so it stays plain.
 
 ### Reading traces
 
-The trace is a self-describing binary format produced by
+The trace is a self-describing binary stream from
 [`dial9-tokio-telemetry`](https://github.com/dial9-rs/dial9-tokio-telemetry).
-Three complementary workflows:
+Triage with `dial9-viewer` (GUI timeline), `dial9` /  `dial9-cli` (grep
++ JSON; pipe into an LLM for triage), or deserialise programmatically
+with [`dial9-trace-format`](https://docs.rs/dial9-trace-format). Follow
+the upstream docs for current install + command surface.
 
-- **GUI — `dial9-viewer`**, the interactive timeline. Best for
-  first-pass triage of stuck flows or scheduling-delay anomalies.
-- **CLI — `dial9` / `dial9-cli`**, for grep-style queries, summary
-  stats, and scripting. Pipe `dial9 events --json` into an LLM if you
-  want a model to triage a trace.
-- **Programmatic** — deserialise the stream with
-  [`dial9-trace-format`](https://docs.rs/dial9-trace-format), the same
-  crate the rama event derives target. Application-defined events
-  round-trip without manual schema work.
-
-For exact command surface and current install instructions, follow the
-upstream docs on the dial9 repo and crate pages above; they evolve
-faster than this README.
-
-### Cross-referencing with the unified macOS system log
-
-The extension emits structured `tracing` events (via the `oslog` layer
-in [`utils.rs`](./tproxy_rs/src/utils.rs)) on the
-`org.ramaproxy.example.tproxy` subsystem. Those share field names with
-the dial9 events, so the natural workflow is: find a problem in the
-system log, lift the relevant identifier, then jump into the dial9
-trace and filter.
+The extension emits structured `tracing` events on the
+`org.ramaproxy.example.tproxy` subsystem with field names that match
+the dial9 events. Typical workflow: spot a problem in the system log,
+lift `flow_id` or similar, then filter the dial9 trace by it.
 
 ```sh
-# Tail extension logs filtered to this example's subsystem
 log stream --predicate 'subsystem == "org.ramaproxy.example.tproxy"' --info --debug
-
-# Replay the last hour
 log show --predicate 'subsystem == "org.ramaproxy.example.tproxy"' --info --debug --last 1h
 ```
 
-For NetworkExtension-side issues (provider / kernel-side, not rama)
-also widen the predicate to include Apple's subsystems:
+Widen to Apple's subsystems for NetworkExtension-side issues:
 
 ```sh
 log show --predicate '(subsystem == "org.ramaproxy.example.tproxy") || \
@@ -538,28 +385,42 @@ log show --predicate '(subsystem == "org.ramaproxy.example.tproxy") || \
   --info --debug --last 30m
 ```
 
+### Bundle everything for offline triage
+
+Hand a single tmp dir to a teammate, an LLM, or `dial9-viewer` —
+pulls the dial9 traces from the sysext storage (sudo), the last hour
+of relevant `log show` output, and any recent provider crash reports:
+
+```sh
+DEST=$(mktemp -d /tmp/rama-tproxy-bundle.XXXXXX) && \
+sudo cp -R "/var/root/Library/Application Support/rama/tproxy/dial9-traces" "$DEST/" 2>/dev/null; \
+log show --last 1h --style ndjson --info --debug \
+  --predicate '(subsystem == "org.ramaproxy.example.tproxy") || \
+               (subsystem == "com.apple.networkextension") || \
+               (process == "org.ramaproxy.example.tproxy.dev.provider")' \
+  > "$DEST/system.ndjson"; \
+sudo cp /Library/Logs/DiagnosticReports/org.ramaproxy.example.tproxy.dev.provider*.ips "$DEST/" 2>/dev/null; \
+sudo chown -R "$(id -u):$(id -g)" "$DEST" && echo "$DEST"
+```
+
+Open the directory with `dial9-viewer "$DEST/dial9-traces"`, point an
+agent at it, or grep the NDJSON log alongside the binary trace.
+
 ### Caveats
 
-- ~1 MiB buffer per OS thread. Fine for this example's bounded thread
-  counts; consider it when copying the pattern into a high-thread
-  workload.
-- On Linux, dial9 additionally captures kernel scheduling delays and CPU
-  profiling samples. On macOS those are more limited — runtime-level
-  events plus the rama-emitted application events are the bulk of
-  what's useful here.
-- Per-future wake-event tracking on the two ingress/egress bridge tasks
-  is intentionally skipped: those are spawned from a Swift dispatch
-  queue (non-tokio thread) where dial9's thread-local
-  `TelemetryHandle::current()` is inert. Runtime-level events still
-  fire on every poll because dial9 hooks the worker thread, so the loss
-  is the per-future wake graph for those two tasks only.
+- ~1 MiB buffer per OS thread. Fine for this demo; reconsider for
+  high-thread workloads.
+- macOS only captures runtime-level + application events; Linux gets
+  kernel scheduling delays and CPU profiling samples too.
+- The two ingress/egress bridge tasks are spawned from a Swift dispatch
+  queue, so dial9's thread-local handle is inert there — per-future
+  wake graphs are missing for those two tasks. Runtime-level events
+  still fire on every poll.
 
 ### See also
 
-- The book chapter on
-  [dial9 runtime telemetry](https://ramaproxy.org/book/dial9.html).
-- [netstack.fm episode 37](https://netstack.fm/#episode-37) — interview
-  with the dial9 authors.
-- [`production_use.rs`](https://github.com/dial9-rs/dial9-tokio-telemetry/blob/main/dial9-tokio-telemetry/examples/production_use.rs)
-  in the dial9 repo, for operator knobs (CPU profiling, S3 upload,
-  schedule-event capture) the example deliberately keeps off by default.
+[dial9 book chapter](https://ramaproxy.org/book/dial9.html),
+[netstack.fm ep. 37](https://netstack.fm/#episode-37), and
+[`production_use.rs`](https://github.com/dial9-rs/dial9-tokio-telemetry/blob/main/dial9-tokio-telemetry/examples/production_use.rs)
+for operator knobs (CPU profiling, S3 upload, schedule-event capture)
+the demo deliberately keeps off by default.

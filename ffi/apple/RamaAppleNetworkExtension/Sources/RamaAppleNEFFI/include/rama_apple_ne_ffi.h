@@ -16,30 +16,39 @@ extern "C" {
  * - Engine handle (RamaTransparentProxyEngine *): methods may be called
  *   from any thread, concurrently. The engine is internally Send + Sync
  *   and all public methods take &self.
+ *   Covered by: cases::stress::ffi_stress_tcp_concurrent_churn (4×4
+ *   concurrent flows on a shared engine).
  *
  * - Session handles (RamaTransparentProxyTcpSession *,
- *   RamaTransparentProxyUdpSession *): methods take &mut Self under the
- *   hood. NEVER make two concurrent FFI calls on the same session
+ *   RamaTransparentProxyUdpSession *): methods take &mut Self under
+ *   the hood. NEVER make two concurrent FFI calls on the same session
  *   pointer. The Swift side (RamaTcpSessionHandle / RamaUdpSessionHandle)
- *   serialises per-session calls via an NSLock; any other consumer must
- *   do the same. Two concurrent calls = data race, even if the
- *   underlying interior data is thread-safe (Rust's aliasing model
- *   treats it as UB regardless of physical races).
+ *   serialises per-session calls via an NSLock; any other consumer
+ *   must do the same. Two concurrent calls = UB regardless of whether
+ *   the interior data is thread-safe.
+ *   Enforced statically (Rust's aliasing model + Swift NSLock); no
+ *   negative-test possible without invoking UB. cases::stress::*
+ *   under `just test-e2e-asan` pins the Swift-side serialisation.
  *
  * - Cancellation: rama_transparent_proxy_tcp_session_cancel (TCP) and
  *   rama_transparent_proxy_udp_session_on_client_close (UDP) flip the
  *   engine's `callback_active` guard, drop senders, signal cooperative
  *   shutdown, and return promptly. Background bridge tasks may still
- *   be running for a few polls after the call returns; the
- *   `callback_active` guard ensures they cannot dispatch into Swift
- *   `context` after cancel returns. It is therefore safe to release
- *   the Swift callback boxes immediately after _session_free (which
- *   calls cancel internally).
+ *   run for a few polls; the `callback_active` guard prevents them
+ *   dispatching into Swift `context` after cancel returns, so the
+ *   Swift callback boxes can be released immediately after
+ *   _session_free (which calls cancel internally).
+ *   Covered by: cases::stress::ffi_stress_inflight_flows_at_test_end
+ *   (sessions + engine torn down with flows in flight); the
+ *   serialisation property itself is pinned at the Rust unit-test
+ *   level by tproxy::engine::tests::safety::
+ *   tcp_cancel_serialises_against_inflight_user_callback.
  *
  * - _session_free / _engine_stop: consume the pointer. Do not use it
- *   afterwards. Re-freeing or re-stopping is undefined behavior; the
- *   Swift wrappers null their stored pointer immediately on these
- *   calls to make double-free a debug-detectable no-op.
+ *   afterwards. The Swift wrappers null their stored pointer
+ *   immediately so double-free becomes a debug-detectable no-op.
+ *   Covered by: cases::stress::ffi_stress_tcp_sequential_churn (8
+ *   open/free cycles); every lifecycle test implicitly stresses it.
  * ==========================================================================*/
 
 /// Opaque transparent proxy engine handle managed by Rust.

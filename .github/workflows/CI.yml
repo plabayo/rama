@@ -157,6 +157,27 @@ jobs:
         working-directory: ./ffi/apple/examples/transparent_proxy
         run: just test-e2e
 
+  test-ffi-apple-example-transparent-proxy-e2e-asan:
+    runs-on: macos-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@v6
+      # ASan needs nightly for `-Z sanitizer=address` and a matching
+      # `rust-src` so the sanitizer-built std actually compiles.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-latest-nightly-apple-transparent-proxy-e2e-asan
+      - name: Install just
+        run: brew install just
+      - name: Run transparent proxy FFI stress tests under AddressSanitizer
+        working-directory: ./ffi/apple/examples/transparent_proxy
+        run: just test-e2e-asan
+
   test-rama-apple-xpc:
     runs-on: macos-latest
     needs:
@@ -599,6 +620,7 @@ jobs:
       - check-rust
       - test-rust-base
       - test-ffi-apple-example-transparent-proxy-e2e
+      - test-ffi-apple-example-transparent-proxy-e2e-asan
       - test-rust-linux-musl
       - test-rama-apple-xpc
       - test-rust-extra
