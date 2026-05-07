@@ -20,4 +20,4 @@ pub use error::ResponseError;
 
 mod router;
 #[doc(inline)]
-pub use router::{Router, RouterError, RouterErrorInternal};
+pub use router::{Router, RouterError};

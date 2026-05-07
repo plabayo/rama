@@ -7,7 +7,7 @@ use rama_core::{
     Layer,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
-    layer::{IntoErrLayer, MapErrLayer},
+    layer::IntoErrLayer,
     matcher::Matcher,
     service::{BoxService, Service},
     telemetry::tracing,
@@ -84,7 +84,6 @@ where
 impl<State, L, O, E> Router<State, L, O, E>
 where
     State: Send + Sync + Clone + 'static,
-    E: Send + 'static,
 {
     /// Apply `layer` to every endpoint registered after this call.
     /// Routes registered before this call keep whatever layer was in effect at the time of registration.
@@ -442,7 +441,7 @@ where
     ) -> Self
     where
         L: Clone,
-        Self: Service<Request, Output = O, Error = RouterError<E>>,
+        Self: Service<Request, Output = O, Error = E>,
     {
         self.set_sub_router_make_fn(prefix, configure_router);
         self
@@ -460,7 +459,7 @@ where
     ) -> &mut Self
     where
         L: Clone,
-        Self: Service<Request, Output = O, Error = RouterError<E>>,
+        Self: Service<Request, Output = O, Error = E>,
     {
         let router = Self {
             routes: MatchitRouter::new(),
@@ -503,19 +502,14 @@ where
         I: IntoEndpointService<T>,
         L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
     {
-        let nested = (
-            MapErrLayer::new(RouterError::Handler),
-            &self.layer,
-        )
-            .layer(service.into_endpoint_service())
-            .boxed();
+        let nested = self.layer.layer(service.into_endpoint_service()).boxed();
         self.set_sub_service_inner(prefix, nested)
     }
 
     fn set_sub_service_inner(
         &mut self,
         prefix: impl AsRef<str>,
-        nested: BoxService<Request, O, RouterError<E>>,
+        nested: BoxService<Request, O, E>,
     ) -> &mut Self {
         let prefix = prefix.as_ref().trim().trim_matches('/').to_lowercase();
         let trie = self.sub_services.get_or_insert_default();
@@ -640,91 +634,52 @@ impl Default for Router {
 }
 
 #[derive(Debug, Clone)]
-pub enum RouterErrorInternal {
+pub enum RouterError {
     Internal,
     MethodNotAllowed(NonEmptySmallVec<7, Method>),
     NotFound,
 }
 
-impl fmt::Display for RouterErrorInternal {
+impl fmt::Display for RouterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
 }
 
-impl Error for RouterErrorInternal {
+impl Error for RouterError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(ResponseError::new(self))
     }
 }
 
-impl IntoResponse for RouterErrorInternal {
+impl IntoResponse for RouterError {
     fn into_response(self) -> Response {
         match self {
-            Self::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-            Self::MethodNotAllowed(allowed) => (
+            RouterError::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            RouterError::MethodNotAllowed(allowed) => (
                 Headers::single(Allow(allowed)),
                 StatusCode::METHOD_NOT_ALLOWED,
             )
                 .into_response(),
-            Self::NotFound => StatusCode::NOT_FOUND.into_response(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum RouterError<E> {
-    Internal(RouterErrorInternal),
-    Handler(E),
-}
-
-impl<E> From<RouterErrorInternal> for RouterError<E> {
-    fn from(value: RouterErrorInternal) -> Self {
-        Self::Internal(value)
-    }
-}
-
-impl<E: fmt::Display> fmt::Display for RouterError<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Internal(err) => fmt::Display::fmt(err, f),
-            Self::Handler(err) => fmt::Display::fmt(err, f),
-        }
-    }
-}
-
-impl<E: Error + 'static> Error for RouterError<E> {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(match self {
-            Self::Internal(err) => err,
-            Self::Handler(err) => err,
-        })
-    }
-}
-
-impl<E: IntoResponse> IntoResponse for RouterError<E> {
-    fn into_response(self) -> Response {
-        match self {
-            Self::Internal(err) => err.into_response(),
-            Self::Handler(err) => err.into_response(),
+            RouterError::NotFound => StatusCode::NOT_FOUND.into_response(),
         }
     }
 }
 
 struct SubService<O, E> {
-    svc: BoxService<Request, O, RouterError<E>>,
+    svc: BoxService<Request, O, E>,
     matcher: Option<PathMatcher>,
 }
 
 impl<State, L, O, E> Service<Request> for Router<State, L, O, E>
 where
     O: Send + 'static,
-    E: Send + 'static,
+    E: Send + From<RouterError> + 'static,
     L: Send + Sync + 'static,
     State: Send + Sync + Clone + 'static,
 {
     type Output = O;
-    type Error = RouterError<E>;
+    type Error = E;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let path = req.uri().path().to_lowercase_smolstr();
@@ -752,7 +707,7 @@ where
                 let ext = Extensions::new();
                 if matcher.matches(Some(&ext), &req) {
                     req.extensions().extend(&ext);
-                    return service.serve(req).await.map_err(RouterError::Handler);
+                    return service.serve(req).await;
                 }
             }
 
@@ -806,7 +761,7 @@ where
                                 tracing::warn!(
                                     "failed to strip full prefix '{full_prefix}' (static: '{prefix}') from Uri (bug??); err = {err}",
                                 );
-                                return Err(RouterErrorInternal::Internal.into());
+                                return Err(RouterError::Internal.into());
                             }
                         };
 
@@ -841,7 +796,7 @@ where
                             tracing::warn!(
                                 "failed to strip literal prefix '{prefix}' from Uri (bug??); err = {err}",
                             );
-                            return Err(RouterErrorInternal::Internal.into());
+                            return Err(RouterError::Internal.into());
                         }
                     }
 
@@ -860,14 +815,14 @@ where
         if let Some(matcher) = allowed_methods
             && let Some(methods) = NonEmptySmallVec::collect(matcher.iter())
         {
-            return Err(RouterErrorInternal::MethodNotAllowed(methods).into());
+            return Err(RouterError::MethodNotAllowed(methods).into());
         }
 
         if let Some(not_found) = &self.not_found {
             let req = Request::from_parts(parts, body);
-            not_found.serve(req).await.map_err(RouterError::Handler)
+            not_found.serve(req).await
         } else {
-            Err(RouterErrorInternal::NotFound.into())
+            Err(RouterError::NotFound.into())
         }
     }
 }
