@@ -681,72 +681,35 @@ impl TransparentProxyTcpSession {
     }
 
     pub fn cancel(&mut self) {
-        // 1. Flip the active-flag first.
+        // Order matters. See `guarded_bytes_sink` for the
+        // callback_active contract.
         //
-        // Soundness note for the Swift `context` lifetime contract:
-        // bridge tasks dispatch to the user-supplied closures only
-        // after re-checking `callback_active` under this synchronous
-        // Mutex (see `guarded_bytes_sink`/`guarded_closed_sink` at
-        // the bottom of this file). Flipping the flag here, *before*
-        // any of the wake-ups below, ensures that any callback
-        // already past the check has its dispatch dropped instead of
-        // reaching the Swift `context` after `cancel` has returned.
-        // Keep this Mutex sync — an async lock would let callbacks
-        // slip through the gap between the check and the actual call.
+        //   1. callback_active = false — any in-flight bridge dispatch
+        //      blocks here on the same sync mutex; further dispatches
+        //      short-circuit.
+        //   2. flow_stop_tx — fires `flow_guard.cancelled()` so the
+        //      bridge's biased select picks the shutdown arm.
+        //   3. notify_one — wake any bridge parked on Paused-wait so
+        //      it observes (1) and (2).
+        //   4. drop senders — natural EOF for `recv()` arms.
+        //   5. detach bridge tasks (let them finish their close
+        //      epilogue for dial9 / tracing); abort the service task
+        //      as a fallback for user code wedged outside bridge IO.
         *self.callback_active.lock() = false;
-
-        // 2. Cancel the per-flow shutdown so `flow_guard.cancelled()`
-        //    fires.
-        //
-        // Important: do this BEFORE the `notify_one()` wake-ups below.
-        // The `select!` arms in `run_tcp_bridge`'s Paused-wait branches
-        // are `biased` to check `flow_guard.cancelled()` first, so any
-        // bridge woken by the notify will exit on the cancelled arm
-        // instead of looping back into the data path. Reversing the
-        // order works in practice (the bridge re-checks via the
-        // biased select on its next iteration), but is fragile if a
-        // future change moves the active-flag check out of the
-        // pending-replay path. Keep cancellation strictly before
-        // wake-ups for clarity.
         if let Some(tx) = self.flow_stop_tx.take() {
             _ = tx.send(());
         }
-
-        // 3. Wake any bridge parked in `notify.notified().await` so it
-        //    can observe the cancellation and exit promptly. Notify is
-        //    sticky — these are no-ops if nobody's waiting.
         self.server_write_notify.notify_one();
         if let Some(notify) = &self.egress_write_notify {
             notify.notify_one();
         }
         self.egress_write_notify = None;
-
-        // 4. Drop the senders so the bridge's `recv()` returns `None`
-        //    after draining anything still buffered. This is the
-        //    natural EOF signal — no separate watch channel needed.
         self.client_tx = None;
         self.egress_tx = None;
         self.egress_paused = None;
-        // Drop pending — this drops bridge_tx, making bridge_rx.await return Err.
         self.pending = None;
-        // Bridge tasks: do NOT abort. The two signals above (dropped
-        // senders + flow_stop_tx → flow_guard.cancelled) are how the
-        // bridges normally exit, and they reach the post-loop
-        // `on_server_closed` / dial9 close-event emission. Aborting
-        // here would interrupt those mid-flight; they aren't useful to
-        // Swift (the `callback_active` flag suppresses dispatch
-        // anyway), but they ARE useful to dial9 so the trace doesn't
-        // miss the close record. We let the JoinHandle drop without
-        // explicit abort: detached, but bounded by the bridge's
-        // `flow_guard.cancelled()` arm which is already firing.
         _ = self.ingress_bridge_task.take();
         _ = self.egress_bridge_task.take();
-        // Service task: keep the abort as a fallback. Once the bridge
-        // halves close, `service.serve(bridge).await` should return on
-        // its own; if the user-supplied service is wedged on something
-        // unrelated to the bridge IO (a hung lock, a never-completing
-        // future), the abort is the only way to get the JoinHandle
-        // out.
         if let Some(task) = self.service_task.take() {
             task.abort();
         }
@@ -1322,19 +1285,14 @@ fn block_on_async_task<F>(rt: &TransparentProxyAsyncRuntime, future: F) -> F::Ou
 where
     F: Future<Output: Send> + Send,
 {
-    // We deliberately drive the inner `tokio::runtime::Runtime` here
-    // rather than the wrapper's `block_on`, because non-`'static`
-    // futures cannot be routed through dial9's spawn-then-await
-    // instrumentation. dial9 wake-tracking on these short-lived
-    // FFI-entry futures is sacrificed; runtime-level events still
-    // fire because the worker thread is dial9-instrumented.
+    // We drive the inner `tokio::runtime::Runtime` directly rather than
+    // the wrapper's `block_on`: non-`'static` futures can't be routed
+    // through dial9's spawn-then-await instrumentation. Wake-tracking
+    // on these short-lived FFI futures is sacrificed; worker-thread
+    // events still fire.
     //
-    // Panic handling: a user-supplied handler future may panic. Modern
-    // Rust (>=1.71) defines panicking through `extern "C"` as a forced
-    // abort, so the process terminates cleanly — but without a log
-    // record the operator can't tell what blew up. We catch_unwind at
-    // this single chokepoint, log the panic location and message via
-    // tracing, then resume_unwind so the documented abort still fires.
+    // catch_unwind logs handler-future panics before the extern "C"
+    // boundary forces abort.
     let inner = rt.tokio_runtime();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match tokio::runtime::Handle::try_current() {
@@ -1409,28 +1367,12 @@ impl<H> TransparentProxyEngine<H> {
 //
 // The `callback_active` mutex is the load-bearing guarantee that bridge
 // tasks never dispatch into a Swift `context` after `cancel()` returned
-// (and after `_session_free` released the `TcpSessionCallbackBox` /
-// `TcpEgressCallbackBox` on the Swift side). The lock is held for the
-// entire duration of the user-supplied callback so that:
-//
-//   1. `cancel()` flips the flag while holding the same mutex; if a
-//      bridge has already passed the active-check and is mid-dispatch,
-//      `cancel()` blocks until the dispatch returns.
-//   2. The Swift box release happens *after* `cancel()` returns; by
-//      then no bridge can possibly be inside the user closure.
-//
-// The naive `if !*callback_active.lock() { return Closed; } user(bytes)`
-// pattern is a UAF: the temporary `MutexGuard` from `.lock()` drops at
-// the end of the `if` expression — by the time `user(bytes)` runs the
-// flag could have been flipped, `cancel()` could have returned, the
-// Swift box could have been released, and `user(bytes)` reaches a
-// dangling pointer.
-//
-// **Bind the guard to a named local** so its scope is the whole closure
-// body. Do NOT bind to `_` — that drops immediately. The outer
-// `#[deny(let_underscore_drop)]` would catch one form of this, but the
-// `if-condition-temporary` form is silent. Keep this comment in sync
-// with each helper below.
+// and `_session_free` released the Swift callback box. The lock is held
+// across the entire user closure: `cancel()` flips the flag under the
+// same mutex, so a mid-dispatch callback blocks `cancel()` until it
+// returns. Bind the guard to a named local (`active`) so its scope is
+// the whole closure body — `let _ = lock()` drops immediately and
+// reintroduces the UAF window.
 
 fn guarded_bytes_status_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
@@ -1439,13 +1381,9 @@ fn guarded_bytes_status_sink(
     Arc::new(move |bytes: Bytes| -> TcpDeliverStatus {
         let active = callback_active.lock();
         if !*active {
-            // Session is being torn down: report Closed so the bridge breaks
-            // its select loop and `on_server_closed` fires once at the end.
             return TcpDeliverStatus::Closed;
         }
-        let status = user_bytes_sink(bytes);
-        drop(active);
-        status
+        user_bytes_sink(bytes)
     })
 }
 
@@ -1459,7 +1397,6 @@ fn guarded_closed_sink(
             return;
         }
         user_closed_sink();
-        drop(active);
     })
 }
 
@@ -1473,7 +1410,6 @@ fn guarded_demand_sink(
             return;
         }
         user_demand_sink();
-        drop(active);
     })
 }
 
@@ -1487,7 +1423,6 @@ fn guarded_bytes_sink(
             return;
         }
         user_bytes_sink(bytes);
-        drop(active);
     })
 }
 
@@ -1604,12 +1539,12 @@ async fn run_tcp_bridge(
         }
 
         tokio::select! {
-            // Biased so shutdown + idle drain promptly. The two data arms
-            // come last; once those are reached, tokio polls them in source
-            // order on each iteration, but a still-pending arm is just
-            // polled later, not penalised — sustained traffic in one
-            // direction does not starve the other (e.g. a busy h2
-            // connection pushing response data + WINDOW_UPDATEs).
+            // Biased: shutdown + idle drain immediately, and the write
+            // arm is preferred when both data arms are simultaneously
+            // ready. Accepted trade-off — the read arm yields a poll to
+            // the kernel buffer, which absorbs short backlog while the
+            // write side bursts. Cancel determinism wins over perfect
+            // read/write fairness for proxy traffic.
             biased;
 
             // Per-flow shutdown — drain immediately.

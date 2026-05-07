@@ -347,11 +347,9 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     deinit {
-        lock.lock()
-        let p = enginePtr
-        enginePtr = nil
-        lock.unlock()
-        if let p {
+        // No lock: Swift's deinit only fires when no strong references
+        // exist, so there is no concurrent caller to race against.
+        if let p = enginePtr {
             rama_transparent_proxy_engine_free(p)
         }
     }

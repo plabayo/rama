@@ -17,12 +17,14 @@ use rama::{
 
 /// Per-pid cache for the path/arguments lookups done by the trace
 /// layer on every request. `pid_arguments` allocates ~1 MiB per call
-/// (sized to `KERN_ARGMAX`); calling it on the per-request hot path
-/// dominates allocator load on a busy h2 connection. The PID space is
-/// stable for the lifetime of the originating process, so a short-TTL
-/// cache is sound — when a PID is reused the entry will already have
-/// expired.
-type PidInfo = (Option<PathBuf>, Arc<Vec<String>>);
+/// (sized to `KERN_ARGMAX`); the PID space is stable for the lifetime
+/// of the originating process, so a short-TTL cache is sound.
+#[derive(Debug, Clone, Default)]
+struct PidInfo {
+    path: Option<Arc<PathBuf>>,
+    args: Arc<Vec<String>>,
+}
+
 fn pid_info_cache() -> &'static Cache<i32, PidInfo> {
     static CACHE: std::sync::OnceLock<Cache<i32, PidInfo>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
@@ -96,27 +98,25 @@ where
         let method = req.method().clone();
         let uri = req.uri().clone();
 
-        let (app_bundle_id, pid, process_path, process_args) = req
+        let (app_bundle_id, pid, info) = req
             .extensions()
             .get_ref::<TransparentProxyFlowMeta>()
             .map(|meta| {
                 let app_bundle_id = meta.source_app_bundle_identifier.as_deref();
                 let maybe_pid = meta.source_app_pid;
-                let (process_path, process_args) = maybe_pid
+                let info = maybe_pid
                     .map(|pid| {
-                        pid_info_cache()
-                            .get_with(pid, || {
-                                (
-                                    lookup_process_path(pid),
-                                    Arc::new(lookup_process_arguments(pid)),
-                                )
-                            })
+                        pid_info_cache().get_with(pid, || PidInfo {
+                            path: lookup_process_path(pid).map(Arc::new),
+                            args: Arc::new(lookup_process_arguments(pid)),
+                        })
                     })
                     .unwrap_or_default();
-                (app_bundle_id, maybe_pid, process_path, process_args)
+                (app_bundle_id, maybe_pid, info)
             })
             .unwrap_or_default();
-        let process_path_display = process_path.as_ref().map(|p| p.display());
+        let process_path_display = info.path.as_deref().map(|p| p.display());
+        let process_args = &*info.args;
 
         tracing::debug!(
             app_bundle_id,
