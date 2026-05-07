@@ -6,10 +6,13 @@
 
 use std::time::{Duration, Instant};
 
+use rama::{futures::future::join_all, http::Version};
 use serial_test::serial;
 
 use crate::shared::{
-    clients::{roundtrip_custom_protocol, udp_roundtrip},
+    clients::{
+        build_http_client, fetch_response, post_with_body, roundtrip_custom_protocol, udp_roundtrip,
+    },
     env::setup_env,
     ingress::spawn_ingress_listener,
     types::{ProxyKind, TcpMode, localhost},
@@ -65,8 +68,12 @@ async fn ffi_stress_udp_sequential_churn() {
     const N: usize = 16;
     let started = Instant::now();
     for i in 0..N {
-        let response =
-            udp_roundtrip(env.engine.clone(), localhost(env.ports.udp), b"stress udp ffi").await;
+        let response = udp_roundtrip(
+            env.engine.clone(),
+            localhost(env.ports.udp),
+            b"stress udp ffi",
+        )
+        .await;
         assert_eq!(
             response.as_slice(),
             b"STRESS UDP FFI",
@@ -125,6 +132,90 @@ async fn ffi_stress_tcp_concurrent_churn() {
     assert!(
         elapsed < Duration::from_secs(15),
         "{TASKS}*{PER_TASK} concurrent tcp roundtrips took {elapsed:?} (>15s)",
+    );
+
+    ingress.shutdown().await;
+}
+
+/// Mixed-shape concurrent load: one slow large-body POST flow + N small
+/// concurrent GET flows. Pins the bridge's per-flow isolation under
+/// asymmetric backpressure shapes, the gap that surfaced in production
+/// as `socket-hang-up` against an unbounded mpsc (pre-#887). The big
+/// upload exercises the ingress→service direction; the small fan-out
+/// exercises the service→ingress direction across many flows
+/// simultaneously.
+#[tokio::test]
+#[serial]
+async fn ffi_stress_mixed_concurrent_load_with_large_body() {
+    let env = setup_env().await;
+    let ingress = spawn_ingress_listener(env.engine.clone(), localhost(env.ports.http)).await;
+    let ingress_addr = ingress.local_addr();
+    let proxy_addr = localhost(env.ports.proxy);
+    let client = build_http_client(None);
+
+    const SMALL_FLOWS: usize = 16;
+    const POST_BYTES: usize = 4 * 1024 * 1024; // 4 MiB upload
+    let base = format!("http://127.0.0.1:{}", ingress_addr.port());
+    let post_body = vec![0xA5_u8; POST_BYTES];
+
+    let started = Instant::now();
+    let large_post = {
+        let client = &client;
+        let url = format!("{base}/echo");
+        let body = post_body.clone();
+        async move {
+            let response = post_with_body(
+                client,
+                &url,
+                Version::HTTP_11,
+                ProxyKind::None,
+                proxy_addr,
+                body,
+            )
+            .await;
+            assert!(
+                response.status().is_success(),
+                "large post status = {}",
+                response.status()
+            );
+            let echoed_len: usize = response
+                .headers()
+                .get("x-echo-len")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok())
+                .expect("x-echo-len header");
+            assert_eq!(
+                echoed_len, POST_BYTES,
+                "server saw fewer bytes than uploaded"
+            );
+        }
+    };
+    let small_flows = join_all((0..SMALL_FLOWS).map(|idx| {
+        let client = &client;
+        let url = format!("{base}/json?small={idx}");
+        async move {
+            let response =
+                fetch_response(client, &url, Version::HTTP_11, ProxyKind::None, proxy_addr).await;
+            assert!(
+                response.status().is_success(),
+                "small flow {idx} status = {}",
+                response.status()
+            );
+        }
+    }));
+
+    let outcome = tokio::time::timeout(Duration::from_secs(60), async move {
+        tokio::join!(large_post, small_flows);
+    })
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "mixed-shape stress exceeded 60s — likely a backpressure stall regression",
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "mixed-shape stress took {elapsed:?} (>60s)",
     );
 
     ingress.shutdown().await;

@@ -252,14 +252,11 @@ async fn run_h2_large_body_case(target: HttpTargetKind, proxy: ProxyKind, size_k
         response.status()
     );
 
-    let body: Bytes = tokio::time::timeout(
-        Duration::from_secs(30),
-        response.into_body().collect(),
-    )
-    .await
-    .expect("body collect should not time out")
-    .expect("body bytes")
-    .to_bytes();
+    let body: Bytes = tokio::time::timeout(Duration::from_secs(30), response.into_body().collect())
+        .await
+        .expect("body collect should not time out")
+        .expect("body bytes")
+        .to_bytes();
     let expected_bytes = size_kb * 1024;
     assert_eq!(
         body.len(),
@@ -306,14 +303,8 @@ async fn run_h2_concurrent_large_case(
             let client = &client;
             let url = format!("{base}/large?kb={size_kb}&stream={idx}");
             async move {
-                let response = fetch_response(
-                    client,
-                    &url,
-                    Version::HTTP_2,
-                    proxy,
-                    proxy_addr,
-                )
-                .await;
+                let response =
+                    fetch_response(client, &url, Version::HTTP_2, proxy, proxy_addr).await;
                 response
                     .into_body()
                     .collect()

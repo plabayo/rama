@@ -175,6 +175,20 @@ pub(crate) async fn fetch_response(
     builder.send().await.expect("send request")
 }
 
+pub(crate) async fn post_with_body(
+    client: &ClientService,
+    url: &str,
+    version: Version,
+    proxy_kind: ProxyKind,
+    proxy_addr: std::net::SocketAddr,
+    body: Vec<u8>,
+) -> Response {
+    let builder = client.post(url).body(body);
+    let builder = apply_http_version(builder, version);
+    let builder = apply_proxy_extensions(builder, proxy_kind, proxy_addr);
+    builder.send().await.expect("send post request")
+}
+
 pub(crate) async fn websocket_echo(
     client: &ClientService,
     url: String,
