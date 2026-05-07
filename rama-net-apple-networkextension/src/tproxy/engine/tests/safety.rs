@@ -340,14 +340,15 @@ fn udp_on_client_close_runs_service_close_epilogue() {
     // synthetic-close branch instead.
     std::thread::sleep(Duration::from_millis(20));
 
-    // The closed_sink is the user-supplied callback, but it's routed
-    // through `guarded_closed_sink(callback_active, ...)`.
-    // `on_client_close` flips `callback_active` *before* signalling
-    // shutdown, so the user closure won't run. We instead observe
-    // that the service task ran to completion (close epilogue
-    // emitted the dial9 / tracing event) by waiting for
-    // `engine.stop()` to drain — if the task were detached without
-    // shutdown observation, stop() would block on its flow_guard.
+    // We observe that the service task ran to completion (close
+    // epilogue emitted the dial9 / tracing event and fired
+    // closed_sink) by waiting for `engine.stop()` to drain — if the
+    // task were detached without shutdown observation, stop() would
+    // block on its flow_guard. The user-supplied closed_sink itself
+    // also runs (it's NOT gated by `callback_active`; the gate is
+    // intentionally absent so Swift's writer pump can drain pending
+    // bytes via `closeWhenDrained` even after a hard cancel — see
+    // `guarded_closed_sink` and `stress_test_root_cause_v2.md` §1).
     session.on_client_close();
     drop(session);
 

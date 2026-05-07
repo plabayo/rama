@@ -61,6 +61,65 @@ fn udp_bridge_delivers_server_datagram() {
     assert_eq!(got.lock().as_slice(), b"ping");
 }
 
+/// Regression for `stress_test_root_cause_v2.md` §1: same shape as
+/// the TCP version (`tcp_cancel_during_inflight_response_still_fires_on_server_closed`).
+/// `on_client_close` must always fire `on_server_closed` so a Swift
+/// dispatcher can run its terminal cleanup. UDP doesn't have an
+/// in-flight pump to drain, but the close-callback contract is the
+/// same.
+#[test]
+fn udp_on_client_close_still_fires_on_server_closed() {
+    let closed_count = Arc::new(AtomicUsize::new(0));
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+    };
+    let engine = build_engine(handler);
+
+    let closed_count_cb = closed_count.clone();
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
+        |_| {},
+        || {},
+        move || {
+            closed_count_cb.fetch_add(1, Ordering::Relaxed);
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| {});
+
+    // Give the service task time to reach its select! before close.
+    std::thread::sleep(Duration::from_millis(20));
+
+    session.on_client_close();
+    drop(session);
+
+    let started = std::time::Instant::now();
+    while closed_count.load(Ordering::Relaxed) == 0 && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        closed_count.load(Ordering::Relaxed),
+        1,
+        "on_client_close must still fire on_server_closed exactly once (regression for stress_test_root_cause_v2.md §1)",
+    );
+
+    engine.stop(0);
+}
+
 /// Egress (remote→service) UDP path drops datagrams when the
 /// per-flow channel is saturated. Asymmetric to the ingress path:
 /// the ingress demand callback re-arms a paused Swift kernel reader,

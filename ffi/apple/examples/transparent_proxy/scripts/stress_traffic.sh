@@ -155,10 +155,15 @@ fi
 WORKER_PIDS=$(jobs -p)
 say "workers up:  $(echo "$WORKER_PIDS" | wc -w | tr -d ' ')"
 
-# Live progress while we wait.
+# Live progress while we wait. `START_TS` is an epoch-second
+# timestamp; subtract a fresh epoch read to get elapsed seconds.
+# Using bash's built-in `$SECONDS` (which counts from shell start,
+# not from epoch) here underflows into a wildly negative "elapsed"
+# display — that was the broken counter in the v2 stress audit.
 while kill -0 $(echo "$WORKER_PIDS" | head -1) 2>/dev/null; do
-  if (( SECONDS - START_TS > DURATION )); then break; fi
-  printf '\r[stress] %ds elapsed' "$((SECONDS - START_TS))"
+  ELAPSED=$(( $(date -u +%s) - START_TS ))
+  if (( ELAPSED > DURATION )); then break; fi
+  printf '\r[stress] %ds elapsed' "$ELAPSED"
   sleep 1
 done
 printf '\n'

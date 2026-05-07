@@ -108,11 +108,108 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
 
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(bytes_count.load(Ordering::Relaxed), 0);
+    // None of these sessions were activated, so no ingress bridge task
+    // ever started — the close-callback path is wired by
+    // `run_tcp_bridge`, which only runs after `activate()`. The pre-
+    // activate cancel just aborts the never-started service task and
+    // returns 0 closes. Activated sessions still fire close exactly
+    // once after cancel — pinned by
+    // `tcp_cancel_during_inflight_response_still_fires_on_server_closed`.
     assert_eq!(closed_count.load(Ordering::Relaxed), 0);
 
     let start = Instant::now();
     engine.stop(0);
     assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+/// Regression for `stress_test_root_cause_v2.md` §1: a `cancel()` that
+/// races against in-flight response bytes must still fire
+/// `on_server_closed`. The dispatcher's writer pump uses that signal
+/// to drain pending bytes via `closeWhenDrained` before closing the
+/// flow's write side; without it, up to ~4 MiB of queued response
+/// bytes plus the NEAppProxyFlow kernel buffer were silently dropped
+/// — which surfaced under stress as truncated downloads (curl
+/// reporting `received 26 MB / 50 MB`) and 30s `--max-time` timeouts.
+///
+/// We model the scenario without Apple by writing a chunked response
+/// from the service, reading the first chunk on the bridge ingress
+/// side, then calling `cancel()` while more chunks are still queued.
+/// Pre-fix this never produced a close callback (the
+/// `guarded_closed_sink` short-circuited on `callback_active = false`);
+/// post-fix it always does.
+#[test]
+fn tcp_cancel_during_inflight_response_still_fires_on_server_closed() {
+    let closed_count = Arc::new(AtomicUsize::new(0));
+    let (saw_first_chunk_tx, saw_first_chunk_rx) = std::sync::mpsc::channel::<()>();
+    let saw_first_chunk_tx = Arc::new(Mutex::new(Some(saw_first_chunk_tx)));
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    let BridgeIo(mut ingress, _egress) = bridge;
+                    // Write three response chunks with a small gap so
+                    // the test can guarantee at least one chunk has
+                    // reached the bridge before cancel fires. The
+                    // remaining chunks model the in-flight pump bytes
+                    // that the production bug discarded.
+                    for _ in 0..3 {
+                        if ingress.write_all(b"chunk").await.is_err() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine(handler);
+
+    let closed_count_cb = closed_count.clone();
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+        move |_bytes| {
+            // Notify on the first chunk only; subsequent chunks are
+            // the "in-flight pump bytes" we want to race against
+            // cancel.
+            if let Some(tx) = saw_first_chunk_tx.lock().take() {
+                _ = tx.send(());
+            }
+            TcpDeliverStatus::Accepted
+        },
+        || {},
+        move || {
+            closed_count_cb.fetch_add(1, Ordering::Relaxed);
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+    saw_first_chunk_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("first chunk must reach the bridge before cancel");
+
+    session.cancel();
+    drop(session);
+
+    let started = Instant::now();
+    while closed_count.load(Ordering::Relaxed) == 0 && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        closed_count.load(Ordering::Relaxed),
+        1,
+        "cancel() must still fire on_server_closed exactly once so the Swift writer pump can drain pending bytes (regression for stress_test_root_cause_v2.md §1)",
+    );
+
+    engine.stop(0);
 }
 
 #[test]

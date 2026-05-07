@@ -1394,6 +1394,14 @@ impl<H> TransparentProxyEngine<H> {
 // returns. Bind the guard to a named local (`active`) so its scope is
 // the whole closure body — `let _ = lock()` drops immediately and
 // reintroduces the UAF window.
+//
+// `guarded_closed_sink` is the lone exception: it is a one-shot
+// terminal signal that consumers need to receive even after a hard
+// cancel (Swift's writer pump uses it to drain in-flight bytes via
+// `closeWhenDrained`), and the Swift closure registered for it only
+// touches `[weak …]` captures so a late-arrival call is a no-op
+// rather than a UAF. See the function's own doc for the failure
+// mode that motivated removing the gate (`stress_test_root_cause_v2.md`).
 
 fn guarded_bytes_status_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
@@ -1409,16 +1417,38 @@ fn guarded_bytes_status_sink(
 }
 
 fn guarded_closed_sink(
-    callback_active: Arc<parking_lot::Mutex<bool>>,
+    _callback_active: Arc<parking_lot::Mutex<bool>>,
     user_closed_sink: ClosedSink,
 ) -> ClosedSink {
-    Arc::new(move || {
-        let active = callback_active.lock();
-        if !*active {
-            return;
-        }
-        user_closed_sink();
-    })
+    // One-shot terminal signal: even when `cancel()` flips
+    // `callback_active = false`, the bridge close epilogue MUST still
+    // fire `on_server_closed` so the Swift writer pump's
+    // `closeWhenDrained` runs and drains in-flight bytes before the
+    // write side is closed.
+    //
+    // Gating this on `callback_active` was the engine-side half of
+    // the truncated-response failure mode (`stress_test_root_cause_v2.md`):
+    // for a curl-style natural-close flow the dispatcher used to call
+    // `session.cancel()`, which flipped the flag; the bridge then
+    // saw `flow_guard.cancelled()` and exited with
+    // `BridgeCloseReason::Shutdown`; the close epilogue's
+    // `on_server_closed` was suppressed here, so up to ~4 MiB of
+    // pump-pending response bytes plus whatever sat in the
+    // NEAppProxyFlow kernel buffer never reached the originating app.
+    // The dispatcher fix (use `on_client_eof()` on natural EOF) is
+    // the primary remediation; dropping this gate makes the engine
+    // self-healing for any future dispatcher that takes the same
+    // shortcut.
+    //
+    // Idempotency / lifetime invariants: `on_server_closed` fires
+    // exactly once per flow at the bridge teardown site, and the
+    // Swift closure only touches `[weak …]` captures (writer / ctx /
+    // self) — so a late-arrival call after `_session_free` is at
+    // worst a no-op, never a UAF. The other guarded sinks
+    // (`guarded_bytes_status_sink`, `guarded_demand_sink`,
+    // `guarded_bytes_sink`) keep the gate; their callers do touch
+    // FFI box state and are the actual UAF risk.
+    user_closed_sink
 }
 
 fn guarded_demand_sink(
