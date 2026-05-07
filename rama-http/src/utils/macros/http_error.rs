@@ -63,7 +63,7 @@ macro_rules! __define_http_rejection {
 
         impl std::error::Error for $name {
             fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                Some($crate::service::web::ResponseError::new(self))
+                Some($crate::service::web::error::DowncastResponseError::new(self))
             }
         }
 

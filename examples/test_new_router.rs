@@ -1,19 +1,23 @@
-use std::{convert::Infallible, error::Error, io, iter::successors, sync::Arc};
+use std::{error::Error, iter::successors};
 
 use derive_more::{Display, Error};
 use h2_support::prelude::Response;
 use rama::{
+    Layer, Service,
     error::BoxError,
     http::{
-        service::web::{extract::Host, Router},
         Body, Method, Request, StatusCode,
+        service::web::{Router, extract::Host},
     },
-    Service,
 };
 use rama_http::{
+    self,
     matcher::HttpMatcher,
     service::web::{
-        extract::host::MissingHost, response::IntoResponse, ResponseError, RouterError,
+        RouterError,
+        error::{DowncastResponseError, DowncastResponseLayer},
+        extract::host::MissingHost,
+        response::IntoResponse,
     },
 };
 
@@ -116,15 +120,37 @@ async fn main() {
     dbg!(&res);
 
     if let Err(err) = res {
-        dbg!(downcast_ref::<ResponseError>(&*err));
+        dbg!(downcast_ref::<DowncastResponseError>(&*err));
         dbg!(downcast_ref::<RouterError>(&*err));
-        dbg!(ResponseError::try_as_response(&*err));
+        dbg!(DowncastResponseError::try_as_response(&*err));
     }
+
+    let router = DowncastResponseLayer::as_ref().layer(router);
+    let res = router
+        .serve(
+            Request::builder()
+                .uri("/test555")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    dbg!(&res);
 
     let mut router1 = Router::new().with_endpoint_layer(());
     router1.set_match_route("/", HttpMatcher::method_get(), test_func5);
 
-    let res = router1
+    let res = DowncastResponseLayer::auto()
+        .layer(router1)
+        .serve(
+            Request::builder()
+                .uri("/test555")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    dbg!(res);
+
+    let res = router
         .serve(
             Request::builder()
                 .uri("/test555")

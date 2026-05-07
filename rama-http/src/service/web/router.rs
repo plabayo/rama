@@ -28,7 +28,8 @@ use crate::{
     service::{
         fs::{DirectoryServeMode, ServeDir},
         web::{
-            IntoEndpointService, IntoEndpointServiceWithState, ResponseError,
+            IntoEndpointService, IntoEndpointServiceWithState,
+            error::DowncastResponseError,
             response::{Headers, IntoResponse, layer::IntoResponseLayer},
         },
     },
@@ -648,7 +649,7 @@ impl fmt::Display for RouterError {
 
 impl Error for RouterError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(ResponseError::new(self))
+        Some(DowncastResponseError::new(self))
     }
 }
 

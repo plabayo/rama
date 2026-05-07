@@ -15,8 +15,7 @@ pub use endpoint::{
 // #[doc(inline)]
 // pub use k8s::{k8s_health, k8s_health_builder};
 
-mod error;
-pub use error::ResponseError;
+pub mod error;
 
 mod router;
 #[doc(inline)]
