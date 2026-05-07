@@ -422,24 +422,38 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     let mut buf = vec![0u8; buf_size];
+    let mut copy_err: Option<std::io::Error> = None;
     loop {
-        let n = reader.read(&mut buf).await?;
-        if n == 0 {
-            // Half-close the write side so the peer sees EOF promptly.
-            // Bounded by `shutdown_grace`: `AsyncWrite::shutdown` on a
-            // TLS writer can wait indefinitely for the peer's
-            // close_notify response, which would otherwise wedge this
-            // future and prevent `run_select_loop` from completing.
-            // The flag tells the outer `run_bridge` post-loop shutdown
-            // to skip this side so we don't double-shutdown the TLS
-            // writer (implementation-defined).
-            _ = tokio::time::timeout(shutdown_grace, writer.shutdown()).await;
-            write_side_shut.store(true, Ordering::Release);
-            return Ok(());
+        match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                if let Err(err) = writer.write_all(&buf[..n]).await {
+                    copy_err = Some(err);
+                    break;
+                }
+                bytes.fetch_add(n as u64, Ordering::Relaxed);
+                progress.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(err) => {
+                copy_err = Some(err);
+                break;
+            }
         }
-        writer.write_all(&buf[..n]).await?;
-        bytes.fetch_add(n as u64, Ordering::Relaxed);
-        progress.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // Single shutdown path for clean EOF, read errors, and write
+    // errors alike: one bounded shutdown attempt, mark the side shut
+    // so the outer `run_bridge` post-loop shutdown skips us, swallow
+    // any shutdown error (the writer may already be poisoned by a
+    // prior write error — that's expected). Bounded by
+    // `shutdown_grace` so a TLS writer waiting on the peer's
+    // close_notify can't wedge this future indefinitely.
+    _ = tokio::time::timeout(shutdown_grace, writer.shutdown()).await;
+    write_side_shut.store(true, Ordering::Release);
+
+    match copy_err {
+        Some(err) => Err(err),
+        None => Ok(()),
     }
 }
 
@@ -698,5 +712,100 @@ mod tests {
             .await
             .expect("bridge did not unwind on EOF within 2s")
             .unwrap();
+    }
+
+    /// `copy_one_way` must call `writer.shutdown()` exactly once
+    /// regardless of whether the loop exited via clean EOF, a read
+    /// error, or a write error. Without this the outer `run_bridge`
+    /// post-loop shutdown would re-enter `shutdown` on a writer that
+    /// already errored — fine for current TLS impls, fragile against
+    /// future ones. Pin the contract.
+    #[tokio::test]
+    async fn copy_one_way_calls_shutdown_once_on_write_error() {
+        use std::sync::atomic::AtomicUsize;
+        use std::task::{Context, Poll};
+        use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+        struct ReadOnce {
+            done: bool,
+        }
+        impl AsyncRead for ReadOnce {
+            fn poll_read(
+                mut self: std::pin::Pin<&mut Self>,
+                _: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                if self.done {
+                    return Poll::Ready(Ok(()));
+                }
+                self.done = true;
+                buf.put_slice(b"hi");
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        struct CountingWriter {
+            shutdown_calls: Arc<AtomicUsize>,
+            fail_write: bool,
+        }
+        impl AsyncWrite for CountingWriter {
+            fn poll_write(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                if self.fail_write {
+                    Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "test",
+                    )))
+                } else {
+                    Poll::Ready(Ok(buf.len()))
+                }
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                self.shutdown_calls.fetch_add(1, Ordering::Relaxed);
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let shutdown_calls = Arc::new(AtomicUsize::new(0));
+        let mut reader = ReadOnce { done: false };
+        let mut writer = CountingWriter {
+            shutdown_calls: shutdown_calls.clone(),
+            fail_write: true,
+        };
+        let bytes = Arc::new(AtomicU64::new(0));
+        let progress = Arc::new(AtomicU64::new(0));
+        let write_side_shut = Arc::new(AtomicBool::new(false));
+        let res = copy_one_way(
+            &mut reader,
+            &mut writer,
+            bytes,
+            progress,
+            64,
+            Duration::from_millis(50),
+            write_side_shut.clone(),
+        )
+        .await;
+        assert!(res.is_err(), "expected write error to propagate");
+        assert_eq!(
+            shutdown_calls.load(Ordering::Relaxed),
+            1,
+            "shutdown must be called exactly once even on the write-error path",
+        );
+        assert!(
+            write_side_shut.load(Ordering::Acquire),
+            "write_side_shut flag must be set so run_bridge skips a duplicate shutdown",
+        );
     }
 }

@@ -430,6 +430,12 @@ pub struct TcpEgressConnectOptions {
 #[repr(C)]
 pub struct UdpEgressConnectOptions {
     pub parameters: NwEgressParameters,
+    /// Whether `connect_timeout_ms` carries a meaningful value.
+    /// `false` ⇒ Swift uses its built-in default.
+    pub has_connect_timeout_ms: bool,
+    /// Wall-clock cap on the egress `NWConnection.stateUpdateHandler`
+    /// reaching `.ready`. See `tproxy::types::NwUdpConnectOptions::connect_timeout`.
+    pub connect_timeout_ms: u32,
 }
 
 /// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.

@@ -360,6 +360,13 @@ typedef struct {
 /// Options for the egress NWConnection on UDP flows.
 typedef struct {
     RamaNwEgressParameters parameters;
+    /// Whether `connect_timeout_ms` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_connect_timeout_ms;
+    /// Wall-clock cap (ms) on the egress NWConnection reaching `.ready`.
+    /// UDP has no real handshake — this bounds the local DNS /
+    /// Network.framework preparation phase.
+    uint32_t connect_timeout_ms;
 } RamaUdpEgressConnectOptions;
 
 /// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's

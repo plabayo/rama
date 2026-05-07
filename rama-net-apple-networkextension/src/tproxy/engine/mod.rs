@@ -1499,8 +1499,10 @@ async fn run_tcp_bridge(
     // pattern for the Swift → Rust direction.
     let mut pending_to_server: Option<Bytes> = None;
 
-    let mut bytes_in: u64 = 0; // bytes written to the duplex (FFI -> service)
-    let mut bytes_out: u64 = 0; // bytes read from the duplex (service -> FFI)
+    // Direction-relative byte counters. See `emit_tcp_bridge_close_event`
+    // for how the Ingress / Egress orientations resolve at log time.
+    let mut bytes_received: u64 = 0; // FFI peer → duplex (this side received)
+    let mut bytes_sent: u64 = 0; // duplex → FFI peer  (this side sent)
     let progress = Arc::new(AtomicU64::new(0));
     let mut last_progress: u64 = 0;
     let mut idle = idle_timeout.map(IdleGuard::new);
@@ -1515,14 +1517,12 @@ async fn run_tcp_bridge(
             let chunk_len = bytes.len() as u64;
             match on_server_bytes(bytes.clone()) {
                 TcpDeliverStatus::Accepted => {
-                    // Count this chunk against `bytes_out` here, on the
-                    // replay's accepted return — the original read at
-                    // line ~`Accepted` arm of the main loop only counts
-                    // for the *first* successful delivery, never for
-                    // chunks that paused and were replayed. Without this
-                    // every chunk that ever paused is missing from the
-                    // close-event byte total.
-                    bytes_out += chunk_len;
+                    // Count this chunk against `bytes_sent` here, on
+                    // the replay's accepted return — the original
+                    // read in the main loop only counts for the first
+                    // successful delivery, never for chunks that
+                    // paused and were replayed.
+                    bytes_sent += chunk_len;
                     progress.fetch_add(1, Ordering::Relaxed);
                 }
                 TcpDeliverStatus::Paused => {
@@ -1619,7 +1619,7 @@ async fn run_tcp_bridge(
                         write_done = true;
                         client_rx.close();
                     } else {
-                        bytes_in += n;
+                        bytes_received += n;
                         progress.fetch_add(1, Ordering::Relaxed);
                     }
                 } else {
@@ -1654,7 +1654,7 @@ async fn run_tcp_bridge(
                         let bytes = Bytes::copy_from_slice(&buf[..n]);
                         match on_server_bytes(bytes.clone()) {
                             TcpDeliverStatus::Accepted => {
-                                bytes_out += n as u64;
+                                bytes_sent += n as u64;
                                 progress.fetch_add(1, Ordering::Relaxed);
                             }
                             TcpDeliverStatus::Paused => {
@@ -1693,26 +1693,21 @@ async fn run_tcp_bridge(
         }
     };
 
-    emit_tcp_bridge_close_event(direction, close_reason, &meta, bytes_in, bytes_out);
-    // Emit the dial9 close event only from the Ingress direction so the
-    // flow appears once in the trace. The structured `tracing` event
-    // above is per-direction (each bridge logs its own bytes_in/bytes_out
-    // for observability); dial9 collapses the two views into a single
-    // record where:
-    //   - `bytes_in`  = client → server  (Ingress.bytes_in,
-    //                   i.e. bytes the bridge wrote into the duplex
-    //                   from the client/FFI side)
-    //   - `bytes_out` = server → client  (Ingress.bytes_out,
-    //                   i.e. bytes the rama service produced for the
-    //                   client side, observed at this bridge's read
-    //                   half via `on_server_bytes`)
+    emit_tcp_bridge_close_event(direction, close_reason, &meta, bytes_received, bytes_sent);
+    // Emit the dial9 close event only from the Ingress direction so
+    // the flow appears once in the trace. The structured `tracing`
+    // event above is per-direction (each bridge logs its own
+    // direction-relative `bytes_received` / `bytes_sent`); dial9
+    // collapses the two views into a single record using the
+    // INGRESS bridge's counts, which on the ingress side mean:
+    //   - bytes_received = client → service (this side received)
+    //   - bytes_sent     = service → client (this side sent)
     // For a faithful relay these match the egress view modulo MITM
-    // transformations; the ingress numbers reflect what the client
-    // actually sent / received, which is what most analyses want.
+    // transformations.
     #[cfg(feature = "dial9")]
     if matches!(direction, BridgeDirection::Ingress) {
         let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
-        crate::tproxy::dial9::record_flow_closed(meta.flow_id, age_ms, bytes_in, bytes_out);
+        crate::tproxy::dial9::record_flow_closed(meta.flow_id, age_ms, bytes_received, bytes_sent);
     }
     on_server_closed();
 }
@@ -1761,9 +1756,17 @@ fn emit_tcp_bridge_close_event(
     direction: BridgeDirection,
     reason: BridgeCloseReason,
     meta: &TransparentProxyFlowMeta,
-    bytes_in: u64,
-    bytes_out: u64,
+    bytes_received: u64,
+    bytes_sent: u64,
 ) {
+    // `bytes_received` / `bytes_sent` are RELATIVE to the side this
+    // bridge half is on (Ingress: client-side; Egress: server-side):
+    //   * Ingress: received = client→service,  sent = service→client
+    //   * Egress:  received = server→service,  sent = service→server
+    // Operators reading the log MUST also read `direction` to
+    // interpret the counts. The previous `bytes_in` / `bytes_out`
+    // names suggested an absolute orientation that is not what the
+    // bridge actually measures.
     let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
     let local = meta.local_endpoint.as_ref().map(ToString::to_string);
     let remote = meta.remote_endpoint.as_ref().map(ToString::to_string);
@@ -1776,8 +1779,8 @@ fn emit_tcp_bridge_close_event(
         direction = %direction,
         reason = %reason,
         age_ms,
-        bytes_in,
-        bytes_out,
+        bytes_received,
+        bytes_sent,
         pid = meta.source_app_pid,
         bundle_id = meta.source_app_bundle_identifier.as_deref(),
         signing_id = meta.source_app_signing_identifier.as_deref(),

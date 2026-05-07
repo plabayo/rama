@@ -723,3 +723,81 @@ impl<S, Issuer: Clone> Layer<S> for TlsMitmRelay<Issuer> {
         TlsMitmRelayService::new(self, inner)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{reason_is_cert_signal, reason_is_handshake_signal};
+
+    /// `reason_is_cert_signal` is the load-bearing classifier for
+    /// "the peer rejected our MITM certificate" detection. Future
+    /// contributors editing the substring list silently change the
+    /// classification of real-world errors; pin the contract here.
+    #[test]
+    fn cert_signal_matches_known_boring_reasons() {
+        for reason in [
+            "unknown_ca",
+            "TLSV1_ALERT_UNKNOWN_CA",
+            "certificate_unknown",
+            "BAD_CERTIFICATE",
+            "bad_cert_request",
+            "expired_certificate",
+            "revoked_certificate",
+            "untrusted_ca",
+            "TLSV1_ALERT_UNTRUSTED",
+            "cert_chain_too_long",
+            "notbefore_is_in_certificate",
+        ] {
+            assert!(
+                reason_is_cert_signal(reason),
+                "expected reason {reason:?} to count as a cert signal",
+            );
+        }
+    }
+
+    /// Generic transport / protocol errors must NOT classify as cert.
+    /// A false-positive here would mark unrelated TLS failures as
+    /// "client rejected our cert" and skew triage.
+    #[test]
+    fn cert_signal_rejects_non_cert_reasons() {
+        for reason in [
+            "ssl_handshake_failure",
+            "TLSV1_ALERT_HANDSHAKE_FAILURE",
+            "decryption_failed",
+            "record_overflow",
+            "internal_error",
+            "no_shared_cipher",
+            "protocol_version",
+            "unexpected_message",
+            "",
+        ] {
+            assert!(
+                !reason_is_cert_signal(reason),
+                "reason {reason:?} must NOT count as a cert signal",
+            );
+        }
+    }
+
+    /// `reason_is_handshake_signal` is the weak / ambiguous classifier
+    /// — it should match generic handshake-stage failures without
+    /// being so loose that it catches everything.
+    #[test]
+    fn handshake_signal_matches_only_handshake_reasons() {
+        for reason in [
+            "ssl_handshake_failure",
+            "TLSV1_ALERT_HANDSHAKE_FAILURE",
+            "handshake_failure",
+            "handshake_not_complete",
+        ] {
+            assert!(
+                reason_is_handshake_signal(reason),
+                "expected reason {reason:?} to count as a handshake signal",
+            );
+        }
+        for reason in ["", "decryption_failed", "internal_error"] {
+            assert!(
+                !reason_is_handshake_signal(reason),
+                "reason {reason:?} must NOT count as a handshake signal",
+            );
+        }
+    }
+}

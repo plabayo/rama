@@ -815,7 +815,9 @@ final class RamaUdpSessionHandle {
                 has_attribution: false, attribution: 0,
                 prohibited_interface_types_mask: 0,
                 preserve_original_meta_data: true
-            )
+            ),
+            has_connect_timeout_ms: false,
+            connect_timeout_ms: 0
         )
         let hasCustom = rama_transparent_proxy_udp_session_get_egress_connect_options(s, &opts)
         return hasCustom ? opts : nil

@@ -712,8 +712,13 @@ macro_rules! __transparent_proxy_ffi_emit {
                 return false;
             };
 
+            let connect_timeout_ms = opts
+                .connect_timeout
+                .and_then(|d| u32::try_from(d.as_millis()).ok());
             let c_opts = RamaUdpEgressConnectOptions {
                 parameters: $crate::ffi::tproxy::NwEgressParameters::from_rust_type(&opts.parameters),
+                has_connect_timeout_ms: connect_timeout_ms.is_some(),
+                connect_timeout_ms: connect_timeout_ms.unwrap_or(0),
             };
             unsafe { *out_options = c_opts };
             true

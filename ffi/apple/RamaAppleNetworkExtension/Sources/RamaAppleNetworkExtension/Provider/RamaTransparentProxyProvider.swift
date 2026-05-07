@@ -726,23 +726,15 @@ private final class UdpClientWritePump {
 
 /// Creates TCP `NWParameters` from optional Rust-supplied egress options.
 ///
-/// Falls back to plain `NWParameters(tls: nil, tcp: NWProtocolTCP.Options())`
-/// (no TLS, no custom TCP options) when `opts` is `nil`.
+/// The `connect_timeout_ms` field intentionally does not propagate to
+/// `NWProtocolTCP.Options.connectionTimeout`. Apple's API takes seconds
+/// (Int), our FFI carries milliseconds, and the resulting ms→s round
+/// would silently change a 999ms cap into 1s. The dispatcher already
+/// enforces the timeout via a millisecond-precision DispatchWorkItem
+/// (see `handleTcpFlow`), so we have a single canonical timeout
+/// instead of two with mismatched precision.
 private func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
-    let tcpOpts = NWProtocolTCP.Options()
-    if let opts, opts.has_connect_timeout_ms {
-        // Apple's `connectionTimeout` is documented in seconds (Int).
-        // Our FFI carries the value in milliseconds. We floor on the
-        // ms→s conversion: callers asking for `connect_timeout_ms = 999`
-        // get 1 second (clamped via `max(1, …)`); `connect_timeout_ms =
-        // 1500` also gets 1. Sub-second resolution is not expressible
-        // through this Apple API. Document at the FFI builder if
-        // sub-second resolution becomes important — the right fix is
-        // to expose seconds at the FFI surface so the lossy conversion
-        // is visible to callers.
-        tcpOpts.connectionTimeout = max(1, Int(opts.connect_timeout_ms / 1000))
-    }
-    let params = NWParameters(tls: nil, tcp: tcpOpts)
+    let params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
     if let opts {
         applyNwEgressParameters(opts.parameters, to: params)
     }
@@ -1347,17 +1339,21 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             logger: { [weak self] message in
                 self?.logFlowMessage(message)
             },
-            onTerminalError: { [weak self] error in
+            onTerminalError: { [weak self, weak ctx] error in
+                // [weak ctx] breaks the cycle:
+                //   session → callbackBox → onServerBytes → writer →
+                //   onTerminalError → ctx → clientReadPump.onTerminal →
+                //   session.
+                // Without it, removing the session from `tcpSessions`
+                // does not let any of the per-flow Swift objects
+                // deallocate.
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
-                ctx.connection?.cancel()
-                ctx.session?.cancel()
+                ctx?.connection?.cancel()
+                ctx?.session?.cancel()
                 self?.removeTcpFlow(flowId)
             },
             onDrained: { [weak ctx] in
-                // Wired below to RamaTcpSessionHandle.signalServerDrain via
-                // the weak ctx → session ref so we don't pin the session
-                // alive past its natural teardown.
                 ctx?.session?.signalServerDrain()
             }
         )
@@ -1365,21 +1361,24 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let decision =
             engine?.newTcpSession(
                 meta: meta,
-                onServerBytes: { data in
-                    writer.enqueue(data)
+                onServerBytes: { [weak writer] data in
+                    // Weak: `writer` is held by `ctx`; Rust holding the
+                    // closure must not pin the writer. If the writer is
+                    // gone, the dispatcher has already torn down — tell
+                    // Rust to stop pumping by reporting `.closed`.
+                    writer?.enqueue(data) ?? .closed
                 },
                 onClientReadDemand: { [weak ctx] in
                     // Rust → Swift: the per-flow ingress channel has space
                     // again, so we may resume `flow.readData`. Hop onto the
                     // flow's queue before touching `ctx`, since this fires
-                    // from a Rust worker thread. `weak ctx` breaks the cycle
-                    // ctx → clientReadPump → session → callbackBox → here.
+                    // from a Rust worker thread.
                     flowQueue.async { [weak ctx] in
                         ctx?.clientReadPump?.resume()
                     }
                 },
-                onServerClosed: { [weak self] in
-                    writer.closeWhenDrained { wasOpened in
+                onServerClosed: { [weak self, weak writer, weak ctx] in
+                    writer?.closeWhenDrained { wasOpened in
                         if wasOpened {
                             flow.closeReadWithError(nil)
                             flow.closeWriteWithError(nil)
@@ -1388,7 +1387,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             flow.closeReadWithError(error)
                             flow.closeWriteWithError(error)
                         }
-                        ctx.connection?.cancel()
+                        ctx?.connection?.cancel()
                         self?.removeTcpFlow(flowId)
                     }
                 }
@@ -1508,12 +1507,26 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                 session: session,
                                 queue: flowQueue,
                                 logger: { [weak self] message in self?.logFlowMessage(message) },
-                                onTerminal: { [weak self] readError in
+                                onTerminal: {
+                                    [weak self, weak ctx, weak readPump, weak session] readError in
+                                    // Weak captures break the
+                                    // ctx → clientReadPump → session
+                                    // cycle that the dispatcher's
+                                    // closure graph would otherwise
+                                    // form (see writer.onTerminalError
+                                    // for the full chain).
                                     flow.closeReadWithError(readError)
                                     flow.closeWriteWithError(readError)
-                                    connection.cancel()
-                                    readPump.cancel()
-                                    session.cancel()
+                                    ctx?.connection?.cancel()
+                                    readPump?.cancel()
+                                    session?.cancel()
+                                    // Defence-in-depth: explicitly
+                                    // sever the per-flow strong refs
+                                    // so a future closure addition
+                                    // that re-introduces a strong
+                                    // capture does not silently leak.
+                                    ctx?.clientReadPump = nil
+                                    ctx?.egressReadPump = nil
                                     self?.removeTcpFlow(flowId)
                                 }
                             )
@@ -1562,17 +1575,32 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         var readPending = false
         var demandPending = false
         var closed = false
-        var writer: UdpClientWritePump!
+        var writer: UdpClientWritePump?
+        var requestRead: (() -> Void)?
 
-        let terminate: (Error?) -> Void = { [weak self] error in
+        let terminate: (Error?) -> Void = { [weak self, weak ctx] error in
+            // Closure cycles in this dispatcher form across three
+            // axes: (1) ctx → clientReadPump → session, (2) writer ↔
+            // terminate (writer.onTerminalError captures terminate;
+            // terminate captures the writer var box), (3) requestRead
+            // recursion captures itself.
+            //
+            // (1) is broken by [weak ctx] in this closure list +
+            // matching weak captures elsewhere. (2) and (3) are broken
+            // by clearing the local closure / writer slots once
+            // terminate has fired — the in-flight flow.readDatagrams
+            // and Rust-driven onClientReadDemand callbacks already
+            // bail on `closed`.
             flowQueue.async {
                 if closed { return }
                 closed = true
                 writer?.close()
+                writer = nil
+                requestRead = nil
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
-                ctx.connection?.cancel()
-                ctx.session?.onClientClose()
+                ctx?.connection?.cancel()
+                ctx?.session?.onClientClose()
                 self?.removeUdpFlow(flowId)
             }
         }
@@ -1594,7 +1622,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             localEndpoint: Self.udpLocalEndpoint(flow: flow)
         )
 
-        var requestRead: (() -> Void)!
         requestRead = { [weak self] in
             flowQueue.async {
                 guard !closed else { return }
@@ -1621,7 +1648,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         }
 
                         let endpoint = endpoints?.first
-                        writer.setSentByEndpoint(endpoint)
+                        writer?.setSentByEndpoint(endpoint)
 
                         guard let session = ctx.session else {
                             self?.logDebug(
@@ -1636,7 +1663,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         }
 
                         if demandPending {
-                            requestRead()
+                            requestRead?()
                         }
                     }
                 }
@@ -1645,8 +1672,13 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         let decision = engine?.newUdpSession(
             meta: bootMeta,
-            onServerDatagram: { data in writer.enqueue(data) },
-            onClientReadDemand: { requestRead() },
+            // [weak writer]: callbackBox holds this closure; without
+            // weak we'd pin the writer past the dispatcher's natural
+            // teardown. `requestRead` and `terminate` are deliberately
+            // strong — they're the only cleanup paths and must run
+            // even after the rest of the per-flow graph is gone.
+            onServerDatagram: { [weak writer] data in writer?.enqueue(data) },
+            onClientReadDemand: { requestRead?() },
             onServerClosed: { terminate(nil) }
         ) ?? .passthrough
 
@@ -1678,6 +1710,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         let egressOpts = session.getEgressConnectOptions()
         let nwParams = makeUdpNwParameters(egressOpts)
+        let connectTimeoutMs: UInt32 = egressOpts?.has_connect_timeout_ms == true
+            ? egressOpts!.connect_timeout_ms : 30_000
 
         // See TCP path for rationale; same metadata-propagation behavior.
         if egressOpts?.parameters.preserve_original_meta_data ?? true {
@@ -1698,7 +1732,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         var egressReady = false
 
-        // 30-second default timeout for UDP egress connection.
+        // Wall-clock cap on the NWConnection.stateUpdateHandler reaching
+        // `.ready`. Configurable via `NwUdpConnectOptions.connect_timeout`;
+        // default 30s when the handler does not override.
         let timeoutWork = DispatchWorkItem { [weak self] in
             guard !egressReady else { return }
             self?.logDebug(
@@ -1708,7 +1744,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             session.onClientClose()
             self?.removeUdpFlow(flowId)
         }
-        flowQueue.asyncAfter(deadline: .now() + 30, execute: timeoutWork)
+        flowQueue.asyncAfter(
+            deadline: .now() + .milliseconds(Int(connectTimeoutMs)), execute: timeoutWork)
 
         connection.stateUpdateHandler = { [weak self] (state: NWConnection.State) in
             flowQueue.async {
@@ -1751,9 +1788,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                 return
                             }
                             self?.logTrace("flow.open ok (udp, egress pre-connected)")
-                            writer.markOpened()
+                            writer?.markOpened()
                             readPump.start()
-                            requestRead()
+                            requestRead?()
                         }
                     }
 
