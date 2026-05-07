@@ -10,8 +10,8 @@ final class BundleIdDerivationTests: XCTestCase {
     func testStripsTeamIdPrefix() {
         XCTAssertEqual(
             RamaTransparentProxyProvider.deriveBundleId(
-                fromSigningId: "7VPF8GD6J4.com.aikido.endpoint.proxy.l4.dist.extension"),
-            "com.aikido.endpoint.proxy.l4.dist.extension"
+                fromSigningId: "9ADE2DC2K3.com.security.endpoint.proxy.l4.dist.extension"),
+            "com.security.endpoint.proxy.l4.dist.extension"
         )
         XCTAssertEqual(
             RamaTransparentProxyProvider.deriveBundleId(
