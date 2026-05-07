@@ -59,7 +59,19 @@ pub use self::runtime::{
 
 /// Default deadline for flow-handler decisions. Tuned via
 /// [`TransparentProxyEngineBuilder::with_decision_deadline`].
-pub(super) const DEFAULT_DECISION_DEADLINE: Duration = Duration::from_secs(1);
+pub const DEFAULT_DECISION_DEADLINE: Duration = Duration::from_secs(3);
+
+/// Default per-flow TCP idle backstop. The engine applies this when
+/// the builder's `tcp_idle_timeout` is left unset; explicit `None` via
+/// [`TransparentProxyEngineBuilder::without_tcp_idle_timeout`] opts
+/// out. Generous by design — it backstops wedged flows, not normal
+/// idle aging.
+pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_mins(15);
+
+/// Default per-flow UDP max-lifetime cap. Mirrors
+/// [`DEFAULT_TCP_IDLE_TIMEOUT`] for UDP; opt out via
+/// [`TransparentProxyEngineBuilder::without_udp_max_flow_lifetime`].
+pub const DEFAULT_UDP_MAX_FLOW_LIFETIME: Duration = Duration::from_mins(15);
 
 /// Action taken when a flow handler exceeds the configured decision deadline.
 ///

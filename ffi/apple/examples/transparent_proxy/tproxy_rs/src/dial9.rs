@@ -25,7 +25,7 @@ use rama::{
 
 /// Hard-coded defaults for the demo. Copy and tune in your own
 /// extension if these don't fit.
-const ROTATION_PERIOD: Duration = Duration::from_secs(60);
+const ROTATION_PERIOD: Duration = Duration::from_mins(1);
 const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 

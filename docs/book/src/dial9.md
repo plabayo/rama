@@ -109,7 +109,9 @@ start.
 
 For the design and motivation behind dial9, listen to
 [netstack.fm episode 37](https://netstack.fm/#episode-37) — interview
-with the dial9 authors. Their guest blog post on the Tokio blog and
-the dial9 README cover the integration patterns in more depth.
+with the dial9 authors. The
+[Tokio blog post](https://tokio.rs/blog/2026-03-18-dial9) and the
+[dial9 README](https://github.com/dial9-rs/dial9-tokio-telemetry)
+cover the integration patterns in more depth.
 
 [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry

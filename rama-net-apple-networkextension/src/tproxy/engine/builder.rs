@@ -39,9 +39,11 @@ where
             tcp_flow_buffer_size: None,
             tcp_channel_capacity: None,
             udp_channel_capacity: None,
-            tcp_idle_timeout: None,
+            // Backstop defaults; opt out via the macro-generated
+            // `without_tcp_idle_timeout()` / `without_udp_max_flow_lifetime()`.
+            tcp_idle_timeout: Some(super::DEFAULT_TCP_IDLE_TIMEOUT),
             tcp_paused_drain_max_wait: None,
-            udp_max_flow_lifetime: None,
+            udp_max_flow_lifetime: Some(super::DEFAULT_UDP_MAX_FLOW_LIFETIME),
             decision_deadline: None,
             decision_deadline_action: None,
             app_message_deadline: None,
@@ -122,27 +124,18 @@ where
         /// "stale flows" that never observe an EOF (e.g. after the host has been
         /// asleep and the kernel-side flow ownership has gone stale).
         ///
-        /// # Safety-net implication of `None`
+        /// Defaults to [`DEFAULT_TCP_IDLE_TIMEOUT`] (15 minutes) — a
+        /// generous backstop, not a primary aging mechanism. Opt out
+        /// with [`without_tcp_idle_timeout`] only if your deployment
+        /// has another mechanism for reaping wedged bridges; with
+        /// neither this nor an eventual `engine.stop()` a bridge that
+        /// wedges outside its `select!` arms can sit forever, since
+        /// `cancel()` deliberately does NOT abort bridge tasks (they
+        /// exit naturally via `flow_guard.cancelled()` so the
+        /// post-loop close-event emission runs).
         ///
-        /// `cancel()` deliberately does NOT abort the bridge tasks —
-        /// they exit naturally via `flow_guard.cancelled()` so the
-        /// post-loop close-event emission (dial9 + structured
-        /// tracing) runs. If a bridge is wedged on something other
-        /// than its `select!` arms (an unbreakable sync call inside
-        /// the user's service, a poll loop with no await), the only
-        /// remaining guards against an indefinite linger are:
-        ///
-        /// 1. `engine.stop()` — its `shutdown.shutdown()` await
-        ///    finally drains the per-flow guard.
-        /// 2. `tcp_idle_timeout` — fires after the configured idle
-        ///    window even in the absence of `engine.stop()`.
-        ///
-        /// With `tcp_idle_timeout = None` *and* no eventual
-        /// `engine.stop()` call, a wedged bridge can sit forever.
-        /// Production deployments should set a generous idle window
-        /// (the demo crate uses 15 minutes) even if the deployment
-        /// expects long-lived flows; the timeout is a backstop, not
-        /// a primary aging mechanism.
+        /// [`DEFAULT_TCP_IDLE_TIMEOUT`]: super::DEFAULT_TCP_IDLE_TIMEOUT
+        /// [`without_tcp_idle_timeout`]: Self::without_tcp_idle_timeout
         pub fn tcp_idle_timeout(mut self, timeout: Option<Duration>) -> Self
         {
             self.tcp_idle_timeout = timeout;
@@ -177,23 +170,24 @@ where
         ///
         /// When set, the engine wraps `service.serve(bridge).await` with a
         /// `tokio::time::timeout` of this duration; on expiry the service
-        /// task is dropped and the flow's close path runs (close events
-        /// fire, callbacks become inactive). `None` (the default) lets a
-        /// UDP flow run indefinitely until the service-side bridge closes.
+        /// task is dropped and the flow's close path runs.
         ///
-        /// **Semantics: this is a max-lifetime cap, not idle detection.**
-        /// True per-direction idle tracking would require plumbing
-        /// progress counters through `UdpFlow` / `NwUdpSocket`; this
-        /// simpler bound exists primarily to backstop misbehaving flows
-        /// that never see an explicit close (Swift-side bug, app death
-        /// without flow close, kernel slot leaked, etc.) so they
-        /// eventually free their per-flow state instead of leaking.
+        /// Defaults to [`DEFAULT_UDP_MAX_FLOW_LIFETIME`] (15 minutes).
+        /// Opt out with [`without_udp_max_flow_lifetime`] if you have
+        /// an external mechanism for reaping stuck flows.
         ///
-        /// Recommended for production deployments: pick a duration
-        /// noticeably longer than your longest legitimate UDP flow (DNS
-        /// resolves are sub-second; QUIC/long-poll sessions can be tens
-        /// of minutes). Pick `None` if you have an external mechanism
-        /// for reaping stuck flows.
+        /// **Semantics: max-lifetime cap, not idle detection.** Picks a
+        /// hard upper bound on per-flow service-task longevity so a
+        /// flow that never sees an explicit close (Swift-side bug,
+        /// app death without flow close, kernel slot leaked, etc.)
+        /// eventually frees its per-flow state.
+        ///
+        /// Production: pick a duration noticeably longer than your
+        /// longest legitimate UDP flow (DNS sub-second; QUIC/long-poll
+        /// tens of minutes).
+        ///
+        /// [`DEFAULT_UDP_MAX_FLOW_LIFETIME`]: super::DEFAULT_UDP_MAX_FLOW_LIFETIME
+        /// [`without_udp_max_flow_lifetime`]: Self::without_udp_max_flow_lifetime
         pub fn udp_max_flow_lifetime(mut self, lifetime: Option<Duration>) -> Self
         {
             self.udp_max_flow_lifetime = lifetime;
@@ -210,8 +204,10 @@ where
         /// [`DecisionDeadlineAction`] for that flow rather than holding kernel
         /// flow ownership indefinitely.
         ///
-        /// Default: one second. The deadline is always-on; tune it rather
-        /// than disable it.
+        /// Defaults to [`DEFAULT_DECISION_DEADLINE`] (3 seconds). The
+        /// deadline is always-on; tune it rather than disable it.
+        ///
+        /// [`DEFAULT_DECISION_DEADLINE`]: super::DEFAULT_DECISION_DEADLINE
         pub fn decision_deadline(mut self, deadline: Duration) -> Self
         {
             self.decision_deadline = Some(deadline);
