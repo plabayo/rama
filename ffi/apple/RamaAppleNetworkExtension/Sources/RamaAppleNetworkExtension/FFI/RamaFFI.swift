@@ -319,6 +319,14 @@ private let ramaUdpOnSendToEgressCallback:
     }
 
 final class RamaTransparentProxyEngineHandle {
+    // Serialises `enginePtr` access so `stop()` can't free the engine
+    // while another thread is mid-FFI call. The session handles already
+    // use this exact pattern; mirror it here. Apple's
+    // `handleAppMessage(_:completionHandler:)` runs on the provider's
+    // dispatch queue, but a swift caller can still race a stop() against
+    // an in-flight message — without the lock, `enginePtr` is a non-
+    // atomic Swift property and the access is a data race.
+    private let lock = NSLock()
     private var enginePtr: OpaquePointer?
 
     init?(engineConfigJson: Data? = nil) {
@@ -339,7 +347,11 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     deinit {
-        if let p = enginePtr {
+        lock.lock()
+        let p = enginePtr
+        enginePtr = nil
+        lock.unlock()
+        if let p {
             rama_transparent_proxy_engine_free(p)
         }
     }
@@ -370,6 +382,8 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     func config() -> RamaTransparentProxyConfigBridge? {
+        lock.lock()
+        defer { lock.unlock() }
         guard let p = enginePtr else { return nil }
         guard let outPtr = rama_transparent_proxy_get_config(p) else { return nil }
         defer { rama_transparent_proxy_config_free(outPtr) }
@@ -413,9 +427,13 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     func stop(reason: Int32) {
-        guard let p = enginePtr else { return }
-        rama_transparent_proxy_engine_stop(p, reason)
+        lock.lock()
+        let p = enginePtr
         enginePtr = nil
+        lock.unlock()
+        if let p {
+            rama_transparent_proxy_engine_stop(p, reason)
+        }
     }
 
     /// Forward a provider message into Rust and return the reply (or `nil` for
@@ -426,6 +444,11 @@ final class RamaTransparentProxyEngineHandle {
     /// from "no reply" — we surface both as `nil`. Rust handlers that want a
     /// distinguishable ack must return a non-empty payload.
     func handleAppMessage(_ message: Data) -> Data? {
+        // Hold the lock across the FFI call so a concurrent stop() can't
+        // free the engine while we're using it. stop() takes the same
+        // lock to swap enginePtr to nil before freeing.
+        lock.lock()
+        defer { lock.unlock() }
         guard let p = enginePtr else { return nil }
 
         let ownedReply = message.withUnsafeBytes { raw in
@@ -446,6 +469,8 @@ final class RamaTransparentProxyEngineHandle {
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyTcpSessionDecision {
+        lock.lock()
+        defer { lock.unlock() }
         guard let p = enginePtr else { return .passthrough }
 
         let callbackBox = Unmanaged.passRetained(
@@ -493,6 +518,8 @@ final class RamaTransparentProxyEngineHandle {
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyUdpSessionDecision {
+        lock.lock()
+        defer { lock.unlock() }
         guard let p = enginePtr else { return .passthrough }
 
         let callbackBox = Unmanaged.passRetained(

@@ -187,6 +187,13 @@ private let writeRetryMaxDelayMs: Int = 200
 /// per-stream-worth of bytes, while keeping per-flow memory bounded.
 private let writePumpMaxPendingBytes: Int = 4 * 1024 * 1024
 
+/// Drop-on-full bound for `UdpClientWritePump.pending`. UDP is lossy by
+/// definition, so the pump prefers dropping the newest datagram on
+/// overflow over indefinite buffering. Picked to absorb a brief stall
+/// (e.g. waiting for the first client read so `sentByEndpoint` is
+/// known) without blowing up under a misbehaving producer.
+private let udpWritePumpMaxPending: Int = 256
+
 private func blockedFlowError() -> NSError {
     NSError(
         domain: "NEAppProxyFlowErrorDomain",
@@ -657,6 +664,18 @@ private final class UdpClientWritePump {
         guard !data.isEmpty else { return }
         queue.async {
             if self.closed { return }
+            // Drop-on-full: UDP is lossy. Indefinite buffering would
+            // deliver datagrams long after the kernel would have dropped
+            // them on the wire. Bias toward dropping the newest entry so
+            // an unstuck pump first drains older queued work.
+            if self.pending.count >= udpWritePumpMaxPending {
+                RamaTransparentProxyEngineHandle.log(
+                    level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
+                    message:
+                        "udp client write pump full (>= \(udpWritePumpMaxPending) datagrams), dropping"
+                )
+                return
+            }
             self.pending.append(data)
             self.flushLocked()
         }

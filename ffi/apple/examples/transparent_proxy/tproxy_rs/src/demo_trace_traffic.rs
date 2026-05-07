@@ -1,5 +1,6 @@
-use std::fmt;
+use std::{fmt, path::PathBuf, sync::Arc, time::Duration};
 
+use moka::sync::Cache;
 use rama::{
     Layer, Service,
     extensions::ExtensionsRef,
@@ -13,6 +14,24 @@ use rama::{
     },
     telemetry::tracing,
 };
+
+/// Per-pid cache for the path/arguments lookups done by the trace
+/// layer on every request. `pid_arguments` allocates ~1 MiB per call
+/// (sized to `KERN_ARGMAX`); calling it on the per-request hot path
+/// dominates allocator load on a busy h2 connection. The PID space is
+/// stable for the lifetime of the originating process, so a short-TTL
+/// cache is sound — when a PID is reused the entry will already have
+/// expired.
+type PidInfo = (Option<PathBuf>, Arc<Vec<String>>);
+fn pid_info_cache() -> &'static Cache<i32, PidInfo> {
+    static CACHE: std::sync::OnceLock<Cache<i32, PidInfo>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        Cache::builder()
+            .max_capacity(1024)
+            .time_to_live(Duration::from_secs(30))
+            .build()
+    })
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DemoTraceTrafficLayer;
@@ -84,7 +103,15 @@ where
                 let app_bundle_id = meta.source_app_bundle_identifier.as_deref();
                 let maybe_pid = meta.source_app_pid;
                 let (process_path, process_args) = maybe_pid
-                    .map(|pid| (lookup_process_path(pid), lookup_process_arguments(pid)))
+                    .map(|pid| {
+                        pid_info_cache()
+                            .get_with(pid, || {
+                                (
+                                    lookup_process_path(pid),
+                                    Arc::new(lookup_process_arguments(pid)),
+                                )
+                            })
+                    })
                     .unwrap_or_default();
                 (app_bundle_id, maybe_pid, process_path, process_args)
             })

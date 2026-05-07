@@ -1328,31 +1328,58 @@ where
     // instrumentation. dial9 wake-tracking on these short-lived
     // FFI-entry futures is sacrificed; runtime-level events still
     // fire because the worker thread is dial9-instrumented.
+    //
+    // Panic handling: a user-supplied handler future may panic. Modern
+    // Rust (>=1.71) defines panicking through `extern "C"` as a forced
+    // abort, so the process terminates cleanly — but without a log
+    // record the operator can't tell what blew up. We catch_unwind at
+    // this single chokepoint, log the panic location and message via
+    // tracing, then resume_unwind so the documented abort still fires.
     let inner = rt.tokio_runtime();
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle)
-            if matches!(
-                handle.runtime_flavor(),
-                tokio::runtime::RuntimeFlavor::MultiThread
-            ) =>
-        {
-            tokio::task::block_in_place(|| inner.block_on(future))
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle)
+                if matches!(
+                    handle.runtime_flavor(),
+                    tokio::runtime::RuntimeFlavor::MultiThread
+                ) =>
+            {
+                tokio::task::block_in_place(|| inner.block_on(future))
+            }
+            Ok(handle)
+                if matches!(
+                    handle.runtime_flavor(),
+                    tokio::runtime::RuntimeFlavor::CurrentThread
+                ) =>
+            {
+                std::thread::scope(|scope| {
+                    let join = scope.spawn(|| inner.block_on(future));
+                    match join.join() {
+                        Ok(output) => output,
+                        Err(panic) => std::panic::resume_unwind(panic),
+                    }
+                })
+            }
+            _ => inner.block_on(future),
         }
-        Ok(handle)
-            if matches!(
-                handle.runtime_flavor(),
-                tokio::runtime::RuntimeFlavor::CurrentThread
-            ) =>
-        {
-            std::thread::scope(|scope| {
-                let join = scope.spawn(|| inner.block_on(future));
-                match join.join() {
-                    Ok(output) => output,
-                    Err(panic) => std::panic::resume_unwind(panic),
-                }
-            })
+    }));
+    match result {
+        Ok(output) => output,
+        Err(panic) => {
+            let msg = if let Some(s) = panic.downcast_ref::<&'static str>() {
+                (*s).to_owned()
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "<non-string panic payload>".to_owned()
+            };
+            tracing::error!(
+                target: "rama_apple_ne::tproxy",
+                panic_message = %msg,
+                "tproxy FFI: handler future panicked; resuming unwind (extern \"C\" boundary aborts the process)",
+            );
+            std::panic::resume_unwind(panic);
         }
-        _ => inner.block_on(future),
     }
 }
 
@@ -1577,12 +1604,13 @@ async fn run_tcp_bridge(
         }
 
         tokio::select! {
-            // No `biased;` between the two data arms — both must remain fair
-            // so that sustained traffic in one direction can't starve the
-            // other (think a busy h2 connection with continuous response data
-            // arriving while the client also pumps WINDOW_UPDATEs). The
-            // shutdown and idle arms are explicitly biased above the data
-            // arms so they fire promptly when relevant.
+            // Biased so shutdown + idle drain promptly. The two data arms
+            // come last; once those are reached, tokio polls them in source
+            // order on each iteration, but a still-pending arm is just
+            // polled later, not penalised — sustained traffic in one
+            // direction does not starve the other (e.g. a busy h2
+            // connection pushing response data + WINDOW_UPDATEs).
+            biased;
 
             // Per-flow shutdown — drain immediately.
             () = flow_guard.cancelled() => {
