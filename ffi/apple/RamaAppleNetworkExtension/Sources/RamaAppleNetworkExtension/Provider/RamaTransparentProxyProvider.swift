@@ -1992,6 +1992,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// `com.fortinet.forticlient.ztagent`) needs this stripping;
     /// without it, team-signed apps silently fail to match because
     /// their signing id carries the prefix.
+    ///
+    /// **Heuristic, not exact.** A signing identifier whose first
+    /// component happens to be exactly 10 uppercase alphanumeric
+    /// characters followed by a dot (e.g.
+    /// `ABCDEFGHIJ.example.weird-app`) is indistinguishable from a
+    /// team-prefixed identifier. Real-world reverse-DNS bundle ids
+    /// almost never collide with the team-id shape (they start with
+    /// short lowercase TLD-style components), but rare exceptions
+    /// will be misclassified. If exact attribution matters, key on
+    /// the raw signing identifier instead.
     static func deriveBundleId(fromSigningId signingId: String?) -> String? {
         guard let signingId, !signingId.isEmpty else { return nil }
         let teamIdLength = 10

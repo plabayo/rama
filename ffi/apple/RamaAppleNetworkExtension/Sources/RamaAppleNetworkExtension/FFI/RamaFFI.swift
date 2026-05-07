@@ -654,6 +654,12 @@ final class RamaTcpSessionHandle {
     /// Activate the session once the egress `NWConnection` is ready and the
     /// intercepted flow has been opened successfully.
     ///
+    /// `activate` is one-shot: a second call would leak the previous
+    /// callback box (Rust still holds its raw pointer because Rust's
+    /// `_session_activate` rejects double-activation as a no-op + log)
+    /// and the new callbacks would never fire. Logged + ignored on
+    /// repeat.
+    ///
     /// - Parameters:
     ///   - onWriteToEgress: Called by Rust when the service has bytes to send to the
     ///     egress NWConnection.
@@ -666,6 +672,14 @@ final class RamaTcpSessionHandle {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
+        if egressCallbackBox != nil {
+            RamaTransparentProxyEngineHandle.log(
+                level: UInt32(RAMA_LOG_LEVEL_WARN.rawValue),
+                message:
+                    "RamaTcpSessionHandle.activate called twice; ignoring second call to avoid leaking the egress callback box"
+            )
+            return
+        }
         let box = Unmanaged.passRetained(
             TcpEgressCallbackBox(
                 onWriteToEgress: onWriteToEgress,
@@ -809,12 +823,25 @@ final class RamaUdpSessionHandle {
 
     /// Activate the session once the egress `NWConnection` is ready.
     ///
+    /// `activate` is one-shot: a second call would leak the previous
+    /// callback box (Rust holds its raw pointer; Rust's
+    /// `_session_activate` rejects double-activation) and the new
+    /// callbacks would never fire. Logged + ignored on repeat.
+    ///
     /// - Parameter onSendToEgress: Called by Rust when the service has a datagram
     ///   to deliver via the egress NWConnection.
     func activate(onSendToEgress: @escaping (Data) -> Void) {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
+        if egressCallbackBox != nil {
+            RamaTransparentProxyEngineHandle.log(
+                level: UInt32(RAMA_LOG_LEVEL_WARN.rawValue),
+                message:
+                    "RamaUdpSessionHandle.activate called twice; ignoring second call to avoid leaking the egress callback box"
+            )
+            return
+        }
         let box = Unmanaged.passRetained(UdpEgressCallbackBox(onSendToEgress: onSendToEgress))
         egressCallbackBox = box
 

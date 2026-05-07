@@ -269,16 +269,6 @@ Rust `tracing` events also surface on the `org.ramaproxy.example.tproxy`
 subsystem — see [Observability with dial9](#observability-with-dial9)
 for the structured-tracing predicates and the offline bundle script.
 
-## Sanitizer-driven race / UAF testing
-
-```sh
-# Requires nightly: `rustup toolchain install nightly`.
-just test-e2e-asan
-```
-
-Runs the `cases::stress::*` churn cases under AddressSanitizer; a
-clean run finishes silently.
-
 ## Troubleshooting
 
 `NEVPNConnectionErrorDomainPlugin code=6` is usually a follow-up to either
