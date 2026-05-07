@@ -346,22 +346,10 @@ private final class TcpClientReadPump {
     }
 }
 
-/// Classify callback errors from `NEAppProxyFlow` read/write operations into expected
-/// disconnects versus actionable failures.
-///
-/// Primary references:
-/// - Normative error-code source:
-///   `/Applications/Xcode.app/.../NetworkExtension.framework/Headers/NEAppProxyFlow.h`
-/// - Apple enum docs:
-///   https://developer.apple.com/documentation/networkextension/neappproxyflowerror-swift.struct/code
-///
-/// Notes for maintainers:
-/// - The numeric `NEAppProxyFlowError` mapping used here comes from the SDK header shipped with
-///   Xcode, which is the normative source for the per-code symbols.
-/// - The Apple enum pages linked from each case are the intended human-readable references for
-///   those symbols.
-/// - We intentionally log disconnect-like outcomes at `trace` with "ended" wording so they are
-///   distinguishable from provider faults during audits.
+/// Classify a `NEAppProxyFlow` callback error into an expected
+/// disconnect vs. an actionable failure. Codes come from
+/// `NEAppProxyFlow.h`; disconnect-like outcomes log at `trace` so
+/// they don't drown out genuine provider faults.
 private func classifyFlowCallbackError(
     _ error: Error,
     operation: String,
@@ -1076,11 +1064,20 @@ private final class NwUdpConnectionReadPump {
     private let session: RamaUdpSessionHandle
     private let queue: DispatchQueue
     private var closed = false
+    // Wires read-side EOF/error into the flow's `terminate` so a
+    // half-open flow doesn't sit until `udp_max_flow_lifetime` reaps it.
+    private let onTerminate: (Error?) -> Void
 
-    init(connection: NWConnection, session: RamaUdpSessionHandle, queue: DispatchQueue) {
+    init(
+        connection: NWConnection,
+        session: RamaUdpSessionHandle,
+        queue: DispatchQueue,
+        onTerminate: @escaping (Error?) -> Void
+    ) {
         self.connection = connection
         self.session = session
         self.queue = queue
+        self.onTerminate = onTerminate
     }
 
     func start() {
@@ -1098,6 +1095,7 @@ private final class NwUdpConnectionReadPump {
                 }
                 if isComplete || error != nil {
                     self.closed = true
+                    self.onTerminate(error)
                     return
                 }
                 self.scheduleRead()
@@ -1702,12 +1700,25 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     timeoutWork.cancel()
 
                     let readPump = NwUdpConnectionReadPump(
-                        connection: connection, session: session, queue: flowQueue)
+                        connection: connection,
+                        session: session,
+                        queue: flowQueue,
+                        onTerminate: { error in terminate(error) }
+                    )
 
                     session.activate(onSendToEgress: { data in
+                        // Surface send failures: the completion
+                        // closure runs on NWConnection's scheduler,
+                        // hop back onto `flowQueue` so `terminate`
+                        // sees flow-scoped state single-threaded.
                         connection.send(
                             content: data,
-                            completion: .contentProcessed({ _ in }))
+                            completion: .contentProcessed({ error in
+                                if let error {
+                                    flowQueue.async { terminate(error) }
+                                }
+                            })
+                        )
                     })
 
                     flow.open(withLocalEndpoint: nil) { [weak self] error in

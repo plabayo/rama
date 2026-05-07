@@ -557,20 +557,12 @@ final class RamaTcpSessionHandle {
         egressCallbackBox = nil
         lock.unlock()
 
-        // Order matters: free the Rust session FIRST so its `cancel()`
-        // flips the engine's `callback_active` guard (held under a
-        // synchronous mutex on the Rust side, with the user closure
-        // dispatched while the lock is held — see
-        // `engine/mod.rs::guarded_*_sink`). After `_session_free`
-        // returns, no bridge task can possibly be inside the user
-        // closure on a different thread, so releasing the boxes here
-        // is race-free.
-        //
-        // **The engine's `callback_active` guard is the load-bearing
-        // piece** — this Swift-side ordering alone is necessary but
-        // insufficient. If you're auditing this path and the engine
-        // guard's lock-across-callback semantics ever changes, this
-        // sequence becomes a UAF.
+        // Free the Rust session before releasing the boxes:
+        // `_session_free` invokes `cancel()` which serialises against
+        // any in-flight bridge dispatch via the engine's
+        // `callback_active` mutex (see `engine/mod.rs::guarded_*_sink`).
+        // The engine guard is the load-bearing piece; this ordering
+        // alone is necessary but insufficient.
         if let p {
             rama_transparent_proxy_tcp_session_free(p)
         }

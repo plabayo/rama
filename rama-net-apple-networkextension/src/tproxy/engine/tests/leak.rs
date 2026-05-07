@@ -1,13 +1,7 @@
-//! Leak / churn tests: verify that opening many sessions and then
-//! dropping or stopping the engine actually frees per-session state.
-//!
-//! These can't catch every leak (some manifest only on the FFI/Swift
-//! boundary, which Layer 2 covers), but they reliably catch the most
-//! common shapes of leak found in the audit:
-//!
-//! - per-flow `Arc` retained past `cancel()` due to a wedge,
-//! - bridge tasks not exiting in bounded time,
-//! - dropping the engine with live sessions hanging the runtime.
+//! Bounded-time create/drop/stop tests for many sessions. A wedge in
+//! `cancel()`, a bridge task that fails to exit, or an engine
+//! shutdown that doesn't drain all per-flow guards surfaces as a
+//! test that times out instead of one that finishes.
 
 use super::common::*;
 use crate::tproxy::engine::*;
@@ -18,12 +12,8 @@ use rama_net::address::HostWithPort;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Sanity: opening a batch of TCP sessions, dropping each one (which
-/// triggers `Drop for TransparentProxyTcpSession` → `cancel()`), then
-/// stopping the engine completes in bounded time.
-///
-/// Regression target: a future change that wedges `cancel()` (e.g. an
-/// unbounded await) would surface here as the test never returning.
+/// Open + drop 256 TCP sessions then `engine.stop()`; the whole
+/// sequence must finish in bounded time.
 #[test]
 fn tcp_drop_many_sessions_completes_in_bounded_time() {
     let handler = TestHandler {
@@ -66,10 +56,8 @@ fn tcp_drop_many_sessions_completes_in_bounded_time() {
     );
 }
 
-/// Engine drop with live sessions: explicit `engine.stop()` while
-/// sessions are still alive must drain cleanly. The shutdown awaits
-/// every per-flow `flow_guard` to drop; a bridge task that fails to
-/// observe shutdown (or holds an unbreakable Arc) wedges this.
+/// `engine.stop()` with live sessions must drain — every per-flow
+/// `flow_guard` must drop within the shutdown's window.
 #[test]
 fn engine_stop_with_live_sessions_drains_within_bound() {
     let handler = TestHandler {
@@ -122,11 +110,8 @@ fn engine_stop_with_live_sessions_drains_within_bound() {
     drop(keep_alive);
 }
 
-/// Churn: open + drop sessions in a tight loop. Watches for state
-/// growth indirectly: if `tcp_cancel_many_idle_sessions_…` succeeds
-/// AND this test's batched churn finishes in bounded total time,
-/// neither the engine nor per-session state grew unboundedly across
-/// batches.
+/// 4096 create + cancel iterations finish well under quadratic
+/// time — sentinel for state that grows per-iteration.
 #[test]
 fn tcp_session_churn_does_not_grow_unboundedly() {
     let handler = TestHandler {

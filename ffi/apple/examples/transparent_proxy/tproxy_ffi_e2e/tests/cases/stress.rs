@@ -1,25 +1,8 @@
-//! FFI stress / churn coverage.
-//!
-//! Each test drives many flows through the FFI surface to exercise
-//! session-handle allocation, callback-box lifetime, the engine's
-//! per-flow tasks, and the cancel/drop teardown path. They serve two
-//! purposes:
-//!
-//! 1. **Sentinel for regressions**: a refactor that wedges any of
-//!    these paths (an unbounded await in `cancel`, a leaked Arc in
-//!    the bridge, a panic on stop with live flows) shows up here
-//!    as a timeout / panic. The numbers below are deliberately
-//!    conservative so CI noise on a busy runner doesn't false-fail.
-//!
-//! 2. **Sanitizer harness**: the cancel-vs-callback UAF (audit #1) is
-//!    impossible to observe deterministically without a sanitizer —
-//!    the race window is microseconds, and on a clean run the test
-//!    passes. Run these tests under
-//!    `RUSTFLAGS="-Zsanitizer=address" cargo +nightly test ...` (see
-//!    `just sanitizer-tproxy-ffi-e2e`) to surface real UAF / data-race
-//!    bugs introduced by future changes. The tests' value as a
-//!    sanitizer harness is the high flow churn — many opportunities
-//!    per second for any race window to land on real memory.
+//! High-churn FFI flow lifecycles. Useful as a bounded-time sentinel
+//! and as a sanitizer harness — the cancel-vs-callback race window
+//! is microseconds wide, so concurrent churn under
+//! `RUSTFLAGS="-Z sanitizer=address"` is the only reliable way to
+//! observe a real UAF. See `just test-e2e-asan`.
 
 use std::time::{Duration, Instant};
 
@@ -32,15 +15,10 @@ use crate::shared::{
     types::{ProxyKind, TcpMode, localhost},
 };
 
-/// Sequential TCP churn: open + roundtrip + close many flows in
-/// succession. Sentinel for cancel/drop wedges and per-flow state
-/// growth. Surfaces a UAF under address-sanitizer.
-///
-/// The iteration count is deliberately conservative because the demo
-/// engine's `peek_duration_s = 0.5` floors each plain-TCP roundtrip
-/// at ~500ms. The point of this test is the cycle, not throughput;
-/// 8 iterations is plenty to exercise the open/close path enough
-/// times for a sanitizer to catch a race window.
+/// 8 sequential plain-TCP roundtrips. Bounded-time sentinel + ASan
+/// harness. Iteration count is small because the demo engine's
+/// 500ms peek floor makes each roundtrip slow; the cycle is what
+/// matters, not throughput.
 #[tokio::test]
 #[serial]
 async fn ffi_stress_tcp_sequential_churn() {
@@ -77,11 +55,8 @@ async fn ffi_stress_tcp_sequential_churn() {
     ingress.shutdown().await;
 }
 
-/// Sequential UDP churn: same as the TCP variant, exercises the UDP
-/// session activate / on_client_close / `udp_max_flow_lifetime`-free
-/// teardown path. Each iteration allocates fresh callback contexts on
-/// the test side, so high churn would surface a session-handle leak
-/// as a hang or runtime-task explosion.
+/// 16 sequential UDP roundtrips through `activate` / `on_client_close`
+/// / no-lifetime-cap teardown.
 #[tokio::test]
 #[serial]
 async fn ffi_stress_udp_sequential_churn() {
@@ -105,10 +80,9 @@ async fn ffi_stress_udp_sequential_churn() {
     );
 }
 
-/// Concurrent TCP churn: many tokio tasks each run their own
-/// roundtrip lifecycle. Exercises the cancel-vs-bridge-dispatch
-/// race that motivated audit finding #1. On a clean run this just
-/// finishes; under address/thread sanitizer it surfaces real races.
+/// 4 × 4 concurrent TCP roundtrips. The concurrent shape is what
+/// gives a sanitizer the cross-thread race window for cancel-vs-
+/// bridge-dispatch.
 #[tokio::test]
 #[serial]
 async fn ffi_stress_tcp_concurrent_churn() {
@@ -156,11 +130,8 @@ async fn ffi_stress_tcp_concurrent_churn() {
     ingress.shutdown().await;
 }
 
-/// Engine-stop sanity under load: leave a batch of in-flight flows
-/// alive, then exercise the existing engine teardown path (the
-/// `setup_env` engine drop happens automatically after each test).
-/// This is the closest e2e-side analog of the engine unit test
-/// `engine_stop_with_live_sessions_drains_within_bound`.
+/// Leave flows in-flight at test scope end; the engine + ingress
+/// `Drop` paths must tolerate a half-finished batch without wedging.
 #[tokio::test]
 #[serial]
 async fn ffi_stress_inflight_flows_at_test_end() {

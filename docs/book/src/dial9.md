@@ -69,21 +69,15 @@ when the feature is on.
 Library code that wants to define its own events alongside rama's
 pre-defined sets can depend on `dial9-trace-format` directly.
 
-## Why dial9 fits long-lived L4 proxies particularly well
+## Why dial9 fits long-lived L4 proxies
 
-The most reliable place where the runtime view matters more than the
-metrics view is a long-lived L4 proxy: lots of concurrent flows,
-each one a multi-poll task, with the failure modes that hurt being
-"this one flow hung for 30 seconds" or "wake-up latency drifted up
-under load." Those are exactly the things conventional metrics
-aggregate away. The runtime trace puts them back into focus.
+Long-lived L4 proxies have many concurrent multi-poll flows; the
+failure modes that hurt — "this flow hung for 30s", "wake-up latency
+drifted up under load" — are exactly what metrics aggregate away.
 
-The transparent-proxy hardening series in `rama-net-apple-networkextension`
-adds a `flow_id` to every flow's structured `tracing` close event.
-That same `flow_id` shows up in the dial9 events emitted from the
-engine, so cross-correlating the two — "here is the flow id from the
-production log; show me its full poll history in dial9-viewer" —
-becomes the natural debugging workflow.
+`rama-net-apple-networkextension` ships a `flow_id` on both its
+structured `tracing` close event and its dial9 events, so a flow id
+from a production log can be looked up directly in dial9-viewer.
 
 ## Playing with it
 

@@ -1,11 +1,5 @@
-//! Safety-property tests for the engine: cancel-vs-callback races, the
-//! Paused-wait wedge backstop, and the UDP max-flow-lifetime cap.
-//!
-//! bugs found regarding:
-//! * UAF in `guarded_*_sink`
-//! * UDP guard parity
-//! * Paused-wait timeout
-//! * `udp_max_flow_lifetime`
+//! Engine safety properties: cancel-vs-callback serialisation, the
+//! TCP paused-wait timeout, and the UDP max-flow-lifetime cap.
 
 use super::common::*;
 use crate::tproxy::engine::*;
@@ -20,27 +14,11 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 
-/// cancel() must serialise against any in-flight TCP user
-/// callback. The fixed `guarded_bytes_status_sink` holds
-/// `callback_active.lock()` across the user closure; cancel() also
-/// takes `callback_active.lock()` to flip the flag, so it MUST block
-/// until the closure returns. Without that lock-across-callback
-/// property, cancel could free the Swift callback box while the bridge
-/// is mid-dispatch (real UAF).
-///
-/// The test:
-/// 1. Installs an `on_server_bytes` that holds a `parking_lot::Mutex`
-///    while in the user closure. The test thread holds that mutex
-///    initially, so the closure blocks once it's invoked.
-/// 2. Triggers the bridge (the per-flow service writes a chunk that
-///    arrives at the bridge's read half, which calls `on_server_bytes`).
-/// 3. Spawns `session.cancel()` on a background thread.
-/// 4. After a short pause, asserts `cancel()` has NOT yet returned —
-///    proving it's blocked on `callback_active.lock()` because the
-///    bridge thread is still inside the closure with that lock held.
-/// 5. Releases the closure's mutex; asserts cancel completes.
-/// 6. Asserts the closure ran exactly once (no UAF / spurious
-///    re-dispatch).
+/// `cancel()` must serialise against an in-flight TCP user callback.
+/// Both sides take `callback_active.lock()`, so a callback that's
+/// mid-dispatch (holding the lock through the user closure) blocks
+/// `cancel()` until it returns. The Swift callback box can therefore
+/// only be released after the dispatch completes.
 #[test]
 fn tcp_cancel_serialises_against_inflight_user_callback() {
     let handler = TestHandler {
@@ -136,11 +114,9 @@ fn tcp_cancel_serialises_against_inflight_user_callback() {
     engine.stop(0);
 }
 
-/// a per-flow TCP bridge whose `on_server_bytes` returns
-/// `Paused` and whose drain signal is never delivered must close on
-/// its own within the configured `paused_drain_max_wait`. Without the
-/// timeout the bridge wedges forever and `engine.stop()` hangs because
-/// the per-flow `flow_guard` never drops.
+/// A TCP bridge whose `on_server_bytes` returns `Paused` indefinitely
+/// must close itself within `paused_drain_max_wait`; otherwise
+/// `engine.stop()` hangs on the unreleased per-flow guard.
 #[test]
 fn tcp_paused_wait_closes_within_max_wait_when_drain_never_fires() {
     let handler = TestHandler {
@@ -205,9 +181,9 @@ fn tcp_paused_wait_closes_within_max_wait_when_drain_never_fires() {
     assert!(stop_started.elapsed() < Duration::from_secs(2));
 }
 
-/// a misbehaving UDP service that never returns must be
-/// closed by `udp_max_flow_lifetime`, otherwise the per-flow service
-/// task lives forever and per-flow state leaks.
+/// A UDP service that never completes must be reaped by
+/// `udp_max_flow_lifetime`; otherwise the per-flow service task and
+/// its state live forever.
 #[test]
 fn udp_max_flow_lifetime_closes_stuck_service() {
     let handler = TestHandler {
@@ -258,17 +234,11 @@ fn udp_max_flow_lifetime_closes_stuck_service() {
     engine.stop(0);
 }
 
-/// UDP `on_client_read_demand` MUST
-/// continue firing on the `Full` arm. Swift's `requestRead` is the
-/// only mechanism that re-issues `flow.readDatagrams`; it gates the
-/// re-issue on a `demandPending` flag that's set by the demand
-/// callback. If we omit demand on overflow, a saturating burst that
-/// drops one datagram leaves Swift's `demandPending = false` and the
-/// flow stalls forever after the next read completion.
-///
-/// Verifies: after a sequence of accepted + dropped datagrams, the
-/// demand callback was invoked at least once per datagram so Swift
-/// has at least as many "pump again" signals as datagrams pushed.
+/// UDP `on_client_read_demand` must fire on every accepted *and*
+/// dropped-on-Full datagram. Swift's `requestRead` re-issues
+/// `flow.readDatagrams` only when `demandPending` is set during the
+/// in-flight read; omitting demand on overflow strands the flow
+/// after the first saturating burst.
 #[test]
 fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
     use std::convert::Infallible;
@@ -330,13 +300,9 @@ fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
     engine.stop(0);
 }
 
-/// UDP `on_client_close` MUST let the
-/// service task run its close epilogue. Aborting the task drops the
-/// future mid-`select!`, skipping the `closed_sink()`,
-/// dial9 `record_flow_closed`, and structured `tracing::info!` close
-/// event — every clean Swift teardown would lose the close record.
-///
-/// The fix wires `flow_guard.cancelled()` into the service task's
+/// UDP `on_client_close` must let the service task run its close
+/// epilogue (close-event emission, dial9 record, `closed_sink`).
+/// `flow_guard.cancelled()` is wired into the service task's
 /// `select!`, and `on_client_close` signals shutdown via
 /// `flow_stop_tx` instead of aborting. Verifies the close-related
 /// callbacks fire on a clean teardown of an active session.
@@ -397,10 +363,8 @@ fn udp_on_client_close_runs_service_close_epilogue() {
     );
 }
 
-/// a UDP `on_client_close` flips `callback_active`
-/// before any further dispatch can reach Swift. Verifies that even if
-/// Swift races a datagram delivery against the close, the user
-/// closure isn't reached after `on_client_close` returns.
+/// `on_client_close` flips `callback_active` first; subsequent
+/// datagrams must not reach the user closure.
 ///
 /// (We can't directly test the cross-thread UAF on UDP without the
 /// FFI surface — that lands in Layer 2 / sanitizer testing — but we
