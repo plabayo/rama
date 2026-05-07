@@ -476,14 +476,18 @@ of relevant `log show` output, and any recent provider crash reports:
 
 ```sh
 DEST=$(mktemp -d /tmp/rama-tproxy-bundle.XXXXXX) && \
-sudo cp -R "/var/root/Library/Application Support/rama/tproxy/dial9-traces" "$DEST/" 2>/dev/null; \
+sudo cp -R "/var/root/Library/Application Support/rama/tproxy/dial9-traces" "$DEST/" 2>/dev/null || true
+
 log show --last 1h --style ndjson --info --debug \
-  --predicate '(subsystem == "org.ramaproxy.example.tproxy") || \
-               (subsystem == "com.apple.networkextension") || \
-               (process == "org.ramaproxy.example.tproxy.dev.provider")' \
-  > "$DEST/system.ndjson"; \
-sudo cp /Library/Logs/DiagnosticReports/org.ramaproxy.example.tproxy.dev.provider*.ips "$DEST/" 2>/dev/null; \
-sudo chown -R "$(id -u):$(id -g)" "$DEST" && echo "$DEST"
+  --predicate 'subsystem == "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension" OR process == "org.ramaproxy.example.tproxy.dev.provider"' \
+  > "$DEST/system.ndjson"
+
+setopt NULL_GLOB
+sudo cp /Library/Logs/DiagnosticReports/org.ramaproxy.example.tproxy.dev.provider*.ips "$DEST/" 2>/dev/null || true
+unsetopt NULL_GLOB
+
+sudo chown -R "$(id -u):$(id -g)" "$DEST"
+echo "$DEST"
 ```
 
 Open the directory with `dial9-viewer "$DEST/dial9-traces"`, point an
