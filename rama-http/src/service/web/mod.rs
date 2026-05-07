@@ -19,4 +19,4 @@ pub mod error;
 
 mod router;
 #[doc(inline)]
-pub use router::{Router, RouterError};
+pub use router::{DefaultLayer, Router, RouterError};

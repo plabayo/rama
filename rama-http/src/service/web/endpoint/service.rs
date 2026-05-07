@@ -1,11 +1,11 @@
 use std::convert::Infallible;
 
 use rama_utils::macros::all_the_tuples_no_last_special_case;
-use rama_core::error::BoxError;
 
 use crate::{
     Request,
     service::web::{
+        endpoint::response::ErrorResponse,
         extract::{FromPartsStateRefPair, FromRequest},
         response::IntoResponse,
     },
@@ -56,7 +56,7 @@ where
     R: Future<Output = O> + Send + 'static,
     O: IntoResponse + Send + 'static,
     I: FromRequest,
-    BoxError: From<I::Rejection>,
+    ErrorResponse: From<I::Rejection>,
     State: Send + Sync + 'static,
 {
 }
@@ -84,7 +84,7 @@ macro_rules! impl_endpoint_service_fn_tuple {
                 O: IntoResponse + Send + 'static,
                 State: Send + Sync + 'static,
                 $($ty: FromPartsStateRefPair<State>),+,
-                $(BoxError: From<$ty::Rejection>),+,
+                $(ErrorResponse: From<$ty::Rejection>),+,
         {
         }
     };
@@ -117,9 +117,9 @@ macro_rules! impl_endpoint_service_fn_tuple_with_from_request {
                 O: IntoResponse + Send + 'static,
                 State: Send + Sync + 'static,
                 I: FromRequest,
-                BoxError: From<I::Rejection>,
+                ErrorResponse: From<I::Rejection>,
                 $($ty: FromPartsStateRefPair<State>),+,
-                $(BoxError: From<$ty::Rejection>),+,
+                $(ErrorResponse: From<$ty::Rejection>),+,
         {
         }
     };
@@ -173,7 +173,7 @@ mod private {
         State: Send + Sync + 'static,
     {
         type Output = O;
-        type Error = BoxError;
+        type Error = ErrorResponse;
 
         async fn call(&self, _req: Request, _state: &State) -> Result<Self::Output, Self::Error> {
             Ok(self().await)
@@ -204,11 +204,11 @@ mod private {
         R: Future<Output = O> + Send + 'static,
         O: IntoResponse + Send + 'static,
         I: FromRequest,
-        BoxError: From<I::Rejection>,
+        ErrorResponse: From<I::Rejection>,
         State: Send + Sync + 'static,
     {
         type Output = O;
-        type Error = BoxError;
+        type Error = ErrorResponse;
 
         async fn call(&self, req: Request, _state: &State) -> Result<Self::Output, Self::Error> {
             let param = I::from_request(req).await?;
@@ -247,10 +247,10 @@ mod private {
                     O: IntoResponse + Send + 'static,
                     State: Send + Sync + 'static,
                     $($ty: FromPartsStateRefPair<State>),+,
-                    $(BoxError: From<$ty::Rejection>),+,
+                    $(ErrorResponse: From<$ty::Rejection>),+,
             {
                 type Output = O;
-                type Error = BoxError;
+                type Error = ErrorResponse;
 
                 async fn call(&self, req: Request, state: &State) -> Result<Self::Output, Self::Error> {
                     let (parts, _body) = req.into_parts();
@@ -298,12 +298,12 @@ mod private {
                     O: IntoResponse + Send + 'static,
                     State: Send + Sync + 'static,
                     I: FromRequest,
-                    BoxError: From<I::Rejection>,
+                    ErrorResponse: From<I::Rejection>,
                     $($ty: FromPartsStateRefPair<State>),+,
-                    $(BoxError: From<$ty::Rejection>),+,
+                    $(ErrorResponse: From<$ty::Rejection>),+,
             {
                 type Output = O;
-                type Error = BoxError;
+                type Error = ErrorResponse;
 
                 async fn call(&self, req: Request, state: &State) -> Result<Self::Output, Self::Error> {
                     let (parts, body) = req.into_parts();

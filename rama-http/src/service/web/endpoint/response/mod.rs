@@ -165,3 +165,9 @@ where
         Self(value.into_response())
     }
 }
+
+impl ErrorResponse {
+    pub fn into_response(self) -> Response {
+        self.0
+    }
+}

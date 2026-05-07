@@ -5,9 +5,8 @@ use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
 use rama_core::{
     Layer,
-    error::BoxError,
     extensions::{Extensions, ExtensionsRef},
-    layer::IntoErrLayer,
+    layer::MapResult,
     matcher::Matcher,
     service::{BoxService, Service},
     telemetry::tracing,
@@ -30,12 +29,28 @@ use crate::{
         web::{
             IntoEndpointService, IntoEndpointServiceWithState,
             error::DowncastResponseError,
-            response::{Headers, IntoResponse, layer::IntoResponseLayer},
+            response::{ErrorResponse, Headers, IntoResponse},
         },
     },
 };
 
-type DefaultLayer = (IntoErrLayer<BoxError>, IntoResponseLayer);
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct DefaultLayer;
+
+impl<S> Layer<S> for DefaultLayer
+where
+    S: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
+{
+    type Service = MapResult<S, fn(Result<S::Output, S::Error>) -> Result<Response, RouterError>>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        MapResult::new(inner, |res| match res {
+            Ok(v) => Ok(v.into_response()),
+            Err(err) => Ok(err.into().into_response()),
+        })
+    }
+}
 
 /// A basic router that can be used to route requests to different services based on the request path.
 ///
@@ -43,7 +58,7 @@ type DefaultLayer = (IntoErrLayer<BoxError>, IntoResponseLayer);
 /// to predefined routes. Each route is associated with an `HttpMatcher`
 /// and a corresponding service handler.
 #[allow(unused)]
-pub struct Router<State = (), Layer = DefaultLayer, O = Response, E = BoxError> {
+pub struct Router<State = (), Layer = DefaultLayer, O = Response, E = RouterError> {
     routes: MatchitRouter<Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>>,
     sub_services: Option<Trie<String, SubService<O, E>>>,
     not_found: Option<BoxService<Request, O, E>>,
@@ -485,7 +500,7 @@ where
     pub fn with_sub_service<I, T>(mut self, prefix: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointService<T>,
-        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+        I::Service: Service<Request, Output = O, Error = E>,
     {
         self.set_sub_service(prefix, service);
         self
@@ -501,9 +516,9 @@ where
     pub fn set_sub_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
     where
         I: IntoEndpointService<T>,
-        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+        I::Service: Service<Request, Output = O, Error = E>,
     {
-        let nested = self.layer.layer(service.into_endpoint_service()).boxed();
+        let nested = service.into_endpoint_service().boxed();
         self.set_sub_service_inner(prefix, nested)
     }
 

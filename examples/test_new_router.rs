@@ -9,6 +9,7 @@ use rama::{
         Body, Method, Request, StatusCode,
         service::web::{Router, extract::Host},
     },
+    layer::IntoErrLayer,
 };
 use rama_http::{
     self,
@@ -17,7 +18,7 @@ use rama_http::{
         RouterError,
         error::{DowncastResponseError, DowncastResponseLayer},
         extract::host::MissingHost,
-        response::IntoResponse,
+        response::{IntoResponse, layer::IntoResponseLayer},
     },
 };
 
@@ -89,7 +90,8 @@ async fn test_func5(host: Host) -> Result<StatusCode, MyCustomErr> {
 
 #[tokio::main]
 async fn main() {
-    let mut router = Router::new();
+    let mut router = Router::new()
+        .with_endpoint_layer((IntoResponseLayer::new(), IntoErrLayer::<BoxError>::new()));
     router.set_match_route("/test1", HttpMatcher::method_get(), test_func1);
     router.set_match_route("/test2", HttpMatcher::method_get(), test_func2);
 
